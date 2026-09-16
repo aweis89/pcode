@@ -205,7 +205,7 @@ def test_recent_tools_follow_active_task_without_headers_or_empty_rows():
     assert task_panel_rows([], history, 10, "⟳") == []
 
 
-@pytest.mark.parametrize("status", ["completed", "pending", "blocked", "cancelled"])
+@pytest.mark.parametrize("status", ["pending", "blocked"])
 def test_without_active_task_tools_are_root_rows_not_children_of_inactive_task(status):
     history = ToolHistory()
     history.record(ToolSummary("read_file", "example.py"))
@@ -215,6 +215,27 @@ def test_without_active_task_tools_are_root_rows_not_children_of_inactive_task(s
         "  ✓ Read · example.py",
     )
     assert task_panel_rows([], history, 10, "⟳") == [("class:plan", "  ✓ Read · example.py")]
+
+
+@pytest.mark.parametrize("budget", [1, 2, 4, 6, 10])
+@pytest.mark.parametrize("final_status", ["completed", "cancelled"])
+def test_finished_plan_hides_tools_and_retains_task_rows(budget, final_status):
+    history = ToolHistory()
+    for i in range(5):
+        history.record(ToolSummary("read_file", f"file_{i}.py"))
+    items = [{"id": str(i), "content": f"Task {i}", "status": "completed"} for i in range(5)]
+    items[-1]["status"] = "in_progress"
+    assert any("Read" in text for _, text in task_panel_rows(items, history, 10, "⟳"))
+
+    items[-1]["status"] = final_status
+    expected = [
+        ("class:plan", f"  {'–' if item['status'] == 'cancelled' else '✓'} {item['content']}")
+        for item in items[:budget]
+    ]
+    assert task_panel_rows(items, history, budget, "⟳") == expected
+    # Rendering hides activity without destroying history or completed tasks.
+    assert len(history.calls) == 5
+    assert task_panel_rows(items, history, budget, "⟳") == expected
 
 
 @pytest.mark.parametrize("budget", [1, 2, 4, 6, 10])

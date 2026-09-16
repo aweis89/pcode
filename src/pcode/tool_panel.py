@@ -95,13 +95,15 @@ def task_panel_rows(items: list[dict], tools: ToolHistory, budget: int, active_i
     """A bounded task viewport with recent tools directly below the active task.
 
     Tools are a rolling view of recent activity, not persisted task ownership.
-    Without an active task they appear at root indentation after the task rows.
+    Without an active task they appear at root indentation after the task rows,
+    unless the plan is finished. Finished plans retain tasks but hide tool activity.
     Keep at least one task visible, even on short panes, and never add headers
     or empty placeholder rows.
     """
     if budget <= 0:
         return []
-    tool_count = min(5, len(tools.calls), max(0, budget - bool(items)))
+    finished = bool(items) and all(item["status"] in {"completed", "cancelled"} for item in items)
+    tool_count = 0 if finished else min(5, len(tools.calls), max(0, budget - bool(items)))
     task_count = min(5, len(items), budget - tool_count)
     active = next((i for i, item in enumerate(items) if item["status"] == "in_progress"), None)
     anchor = active if active is not None else 0
