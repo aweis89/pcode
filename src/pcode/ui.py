@@ -417,8 +417,11 @@ def create_prompt(
         return min(text_height, available) + 2
 
     plan_spinner = Spinner("dots")
+    # Give the prompt line its own glyph so it reads as the overall turn, not as
+    # another in-progress task row.
+    prompt_spinner = Spinner("arc")
     # Animate active tasks and update running tool elapsed times during pauses.
-    session.app.refresh_interval = plan_spinner.interval / 1000
+    session.app.refresh_interval = min(plan_spinner.interval, prompt_spinner.interval) / 1000
 
     def plan_rows():
         # Share one height budget instead of stacking separate Tools and Tasks
@@ -439,7 +442,7 @@ def create_prompt(
         Window(
             FormattedTextControl(
                 lambda: activity.prompt_fragments(
-                    plan_spinner.render(monotonic()).plain,
+                    prompt_spinner.render(monotonic()).plain,
                     session.app.output.get_size().columns - 2,
                 ),
                 show_cursor=False,

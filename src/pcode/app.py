@@ -17,6 +17,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from pcode.commands import Command, CommandRegistry
+from pcode.preferences import apply_effort, load_preferences, save_preferences
 from pcode.runtime import (
     Message,
     PlanUpdated,
@@ -66,6 +67,9 @@ class PreviewApp:
                     else None
                 ),
             )
+        agent = getattr(self.runtime, "agent", None)
+        if agent is not None and model:
+            apply_effort(agent, model, load_preferences().get("effort"))
         self.activity = Activity()
         self.transcript = Transcript(console or Console(), theme, activity=self.activity)
         self.running = True
@@ -98,6 +102,12 @@ class PreviewApp:
         ):
             self.registry.register(command)
 
+    def persist_defaults(self, **updates: str) -> None:
+        try:
+            save_preferences(**updates)
+        except OSError:
+            self.transcript.note("Could not save defaults; this selection applies only here.")
+
     def select_model(self, argument: str) -> None:
         self.model_requested = True
 
@@ -109,10 +119,12 @@ class PreviewApp:
         if self.activity.busy or self.activity.queued_prompts:
             raise ValueError("Cannot change models while working or messages are queued.")
         if model == self.model:
+            self.persist_defaults(model=model)
             self.transcript.note(f"Already using {model}.")
             return
         # Construct first: a missing provider/login must leave the old session intact.
         agent = await asyncio.to_thread(create_agent, model, self.workspace)
+        apply_effort(agent, model, load_preferences().get("effort"))
         save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
         root = self.session_dir
         workspace = self.workspace
@@ -125,6 +137,7 @@ class PreviewApp:
             close()
         self.runtime = runtime
         self.model = model
+        self.persist_defaults(model=model)
         self.save_sessions = save
         self.resuming = False
         self.activity.plan = []
@@ -195,8 +208,7 @@ class PreviewApp:
                 "Refresh/login in pi when it expires; pcode never writes pi's auth file."
             )
             self.transcript.note(
-                "For future launches use PCODE_ANTHROPIC_AUTH=pi "
-                "pcode -m anthropic:<model-id>."
+                "For future launches use PCODE_ANTHROPIC_AUTH=pi pcode -m anthropic:<model-id>."
             )
         except LoginError as error:
             self.transcript.note(str(error))
@@ -294,6 +306,7 @@ class PreviewApp:
         else:
             settings["openai_reasoning_effort"] = value
         agent.model_settings = settings
+        self.persist_defaults(model=self.model, effort=value)
         self.transcript.note(f"Effort: {self.current_effort()} (next turn).")
 
     def adjust_effort(self, direction: int) -> None:
@@ -351,7 +364,9 @@ class PreviewApp:
         try:
             if Path(saved.info.workspace).resolve() != self.workspace:
                 raise SessionError("Workspace differs; refusing cross-repo resume.")
-            runtime = AgentRuntime(create_agent(saved.info.model, self.workspace), saved)
+            agent = create_agent(saved.info.model, self.workspace)
+            apply_effort(agent, saved.info.model, load_preferences().get("effort"))
+            runtime = AgentRuntime(agent, saved)
             await runtime.restore()
         except BaseException:
             saved.close()
@@ -797,7 +812,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Streaming terminal with a Coder agent")
     parser.add_argument("--theme", choices=PALETTES, default="dark")
     parser.add_argument(
-        "-m", "--model", help="Pydantic Agent model string; omitted = offline preview"
+        "-m",
+        "--model",
+        help="Pydantic Agent model string; omitted = saved default or offline preview",
     )
     parser.add_argument(
         "-C", "--workspace", type=Path, help="Coder workspace (default: current directory)"
@@ -848,6 +865,8 @@ def main() -> None:
                 )
             args.model = saved.info.model
             args.workspace = Path(saved.info.workspace)
+        if not args.resume and not args.model:
+            args.model = load_preferences().get("model")
         workspace = args.workspace or Path.cwd()
         if not workspace.is_dir():
             raise SessionError("Workspace must be an existing directory.")
