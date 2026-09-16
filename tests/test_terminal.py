@@ -42,7 +42,8 @@ def test_terminal_completion_resize_interrupt_and_exit(columns):
         child.close()
         assert child.exitstatus == 0
         output = log.getvalue()
-        assert "Goodbye." in output
+        assert "Session not saved;" in output
+        assert "Goodbye." not in output
         assert "\x1b[?1049h" not in output  # Output stays in normal scrollback.
         assert "\x1b[?1049l" not in output
         assert "\x1b[?1047h" not in output
