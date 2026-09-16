@@ -43,7 +43,8 @@ def test_terminal_completion_resize_interrupt_and_exit(columns):
         assert child.exitstatus == 0
         output = log.getvalue()
         assert "Goodbye." in output
-        assert "\x1b[?1049h" not in output  # No alternate screen.
+        assert "\x1b[?1049h" in output  # Full-screen transcript.
+        assert "\x1b[?1049l" in output  # Restore terminal on exit.
         assert "\x1b[?1047h" not in output
         assert "\x1b[3J" not in output  # No scrollback erasure.
         assert not re.search(r"\x1b\[\d*;\d*r", output)  # No scroll region.

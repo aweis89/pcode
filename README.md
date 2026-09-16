@@ -1,6 +1,6 @@
 # pcode
 
-A small, scrollback-native terminal for a Pydantic AI Coder agent, with an offline
+A small, full-screen terminal for a Pydantic AI Coder agent, with an offline
 UI preview. See [PLAN.md](PLAN.md) for the longer-term direction.
 
 ## Run
@@ -61,6 +61,14 @@ and corresponding authentication.
 UI or sandbox yet.** Use a trusted repository and a safe working environment.
 The agent is instructed to answer questions without changing files unless asked,
 and to avoid credential contents, but instructions are not an enforcement boundary.
+
+File tools can access paths outside the selected workspace by default, subject to
+OS permissions and Harness's protected-file rules. They are rooted at the
+filesystem root (`/` on macOS/Linux); the agent is instructed to use absolute
+paths and scope repository searches to the workspace. Shell commands and repository
+instructions still use the selected workspace. The explorer has the same path
+access but remains read-only. This applies to new processes, including resumed
+sessions; it does not reconfigure tools in an already-running process.
 
 This project pins Harness 0.31.x. Its Coder composition includes filesystem,
 shell, repository context, planning, an explorer subagent, and context management.
@@ -134,7 +142,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   `/theme` alone toggles.
 - `/help`: command list and keyboard shortcuts.
 - `/context`: current model, workspace, completed turns, and token usage.
-- `/new`: start a new saved conversation without clearing scrollback or input history.
+- `/new`: start a new saved conversation without clearing the on-screen transcript or input history.
 - `/sessions`: list saved conversations and resume instructions.
 - `/quit` (alias `/exit`): exit.
 
@@ -148,6 +156,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 | Ctrl+R | Search this process's input history |
 | Ctrl+C | Discard input, or cancel the running agent |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
+| PageUp / PageDown | Scroll the conversation (pauses following new output) |
+| Ctrl+End | Jump to the latest output and resume following |
 
 The input is bottom-aligned from startup, with one editable line plus its border.
 It expands upward for wrapped text or explicit newlines, and shrinks when text is
@@ -155,9 +165,10 @@ removed. Completion appears above the frame. Very long input scrolls within the
 available pane height. Multiline bracketed paste works; mouse capture is off.
 
 During generation, a small temporary region above the prompt shows live text or
-current activity. Finalized text blocks become Rich Markdown in ordinary terminal
-scrollback, printed once. Completed tools get concise summaries rather than raw
-output dumps. The prompt is read-only during a run; cancellation restores editing.
+current activity. Finalized text blocks become Rich Markdown in an app-owned,
+scrollable transcript. Resizing re-renders the original content at the new width,
+including Markdown, tables, and code blocks. Scrolling up pauses automatic following;
+Ctrl+End resumes it. Completed tools get concise summaries rather than raw output dumps. The prompt is read-only during a run; cancellation restores editing.
 Editor history remains in memory; live model messages and transcript events are
 saved unless `--no-save` is set. Failed/cancelled runs recover settled checkpoints
 when safe. Cancellation never undoes completed tool effects.
@@ -177,11 +188,14 @@ when safe. Cancellation never undoes completed tool effects.
 - `src/pcode/commands.py`: registry shared by dispatch, help, and completion.
 - `src/pcode/app.py`: CLI and asynchronous composition.
 
-Rich owns permanent pixels; prompt_toolkit owns mutable pixels. Completed blocks
-are printed through `run_in_terminal`, which suspends and restores the editing
-area. No full-screen conversation viewport, alternate screen, custom cursor
-positioning, or manually reserved scroll region. Existing transcript is never
-repainted. Bottom placement relies on ordinary terminal cursor-position reports.
+prompt_toolkit owns the entire alternate screen: transcript, live preview, menus,
+and editor. Rich renders retained transcript blocks at the viewport's current
+width; those styled lines are cached until the width changes. New blocks are
+rendered incrementally. A resize while scrolled up retains the current block and
+approximate position within it. The application stays on the alternate screen
+between turns and restores the previous terminal screen on exit. Use application
+scrolling for conversation history, not terminal scrollback. `--demo` remains a
+noninteractive print-and-exit command.
 
 Approvals, queued prompts, model pickers, and MCP management are not implemented yet. Each run is capped at 30 model requests as a basic guard
 against runaway tool loops, not a monetary budget.
@@ -210,10 +224,9 @@ file reads using Pydantic's `FunctionModel`. Session tests cover round-trip hist
 post-tool failures, safe diagnostics, file permissions, locking, torn journals,
 and refusal to resume unresolved side effects. A native-provider wire test checks
 that explicit cache markers are omitted while streaming/store settings are retained.
-PTY tests check clean startup/exit
-without alternate-screen or scroll-region sequences. When tmux is installed,
+PTY tests check clean startup/exit and alternate-screen restoration. When tmux is installed,
 isolated-server tests measure prompt height and bottom placement through splits,
-streaming, cancellation, and replies, and check transcript retention.
+streaming, cancellation, and replies, and check transcript scrolling and resize reflow.
 
 Real tmux tests include cursor-position reports: plain PTYs alone missed the
 original frame-stretching bug. Actual copy-mode/search and rendering in your

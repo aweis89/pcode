@@ -1,17 +1,21 @@
-"""prompt_toolkit owns editing; Rich prints completed transcript blocks once."""
+"""Full-screen editing and width-aware Rich transcript rendering."""
 
 from dataclasses import dataclass
+from io import StringIO
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import get_app
+from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.filters import Always, Condition, has_focus, is_searching
+from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+from prompt_toolkit.formatted_text.utils import split_lines
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.containers import VerticalAlign
-from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UIControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.search import stop_search
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame
 from rich.console import Console
@@ -61,12 +65,94 @@ class Activity:
     status: str = ""
 
     def preview(self):
-        # Only the temporary tail is repainted. Full finalized blocks go to Rich.
+        # Keep the live tail bounded; completed messages remain in the transcript.
         return [("", self.text[-6000:] or self.status), ("[SetCursorPosition]", "")]
 
 
+class TranscriptControl(UIControl):
+    """Render retained Rich blocks at the actual pane width, not stdout width."""
+
+    def __init__(self, transcript):
+        self.transcript = transcript
+        self.width = 0
+        self.height = 1
+        self.lines = []
+        self.rendered = 0
+        self.block_starts = []
+        self.top = 0
+        self.follow = True
+
+    def create_content(self, width, height):
+        anchor = None
+        if width != self.width:
+            if not self.follow and self.block_starts:
+                block = max(i for i, start in enumerate(self.block_starts) if start <= self.top)
+                end = (
+                    self.block_starts[block + 1]
+                    if block + 1 < len(self.block_starts)
+                    else len(self.lines)
+                )
+                anchor = (
+                    block,
+                    (self.top - self.block_starts[block]) / max(1, end - self.block_starts[block]),
+                )
+            self.width = width
+            self.lines = []
+            self.block_starts = []
+            self.rendered = 0
+        self.height = height
+        blocks = self.transcript.blocks
+        for block in blocks[self.rendered :]:
+            self.block_starts.append(len(self.lines))
+            stream = StringIO()
+            console = Console(
+                file=stream,
+                width=max(1, width),
+                force_terminal=True,
+                color_system="truecolor",
+                legacy_windows=False,
+            )
+            console.print(*block)
+            fragments = to_formatted_text(ANSI(stream.getvalue().rstrip("\n")))
+            self.lines.extend(list(split_lines(fragments)))
+        self.rendered = len(blocks)
+        if anchor is not None:
+            block, fraction = anchor
+            start = self.block_starts[block]
+            end = (
+                self.block_starts[block + 1]
+                if block + 1 < len(self.block_starts)
+                else len(self.lines)
+            )
+            self.top = start + int(fraction * (end - start))
+        maximum = max(0, len(self.lines) - height)
+        if self.follow:
+            self.top = maximum
+        # Clamp the displayed viewport, not the reading anchor: shrinking again
+        # after a height-only resize should restore the reader's position.
+        visible_top = min(self.top, maximum)
+        visible = self.lines[visible_top : visible_top + height]
+        return UIContent(get_line=lambda i: visible[i], line_count=len(visible), show_cursor=False)
+
+    def scroll(self, pages):
+        self.follow = False
+        maximum = max(0, len(self.lines) - self.height)
+        self.top = max(0, min(maximum, min(self.top, maximum) + pages * max(1, self.height - 1)))
+        if self.top == maximum:
+            self.follow = True
+
+    def latest(self):
+        self.follow = True
+
+
 def create_prompt(
-    registry: CommandRegistry, *, activity: Activity | None = None, **kwargs
+    registry: CommandRegistry,
+    *,
+    activity: Activity | None = None,
+    transcript: "Transcript | None" = None,
+    on_submit=None,
+    on_cancel=None,
+    **kwargs,
 ) -> PromptSession:
     activity = activity or Activity()
     keys = KeyBindings()
@@ -90,6 +176,40 @@ def create_prompt(
     @keys.add("c-d", filter=Condition(lambda: activity.busy))
     def cancel(event: KeyPressEvent) -> None:
         event.app.exit(exception=KeyboardInterrupt)
+
+    if transcript is not None:
+
+        @keys.add("c-c")
+        @keys.add("c-d", filter=Condition(lambda: activity.busy))
+        def interrupt(event):
+            if activity.busy:
+                on_cancel()
+            else:
+                if is_searching():
+                    stop_search()
+                session.default_buffer.reset()
+                transcript.note("Input discarded. Ctrl+D on an empty prompt exits.")
+
+        @keys.add("c-d", filter=Condition(lambda: not activity.busy))
+        def exit_or_delete(event):
+            if not event.current_buffer.text:
+                event.app.exit()
+            else:
+                event.current_buffer.delete()
+
+        view = TranscriptControl(transcript)
+
+        @keys.add("pageup")
+        def page_up(event):
+            view.scroll(-1)
+
+        @keys.add("pagedown")
+        def page_down(event):
+            view.scroll(1)
+
+        @keys.add("c-end")
+        def latest(event):
+            view.latest()
 
     session = PromptSession(
         message=[("class:prompt", "❯ ")],
@@ -143,6 +263,16 @@ def create_prompt(
     )
     # Keep transient output/menus above the editor so its bottom edge stays anchored.
     children = [live, menu, search, Frame(editor, height=frame_height)]
+    if transcript is not None:
+        children.insert(0, Window(view, wrap_lines=False))
+
+        def accept(buffer):
+            text = buffer.text
+            buffer.append_to_history()
+            on_submit(text)
+            return False
+
+        session.default_buffer.accept_handler = accept
     if session.bottom_toolbar is not None:
         children.append(
             Window(
@@ -153,8 +283,22 @@ def create_prompt(
                 height=1,
             )
         )
-    session.layout = Layout(HSplit(children, align=VerticalAlign.BOTTOM), focused_element=editor)
+    session.layout = Layout(
+        HSplit(children, align=VerticalAlign.JUSTIFY if transcript else VerticalAlign.BOTTOM),
+        focused_element=editor,
+    )
     session.app.layout = session.layout
+    if transcript is not None:
+        editor_app = session.app
+        session.app = Application(
+            layout=session.layout,
+            full_screen=True,
+            key_bindings=editor_app.key_bindings,
+            style=editor_app.style,
+            input=editor_app.input,
+            output=editor_app.output,
+            mouse_support=False,
+        )
     return session
 
 
@@ -162,14 +306,21 @@ class Transcript:
     def __init__(self, console: Console, theme: str = "dark") -> None:
         self.console = console
         self.theme = theme
+        self.full_screen = False
+        self.blocks = []
+
+    def print(self, *objects) -> None:
+        self.blocks.append(objects)
+        if not self.full_screen:
+            self.console.print(*objects)
 
     @property
     def palette(self) -> Palette:
         return PALETTES[self.theme]
 
     def welcome(self, model: str | None = None, workspace: str = "") -> None:
-        self.console.print()
-        self.console.print(
+        self.print()
+        self.print(
             Text.assemble(
                 ("pcode", f"bold {self.palette.accent}"),
                 (f"  /  {model or 'UI preview'}", self.palette.muted),
@@ -181,28 +332,28 @@ class Transcript:
         else:
             self.note("Local only · no model connected · no files or shell tools")
         self.note("Type / for commands, /demo for a sample response, /help for keys.")
-        self.console.print()
+        self.print()
 
     def note(self, text: str) -> None:
-        self.console.print(Text(text, style=self.palette.muted))
+        self.print(Text(text, style=self.palette.muted))
 
     def user(self, text: str) -> None:
-        self.console.print(Text.assemble(("❯ ", f"bold {self.palette.accent}"), text))
-        self.console.print()
+        self.print(Text.assemble(("❯ ", f"bold {self.palette.accent}"), text))
+        self.print()
 
     def events(self, events: tuple[Event, ...]) -> None:
         for event in events:
             if isinstance(event, Message):
-                self.console.print(Markdown(event.markdown, code_theme=self.palette.syntax))
-                self.console.print()
+                self.print(Markdown(event.markdown, code_theme=self.palette.syntax))
+                self.print()
             elif isinstance(event, ToolSummary):
-                self.console.print(
+                self.print(
                     Text.assemble(
                         (f"  {'!' if event.failed else '✓'} {event.name}  ", self.palette.accent),
                         (event.detail, self.palette.muted),
                     )
                 )
-                self.console.print()
+                self.print()
 
     def help(self, registry: CommandRegistry) -> None:
         table = Table(box=None, padding=(0, 2), show_header=False)
@@ -210,11 +361,11 @@ class Transcript:
         table.add_column()
         for command in registry.commands:
             table.add_row(command.name, command.description)
-        self.console.print(table)
-        self.console.print()
+        self.print(table)
+        self.print()
         self.note("Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note("During a run: Ctrl+C/Ctrl+D cancel; editing resumes when the run finishes.")
-        self.note("Input history is in memory only. Mouse selection stays with your terminal.")
-        self.console.print()
+        self.note("Input history is in memory only. PgUp/PgDn scroll · Ctrl+End follow latest.")
+        self.print()

@@ -69,8 +69,8 @@ class PreviewRuntime:
                 "| `Ada` | Hello, Ada! |\n"
                 "| empty | Hello, world! |\n"
                 "| `世界` | Hello, 世界! |\n\n"
-                "- Markdown, code, and this table are ordinary terminal output.\n"
-                "- Try resizing the terminal or selecting text above the prompt.\n\n"
+                "- Markdown, code, and this table reflow when the terminal is resized.\n"
+                "- Use PageUp/PageDown to scroll and Ctrl+End to follow new output.\n\n"
                 "**No files were read or changed, and no tests were executed.**"
             ),
         )
