@@ -6,11 +6,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from prompt_toolkit.formatted_text import fragment_list_to_text
+from prompt_toolkit.styles import default_ui_style, merge_styles
 from rich.cells import cell_len
 from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.runtime import PreviewRuntime
+from pcode.ui import PALETTES
 
 
 def make_app(workspace, monkeypatch, *, model=None, width=100):
@@ -34,20 +37,20 @@ def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, _ = make_app(tmp_path / "p/pcode", monkeypatch, model="openai:gpt-5")
     app.branch = "master"
-    assert app.toolbar()[0][1] == " ~/p/pcode master · gpt-5 · effort: default"
+    assert fragment_list_to_text(app.toolbar()) == " ~/p/pcode master · gpt-5 · effort: default"
     app.runtime.agent = SimpleNamespace(
         model=SimpleNamespace(settings={"openai_reasoning_effort": "low"}),
         model_settings={"openai_reasoning_effort": "high"},
     )
-    assert app.toolbar()[0][1].endswith("gpt-5 · effort: high")
+    assert fragment_list_to_text(app.toolbar()).endswith("gpt-5 · effort: high")
     app.runtime.agent.model_settings = None
-    assert app.toolbar()[0][1].endswith("effort: low")
+    assert fragment_list_to_text(app.toolbar()).endswith("effort: low")
 
 
 def test_preview_home_and_help(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, stream = make_app(tmp_path, monkeypatch)
-    assert app.toolbar()[0][1] == " ~ · preview · effort: n/a"
+    assert fragment_list_to_text(app.toolbar()) == " ~ · preview · effort: n/a"
     app.handle("/help")
     help_text = stream.getvalue()
     for hint in (
@@ -59,7 +62,7 @@ def test_preview_home_and_help(tmp_path, monkeypatch):
         "cancel",
     ):
         assert hint in help_text
-        assert hint not in app.toolbar()[0][1]
+        assert hint not in fragment_list_to_text(app.toolbar())
 
 
 def test_footer_outside_home_and_busy(tmp_path, monkeypatch):
@@ -67,7 +70,7 @@ def test_footer_outside_home_and_busy(tmp_path, monkeypatch):
     app, _ = make_app(tmp_path, monkeypatch, width=200)
     app.activity.busy = True
     app.activity.queued = 2
-    text = app.toolbar()[0][1]
+    text = fragment_list_to_text(app.toolbar())
     assert str(tmp_path) in text
     assert text.endswith("preview · effort: n/a · working · 2 queued")
     assert "Ctrl" not in text
@@ -76,7 +79,7 @@ def test_footer_outside_home_and_busy(tmp_path, monkeypatch):
 @pytest.mark.parametrize("width", [20, 40, 60, 100])
 def test_long_unicode_path_stays_one_row(tmp_path, monkeypatch, width):
     app, _ = make_app(tmp_path / ("界" * 100 + "\npath"), monkeypatch, width=width)
-    text = app.toolbar()[0][1]
+    text = fragment_list_to_text(app.toolbar())
     assert cell_len(text) <= width
     assert "\n" not in text
     if width >= 40:
@@ -86,7 +89,7 @@ def test_long_unicode_path_stays_one_row(tmp_path, monkeypatch, width):
 def test_narrow_busy_footer_keeps_model_effort_and_activity(tmp_path, monkeypatch):
     app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=35)
     app.activity.busy = True
-    text = app.toolbar()[0][1]
+    text = fragment_list_to_text(app.toolbar())
     assert text == " local · effort: default · working"
     assert cell_len(text) <= 35
 
@@ -134,4 +137,35 @@ def test_git_unavailable_does_not_break_footer(tmp_path, monkeypatch, error):
     monkeypatch.setattr("pcode.app.subprocess.run", fail)
     app.refresh_branch()
     assert app.branch == ""
-    assert "preview" in app.toolbar()[0][1]
+    assert "preview" in fragment_list_to_text(app.toolbar())
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_footer_styles_use_terminal_background(theme):
+    palette = PALETTES[theme]
+    style = merge_styles([default_ui_style(), palette.prompt_style()])
+    for role, color in (
+        ("text", palette.muted),
+        ("location", palette.foreground),
+        ("model", palette.accent),
+        ("activity", palette.accent),
+    ):
+        attrs = style.get_attrs_for_style_str(
+            f"class:bottom-toolbar class:bottom-toolbar.text class:bottom-toolbar.{role}"
+        )
+        assert attrs.bgcolor == "default"
+        assert not attrs.reverse
+        assert attrs.color == color.lstrip("#")
+        assert attrs.bold == (role == "activity")
+
+
+def test_footer_segments_highlight_context_and_activity(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=200)
+    app.activity.busy = True
+    app.activity.queued = 2
+    fragments = app.toolbar()
+    assert ("class:bottom-toolbar.location", str(tmp_path)) in fragments
+    assert ("class:bottom-toolbar.model", "local") in fragments
+    assert ("class:bottom-toolbar.activity", "working") in fragments
+    assert ("class:bottom-toolbar.activity", "2 queued") in fragments

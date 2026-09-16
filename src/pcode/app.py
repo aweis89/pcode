@@ -227,7 +227,27 @@ class PreviewApp:
             path.truncate(path_width, overflow="ellipsis")
         text = Text(f" {path.plain} · {details}" if path.plain else f" {details}")
         text.truncate(width, overflow="ellipsis")
-        return [("class:bottom-toolbar.text", text.plain)]
+        segments = [("text", " ")]
+        if path.plain:
+            segments.extend([("location", path.plain), ("text", " · ")])
+        model_text = plain(model, limit=None)
+        segments.extend(
+            [("model", model_text), ("text", plain(f" · effort: {effort}", limit=None))]
+        )
+        if self.activity.busy:
+            segments.extend([("text", " · "), ("activity", "working")])
+            if self.activity.queued:
+                segments.extend([("text", " · "), ("activity", f"{self.activity.queued} queued")])
+        # Slice the already cell-truncated text, preserving its ellipsis and the
+        # same narrow-terminal priorities without splitting wide characters.
+        fragments = []
+        remaining = text.plain
+        for role, value in segments:
+            if not remaining:
+                break
+            fragments.append((f"class:bottom-toolbar.{role}", remaining[: len(value)]))
+            remaining = remaining[len(value) :]
+        return fragments
 
     def handle(self, text: str) -> bool:
         """Handle commands/preview synchronously; return whether a live run is needed."""
