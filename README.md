@@ -166,10 +166,11 @@ available pane height. Multiline bracketed paste works; mouse capture is off.
 
 Live responses stream as literal text into normal terminal scrollback, including
 Markdown markers. Complete lines are printed once; only the unfinished display
-line is live. Lines wrap at spaces using the current terminal width, keeping
+line is live. Rich's `Text.wrap()` wraps at spaces using the current terminal width, keeping
 words together across streamed chunks. The separating space becomes a newline;
 explicit newlines and indentation are retained. Tokens longer than the available
-width must still split. The live tail stays small. Finishing a message flushes the tail without replacing the response
+width must still split. The live tail stays small. Finishing a message flushes the
+tail without replacing the response
 with rendered Markdown. Tool summaries remain concise, styled output. `/demo`
 and restored session messages still use Rich Markdown.
 

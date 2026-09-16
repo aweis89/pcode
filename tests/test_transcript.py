@@ -113,6 +113,20 @@ def test_exact_width_word_does_not_push_space_into_next_word():
     asyncio.run(run())
 
 
+def test_trailing_separator_at_right_edge_survives_until_next_delta():
+    async def run():
+        output, stream = make_output(width=5)
+        output.delta("hello ")
+        await output.flush()
+        assert output.tail == "hello "
+        output.delta("world")
+        output.finish()
+        await output.flush()
+        assert stream.getvalue() == "hello\nworld\n\n"
+
+    asyncio.run(run())
+
+
 def test_long_tokens_split_but_indentation_and_explicit_newlines_survive():
     async def run():
         output, stream = make_output(width=8)
