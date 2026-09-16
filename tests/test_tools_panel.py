@@ -115,8 +115,9 @@ def test_errors_are_retained_without_numbered_expansion_and_reset_clears_them():
     assert stream.getvalue() == ""
     assert app.activity.tools.calls[0].event.error == event.error
     assert "! Run failed" in app.activity.tools.calls[0].line()
-    assert app.registry.find("/tools") is None
-    assert not app.registry.dispatch("/tools 1")
+    assert app.registry.find("/tools") is not None
+    with pytest.raises(ValueError, match="Usage: /tools"):
+        app.registry.dispatch("/tools 1")
     app.new("")
     assert not app.activity.tools.calls
 

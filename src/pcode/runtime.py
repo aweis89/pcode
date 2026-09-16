@@ -14,6 +14,10 @@ class ToolStarted:
     detail: str
     call_id: str
     command: str = ""
+    arguments: str | None = None
+    run_id: str = ""
+    started_at: str = ""
+    process_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,10 @@ class ToolSummary:
     elapsed_seconds: float | None = None
     error: str = ""
     command: str = ""
+    result: str | None = None
+    run_id: str = ""
+    outcome: str = ""
+    process_id: str = ""
 
 
 @dataclass(frozen=True)

@@ -7,7 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from prompt_toolkit.application import get_app
+from prompt_toolkit.application import get_app, in_terminal
+from prompt_toolkit.input import create_input
 from prompt_toolkit.styles import DynamicStyle
 from rich.cells import cell_len
 from rich.console import Console
@@ -66,9 +67,12 @@ class PreviewApp:
         self.activity = Activity()
         self.transcript = Transcript(console or Console(), theme, activity=self.activity)
         self.running = True
+        self.inspector_requested: str | None = None
         self.registry = CommandRegistry()
         for command in (
             Command("/help", "Commands and keyboard shortcuts", self.help),
+            Command("/tools", "Inspect tool calls and their results", self.tools, ("failed",)),
+            Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
             Command("/demo", "Sample Markdown, code, diff, and tool output", self.demo),
             Command("/theme", "Switch palette: dark / light", self.theme, tuple(PALETTES)),
             Command("/context", "Model, workspace, and session usage", self.context),
@@ -77,6 +81,50 @@ class PreviewApp:
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
         ):
             self.registry.register(command)
+
+    def tools(self, argument: str) -> None:
+        self.inspector_requested = argument
+
+    async def inspect_tools(self, output: TerminalOutput, session) -> None:
+        from pcode.inspection import ToolArchive
+        from pcode.inspector_ui import ToolInspector
+
+        failed = self.inspector_requested == "failed"
+        self.inspector_requested = None
+        saved = getattr(self.runtime, "session", None)
+        if saved is not None:
+            archive = getattr(self.runtime, "inspections", None) or ToolArchive()
+            await asyncio.to_thread(archive.update, saved.directory / "transcript.jsonl")
+            self.runtime.inspections = archive
+        elif hasattr(self.runtime, "inspections"):
+            archive = self.runtime.inspections
+        else:
+            archive = ToolArchive()
+            for call in self.activity.tools.calls:
+                archive.event(call.event)
+            archive.settle("unknown")
+        await output.flush()
+        # One terminal owner: drain permanent output, suspend the editor, and
+        # hold the writer lock until the alternate screen has been restored.
+        async with output.lock:
+            async with in_terminal():
+                # The suspended editor can still have an escape-flush timer.
+                # Give the modal its own parser, or that timer can steal an
+                # early Escape from the shared input object's parser buffer.
+                stdin = getattr(session.app.input, "stdin", None)
+                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
+                try:
+                    inspector = ToolInspector(
+                        archive,
+                        failed=failed,
+                        input=modal_input,
+                        output=session.app.output,
+                        style=session.app.style,
+                    )
+                    await inspector.run()
+                finally:
+                    if modal_input is not session.app.input:
+                        modal_input.close()
 
     def help(self, argument: str) -> None:
         self.transcript.help(self.registry)
@@ -381,6 +429,8 @@ class PreviewApp:
                             self.transcript.note(
                                 "Run cancelled. Completed tool effects are not undone."
                             )
+                    if self.inspector_requested is not None:
+                        await self.inspect_tools(output, session)
                 except Exception as error:
                     from pcode.live import error_message
 

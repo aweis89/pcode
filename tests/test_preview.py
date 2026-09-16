@@ -21,7 +21,20 @@ def make_app(width=80):
 @pytest.mark.parametrize(
     "text, expected",
     [
-        ("/", ["/help", "/demo", "/theme", "/context", "/new", "/sessions", "/quit"]),
+        (
+            "/",
+            [
+                "/help",
+                "/tools",
+                "/errors",
+                "/demo",
+                "/theme",
+                "/context",
+                "/new",
+                "/sessions",
+                "/quit",
+            ],
+        ),
         ("/de", ["/demo"]),
         ("/theme ", ["dark", "light"]),
         ("/theme l", ["light"]),
@@ -29,7 +42,7 @@ def make_app(width=80):
         ("hello /", []),
         ("/demo\n/", []),
         ("/missing", []),
-        ("/tool", []),
+        ("/tool", ["/tools"]),
     ],
 )
 def test_completion(text, expected):
