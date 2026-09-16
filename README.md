@@ -115,7 +115,7 @@ Default location: `$XDG_STATE_HOME/pcode/sessions`, or
 - `steps.sqlite3`: Harness `StepPersistence` events, full Pydantic message snapshots
   (including tool arguments/results and provider reasoning metadata), and a tool-effect ledger.
 - `transcript.jsonl`: submitted prompts, streamed text, completed blocks/tool summaries,
-  and structured failure diagnostics (HTTP status, provider code/parameter/message).
+  bounded redacted tool-inspection arguments/results, and structured failure diagnostics (HTTP status, provider code/parameter/message).
 
 Session directories are mode 0700 and data files are 0600. **These files contain
 conversation and repository content in plaintext.** They stay outside the repo by
@@ -156,6 +156,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/theme light` or `/theme dark`: change the input and future output palette.
   `/theme` alone toggles.
 - `/help`: command list and keyboard shortcuts.
+- `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
+- `/tools failed` or `/errors`: open the same inspector filtered to failures.
 - `/context`: current model, workspace, completed turns, and token usage.
 - `/new`: start a new saved conversation without clearing the on-screen transcript or input history.
 - `/sessions`: list saved conversations and resume instructions.
@@ -195,11 +197,43 @@ session resume restores this history independently of conversation replay.
 Successful planning operations update the task rows without duplicate tool rows;
 failed planning operations remain visible as failed calls. Plans and tools persist
 across turns and saved-session resumes; `/new` clears both.
-Routine tool summaries no longer enter conversation scrollback. Tool expansion
-and a details UI are deferred; there is currently no `/tools` command. Retained
-error diagnostics and saved session diagnostics remain available for future
-inspection UI work. The non-interactive `--demo` sample still prints its
-fictional tool summaries.
+Routine tool summaries no longer enter conversation scrollback. `/tools` opens a
+read-only alternate-screen inspector, separate from this ten-call activity panel.
+It retains all live conversation calls, including successful planning operations.
+The non-interactive `--demo` sample still prints its fictional tool summaries.
+
+### Tool-call inspector
+
+Use `/tools`, `/tools failed`, or `/errors`. Like other slash commands, these queue
+behind the active turn; a failed/cancelled turn clears queued commands, so submit
+`/errors` again after it settles. Inspection never reruns a tool.
+
+- Calls are newest first. Use arrows to select and Tab/Shift+Tab to move between
+  the call list, detail pane, and search field.
+- In the call list, **f** toggles failures, **t** cycles tool-name filters, and
+  **/** focuses search. Search matches tool names/statuses and command/summary
+  previews, not the complete output payload. Ctrl+F focuses search from any pane.
+- In details, use arrows, PageUp/PageDown, or Ctrl+Home/Ctrl+End to scroll.
+- Escape, Ctrl+C, or Ctrl+D closes only the inspector and restores the editor draft.
+- Wide terminals show calls and details side by side; narrow terminals stack them.
+
+Details include the call/run IDs, timestamp and duration when captured, structured
+arguments, framework outcome, and returned output/error. Nonzero command exits,
+timeouts, and tool retries are failures; interruption and unknown results remain
+distinct. Background launch/check/stop calls show their process ID and related
+calls when available. A successful launch is not proof that the process finished
+successfully.
+
+Saved inspection data is a redacted display projection in `transcript.jsonl`, not
+an execution or recovery log. It survives resume and failures in later model
+requests. Metadata is indexed incrementally; result payloads are read on selection.
+Arguments and results are each capped at 128 Ki characters, with explicit truncation
+markers. Tool-side truncation is preserved, not recoverable by the inspector.
+Unsaved conversations retain at most 8 MiB of payload text; older evicted details
+are labeled while call metadata remains. `/new` resets the inspector history.
+Older saved calls remain browsable but show a missing-details label where their
+journal did not capture arguments/results. Preview mode shows its recent fixtures.
+Redaction is best-effort, not a guarantee that arbitrary sensitive content is removed.
 
 The editor avoids full-screen erase sequences that terminals such as tmux can
 copy into scrollback, leaving duplicate borders after a resize. Repeated
@@ -226,7 +260,8 @@ running more requests. The queue is in memory only, not saved until submitted to
 the runtime. `/quit` during generation queues an exit; cancel first to exit sooner.
 
 Use terminal/tmux scrollback, selection, and search for conversation history.
-There is no alternate screen or application-owned conversation viewport. Resizing
+The conversation has no alternate screen or application-owned viewport; only the
+temporary tool inspector uses the alternate screen. Resizing
 does not re-render completed responses; reflow is up to the terminal, and explicit
 line breaks remain. Known limitation: narrowing a pane during streaming can leave
 a copy of the unfinished line in scrollback when prompt_toolkit erases its old
@@ -250,6 +285,8 @@ when safe. Cancellation never undoes completed tool effects.
 - `src/pcode/ui.py`: prompt_toolkit editor and bottom-aligned layout, plus a batched
   terminal writer for committed Markdown blocks and a bounded unfinished preview.
 - `src/pcode/commands.py`: registry shared by dispatch, help, and completion.
+- `src/pcode/inspection.py`: bounded inspection projection and lazy journal index.
+- `src/pcode/inspector_ui.py`: alternate-screen tool selection, filters, and scrollable details.
 - `src/pcode/app.py`: CLI and asynchronous composition.
 
 prompt_toolkit owns only the live tail, menus, and editor in the normal screen.

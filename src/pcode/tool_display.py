@@ -53,6 +53,9 @@ def argument(value: str, *, command: bool = False) -> str:
 
 def command_text(value: str) -> str:
     """Redact first, then preserve layout without allowing terminal controls."""
+    value = _ANSI.sub("", value)
+    value = _PRIVATE_KEY.sub("[private key redacted]", value)
+    value = _QUOTED_CREDENTIAL.sub(r"\1\2[redacted]\2", value)
     value = redact(_CREDENTIAL_OPTION.sub(r"\1[redacted]", value))
     return "\n".join(plain(line.expandtabs(4), limit=None) for line in value.split("\n"))
 
@@ -65,7 +68,7 @@ def command_preview(value: str) -> str:
     # Inline interpreter payloads are implementation detail, not useful labels.
     inline = re.search(r"\b(?:python[\d.]*|node|ruby|perl)\s+(-c|-e)\s+", first)
     if inline and (len(first) > 100 or len(lines) > 1):
-        first = first[:inline.end()].rstrip() + " … [inline code hidden]"
+        first = first[: inline.end()].rstrip() + " … [inline code hidden]"
     elif len(lines) > 1:
         first += f" … [{len(lines) - 1} more lines]"
     return plain(first, limit=100)
@@ -74,9 +77,7 @@ def command_preview(value: str) -> str:
 def target(name: str, args: dict) -> str:
     if name in {"run_command", "start_command"}:
         command = args.get("command")
-        return (
-            command_preview(command) if isinstance(command, str) else "command unavailable"
-        )
+        return command_preview(command) if isinstance(command, str) else "command unavailable"
     if name in {"get_page", "web_search"}:
         key = "url" if name == "get_page" else "query"
         value = args.get(key)
@@ -130,6 +131,12 @@ def failure_reason(content: object) -> str:
 _ANSI = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]")
 _PRIVATE_KEY = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)",
+    re.DOTALL,
+)
+
+_QUOTED_CREDENTIAL = re.compile(
+    r"(?i)((?:password|passwd|secret|token|api[_-]?key|authorization)[\"']?\s*[:=]\s*)"
+    r"([\"'])(.*?)(?<!\\)\2",
     re.DOTALL,
 )
 
@@ -243,10 +250,13 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
             if (isinstance(old, str) and isinstance(new, str))
             else "Edit finished"
         )
-    elif name == "run_command":
-        # Harness appends this marker only for nonzero exit codes.
+    elif name in {"run_command", "start_command", "check_command", "stop_command"}:
+        # Foreground nonzero exits and completed background processes carry this marker.
         match = re.search(r"\[exit code: (-?\d+)\]\s*$", text)
-        if re.fullmatch(r"\[Command timed out after [\d.]+s\]", text):
+        if text.startswith("[Error:"):
+            failed = True
+            result = failure_reason(text)
+        elif re.fullmatch(r"\[Command timed out after [\d.]+s\]", text):
             failed = True
             result = "Timed out"
         elif match:

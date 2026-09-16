@@ -283,7 +283,7 @@ def test_multiline_command_preview_is_compact_and_sanitized():
     assert "1 more lines" not in stream.getvalue()
     assert "2 more lines" in stream.getvalue()
     assert "\\n" not in stream.getvalue()
-    assert command_text("echo \x1b[2Jhello\u202e\n\tend") == "echo [2Jhello \n    end"
+    assert command_text("echo \x1b[2Jhello\u202e\n\tend") == "echo hello \n    end"
 
 
 def test_command_text_redacts_before_preserving_lines():

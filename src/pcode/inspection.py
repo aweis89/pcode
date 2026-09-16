@@ -1,0 +1,242 @@
+"""Read-only inspection projection; never used to replay or execute tools.
+
+Saved payloads stay in the existing private UI journal and are loaded on selection.
+Unsaved payloads have a global memory budget; call metadata is retained on eviction.
+"""
+
+import json
+import math
+import re
+from collections import deque
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+from pcode.runtime import ToolStarted, ToolSummary
+from pcode.tool_display import command_text
+
+PAYLOAD_LIMIT = 128 * 1024  # characters per arguments/result field
+MEMORY_LIMIT = 8 * 1024 * 1024  # UTF-8 bytes of unsaved payload text
+MISSING = "Details were not captured for this call (older session or preview)."
+
+
+def _redact_fields(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: "[redacted]"
+            if re.search(
+                r"(?i)password|passwd|secret|token|authorization|api.?key|private.?key", str(key)
+            )
+            else _redact_fields(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_fields(item) for item in value]
+    return value
+
+
+def capture(value: object) -> str:
+    """Render a bounded, redacted text projection, not arbitrary object reprs."""
+    text = (
+        value
+        if isinstance(value, str)
+        else json.dumps(
+            _redact_fields(value),
+            ensure_ascii=False,
+            indent=2,
+            default=lambda obj: f"<{type(obj).__name__} omitted>",
+        )
+    )
+    text = command_text(text)
+    if len(text) > PAYLOAD_LIMIT:
+        text = text[:PAYLOAD_LIMIT] + "\n[Inspector truncated this payload at 128 Ki characters.]"
+    return text
+
+
+@dataclass
+class Payload:
+    text: str | None = None
+    path: Path | None = None
+    offset: int = 0
+    key: str = ""
+
+    def read(self) -> str:
+        if self.path is None:
+            return self.text if self.text is not None else MISSING
+        try:
+            with self.path.open("rb") as file:
+                file.seek(self.offset)
+                record = json.loads(file.readline())
+            if not isinstance(record, dict):
+                return "Saved details are unavailable: damaged journal record."
+            value = record.get(self.key)
+            if value is None and self.key == "result" and record.get("error"):
+                return capture(record["error"]) + "\n\n" + MISSING
+            return capture(value) if value is not None else MISSING
+        except (OSError, ValueError):
+            return "Saved details are unavailable or the journal record is damaged."
+
+
+@dataclass
+class InspectedCall:
+    call_id: str
+    name: str
+    run_id: str
+    started_at: str = "unavailable"
+    state: str = "running"
+    detail: str = ""
+    summary: str = ""
+    elapsed: float | None = None
+    outcome: str = ""
+    process_id: str = ""
+    arguments: Payload = field(default_factory=Payload)
+    result: Payload = field(default_factory=Payload)
+
+    def title(self) -> str:
+        return f"{self.state:11} {self.name} · {self.detail}"
+
+    def details(self, calls: list["InspectedCall"]) -> str:
+        timing = f"{self.elapsed:.2f}s" if self.elapsed is not None else "unavailable"
+        related = [
+            c.call_id
+            for c in calls
+            if c is not self and self.process_id and c.process_id == self.process_id
+        ]
+        metadata = (
+            f"{self.name} · {self.state}\nCall: {self.call_id}\nRun: {self.run_id}\n"
+            f"Started: {self.started_at}\nDuration: {timing}\n"
+            f"Framework outcome: {self.outcome or 'unavailable'}\nSummary: {self.summary}\n"
+        )
+        if self.process_id:
+            metadata += (
+                f"Background process: {self.process_id}\n"
+                f"Related calls: {', '.join(related) or 'none'}\n"
+            )
+        return command_text(
+            metadata
+            + "\nArguments\n─────────\n"
+            + self.arguments.read()
+            + "\n\nReturned result / error\n───────────────────────\n"
+            + self.result.read()
+            + "\n\nOnly captured tool output is shown; tool-side truncation cannot be recovered."
+        )
+
+
+class ToolArchive:
+    def __init__(self) -> None:
+        self.calls: list[InspectedCall] = []
+        self._running: dict[tuple[str, str], InspectedCall] = {}
+        self._payloads: deque[tuple[Payload, int]] = deque()
+        self._bytes = 0
+        self.run_id = "unavailable"
+        self._path: Path | None = None
+        self._file_id: tuple[int, int] | None = None
+        self._offset = 0
+
+    def settle(self, state: str) -> None:
+        for call in self._running.values():
+            call.state = state
+        self._running.clear()
+
+    def _payload(self, record: dict, key: str, path: Path | None, offset: int) -> Payload:
+        if path is not None:
+            return Payload(path=path, offset=offset, key=key)
+        value = record.get(key)
+        if value is None and key == "result" and record.get("error"):
+            value = capture(record["error"]) + "\n\n" + MISSING
+        payload = Payload(text=capture(value) if value is not None else None)
+        size = len((payload.text or "").encode("utf-8"))
+        self._payloads.append((payload, size))
+        self._bytes += size
+        while self._bytes > MEMORY_LIMIT:
+            old, count = self._payloads.popleft()
+            old.text = "[Payload evicted from the unsaved session's 8 MiB inspection budget.]"
+            self._bytes -= count
+        return payload
+
+    def record(self, record: dict, *, path: Path | None = None, offset: int = 0) -> None:
+        kind = record.get("kind")
+        if not isinstance(kind, str):
+            return
+        # Ignore malformed metadata without losing healthy surrounding records.
+        for key in (
+            "name",
+            "call_id",
+            "run_id",
+            "detail",
+            "command",
+            "process_id",
+            "started_at",
+            "time",
+            "outcome",
+        ):
+            if key in record and not isinstance(record[key], str):
+                return
+        if kind == "turn_started":
+            self.settle("unknown")
+            self.run_id = record.get("run_id", str(offset))
+            return
+        if kind in {"turn_completed", "turn_failed", "turn_cancelled"}:
+            self.settle("interrupted" if kind == "turn_cancelled" else "unknown")
+            return
+        if kind not in {"ToolStarted", "ToolSummary"}:
+            return
+        if not record.get("name"):
+            return
+        call_id = record.get("call_id") or f"unavailable-{len(self.calls) + 1}"
+        run_id = record.get("run_id") or self.run_id
+        key = (run_id, call_id)
+        call = self._running.get(key)
+        if call is None:
+            call = InspectedCall(call_id, capture(record["name"]), run_id)
+            self.calls.append(call)
+        call.detail = command_text(record.get("command") or record.get("detail", ""))[:300]
+        call.summary = command_text(record.get("detail", ""))[:1000]
+        call.process_id = command_text(record.get("process_id") or call.process_id)
+        if kind == "ToolStarted":
+            call.started_at = record.get("started_at") or record.get("time", "unavailable")
+            call.arguments = self._payload(record, "arguments", path, offset)
+            self._running[key] = call
+        else:
+            call.result = self._payload(record, "result", path, offset)
+            elapsed = record.get("elapsed_seconds")
+            call.elapsed = (
+                elapsed
+                if (type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0)
+                else None
+            )
+            call.state = "failed" if record.get("failed") else "succeeded"
+            call.outcome = record.get("outcome", "")
+            self._running.pop(key, None)
+
+    def event(self, event: ToolStarted | ToolSummary) -> None:
+        self.record({"kind": type(event).__name__, **asdict(event)})
+
+    def update(self, path: Path) -> None:
+        """Incrementally index complete appends; payloads remain file-offset references."""
+        stat = path.stat()
+        identity = (stat.st_dev, stat.st_ino)
+        if path != self._path or identity != self._file_id or stat.st_size < self._offset:
+            self.__init__()
+            self._path, self._file_id = path, identity
+        with path.open("rb") as file:
+            file.seek(self._offset)
+            while True:
+                offset = file.tell()
+                line = file.readline()
+                if not line or not line.endswith(b"\n"):
+                    break  # Retry an incomplete append on the next open.
+                self._offset = file.tell()
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    self.record(record, path=path, offset=offset)
+        for call in self._running.values():
+            call.state = "unknown"
+
+    @classmethod
+    def load(cls, path: Path) -> "ToolArchive":
+        archive = cls()
+        archive.update(path)
+        return archive

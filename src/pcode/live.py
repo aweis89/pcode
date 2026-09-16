@@ -1,7 +1,9 @@
 """Translate Pydantic streams to UI-independent application events."""
 
 import asyncio
+import re
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from uuid import uuid4
@@ -25,6 +27,7 @@ from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
 from pydantic_ai_harness.step_persistence import StepPersistence
 
 from pcode.diagnostics import error_details
+from pcode.inspection import ToolArchive, capture
 from pcode.runtime import (
     Event,
     Message,
@@ -78,6 +81,7 @@ class AgentRuntime:
 
     def _clear(self) -> None:
         info = self.session.info if self.session else None
+        self.inspections = ToolArchive()
         self.history: list[ModelMessage] = []
         self.conversation_id = info.id if info else str(uuid4())
         self.turns = info.turns if info else 0
@@ -115,12 +119,20 @@ class AgentRuntime:
             saved.append("turn_started", prompt=prompt, run_id=run_id, sync=True)
             saved.info.status = "running"
             saved.save_info()
+        self.inspections.run_id = run_id
         try:
             async for event in self._stream(prompt, run_id):
                 if saved:
                     saved.event(event)
+                if saved is None and isinstance(event, (ToolStarted, ToolSummary)):
+                    self.inspections.event(event)
                 yield event
         except BaseException as error:
+            self.inspections.settle(
+                "interrupted"
+                if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit))
+                else "unknown"
+            )
             if saved:
                 cancelled = isinstance(
                     error, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit)
@@ -141,6 +153,7 @@ class AgentRuntime:
                     self.recovery_blocked = str(recovery_error)
             raise
         else:
+            self.inspections.settle("unknown")
             if saved:
                 saved.append("turn_completed", run_id=run_id, sync=True)
                 saved.info.status = "complete"
@@ -200,6 +213,10 @@ class AgentRuntime:
                         event.part.tool_name,
                         target(event.part.tool_name, args),
                         event.part.tool_call_id,
+                        arguments=capture(args if args else event.part.args),
+                        run_id=run_id,
+                        started_at=datetime.now(timezone.utc).isoformat(),
+                        process_id=capture(args.get("command_id", "")),
                         command=command_text(args["command"])
                         if event.part.tool_name in {"run_command", "start_command"}
                         and isinstance(args.get("command"), str)
@@ -228,6 +245,18 @@ class AgentRuntime:
                         detail,
                         failed=failed,
                         call_id=event.tool_call_id,
+                        result=capture(event.part.content),
+                        run_id=run_id,
+                        outcome=outcome,
+                        process_id=(
+                            match[1]
+                            if name == "start_command"
+                            and isinstance(event.part.content, str)
+                            and (
+                                match := re.search(r"^ID: (\w+)$", event.part.content, re.MULTILINE)
+                            )
+                            else capture(args.get("command_id", ""))
+                        ),
                         elapsed_seconds=max(0, monotonic() - started),
                         command=command_text(args["command"])
                         if name in {"run_command", "start_command"}
