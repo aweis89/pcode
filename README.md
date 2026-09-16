@@ -167,7 +167,7 @@ The picker currently supports configured **Anthropic** and **OpenAI Codex** prov
   Pi reuse remains opt-in; opening the picker never reads pi credentials.
 - Codex is enabled when its CLI credential file exists (`CODEX_HOME` is honored).
   Opening the picker checks file presence only, not its contents or validity.
-- With `PCODE_LLM_PROXY` set, only Codex is offered; unset it to select Anthropic.
+- `PCODE_LLM_PROXY` applies only to Codex and does not restrict model selection.
 
 Models are grouped by provider and family, with numeric versions sorted newest
 first (Opus 5 before Opus 4.8; 4.10 before 4.9). Filtering preserves that order.
@@ -175,21 +175,22 @@ The current model is marked, not pinned above newer versions; undated aliases
 precede dated snapshots of the same version. This uses model IDs, not release-date
 metadata across different families.
 
-Suggestions come from the installed Pydantic AI catalog (Anthropic and selected
-GPT-5 coding/base variants for Codex). Opening the picker makes **no network
-requests**. This is not an account-entitlement list: the provider checks model
+Suggestions come from the installed Pydantic AI catalog (Anthropic models and
+all OpenAI model IDs for Codex). Opening the picker makes **no network requests**.
+This is not an account-entitlement list: the provider checks model
 availability and credentials when you use the model. Custom IDs are accepted only
 for providers enabled in the picker. If none are configured, use `/login`, set
 `ANTHROPIC_API_KEY`, or run `codex login` first.
 
-**Changing models starts a new conversation.** The old saved session remains
-available through `/session`; its model and history are not rewritten. Visible
-transcript and editor draft remain, but model context, plan, tool panel, and
-reasoning settings reset. Selecting the current model is a no-op. The new session
-is saved lazily on its first prompt, and `--no-save` still applies. A failed switch
-leaves the old conversation intact. Model selection is disabled while a run or
-queued messages are active. This also works from offline preview to start a live
-conversation without restarting pcode.
+**Changing models continues the current conversation.** Message history, session ID,
+plan, tool panel, usage totals, transcript, and editor draft are preserved. The
+saved session records the selected model so resuming uses it too. Model-specific
+settings are rebuilt for the selected model. Use `/new` to start over instead.
+Selecting the current model is a no-op; `--no-save` still applies, and sessions
+are saved lazily on their first prompt. A failed switch leaves the old conversation
+intact. Model selection is disabled while a run or queued messages are active.
+This also works from offline preview to start a live conversation without
+restarting pcode.
 
 ### Local Meridian provider
 
@@ -216,8 +217,8 @@ access; the proxy must already be running.
 
 Requests use the Anthropic streaming API with `x-meridian-agent: passthrough`, so
 pcode—not Meridian's built-in agent—executes the supplied tools. There is no
-fallback to direct Anthropic requests if the proxy is unavailable. Unset
-`PCODE_LLM_PROXY` when using Meridian: that separate setting remains Codex-only.
+fallback to direct Anthropic requests if the proxy is unavailable.
+`PCODE_LLM_PROXY` is ignored when using Meridian; that setting applies only to Codex.
 
 ### Model-only HTTP proxy
 
@@ -228,8 +229,9 @@ PCODE_LLM_PROXY=http://127.0.0.1:8080 pcode --model openai-codex:gpt-5.6-sol
 ```
 
 HTTP and HTTPS proxy URLs are supported (HTTPS model traffic uses CONNECT).
-This currently supports `openai-codex:` models only; setting it with another
-provider produces an error rather than silently sending model requests directly.
+This applies to `openai-codex:` models only. Other providers ignore this setting
+and retain their normal routing. You can leave it set when resuming a non-Codex
+session or switching providers in the model picker.
 An unset or blank value preserves the normal provider behavior.
 
 The dedicated model client ignores global proxy settings, including `NO_PROXY`,
@@ -257,24 +259,27 @@ including when resuming a session.
 ### Tool permissions
 
 **Live mode enables actual Coder file edits and shell tools. There is no approval
-UI or sandbox yet.** Use a trusted repository and a safe working environment.
-The agent is instructed to answer questions without changing files unless asked,
-and to avoid credential contents, but instructions are not an enforcement boundary.
+UI.** pcode does not implement its own permission model and does not use prompt
+text as a safety control. Permission management is out of scope: run pcode inside
+a sandboxing wrapper (a container, VM, or an OS sandbox such as `sandbox-exec`
+or `bwrap`) when you need enforcement, and otherwise use a trusted repository and
+a safe working environment.
 
-File tools can access paths outside the selected workspace by default, subject to
-OS permissions and Harness's protected-file rules. They are rooted at the
-filesystem root (`/` on macOS/Linux); the agent is instructed to use absolute
-paths and scope repository searches to the workspace. Shell commands and repository
-instructions still use the selected workspace. The explorer has the same path
-access but remains read-only. This applies to new processes, including resumed
-sessions; it does not reconfigure tools in an already-running process.
+File tools are scoped to the selected workspace by Harness's `FileSystem`
+capability: paths resolve relative to the workspace root, traversal above it is
+rejected, and protected patterns such as `.git/`, `.env`, `*.pem`, `*.key`, and
+`**/secrets*` are read-only through these tools. The explorer subagent shares that
+root but exposes only read-only file tools. Shell commands run with the workspace
+as their working directory but are not confined to it: they can still read or
+modify anything the OS allows, including files protected by the file tools.
 
 This project pins Harness 0.31.x. Its Coder composition includes filesystem,
 shell, repository context, planning, an explorer subagent, and context management.
-Its default command allowlist is not a sandbox: permitted interpreters/build tools
-can run arbitrary code. Files and code returned by tools are sent to the selected
-model. Background processes started by tools can outlive a turn; cancelling a run
-is not an undo of completed tool effects.
+pcode clears Harness's default command allowlist, so `run_command` accepts any
+command: treat it as arbitrary code execution as the invoking user. Files and
+code returned by tools are sent to the selected model. Background processes
+started by tools can outlive a turn; cancelling a run is not an undo of
+completed tool effects.
 
 ## Sessions and debugging
 
@@ -343,7 +348,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/theme light` or `/theme dark`: change the input and future output palette.
   `/theme` alone toggles.
 - `/help`: command list and keyboard shortcuts.
-- `/model`: searchable model picker for configured providers (starts a new conversation).
+- `/model`: searchable model picker for configured providers (keeps the conversation).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed` or `/errors`: open the same inspector filtered to failures.
 - `/context`: current model, workspace, completed turns, and token usage.
@@ -359,7 +364,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 | Enter | Send (queue during generation), or accept a selected completion |
 | Alt+Enter | Newline (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
-| Ctrl+L | Choose a model (idle only; starts a new conversation) |
+| Ctrl+L | Choose a model (idle only; keeps the conversation) |
 | Ctrl+R | Search this process's input history |
 | Ctrl+C | Discard idle input; during generation, cancel without deleting the draft |
 | Ctrl+D | Exit on empty idle input; cancel during generation |

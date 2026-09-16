@@ -86,6 +86,20 @@ class Activity:
     plan: list[dict] = field(default_factory=list)
     tools: ToolHistory = field(default_factory=ToolHistory)
 
+    def reset(self) -> None:
+        """Clear the panel for a new conversation, keeping the draft and queue."""
+        self.plan = []
+        self.tools.clear()
+        self.prompt = ""
+        self.prompt_state = ""
+        self.status = ""
+
+    def plan_rows(self, budget: int, spinner: str):
+        # Persisted task status describes unfinished work, not a live request.
+        # Use the turn lifecycle rather than busy, which also includes queued input.
+        icon = spinner if self.prompt_state == "running" else "○"
+        return task_panel_rows(self.plan, self.tools, budget, icon)
+
     def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
         style = "bold ansired" if self.prompt_state == "failed" else "class:prompt"
@@ -416,10 +430,10 @@ def create_prompt(
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
         return min(text_height, available) + 2
 
-    plan_spinner = Spinner("dots")
+    plan_spinner = Spinner("arc")
     # Give the prompt line its own glyph so it reads as the overall turn, not as
     # another in-progress task row.
-    prompt_spinner = Spinner("arc")
+    prompt_spinner = Spinner("dots")
     # Animate active tasks and update running tool elapsed times during pauses.
     session.app.refresh_interval = min(plan_spinner.interval, prompt_spinner.interval) / 1000
 
@@ -427,9 +441,7 @@ def create_prompt(
         # Share one height budget instead of stacking separate Tools and Tasks
         # panels. Leave space for the live tail, completion menu, and editor.
         budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
-        return task_panel_rows(
-            activity.plan, activity.tools, budget, plan_spinner.render(monotonic()).plain
-        )
+        return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
     def plan_height() -> int:
         rows = plan_rows()
@@ -674,7 +686,7 @@ class Transcript:
         self.print()
         self.note("/ commands · Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
-        self.note("Ctrl+L choose model (new conversation)")
+        self.note("Ctrl+L choose model (keep conversation)")
         self.note("Ctrl+N increase effort · Ctrl+P decrease effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note("During a run: type a draft · Enter queues · Ctrl+C/Ctrl+D cancel, keep draft.")

@@ -473,7 +473,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "Task 8", running=True)
-    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    frames = "◜◠◝◞◡◟"
     first_frame = next(frame for frame in frames if f"{frame} Task 8" in screen)
     deadline = time.monotonic() + 1
     while time.monotonic() < deadline:
@@ -510,8 +510,9 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     screen = capture(pane, "Context reset")
     assert "Tasks ·" not in screen
     assert "Task 0" not in screen
-    assert "✓ h" in screen  # Last prompt remains visible after clearing tasks.
-    assert screen.count("┌") == screen.count("└") == 2
+    # /new zeroes the whole widget: tasks, tools, and the previous prompt row.
+    assert "✓ h" not in screen
+    assert screen.count("┌") == screen.count("└") == 1
 
 
 PAUSED_PREVIEW_SCRIPT = """

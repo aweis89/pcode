@@ -126,11 +126,21 @@ def test_switch_from_preview_is_lazy_and_honors_save(monkeypatch, tmp_path, save
     asyncio.run(run())
 
 
-def test_switch_preserves_old_saved_session_and_resets_context(monkeypatch, tmp_path):
-    monkeypatch.setattr("pcode.agent.create_agent", lambda *args: Agent("test"))
+@pytest.mark.parametrize("save", [False, True])
+def test_switch_continues_conversation(monkeypatch, tmp_path, save):
+    from pydantic_ai.models.function import FunctionModel
+
+    requests = []
+
+    async def respond(messages, info):
+        requests.append(list(messages))
+        yield "remembered answer"
+
+    monkeypatch.setattr(
+        "pcode.agent.create_agent", lambda *args: Agent(FunctionModel(stream_function=respond))
+    )
     root = tmp_path / "sessions"
-    saved = SavedSession.create(MODELS[0], tmp_path, root)
-    old_id = saved.info.id
+    saved = SavedSession.create(MODELS[0], tmp_path, root) if save else None
     runtime = AgentRuntime(Agent("test"), saved)
     app = PreviewApp(
         model=MODELS[0],
@@ -142,26 +152,82 @@ def test_switch_preserves_old_saved_session_and_resets_context(monkeypatch, tmp_
 
     async def run():
         _ = [event async for event in runtime.stream("old question")]
+        old_id = runtime.conversation_id
+        history = list(runtime.history)
+        plan_store = runtime.plan_store
+        inspections = runtime.inspections
+        usage = (runtime.input_tokens, runtime.output_tokens)
         app.activity.plan = [{"content": "old plan"}]
         runtime.agent.model_settings = {"temperature": 0.5}
         await app.switch_model(MODELS[1])
-        assert app.runtime is not runtime
+        assert app.runtime is runtime
         assert app.model == MODELS[1]
-        assert app.runtime.history == []
-        assert app.runtime.turns == 0
-        assert app.runtime.agent.model_settings is None
-        assert app.activity.plan == []
-        assert app.runtime.session is None
-        reopened = SavedSession.open(old_id, root)
-        assert reopened.info.model == MODELS[0]
-        reopened.close()
-        _ = [event async for event in app.runtime.stream("new question")]
-        assert app.runtime.session.info.id != old_id
-        assert app.runtime.session.info.model == MODELS[1]
-        assert app.runtime.session.directory.parent == root
-        app.runtime.close()
+        assert runtime.history == history
+        assert runtime.conversation_id == old_id
+        assert runtime.turns == 1
+        assert (runtime.input_tokens, runtime.output_tokens) == usage
+        assert runtime.plan_store is plan_store
+        assert runtime.inspections is inspections
+        assert runtime.agent.model_settings is None
+        assert app.activity.plan == [{"content": "old plan"}]
+        assert runtime.session is saved
+        if save:
+            from pcode.sessions import read_info
+
+            assert read_info(saved.directory).model == MODELS[1]
+        _ = [event async for event in runtime.stream("follow-up question")]
+        assert requests[0][: len(history)] == history
+        assert runtime.turns == 2
+        assert runtime.conversation_id == old_id
+        if save:
+            assert runtime.session.info.id == old_id
+            assert len(list(root.iterdir())) == 1
+            recovered = await runtime.session.recover()
+            assert recovered == runtime.history
+        else:
+            assert runtime.session is None
+            assert not root.exists()
+        runtime.reset()
+        _ = [event async for event in runtime.stream("new question")]
+        assert runtime.conversation_id != old_id
+        if save:
+            assert runtime.session.info.model == MODELS[1]
+        runtime.close()
 
     asyncio.run(run())
+
+
+def test_switch_manifest_failure_keeps_conversation(monkeypatch, tmp_path):
+    saved = SavedSession.create(MODELS[0], tmp_path, tmp_path / "sessions")
+    runtime = AgentRuntime(Agent("test"), saved)
+    app = PreviewApp(
+        model=MODELS[0],
+        runtime=runtime,
+        saved_session=saved,
+        console=Console(file=StringIO()),
+    )
+    old_agent = runtime.agent
+    monkeypatch.setattr("pcode.agent.create_agent", lambda *args: Agent("test"))
+    monkeypatch.setattr(saved, "save_info", Mock(side_effect=OSError("disk full")))
+    try:
+        with pytest.raises(OSError, match="disk full"):
+            asyncio.run(app.switch_model(MODELS[1]))
+        assert app.runtime is runtime
+        assert runtime.agent is old_agent
+        assert app.model == saved.info.model == MODELS[0]
+    finally:
+        runtime.close()
+
+
+def test_replacing_agent_rebinds_planning_store():
+    from pydantic_ai_harness import Planning
+
+    runtime = AgentRuntime(Agent("test"))
+    planning = Planning()
+    runtime.replace_agent(Agent("test", capabilities=[planning]))
+    assert planning.store_resolver(None) is runtime.plan_store
+    runtime.reset()
+    assert planning.store_resolver(None) is runtime.plan_store
 
 
 def test_failed_switch_and_same_model_keep_runtime(monkeypatch, tmp_path):
