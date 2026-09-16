@@ -75,6 +75,7 @@ def test_edit_and_queue_during_generation(outcome):
                     await wait_for(lambda: session.default_buffer.text == "draft text")
                     assert session.default_buffer.cursor_position == 6
                     assert app.activity.queued == 1
+                    assert app.activity.queued_prompts == ["second"]
                     assert calls == ["first"]
                     assert app.activity.prompt == "first"
                     assert app.activity.prompt_state == "running"
@@ -83,6 +84,7 @@ def test_edit_and_queue_during_generation(outcome):
                     else:
                         finish.set()
                     await wait_for(lambda: not app.activity.busy)
+                    assert app.activity.queued_prompts == []
                     if outcome == "success":
                         assert followup.is_set()
                         assert calls == ["first", "second"]
@@ -157,3 +159,21 @@ def test_prompt_indicator_keeps_short_prompt_intact():
 
     activity = Activity(prompt="Fix bug", prompt_state="running")
     assert activity.prompt_fragments("⠋", 9) == [("class:prompt", "⠋ "), ("", "Fix bug")]
+
+
+def test_queue_previews_are_ordered_bounded_and_single_line():
+    from pcode.tool_panel import panel_fragments
+    from pcode.ui import Activity
+
+    activity = Activity(queued_prompts=["first\ncontinued", "second", "third", "fourth", "fifth"])
+    rows = activity.queue_rows(3)
+    assert [text for _, text in rows] == [
+        "Queued: first\ncontinued",
+        "Queued: second",
+        "… 3 more queued",
+    ]
+    rendered = "".join(text for _, text in panel_fragments(rows, 18))
+    assert rendered.splitlines() == ["Queued: first con…", "Queued: second", "… 3 more queued"]
+    assert len(activity.queue_rows(1)) == 1
+    assert activity.queue_rows(0) == []
+    assert Activity().queue_rows(3) == []

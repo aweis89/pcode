@@ -696,3 +696,31 @@ def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
         assert len(header) == columns
         assert lines[editor_top - 1].startswith("└")
         assert input_rows(screen) == 1
+
+
+@pytest.mark.parametrize("pane", [PAUSED_PREVIEW_SCRIPT], indirect=True)
+def test_queued_messages_stay_directly_above_editor(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "active prompt")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    capture(pane, "PAUSED_TAIL", running=True)
+    for text in ("first queued message " * 10, "second queued message"):
+        pane("send-keys", "-t", "preview:0.0", "-l", text)
+        pane("send-keys", "-t", "preview:0.0", "Enter")
+    pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
+    for width in (100, 40):
+        pane("resize-window", "-t", "preview:0", "-x", str(width))
+        screen = capture(pane, "│❯ keep draft", running=True, columns=width)
+        lines = screen.splitlines()
+        editor_top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
+        assert lines[editor_top - 2].startswith("Queued: first queued message")
+        assert lines[editor_top - 2].endswith("…")
+        assert lines[editor_top - 1] == "Queued: second queued message"
+        assert lines[editor_top - 3].startswith("└")
+        assert "active prompt" in lines[editor_top - 4]
+        assert "│❯ keep draft" in screen
+        assert input_rows(screen) == 1
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    screen = capture(pane, "Run cancelled.")
+    assert "Queued:" not in screen
+    assert "│❯ keep draft" in screen

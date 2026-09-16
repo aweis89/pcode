@@ -462,6 +462,7 @@ class PreviewApp:
             count = queue.qsize()
             while not queue.empty():
                 queue.get_nowait()
+            self.activity.queued_prompts.clear()
             self.activity.queued = 0
             if count:
                 self.transcript.note(f"Cleared {count} queued message(s).")
@@ -479,6 +480,7 @@ class PreviewApp:
         def submit(text):
             if text.strip():
                 queue.put_nowait(text.strip())
+                self.activity.queued_prompts.append(text.strip())
                 self.activity.queued = queue.qsize()
                 # Set immediately so Enter + Ctrl+C in one input batch cancels
                 # the pending request rather than clearing the user's draft.
@@ -488,6 +490,7 @@ class PreviewApp:
             nonlocal live_task
             while self.running:
                 text = await queue.get()
+                self.activity.queued_prompts.pop(0)
                 self.activity.queued = queue.qsize()
                 success = True
                 try:
