@@ -101,12 +101,14 @@ class PreviewApp:
         failed = self.inspector_requested == "failed"
         self.inspector_requested = None
         saved = getattr(self.runtime, "session", None)
-        if saved is not None:
-            archive = getattr(self.runtime, "inspections", None) or ToolArchive()
-            await asyncio.to_thread(archive.update, saved.directory / "transcript.jsonl")
-            self.runtime.inspections = archive
-        elif hasattr(self.runtime, "inspections"):
-            archive = self.runtime.inspections
+        if saved is not None or hasattr(self.runtime, "inspections"):
+            # The browser owns a snapshot, never the archive streaming mutates.
+            # File indexing can then run off-thread, including saved history.
+            from copy import deepcopy
+
+            archive = deepcopy(getattr(self.runtime, "inspections", None) or ToolArchive())
+            if saved is not None:
+                await asyncio.to_thread(archive.update, saved.directory / "transcript.jsonl")
         else:
             archive = ToolArchive()
             for call in self.activity.tools.calls:
@@ -503,10 +505,16 @@ class PreviewApp:
         if self.resuming:
             self.replay()
         queue = asyncio.Queue()
+        commands = asyncio.Queue()
+        command_idle = asyncio.Event()
+        command_idle.set()
         live_task = None
+        queue_generation = 0
 
         def clear_queue():
-            count = queue.qsize()
+            nonlocal queue_generation
+            queue_generation += 1
+            count = len(self.activity.queued_prompts)
             while not queue.empty():
                 queue.get_nowait()
             self.activity.queued_prompts.clear()
@@ -525,20 +533,62 @@ class PreviewApp:
                 self.transcript.note("Run cancelled. Completed tool effects are not undone.")
 
         def submit(text):
-            if text.strip():
-                queue.put_nowait(text.strip())
-                self.activity.queued_prompts.append(text.strip())
-                self.activity.queued = queue.qsize()
+            text = text.strip()
+            if text.startswith("/"):
+                commands.put_nowait(text)
+                command_idle.clear()
+            elif text:
+                queue.put_nowait((queue_generation, text))
+                self.activity.queued_prompts.append(text)
+                self.activity.queued = len(self.activity.queued_prompts)
                 # Set immediately so Enter + Ctrl+C in one input batch cancels
                 # the pending request rather than clearing the user's draft.
                 self.activity.busy = True
 
+        async def consume_commands():
+            while self.running:
+                text = await commands.get()
+                try:
+                    command = self.registry.find(text.split(maxsplit=1)[0])
+                    if command and command.name in {"/new", "/session"} and self.activity.busy:
+                        self.transcript.user(text)
+                        self.transcript.note(
+                            f"{command.name} is unavailable while working. "
+                            "Cancel with Ctrl+C or wait for the run to finish, then retry."
+                        )
+                    else:
+                        self.handle(text)
+                        if not self.running:
+                            cancel()
+                            if live_task is not None:
+                                await live_task
+                        if self.session_requested:
+                            await self.choose_session(output, session)
+                        if self.inspector_requested is not None:
+                            await self.inspect_tools(output, session)
+                except Exception as error:
+                    from pcode.live import error_message
+
+                    self.transcript.note(error_message(error))
+                finally:
+                    if commands.empty():
+                        command_idle.set()
+                await output.flush()
+                if not self.running and session.app.is_running:
+                    session.app.exit()
+
         async def consume():
             nonlocal live_task
             while self.running:
-                text = await queue.get()
+                await command_idle.wait()
+                generation, text = await queue.get()
+                await command_idle.wait()
+                if not self.running:
+                    return
+                if generation != queue_generation:
+                    continue  # Cancelled while waiting for a command/modal.
                 self.activity.queued_prompts.pop(0)
-                self.activity.queued = queue.qsize()
+                self.activity.queued = len(self.activity.queued_prompts)
                 success = True
                 try:
                     if self.handle(text):
@@ -556,10 +606,6 @@ class PreviewApp:
                             self.transcript.note(
                                 "Run cancelled. Completed tool effects are not undone."
                             )
-                    if self.session_requested:
-                        await self.choose_session(output, session)
-                    if self.inspector_requested is not None:
-                        await self.inspect_tools(output, session)
                 except Exception as error:
                     from pcode.live import error_message
 
@@ -571,7 +617,7 @@ class PreviewApp:
                     return
                 if not success:
                     clear_queue()
-                self.activity.busy = not queue.empty()
+                self.activity.busy = bool(self.activity.queued_prompts)
                 await output.flush()
                 if not self.running:
                     session.app.exit()
@@ -604,6 +650,7 @@ class PreviewApp:
             session.app.create_background_task(watch_branch())
             session.app.create_background_task(output.run())
             session.app.create_background_task(consume())
+            session.app.create_background_task(consume_commands())
 
         try:
             await session.app.run_async(pre_run=start)

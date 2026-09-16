@@ -177,3 +177,141 @@ def test_queue_previews_are_ordered_bounded_and_single_line():
     assert len(activity.queue_rows(1)) == 1
     assert activity.queue_rows(0) == []
     assert Activity().queue_rows(3) == []
+
+
+@pytest.mark.parametrize("inspector_command", ["/tools", "/errors"])
+def test_commands_run_while_model_waits(inspector_command):
+    async def run():
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        streamed = asyncio.Event()
+        printed = StringIO()
+        calls = []
+
+        from pcode.inspection import ToolArchive
+        from pcode.runtime import ToolStarted, ToolSummary
+
+        archive = ToolArchive()
+        archive.event(ToolStarted("read_file", "example.py", "call-1"))
+
+        class Runtime:
+            session = None
+            recovery_blocked = ""
+            inspections = archive
+
+            async def stream(self, text):
+                calls.append(text)
+                started.set()
+                await finish.wait()
+                archive.event(ToolSummary("read_file", "done", call_id="call-1"))
+                yield TextDelta("answer while inspecting")
+                yield Message("answer while inspecting")
+                streamed.set()
+
+            def reset(self):
+                raise AssertionError("must not reset an active run")
+
+        app = PreviewApp(model="test:local", runtime=Runtime(), console=Console(file=printed))
+        with create_pipe_input() as pipe:
+            session = None
+            inspector = None
+            from pcode.inspector_ui import ToolInspector
+
+            def prompt(*args, **kwargs):
+                nonlocal session
+                session = create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+                return session
+
+            def browser(*args, **kwargs):
+                nonlocal inspector
+                inspector = ToolInspector(*args, **kwargs)
+                return inspector
+
+            async def wait_for(predicate):
+                async with asyncio.timeout(5):
+                    while not predicate():
+                        await asyncio.sleep(0.01)
+
+            with (
+                patch("pcode.app.create_prompt", prompt),
+                patch("pcode.inspector_ui.ToolInspector", browser),
+            ):
+                task = asyncio.create_task(app.run_async())
+                try:
+                    await wait_for(lambda: session is not None and session.app.is_running)
+                    pipe.send_text("first\r")
+                    await asyncio.wait_for(started.wait(), 5)
+                    pipe.send_text("/theme light\r/help\r/new\r/session\r/nope\r/theme invalid\r")
+                    await wait_for(lambda: "Usage: /theme" in printed.getvalue())
+                    assert app.transcript.theme == "light"
+                    assert "Unknown command" in printed.getvalue()
+                    assert "/new is unavailable while working" in printed.getvalue()
+                    assert "/session is unavailable while working" in printed.getvalue()
+                    assert app.activity.busy
+                    assert app.activity.queued_prompts == []
+                    assert calls == ["first"]
+                    pipe.send_text(inspector_command + "\r")
+                    await wait_for(lambda: inspector is not None and inspector.app.is_running)
+                    assert inspector.failed == (inspector_command == "/errors")
+                    assert inspector.archive is not archive
+                    assert inspector.archive.calls[0].state == "running"
+                    assert not finish.is_set()
+                    finish.set()
+                    await asyncio.wait_for(streamed.wait(), 5)
+                    assert archive.calls[0].state == "succeeded"
+                    assert inspector.archive.calls[0].state == "running"
+                    # Streaming continues, but permanent output waits for the modal.
+                    assert "answer while inspecting" not in printed.getvalue()
+                    pipe.send_text("\x1b")
+                    await wait_for(lambda: not inspector.app.is_running)
+                    await wait_for(lambda: "answer while inspecting" in printed.getvalue())
+                    pipe.send_text("/quit\r")
+                    await asyncio.wait_for(task, 5)
+                finally:
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("command", ["/quit", "/exit"])
+def test_quit_cancels_active_run(command):
+    async def run():
+        started = asyncio.Event()
+        cleaned = asyncio.Event()
+
+        class Runtime:
+            session = None
+            recovery_blocked = ""
+
+            async def stream(self, text):
+                try:
+                    started.set()
+                    await asyncio.Event().wait()
+                    yield Message("unreachable")
+                finally:
+                    await asyncio.sleep(0.01)
+                    cleaned.set()
+
+        app = PreviewApp(model="test:local", runtime=Runtime(), console=Console(file=StringIO()))
+        with create_pipe_input() as pipe:
+
+            def prompt(*args, **kwargs):
+                return create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+
+            with patch("pcode.app.create_prompt", prompt):
+                task = asyncio.create_task(app.run_async())
+                try:
+                    pipe.send_text("first\r")
+                    await asyncio.wait_for(started.wait(), 5)
+                    pipe.send_text("second\r" + command + "\r")
+                    await asyncio.wait_for(task, 5)
+                    assert cleaned.is_set()
+                    assert not app.activity.queued_prompts
+                finally:
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())

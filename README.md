@@ -208,9 +208,10 @@ The non-interactive `--demo` sample still prints its fictional tool summaries.
 
 ### Tool-call inspector
 
-Use `/tools`, `/tools failed`, or `/errors`. Like other slash commands, these queue
-behind the active turn; a failed/cancelled turn clears queued commands, so submit
-`/errors` again after it settles. Inspection never reruns a tool.
+Use `/tools`, `/tools failed`, or `/errors`, including during an active turn.
+The inspector shows a snapshot of the calls available when opened; reopen it to
+see newer results. The model keeps running while the inspector is open, and
+terminal output is buffered until it closes. Inspection never reruns a tool.
 
 - Calls are newest first. Use arrows to select and Tab/Shift+Tab to move between
   the call list, detail pane, and search field.
@@ -258,12 +259,16 @@ and restored session messages still use Rich Markdown.
 
 The editor remains usable throughout generation, including multiline input,
 history, and slash completion. Enter queues the next message and clears the
-editor for another draft; the toolbar shows the queue count. Queued messages and
-commands run in order, only after the current turn finishes. Ctrl+C or Ctrl+D
-cancels the current turn, clears queued submissions, and preserves the unsubmitted
-draft and cursor. A failed turn also clears the queue rather than automatically
-running more requests. The queue is in memory only, not saved until submitted to
-the runtime. `/quit` during generation queues an exit; cancel first to exit sooner.
+editor for another draft; the toolbar shows the queue count. Queued messages run
+in order after the current turn finishes. Slash commands use a separate async
+handler, so help, inspection, theme, context, and effort controls remain available
+while the model works. `/new` and `/session` require an idle conversation: cancel
+or wait, then retry. `/quit` (or `/exit`) cancels the active run and waits for its
+cleanup before exiting. Ctrl+C or Ctrl+D cancels the current turn, clears queued
+messages, and preserves the unsubmitted draft and cursor. A failed turn also
+clears queued messages rather than automatically running more requests. Commands
+are not discarded with that queue. The queue is in memory only, not saved until
+submitted to the runtime.
 
 Use terminal/tmux scrollback, selection, and search for conversation history.
 The conversation has no alternate screen or application-owned viewport; only the
