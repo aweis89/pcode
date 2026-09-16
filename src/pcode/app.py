@@ -68,6 +68,7 @@ class PreviewApp:
         self.transcript = Transcript(console or Console(), theme, activity=self.activity)
         self.running = True
         self.inspector_requested: str | None = None
+        self.session_requested = False
         self.registry = CommandRegistry()
         for command in (
             Command("/help", "Commands and keyboard shortcuts", self.help),
@@ -77,6 +78,7 @@ class PreviewApp:
             Command("/theme", "Switch palette: dark / light", self.theme, tuple(PALETTES)),
             Command("/context", "Model, workspace, and session usage", self.context),
             Command("/new", "Start a new saved conversation; keep transcript", self.new),
+            Command("/session", "Choose a saved session to resume", self.select_session),
             Command("/sessions", "List saved sessions and resume instructions", self.sessions),
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
         ):
@@ -167,6 +169,80 @@ class PreviewApp:
         self.transcript.note("Context reset. Input history and transcript are unchanged.")
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")
+
+    def select_session(self, argument: str) -> None:
+        self.session_requested = True
+
+    async def resume_session(self, identity: str) -> None:
+        from pcode.agent import create_agent
+        from pcode.live import AgentRuntime
+        from pcode.sessions import SavedSession, SessionError
+
+        current = getattr(self.runtime, "session", None)
+        if current is not None and current.info.id == identity:
+            self.transcript.note("This session is already active.")
+            return
+        saved = SavedSession.open(identity, self.session_dir)
+        try:
+            if Path(saved.info.workspace).resolve() != self.workspace:
+                raise SessionError("Workspace differs; refusing cross-repo resume.")
+            runtime = AgentRuntime(create_agent(saved.info.model, self.workspace), saved)
+            await runtime.restore()
+        except BaseException:
+            saved.close()
+            raise
+        # Keep the current conversation intact until recovery has succeeded.
+        close = getattr(self.runtime, "close", None)
+        if close is not None:
+            close()
+        self.runtime = runtime
+        self.model = saved.info.model
+        self.session_dir = saved.directory.parent
+        self.activity.prompt = ""
+        self.replay()
+
+    async def choose_session(self, output: TerminalOutput, session) -> None:
+        from pcode.diagnostics import redact
+        from pcode.session_ui import session_dialog
+        from pcode.sessions import first_prompt, list_sessions
+
+        self.session_requested = False
+        records = [
+            info
+            for info in list_sessions(self.session_dir)
+            if Path(info.workspace).resolve() == self.workspace
+        ]
+        if not records:
+            self.transcript.note("No saved sessions for this workspace.")
+            return
+        current = getattr(self.runtime, "session", None)
+        values = [
+            (
+                info.id,
+                f"{plain(redact(first_prompt(info, self.session_dir)), 100)}"
+                f"\n  {info.updated[:16]} · {plain(info.model)} · {info.id[:8]}"
+                + (" · active" if current and current.info.id == info.id else ""),
+            )
+            for info in records
+        ]
+        await output.flush()
+        async with output.lock:
+            async with in_terminal():
+                stdin = getattr(session.app.input, "stdin", None)
+                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
+                try:
+                    dialog = session_dialog(
+                        values,
+                        input=modal_input,
+                        output=session.app.output,
+                        style=session.app.style,
+                    )
+                    identity = await dialog.run_async()
+                finally:
+                    if modal_input is not session.app.input:
+                        modal_input.close()
+        if identity is not None:
+            await self.resume_session(identity)
 
     def sessions(self, argument: str) -> None:
         from pcode.sessions import list_sessions
@@ -429,6 +505,8 @@ class PreviewApp:
                             self.transcript.note(
                                 "Run cancelled. Completed tool effects are not undone."
                             )
+                    if self.session_requested:
+                        await self.choose_session(output, session)
                     if self.inspector_requested is not None:
                         await self.inspect_tools(output, session)
                 except Exception as error:
@@ -559,7 +637,7 @@ def main() -> None:
 
         parser.exit(2, error_message(error) + "\n")
     finally:
-        if app is not None and args.model:
+        if app is not None and app.model:
             app.runtime.close()
         if saved is not None:
             saved.close()

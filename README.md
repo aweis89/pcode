@@ -105,7 +105,10 @@ Resume accepts an unambiguous ID prefix (at least 8 characters) and restores the
 saved model, workspace, and structured message history. It prints recent transcript
 blocks and waits for your next message; it does not automatically re-run tools.
 A different explicit `-m` or `-C` is rejected on resume. Only one process may open
-a session for writing. `/sessions` lists sessions from inside the terminal too.
+a session for writing. `/session` opens a popup of saved conversations in the current
+workspace, labeled by their first prompt (newest first). Use ↑/↓ and Enter to
+resume in place, or Esc to cancel. Resuming restores the saved model, history,
+and plan. `/sessions` lists sessions from inside the terminal too.
 
 Default location: `$XDG_STATE_HOME/pcode/sessions`, or
 `~/.local/state/pcode/sessions`. Override with `--session-dir PATH` or
@@ -160,6 +163,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/tools failed` or `/errors`: open the same inspector filtered to failures.
 - `/context`: current model, workspace, completed turns, and token usage.
 - `/new`: start a new saved conversation without clearing the on-screen transcript or input history.
+- `/session`: choose a saved conversation by its first prompt and resume it in place.
 - `/sessions`: list saved conversations and resume instructions.
 - `/quit` (alias `/exit`): exit.
 
