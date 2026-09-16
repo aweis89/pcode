@@ -114,7 +114,8 @@ class AgentRuntime:
             conversation_id=self.conversation_id,
             run_id=run_id,
             capabilities=[StepPersistence(store=self.session.store)] if self.session else [],
-            usage_limits=UsageLimits(request_limit=30),
+            # Explicitly disable the cap; omitting this restores the library default.
+            usage_limits=UsageLimits(request_limit=None),
         ) as events:
             async for event in events:
                 if isinstance(event, PartStartEvent):

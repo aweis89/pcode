@@ -11,7 +11,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness import Coder
 from rich.console import Console
 
-from pcode.agent import create_agent
+from pcode.agent import create_agent, create_coder
 from pcode.app import PreviewApp
 from pcode.live import AgentRuntime, error_message
 from pcode.runtime import Message, RunStatus, TextDelta, ToolSummary
@@ -80,6 +80,80 @@ def test_stream_runs_real_coder_read_tool_and_retains_history(tmp_path):
         assert runtime.history == []
         assert runtime.turns == 0
         assert runtime.conversation_id != old_id
+
+    asyncio.run(run())
+
+
+def test_coder_can_read_and_write_outside_workspace(tmp_path):
+    import json
+
+    from pydantic_ai_harness.filesystem import FileSystem
+    from pydantic_ai_harness.repo_context import RepoContext
+    from pydantic_ai_harness.shell import Shell
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside marker")
+    output = tmp_path / "written.txt"
+    coder = create_coder(workspace)
+    assert next(c for c in coder.capabilities if isinstance(c, Shell)).cwd == workspace
+    context = next(c for c in coder.capabilities if isinstance(c, RepoContext))
+    assert context.workspace_dir == workspace
+    filesystem = next(c for c in coder.capabilities if isinstance(c, FileSystem))
+    assert filesystem.protected_patterns
+    requests = 0
+
+    async def model(messages, info):
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            yield {0: DeltaToolCall(name="read_file", json_args=json.dumps({"path": str(outside)}))}
+        elif requests == 2:
+            results = [
+                p for message in messages for p in message.parts if isinstance(p, ToolReturnPart)
+            ]
+            assert any("outside marker" in str(p.content) for p in results)
+            yield {0: DeltaToolCall(
+                name="write_file", json_args=json.dumps({"path": str(output), "content": "done"})
+            )}
+        else:
+            yield "Finished"
+
+    runtime = AgentRuntime(Agent(FunctionModel(stream_function=model), capabilities=[coder]))
+
+    async def run():
+        events = [event async for event in runtime.stream("Read and write outside the repository")]
+        assert Message("Finished") in events
+        assert output.read_text() == "done"
+
+    asyncio.run(run())
+
+
+def test_stream_has_no_model_request_limit():
+    requests = 0
+
+    async def model(messages, info):
+        nonlocal requests
+        requests += 1
+        if requests <= 55:
+            yield {0: DeltaToolCall(name="noop", json_args="{}")}
+        else:
+            yield "Finished beyond both the old and library-default caps."
+
+    agent = Agent(FunctionModel(stream_function=model))
+
+    @agent.tool_plain
+    def noop() -> str:
+        return "ok"
+
+    runtime = AgentRuntime(agent)
+
+    async def run():
+        events = [event async for event in runtime.stream("Run a long tool loop")]
+        assert Message("Finished beyond both the old and library-default caps.") in events
+        assert requests == 56
+        assert runtime.turns == 1
 
     asyncio.run(run())
 

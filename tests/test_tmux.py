@@ -46,7 +46,7 @@ def pane(request):
         subprocess.run([*base, "kill-server"], capture_output=True, env=env)
 
 
-def capture(pane, expected, *, running=False):
+def capture(pane, expected, *, running=False, columns=None):
     """Allow asynchronous completion and resize paints to settle, with a deadline."""
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
@@ -56,6 +56,7 @@ def capture(pane, expected, *, running=False):
             expected in screen
             and len(lines) >= 2
             and lines[-2].startswith("└")
+            and (columns is None or len(lines[-2]) == columns)
             and ("Ctrl+C cancel" if running else "Ctrl+D exit") in lines[-1]
         ):
             return screen
@@ -73,16 +74,18 @@ def input_rows(screen):
     return bottom - top - 1
 
 
-def test_bottom_prompt_preserves_transcript(pane):
+def test_fullscreen_transcript_scrolls(pane):
     assert input_rows(capture(pane, "❯")) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "/demo")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     assert input_rows(capture(pane, "No files were")) == 1
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
-    assert "pcode  /  UI preview" in history
-    assert "❯ /demo" in history
     assert "Hello, world!" in history
-    assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "0"
+    assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "1"
+    pane("send-keys", "-t", "preview:0.0", "PPage")
+    capture(pane, "pcode  /  UI preview")
+    pane("send-keys", "-t", "preview:0.0", "C-End")
+    capture(pane, "No files were")
 
 
 @pytest.mark.parametrize("split", ["-h", "-v"])
@@ -157,3 +160,52 @@ def test_stream_resize_and_cancellation(pane):
     assert input_rows(capture(pane, "Run cancelled.")) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "next input")
     assert input_rows(capture(pane, "next input")) == 1
+
+
+REFLOW_SCRIPT = """
+from pcode.app import PreviewApp
+from pcode.runtime import Message
+app = PreviewApp()
+app.transcript.full_screen = True
+app.transcript.events((Message("REFLOW_START " + "word " * 45 + "REFLOW_END"),))
+app.run()
+"""
+
+
+@pytest.mark.parametrize("pane", [REFLOW_SCRIPT], indirect=True)
+def test_completed_response_reflows_on_width_resize(pane):
+    def response_lines(screen):
+        lines = screen.splitlines()
+        start = next(i for i, line in enumerate(lines) if "REFLOW_START" in line)
+        end = next(i for i, line in enumerate(lines) if "REFLOW_END" in line)
+        return lines[start : end + 1]
+
+    wide = response_lines(capture(pane, "REFLOW_END"))
+    pane("split-window", "-h", "-t", "preview:0.0", "cat")
+    narrow_screen = capture(pane, "REFLOW_END")
+    narrow = response_lines(narrow_screen)
+    assert input_rows(narrow_screen) == 1
+    assert len(narrow) > len(wide)
+    assert " ".join(" ".join(narrow).split()) == " ".join(" ".join(wide).split())
+    pane("kill-pane", "-t", "preview:0.1")
+    assert response_lines(capture(pane, "REFLOW_END", columns=100)) == wide
+
+
+@pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
+def test_immediate_cancellation_unlocks_editor(pane):
+    capture(pane, "❯")
+    # Deliver submission and cancellation together, before the model task can start.
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter", "C-c")
+    capture(pane, "Run cancelled.")
+    pane("send-keys", "-t", "preview:0.0", "-l", "editable again")
+    assert input_rows(capture(pane, "editable again")) == 1
+
+
+def test_cancel_history_search_discards_draft(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "draft")
+    pane("send-keys", "-t", "preview:0.0", "C-r", "C-c")
+    capture(pane, "Input discarded.")
+    pane("send-keys", "-t", "preview:0.0", "-l", "fresh")
+    screen = capture(pane, "❯ fresh")
+    assert "draft" not in screen

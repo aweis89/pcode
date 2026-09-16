@@ -6,8 +6,10 @@ import os
 import sys
 from pathlib import Path
 
-from prompt_toolkit.application import get_app, run_in_terminal
+from prompt_toolkit.application import get_app
+from prompt_toolkit.styles import DynamicStyle
 from rich.console import Console
+from rich.rule import Rule
 
 from pcode.commands import Command, CommandRegistry
 from pcode.runtime import Message, PreviewRuntime, RunStatus, TextDelta, ToolSummary
@@ -45,7 +47,7 @@ class PreviewApp:
             Command("/demo", "Sample Markdown, code, diff, and tool output", self.demo),
             Command("/theme", "Switch palette: dark / light", self.theme, tuple(PALETTES)),
             Command("/context", "Model, workspace, and session usage", self.context),
-            Command("/new", "Start a new saved conversation; keep scrollback", self.new),
+            Command("/new", "Start a new saved conversation; keep transcript", self.new),
             Command("/sessions", "List saved sessions and resume instructions", self.sessions),
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
         ):
@@ -84,8 +86,8 @@ class PreviewApp:
 
     def new(self, argument: str) -> None:
         self.runtime.reset()
-        self.transcript.console.rule("New conversation", style=self.transcript.palette.muted)
-        self.transcript.note("Context reset. Input history and terminal scrollback are unchanged.")
+        self.transcript.print(Rule("New conversation", style=self.transcript.palette.muted))
+        self.transcript.note("Context reset. Input history and transcript are unchanged.")
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")
 
@@ -155,7 +157,7 @@ class PreviewApp:
             self.transcript.events(self.preview.reply(text))
         return False
 
-    async def run_live(self, session, text: str) -> None:
+    async def run_live(self, session, text: str, *, persistent: bool = False) -> None:
         from pcode.live import error_message
 
         activity = self.activity
@@ -177,24 +179,25 @@ class PreviewApp:
                     else:
                         if isinstance(event, Message):
                             activity.text = ""
-                        # Suspend only the mutable prompt, then commit the finished
-                        # block normally to stdout. Never repaint old transcript.
-                        await run_in_terminal(lambda event=event: self.transcript.events((event,)))
+                        self.transcript.events((event,))
                     session.app.invalidate()
             except asyncio.CancelledError:
                 raise
             except Exception as error:
                 failure = error
             finally:
-                if not session.app.is_done:
+                if not persistent and not session.app.is_done:
                     session.app.exit(result="")
 
         try:
-            await session.prompt_async(
-                style=self.transcript.palette.prompt_style(),
-                pre_run=lambda: session.app.create_background_task(produce()),
-            )
-        except (KeyboardInterrupt, EOFError):
+            if persistent:
+                await produce()
+            else:
+                await session.prompt_async(
+                    style=self.transcript.palette.prompt_style(),
+                    pre_run=lambda: session.app.create_background_task(produce()),
+                )
+        except (KeyboardInterrupt, EOFError, asyncio.CancelledError):
             cancelled = True
         finally:
             # PromptSession waits for its background task cancellation/cleanup.
@@ -211,35 +214,64 @@ class PreviewApp:
             if self.runtime.recovery_blocked:
                 self.transcript.note(self.runtime.recovery_blocked)
         activity.status = ""
+        session.app.invalidate()
 
     async def run_async(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         if self.resuming:
             await self.runtime.restore()
+        self.transcript.full_screen = True
         self.transcript.welcome(self.model, str(self.workspace))
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")
         if self.resuming:
             self.replay()
-        session = create_prompt(self.registry, activity=self.activity, bottom_toolbar=self.toolbar)
-        while self.running:
-            try:
-                text = await session.prompt_async(style=self.transcript.palette.prompt_style())
-                if self.handle(text):
-                    await self.run_live(session, text.strip())
-            except KeyboardInterrupt:
-                self.transcript.note("Input discarded. Ctrl+D on an empty prompt exits.")
-            except EOFError:
-                break
-        self.transcript.note("Goodbye. Your transcript stays in terminal scrollback.")
+        live_task = None
+
+        def cancel():
+            if live_task is not None:
+                live_task.cancel()
+
+        def run_finished(task):
+            # A task cancelled before its coroutine starts cannot run its finally block.
+            if task.cancelled():
+                self.activity.busy = False
+                self.activity.text = ""
+                self.activity.status = ""
+                self.transcript.note("Run cancelled. Completed tool effects are not undone.")
+                session.app.invalidate()
+
+        def submit(text):
+            nonlocal live_task
+            if self.handle(text):
+                # Lock editing immediately, before the background task gets scheduled.
+                self.activity.busy = True
+                live_task = session.app.create_background_task(
+                    self.run_live(session, text.strip(), persistent=True)
+                )
+                live_task.add_done_callback(run_finished)
+            if not self.running:
+                session.app.exit()
+
+        session = create_prompt(
+            self.registry,
+            activity=self.activity,
+            transcript=self.transcript,
+            on_submit=submit,
+            on_cancel=cancel,
+            bottom_toolbar=self.toolbar,
+        )
+        session.app.style = DynamicStyle(lambda: self.transcript.palette.prompt_style())
+        await session.app.run_async()
+        self.transcript.console.print("Goodbye.")
 
     def run(self) -> None:
         asyncio.run(self.run_async())
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scrollback-native terminal with a Coder agent")
+    parser = argparse.ArgumentParser(description="Full-screen terminal with a Coder agent")
     parser.add_argument("--theme", choices=PALETTES, default="dark")
     parser.add_argument(
         "-m", "--model", help="Pydantic Agent model string; omitted = offline preview"
