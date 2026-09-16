@@ -599,3 +599,36 @@ def test_recent_tools_are_nested_inside_headerless_task_widget(pane):
     screen = capture(pane, "Run cancelled.")
     assert "Run · interrupted" in screen
     assert "│❯ keep draft" in screen
+
+
+RESIZE_TRANSCRIPT_SCRIPT = TOOLS_SCRIPT.replace(
+    'yield TextDelta("MODEL CONVERSATION ONLY\\n\\n")',
+    'yield TextDelta("".join(f"RESIZE_TRANSCRIPT_{i:03d}\\n\\n" for i in range(40)))',
+)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="tmux narrowing reflows old task rows beyond prompt_toolkit's resize erase",
+)
+@pytest.mark.parametrize("pane", [RESIZE_TRANSCRIPT_SCRIPT], indirect=True)
+def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
+    capture(pane, "A task")
+    pane("resize-window", "-t", "preview:0", "-x", "240", "-y", "40")
+    capture(pane, "A task", columns=240)
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    capture(pane, "⟳ Run", running=True, columns=240)
+
+    for width, height in ((120, 24), (240, 40), (80, 24), (240, 40)):
+        pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
+        screen = capture(pane, "⟳ Run", running=True, columns=width)
+        assert input_rows(screen) == 1
+        editor = next(line for line in screen.splitlines() if line.startswith("│❯"))
+        assert editor[2:-1].strip() == ""  # No multiline draft needed to trigger this.
+        history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+        # A viewport clear can remove the ghost while destroying real output.
+        for i in range(40):
+            marker = f"RESIZE_TRANSCRIPT_{i:03d}"
+            assert history.count(marker) == 1, f"Lost or duplicated {marker}:\n{history}"
+        history = single_editor_history(pane, "A task", frames=2)
+        assert history.count("file_09.py") == 1
