@@ -48,8 +48,13 @@ class Palette:
                 "tool.failed": "bold ansired",
                 "prompt": f"{self.accent} bold",
                 "frame.border": self.muted,
-                "bottom-toolbar": f"noreverse bg:{self.surface} {self.muted}",
+                # Override the built-in reverse-video toolbar. Let the terminal
+                # supply the background, including when its theme is light.
+                "bottom-toolbar": f"noreverse bg:default {self.muted}",
                 "bottom-toolbar.text": self.muted,
+                "bottom-toolbar.location": self.foreground,
+                "bottom-toolbar.model": self.accent,
+                "bottom-toolbar.activity": f"{self.accent} bold",
                 "completion-menu.completion": f"bg:{self.surface} {self.foreground}",
                 "completion-menu.completion.current": f"bg:{self.selected} {self.accent} bold",
                 "completion-menu.meta.completion": f"bg:{self.surface} {self.muted}",
