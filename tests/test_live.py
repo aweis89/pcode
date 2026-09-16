@@ -133,6 +133,27 @@ def test_coder_can_read_and_write_outside_workspace(tmp_path):
     asyncio.run(run())
 
 
+def test_coder_allows_all_commands_by_default(tmp_path):
+    from pydantic_ai_harness.shell import Shell
+    from pydantic_ai_harness.shell._capability import LLM_API_KEY_ENV_PATTERNS
+
+    coder = create_coder(tmp_path)
+    shell = next(c for c in coder.capabilities if isinstance(c, Shell))
+    assert not shell.allowed_commands
+    assert not shell.denied_commands
+    assert not shell.denied_operators
+    assert shell.allow_interactive
+    assert shell.denied_env_patterns == LLM_API_KEY_ENV_PATTERNS
+
+    async def run():
+        # Previously excluded executables, without inspecting real environment values.
+        toolset = shell.get_toolset()
+        assert "allowed" in await toolset.run_command("printf allowed")
+        assert "allowed" in await toolset.run_command("python3 -c 'print(\"allowed\")'")
+
+    asyncio.run(run())
+
+
 def test_stream_has_no_model_request_limit():
     requests = 0
 

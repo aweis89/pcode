@@ -10,6 +10,7 @@ from pydantic_ai_harness import Coder
 from pydantic_ai_harness.exa import ExaSearch
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
+from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.subagents import SubAgent
 
 
@@ -35,6 +36,12 @@ def create_coder(workspace: Path) -> Coder:
     for capability in coder.capabilities:
         if isinstance(capability, FileSystem):
             capability.root_dir = root
+        elif isinstance(capability, Shell):
+            # An empty allowlist alone can still leave Harness's default denylist.
+            capability.allowed_commands = []
+            capability.denied_commands = []
+            capability.denied_operators = []
+            capability.allow_interactive = True
     # Missing credentials must not prevent ordinary coding sessions. Let the
     # capability read the key itself; never put it in instructions or tool args.
     if os.environ.get("EXA_API_KEY", "").strip():
