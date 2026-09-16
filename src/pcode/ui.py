@@ -86,6 +86,14 @@ class Activity:
     plan: list[dict] = field(default_factory=list)
     tools: ToolHistory = field(default_factory=ToolHistory)
 
+    def reset(self) -> None:
+        """Clear the panel for a new conversation, keeping the draft and queue."""
+        self.plan = []
+        self.tools.clear()
+        self.prompt = ""
+        self.prompt_state = ""
+        self.status = ""
+
     def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
         style = "bold ansired" if self.prompt_state == "failed" else "class:prompt"
