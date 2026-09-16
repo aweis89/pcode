@@ -138,6 +138,66 @@ Pi auth selection is process-local, not stored in sessions. Supply
 shell). Use `PCODE_ANTHROPIC_AUTH=api-key` or unset it for the normal environment API-key
 flow. Existing environment settings are not overwritten in your shell.
 
+### Choose a model in the terminal
+
+Use **`/model`** or **Ctrl+L** to open the searchable model picker. Type to filter,
+use ↑/↓ to select, and press Enter to apply. Escape, Ctrl+C, or Ctrl+L closes the
+picker without changing the model or editor draft. For a model not in the catalog,
+type its full `provider:model-id` (for example `anthropic:claude-opus-5`).
+
+The picker currently supports configured **Anthropic** and **OpenAI Codex** providers:
+
+- The current provider is included even when using a custom model ID.
+- Anthropic is enabled by `ANTHROPIC_API_KEY`, `PCODE_ANTHROPIC_AUTH=pi`, or `/login`.
+  Pi reuse remains opt-in; opening the picker never reads pi credentials.
+- Codex is enabled when its CLI credential file exists (`CODEX_HOME` is honored).
+  Opening the picker checks file presence only, not its contents or validity.
+- With `PCODE_LLM_PROXY` set, only Codex is offered; unset it to select Anthropic.
+
+Suggestions come from the installed Pydantic AI catalog (Anthropic and selected
+GPT-5 coding/base variants for Codex). Opening the picker makes **no network
+requests**. This is not an account-entitlement list: the provider checks model
+availability and credentials when you use the model. Custom IDs are accepted only
+for providers enabled in the picker. If none are configured, use `/login`, set
+`ANTHROPIC_API_KEY`, or run `codex login` first.
+
+**Changing models starts a new conversation.** The old saved session remains
+available through `/session`; its model and history are not rewritten. Visible
+transcript and editor draft remain, but model context, plan, tool panel, and
+reasoning settings reset. Selecting the current model is a no-op. The new session
+is saved lazily on its first prompt, and `--no-save` still applies. A failed switch
+leaves the old conversation intact. Model selection is disabled while a run or
+queued messages are active. This also works from offline preview to start a live
+conversation without restarting pcode.
+
+### Local Meridian provider
+
+Use your running [Meridian](https://github.com/rynfar/meridian) proxy as a separate
+provider (no pcode-managed subscription login):
+
+```sh
+env -u PCODE_LLM_PROXY pcode -m meridian:claude-sonnet-5
+```
+
+The default endpoint is `http://127.0.0.1:3456`. Override it with
+`PCODE_MERIDIAN_BASE_URL` (the server root, without `/v1/messages`). If your proxy
+requires an API key, supply `PCODE_MERIDIAN_API_KEY` in the environment. Otherwise,
+pcode uses a non-secret placeholder. It never inherits `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, or `ANTHROPIC_BASE_URL` for Meridian requests; Meridian owns
+upstream authentication. Global HTTP proxy settings are ignored by this client.
+
+**`/model` / Ctrl+L** includes Meridian when its executable is on `PATH`, when
+`PCODE_MERIDIAN_BASE_URL` is configured, or when the current model is Meridian.
+Suggestions use the installed SDK's Claude model catalog; type
+`meridian:<model-id>` for other IDs supported by your proxy. Selecting one uses the
+normal new-conversation flow. Discovery does not start Meridian or verify model
+access; the proxy must already be running.
+
+Requests use the Anthropic streaming API with `x-meridian-agent: passthrough`, so
+pcode—not Meridian's built-in agent—executes the supplied tools. There is no
+fallback to direct Anthropic requests if the proxy is unavailable. Unset
+`PCODE_LLM_PROXY` when using Meridian: that separate setting remains Codex-only.
+
 ### Model-only HTTP proxy
 
 Set `PCODE_LLM_PROXY` to route **Codex model requests only** through an HTTP proxy:
@@ -262,6 +322,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/theme light` or `/theme dark`: change the input and future output palette.
   `/theme` alone toggles.
 - `/help`: command list and keyboard shortcuts.
+- `/model`: searchable model picker for configured providers (starts a new conversation).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed` or `/errors`: open the same inspector filtered to failures.
 - `/context`: current model, workspace, completed turns, and token usage.
@@ -277,6 +338,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 | Enter | Send (queue during generation), or accept a selected completion |
 | Alt+Enter | Newline (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
+| Ctrl+L | Choose a model (idle only; starts a new conversation) |
 | Ctrl+R | Search this process's input history |
 | Ctrl+C | Discard idle input; during generation, cancel without deleting the draft |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
@@ -365,7 +427,7 @@ history, and slash completion. Enter queues the next message and clears the
 editor for another draft; the toolbar shows the queue count. Queued messages run
 in order after the current turn finishes. Slash commands use a separate async
 handler, so help, inspection, theme, context, and effort controls remain available
-while the model works. `/new` and `/session` require an idle conversation: cancel
+while the model works. `/new`, `/session`, `/login`, and `/model` require an idle conversation: cancel
 or wait, then retry. `/quit` (or `/exit`) cancels the active run and waits for its
 cleanup before exiting. Ctrl+C or Ctrl+D cancels the current turn, clears queued
 messages, and preserves the unsubmitted draft and cursor. A failed turn also

@@ -91,6 +91,10 @@ def create_agent(model: str, workspace: Path) -> Agent:
         if model.startswith("openai-codex:")
         else model
     )
+    if model.startswith("meridian:"):
+        from pcode.meridian import meridian_model
+
+        resolved = meridian_model(model)
     defer_model_check = False
     if model.startswith("anthropic:"):
         from pcode.auth import anthropic_model
