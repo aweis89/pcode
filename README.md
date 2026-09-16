@@ -3,7 +3,43 @@
 A small, streaming terminal for a Pydantic AI Coder agent, with an offline
 UI preview. See [PLAN.md](PLAN.md) for the longer-term direction.
 
-## Run
+## Install with Homebrew
+
+With [Homebrew](https://brew.sh/) installed:
+
+```sh
+brew tap aweis89/pcode https://github.com/aweis89/pcode.git
+brew install --HEAD aweis89/pcode/pcode
+pcode --demo
+pcode -m openai-codex:gpt-5.6-luna
+```
+
+This repository doubles as a Homebrew tap. The explicit repository URL is
+required because its name is `pcode`, not `homebrew-pcode`. There are no tagged
+releases yet, so the formula installs the latest `master` with `--HEAD`, rather
+than a stable release. These commands become available once `Formula/pcode.rb`
+is published to GitHub.
+
+Homebrew installs Python 3.13 and uses `uv` at build time to install the
+application and its locked dependencies into a private environment. Installation
+requires network access to fetch Python packages; it does not modify your global
+Python environment. Run `pcode` directly after installation (no `uv run` needed).
+Provider authentication is still required for live models, as described below.
+
+To update or uninstall:
+
+```sh
+brew update
+brew upgrade --fetch-HEAD aweis89/pcode/pcode
+# To remove:
+brew uninstall pcode
+brew untap aweis89/pcode
+```
+
+The formula includes offline smoke tests: `brew test aweis89/pcode/pcode`.
+This is an upstream tap, not a formula in `homebrew/core`.
+
+## Run from source
 
 With [uv](https://docs.astral.sh/uv/) installed, from this directory:
 
