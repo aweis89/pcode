@@ -93,6 +93,28 @@ For ordinary OpenAI API models, use an `openai:...` string and supply
 installed by default. Other Pydantic model strings require their provider extras
 and corresponding authentication.
 
+### Model-only HTTP proxy
+
+Set `PCODE_LLM_PROXY` to route **Codex model requests only** through an HTTP proxy:
+
+```sh
+PCODE_LLM_PROXY=http://127.0.0.1:8080 pcode --model openai-codex:gpt-5.6-sol
+```
+
+HTTP and HTTPS proxy URLs are supported (HTTPS model traffic uses CONNECT).
+This currently supports `openai-codex:` models only; setting it with another
+provider produces an error rather than silently sending model requests directly.
+An unset or blank value preserves the normal provider behavior.
+
+The dedicated model client ignores global proxy settings, including `NO_PROXY`,
+when this option is set. Codex token refresh and the explorer's inherited model
+calls also use that client. Exa requests and shell subprocesses retain their normal
+HTTP configuration: pcode does not set or modify `HTTP_PROXY`, `HTTPS_PROXY`, or
+`ALL_PROXY`. If those variables are already set, tools may still use those proxies.
+The model client also ignores environment-based TLS configuration (`trust_env=False`);
+use a proxy that tunnels HTTPS without requiring a custom environment-specified CA.
+Do not include proxy URLs containing credentials in prompts or diagnostics.
+
 ### Web search
 
 Set `EXA_API_KEY` in the environment before starting pcode to enable Exa-backed

@@ -179,15 +179,20 @@ class AgentRuntime:
 
         # Unlike run_stream(), this completes the tool loop even when the model
         # sends explanatory text alongside its tool calls.
-        async with self.agent.run_stream_events(
-            prompt,
-            message_history=self.history,
-            conversation_id=self.conversation_id,
-            run_id=run_id,
-            capabilities=[StepPersistence(store=self.session.store)] if self.session else [],
-            # Explicitly disable the cap; omitting this restores the library default.
-            usage_limits=UsageLimits(request_limit=None),
-        ) as events:
+        # Enter the agent too: a run alone does not own a statically supplied
+        # model's HTTP client. Exit closes it on success, failure, or cancellation.
+        async with (
+            self.agent,
+            self.agent.run_stream_events(
+                prompt,
+                message_history=self.history,
+                conversation_id=self.conversation_id,
+                run_id=run_id,
+                capabilities=[StepPersistence(store=self.session.store)] if self.session else [],
+                # Explicitly disable the cap; omitting this restores the library default.
+                usage_limits=UsageLimits(request_limit=None),
+            ) as events,
+        ):
             async for event in events:
                 if isinstance(event, PartStartEvent):
                     if isinstance(event.part, TextPart):
