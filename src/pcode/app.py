@@ -132,7 +132,15 @@ class PreviewApp:
                     self.transcript.note("[Partial output from an interrupted run]")
             elif kind == "ToolSummary":
                 self.transcript.events(
-                    (ToolSummary(record["name"], record["detail"], record.get("failed", False)),)
+                    (
+                        ToolSummary(
+                            record["name"],
+                            record["detail"],
+                            record.get("failed", False),
+                            record.get("call_id", ""),
+                            record.get("elapsed_seconds"),
+                        ),
+                    )
                 )
             elif kind in ("turn_failed", "turn_cancelled"):
                 self.transcript.note(f"[{kind.replace('_', ' ')}; diagnostics saved]")
@@ -292,7 +300,12 @@ class PreviewApp:
             on_cancel=cancel,
             bottom_toolbar=self.toolbar,
         )
-        output = TerminalOutput(self.transcript.console, self.activity, session.app)
+        output = TerminalOutput(
+            self.transcript.console,
+            self.activity,
+            session.app,
+            code_theme=lambda: self.transcript.palette.syntax,
+        )
         self.transcript.output = output
         session.app.style = DynamicStyle(lambda: self.transcript.palette.prompt_style())
 

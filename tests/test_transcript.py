@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
+from rich.markdown import Markdown
 
 from pcode.ui import Activity, CursorSafeOutput, TerminalOutput
 
@@ -20,20 +21,24 @@ def make_output(width=80):
     return output, stream
 
 
-def test_complete_lines_commit_once_and_final_message_is_not_reprinted():
+def rendered(stream):
+    return "\n".join(line.rstrip() for line in stream.getvalue().split("\n"))
+
+
+def test_complete_blocks_commit_once_and_final_message_is_not_reprinted():
     async def run():
         output, stream = make_output()
-        output.delta("**hello**\npartial")
+        output.delta("**hello**\n\npartial")
         await output.flush()
-        assert stream.getvalue() == "**hello**\n"
+        assert rendered(stream) == "hello\n\n"
         assert output.activity.text == "partial"
         output.delta(" answer")
         await output.flush()
-        assert stream.getvalue() == "**hello**\n"
+        assert rendered(stream) == "hello\n\n"
         assert output.activity.text == "partial answer"
-        output.finish("**hello**\npartial answer")
+        output.finish("**hello**\n\npartial answer")
         await output.flush()
-        assert stream.getvalue() == "**hello**\npartial answer\n\n"
+        assert rendered(stream) == "hello\n\npartial answer\n\n"
         assert output.activity.text == ""
         output.finish()
         await output.flush()
@@ -65,7 +70,7 @@ def test_fallback_messages_tools_and_empty_completion_stay_ordered():
         output.delta("next\n")
         output.finish("next\n")
         await output.flush()
-        assert stream.getvalue() == "No deltas\n\ntool finished\nnext\n\n"
+        assert rendered(stream) == "No deltas\n\ntool finished\nnext\n\n"
 
     asyncio.run(run())
 
@@ -96,7 +101,7 @@ def test_words_wrap_identically_across_delta_boundaries():
                 await output.flush()
             output.finish()
             await output.flush()
-            results.append(stream.getvalue())
+            results.append(rendered(stream))
         assert results == ["hello\nworld\nagain\n界界界\nnext\n\n"] * 3
 
     asyncio.run(run())
@@ -108,7 +113,7 @@ def test_exact_width_word_does_not_push_space_into_next_word():
         output.delta("hello world again")
         output.finish()
         await output.flush()
-        assert stream.getvalue() == "hello\nworld\nagain\n\n"
+        assert rendered(stream) == "hello\nworld\nagain\n\n"
 
     asyncio.run(run())
 
@@ -122,18 +127,18 @@ def test_trailing_separator_at_right_edge_survives_until_next_delta():
         output.delta("world")
         output.finish()
         await output.flush()
-        assert stream.getvalue() == "hello\nworld\n\n"
+        assert rendered(stream) == "hello\nworld\n\n"
 
     asyncio.run(run())
 
 
-def test_long_tokens_split_but_indentation_and_explicit_newlines_survive():
+def test_long_tokens_split_and_paragraphs_render_as_markdown():
     async def run():
         output, stream = make_output(width=8)
         output.delta("  x =  1\n\nabcdefghijklmnopq")
         output.finish()
         await output.flush()
-        assert stream.getvalue() == "  x =  1\n\nabcdefgh\nijklmnop\nq\n\n"
+        assert rendered(stream) == "x =  1\n\nabcdefgh\nijklmnop\nq\n\n"
 
     asyncio.run(run())
 
@@ -143,10 +148,94 @@ def test_uncommitted_tail_uses_new_width_after_resize():
         output, stream = make_output(width=40)
         output.delta("hello world again")
         await output.flush()
-        assert stream.getvalue() == ""
+        assert rendered(stream) == ""
         output.app.output.get_size = lambda: Size(rows=24, columns=10)
         output.finish()
         await output.flush()
-        assert stream.getvalue() == "hello\nworld\nagain\n\n"
+        assert rendered(stream) == "hello\nworld\nagain\n\n"
+
+    asyncio.run(run())
+
+
+def test_markdown_structures_match_static_renderer_across_chunk_boundaries():
+    samples = [
+        "## Heading\n\n**bold** and `inline` with *emphasis*.",
+        "```python\n  x = 1\n\n  print(x)\n```\n",
+        "~~~~python\nx = 1\n```\n~~~~\n",
+        "- first\n\n- second\n  - nested\n",
+        "> first\n>\n> second\n",
+        "| Name | Value |\n| --- | --- |\n| one | two |\n\n",
+        "Title\n=====\n",
+        "    x = 1\n\n    print(x)\n",
+    ]
+
+    async def run():
+        for source in samples:
+            expected = StringIO()
+            console = Console(file=expected, color_system=None, width=40)
+            console.print(Markdown(source, code_theme="nord"))
+            console.print()
+            for chunks in ([source], list(source)):
+                output, stream = make_output(width=40)
+                for chunk in chunks:
+                    output.delta(chunk)
+                    await output.flush()
+                output.finish(source)
+                await output.flush()
+                assert rendered(stream) == rendered(expected), source
+
+    asyncio.run(run())
+
+
+def test_fence_blank_lines_stay_buffered_until_closing_fence():
+    async def run():
+        output, stream = make_output()
+        output.delta("```python\nprint('first')\n\n")
+        await output.flush()
+        assert stream.getvalue() == ""
+        output.delta("print('second')\n```\n")
+        await output.flush()
+        assert "first" in stream.getvalue()
+        assert "second" in stream.getvalue()
+        assert "```" not in stream.getvalue()
+        assert output.tail == ""
+
+    asyncio.run(run())
+
+
+def test_unfinished_preview_is_bounded_and_finish_preserves_all_source():
+    async def run():
+        output, stream = make_output(width=20)
+        source = "\n".join(f"line_{i:03d}" for i in range(100))
+        output.delta(source)
+        await output.flush()
+        assert len(output.activity.text.splitlines()) <= 1
+        assert "line_099" in output.activity.text
+        assert stream.getvalue() == ""
+        output.finish()  # Also used for cancellation and tool boundaries.
+        await output.flush()
+        for i in range(100):
+            assert stream.getvalue().count(f"line_{i:03d}") == 1
+        assert output.activity.text == ""
+
+    asyncio.run(run())
+
+
+def test_streamed_markdown_emits_styles_and_uses_selected_code_theme():
+    async def run():
+        output, stream = make_output()
+        output.console = Console(file=stream, force_terminal=True, color_system="truecolor")
+        output.code_theme = lambda: "friendly"
+        output.delta("**bold**\n\n```python\nx = 1\n```\n")
+        assert any(
+            isinstance(obj, Markdown) and obj.code_theme == "friendly"
+            for objects, _, _ in output.pending
+            for obj in objects
+        )
+        output.finish()
+        await output.flush()
+        assert "\x1b[" in stream.getvalue()
+        assert "**" not in stream.getvalue()
+        assert "```" not in stream.getvalue()
 
     asyncio.run(run())

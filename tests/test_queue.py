@@ -98,7 +98,8 @@ def test_edit_and_queue_during_generation(outcome):
                         task.cancel()
                         await asyncio.gather(task, return_exceptions=True)
         printed = output.getvalue()
-        assert printed.count("**first**") == 1  # No final Markdown rendering pass.
+        assert "**first**" not in printed
+        assert printed.count("first partial") == 1  # Rendered once, including cancellation.
         assert printed.count("partial") == 1
         assert "private provider body" not in printed
         if outcome == "cancel":

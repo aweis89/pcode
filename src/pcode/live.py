@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 from pydantic_ai import (
@@ -25,6 +26,7 @@ from pydantic_ai_harness.step_persistence import StepPersistence
 from pcode.diagnostics import error_details
 from pcode.runtime import Event, Message, RunStatus, TextDelta, ToolSummary
 from pcode.sessions import SavedSession, SessionError
+from pcode.tool_display import label, result_detail, target
 
 
 class AgentRuntime:
@@ -121,7 +123,18 @@ class AgentRuntime:
 
     async def _stream(self, prompt: str, run_id: str) -> AsyncIterator[Event]:
         emitted_text = False
-        tools: dict[str, str] = {}
+        tools: dict[str, tuple[str, dict, float]] = {}
+
+        def activity() -> RunStatus:
+            if not tools:
+                return RunStatus("Waiting for model…")
+            if len(tools) == 1:
+                name, args, _ = next(iter(tools.values()))
+                where = target(name, args)
+                return RunStatus(f"Running {name}" + (f" · {where}" if where else "") + "…")
+            names = ", ".join(label(item[0]) for item in list(tools.values())[:3])
+            return RunStatus(f"Running {len(tools)} tools · {names}…")
+
         # Unlike run_stream(), this completes the tool loop even when the model
         # sends explanatory text alongside its tool calls.
         async with self.agent.run_stream_events(
@@ -149,23 +162,29 @@ class AgentRuntime:
                         emitted_text = True
                         yield Message(event.part.content)
                 elif isinstance(event, FunctionToolCallEvent):
-                    tools[event.part.tool_call_id] = event.part.tool_name
-                    yield RunStatus(f"Running {event.part.tool_name}…")
+                    try:
+                        args = event.part.args_as_dict()
+                    except (ValueError, TypeError):
+                        args = {}
+                    tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
+                    yield activity()
                 elif isinstance(event, FunctionToolResultEvent):
-                    name = tools.pop(event.tool_call_id, None) or event.part.tool_name or "tool"
-                    outcome = (
-                        "needs retry"
-                        if isinstance(event.part, RetryPromptPart)
-                        else event.part.outcome
+                    name, args, started = tools.pop(
+                        event.tool_call_id,
+                        (event.part.tool_name or "tool", {}, monotonic()),
                     )
-                    # Tool contents remain in model history, not dumped into the
-                    # terminal. Output may be large or contain sensitive material.
+                    outcome = (
+                        "retry" if isinstance(event.part, RetryPromptPart) else event.part.outcome
+                    )
+                    detail, failed = result_detail(name, args, event.part.content, outcome)
                     yield ToolSummary(
                         name,
-                        "completed" if outcome == "success" else outcome,
-                        failed=outcome != "success",
+                        detail,
+                        failed=failed,
+                        call_id=event.tool_call_id,
+                        elapsed_seconds=max(0, monotonic() - started),
                     )
-                    yield RunStatus("Waiting for model…")
+                    yield activity()
                 elif isinstance(event, AgentRunResultEvent):
                     result = event.result
                     if result.output and not emitted_text:
