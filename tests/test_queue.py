@@ -76,6 +76,8 @@ def test_edit_and_queue_during_generation(outcome):
                     assert session.default_buffer.cursor_position == 6
                     assert app.activity.queued == 1
                     assert calls == ["first"]
+                    assert app.activity.prompt == "first"
+                    assert app.activity.prompt_state == "running"
                     if outcome == "cancel":
                         pipe.send_text("\x03")
                     else:
@@ -87,6 +89,11 @@ def test_edit_and_queue_during_generation(outcome):
                     else:
                         assert calls == ["first"]
                         assert app.activity.queued == 0
+                    assert (
+                        app.activity.prompt_state
+                        == {"success": "done", "failure": "failed", "cancel": "cancelled"}[outcome]
+                    )
+                    assert app.activity.prompt == ("second" if outcome == "success" else "first")
                     assert session.default_buffer.text == "draft text"
                     assert session.default_buffer.cursor_position == 6
                     pipe.send_text("my ")
@@ -110,3 +117,18 @@ def test_edit_and_queue_during_generation(outcome):
             assert printed.count("second answer") == 1
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "state,icon", [("running", "⠋"), ("failed", "!"), ("cancelled", "■"), ("done", "✓")]
+)
+def test_prompt_indicator(state, icon):
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="first\nsecond\x1b", prompt_state=state)
+    fragments = activity.prompt_fragments("⠋")
+    assert fragments[0][1] == icon + " "
+    assert fragments[1][1].startswith("first second ")
+    if state == "failed":
+        assert "ansired" in fragments[0][0]
+        assert fragments[1][1].endswith(" · failed")

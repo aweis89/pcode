@@ -71,8 +71,19 @@ class Activity:
     text: str = ""
     status: str = ""
     queued: int = 0
+    prompt: str = ""
+    prompt_state: str = ""
     plan: list[dict] = field(default_factory=list)
     tools: ToolHistory = field(default_factory=ToolHistory)
+
+    def prompt_fragments(self, spinner: str):
+        icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
+        style = "bold ansired" if self.prompt_state == "failed" else "class:prompt"
+        suffix = {"failed": " · failed", "cancelled": " · cancelled"}.get(self.prompt_state, "")
+        return [
+            (style, icons.get(self.prompt_state, "❯") + " "),
+            ("", plain(self.prompt, limit=None) + suffix),
+        ]
 
     def preview(self):
         return [("", self.text)]
@@ -357,7 +368,7 @@ def create_prompt(
 
     def frame_height() -> int:
         size = session.app.output.get_size()
-        available = max(1, size.rows - 4 - plan_height())
+        available = max(1, size.rows - 4 - plan_height() - bool(activity.prompt))
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
         return min(text_height, available) + 2
 
@@ -408,7 +419,19 @@ def create_prompt(
     # The unfinished line belongs directly after committed output, not in a
     # preview beside the editor. Put spare height BELOW it to avoid a jump when
     # that line is committed to scrollback. The editor stays bottom-aligned.
-    children = [live, menu, search, plan, Frame(editor, height=frame_height)]
+    current_prompt = ConditionalContainer(
+        Window(
+            FormattedTextControl(
+                lambda: activity.prompt_fragments(plan_spinner.render(monotonic()).plain),
+                show_cursor=False,
+            ),
+            height=1,
+            wrap_lines=False,
+            dont_extend_height=True,
+        ),
+        filter=Condition(lambda: bool(activity.prompt)),
+    )
+    children = [live, menu, search, plan, current_prompt, Frame(editor, height=frame_height)]
     if transcript is not None:
         children.insert(1, Window())
 
