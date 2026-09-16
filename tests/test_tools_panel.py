@@ -249,7 +249,8 @@ def test_shared_task_tool_budget_keeps_active_item_and_latest_calls_visible(budg
     assert len(lines) <= budget
     text = [text for _, text in lines]
     active = text.index("  ⟳ Task 8")
-    count = min(5, budget - 1)
+    count = min(3, budget - 1)
+    assert sum("Read ·" in line for line in text) == count
     assert all(line.startswith("      ✓ Read") for line in text[active + 1 : active + 1 + count])
     if count:
         assert text[active + count] == "      ✓ Read · file_9.py"
