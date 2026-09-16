@@ -74,18 +74,15 @@ def input_rows(screen):
     return bottom - top - 1
 
 
-def test_fullscreen_transcript_scrolls(pane):
+def test_transcript_uses_terminal_scrollback(pane):
     assert input_rows(capture(pane, "❯")) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "/demo")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     assert input_rows(capture(pane, "No files were")) == 1
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert "Hello, world!" in history
-    assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "1"
-    pane("send-keys", "-t", "preview:0.0", "PPage")
-    capture(pane, "pcode  /  UI preview")
-    pane("send-keys", "-t", "preview:0.0", "C-End")
-    capture(pane, "No files were")
+    assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "0"
+    assert "pcode  /  UI preview" in history
 
 
 @pytest.mark.parametrize("split", ["-h", "-v"])
@@ -127,8 +124,8 @@ from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
 
 async def model(messages, info):
-    yield "FIRST STREAM CHUNK"
-    await asyncio.sleep(1)
+    yield "COMMITTED LINE\\nFIRST STREAM CHUNK"
+    await asyncio.sleep(2)
     yield "\\nLIVE ANSWER COMPLETE"
 
 runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
@@ -141,8 +138,13 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "hello")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    assert input_rows(capture(pane, "FIRST STREAM CHUNK", running=True)) == 1
-    assert input_rows(capture(pane, "LIVE ANSWER COMPLETE")) == 1
+    streaming = capture(pane, "FIRST STREAM CHUNK", running=True)
+    assert input_rows(streaming) == 1
+    assert "COMMITTED LINE\nFIRST STREAM CHUNK" in streaming
+    before = streaming.splitlines().index("FIRST STREAM CHUNK")
+    completed = capture(pane, "LIVE ANSWER COMPLETE")
+    assert input_rows(completed) == 1
+    assert completed.splitlines().index("FIRST STREAM CHUNK") == before
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert history.count("FIRST STREAM CHUNK") == 1
     assert "❯ hello" in history
@@ -156,39 +158,30 @@ def test_stream_resize_and_cancellation(pane):
     capture(pane, "FIRST STREAM CHUNK", running=True)
     pane("split-window", "-v", "-t", "preview:0.0", "cat")
     assert input_rows(capture(pane, "FIRST STREAM CHUNK", running=True)) == 1
-    pane("send-keys", "-t", "preview:0.0", "C-c")
-    assert input_rows(capture(pane, "Run cancelled.")) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "next input")
-    assert input_rows(capture(pane, "next input")) == 1
+    capture(pane, "❯ next input", running=True)
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    cancelled = capture(pane, "Run cancelled.")
+    assert input_rows(cancelled) == 1
+    assert "❯ next input" in cancelled
 
 
-REFLOW_SCRIPT = """
-from pcode.app import PreviewApp
-from pcode.runtime import Message
-app = PreviewApp()
-app.transcript.full_screen = True
-app.transcript.events((Message("REFLOW_START " + "word " * 45 + "REFLOW_END"),))
-app.run()
-"""
-
-
-@pytest.mark.parametrize("pane", [REFLOW_SCRIPT], indirect=True)
-def test_completed_response_reflows_on_width_resize(pane):
-    def response_lines(screen):
-        lines = screen.splitlines()
-        start = next(i for i, line in enumerate(lines) if "REFLOW_START" in line)
-        end = next(i for i, line in enumerate(lines) if "REFLOW_END" in line)
-        return lines[start : end + 1]
-
-    wide = response_lines(capture(pane, "REFLOW_END"))
+@pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
+def test_draft_and_cursor_survive_stream_completion_and_width_resize(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    capture(pane, "FIRST STREAM CHUNK", running=True)
+    pane("send-keys", "-t", "preview:0.0", "-l", "draft text")
+    pane("send-keys", "-t", "preview:0.0", "Left", "Left", "Left", "Left")
+    capture(pane, "❯ draft text", running=True)
     pane("split-window", "-h", "-t", "preview:0.0", "cat")
-    narrow_screen = capture(pane, "REFLOW_END")
-    narrow = response_lines(narrow_screen)
-    assert input_rows(narrow_screen) == 1
-    assert len(narrow) > len(wide)
-    assert " ".join(" ".join(narrow).split()) == " ".join(" ".join(wide).split())
-    pane("kill-pane", "-t", "preview:0.1")
-    assert response_lines(capture(pane, "REFLOW_END", columns=100)) == wide
+    capture(pane, "❯ draft text", running=True)
+    screen = capture(pane, "LIVE ANSWER COMPLETE")
+    assert "❯ draft text" in screen
+    pane("send-keys", "-t", "preview:0.0", "-l", "my ")
+    capture(pane, "❯ draft my text")
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert history.count("COMMITTED LINE") == 1
 
 
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
@@ -201,6 +194,21 @@ def test_immediate_cancellation_unlocks_editor(pane):
     assert input_rows(capture(pane, "editable again")) == 1
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="prompt_toolkit's resize erase can leave the live line behind after frame reflow",
+)
+@pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
+def test_width_resize_does_not_leave_a_copy_of_unfinished_line(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    capture(pane, "FIRST STREAM CHUNK", running=True)
+    pane("split-window", "-h", "-t", "preview:0.0", "cat")
+    capture(pane, "LIVE ANSWER COMPLETE")
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert history.count("FIRST STREAM CHUNK") == 1
+
+
 def test_cancel_history_search_discards_draft(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "draft")
@@ -209,3 +217,69 @@ def test_cancel_history_search_discards_draft(pane):
     pane("send-keys", "-t", "preview:0.0", "-l", "fresh")
     screen = capture(pane, "❯ fresh")
     assert "draft" not in screen
+
+
+LONG_SCRIPT = """
+import asyncio
+from pydantic_ai import Agent
+from pydantic_ai.models.function import FunctionModel
+from pcode.app import PreviewApp
+from pcode.live import AgentRuntime
+
+async def model(messages, info):
+    for i in range(80):
+        yield f"LINE_{i:03d}\\n"
+        await asyncio.sleep(0.005)
+    yield "**UNCHANGED MARKDOWN** " + "wide界 " * 60 + "TAIL_MARKER"
+    await asyncio.sleep(1)
+    yield " FINISHED"
+
+runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+PreviewApp(model="test:local", runtime=runtime).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [LONG_SCRIPT], indirect=True)
+def test_long_stream_remains_in_scrollback_without_truncation(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    capture(pane, "TAIL_MARKER", running=True)
+    pane("send-keys", "-t", "preview:0.0", "-l", "still editable")
+    screen = capture(pane, "FINISHED")
+    assert "❯ still editable" in screen
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    for i in range(80):
+        assert history.count(f"LINE_{i:03d}") == 1
+    assert history.count("**UNCHANGED MARKDOWN**") == 1
+    assert history.count("TAIL_MARKER") == 1
+
+
+WORD_WRAP_SCRIPT = """
+from pydantic_ai import Agent
+from pydantic_ai.models.function import FunctionModel
+from pcode.app import PreviewApp
+from pcode.live import AgentRuntime
+
+async def model(messages, info):
+    yield "WRAP_START\\n"
+    for char in "streaming boundaries " * 30:
+        yield char
+    yield "\\nWRAP_END"
+
+runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+PreviewApp(model="test:local", runtime=runtime).run()
+"""
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("pane", [WORD_WRAP_SCRIPT], indirect=True)
+def test_words_stay_whole_in_regular_and_split_panes(pane, split):
+    capture(pane, "❯")
+    if split:
+        pane("split-window", "-h", "-t", "preview:0.0", "cat")
+        capture(pane, "❯", columns=50)
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    capture(pane, "WRAP_END")
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    text = history.split("WRAP_START\n", 1)[1].split("WRAP_END", 1)[0]
+    assert text.split() == ["streaming", "boundaries"] * 30
