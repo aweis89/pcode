@@ -16,6 +16,7 @@ from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.subagents import SubAgent
 
+from pcode.llm_proxy import ProxiedCodexProvider
 from pcode.planning import IdentifiedPlanning
 from pcode.repo_context import AutomaticRepoContext
 
@@ -75,6 +76,9 @@ def create_coder(workspace: Path) -> CombinedCapability:
 
 
 def create_agent(model: str, workspace: Path) -> Agent:
+    proxy = os.environ.get("PCODE_LLM_PROXY", "").strip()
+    if proxy and not model.startswith("openai-codex:"):
+        raise ValueError("PCODE_LLM_PROXY currently supports only openai-codex: models")
     # Subscription endpoints reject the explicit cache markers that Harness
     # Planning adds after write_plan. Keep the native provider/auth/model name;
     # override only this advertised capability (verified against AI 2.43.0).
@@ -82,6 +86,7 @@ def create_agent(model: str, workspace: Path) -> Agent:
         OpenAICodexModel(
             model.removeprefix("openai-codex:"),
             profile=OpenAIModelProfile(openai_supports_prompt_cache_breakpoints=False),
+            **({"provider": ProxiedCodexProvider(proxy)} if proxy else {}),
         )
         if model.startswith("openai-codex:")
         else model

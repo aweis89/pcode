@@ -83,6 +83,12 @@ Specific traps already encountered here:
   the real-tmux height regression tests, not just PTY startup/exit checks.
 - `src/pcode/repo_context.py` uses a private Harness inventory API. Recheck it
   against installed source and the repository-context tests on upgrades.
+- `src/pcode/llm_proxy.py` uses Pydantic AI's private provider ownership hooks
+  (`_own_http_client`, `_http_client_factory`, and Codex auth/client fields) so
+  injected proxy clients close and reopen with the agent. Verified with 2.43.0
+  and httpx2 2.13.0; rerun `tests/test_llm_proxy.py` on upgrades. Codex requires
+  httpx2, not legacy httpx. Static models require entering the agent context;
+  `run_stream_events()` alone does not manage their client lifetime.
 
 Inspect library source and package metadata, not credential stores, `.env`
 files, private keys, or token files. API discovery should not require live model

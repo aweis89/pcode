@@ -523,6 +523,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
+    { name = "httpx2" },
     { name = "prompt-toolkit" },
     { name = "pydantic-ai-harness", extra = ["exa"] },
     { name = "pydantic-ai-slim", extra = ["openai"] },
@@ -539,6 +540,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "filelock", specifier = ">=3.16,<4" },
+    { name = "httpx2", specifier = ">=2.13,<3" },
     { name = "prompt-toolkit", specifier = ">=3.0.52,<4" },
     { name = "pydantic-ai-harness", extras = ["exa"], specifier = ">=0.31.0,<0.32" },
     { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=2.43.0,<3" },
