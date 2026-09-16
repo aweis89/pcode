@@ -21,12 +21,21 @@ from pydantic_ai import (
 )
 from pydantic_ai.messages import ModelMessage, RetryPromptPart
 from pydantic_ai.usage import UsageLimits
+from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
 from pydantic_ai_harness.step_persistence import StepPersistence
 
 from pcode.diagnostics import error_details
-from pcode.runtime import Event, Message, RunStatus, TextDelta, ToolSummary
+from pcode.runtime import (
+    Event,
+    Message,
+    PlanUpdated,
+    RunStatus,
+    TextDelta,
+    ToolStarted,
+    ToolSummary,
+)
 from pcode.sessions import SavedSession, SessionError
-from pcode.tool_display import label, result_detail, target
+from pcode.tool_display import command_error, command_text, label, result_detail, target
 
 
 class AgentRuntime:
@@ -51,6 +60,21 @@ class AgentRuntime:
 
         self.session_factory = session_factory
         self._clear()
+        # Coder's public root capability is flattened by Pydantic AI. A resolver
+        # keeps the store conversation-scoped, including after /new.
+        for capability in self.agent.root_capability.capabilities:
+            if isinstance(capability, Planning):
+                capability.store_resolver = lambda ctx: self.plan_store
+
+    def startup_context(self) -> list[str]:
+        """Report only repository context configured on this agent."""
+        from pcode.repo_context import AutomaticRepoContext
+
+        lines = []
+        for capability in self.agent.root_capability.capabilities:
+            if isinstance(capability, AutomaticRepoContext):
+                lines.extend(capability.startup_summary())
+        return lines
 
     def _clear(self) -> None:
         info = self.session.info if self.session else None
@@ -60,6 +84,7 @@ class AgentRuntime:
         self.input_tokens = info.input_tokens if info else 0
         self.output_tokens = info.output_tokens if info else 0
         self.recovery_blocked = ""
+        self.plan_store = InMemoryPlanStore()
 
     def reset(self) -> None:
         if self.session:
@@ -70,6 +95,9 @@ class AgentRuntime:
     async def restore(self) -> None:
         if self.session:
             self.history = await self.session.recover()
+            await self.plan_store.set_items(
+                [PlanItem.model_validate(item) for item in self.session.latest_plan()]
+            )
 
     def close(self) -> None:
         if self.session:
@@ -122,6 +150,7 @@ class AgentRuntime:
                 saved.save_info()
 
     async def _stream(self, prompt: str, run_id: str) -> AsyncIterator[Event]:
+        plan_items = [item.model_dump(mode="json") for item in await self.plan_store.get_items()]
         emitted_text = False
         tools: dict[str, tuple[str, dict, float]] = {}
 
@@ -167,6 +196,15 @@ class AgentRuntime:
                     except (ValueError, TypeError):
                         args = {}
                     tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
+                    yield ToolStarted(
+                        event.part.tool_name,
+                        target(event.part.tool_name, args),
+                        event.part.tool_call_id,
+                        command=command_text(args["command"])
+                        if event.part.tool_name in {"run_command", "start_command"}
+                        and isinstance(args.get("command"), str)
+                        else "",
+                    )
                     yield activity()
                 elif isinstance(event, FunctionToolResultEvent):
                     name, args, started = tools.pop(
@@ -177,12 +215,29 @@ class AgentRuntime:
                         "retry" if isinstance(event.part, RetryPromptPart) else event.part.outcome
                     )
                     detail, failed = result_detail(name, args, event.part.content, outcome)
+                    # Read the store after every settled tool: covers granular,
+                    # batched, and future plan mutations without parsing results.
+                    items = [
+                        item.model_dump(mode="json") for item in await self.plan_store.get_items()
+                    ]
+                    if items != plan_items:
+                        plan_items = items
+                        yield PlanUpdated(items)
                     yield ToolSummary(
                         name,
                         detail,
                         failed=failed,
                         call_id=event.tool_call_id,
                         elapsed_seconds=max(0, monotonic() - started),
+                        command=command_text(args["command"])
+                        if name in {"run_command", "start_command"}
+                        and isinstance(args.get("command"), str)
+                        else "",
+                        error=command_error(event.part.content)
+                        if failed
+                        and name
+                        in {"run_command", "start_command", "check_command", "stop_command"}
+                        else "",
                     )
                     yield activity()
                 elif isinstance(event, AgentRunResultEvent):

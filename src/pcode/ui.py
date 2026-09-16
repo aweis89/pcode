@@ -3,7 +3,8 @@
 import asyncio
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from time import monotonic
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app, in_terminal
@@ -20,12 +21,14 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
 from pcode.commands import CommandRegistry, SlashCompleter
-from pcode.runtime import Event, Message, ToolSummary
-from pcode.tool_display import label, plain
+from pcode.runtime import Event, Message, ToolStarted, ToolSummary
+from pcode.tool_display import command_preview, command_text, label, plain
+from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,9 @@ class Palette:
     def prompt_style(self) -> Style:
         return Style.from_dict(
             {
+                "plan": self.muted,
+                "plan.active": f"{self.accent} bold",
+                "tool.failed": "bold ansired",
                 "prompt": f"{self.accent} bold",
                 "frame.border": self.muted,
                 "bottom-toolbar": f"noreverse bg:{self.surface} {self.muted}",
@@ -65,6 +71,8 @@ class Activity:
     text: str = ""
     status: str = ""
     queued: int = 0
+    plan: list[dict] = field(default_factory=list)
+    tools: ToolHistory = field(default_factory=ToolHistory)
 
     def preview(self):
         return [("", self.text)]
@@ -72,7 +80,7 @@ class Activity:
 
 @Output.register
 class CursorSafeOutput:
-    """Delegate terminal operations, but hide the cursor during output handoffs."""
+    """Keep renderer erases out of history and hide the cursor during handoffs."""
 
     def __init__(self, output: Output):
         self.output = output
@@ -81,6 +89,19 @@ class CursorSafeOutput:
 
     def __getattr__(self, name):
         return getattr(self.output, name)
+
+    def erase_down(self) -> None:
+        # Avoid ED at column zero: terminals such as tmux preserve a full-screen
+        # erase in scrollback, including the supposedly transient editor frame.
+        # prompt_toolkit calls this at column zero. Split the erase into ED from
+        # column one plus EL from column zero, keeping the final cursor unchanged.
+        if self.output.get_size().columns < 2:
+            self.output.erase_down()
+            return
+        self.output.cursor_forward(1)
+        self.output.erase_down()
+        self.output.cursor_backward(1)
+        self.output.erase_end_of_line()
 
     def show_cursor(self) -> None:
         self._visible = True
@@ -123,6 +144,11 @@ class TerminalOutput:
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
+        # Freeze the visible source at flush boundaries: a redraw while waiting
+        # for a terminal handoff must not hide text that is not committed yet.
+        self._preview_source = ""
+        self._preview_key: tuple[str, int] | None = None
+        self._preview_text = ""
 
     def print(self, *objects) -> None:
         self.pending.append((objects, "\n", False))
@@ -186,8 +212,19 @@ class TerminalOutput:
         # Only one display row belongs to prompt_toolkit. Keep the complete
         # source separately so clipping never loses text from final scrollback.
         width = max(1, self.app.output.get_size().columns)
-        rows = Text(self.tail).wrap(self.console, width, overflow="fold")
-        return rows[-1].plain if rows else ""
+        key = (self._preview_source, width)
+        if key != self._preview_key:
+            rows = Text(self._preview_source).wrap(self.console, width, overflow="fold")
+            self._preview_text = rows[-1].plain if rows else ""
+            self._preview_key = key
+        return self._preview_text
+
+    def refresh_preview(self) -> bool:
+        """Reflow the last flushed preview on resize, without scheduling a redraw."""
+        text = self._preview()
+        changed = text != self.activity.text
+        self.activity.text = text
+        return changed
 
     def finish(self, fallback: str = "") -> None:
         # Message is a completion marker, not a second copy of streamed text.
@@ -210,18 +247,23 @@ class TerminalOutput:
                         # Snapshot after entering: input/model events can arrive while
                         # in_terminal waits for CPR, but not during these sync writes.
                         pending, self.pending = self.pending, []
-                        self.activity.text = self._preview()
-                        for objects, end, soft_wrap in pending:
-                            self.console.print(
-                                *objects,
-                                end=end,
-                                soft_wrap=soft_wrap,
-                                width=max(1, self.app.output.get_size().columns),
-                            )
+                        self._preview_source = self.tail
+                        self.refresh_preview()
+                        width = max(1, self.app.output.get_size().columns)
+                        # Rich's public buffer context coalesces the batch's
+                        # prints (including separators) into one output flush.
+                        # Keep it synchronous and inside the single-writer handoff.
+                        with self.console:
+                            for objects, end, soft_wrap in pending:
+                                self.console.print(
+                                    *objects, end=end, soft_wrap=soft_wrap, width=width
+                                )
+                # in_terminal already repainted the editor on exit.
             else:
-                self.activity.text = self._preview()
+                self._preview_source = self.tail
+                if self.refresh_preview():
+                    self.app.invalidate()
             self.changed.clear()
-            self.app.invalidate()
 
     async def run(self) -> None:
         while True:
@@ -315,10 +357,41 @@ def create_prompt(
 
     def frame_height() -> int:
         size = session.app.output.get_size()
-        available = max(1, size.rows - 4)
+        available = max(1, size.rows - 4 - plan_height())
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
         return min(text_height, available) + 2
 
+    plan_spinner = Spinner("dots")
+    # Animate active tasks and update running tool elapsed times during pauses.
+    session.app.refresh_interval = plan_spinner.interval / 1000
+
+    def plan_rows():
+        # Share one height budget instead of stacking separate Tools and Tasks
+        # panels. Leave space for the live tail, completion menu, and editor.
+        budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
+        return task_panel_rows(
+            activity.plan, activity.tools, budget, plan_spinner.render(monotonic()).plain
+        )
+
+    def plan_height() -> int:
+        rows = plan_rows()
+        return len(rows) + 2 if rows else 0
+
+    def plan_text():
+        return panel_fragments(plan_rows(), session.app.output.get_size().columns - 2)
+
+    plan = ConditionalContainer(
+        Frame(
+            Window(
+                FormattedTextControl(plan_text),
+                height=lambda: plan_height() - 2,
+                dont_extend_height=True,
+                wrap_lines=False,
+            ),
+            height=plan_height,
+        ),
+        filter=Condition(lambda: bool(activity.plan or activity.tools.calls)),
+    )
     menu = CompletionsMenu(
         max_height=6, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
     )
@@ -326,7 +399,8 @@ def create_prompt(
     live = ConditionalContainer(
         Window(
             FormattedTextControl(activity.preview, show_cursor=False),
-            wrap_lines=True,
+            height=1,
+            wrap_lines=False,
             dont_extend_height=True,
         ),
         filter=Condition(lambda: bool(activity.text)),
@@ -334,7 +408,7 @@ def create_prompt(
     # The unfinished line belongs directly after committed output, not in a
     # preview beside the editor. Put spare height BELOW it to avoid a jump when
     # that line is committed to scrollback. The editor stays bottom-aligned.
-    children = [live, menu, search, Frame(editor, height=frame_height)]
+    children = [live, menu, search, plan, Frame(editor, height=frame_height)]
     if transcript is not None:
         children.insert(1, Window())
 
@@ -367,17 +441,29 @@ def create_prompt(
             full_screen=False,
             erase_when_done=True,
             min_redraw_interval=1 / 30,
+            refresh_interval=editor_app.refresh_interval,
             key_bindings=editor_app.key_bindings,
             style=editor_app.style,
             input=editor_app.input,
             output=editor_app.output,
             mouse_support=False,
         )
+
+        def refresh_preview(app):
+            # SIGWINCH redraws must reflow a paused stream too. Updating before
+            # layout also lets the live row's visibility filter see the new text.
+            if transcript.output is not None:
+                transcript.output.refresh_preview()
+
+        session.app.before_render += refresh_preview
     return session
 
 
 class Transcript:
-    def __init__(self, console: Console, theme: str = "dark") -> None:
+    def __init__(
+        self, console: Console, theme: str = "dark", *, activity: Activity | None = None
+    ) -> None:
+        self.activity = activity
         self.console = console
         self.theme = theme
         self.output: TerminalOutput | None = None
@@ -415,12 +501,53 @@ class Transcript:
         self.print(Text.assemble(("❯ ", f"bold {self.palette.accent}"), text))
         self.print()
 
-    def events(self, events: tuple[Event, ...]) -> None:
+    def command_summary(self, event: ToolSummary) -> None:
+        result = (
+            " · " + plain(event.detail.rsplit(" → ", 1)[-1], limit=60)
+            if event.failed or (event.name != "run_command" and " → " in event.detail)
+            else ""
+        )
+        elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
+        header = Text(
+            f"  {'!' if event.failed else '✓'} {label(event.name)}{result}{elapsed}",
+            style="bold red" if event.failed else self.palette.accent,
+            no_wrap=True,
+            overflow="ellipsis",
+        )
+        preview = Text(
+            "    " + command_preview(event.command),
+            style=self.palette.muted,
+            no_wrap=True,
+            overflow="ellipsis",
+        )
+        header.truncate(self.console.width, overflow="ellipsis")
+        preview.truncate(self.console.width, overflow="ellipsis")
+        self.print(header)
+        self.print(preview)
+
+    def events(self, events: tuple[Event, ...], *, show_tools: bool = False) -> None:
         for event in events:
+            if isinstance(event, (ToolStarted, ToolSummary)) and self.activity and not show_tools:
+                self.activity.tools.record(event)
+                if self.output is not None:
+                    self.output.app.invalidate()
+                continue
             if isinstance(event, Message):
                 self.print(Markdown(event.markdown, code_theme=self.palette.syntax))
                 self.print()
             elif isinstance(event, ToolSummary):
+                if event.command:
+                    if show_tools:
+                        self.print(Text(f"{label(event.name)} · {plain(event.detail, limit=None)}"))
+                        self.print(Text(command_text(event.command)))
+                    else:
+                        self.command_summary(event)
+                    if event.failed and event.error:
+                        for line in event.error.splitlines():
+                            self.print(
+                                Text("      " + plain(line, limit=None), style=self.palette.muted)
+                            )
+                    continue
                 self.print(
                     Text.assemble(
                         (
@@ -436,6 +563,11 @@ class Transcript:
                         ),
                     )
                 )
+                if event.failed and event.error:
+                    for line in event.error.splitlines():
+                        self.print(
+                            Text("      " + plain(line, limit=None), style=self.palette.muted)
+                        )
 
     def help(self, registry: CommandRegistry) -> None:
         table = Table(box=None, padding=(0, 2), show_header=False)

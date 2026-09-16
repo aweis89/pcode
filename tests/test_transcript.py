@@ -239,3 +239,71 @@ def test_streamed_markdown_emits_styles_and_uses_selected_code_theme():
         assert "```" not in stream.getvalue()
 
     asyncio.run(run())
+
+
+def test_pending_prints_share_one_rich_write_and_flush():
+    class CountingStream(StringIO):
+        writes = 0
+        flushes = 0
+
+        def write(self, text):
+            self.writes += 1
+            return super().write(text)
+
+        def flush(self):
+            self.flushes += 1
+            return super().flush()
+
+    async def run():
+        output, _ = make_output()
+        stream = CountingStream()
+        output.console = Console(file=stream, color_system=None)
+        output.delta("**first**\n\nsecond\n\n")
+        output.print("tool finished")
+        await output.flush()
+        assert rendered(stream).splitlines() == ["first", "", "second", "", "tool finished"]
+        assert stream.writes == 1
+        assert stream.flushes == 1
+
+    asyncio.run(run())
+
+
+def test_unchanged_preview_is_cached_and_noop_flush_does_not_invalidate(monkeypatch):
+    from rich.text import Text
+
+    async def run():
+        output, _ = make_output(width=10)
+        wraps = []
+        invalidations = []
+        original_wrap = Text.wrap
+
+        def wrap(self, *args, **kwargs):
+            wraps.append(self.plain)
+            return original_wrap(self, *args, **kwargs)
+
+        monkeypatch.setattr(Text, "wrap", wrap)
+        output.app.invalidate = lambda: invalidations.append(True)
+        output.delta("hello world again")
+        await output.flush()
+        assert output.activity.text == "again"
+        for _ in range(5):
+            await output.flush()
+            output.refresh_preview()
+        assert len(wraps) == 1
+        assert len(invalidations) == 1
+
+        output.app.output.get_size = lambda: Size(rows=24, columns=20)
+        assert output.refresh_preview()
+        assert output.activity.text == "hello world again"
+        assert len(wraps) == 2
+        # Before-render callbacks must not recursively invalidate.
+        assert len(invalidations) == 1
+
+        # Newly committed source isn't visible until the output handoff.
+        output.delta("\n\nnext")
+        output.refresh_preview()
+        assert output.activity.text == "hello world again"
+        await output.flush()
+        assert output.activity.text == "next"
+
+    asyncio.run(run())

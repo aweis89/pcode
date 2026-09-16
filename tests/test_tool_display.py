@@ -82,7 +82,7 @@ from pcode.ui import Transcript
             "pytest → Timed out",
             True,
         ),
-        ("run_command", {"command": "pytest"}, "(no output)", "pytest → exit 0", False),
+        ("run_command", {"command": "pytest"}, "(no output)", "pytest", False),
         (
             "write_plan",
             {"items": [{"status": "completed"}, {"status": "in_progress"}]},
@@ -98,7 +98,7 @@ from pcode.ui import Transcript
             False,
         ),
         ("inventory_agent_context", {}, {}, "Assistant configuration inspected", False),
-        ("unknown_tool", {"secret": "private text"}, "private text", "Succeeded", False),
+        ("unknown_tool", {"secret": "private text"}, "private text", "", False),
     ],
 )
 def test_safe_result_metrics(name, args, content, expected, failed):
@@ -256,24 +256,48 @@ def test_command_credential_options_redacted_without_hiding_ordinary_arguments(m
     assert target("search_files", {"pattern": "synthetic-display-fixture"}) == '"[redacted]" in .'
 
 
-def test_long_command_wraps_without_losing_arguments_or_result():
+def test_long_command_is_compact_without_numbers_or_details_hint():
     command = "pytest " + " ".join(f"tests/test_example_{i}.py" for i in range(20))
-    assert target("run_command", {"command": command}) == command
+    assert len(target("run_command", {"command": command})) <= 100
     detail, failed = result_detail("run_command", {"command": command}, "(no output)", "success")
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=60, color_system=None))
-    transcript.events((ToolSummary("run_command", detail, failed),))
+    transcript.events((ToolSummary("run_command", detail, failed, command=command),))
     output = stream.getvalue()
-    assert "arguments hidden" not in output
-    assert "…" not in output
-    assert "tests/test_example_19.py" in output
-    assert "exit 0" in output
-    assert len(output.splitlines()) > 1
+    assert "…" in output
+    assert "tests/test_example_19.py" not in output
+    assert "exit 0" not in output
+    assert "/tool" not in output
+    assert "#" not in output
+    assert len(output.splitlines()) == 2
+
+
+def test_multiline_command_preview_is_compact_and_sanitized():
+    from pcode.tool_display import command_text
+
+    command = "python - <<'PY'\n    print('hello')\nPY"
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None))
+    transcript.events((ToolSummary("run_command", "script → exit 0", command=command),))
+    assert "print('hello')" not in stream.getvalue()
+    assert "1 more lines" not in stream.getvalue()
+    assert "2 more lines" in stream.getvalue()
+    assert "\\n" not in stream.getvalue()
+    assert command_text("echo \x1b[2Jhello\u202e\n\tend") == "echo [2Jhello \n    end"
+
+
+def test_command_text_redacts_before_preserving_lines():
+    from pcode.tool_display import command_text
+
+    assert command_text('client --token "dummy credential"\necho done') == (
+        "client --token [redacted]\necho done"
+    )
 
 
 def test_command_and_query_controls_are_not_sent_to_terminal():
     assert (
-        target("run_command", {"command": "echo first\necho second"}) == r"echo first\necho second"
+        target("run_command", {"command": "echo first\necho second"})
+        == "echo first … [1 more lines]"
     )
     for name, args in (
         ("run_command", {"command": "echo \x1b[2Jhello\u202e"}),
@@ -325,3 +349,33 @@ def test_visible_inputs_reach_running_and_completed_events(name, args, result, e
         assert any(isinstance(e, ToolSummary) and expected in e.detail for e in events)
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["(no output)", "[stdout]\nok", "[stderr]\nwarning", "[exit code: 0]", "other output"],
+)
+def test_successful_commands_have_no_redundant_status(content):
+    assert result_detail("run_command", {"command": "echo hi"}, content, "success") == (
+        "echo hi", False
+    )
+
+
+@pytest.mark.parametrize(
+    "name,args,expected",
+    [
+        ("get_page", {"url": "https://example.com/docs"}, "https://example.com/docs"),
+        ("web_search", {"query": "python async tools"}, "python async tools"),
+        ("get_page", {}, "url unavailable"),
+        ("web_search", {"query": None}, "query unavailable"),
+    ],
+)
+def test_web_tools_show_inputs_in_targets_and_results(name, args, expected):
+    assert target(name, args) == expected
+    assert result_detail(name, args, "private response", "success") == (expected, False)
+    stream = StringIO()
+    Transcript(Console(file=stream, width=180, color_system=None)).events(
+        (ToolSummary(name, expected),)
+    )
+    assert expected in stream.getvalue()
+    assert "Succeeded" not in stream.getvalue()

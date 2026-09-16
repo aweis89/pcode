@@ -203,6 +203,37 @@ class SavedSession:
                 return snapshot.messages
         return []
 
+    def latest_plan(self) -> list[dict]:
+        """Recover UI/tool state even when the last update predates replay's limit."""
+        items = []
+        with (self.directory / "transcript.jsonl").open(encoding="utf-8") as file:
+            for line in file:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if record.get("kind") == "PlanUpdated":
+                    items = record["items"]
+        return items
+
+    def tool_events(self):
+        """Stream tool lifecycle records independently of the transcript replay limit."""
+        with (self.directory / "transcript.jsonl").open(encoding="utf-8", errors="replace") as file:
+            for line in file:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if record.get("kind") in {
+                    "ToolStarted",
+                    "ToolSummary",
+                    "turn_started",
+                    "turn_completed",
+                    "turn_cancelled",
+                    "turn_failed",
+                }:
+                    yield record
+
     def recent_transcript(self, limit: int = 40) -> list[dict]:
         """UI replay, distinct from the complete model history stored by Harness."""
         records = deque(maxlen=limit)

@@ -6,6 +6,7 @@ import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import CombinedCapability
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness import Coder
@@ -14,7 +15,7 @@ from rich.console import Console
 from pcode.agent import create_agent, create_coder
 from pcode.app import PreviewApp
 from pcode.live import AgentRuntime, error_message
-from pcode.runtime import Message, RunStatus, TextDelta, ToolSummary
+from pcode.runtime import Message, RunStatus, TextDelta, ToolStarted, ToolSummary
 from pcode.ui import TerminalOutput, create_prompt
 
 
@@ -25,7 +26,7 @@ def test_codex_uses_native_model_with_only_cache_override(tmp_path):
         "gpt-5.6-luna", profile={"openai_supports_prompt_cache_breakpoints": False}
     )
     assert constructor.call_args.args == (model.return_value,)
-    assert isinstance(constructor.call_args.kwargs["capabilities"][0], Coder)
+    assert isinstance(constructor.call_args.kwargs["capabilities"][0], CombinedCapability)
 
 
 def test_other_model_strings_are_passed_unchanged(tmp_path):
@@ -62,6 +63,13 @@ def test_stream_runs_real_coder_read_tool_and_retains_history(tmp_path):
 
     async def run():
         events = [event async for event in runtime.stream("Read sample.txt")]
+        started = next(event for event in events if isinstance(event, ToolStarted))
+        completed = next(event for event in events if isinstance(event, ToolSummary))
+        assert started.name == "read_file"
+        assert started.detail == "sample.txt"
+        assert started.call_id == completed.call_id
+        assert events.index(started) < events.index(completed)
+
         assert [e.markdown for e in events if isinstance(e, Message)] == [
             "Looking at the file.",
             "The file contains the workspace marker.",

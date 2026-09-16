@@ -177,6 +177,35 @@ It expands upward for wrapped text or explicit newlines, and shrinks when text i
 removed. Completion appears above the frame. Very long input scrolls within the
 available pane height. Multiline bracketed paste works; mouse capture is off.
 
+Tasks and recent tool activity share one compact, headerless widget above the
+editor. Task rows show status icons and keep the active item visible. Up to five
+recent tool calls appear as indented subitems immediately below the active task;
+this rolling view follows the currently active item, rather than recording
+historical task ownership. When there is no active task (including no plan),
+tools appear as unparented rows in the same widget instead of beneath a completed
+or pending task. There is no separate Tools panel or Tasks heading.
+
+The shared height budget shrinks in small panes, preserving the active task and
+the newest tool calls. Empty tool slots are not reserved, and an empty widget is
+hidden. Each call updates in place from running to success/failure; cancellation
+marks unfinished calls as interrupted, not undone. Rows show a status icon, tool
+name, elapsed time, and truncated path/command summary, without call numbers or
+run counters. The latest ten calls remain in bounded internal history, and saved
+session resume restores this history independently of conversation replay.
+Successful planning operations update the task rows without duplicate tool rows;
+failed planning operations remain visible as failed calls. Plans and tools persist
+across turns and saved-session resumes; `/new` clears both.
+Routine tool summaries no longer enter conversation scrollback. Tool expansion
+and a details UI are deferred; there is currently no `/tools` command. Retained
+error diagnostics and saved session diagnostics remain available for future
+inspection UI work. The non-interactive `--demo` sample still prints its
+fictional tool summaries.
+
+The editor avoids full-screen erase sequences that terminals such as tmux can
+copy into scrollback, leaving duplicate borders after a resize. Repeated
+horizontal and vertical shrink/grow cycles, including multiline drafts, are
+covered by real-tmux tests with cursor-position reports enabled.
+
 Live responses stream as literal text into normal terminal scrollback, including
 Markdown markers. Complete lines are printed once; only the unfinished display
 line is live. Rich's `Text.wrap()` wraps at spaces using the current terminal width, keeping
@@ -184,7 +213,7 @@ words together across streamed chunks. The separating space becomes a newline;
 explicit newlines and indentation are retained. Tokens longer than the available
 width must still split. The live tail stays small. Finishing a message flushes the
 tail without replacing the response
-with rendered Markdown. Tool summaries remain concise, styled output. `/demo`
+with rendered Markdown. Tool summaries live inside the task widget. `/demo`
 and restored session messages still use Rich Markdown.
 
 The editor remains usable throughout generation, including multiline input,
@@ -272,3 +301,10 @@ resize. One expected failure tracks the unfinished-line width-resize limitation.
 Real tmux tests include cursor-position reports: plain PTYs alone missed the
 original frame-stretching bug. Actual copy-mode/search and rendering in your
 terminal still deserve a manual feel check.
+
+### Command previews
+
+Shell tool calls show a compact two-row preview with their result and duration.
+Long arguments and embedded scripts are abbreviated; short commands remain readable.
+Previews are redacted and terminal-control sanitized. Failure excerpts remain visible.
+There is currently no command to expand previews or show full command outputs.
