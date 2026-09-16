@@ -13,7 +13,7 @@ from rich.rule import Rule
 
 from pcode.commands import Command, CommandRegistry
 from pcode.runtime import Message, PreviewRuntime, RunStatus, TextDelta, ToolSummary
-from pcode.ui import PALETTES, Activity, Transcript, create_prompt
+from pcode.ui import PALETTES, Activity, TerminalOutput, Transcript, create_prompt
 
 
 class PreviewApp:
@@ -26,18 +26,30 @@ class PreviewApp:
         workspace: Path | None = None,
         runtime=None,
         saved_session=None,
+        save: bool = False,
+        session_dir: Path | None = None,
         resume: bool = False,
     ) -> None:
         self.model = model
         self.resuming = resume
         self.workspace = (workspace or Path.cwd()).resolve()
+        self.session_dir = saved_session.directory.parent if saved_session else session_dir
         self.preview = PreviewRuntime()
         self.runtime = runtime or self.preview
         if model and runtime is None:
             from pcode.agent import create_agent
             from pcode.live import AgentRuntime
+            from pcode.sessions import SavedSession
 
-            self.runtime = AgentRuntime(create_agent(model, self.workspace), saved_session)
+            self.runtime = AgentRuntime(
+                create_agent(model, self.workspace),
+                saved_session,
+                session_factory=(
+                    (lambda: SavedSession.create(model, self.workspace, session_dir))
+                    if save
+                    else None
+                ),
+            )
         self.activity = Activity()
         self.transcript = Transcript(console or Console(), theme)
         self.running = True
@@ -74,6 +86,8 @@ class PreviewApp:
             if self.runtime.session:
                 self.transcript.note(f"Session: {self.runtime.session.info.id}")
                 self.transcript.note(f"Saved in: {self.runtime.session.directory}")
+            elif self.runtime.session_factory is not None:
+                self.transcript.note("Session will be saved after your first prompt.")
             else:
                 self.transcript.note("Saving disabled; session is in memory only.")
         else:
@@ -95,7 +109,7 @@ class PreviewApp:
         from pcode.sessions import list_sessions
 
         saved = getattr(self.runtime, "session", None)
-        root = saved.directory.parent if saved else None
+        root = saved.directory.parent if saved else self.session_dir
         records = list_sessions(root)
         if not records:
             self.transcript.note("No saved sessions.")
@@ -131,7 +145,10 @@ class PreviewApp:
     def toolbar(self):
         width = get_app().output.get_size().columns
         if self.activity.busy:
-            text = " working · Ctrl+C cancel"
+            queued = f" · {self.activity.queued} queued" if self.activity.queued else ""
+            text = f" working · Ctrl+C cancel · Enter queues{queued}"
+            if width >= 100 and self.activity.status:
+                text += f" · {self.activity.status}"
         elif width < 60:
             text = f" {'coder' if self.model else 'preview'} · /help · Ctrl+D exit"
         else:
@@ -157,54 +174,32 @@ class PreviewApp:
             self.transcript.events(self.preview.reply(text))
         return False
 
-    async def run_live(self, session, text: str, *, persistent: bool = False) -> None:
+    async def run_live(self, output: TerminalOutput, text: str) -> bool:
         from pcode.live import error_message
 
-        activity = self.activity
-        activity.busy = True
-        activity.text = ""
-        activity.status = "Waiting for model…"
+        self.activity.status = "Waiting for model…"
         failure = None
         cancelled = False
-
-        async def produce() -> None:
-            nonlocal failure
-            try:
-                async for event in self.runtime.stream(text):
-                    if isinstance(event, TextDelta):
-                        activity.text += event.text
-                        activity.status = "Responding…"
-                    elif isinstance(event, RunStatus):
-                        activity.status = event.text
-                    else:
-                        if isinstance(event, Message):
-                            activity.text = ""
-                        self.transcript.events((event,))
-                    session.app.invalidate()
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                failure = error
-            finally:
-                if not persistent and not session.app.is_done:
-                    session.app.exit(result="")
-
         try:
-            if persistent:
-                await produce()
-            else:
-                await session.prompt_async(
-                    style=self.transcript.palette.prompt_style(),
-                    pre_run=lambda: session.app.create_background_task(produce()),
-                )
-        except (KeyboardInterrupt, EOFError, asyncio.CancelledError):
+            async for event in self.runtime.stream(text):
+                if isinstance(event, TextDelta):
+                    output.delta(event.text)
+                    self.activity.status = "Responding…"
+                elif isinstance(event, RunStatus):
+                    self.activity.status = event.text
+                elif isinstance(event, Message):
+                    output.finish(event.markdown)
+                else:
+                    output.finish()
+                    self.transcript.events((event,))
+                output.app.invalidate()
+        except asyncio.CancelledError:
             cancelled = True
+        except Exception as error:
+            failure = error
         finally:
-            # PromptSession waits for its background task cancellation/cleanup.
-            activity.busy = False
-        if activity.text:
-            self.transcript.events((Message(activity.text),))
-            activity.text = ""
+            output.finish()
+            self.activity.status = ""
         if cancelled:
             self.transcript.note("Run cancelled. Completed tool effects are not undone.")
         elif failure:
@@ -213,46 +208,81 @@ class PreviewApp:
             self.transcript.note(f"Session and diagnostics: {self.runtime.session.directory}")
             if self.runtime.recovery_blocked:
                 self.transcript.note(self.runtime.recovery_blocked)
-        activity.status = ""
-        session.app.invalidate()
+        return not (cancelled or failure)
 
     async def run_async(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         if self.resuming:
             await self.runtime.restore()
-        self.transcript.full_screen = True
         self.transcript.welcome(self.model, str(self.workspace))
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")
         if self.resuming:
             self.replay()
+        queue = asyncio.Queue()
         live_task = None
 
-        def cancel():
-            if live_task is not None:
-                live_task.cancel()
+        def clear_queue():
+            count = queue.qsize()
+            while not queue.empty():
+                queue.get_nowait()
+            self.activity.queued = 0
+            if count:
+                self.transcript.note(f"Cleared {count} queued message(s).")
 
-        def run_finished(task):
-            # A task cancelled before its coroutine starts cannot run its finally block.
-            if task.cancelled():
+        def cancel():
+            clear_queue()
+            if live_task is not None and not live_task.done():
+                # Repeated interrupts must not interrupt persistence/cleanup.
+                if not live_task.cancelling():
+                    live_task.cancel()
+            else:
                 self.activity.busy = False
-                self.activity.text = ""
-                self.activity.status = ""
                 self.transcript.note("Run cancelled. Completed tool effects are not undone.")
-                session.app.invalidate()
 
         def submit(text):
-            nonlocal live_task
-            if self.handle(text):
-                # Lock editing immediately, before the background task gets scheduled.
+            if text.strip():
+                queue.put_nowait(text.strip())
+                self.activity.queued = queue.qsize()
+                # Set immediately so Enter + Ctrl+C in one input batch cancels
+                # the pending request rather than clearing the user's draft.
                 self.activity.busy = True
-                live_task = session.app.create_background_task(
-                    self.run_live(session, text.strip(), persistent=True)
-                )
-                live_task.add_done_callback(run_finished)
-            if not self.running:
-                session.app.exit()
+
+        async def consume():
+            nonlocal live_task
+            while self.running:
+                text = await queue.get()
+                self.activity.queued = queue.qsize()
+                success = True
+                try:
+                    if self.handle(text):
+                        live_task = asyncio.create_task(self.run_live(output, text))
+                        try:
+                            success = await live_task
+                        except asyncio.CancelledError:
+                            # Cancellation before run_live's first instruction.
+                            if not session.app.is_running:
+                                return
+                            success = False
+                            self.transcript.note(
+                                "Run cancelled. Completed tool effects are not undone."
+                            )
+                except Exception as error:
+                    from pcode.live import error_message
+
+                    self.transcript.note(error_message(error))
+                    success = False
+                finally:
+                    live_task = None
+                if not session.app.is_running:
+                    return
+                if not success:
+                    clear_queue()
+                self.activity.busy = not queue.empty()
+                await output.flush()
+                if not self.running:
+                    session.app.exit()
 
         session = create_prompt(
             self.registry,
@@ -262,8 +292,19 @@ class PreviewApp:
             on_cancel=cancel,
             bottom_toolbar=self.toolbar,
         )
+        output = TerminalOutput(self.transcript.console, self.activity, session.app)
+        self.transcript.output = output
         session.app.style = DynamicStyle(lambda: self.transcript.palette.prompt_style())
-        await session.app.run_async()
+
+        def start():
+            session.app.create_background_task(output.run())
+            session.app.create_background_task(consume())
+
+        try:
+            await session.app.run_async(pre_run=start)
+        finally:
+            await output.flush()
+            self.transcript.output = None
         self.transcript.console.print("Goodbye.")
 
     def run(self) -> None:
@@ -271,7 +312,7 @@ class PreviewApp:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Full-screen terminal with a Coder agent")
+    parser = argparse.ArgumentParser(description="Streaming terminal with a Coder agent")
     parser.add_argument("--theme", choices=PALETTES, default="dark")
     parser.add_argument(
         "-m", "--model", help="Pydantic Agent model string; omitted = offline preview"
@@ -327,13 +368,13 @@ def main() -> None:
         workspace = args.workspace or Path.cwd()
         if not workspace.is_dir():
             raise SessionError("Workspace must be an existing directory.")
-        if args.model and saved is None and not args.no_save:
-            saved = SavedSession.create(args.model, workspace, args.session_dir)
         app = PreviewApp(
             theme=args.theme,
             model=args.model,
             workspace=workspace,
             saved_session=saved,
+            save=not args.no_save,
+            session_dir=args.session_dir,
             resume=bool(args.resume),
         )
         app.run()

@@ -210,11 +210,19 @@ def test_new_session_preserves_old_one(tmp_path):
     identity = saved.info.id
     runtime.reset()
     try:
-        assert runtime.session.info.id != identity
+        assert runtime.session is None
         assert runtime.history == []
-        assert len(list_sessions(saved.directory.parent)) == 2
+        assert len(list_sessions(saved.directory.parent)) == 1
         reopened = SavedSession.open(identity, saved.directory.parent)
         reopened.close()
+
+        async def submit():
+            return [event async for event in runtime.stream("new question")]
+
+        asyncio.run(submit())
+        assert runtime.session.info.id != identity
+        assert runtime.conversation_id == runtime.session.info.id
+        assert len(list_sessions(saved.directory.parent)) == 2
     finally:
         runtime.close()
 

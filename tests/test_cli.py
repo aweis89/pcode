@@ -31,7 +31,9 @@ def test_cli_passes_model_and_workspace(monkeypatch, tmp_path):
     assert app.call_args.kwargs["theme"] == "dark"
     assert app.call_args.kwargs["model"] == "openai-codex:gpt-5.6-luna"
     assert app.call_args.kwargs["workspace"] == tmp_path
-    assert app.call_args.kwargs["saved_session"].info.model == "openai-codex:gpt-5.6-luna"
+    assert app.call_args.kwargs["saved_session"] is None
+    assert app.call_args.kwargs["save"] is True
+    assert not (tmp_path / "sessions").exists()
     app.return_value.run.assert_called_once()
 
 

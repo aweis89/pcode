@@ -1,22 +1,20 @@
-"""Full-screen editing and width-aware Rich transcript rendering."""
+"""Editable prompt with append-only output in the terminal's normal scrollback."""
 
+import asyncio
 from dataclasses import dataclass
-from io import StringIO
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.application import Application, get_app, in_terminal
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.filters import Always, Condition, has_focus, is_searching
-from prompt_toolkit.formatted_text import ANSI, to_formatted_text
-from prompt_toolkit.formatted_text.utils import split_lines
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.containers import VerticalAlign
-from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UIControl
-from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.search import stop_search
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame
 from rich.console import Console
 from rich.markdown import Markdown
@@ -63,86 +61,123 @@ class Activity:
     busy: bool = False
     text: str = ""
     status: str = ""
+    queued: int = 0
 
     def preview(self):
-        # Keep the live tail bounded; completed messages remain in the transcript.
-        return [("", self.text[-6000:] or self.status), ("[SetCursorPosition]", "")]
+        return [("", self.text)]
 
 
-class TranscriptControl(UIControl):
-    """Render retained Rich blocks at the actual pane width, not stdout width."""
+class TerminalOutput:
+    """Commit complete lines once; only the unfinished display line stays live.
 
-    def __init__(self, transcript):
-        self.transcript = transcript
-        self.width = 0
-        self.height = 1
-        self.lines = []
-        self.rendered = 0
-        self.block_starts = []
-        self.top = 0
-        self.follow = True
+    All writes run through one batched terminal handoff. Never hold the handoff
+    across a network await: the editor must keep receiving input while streaming.
+    """
 
-    def create_content(self, width, height):
-        anchor = None
-        if width != self.width:
-            if not self.follow and self.block_starts:
-                block = max(i for i, start in enumerate(self.block_starts) if start <= self.top)
-                end = (
-                    self.block_starts[block + 1]
-                    if block + 1 < len(self.block_starts)
-                    else len(self.lines)
-                )
-                anchor = (
-                    block,
-                    (self.top - self.block_starts[block]) / max(1, end - self.block_starts[block]),
-                )
-            self.width = width
-            self.lines = []
-            self.block_starts = []
-            self.rendered = 0
-        self.height = height
-        blocks = self.transcript.blocks
-        for block in blocks[self.rendered :]:
-            self.block_starts.append(len(self.lines))
-            stream = StringIO()
-            console = Console(
-                file=stream,
-                width=max(1, width),
-                force_terminal=True,
-                color_system="truecolor",
-                legacy_windows=False,
-            )
-            console.print(*block)
-            fragments = to_formatted_text(ANSI(stream.getvalue().rstrip("\n")))
-            self.lines.extend(list(split_lines(fragments)))
-        self.rendered = len(blocks)
-        if anchor is not None:
-            block, fraction = anchor
-            start = self.block_starts[block]
-            end = (
-                self.block_starts[block + 1]
-                if block + 1 < len(self.block_starts)
-                else len(self.lines)
-            )
-            self.top = start + int(fraction * (end - start))
-        maximum = max(0, len(self.lines) - height)
-        if self.follow:
-            self.top = maximum
-        # Clamp the displayed viewport, not the reading anchor: shrinking again
-        # after a height-only resize should restore the reader's position.
-        visible_top = min(self.top, maximum)
-        visible = self.lines[visible_top : visible_top + height]
-        return UIContent(get_line=lambda i: visible[i], line_count=len(visible), show_cursor=False)
+    def __init__(self, console: Console, activity: Activity, app: Application):
+        self.console = console
+        self.activity = activity
+        self.app = app
+        self.tail = ""
+        self.streamed = False
+        self.pending: list[tuple[tuple[object, ...], str, bool]] = []
+        self.changed = asyncio.Event()
+        self.lock = asyncio.Lock()
 
-    def scroll(self, pages):
-        self.follow = False
-        maximum = max(0, len(self.lines) - self.height)
-        self.top = max(0, min(maximum, min(self.top, maximum) + pages * max(1, self.height - 1)))
-        if self.top == maximum:
-            self.follow = True
+    def print(self, *objects) -> None:
+        self.pending.append((objects, "\n", False))
+        self.changed.set()
 
-    def latest(self):
-        self.follow = True
+    def _literal(self, text: str) -> None:
+        self.pending.append(((Text(text),), "", True))
+        self.changed.set()
+
+    def delta(self, text: str) -> None:
+        if not text:
+            return
+        self.streamed = True
+        # Model output is text, not terminal control sequences. Tabs have stable
+        # display widths in both the live line and committed output.
+        text = "".join(
+            "    "
+            if c == "\t"
+            else c
+            if c == "\n" or ord(c) >= 32 and not 127 <= ord(c) < 160
+            else "�"
+            for c in text
+        )
+        for char in text:
+            if char == "\n":
+                self._wrap_tail()
+                self._literal(self.tail + "\n")
+                self.tail = ""
+            else:
+                self.tail += char
+                self._wrap_tail()
+        self.changed.set()
+
+    def _wrap_tail(self) -> None:
+        width = max(1, self.app.output.get_size().columns)
+        while get_cwidth(self.tail) > width:
+            cells = 0
+            fitting = 0
+            boundary = 0
+            seen_text = False
+            for index, char in enumerate(self.tail):
+                size = get_cwidth(char)
+                if size and cells + size > width:
+                    break
+                cells += size
+                fitting = index + 1
+                # Don't treat leading code indentation as a word separator.
+                if char == " " and seen_text:
+                    boundary = fitting
+                elif char != " ":
+                    seen_text = True
+            # A word wider than the pane must split. Always make progress even
+            # if one wide character cannot fit in a one-column terminal.
+            if fitting and self.tail[fitting : fitting + 1] == " ":
+                # A separator immediately after a full line belongs to the wrap,
+                # not the next word (where it would waste a column).
+                cut, remainder = fitting, fitting + 1
+            elif boundary:
+                cut, remainder = boundary - 1, boundary
+            else:
+                cut = remainder = fitting or 1
+            self._literal(self.tail[:cut] + "\n")
+            self.tail = self.tail[remainder:]
+
+    def finish(self, fallback: str = "") -> None:
+        # Message is a completion marker, not a second rendering of the answer.
+        if not self.streamed and fallback:
+            self.delta(fallback)
+        if self.streamed:
+            self._wrap_tail()
+            self._literal(self.tail + "\n\n" if self.tail else "\n")
+        self.tail = ""
+        self.streamed = False
+        self.changed.set()
+
+    async def flush(self) -> None:
+        async with self.lock:
+            if self.pending:
+                async with in_terminal():
+                    # Snapshot after entering: input/model events can arrive while
+                    # in_terminal waits for CPR, but not during these sync writes.
+                    pending, self.pending = self.pending, []
+                    self.activity.text = self.tail
+                    for objects, end, soft_wrap in pending:
+                        self.console.print(*objects, end=end, soft_wrap=soft_wrap)
+            else:
+                self.activity.text = self.tail
+            self.changed.clear()
+            self.app.invalidate()
+
+    async def run(self) -> None:
+        while True:
+            await self.changed.wait()
+            await asyncio.sleep(1 / 30)
+            await self.flush()
 
 
 def create_prompt(
@@ -159,8 +194,6 @@ def create_prompt(
 
     @keys.add("enter", filter=~is_searching)
     def submit(event: KeyPressEvent) -> None:
-        if activity.busy:
-            return
         buffer = event.current_buffer
         if buffer.complete_state and buffer.complete_state.current_completion:
             # First Enter accepts the selected completion; next Enter sends it.
@@ -170,8 +203,7 @@ def create_prompt(
 
     @keys.add("escape", "enter", filter=~is_searching)
     def newline(event: KeyPressEvent) -> None:
-        if not activity.busy:
-            event.current_buffer.insert_text("\n")
+        event.current_buffer.insert_text("\n")
 
     @keys.add("c-d", filter=Condition(lambda: activity.busy))
     def cancel(event: KeyPressEvent) -> None:
@@ -196,20 +228,6 @@ def create_prompt(
                 event.app.exit()
             else:
                 event.current_buffer.delete()
-
-        view = TranscriptControl(transcript)
-
-        @keys.add("pageup")
-        def page_up(event):
-            view.scroll(-1)
-
-        @keys.add("pagedown")
-        def page_down(event):
-            view.scroll(1)
-
-        @keys.add("c-end")
-        def latest(event):
-            view.latest()
 
     session = PromptSession(
         message=[("class:prompt", "❯ ")],
@@ -236,7 +254,6 @@ def create_prompt(
     editor = session.layout.current_window
     editor.height = None
     editor.dont_extend_height = Always()
-    session.default_buffer.read_only = Condition(lambda: activity.busy)
     search = ConditionalContainer(
         Window(editor.content.search_buffer_control, height=1, style="class:search-toolbar"),
         filter=is_searching,
@@ -256,15 +273,16 @@ def create_prompt(
         Window(
             FormattedTextControl(activity.preview, show_cursor=False),
             wrap_lines=True,
-            height=lambda: Dimension(max=max(1, min(8, session.app.output.get_size().rows // 3))),
             dont_extend_height=True,
         ),
-        filter=Condition(lambda: activity.busy),
+        filter=Condition(lambda: bool(activity.text)),
     )
-    # Keep transient output/menus above the editor so its bottom edge stays anchored.
+    # The unfinished line belongs directly after committed output, not in a
+    # preview beside the editor. Put spare height BELOW it to avoid a jump when
+    # that line is committed to scrollback. The editor stays bottom-aligned.
     children = [live, menu, search, Frame(editor, height=frame_height)]
     if transcript is not None:
-        children.insert(0, Window(view, wrap_lines=False))
+        children.insert(1, Window())
 
         def accept(buffer):
             text = buffer.text
@@ -292,7 +310,9 @@ def create_prompt(
         editor_app = session.app
         session.app = Application(
             layout=session.layout,
-            full_screen=True,
+            full_screen=False,
+            erase_when_done=True,
+            min_redraw_interval=1 / 30,
             key_bindings=editor_app.key_bindings,
             style=editor_app.style,
             input=editor_app.input,
@@ -306,12 +326,12 @@ class Transcript:
     def __init__(self, console: Console, theme: str = "dark") -> None:
         self.console = console
         self.theme = theme
-        self.full_screen = False
-        self.blocks = []
+        self.output: TerminalOutput | None = None
 
     def print(self, *objects) -> None:
-        self.blocks.append(objects)
-        if not self.full_screen:
+        if self.output is not None:
+            self.output.print(*objects)
+        else:
             self.console.print(*objects)
 
     @property
@@ -366,6 +386,6 @@ class Transcript:
         self.note("Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
-        self.note("During a run: Ctrl+C/Ctrl+D cancel; editing resumes when the run finishes.")
-        self.note("Input history is in memory only. PgUp/PgDn scroll · Ctrl+End follow latest.")
+        self.note("During a run: type a draft · Enter queues · Ctrl+C/Ctrl+D cancel, keep draft.")
+        self.note("Cancellation clears queued messages. Use terminal/tmux scrollback for history.")
         self.print()

@@ -1,7 +1,8 @@
 """Translate Pydantic streams to UI-independent application events."""
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 from uuid import uuid4
 
 from pydantic_ai import (
@@ -27,9 +28,26 @@ from pcode.sessions import SavedSession, SessionError
 
 
 class AgentRuntime:
-    def __init__(self, agent: Agent, session: SavedSession | None = None) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        session: SavedSession | None = None,
+        *,
+        session_factory: Callable[[], SavedSession] | None = None,
+    ) -> None:
         self.agent = agent
         self.session = session
+        if session is not None:
+            model, workspace, root = (
+                session.info.model,
+                Path(session.info.workspace),
+                session.directory.parent,
+            )
+
+            def session_factory():
+                return SavedSession.create(model, workspace, root)
+
+        self.session_factory = session_factory
         self._clear()
 
     def _clear(self) -> None:
@@ -43,13 +61,8 @@ class AgentRuntime:
 
     def reset(self) -> None:
         if self.session:
-            old = self.session
-            from pathlib import Path
-
-            self.session = SavedSession.create(
-                old.info.model, Path(old.info.workspace), old.directory.parent
-            )
-            old.close()
+            self.session.close()
+            self.session = None
         self._clear()
 
     async def restore(self) -> None:
@@ -63,6 +76,9 @@ class AgentRuntime:
     async def stream(self, prompt: str) -> AsyncIterator[Event]:
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
+        if self.session is None and self.session_factory is not None:
+            self.session = self.session_factory()
+            self.conversation_id = self.session.info.id
         saved = self.session
         run_id = str(uuid4())
         if saved:

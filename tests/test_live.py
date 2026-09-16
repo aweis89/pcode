@@ -15,7 +15,7 @@ from pcode.agent import create_agent, create_coder
 from pcode.app import PreviewApp
 from pcode.live import AgentRuntime, error_message
 from pcode.runtime import Message, RunStatus, TextDelta, ToolSummary
-from pcode.ui import create_prompt
+from pcode.ui import TerminalOutput, create_prompt
 
 
 def test_codex_uses_native_model_with_only_cache_override(tmp_path):
@@ -114,9 +114,12 @@ def test_coder_can_read_and_write_outside_workspace(tmp_path):
                 p for message in messages for p in message.parts if isinstance(p, ToolReturnPart)
             ]
             assert any("outside marker" in str(p.content) for p in results)
-            yield {0: DeltaToolCall(
-                name="write_file", json_args=json.dumps({"path": str(output), "content": "done"})
-            )}
+            yield {
+                0: DeltaToolCall(
+                    name="write_file",
+                    json_args=json.dumps({"path": str(output), "content": "done"}),
+                )
+            }
         else:
             yield "Finished"
 
@@ -192,7 +195,10 @@ def test_ui_stream_commits_final_message_only_once():
             session = create_prompt(
                 app.registry, activity=app.activity, input=pipe, output=DummyOutput()
             )
-            await asyncio.wait_for(app.run_live(session, "hello"), timeout=5)
+            writer = TerminalOutput(app.transcript.console, app.activity, session.app)
+            app.transcript.output = writer
+            assert await asyncio.wait_for(app.run_live(writer, "hello"), timeout=5)
+            await writer.flush()
         assert not app.activity.busy
         assert output.getvalue().count("hello from the model") == 1
         assert app.runtime.turns == 1
@@ -224,10 +230,13 @@ def test_ui_cancellation_cleans_up_generation_and_accepts_next_input():
             session = create_prompt(
                 app.registry, activity=app.activity, input=pipe, output=DummyOutput()
             )
-            task = asyncio.create_task(app.run_live(session, "start"))
+            writer = TerminalOutput(app.transcript.console, app.activity, session.app)
+            app.transcript.output = writer
+            task = asyncio.create_task(app.run_live(writer, "start"))
             await asyncio.wait_for(started.wait(), timeout=5)
-            pipe.send_text("\x03")
-            await asyncio.wait_for(task, timeout=5)
+            task.cancel()
+            assert not await asyncio.wait_for(task, timeout=5)
+            await writer.flush()
             assert cleaned_up
             assert not app.activity.busy
             assert app.runtime.history == []

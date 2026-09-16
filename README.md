@@ -1,6 +1,6 @@
 # pcode
 
-A small, full-screen terminal for a Pydantic AI Coder agent, with an offline
+A small, streaming terminal for a Pydantic AI Coder agent, with an offline
 UI preview. See [PLAN.md](PLAN.md) for the longer-term direction.
 
 ## Run
@@ -32,8 +32,10 @@ pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
 ```
 
 Try asking: `What does this repository do? Read the README and cite relevant files.`
-Live conversations save automatically. `/new` starts a new saved conversation
-without deleting the old one.
+Live conversations save automatically when the first model prompt is submitted.
+Opening the app, using commands, or quitting without a prompt creates no session.
+`/new` resets context without deleting the old conversation; its replacement is
+created on the next model prompt.
 
 ### Authentication
 
@@ -150,25 +152,44 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 
 | Key | Action |
 | --- | --- |
-| Enter | Send, or accept a selected completion |
+| Enter | Send (queue during generation), or accept a selected completion |
 | Alt+Enter | Newline (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
 | Ctrl+R | Search this process's input history |
-| Ctrl+C | Discard input, or cancel the running agent |
+| Ctrl+C | Discard idle input; during generation, cancel without deleting the draft |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
-| PageUp / PageDown | Scroll the conversation (pauses following new output) |
-| Ctrl+End | Jump to the latest output and resume following |
 
 The input is bottom-aligned from startup, with one editable line plus its border.
 It expands upward for wrapped text or explicit newlines, and shrinks when text is
 removed. Completion appears above the frame. Very long input scrolls within the
 available pane height. Multiline bracketed paste works; mouse capture is off.
 
-During generation, a small temporary region above the prompt shows live text or
-current activity. Finalized text blocks become Rich Markdown in an app-owned,
-scrollable transcript. Resizing re-renders the original content at the new width,
-including Markdown, tables, and code blocks. Scrolling up pauses automatic following;
-Ctrl+End resumes it. Completed tools get concise summaries rather than raw output dumps. The prompt is read-only during a run; cancellation restores editing.
+Live responses stream as literal text into normal terminal scrollback, including
+Markdown markers. Complete lines are printed once; only the unfinished display
+line is live. Lines wrap at spaces using the current terminal width, keeping
+words together across streamed chunks. The separating space becomes a newline;
+explicit newlines and indentation are retained. Tokens longer than the available
+width must still split. The live tail stays small. Finishing a message flushes the tail without replacing the response
+with rendered Markdown. Tool summaries remain concise, styled output. `/demo`
+and restored session messages still use Rich Markdown.
+
+The editor remains usable throughout generation, including multiline input,
+history, and slash completion. Enter queues the next message and clears the
+editor for another draft; the toolbar shows the queue count. Queued messages and
+commands run in order, only after the current turn finishes. Ctrl+C or Ctrl+D
+cancels the current turn, clears queued submissions, and preserves the unsubmitted
+draft and cursor. A failed turn also clears the queue rather than automatically
+running more requests. The queue is in memory only, not saved until submitted to
+the runtime. `/quit` during generation queues an exit; cancel first to exit sooner.
+
+Use terminal/tmux scrollback, selection, and search for conversation history.
+There is no alternate screen or application-owned conversation viewport. Resizing
+does not re-render completed responses; reflow is up to the terminal, and explicit
+line breaks remain. Known limitation: narrowing a pane during streaming can leave
+a copy of the unfinished line in scrollback when prompt_toolkit erases its old
+layout after the terminal has reflowed the input frame. A tmux regression test
+tracks this as an expected failure; committed lines are not reprinted.
+
 Editor history remains in memory; live model messages and transcript events are
 saved unless `--no-save` is set. Failed/cancelled runs recover settled checkpoints
 when safe. Cancellation never undoes completed tool effects.
@@ -183,22 +204,20 @@ when safe. Cancellation never undoes completed tool effects.
 - `src/pcode/sessions.py`: private manifests/journals, session locking, and the
   official Harness SQLite step store; recovery uses its settled snapshots.
 - `src/pcode/diagnostics.py`: structured provider errors with best-effort redaction.
-- `src/pcode/ui.py`: prompt_toolkit editor, bottom-aligned layout, temporary live
-  output, and Rich finalized transcript rendering.
+- `src/pcode/ui.py`: prompt_toolkit editor and bottom-aligned layout, plus a batched
+  terminal writer for committed lines and an unfinished live tail.
 - `src/pcode/commands.py`: registry shared by dispatch, help, and completion.
 - `src/pcode/app.py`: CLI and asynchronous composition.
 
-prompt_toolkit owns the entire alternate screen: transcript, live preview, menus,
-and editor. Rich renders retained transcript blocks at the viewport's current
-width; those styled lines are cached until the width changes. New blocks are
-rendered incrementally. A resize while scrolled up retains the current block and
-approximate position within it. The application stays on the alternate screen
-between turns and restores the previous terminal screen on exit. Use application
-scrolling for conversation history, not terminal scrollback. `--demo` remains a
-noninteractive print-and-exit command.
+prompt_toolkit owns only the live tail, menus, and editor in the normal screen.
+`TerminalOutput` batches writes through `in_terminal()` at up to 30 updates per
+second, briefly repainting the prompt without resetting its buffer or cursor.
+It never holds a terminal handoff across a model/network wait. Rich styles static
+output; streamed text is never converted to Markdown at completion. `--demo`
+remains a noninteractive print-and-exit command.
 
-Approvals, queued prompts, model pickers, and MCP management are not implemented yet. Each run is capped at 30 model requests as a basic guard
-against runaway tool loops, not a monetary budget.
+Approvals, model pickers, and MCP management are not implemented yet. Model
+request-count limits are explicitly disabled; there is no monetary budget guard.
 
 ## References
 
@@ -224,9 +243,12 @@ file reads using Pydantic's `FunctionModel`. Session tests cover round-trip hist
 post-tool failures, safe diagnostics, file permissions, locking, torn journals,
 and refusal to resume unresolved side effects. A native-provider wire test checks
 that explicit cache markers are omitted while streaming/store settings are retained.
-PTY tests check clean startup/exit and alternate-screen restoration. When tmux is installed,
-isolated-server tests measure prompt height and bottom placement through splits,
-streaming, cancellation, and replies, and check transcript scrolling and resize reflow.
+PTY tests check clean startup/exit without an alternate screen. Queue tests verify
+serial turns, failures, cancellation, and draft/cursor preservation. When tmux is
+installed, isolated-server tests measure prompt height and bottom placement
+through splits, streaming, cancellation, and replies. They also verify long
+responses in scrollback, no completion-time replacement, and draft editing during
+resize. One expected failure tracks the unfinished-line width-resize limitation.
 
 Real tmux tests include cursor-position reports: plain PTYs alone missed the
 original frame-stretching bug. Actual copy-mode/search and rendering in your
