@@ -1,6 +1,7 @@
 """Editable prompt with append-only output in the terminal's normal scrollback."""
 
 import asyncio
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -24,6 +25,7 @@ from rich.text import Text
 
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.runtime import Event, Message, ToolSummary
+from pcode.tool_display import label, plain
 
 
 @dataclass(frozen=True)
@@ -105,18 +107,19 @@ class CursorSafeOutput:
 
 
 class TerminalOutput:
-    """Commit complete lines once; only the unfinished display line stays live.
+    """Commit completed Markdown blocks once; keep a bounded unfinished preview.
 
     All writes run through one batched terminal handoff. Never hold the handoff
     across a network await: the editor must keep receiving input while streaming.
     """
 
-    def __init__(self, console: Console, activity: Activity, app: Application):
+    def __init__(self, console: Console, activity: Activity, app: Application, *, code_theme=None):
         self.console = console
         self.activity = activity
         self.app = app
         self.tail = ""
         self.streamed = False
+        self.code_theme = code_theme or (lambda: "nord")
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
@@ -125,16 +128,16 @@ class TerminalOutput:
         self.pending.append((objects, "\n", False))
         self.changed.set()
 
-    def _literal(self, text: str) -> None:
-        self.pending.append(((Text(text),), "", True))
-        self.changed.set()
+    def _commit(self, source: str) -> None:
+        if source.strip():
+            self.print(Markdown(source, code_theme=self.code_theme()))
+            self.print()
 
     def delta(self, text: str) -> None:
         if not text:
             return
         self.streamed = True
-        # Model output is text, not terminal control sequences. Tabs have stable
-        # display widths in both the live line and committed output.
+        # Model output is text, never terminal control sequences.
         text = "".join(
             "    "
             if c == "\t"
@@ -143,34 +146,55 @@ class TerminalOutput:
             else "�"
             for c in text
         )
-        for char in text:
-            if char == "\n":
-                self._wrap_tail()
-                self._literal(self.tail + "\n")
-                self.tail = ""
-            else:
-                self.tail += char
-                self._wrap_tail()
+        # Examine boundaries independently of provider chunk sizes. Do not parse
+        # every token: a newline can complete a block, a partial line cannot.
+        for part in text.splitlines(keepends=True):
+            self.tail += part
+            if part.endswith("\n"):
+                self._commit_blocks()
         self.changed.set()
 
-    def _wrap_tail(self) -> None:
+    def _commit_blocks(self) -> None:
+        lines = self.tail.splitlines(keepends=True)
+        tokens = Markdown(self.tail).parsed
+        blocks = [token for token in tokens if token.level == 0 and token.map]
+        if not blocks:
+            return
+        last = blocks[-1]
+        # Retain the last container: blank lines can belong to lists, quotes,
+        # indented code, or fenced code. A following top-level block settles it.
+        end = last.map[0]
+        if lines[-1].strip() == "" and last.type in {
+            "paragraph_open",
+            "heading_open",
+            "table_open",
+            "hr",
+        }:
+            end = len(lines)
+        elif last.type == "fence":
+            closing = lines[last.map[1] - 1].rstrip("\r\n")
+            if last.map[1] - last.map[0] > 1 and re.fullmatch(
+                r" {0,3}" + re.escape(last.markup[0]) + "{" + str(len(last.markup)) + r",} *",
+                closing,
+            ):
+                end = last.map[1]
+        if end:
+            self._commit("".join(lines[:end]))
+            self.tail = "".join(lines[end:])
+
+    def _preview(self) -> str:
+        # Only one display row belongs to prompt_toolkit. Keep the complete
+        # source separately so clipping never loses text from final scrollback.
         width = max(1, self.app.output.get_size().columns)
-        lines = Text(self.tail).wrap(self.console, width, overflow="fold")
-        if len(lines) > 1:
-            for line in lines[:-1]:
-                self._literal(line.plain.rstrip(" ") + "\n")
-            self.tail = lines[-1].plain
-        # With only one row, retain the original tail: Rich may trim a trailing
-        # separator at the right edge, but the next delta still needs that space
-        # to distinguish two words. Only committed rows become immutable.
+        rows = Text(self.tail).wrap(self.console, width, overflow="fold")
+        return rows[-1].plain if rows else ""
 
     def finish(self, fallback: str = "") -> None:
-        # Message is a completion marker, not a second rendering of the answer.
+        # Message is a completion marker, not a second copy of streamed text.
         if not self.streamed and fallback:
             self.delta(fallback)
         if self.streamed:
-            self._wrap_tail()
-            self._literal(self.tail + "\n\n" if self.tail else "\n")
+            self._commit(self.tail)
         self.tail = ""
         self.streamed = False
         self.changed.set()
@@ -186,11 +210,16 @@ class TerminalOutput:
                         # Snapshot after entering: input/model events can arrive while
                         # in_terminal waits for CPR, but not during these sync writes.
                         pending, self.pending = self.pending, []
-                        self.activity.text = self.tail
+                        self.activity.text = self._preview()
                         for objects, end, soft_wrap in pending:
-                            self.console.print(*objects, end=end, soft_wrap=soft_wrap)
+                            self.console.print(
+                                *objects,
+                                end=end,
+                                soft_wrap=soft_wrap,
+                                width=max(1, self.app.output.get_size().columns),
+                            )
             else:
-                self.activity.text = self.tail
+                self.activity.text = self._preview()
             self.changed.clear()
             self.app.invalidate()
 
@@ -394,11 +423,19 @@ class Transcript:
             elif isinstance(event, ToolSummary):
                 self.print(
                     Text.assemble(
-                        (f"  {'!' if event.failed else '✓'} {event.name}  ", self.palette.accent),
-                        (event.detail, self.palette.muted),
+                        (
+                            f"  {'!' if event.failed else '✓'} {label(event.name)}  ",
+                            "bold red" if event.failed else self.palette.accent,
+                        ),
+                        (plain(event.detail, limit=None), self.palette.muted),
+                        (
+                            f"  {event.elapsed_seconds:.1f}s"
+                            if event.elapsed_seconds is not None
+                            else "",
+                            self.palette.muted,
+                        ),
                     )
                 )
-                self.print()
 
     def help(self, registry: CommandRegistry) -> None:
         table = Table(box=None, padding=(0, 2), show_header=False)

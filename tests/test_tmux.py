@@ -124,9 +124,9 @@ from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
 
 async def model(messages, info):
-    yield "COMMITTED LINE\\nFIRST STREAM CHUNK"
+    yield "COMMITTED LINE\\n\\nFIRST STREAM CHUNK"
     await asyncio.sleep(2)
-    yield "\\nLIVE ANSWER COMPLETE"
+    yield "\\n\\nLIVE ANSWER COMPLETE"
 
 runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
 PreviewApp(model="test:local", runtime=runtime).run()
@@ -140,7 +140,7 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     pane("send-keys", "-t", "preview:0.0", "Enter")
     streaming = capture(pane, "FIRST STREAM CHUNK", running=True)
     assert input_rows(streaming) == 1
-    assert "COMMITTED LINE\nFIRST STREAM CHUNK" in streaming
+    assert "COMMITTED LINE" in streaming
     before = streaming.splitlines().index("FIRST STREAM CHUNK")
     completed = capture(pane, "LIVE ANSWER COMPLETE")
     assert input_rows(completed) == 1
@@ -228,9 +228,9 @@ from pcode.live import AgentRuntime
 
 async def model(messages, info):
     for i in range(80):
-        yield f"LINE_{i:03d}\\n"
+        yield f"LINE_{i:03d}\\n\\n"
         await asyncio.sleep(0.005)
-    yield "**UNCHANGED MARKDOWN** " + "wide界 " * 60 + "TAIL_MARKER"
+    yield "**FORMATTED MARKDOWN** " + "wide界 " * 60 + "TAIL_MARKER"
     await asyncio.sleep(1)
     yield " FINISHED"
 
@@ -250,7 +250,8 @@ def test_long_stream_remains_in_scrollback_without_truncation(pane):
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     for i in range(80):
         assert history.count(f"LINE_{i:03d}") == 1
-    assert history.count("**UNCHANGED MARKDOWN**") == 1
+    assert history.count("FORMATTED MARKDOWN") == 1
+    assert "**FORMATTED MARKDOWN**" not in history
     assert history.count("TAIL_MARKER") == 1
 
 
@@ -261,10 +262,10 @@ from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
 
 async def model(messages, info):
-    yield "WRAP_START\\n"
+    yield "WRAP_START\\n\\n"
     for char in "streaming boundaries " * 30:
         yield char
-    yield "\\nWRAP_END"
+    yield "\\n\\nWRAP_END"
 
 runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
 PreviewApp(model="test:local", runtime=runtime).run()
@@ -297,7 +298,7 @@ from pcode.live import AgentRuntime
 class SlowConsole(Console):
     def print(self, *objects, **kwargs):
         super().print(*objects, **kwargs)
-        if any("CURSOR_LINE_" in str(obj) for obj in objects):
+        if any("CURSOR_LINE_" in getattr(obj, "markup", str(obj)) for obj in objects):
             # Enlarge the handoff window so cursor visibility can be sampled
             # deterministically, even on a fast terminal.
             time.sleep(0.15)
@@ -305,7 +306,7 @@ class SlowConsole(Console):
 async def model(messages, info):
     await asyncio.sleep(0.5)
     for i in range(12):
-        yield f"CURSOR_LINE_{i:03d}\\n"
+        yield f"CURSOR_LINE_{i:03d}\\n\\n"
         await asyncio.sleep(0.05)
     yield "CURSOR_STREAM_DONE"
 
@@ -353,3 +354,41 @@ def test_cursor_is_hidden_while_committing_stream_and_returns_to_draft(pane):
     else:
         pytest.fail(f"Stream did not complete:\n{snapshot}")
     assert samples > 0, "Did not observe a transcript handoff"
+
+
+MARKDOWN_SCRIPT = """
+import asyncio
+from pydantic_ai import Agent
+from pydantic_ai.models.function import FunctionModel
+from pcode.app import PreviewApp
+from pcode.live import AgentRuntime
+
+async def model(messages, info):
+    yield "**Styled response**\\n\\n```python\\n"
+    for i in range(60):
+        yield f"value_{i:03d} = {i}\\n"
+    yield "# PREVIEW_MARKER"
+    await asyncio.sleep(2)
+    yield "\\n```\\n\\nMARKDOWN_DONE"
+
+runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+PreviewApp(model="test:local", runtime=runtime).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [MARKDOWN_SCRIPT], indirect=True)
+def test_markdown_code_preview_stays_bounded_and_commits_once(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "PREVIEW_MARKER", running=True)
+    assert input_rows(screen) == 1
+    assert "**Styled response**" not in screen
+    assert "value_000" not in screen  # Still buffered, not a pane-sized live block.
+    pane("send-keys", "-t", "preview:0.0", "-l", "draft survives")
+    assert input_rows(capture(pane, "MARKDOWN_DONE")) == 1
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    for i in range(60):
+        assert history.count(f"value_{i:03d}") == 1
+    assert history.count("PREVIEW_MARKER") == 1
+    assert "```" not in history
+    assert "❯ draft survives" in history

@@ -13,6 +13,8 @@ class ToolSummary:
     name: str
     detail: str
     failed: bool = False
+    call_id: str = ""
+    elapsed_seconds: float | None = None
 
 
 @dataclass(frozen=True)
