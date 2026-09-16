@@ -141,22 +141,20 @@ def test_git_unavailable_does_not_break_footer(tmp_path, monkeypatch, error):
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
-def test_footer_styles_use_terminal_background(theme):
+def test_footer_styles_use_terminal_foreground_and_background(theme):
+    # A light terminal can use the default dark app palette (and vice versa).
+    # Keep both colors terminal-native rather than assuming they match.
     palette = PALETTES[theme]
     style = merge_styles([default_ui_style(), palette.prompt_style()])
-    for role, color in (
-        ("text", palette.muted),
-        ("location", palette.foreground),
-        ("model", palette.accent),
-        ("activity", palette.accent),
-    ):
+    for role in ("text", "location", "model", "activity"):
         attrs = style.get_attrs_for_style_str(
             f"class:bottom-toolbar class:bottom-toolbar.text class:bottom-toolbar.{role}"
         )
         assert attrs.bgcolor == "default"
+        assert attrs.color == "default"
         assert not attrs.reverse
-        assert attrs.color == color.lstrip("#")
-        assert attrs.bold == (role == "activity")
+        assert not attrs.dim
+        assert attrs.bold == (role in ("location", "activity"))
 
 
 def test_footer_segments_highlight_context_and_activity(tmp_path, monkeypatch):
