@@ -8,14 +8,14 @@ from prompt_toolkit.data_structures import Size
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
-from pcode.ui import Activity, TerminalOutput
+from pcode.ui import Activity, CursorSafeOutput, TerminalOutput
 
 
 def make_output(width=80):
     stream = StringIO()
     terminal = DummyOutput()
     terminal.get_size = lambda: Size(rows=24, columns=width)
-    app = SimpleNamespace(output=terminal, invalidate=lambda: None)
+    app = SimpleNamespace(output=CursorSafeOutput(terminal), invalidate=lambda: None)
     output = TerminalOutput(Console(file=stream, color_system=None), Activity(), app)
     return output, stream
 

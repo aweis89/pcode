@@ -1,6 +1,7 @@
 """Editable prompt with append-only output in the terminal's normal scrollback."""
 
 import asyncio
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from prompt_toolkit import PromptSession
@@ -12,6 +13,7 @@ from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.output import Output, create_output
 from prompt_toolkit.search import stop_search
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame
@@ -64,6 +66,42 @@ class Activity:
 
     def preview(self):
         return [("", self.text)]
+
+
+@Output.register
+class CursorSafeOutput:
+    """Delegate terminal operations, but hide the cursor during output handoffs."""
+
+    def __init__(self, output: Output):
+        self.output = output
+        self._hidden = 0
+        self._visible = True
+
+    def __getattr__(self, name):
+        return getattr(self.output, name)
+
+    def show_cursor(self) -> None:
+        self._visible = True
+        if not self._hidden:
+            self.output.show_cursor()
+
+    def hide_cursor(self) -> None:
+        self._visible = False
+        self.output.hide_cursor()
+
+    @contextmanager
+    def hidden_cursor(self):
+        self._hidden += 1
+        self.output.hide_cursor()
+        self.output.flush()
+        try:
+            yield
+        finally:
+            self._hidden -= 1
+            if not self._hidden:
+                if self._visible:
+                    self.output.show_cursor()
+                self.output.flush()
 
 
 class TerminalOutput:
@@ -140,13 +178,17 @@ class TerminalOutput:
     async def flush(self) -> None:
         async with self.lock:
             if self.pending:
-                async with in_terminal():
-                    # Snapshot after entering: input/model events can arrive while
-                    # in_terminal waits for CPR, but not during these sync writes.
-                    pending, self.pending = self.pending, []
-                    self.activity.text = self.tail
-                    for objects, end, soft_wrap in pending:
-                        self.console.print(*objects, end=end, soft_wrap=soft_wrap)
+                # Renderer.reset() shows the cursor at the transcript position
+                # both when erasing and before repainting. Suppress those shows
+                # until in_terminal has restored the editor and its cursor.
+                with self.app.output.hidden_cursor():
+                    async with in_terminal():
+                        # Snapshot after entering: input/model events can arrive while
+                        # in_terminal waits for CPR, but not during these sync writes.
+                        pending, self.pending = self.pending, []
+                        self.activity.text = self.tail
+                        for objects, end, soft_wrap in pending:
+                            self.console.print(*objects, end=end, soft_wrap=soft_wrap)
             else:
                 self.activity.text = self.tail
             self.changed.clear()
@@ -208,7 +250,11 @@ def create_prompt(
             else:
                 event.current_buffer.delete()
 
+    output = kwargs.pop("output", None)
+    if not isinstance(output, CursorSafeOutput):
+        output = CursorSafeOutput(output if output is not None else create_output())
     session = PromptSession(
+        output=output,
         message=[("class:prompt", "❯ ")],
         prompt_continuation=lambda width, line, soft: [("class:prompt", "  " if soft else "· ")],
         multiline=True,

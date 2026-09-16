@@ -283,3 +283,73 @@ def test_words_stay_whole_in_regular_and_split_panes(pane, split):
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     text = history.split("WRAP_START\n", 1)[1].split("WRAP_END", 1)[0]
     assert text.split() == ["streaming", "boundaries"] * 30
+
+
+CURSOR_SCRIPT = """
+import asyncio
+import time
+from rich.console import Console
+from pydantic_ai import Agent
+from pydantic_ai.models.function import FunctionModel
+from pcode.app import PreviewApp
+from pcode.live import AgentRuntime
+
+class SlowConsole(Console):
+    def print(self, *objects, **kwargs):
+        super().print(*objects, **kwargs)
+        if any("CURSOR_LINE_" in str(obj) for obj in objects):
+            # Enlarge the handoff window so cursor visibility can be sampled
+            # deterministically, even on a fast terminal.
+            time.sleep(0.15)
+
+async def model(messages, info):
+    await asyncio.sleep(0.5)
+    for i in range(12):
+        yield f"CURSOR_LINE_{i:03d}\\n"
+        await asyncio.sleep(0.05)
+    yield "CURSOR_STREAM_DONE"
+
+runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+PreviewApp(model="test:local", runtime=runtime, console=SlowConsole()).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [CURSOR_SCRIPT], indirect=True)
+def test_cursor_is_hidden_while_committing_stream_and_returns_to_draft(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    pane("send-keys", "-t", "preview:0.0", "-l", "draft text")
+    pane("send-keys", "-t", "preview:0.0", "Left", "Left", "Left", "Left")
+    capture(pane, "❯ draft text", running=True)
+    samples = 0
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline:
+        # These commands run in one tmux invocation, so the screen and cursor
+        # mode describe the same terminal state rather than different paints.
+        snapshot = pane(
+            "capture-pane",
+            "-p",
+            "-t",
+            "preview:0.0",
+            ";",
+            "display-message",
+            "-p",
+            "-t",
+            "preview:0.0",
+            "CURSOR_STATE #{cursor_flag} #{cursor_x} #{cursor_y}",
+        )
+        screen, state = snapshot.rsplit("CURSOR_STATE ", 1)
+        visible, x, y = map(int, state.split())
+        lines = screen.splitlines()
+        if "CURSOR_LINE_" in screen and not any(line.startswith("│❯") for line in lines):
+            samples += 1
+            assert not visible, snapshot
+        if "CURSOR_STREAM_DONE" in screen and "Ctrl+D exit" in lines[-1]:
+            assert visible, snapshot
+            assert lines[y].startswith("│❯ draft text"), snapshot
+            assert x == 9, snapshot  # Three-cell prompt plus 'draft '.
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail(f"Stream did not complete:\n{snapshot}")
+    assert samples > 0, "Did not observe a transcript handoff"
