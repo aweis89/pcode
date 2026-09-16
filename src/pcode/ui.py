@@ -76,6 +76,7 @@ class Activity:
     text: str = ""
     status: str = ""
     queued: int = 0
+    queued_prompts: list[str] = field(default_factory=list)
     prompt: str = ""
     prompt_state: str = ""
     plan: list[dict] = field(default_factory=list)
@@ -92,6 +93,17 @@ class Activity:
         remaining = max(0, width - prefix.cell_len)
         text.truncate(remaining, overflow="ellipsis" if remaining else "crop")
         return [(style, prefix.plain), ("", text.plain)]
+
+    def queue_rows(self, budget: int):
+        """Show the next queued prompts, leaving room for the editor on short panes."""
+        if budget <= 0:
+            return []
+        visible = budget if len(self.queued_prompts) <= budget else budget - 1
+        rows = [("class:plan", f"Queued: {text}") for text in self.queued_prompts[:visible]]
+        remaining = len(self.queued_prompts) - visible
+        if remaining > 0:
+            rows.append(("class:plan", f"… {remaining} more queued"))
+        return rows
 
     def preview(self):
         return [("", self.text)]
@@ -376,7 +388,7 @@ def create_prompt(
 
     def frame_height() -> int:
         size = session.app.output.get_size()
-        available = max(1, size.rows - 4 - plan_height())
+        available = max(1, size.rows - 4 - plan_height() - len(queue_rows()))
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
         return min(text_height, available) + 2
 
@@ -431,6 +443,23 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(activity.prompt or activity.plan or activity.tools.calls)),
     )
+
+    def queue_rows():
+        budget = min(4, max(1, session.app.output.get_size().rows // 4))
+        return activity.queue_rows(budget)
+
+    queued = ConditionalContainer(
+        Window(
+            FormattedTextControl(
+                lambda: panel_fragments(queue_rows(), session.app.output.get_size().columns),
+                show_cursor=False,
+            ),
+            height=lambda: len(queue_rows()),
+            wrap_lines=False,
+            dont_extend_height=True,
+        ),
+        filter=Condition(lambda: bool(activity.queued_prompts)),
+    )
     menu = CompletionsMenu(
         max_height=6, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
     )
@@ -447,7 +476,7 @@ def create_prompt(
     # The unfinished line belongs directly after committed output, not in a
     # preview beside the editor. Put spare height BELOW it to avoid a jump when
     # that line is committed to scrollback. The editor stays bottom-aligned.
-    children = [live, menu, search, plan, Frame(editor, height=frame_height)]
+    children = [live, menu, search, plan, queued, Frame(editor, height=frame_height)]
     if transcript is not None:
         children.insert(1, Window())
 
