@@ -57,4 +57,19 @@ def model_catalog(providers: set[str], current: str | None = None) -> list[str]:
             models.add(f"openai-codex:{model}")
     if current and current.partition(":")[0] in providers:
         models.add(current)
-    return sorted(models, key=lambda name: (name != current, name))
+    return sorted(models, key=model_sort_key)
+
+
+def model_sort_key(name: str):
+    """Group providers/families alphabetically, then numeric versions newest first.
+
+    Compare numeric components as integers so 4.10 precedes 4.9. Undated aliases
+    sort before dated snapshots of the same version. Do not pin the current model
+    above newer suggestions; the picker marks it separately.
+    """
+    provider, _, model = name.partition(":")
+    parts = tuple(
+        (1, -int(part)) if part.isdigit() else (0, part.casefold())
+        for part in re.split(r"(\d+)", model)
+    )
+    return provider, parts

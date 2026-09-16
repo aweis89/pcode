@@ -30,6 +30,8 @@ async def wait_for(predicate):
         ("\r", MODELS[0]),
         ("\x1b[B\r", MODELS[1]),
         ("luna\r", MODELS[1]),
+        ("anthopus\r", MODELS[0]),
+        ("codluna\r", MODELS[1]),
         ("anthropic:new-model\r", "anthropic:new-model"),
         ("\x1b", None),
         ("\x03", None),
@@ -266,3 +268,48 @@ def test_no_active_provider_does_not_open_modal(monkeypatch):
     assert not app.model_requested
     assert "No active model providers" in buffer.getvalue()
     factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("anthopus", ["anthropic:claude-opus-5"]),
+        ("ANTHOPUS", ["anthropic:claude-opus-5"]),
+        ("anth opus", ["anthropic:claude-opus-5"]),
+        ("opus anth", ["anthropic:claude-opus-5"]),
+        ("claopus", ["anthropic:claude-opus-5"]),
+        ("codluna", ["openai-codex:gpt-5.6-luna"]),
+        ("openai luna", ["openai-codex:gpt-5.6-luna"]),
+        ("sonnet", ["anthropic:claude-sonnet-5"]),
+        ("gpt-5.6", ["openai-codex:gpt-5.6-luna"]),
+        ("opus luna", []),
+    ],
+)
+def test_filter_combines_provider_and_model_prefixes(query, expected):
+    models = [*MODELS, "anthropic:claude-sonnet-5", "anthropic:claude-haiku-4-5"]
+    with create_pipe_input() as pipe:
+        picker = ModelPicker(models, PROVIDERS, input=pipe, output=DummyOutput())
+        picker.selected = 2
+        picker.search.text = query
+        assert picker.matches == expected
+        assert picker.selected == 0
+        picker.search.text = ""
+        assert picker.matches == models
+
+
+def test_filter_preserves_newest_first_catalog_order():
+    from pcode.models import model_catalog
+
+    current = "anthropic:claude-opus-4-5"
+    with create_pipe_input() as pipe:
+        picker = ModelPicker(
+            model_catalog({"anthropic"}, current),
+            {"anthropic"},
+            current=current,
+            input=pipe,
+            output=DummyOutput(),
+        )
+        picker.search.text = "anthopus"
+        assert picker.matches[0] == "anthropic:claude-opus-5"
+        assert picker.matches.index("anthropic:claude-opus-4-8") < picker.matches.index(current)
+        assert "current" in str(picker.fragments())

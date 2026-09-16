@@ -13,6 +13,32 @@ from prompt_toolkit.widgets import Dialog, Label, TextArea
 from pcode.models import PROVIDERS
 
 
+def matches_model(term: str, model: str) -> bool:
+    """Match substrings or joined word prefixes, e.g. anth + opus.
+
+    Gaps are allowed between words, not inside them. This keeps 'anthopus'
+    from matching an unrelated Sonnet via scattered letters in 'anthropic:claude'.
+    """
+    provider, _, name = model.partition(":")
+    for text in (model.casefold(), f"{PROVIDERS.get(provider, provider)} {name}".casefold()):
+        if term in text:
+            return True
+        # Track how much of the query can be consumed by successive word prefixes.
+        positions = {0}
+        for word in re.findall(r"[a-z0-9]+", text):
+            following = set(positions)  # Skipping a word is allowed.
+            for position in positions:
+                for length, character in enumerate(word, 1):
+                    index = position + length - 1
+                    if index >= len(term) or character != term[index]:
+                        break
+                    following.add(index + 1)
+            if len(term) in following:
+                return True
+            positions = following
+    return False
+
+
 class ModelPicker:
     def __init__(self, models, providers, *, current=None, input=None, output=None, style=None):
         self.models = list(models)
@@ -84,8 +110,8 @@ class ModelPicker:
 
     def filter(self, buffer):
         query = buffer.text.strip()
-        terms = query.lower().split()
-        self.matches = [name for name in self.models if all(t in name.lower() for t in terms)]
+        terms = query.casefold().split()
+        self.matches = [name for name in self.models if all(matches_model(t, name) for t in terms)]
         provider, _, name = query.partition(":")
         if (
             provider in self.providers
