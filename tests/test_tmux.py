@@ -676,3 +676,23 @@ def test_failed_prompt_indicator_stays_visible(pane):
     failed = capture(pane, "! hello · failed")
     assert input_rows(failed) == 1
     assert "Run failed" in failed
+
+
+@pytest.mark.parametrize("pane", [PAUSED_PREVIEW_SCRIPT], indirect=True)
+def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "LONG PROMPT " * 30)
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    capture(pane, "PAUSED_TAIL", running=True)
+    for columns in (40, 100, 35):
+        pane("resize-window", "-t", "preview:0", "-x", str(columns))
+        screen = capture(pane, "PAUSED_TAIL", running=True, columns=columns)
+        lines = screen.splitlines()
+        editor_top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
+        assert lines[editor_top - 3].startswith("┌")
+        header = lines[editor_top - 2]
+        assert header.startswith("│") and header.endswith("…│")
+        assert "LONG PROMPT" in header
+        assert len(header) == columns
+        assert lines[editor_top - 1].startswith("└")
+        assert input_rows(screen) == 1
