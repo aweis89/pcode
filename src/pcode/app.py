@@ -140,11 +140,7 @@ class PreviewApp:
         self.persist_defaults(model=model)
         self.save_sessions = save
         self.resuming = False
-        self.activity.plan = []
-        self.activity.tools.clear()
-        self.activity.prompt = ""
-        self.activity.prompt_state = ""
-        self.activity.status = ""
+        self.activity.reset()
         self.transcript.print(Rule("New conversation", style=self.transcript.palette.muted))
         self.transcript.note(f"Model: {model}. Context reset; transcript and draft are unchanged.")
         self.show_startup_context()
@@ -341,8 +337,7 @@ class PreviewApp:
 
     def new(self, argument: str) -> None:
         self.runtime.reset()
-        self.activity.plan = []
-        self.activity.tools.clear()
+        self.activity.reset()
         self.transcript.print(Rule("New conversation", style=self.transcript.palette.muted))
         self.transcript.note("Context reset. Input history and transcript are unchanged.")
         if self.model and self.runtime.session:

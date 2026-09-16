@@ -510,8 +510,9 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     screen = capture(pane, "Context reset")
     assert "Tasks ·" not in screen
     assert "Task 0" not in screen
-    assert "✓ h" in screen  # Last prompt remains visible after clearing tasks.
-    assert screen.count("┌") == screen.count("└") == 2
+    # /new zeroes the whole widget: tasks, tools, and the previous prompt row.
+    assert "✓ h" not in screen
+    assert screen.count("┌") == screen.count("└") == 1
 
 
 PAUSED_PREVIEW_SCRIPT = """

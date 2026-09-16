@@ -122,6 +122,22 @@ def test_errors_are_retained_without_numbered_expansion_and_reset_clears_them():
     assert not app.activity.tools.calls
 
 
+def test_new_clears_task_panel_and_previous_prompt_row():
+    app = PreviewApp(console=Console(file=StringIO()))
+    app.activity.plan = [{"id": "one", "content": "A task", "status": "completed"}]
+    app.activity.tools.record(ToolSummary("read_file", "file.py", call_id="one"))
+    app.activity.prompt = "previous prompt"
+    app.activity.prompt_state = "done"
+    app.activity.status = "Responding…"
+    app.new("")
+    assert app.activity.plan == []
+    assert not app.activity.tools.calls
+    assert app.activity.prompt == ""
+    assert app.activity.prompt_state == ""
+    assert app.activity.status == ""
+    assert task_panel_rows(app.activity.plan, app.activity.tools, 10, "⠋") == []
+
+
 def test_cancelled_run_marks_outstanding_tool_interrupted():
     class Runtime:
         session = None
