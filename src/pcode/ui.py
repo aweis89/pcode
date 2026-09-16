@@ -4,6 +4,7 @@ import asyncio
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import cache
 from time import monotonic
 
 from prompt_toolkit import PromptSession
@@ -40,7 +41,10 @@ class Palette:
     selected: str
     syntax: str
 
+    @cache
     def prompt_style(self) -> Style:
+        # Palette is immutable. Reuse the Style so DynamicStyle's identity-based
+        # invalidation hash changes only with the palette, not on every redraw.
         return Style.from_dict(
             {
                 "plan": self.muted,
