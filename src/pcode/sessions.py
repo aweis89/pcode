@@ -80,6 +80,28 @@ def list_sessions(root: Path | None = None) -> list[SessionInfo]:
     return sorted(result, key=lambda info: info.updated, reverse=True)
 
 
+def first_prompt(info: SessionInfo, root: Path | None = None) -> str:
+    """Read the first submitted prompt without opening or locking the session."""
+    directory = (root or session_root()) / info.id
+    path = directory / "transcript.jsonl"
+    if directory.is_symlink() or path.is_symlink():
+        return "(Prompt unavailable)"
+    try:
+        with path.open() as stream:
+            for line in stream:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict) and record.get("kind") == "turn_started":
+                    prompt = record.get("prompt")
+                    if isinstance(prompt, str):
+                        return prompt
+    except OSError:
+        return "(Prompt unavailable)"
+    return "(No prompt yet)"
+
+
 def resolve_session(selector: str, root: Path | None = None) -> Path:
     root = root or session_root()
     if selector != "latest" and not re.fullmatch(r"[a-f0-9-]{8,36}", selector):

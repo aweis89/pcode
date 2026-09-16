@@ -31,6 +31,7 @@ def make_app(width=80):
                 "/theme",
                 "/context",
                 "/new",
+                "/session",
                 "/sessions",
                 "/quit",
             ],
