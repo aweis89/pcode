@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -558,7 +559,16 @@ class PreviewApp:
         finally:
             await output.flush()
             self.transcript.output = None
-        self.transcript.console.print("Goodbye.")
+        saved = getattr(self.runtime, "session", None)
+        if saved is None:
+            self.transcript.console.print("Session not saved; no resume command available.")
+        else:
+            from pcode.sessions import session_root
+
+            command = ["pcode", "--resume", saved.info.id]
+            if saved.directory.parent.resolve() != session_root().resolve():
+                command.extend(["--session-dir", str(saved.directory.parent.resolve())])
+            self.transcript.console.print(f"Resume with: {shlex.join(command)}", markup=False)
 
     def run(self) -> None:
         asyncio.run(self.run_async())
