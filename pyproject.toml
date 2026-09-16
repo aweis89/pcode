@@ -1,10 +1,12 @@
 [project]
 name = "pcode"
 version = "0.1.0"
-description = "A scrollback-native terminal UI preview"
+description = "A scrollback-native terminal for Pydantic AI"
 requires-python = ">=3.11"
 dependencies = [
     "prompt-toolkit>=3.0.52,<4",
+    "pydantic-ai-harness>=0.31.0,<0.32",
+    "pydantic-ai-slim[openai]>=2.43.0,<3",
     "rich>=14,<15",
 ]
 

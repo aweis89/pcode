@@ -1,0 +1,155 @@
+import asyncio
+from io import StringIO
+from unittest.mock import patch
+
+import pytest
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
+from pydantic_ai import Agent
+from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai_harness import Coder
+from rich.console import Console
+
+from pcode.agent import create_agent
+from pcode.app import PreviewApp
+from pcode.live import AgentRuntime, error_message
+from pcode.runtime import Message, RunStatus, TextDelta, ToolSummary
+from pcode.ui import create_prompt
+
+
+def test_model_string_is_passed_unchanged(tmp_path):
+    with patch("pcode.agent.Agent") as constructor:
+        create_agent("openai-codex:gpt-5.6-luna", tmp_path)
+    assert constructor.call_args.args == ("openai-codex:gpt-5.6-luna",)
+    assert isinstance(constructor.call_args.kwargs["capabilities"][0], Coder)
+
+
+def test_stream_runs_real_coder_read_tool_and_retains_history(tmp_path):
+    (tmp_path / "sample.txt").write_text("a unique workspace marker")
+    requests = []
+
+    async def model(messages, info):
+        requests.append(messages)
+        names = {tool.name for tool in info.function_tools}
+        assert {"read_file", "edit_file", "run_command"} <= names
+        if len(requests) == 1:
+            yield "Looking at the file."
+            yield {0: DeltaToolCall(name="read_file", json_args='{"path":"sample.txt"}')}
+        elif len(requests) == 2:
+            results = [
+                p for message in messages for p in message.parts if isinstance(p, ToolReturnPart)
+            ]
+            assert any("a unique workspace marker" in str(p.content) for p in results)
+            yield "The file contains "
+            yield "the workspace marker."
+        else:
+            assert len(messages) > len(requests[0])
+            yield "I remember the previous answer."
+
+    runtime = AgentRuntime(
+        Agent(FunctionModel(stream_function=model), capabilities=[Coder(tmp_path)])
+    )
+
+    async def run():
+        events = [event async for event in runtime.stream("Read sample.txt")]
+        assert [e.markdown for e in events if isinstance(e, Message)] == [
+            "Looking at the file.",
+            "The file contains the workspace marker.",
+        ]
+        assert any(isinstance(e, TextDelta) for e in events)
+        assert any(isinstance(e, RunStatus) and "read_file" in e.text for e in events)
+        assert any(isinstance(e, ToolSummary) and e.name == "read_file" for e in events)
+        assert runtime.turns == 1
+        assert runtime.history
+        assert runtime.input_tokens > 0
+        followup = [event async for event in runtime.stream("What did you read?")]
+        assert Message("I remember the previous answer.") in followup
+        assert runtime.turns == 2
+        old_id = runtime.conversation_id
+        runtime.reset()
+        assert runtime.history == []
+        assert runtime.turns == 0
+        assert runtime.conversation_id != old_id
+
+    asyncio.run(run())
+
+
+def test_failed_stream_does_not_commit_history():
+    async def broken(messages, info):
+        yield "Partial"
+        raise RuntimeError("sensitive provider body")
+
+    runtime = AgentRuntime(Agent(FunctionModel(stream_function=broken)))
+
+    async def run():
+        with pytest.raises(Exception):
+            _ = [event async for event in runtime.stream("hello")]
+        assert runtime.history == []
+        assert runtime.turns == 0
+
+    asyncio.run(run())
+    assert "sensitive provider body" not in error_message(RuntimeError("sensitive provider body"))
+
+
+def test_ui_stream_commits_final_message_only_once():
+    async def model(messages, info):
+        yield "hello "
+        yield "from the model"
+
+    output = StringIO()
+    app = PreviewApp(
+        model="test:local",
+        runtime=AgentRuntime(Agent(FunctionModel(stream_function=model))),
+        console=Console(file=output, color_system=None),
+    )
+
+    async def run():
+        with create_pipe_input() as pipe:
+            session = create_prompt(
+                app.registry, activity=app.activity, input=pipe, output=DummyOutput()
+            )
+            await asyncio.wait_for(app.run_live(session, "hello"), timeout=5)
+        assert not app.activity.busy
+        assert output.getvalue().count("hello from the model") == 1
+        assert app.runtime.turns == 1
+
+    asyncio.run(run())
+
+
+def test_ui_cancellation_cleans_up_generation_and_accepts_next_input():
+    output = StringIO()
+    cleaned_up = []
+
+    async def run():
+        started = asyncio.Event()
+
+        async def model(messages, info):
+            try:
+                yield "unfinished answer"
+                started.set()
+                await asyncio.Event().wait()
+            finally:
+                cleaned_up.append(True)
+
+        app = PreviewApp(
+            model="test:local",
+            runtime=AgentRuntime(Agent(FunctionModel(stream_function=model))),
+            console=Console(file=output, color_system=None),
+        )
+        with create_pipe_input() as pipe:
+            session = create_prompt(
+                app.registry, activity=app.activity, input=pipe, output=DummyOutput()
+            )
+            task = asyncio.create_task(app.run_live(session, "start"))
+            await asyncio.wait_for(started.wait(), timeout=5)
+            pipe.send_text("\x03")
+            await asyncio.wait_for(task, timeout=5)
+            assert cleaned_up
+            assert not app.activity.busy
+            assert app.runtime.history == []
+            pipe.send_text("next input\r")
+            assert await session.prompt_async() == "next input"
+        assert "Run cancelled" in output.getvalue()
+
+    asyncio.run(run())

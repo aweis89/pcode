@@ -1,4 +1,4 @@
-"""Local fixture runtime. No terminal libraries, network, or filesystem tools."""
+"""Application events and the offline fixture runtime; no terminal imports."""
 
 from dataclasses import dataclass
 
@@ -12,9 +12,20 @@ class Message:
 class ToolSummary:
     name: str
     detail: str
+    failed: bool = False
 
 
-Event = Message | ToolSummary
+@dataclass(frozen=True)
+class TextDelta:
+    text: str
+
+
+@dataclass(frozen=True)
+class RunStatus:
+    text: str
+
+
+Event = Message | ToolSummary | TextDelta | RunStatus
 
 
 class PreviewRuntime:

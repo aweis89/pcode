@@ -14,7 +14,7 @@ pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is no
 
 
 @pytest.fixture
-def pane():
+def pane(request):
     server = "pcode-test-" + uuid.uuid4().hex
     base = ["tmux", "-L", server, "-f", "/dev/null"]
     env = {**os.environ}
@@ -35,14 +35,18 @@ def pane():
             "32",
             "-c",
             os.getcwd(),
-            shlex.join([sys.executable, "-m", "pcode.app"]),
+            shlex.join(
+                [sys.executable, "-c", request.param]
+                if hasattr(request, "param")
+                else [sys.executable, "-m", "pcode.app"]
+            ),
         )
         yield command
     finally:
         subprocess.run([*base, "kill-server"], capture_output=True, env=env)
 
 
-def capture(pane, expected):
+def capture(pane, expected, *, running=False):
     """Allow asynchronous completion and resize paints to settle, with a deadline."""
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
@@ -52,7 +56,7 @@ def capture(pane, expected):
             expected in screen
             and len(lines) >= 2
             and lines[-2].startswith("└")
-            and "Ctrl+D exit" in lines[-1]
+            and ("Ctrl+C cancel" if running else "Ctrl+D exit") in lines[-1]
         ):
             return screen
         time.sleep(0.05)
@@ -61,7 +65,7 @@ def capture(pane, expected):
 
 def input_rows(screen):
     lines = screen.splitlines()
-    assert "Ctrl+D exit" in lines[-1], screen
+    assert "Ctrl+D exit" in lines[-1] or "Ctrl+C cancel" in lines[-1], screen
     assert lines[-2].startswith("└"), screen
     cursor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
     top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("┌"))
@@ -110,3 +114,46 @@ def test_input_only_grows_for_text(pane, split):
     pane("kill-pane", "-t", "preview:0.1")
     pane("send-keys", "-t", "preview:0.0", "-l", " again")
     assert input_rows(capture(pane, "short again")) == 1
+
+
+LIVE_SCRIPT = """
+import asyncio
+from pydantic_ai import Agent
+from pydantic_ai.models.function import FunctionModel
+from pcode.app import PreviewApp
+from pcode.live import AgentRuntime
+
+async def model(messages, info):
+    yield "FIRST STREAM CHUNK"
+    await asyncio.sleep(1)
+    yield "\\nLIVE ANSWER COMPLETE"
+
+runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+PreviewApp(model="test:local", runtime=runtime).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
+def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "hello")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    assert input_rows(capture(pane, "FIRST STREAM CHUNK", running=True)) == 1
+    assert input_rows(capture(pane, "LIVE ANSWER COMPLETE")) == 1
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert history.count("FIRST STREAM CHUNK") == 1
+    assert "❯ hello" in history
+
+
+@pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
+def test_stream_resize_and_cancellation(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "hello")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    capture(pane, "FIRST STREAM CHUNK", running=True)
+    pane("split-window", "-v", "-t", "preview:0.0", "cat")
+    assert input_rows(capture(pane, "FIRST STREAM CHUNK", running=True)) == 1
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    assert input_rows(capture(pane, "Run cancelled.")) == 1
+    pane("send-keys", "-t", "preview:0.0", "-l", "next input")
+    assert input_rows(capture(pane, "next input")) == 1

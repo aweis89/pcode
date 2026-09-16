@@ -10,6 +10,7 @@ from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame
@@ -53,11 +54,27 @@ PALETTES = {
 }
 
 
-def create_prompt(registry: CommandRegistry, **kwargs) -> PromptSession:
+@dataclass
+class Activity:
+    busy: bool = False
+    text: str = ""
+    status: str = ""
+
+    def preview(self):
+        # Only the temporary tail is repainted. Full finalized blocks go to Rich.
+        return [("", self.text[-6000:] or self.status), ("[SetCursorPosition]", "")]
+
+
+def create_prompt(
+    registry: CommandRegistry, *, activity: Activity | None = None, **kwargs
+) -> PromptSession:
+    activity = activity or Activity()
     keys = KeyBindings()
 
     @keys.add("enter", filter=~is_searching)
     def submit(event: KeyPressEvent) -> None:
+        if activity.busy:
+            return
         buffer = event.current_buffer
         if buffer.complete_state and buffer.complete_state.current_completion:
             # First Enter accepts the selected completion; next Enter sends it.
@@ -67,7 +84,12 @@ def create_prompt(registry: CommandRegistry, **kwargs) -> PromptSession:
 
     @keys.add("escape", "enter", filter=~is_searching)
     def newline(event: KeyPressEvent) -> None:
-        event.current_buffer.insert_text("\n")
+        if not activity.busy:
+            event.current_buffer.insert_text("\n")
+
+    @keys.add("c-d", filter=Condition(lambda: activity.busy))
+    def cancel(event: KeyPressEvent) -> None:
+        event.app.exit(exception=KeyboardInterrupt)
 
     session = PromptSession(
         message=[("class:prompt", "❯ ")],
@@ -94,6 +116,7 @@ def create_prompt(registry: CommandRegistry, **kwargs) -> PromptSession:
     editor = session.layout.current_window
     editor.height = None
     editor.dont_extend_height = Always()
+    session.default_buffer.read_only = Condition(lambda: activity.busy)
     search = ConditionalContainer(
         Window(editor.content.search_buffer_control, height=1, style="class:search-toolbar"),
         filter=is_searching,
@@ -109,8 +132,17 @@ def create_prompt(registry: CommandRegistry, **kwargs) -> PromptSession:
         max_height=6, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
     )
     menu.content.dont_extend_height = Always()
-    # Keep transient menus above the editor so its bottom edge stays anchored.
-    children = [menu, search, Frame(editor, height=frame_height)]
+    live = ConditionalContainer(
+        Window(
+            FormattedTextControl(activity.preview, show_cursor=False),
+            wrap_lines=True,
+            height=lambda: Dimension(max=max(1, min(8, session.app.output.get_size().rows // 3))),
+            dont_extend_height=True,
+        ),
+        filter=Condition(lambda: activity.busy),
+    )
+    # Keep transient output/menus above the editor so its bottom edge stays anchored.
+    children = [live, menu, search, Frame(editor, height=frame_height)]
     if session.bottom_toolbar is not None:
         children.append(
             Window(
@@ -135,14 +167,19 @@ class Transcript:
     def palette(self) -> Palette:
         return PALETTES[self.theme]
 
-    def welcome(self) -> None:
+    def welcome(self, model: str | None = None, workspace: str = "") -> None:
         self.console.print()
         self.console.print(
             Text.assemble(
-                ("pcode", f"bold {self.palette.accent}"), ("  /  UI preview", self.palette.muted)
+                ("pcode", f"bold {self.palette.accent}"),
+                (f"  /  {model or 'UI preview'}", self.palette.muted),
             )
         )
-        self.note("Local only · no model connected · no files or shell tools")
+        if model:
+            self.note(f"Coder · workspace: {workspace}")
+            self.note("Live model · file edits and shell tools enabled · not a sandbox")
+        else:
+            self.note("Local only · no model connected · no files or shell tools")
         self.note("Type / for commands, /demo for a sample response, /help for keys.")
         self.console.print()
 
@@ -161,7 +198,7 @@ class Transcript:
             elif isinstance(event, ToolSummary):
                 self.console.print(
                     Text.assemble(
-                        (f"  ✓ {event.name}  ", self.palette.accent),
+                        (f"  {'!' if event.failed else '✓'} {event.name}  ", self.palette.accent),
                         (event.detail, self.palette.muted),
                     )
                 )
@@ -178,5 +215,6 @@ class Transcript:
         self.note("Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
+        self.note("During a run: Ctrl+C/Ctrl+D cancel; editing resumes when the run finishes.")
         self.note("History is in memory only. Mouse selection stays with your terminal.")
         self.console.print()

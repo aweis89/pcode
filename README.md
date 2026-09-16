@@ -1,89 +1,142 @@
 # pcode
 
-A small, offline UI preview of [PLAN.md](PLAN.md). Judge the prompt, completion
-menu, and transcript before adding a real agent runtime.
+A small, scrollback-native terminal for a Pydantic AI Coder agent, with an offline
+UI preview. See [PLAN.md](PLAN.md) for the longer-term direction.
 
 ## Run
 
-With [uv](https://docs.astral.sh/uv/) installed:
+With [uv](https://docs.astral.sh/uv/) installed, from this directory:
 
 ```sh
-uv run pcode
+uv run pcode -m openai-codex:gpt-5.6-luna
+```
+
+`-m` / `--model` passes the model string directly to Pydantic's `Agent`. Nothing
+is remapped to a different model or provider. The current directory is the Coder
+workspace; select another repository with `-C`:
+
+```sh
+uv run pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
+```
+
+For a bare `pcode` command available outside this project:
+
+```sh
+uv tool install --editable .
+pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
+```
+
+Try asking: `What does this repository do? Read the README and cite relevant files.`
+Follow-up messages retain the conversation in memory. `/new` resets model context.
+
+### Authentication
+
+For `openai-codex:`, use an existing subscription login. If missing or expired:
+
+```sh
+codex login
+```
+
+Pydantic reads the CLI's credential store (`CODEX_HOME` is honored); pcode never
+prints, copies, or writes it. This provider does not fall back to `OPENAI_API_KEY`.
+Refreshed credentials live only in the provider's memory with the default loader,
+so you may need to sign in again after restarting. Model availability still
+depends on your account. Authentication failures are displayed without raw
+provider bodies or credential values.
+
+For ordinary OpenAI API models, use an `openai:...` string and supply
+`OPENAI_API_KEY` through your environment. Only the OpenAI provider extra is
+installed by default. Other Pydantic model strings require their provider extras
+and corresponding authentication.
+
+### Tool permissions
+
+**Live mode enables actual Coder file edits and shell tools. There is no approval
+UI or sandbox yet.** Use a trusted repository and a safe working environment.
+The agent is instructed to answer questions without changing files unless asked,
+and to avoid credential contents, but instructions are not an enforcement boundary.
+
+This project pins Harness 0.31.x. Its Coder composition includes filesystem,
+shell, repository context, planning, an explorer subagent, and context management.
+Its default command allowlist is not a sandbox: permitted interpreters/build tools
+can run arbitrary code. Files and code returned by tools are sent to the selected
+model. Background processes started by tools can outlive a turn; cancelling a run
+is not an undo of completed tool effects.
+
+## Offline preview and commands
+
+```sh
+uv run pcode                 # no model, canned replies only
+uv run pcode --demo          # print a sample and exit, no terminal/auth needed
+uv run pcode --theme light   # light input palette
 ```
 
 Type `/` to open the command menu, then narrow it by typing. Use Tab or the
 arrow keys to choose. Enter accepts a selected completion; another Enter runs it.
 
-- `/demo`: fictional coding response with Markdown, Python, a diff, a table,
-  and completed tool summaries. No actual tools run.
+- `/demo`: fictional Markdown, code, diff, table, and tool summaries; never calls
+  the model, even in live mode, and does not enter its conversation history.
 - `/theme light` or `/theme dark`: change the input and future output palette.
-  `/theme` alone toggles. Start in light mode with `uv run pcode --theme light`.
+  `/theme` alone toggles.
 - `/help`: command list and keyboard shortcuts.
-- `/context`: preview counter and an honest list of what is not connected.
-- `/new`: reset the preview counter without clearing scrollback or input history.
+- `/context`: current model, workspace, completed turns, and token usage.
+- `/new`: reset the conversation without clearing scrollback or input history.
 - `/quit` (alias `/exit`): exit.
 
-Ordinary messages get a canned reply. No model, API key, network call, filesystem
-access, or shell tool is involved at runtime. Input history lives only in memory.
-
-### Keys
+### Keys and layout
 
 | Key | Action |
 | --- | --- |
 | Enter | Send, or accept a selected completion |
-| Alt+Enter | Insert a newline (Esc followed by Enter also works) |
+| Alt+Enter | Newline (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
 | Ctrl+R | Search this process's input history |
-| Ctrl+C | Discard the current input |
-| Ctrl+D | Exit when the input is empty; otherwise forward-delete |
+| Ctrl+C | Discard input, or cancel the running agent |
+| Ctrl+D | Exit on empty idle input; cancel during generation |
 
-The input is bottom-aligned from startup, with one editable line (plus its
-border). It expands upward for wrapped text or explicit newlines, and shrinks
-again when text is removed. Completion appears above the frame without moving
-its bottom edge. Very long input scrolls within the available pane height.
+The input is bottom-aligned from startup, with one editable line plus its border.
+It expands upward for wrapped text or explicit newlines, and shrinks when text is
+removed. Completion appears above the frame. Very long input scrolls within the
+available pane height. Multiline bracketed paste works; mouse capture is off.
 
-Multiline bracketed paste is supported. Mouse capture is off, so normal terminal
-selection remains available. For a non-interactive rendering sample:
+During generation, a small temporary region above the prompt shows live text or
+current activity. Finalized text blocks become Rich Markdown in ordinary terminal
+scrollback, printed once. Completed tools get concise summaries rather than raw
+output dumps. The prompt is read-only during a run; cancellation restores editing.
+Input history and model history are in memory only. A failed or cancelled turn is
+not added to the next model request, although its completed tool effects remain.
 
-```sh
-uv run pcode --demo
-```
+## Small architecture
 
-## Deliberately small architecture
+- `src/pcode/agent.py`: `Agent(model, capabilities=[Coder(workspace)])` definition;
+  independent of the terminal.
+- `src/pcode/live.py`: `run_stream_events()` adapter, history, and usage. It runs the
+  whole tool loop, including when the model emits text before tool calls.
+- `src/pcode/runtime.py`: plain application events and offline fixtures.
+- `src/pcode/ui.py`: prompt_toolkit editor, bottom-aligned layout, temporary live
+  output, and Rich finalized transcript rendering.
+- `src/pcode/commands.py`: registry shared by dispatch, help, and completion.
+- `src/pcode/app.py`: CLI and asynchronous composition.
 
-- `src/pcode/ui.py`: `PromptSession` editing with a content-sized layout built
-  from public prompt_toolkit widgets, plus Rich transcript rendering. Normal
-  screen only, no custom cursor handling.
-- `src/pcode/commands.py`: metadata registry shared by execution, help, and
-  completion (including theme arguments).
-- `src/pcode/runtime.py`: deterministic fixture runtime returning plain events;
-  it imports neither terminal library.
-- `src/pcode/app.py`: composes the preview and its commands.
+Rich owns permanent pixels; prompt_toolkit owns mutable pixels. Completed blocks
+are printed through `run_in_terminal`, which suspends and restores the editing
+area. No full-screen conversation viewport, alternate screen, custom cursor
+positioning, or manually reserved scroll region. Existing transcript is never
+repainted. Bottom placement relies on ordinary terminal cursor-position reports.
 
-The mutable prompt is erased on submission, then Rich prints the submitted input
-and completed response once. Historical output is never repainted. The toolbar
-belongs to prompt_toolkit's temporary prompt area, not an independently pinned bar.
-Code blocks use Rich's bundled syntax highlighting; prose inherits the terminal's
-foreground/background. Theme changes do not recolor existing scrollback.
+Approvals, persistent sessions, queued prompts, model pickers, and MCP management
+are not implemented yet. Each run is capped at 30 model requests as a basic guard
+against runaway tool loops, not a monetary budget.
 
-This is **not Milestone 1 of the full plan**: streaming, real Pydantic AI/Harness
-integration, approvals, persistence, pickers, and actual tools are intentionally
-omitted. The next slice can replace the fixture runtime with a Pydantic adapter
-without teaching the renderer about framework-specific events. Streaming will
-need its own terminal-stability validation rather than a pretend animation here.
+## References
 
-## API references used
+- [prompt_toolkit prompts](https://python-prompt-toolkit.readthedocs.io/en/stable/pages/asking_for_input.html)
+- [Rich Console](https://rich.readthedocs.io/en/stable/console.html)
+- [Pydantic streaming events](https://ai.pydantic.dev/agents/#streaming-all-events)
+- [Pydantic Harness Coder](https://ai.pydantic.dev/harness/coder/)
 
-- [prompt_toolkit prompts](https://python-prompt-toolkit.readthedocs.io/en/stable/pages/asking_for_input.html):
-  `PromptSession`, custom completion metadata, multiline editing, key bindings,
-  frames, and temporary toolbars.
-- [Upstream toolbar example](https://github.com/prompt-toolkit/python-prompt-toolkit/blob/main/examples/prompts/bottom-toolbar.py):
-  use the library-owned toolbar instead of hand-positioning a status line.
-- [Rich Console](https://rich.readthedocs.io/en/stable/console.html): normal
-  `Console.print` with automatic terminal width and permanent output.
-- [Pydantic AI](https://ai.pydantic.dev/) and
-  [Harness](https://ai.pydantic.dev/harness/): reviewed for the later runtime;
-  neither is installed just to display canned responses.
+The latest Harness website describes a newer Coder composition than the pinned
+0.31.x release. Implementation follows the installed release's public API.
 
 ## Validate
 
@@ -93,17 +146,13 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-Tests cover registry dispatch, completion, multiline/paste keys, history search,
-interruption, Unicode and narrow output, and real Unix PTY startup/resize/exit.
-When tmux is installed, isolated-server tests also measure input height across
-horizontal/vertical splits, completion, line wrapping, newlines, and deletion,
-plus bottom placement at startup/after replies and transcript retention.
-These include real cursor-position reports; plain PTYs alone missed the original
-frame-stretching bug. Tests also check that the app does not switch to the alternate
-screen, erase scrollback, or set a scroll region. They do not prove visual
-correctness in every emulator.
+Tests require no API keys or paid model calls. They cover completion, keybindings,
+Unicode/narrow output, streaming, history/reset, cancellation, and actual Coder
+file reads using Pydantic's `FunctionModel`. PTY tests check clean startup/exit
+without alternate-screen or scroll-region sequences. When tmux is installed,
+isolated-server tests measure prompt height and bottom placement through splits,
+streaming, cancellation, and replies, and check transcript retention.
 
-For a manual feel check, run `uv run pcode` inside tmux, try `/demo`, resize the
-pane, then use copy mode/search to find earlier output. Exit and check that the
-transcript remains. Actual tmux copy-mode and emulator rendering still need that
-manual check.
+Real tmux tests include cursor-position reports: plain PTYs alone missed the
+original frame-stretching bug. Actual copy-mode/search and rendering in your
+terminal still deserve a manual feel check.
