@@ -373,7 +373,7 @@ def create_prompt(
 
     def frame_height() -> int:
         size = session.app.output.get_size()
-        available = max(1, size.rows - 4 - plan_height() - bool(activity.prompt))
+        available = max(1, size.rows - 4 - plan_height())
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
         return min(text_height, available) + 2
 
@@ -391,22 +391,39 @@ def create_prompt(
 
     def plan_height() -> int:
         rows = plan_rows()
-        return len(rows) + 2 if rows else 0
+        return len(rows) + bool(activity.prompt) + 2 if rows or activity.prompt else 0
 
     def plan_text():
         return panel_fragments(plan_rows(), session.app.output.get_size().columns - 2)
 
+    current_prompt = ConditionalContainer(
+        Window(
+            FormattedTextControl(
+                lambda: activity.prompt_fragments(plan_spinner.render(monotonic()).plain),
+                show_cursor=False,
+            ),
+            height=1,
+            wrap_lines=False,
+            dont_extend_height=True,
+        ),
+        filter=Condition(lambda: bool(activity.prompt)),
+    )
     plan = ConditionalContainer(
         Frame(
-            Window(
-                FormattedTextControl(plan_text),
-                height=lambda: plan_height() - 2,
-                dont_extend_height=True,
-                wrap_lines=False,
+            HSplit(
+                [
+                    current_prompt,
+                    Window(
+                        FormattedTextControl(plan_text),
+                        height=lambda: len(plan_rows()),
+                        dont_extend_height=True,
+                        wrap_lines=False,
+                    ),
+                ]
             ),
             height=plan_height,
         ),
-        filter=Condition(lambda: bool(activity.plan or activity.tools.calls)),
+        filter=Condition(lambda: bool(activity.prompt or activity.plan or activity.tools.calls)),
     )
     menu = CompletionsMenu(
         max_height=6, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
@@ -424,19 +441,7 @@ def create_prompt(
     # The unfinished line belongs directly after committed output, not in a
     # preview beside the editor. Put spare height BELOW it to avoid a jump when
     # that line is committed to scrollback. The editor stays bottom-aligned.
-    current_prompt = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: activity.prompt_fragments(plan_spinner.render(monotonic()).plain),
-                show_cursor=False,
-            ),
-            height=1,
-            wrap_lines=False,
-            dont_extend_height=True,
-        ),
-        filter=Condition(lambda: bool(activity.prompt)),
-    )
-    children = [live, menu, search, plan, current_prompt, Frame(editor, height=frame_height)]
+    children = [live, menu, search, plan, Frame(editor, height=frame_height)]
     if transcript is not None:
         children.insert(1, Window())
 
