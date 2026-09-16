@@ -8,6 +8,7 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.filters import Always, Condition, has_focus, is_searching
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
+from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style
@@ -108,7 +109,8 @@ def create_prompt(registry: CommandRegistry, **kwargs) -> PromptSession:
         max_height=6, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
     )
     menu.content.dont_extend_height = Always()
-    children = [Frame(editor, height=frame_height), menu, search]
+    # Keep transient menus above the editor so its bottom edge stays anchored.
+    children = [menu, search, Frame(editor, height=frame_height)]
     if session.bottom_toolbar is not None:
         children.append(
             Window(
@@ -119,7 +121,7 @@ def create_prompt(registry: CommandRegistry, **kwargs) -> PromptSession:
                 height=1,
             )
         )
-    session.layout = Layout(HSplit(children), focused_element=editor)
+    session.layout = Layout(HSplit(children, align=VerticalAlign.BOTTOM), focused_element=editor)
     session.app.layout = session.layout
     return session
 

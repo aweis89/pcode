@@ -37,10 +37,10 @@ access, or shell tool is involved at runtime. Input history lives only in memory
 | Ctrl+C | Discard the current input |
 | Ctrl+D | Exit when the input is empty; otherwise forward-delete |
 
-The input starts with one editable line (plus its border), expands for wrapped
-text or explicit newlines, and shrinks again when text is removed. Completion
-appears below the frame instead of enlarging it. Very long input scrolls within
-the available pane height.
+The input is bottom-aligned from startup, with one editable line (plus its
+border). It expands upward for wrapped text or explicit newlines, and shrinks
+again when text is removed. Completion appears above the frame without moving
+its bottom edge. Very long input scrolls within the available pane height.
 
 Multiline bracketed paste is supported. Mouse capture is off, so normal terminal
 selection remains available. For a non-interactive rendering sample:
@@ -96,7 +96,8 @@ uv run ruff format --check .
 Tests cover registry dispatch, completion, multiline/paste keys, history search,
 interruption, Unicode and narrow output, and real Unix PTY startup/resize/exit.
 When tmux is installed, isolated-server tests also measure input height across
-horizontal/vertical splits, completion, line wrapping, newlines, and deletion.
+horizontal/vertical splits, completion, line wrapping, newlines, and deletion,
+plus bottom placement at startup/after replies and transcript retention.
 These include real cursor-position reports; plain PTYs alone missed the original
 frame-stretching bug. Tests also check that the app does not switch to the alternate
 screen, erase scrollback, or set a scroll region. They do not prove visual

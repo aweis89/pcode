@@ -47,7 +47,13 @@ def capture(pane, expected):
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
         screen = pane("capture-pane", "-p", "-t", "preview:0.0")
-        if expected in screen and "└" in screen and "Ctrl+D exit" in screen:
+        lines = screen.splitlines()
+        if (
+            expected in screen
+            and len(lines) >= 2
+            and lines[-2].startswith("└")
+            and "Ctrl+D exit" in lines[-1]
+        ):
             return screen
         time.sleep(0.05)
     pytest.fail(f"Prompt did not settle with {expected!r}:\n{screen}")
@@ -55,10 +61,24 @@ def capture(pane, expected):
 
 def input_rows(screen):
     lines = screen.splitlines()
+    assert "Ctrl+D exit" in lines[-1], screen
+    assert lines[-2].startswith("└"), screen
     cursor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
     top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("┌"))
     bottom = next(i for i, line in enumerate(lines[top + 1 :], top + 1) if line.startswith("└"))
     return bottom - top - 1
+
+
+def test_bottom_prompt_preserves_transcript(pane):
+    assert input_rows(capture(pane, "❯")) == 1
+    pane("send-keys", "-t", "preview:0.0", "-l", "/demo")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    assert input_rows(capture(pane, "No files were")) == 1
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert "pcode  /  UI preview" in history
+    assert "❯ /demo" in history
+    assert "Hello, world!" in history
+    assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "0"
 
 
 @pytest.mark.parametrize("split", ["-h", "-v"])
@@ -76,7 +96,7 @@ def test_input_only_grows_for_text(pane, split):
     pane("send-keys", "-t", "preview:0.0", "-l", "/")
     screen = capture(pane, "\n /demo ")
     assert input_rows(screen) == 1
-    assert screen.index("└") < screen.index("\n /demo ")  # Menu outside the frame.
+    assert screen.index("\n /demo ") < screen.rindex("┌")  # Menu above the fixed frame.
 
     pane("send-keys", "-t", "preview:0.0", "C-c")
     text = "x" * 120 + "END"
