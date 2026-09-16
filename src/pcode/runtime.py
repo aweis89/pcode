@@ -9,12 +9,22 @@ class Message:
 
 
 @dataclass(frozen=True)
+class ToolStarted:
+    name: str
+    detail: str
+    call_id: str
+    command: str = ""
+
+
+@dataclass(frozen=True)
 class ToolSummary:
     name: str
     detail: str
     failed: bool = False
     call_id: str = ""
     elapsed_seconds: float | None = None
+    error: str = ""
+    command: str = ""
 
 
 @dataclass(frozen=True)
@@ -27,7 +37,14 @@ class RunStatus:
     text: str
 
 
-Event = Message | ToolSummary | TextDelta | RunStatus
+@dataclass(frozen=True)
+class PlanUpdated:
+    """Authoritative Harness plan snapshot, not a parsed tool summary."""
+
+    items: list[dict]
+
+
+Event = Message | ToolStarted | ToolSummary | TextDelta | RunStatus | PlanUpdated
 
 
 class PreviewRuntime:

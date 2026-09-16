@@ -52,3 +52,21 @@ def test_handoff_respects_renderer_request_to_keep_cursor_hidden():
     assert not terminal.visible
     output.show_cursor()
     assert terminal.visible
+
+
+def test_renderer_erase_avoids_a_full_screen_clear():
+    from unittest.mock import Mock, call
+
+    from prompt_toolkit.data_structures import Size
+
+    terminal = Mock(spec=DummyOutput)
+    terminal.get_size.return_value = Size(rows=24, columns=80)
+    output = CursorSafeOutput(terminal)
+    output.erase_down()
+    assert terminal.method_calls == [
+        call.get_size(),
+        call.cursor_forward(1),
+        call.erase_down(),
+        call.cursor_backward(1),
+        call.erase_end_of_line(),
+    ]

@@ -1,20 +1,26 @@
 """Agent construction is independent of the terminal and runtime adapter."""
 
 import os
+from dataclasses import fields
 from pathlib import Path
 
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import CombinedCapability
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai_harness import Coder
 from pydantic_ai_harness.exa import ExaSearch
 from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.subagents import SubAgent
 
+from pcode.planning import IdentifiedPlanning
+from pcode.repo_context import AutomaticRepoContext
 
-def create_coder(workspace: Path) -> Coder:
+
+def create_coder(workspace: Path) -> CombinedCapability:
     """Keep repository context local, but allow file tools outside the workspace."""
     workspace = workspace.resolve()
     root = Path(workspace.anchor)
@@ -28,9 +34,27 @@ def create_coder(workspace: Path) -> Coder:
         description="Explore the codebase and answer questions without modifying anything",
         instructions=path_guidance + "Answer with concrete paths and evidence. "
         "Never read or print credential values or secret-bearing files.",
-        capabilities=[FileSystem(root, read_only=True), RepoContext(workspace_dir=workspace)],
+        capabilities=[
+            FileSystem(root, read_only=True),
+            AutomaticRepoContext(workspace_dir=workspace),
+        ],
     )
     coder = Coder(workspace, subagents=[SubAgent(explorer)], instructions=path_guidance)
+    # Supply discovery in each run's context, not as a model-driven tool call.
+    coder.capabilities = [
+        AutomaticRepoContext(workspace_dir=workspace)
+        if isinstance(capability, RepoContext)
+        else IdentifiedPlanning(
+            **{
+                field.name: getattr(capability, field.name)
+                for field in fields(Planning)
+                if field.init
+            }
+        )
+        if isinstance(capability, Planning)
+        else capability
+        for capability in coder.capabilities
+    ]
     # Coder has no separate filesystem-root option in Harness 0.31. Configure
     # its public FileSystem capability without moving Shell or RepoContext.
     for capability in coder.capabilities:
@@ -46,7 +70,8 @@ def create_coder(workspace: Path) -> Coder:
     # capability read the key itself; never put it in instructions or tool args.
     if os.environ.get("EXA_API_KEY", "").strip():
         coder.capabilities.append(ExaSearch())
-    return coder
+    # Recompose so instruction sources track replaced/added capabilities too.
+    return CombinedCapability(coder.capabilities)
 
 
 def create_agent(model: str, workspace: Path) -> Agent:

@@ -12,7 +12,15 @@ from rich.console import Console
 from rich.rule import Rule
 
 from pcode.commands import Command, CommandRegistry
-from pcode.runtime import Message, PreviewRuntime, RunStatus, TextDelta, ToolSummary
+from pcode.runtime import (
+    Message,
+    PlanUpdated,
+    PreviewRuntime,
+    RunStatus,
+    TextDelta,
+    ToolStarted,
+    ToolSummary,
+)
 from pcode.ui import PALETTES, Activity, TerminalOutput, Transcript, create_prompt
 
 
@@ -51,7 +59,7 @@ class PreviewApp:
                 ),
             )
         self.activity = Activity()
-        self.transcript = Transcript(console or Console(), theme)
+        self.transcript = Transcript(console or Console(), theme, activity=self.activity)
         self.running = True
         self.registry = CommandRegistry()
         for command in (
@@ -100,6 +108,8 @@ class PreviewApp:
 
     def new(self, argument: str) -> None:
         self.runtime.reset()
+        self.activity.plan = []
+        self.activity.tools.clear()
         self.transcript.print(Rule("New conversation", style=self.transcript.palette.muted))
         self.transcript.note("Context reset. Input history and transcript are unchanged.")
         if self.model and self.runtime.session:
@@ -121,6 +131,7 @@ class PreviewApp:
         from pcode.diagnostics import redact
 
         saved = self.runtime.session
+        self.activity.plan = saved.latest_plan()
         self.transcript.note(f"Resumed {saved.info.id}; showing recent transcript.")
         for record in saved.recent_transcript():
             kind = record["kind"]
@@ -130,22 +141,36 @@ class PreviewApp:
                 self.transcript.events((Message(redact(record["markdown"])),))
                 if kind == "partial":
                     self.transcript.note("[Partial output from an interrupted run]")
-            elif kind == "ToolSummary":
-                self.transcript.events(
-                    (
-                        ToolSummary(
-                            record["name"],
-                            record["detail"],
-                            record.get("failed", False),
-                            record.get("call_id", ""),
-                            record.get("elapsed_seconds"),
-                        ),
+
+        # Tool history is independent of the bounded conversation replay. Replay
+        # lifecycle events so concurrency order and interrupted starts survive.
+        self.activity.tools.clear()
+        for record in saved.tool_events():
+            kind = record["kind"]
+            if kind.startswith("turn_"):
+                self.activity.tools.interrupt_running()
+            elif kind == "ToolStarted":
+                self.activity.tools.record(
+                    ToolStarted(
+                        record["name"],
+                        redact(record["detail"]),
+                        record["call_id"],
+                        redact(record.get("command", "")),
                     )
                 )
-            elif kind in ("turn_failed", "turn_cancelled"):
-                self.transcript.note(f"[{kind.replace('_', ' ')}; diagnostics saved]")
-        if saved.info.status != "complete":
-            self.transcript.note("Recovered the last settled checkpoint. No tools were replayed.")
+            else:
+                self.activity.tools.record(
+                    ToolSummary(
+                        record["name"],
+                        redact(record["detail"]),
+                        record.get("failed", False),
+                        record.get("call_id", ""),
+                        record.get("elapsed_seconds"),
+                        redact(record.get("error", "")),
+                        redact(record.get("command", "")),
+                    )
+                )
+        self.activity.tools.interrupt_running()
 
     def quit(self, argument: str) -> None:
         self.running = False
@@ -195,6 +220,11 @@ class PreviewApp:
                     self.activity.status = "Responding…"
                 elif isinstance(event, RunStatus):
                     self.activity.status = event.text
+                elif isinstance(event, PlanUpdated):
+                    self.activity.plan = event.items
+                elif isinstance(event, (ToolStarted, ToolSummary)):
+                    # Tool activity is mutable UI state, not a model-text boundary.
+                    self.transcript.events((event,))
                 elif isinstance(event, Message):
                     output.finish(event.markdown)
                 else:
@@ -207,6 +237,7 @@ class PreviewApp:
             failure = error
         finally:
             output.finish()
+            self.activity.tools.interrupt_running()
             self.activity.status = ""
         if cancelled:
             self.transcript.note("Run cancelled. Completed tool effects are not undone.")
@@ -218,12 +249,19 @@ class PreviewApp:
                 self.transcript.note(self.runtime.recovery_blocked)
         return not (cancelled or failure)
 
+    def show_startup_context(self) -> None:
+        summary = getattr(self.runtime, "startup_context", None)
+        if summary is not None:
+            for line in summary():
+                self.transcript.note(line)
+
     async def run_async(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         if self.resuming:
             await self.runtime.restore()
         self.transcript.welcome(self.model, str(self.workspace))
+        self.show_startup_context()
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")
         if self.resuming:
@@ -359,7 +397,8 @@ def main() -> None:
         # --demo never constructs a provider, even when -m is also supplied.
         app = PreviewApp(theme=args.theme)
         app.transcript.welcome()
-        app.demo("")
+        # There is no mutable panel in the non-interactive sample.
+        app.transcript.events(app.preview.demo(), show_tools=True)
         return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         parser.error("interactive mode needs a terminal; use --demo for a non-interactive sample")

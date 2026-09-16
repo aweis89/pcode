@@ -392,3 +392,210 @@ def test_markdown_code_preview_stays_bounded_and_commits_once(pane):
     assert history.count("PREVIEW_MARKER") == 1
     assert "```" not in history
     assert "❯ draft survives" in history
+
+
+def single_editor_history(pane, marker, *, frames=1):
+    """History-inclusive check; a resize erase/repaint is not an atomic write."""
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+        if history.count("┌") == history.count("└") == frames and history.count(marker) == 1:
+            return history
+        time.sleep(0.05)
+    pytest.fail(
+        f"Expected {frames} frames and one {marker!r} across screen and history:\n{history}"
+    )
+
+
+@pytest.mark.parametrize("multiline", [False, True])
+@pytest.mark.parametrize("split", ["-h", "-v"])
+def test_repeated_resize_keeps_one_editor_frame_and_draft(pane, multiline, split):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "RESIZE_DRAFT")
+    if multiline:
+        pane("send-keys", "-t", "preview:0.0", "Escape", "Enter")
+        pane("send-keys", "-t", "preview:0.0", "-l", "second line " * 8)
+    capture(pane, "RESIZE_DRAFT")
+    for _ in range(3):
+        pane("split-window", split, "-t", "preview:0.0", "cat")
+        width = int(pane("display-message", "-p", "-t", "preview:0.0", "#{pane_width}"))
+        capture(pane, "RESIZE_DRAFT", columns=width)
+        single_editor_history(pane, "RESIZE_DRAFT")
+        pane("kill-pane", "-t", "preview:0.1")
+        capture(pane, "RESIZE_DRAFT", columns=100)
+        single_editor_history(pane, "RESIZE_DRAFT")
+    pane("send-keys", "-t", "preview:0.0", "C-a")
+    pane("send-keys", "-t", "preview:0.0", "-l", "inserted ")
+    capture(pane, "inserted " + ("second line" if multiline else "RESIZE_DRAFT"))
+
+
+PLAN_SCRIPT = r"""
+import asyncio
+from pcode.app import PreviewApp
+from pcode.runtime import PlanUpdated, ToolSummary
+
+class Runtime:
+    session = None
+    async def stream(self, prompt):
+        items = [{"id": str(i), "content": f"Task {i}", "status": "pending"} for i in range(12)]
+        items[8]["status"] = "in_progress"
+        yield PlanUpdated(items)
+        yield ToolSummary("write_plan", "Plan updated")
+        await asyncio.sleep(2)
+        yield PlanUpdated([dict(item, status="completed") for item in items])
+    def reset(self):
+        pass
+
+PreviewApp(model="test:local", runtime=Runtime()).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [PLAN_SCRIPT], indirect=True)
+@pytest.mark.parametrize("split", ["-h", "-v"])
+def test_plan_panel_is_bounded_updates_and_clears(pane, split):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "Task 8", running=True)
+    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    first_frame = next(frame for frame in frames if f"{frame} Task 8" in screen)
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        animated = pane("capture-pane", "-p", "-t", "preview:0.0")
+        if any(f"{frame} Task 8" in animated for frame in frames if frame != first_frame):
+            break
+        time.sleep(0.03)
+    else:
+        pytest.fail("Active plan spinner did not animate while waiting for a tool")
+    assert "Tasks ·" not in screen and "Tools" not in screen
+    lines = screen.splitlines()
+    first_task = next(i for i, line in enumerate(lines) if "Task 6" in line)
+    assert lines[first_task - 1].startswith("┌")
+    assert all(
+        line.startswith("│") and line.endswith("│") for line in lines[first_task : first_task + 5]
+    )
+    assert lines[first_task + 5].startswith("└")
+    assert input_rows(screen) == 1
+    assert "Task 0\n" not in screen
+    pane("send-keys", "-t", "preview:0.0", "-l", "editable draft")
+    pane("split-window", split, "-t", "preview:0.0", "cat")
+    completed = capture(pane, "✓ Task 0")
+    assert input_rows(completed) == 1
+    assert completed.count("┌") == completed.count("└") == 2
+    pane("kill-pane", "-t", "preview:0.1")
+    capture(pane, "editable draft", columns=100)
+    history = single_editor_history(pane, "editable draft", frames=2)
+    assert "Plan updated" not in history
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/new")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    screen = capture(pane, "Context reset")
+    assert "Tasks ·" not in screen
+    assert screen.count("┌") == screen.count("└") == 1
+
+
+PAUSED_PREVIEW_SCRIPT = """
+import asyncio
+from pydantic_ai import Agent
+from pydantic_ai.models.function import FunctionModel
+from pcode.app import PreviewApp
+from pcode.live import AgentRuntime
+
+async def model(messages, info):
+    yield "COMMITTED MARKER\\n\\n" + "x" * 50 + "PAUSED_TAIL"
+    await asyncio.sleep(30)
+
+runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+PreviewApp(model="test:local", runtime=runtime).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [PAUSED_PREVIEW_SCRIPT], indirect=True)
+def test_paused_preview_reflows_on_resize_without_more_tokens(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    capture(pane, "PAUSED_TAIL", running=True)
+    pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
+    for columns in (40, 100, 35):
+        pane("resize-window", "-t", "preview:0", "-x", str(columns))
+        screen = capture(pane, "PAUSED_TAIL", running=True, columns=columns)
+        # Check the active preview region, not resize ghosting in old history
+        # (covered separately by the existing strict-xfail regression).
+        lines = screen[: screen.rindex("┌")].splitlines()
+        tail_row = max(i for i, line in enumerate(lines) if line.strip())
+        expected_length = 61 % columns or columns
+        assert lines[tail_row] == "x" * (expected_length - 11) + "PAUSED_TAIL", screen
+        assert tail_row == 0 or not lines[tail_row - 1].strip(), screen
+        assert "│❯ keep draft" in screen
+        assert input_rows(screen) == 1
+
+
+TOOLS_SCRIPT = """
+import asyncio
+from pcode.app import PreviewApp
+from pcode.runtime import TextDelta, ToolStarted, ToolSummary
+
+class Runtime:
+    session = None
+    turns = 0
+
+    async def stream(self, prompt):
+        yield TextDelta("MODEL CONVERSATION ONLY\\n\\n")
+        for i in range(1, 13):
+            yield ToolStarted("read_file", f"file_{i:02d}.py", str(i))
+            await asyncio.sleep(0.02)
+            yield ToolSummary(
+                "read_file", f"file_{i:02d}.py", call_id=str(i), failed=i == 12,
+                error="INSPECTABLE ERROR" if i == 12 else "",
+            )
+        yield ToolStarted("run_command", "waiting", "13",
+                          command="printf FIRST_DETAIL\\nprintf SECOND_DETAIL")
+        await asyncio.sleep(30)
+
+app = PreviewApp(model="test:local", runtime=Runtime())
+app.activity.plan = [{"id": "one", "content": "A task", "status": "in_progress"}]
+app.run()
+"""
+
+
+@pytest.mark.parametrize("pane", [TOOLS_SCRIPT], indirect=True)
+def test_recent_tools_are_nested_inside_headerless_task_widget(pane):
+    initial = capture(pane, "A task")
+    assert "Tools" not in initial and "Tasks ·" not in initial
+    assert initial.count("┌") == initial.count("└") == 2
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "⟳ Run", running=True)
+    lines = screen.splitlines()
+    task = next(i for i, line in enumerate(lines) if "A task" in line)
+    assert lines[task - 1].startswith("┌")
+    assert lines[task + 1].startswith("│      ✓ Read · file_09.py")
+    assert lines[task + 4].startswith("│      ! Read failed · file_12.py")
+    assert lines[task + 5].startswith("│      ⟳ Run")
+    assert lines[task + 6].startswith("└")
+    assert lines[task + 7].startswith("┌")  # Editor, not another Tools widget.
+    assert "Tools" not in screen and "Tasks ·" not in screen
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert "file_01.py" not in history
+    assert history.count("file_09.py") == 1
+    assert "INSPECTABLE ERROR" not in history
+
+    pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
+    for width, height in ((40, 20), (100, 32), (40, 14)):
+        pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
+        count = 5 if height >= 20 else 4
+        deadline = time.monotonic() + 3
+        while True:
+            screen = capture(pane, "A task", running=True, columns=width)
+            lines = screen.splitlines()
+            # Inspect the live widget nearest the editor, not old resize ghosts.
+            task = max(i for i, line in enumerate(lines) if "A task" in line)
+            if lines[task + count + 1].startswith("└"):
+                break
+            assert time.monotonic() < deadline, screen
+            time.sleep(0.05)
+        assert all(line.startswith("│      ") for line in lines[task + 1 : task + count + 1])
+        assert "keep draft" in screen
+        assert input_rows(screen) == 1
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    screen = capture(pane, "Run cancelled.")
+    assert "Run · interrupted" in screen
+    assert "│❯ keep draft" in screen

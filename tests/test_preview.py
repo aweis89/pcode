@@ -29,6 +29,7 @@ def make_app(width=80):
         ("hello /", []),
         ("/demo\n/", []),
         ("/missing", []),
+        ("/tool", []),
     ],
 )
 def test_completion(text, expected):
@@ -75,7 +76,8 @@ def test_rendering_fits_terminal(width, theme):
     app.handle("Hello 世界 👋 " + "unbroken" * 30)
     output = stream.getvalue()
     assert "世界" in output
-    assert "preview only" in output
+    assert "preview only" not in output
+    assert all("preview only" in call.event.detail for call in app.activity.tools.calls)
     assert all(cell_len(line) <= width for line in output.splitlines())
     assert "\x1b" not in output
 
@@ -130,3 +132,11 @@ def test_prompt_interrupt_and_eof(keys, exception):
         pipe.send_text(keys)
         with pytest.raises(exception):
             session.prompt()
+
+
+def test_tool_command_is_not_available():
+    app, stream = make_app()
+    assert app.registry.find("/tool") is None
+    for text in ("/tool", "/tool 1"):
+        app.handle(text)
+    assert stream.getvalue().count("Unknown command") == 2

@@ -1,4 +1,4 @@
-"""Tool presentation with visible inputs, credential redaction, and no raw result bodies."""
+"""Tool presentation with visible inputs and sanitized command failure excerpts."""
 
 import json
 import re
@@ -51,12 +51,36 @@ def argument(value: str, *, command: bool = False) -> str:
     return plain(redact(value).replace("\n", r"\n").replace("\t", r"\t"), limit=None)
 
 
+def command_text(value: str) -> str:
+    """Redact first, then preserve layout without allowing terminal controls."""
+    value = redact(_CREDENTIAL_OPTION.sub(r"\1[redacted]", value))
+    return "\n".join(plain(line.expandtabs(4), limit=None) for line in value.split("\n"))
+
+
+def command_preview(value: str) -> str:
+    """Structural preview, not an inferred claim about a script's purpose."""
+    text = command_text(value)
+    lines = text.splitlines()
+    first = next((line.strip() for line in lines if line.strip()), "(empty command)")
+    # Inline interpreter payloads are implementation detail, not useful labels.
+    inline = re.search(r"\b(?:python[\d.]*|node|ruby|perl)\s+(-c|-e)\s+", first)
+    if inline and (len(first) > 100 or len(lines) > 1):
+        first = first[:inline.end()].rstrip() + " … [inline code hidden]"
+    elif len(lines) > 1:
+        first += f" … [{len(lines) - 1} more lines]"
+    return plain(first, limit=100)
+
+
 def target(name: str, args: dict) -> str:
     if name in {"run_command", "start_command"}:
         command = args.get("command")
         return (
-            argument(command, command=True) if isinstance(command, str) else "command unavailable"
+            command_preview(command) if isinstance(command, str) else "command unavailable"
         )
+    if name in {"get_page", "web_search"}:
+        key = "url" if name == "get_page" else "query"
+        value = args.get(key)
+        return argument(value) if isinstance(value, str) else f"{key} unavailable"
     if name in {
         "read_file",
         "write_file",
@@ -103,11 +127,72 @@ def failure_reason(content: object) -> str:
     return "Tool could not complete; details withheld"
 
 
+_ANSI = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]")
+_PRIVATE_KEY = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)",
+    re.DOTALL,
+)
+
+
+def command_error(content: object) -> str:
+    """Prefer stderr, or stdout for tools such as pytest; keep a bounded diagnostic tail."""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        # Validation errors contain an input field: show only their messages.
+        text = "\n".join(
+            item["msg"]
+            for item in content
+            if isinstance(item, dict) and isinstance(item.get("msg"), str)
+        )
+    else:
+        return "No error output returned."
+    text = re.sub(r"\n?\[exit code: -?\d+\]\s*$", "", text)
+    stderr = re.search(r"(?:^|\n)\[stderr\]\n(.*)", text, re.DOTALL)
+    if stderr and stderr[1].strip():
+        text = stderr[1]
+    else:
+        text = re.sub(r"(?:^|\n)\[(?:stdout|stderr)\]\n?", "\n", text)
+    # Remove escape sequences before redaction, then redact before clipping to avoid
+    # leaking pieces of a credential across formatting or excerpt boundaries.
+    text = _ANSI.sub("", text)
+    text = _PRIVATE_KEY.sub("[private key redacted]", text)
+    text = redact(_CREDENTIAL_OPTION.sub(r"\1[redacted]", text))
+    lines = [plain(line.expandtabs(4), limit=None) for line in text.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines or lines == ["(no output)"]:
+        return "No error output returned."
+    truncated = len(lines) > 8
+    excerpt = "\n".join(lines[-8:])
+    if len(excerpt) > 1600:
+        excerpt = excerpt[-1600:]
+        truncated = True
+    return ("… earlier error output truncated\n" if truncated else "") + excerpt
+
+
 def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple[str, bool]:
     """Extract metrics from known Harness formats, with a safe unknown-format fallback."""
     where = target(name, args)
     text = content if isinstance(content, str) else ""
     failed = outcome != "success"
+    # Harness 0.31 reports plan validation failures as ordinary string returns.
+    # Do not hide these along with successful panel-only updates.
+    if name in PLAN_TOOLS and (
+        text.startswith(
+            (
+                "Plan not updated:",
+                "No changes applied.",
+                "Invalid status ",
+                "Cannot ",
+                "A step cannot ",
+            )
+        )
+        or text.endswith("not found.")
+    ):
+        failed = True
     if failed:
         prefix = "Retry requested" if outcome == "retry" else "Failed"
         result = f"{prefix} · {failure_reason(content)}"
@@ -167,13 +252,13 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
         elif match:
             code = int(match[1])
             failed = code != 0
-            result = f"exit {code}"
+            result = f"exit {code}" if failed else ""
             if code == 127:
                 result += " · Executable not found"
         elif text == "(no output)" or text.startswith(("[stdout]\n", "[stderr]\n")):
-            result = "exit 0"
+            result = ""
         else:
-            result = "Command finished"  # Do not invent an exit code for unknown formats.
+            result = ""  # No redundant success text for unknown formats.
     elif name == "write_plan":
         items = args.get("items")
         if isinstance(items, list) and all(isinstance(item, dict) for item in items):
@@ -201,9 +286,25 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
         except (ValueError, TypeError):
             result = "Assistant configuration inspected"
     else:
-        result = "Succeeded"
+        result = ""
     if name in {"search_files", "find_files", "list_directory"} and re.search(
         r"^\[\.\.\. truncated at \d+ (?:entries|matches)\]$", text, re.MULTILINE
     ):
         result += " · truncated"
-    return (f"{where} → {result}" if where else result), failed
+    return (f"{where} → {result}" if where and result else where or result), failed
+
+
+# Successful planning calls update the pinned panel; failures remain in scrollback.
+PLAN_TOOLS = frozenset(
+    {
+        "write_plan",
+        "read_plan",
+        "add_task",
+        "update_task_status",
+        "update_task_statuses",
+        "remove_task",
+        "add_subtask",
+        "set_dependency",
+        "get_available_tasks",
+    }
+)
