@@ -57,6 +57,19 @@ For ordinary OpenAI API models, use an `openai:...` string and supply
 installed by default. Other Pydantic model strings require their provider extras
 and corresponding authentication.
 
+### Web search
+
+Set `EXA_API_KEY` in the environment before starting pcode to enable Exa-backed
+`web_search` and `get_page` tools for the coder. The key is read by the Exa client,
+not passed to the model. Without a nonblank key, search tools are omitted and
+ordinary coding sessions work as before. The read-only explorer stays local.
+
+Search returns up to five results with excerpts and source URLs; page retrieval
+returns up to 10,000 characters. Deep search is disabled. Queries and requested
+URLs are sent to Exa and may incur API charges; returned content is sent to the
+model and can be saved in session history. Restart pcode after changing the key,
+including when resuming a session.
+
 ### Tool permissions
 
 **Live mode enables actual Coder file edits and shell tools. There is no approval
