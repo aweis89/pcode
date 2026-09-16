@@ -36,7 +36,7 @@ def session_dialog(values, *, input=None, output=None, style=None):
         layout=Layout(dialog, focused_element=choices),
         key_bindings=bindings,
         full_screen=True,
-        mouse_support=False,
+        mouse_support=True,
         input=input,
         output=output,
         style=style,

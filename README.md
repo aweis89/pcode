@@ -218,6 +218,8 @@ behind the active turn; a failed/cancelled turn clears queued commands, so submi
   **/** focuses search. Search matches tool names/statuses and command/summary
   previews, not the complete output payload. Ctrl+F focuses search from any pane.
 - In details, use arrows, PageUp/PageDown, or Ctrl+Home/Ctrl+End to scroll.
+- Mouse clicks and wheel scrolling work in the popups. In tmux, enable mouse
+  forwarding with `tmux set -g mouse on` (or `set -g mouse on` in `~/.tmux.conf`).
 - Escape, Ctrl+C, or Ctrl+D closes only the inspector and restores the editor draft.
 - Wide terminals show calls and details side by side; narrow terminals stack them.
 

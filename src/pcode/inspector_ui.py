@@ -91,7 +91,7 @@ class ToolInspector:
             layout=Layout(root, focused_element=self.list),
             key_bindings=keys,
             full_screen=True,
-            mouse_support=False,
+            mouse_support=True,
             **app_options,
         )
         self.refresh()
