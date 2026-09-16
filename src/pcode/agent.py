@@ -1,11 +1,13 @@
 """Agent construction is independent of the terminal and runtime adapter."""
 
+import os
 from pathlib import Path
 
 from pydantic_ai import Agent
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai_harness import Coder
+from pydantic_ai_harness.exa import ExaSearch
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.subagents import SubAgent
@@ -33,6 +35,10 @@ def create_coder(workspace: Path) -> Coder:
     for capability in coder.capabilities:
         if isinstance(capability, FileSystem):
             capability.root_dir = root
+    # Missing credentials must not prevent ordinary coding sessions. Let the
+    # capability read the key itself; never put it in instructions or tool args.
+    if os.environ.get("EXA_API_KEY", "").strip():
+        coder.capabilities.append(ExaSearch())
     return coder
 
 
