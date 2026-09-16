@@ -70,8 +70,10 @@ class PreviewApp:
         self.running = True
         self.inspector_requested: str | None = None
         self.session_requested = False
+        self.login_requested = False
         self.registry = CommandRegistry()
         for command in (
+            Command("/login", "Reuse pi's Anthropic login", self.login, ("pi",)),
             Command("/help", "Commands and keyboard shortcuts", self.help),
             Command("/tools", "Inspect tool calls and their results", self.tools, ("failed",)),
             Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
@@ -90,6 +92,37 @@ class PreviewApp:
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
         ):
             self.registry.register(command)
+
+    def login(self, argument: str) -> None:
+        if self.model and not self.model.startswith("anthropic:"):
+            self.transcript.note("/login currently supports Anthropic only.")
+            return
+        self.login_requested = True
+
+    async def login_pi(self) -> None:
+        self.login_requested = False
+        from pcode.auth import LoginError
+        from pcode.pi_auth import PiAnthropicModel, pi_auth_path, read_pi_credential
+
+        try:
+            if self.model:
+                model = await asyncio.to_thread(PiAnthropicModel, self.model)
+                self.runtime.agent.model = model
+            else:
+                await asyncio.to_thread(read_pi_credential, pi_auth_path())
+            os.environ["PCODE_ANTHROPIC_AUTH"] = "pi"
+            self.transcript.note(
+                "Using pi's Anthropic credential (read-only). "
+                "Refresh/login in pi when it expires; pcode never writes pi's auth file."
+            )
+            self.transcript.note(
+                "For future launches use PCODE_ANTHROPIC_AUTH=pi "
+                "pcode -m anthropic:<model-id>."
+            )
+        except LoginError as error:
+            self.transcript.note(str(error))
+        except Exception:
+            self.transcript.note("Could not use pi login. No credential details were logged.")
 
     def tools(self, argument: str) -> None:
         self.inspector_requested = argument
@@ -550,7 +583,11 @@ class PreviewApp:
                 text = await commands.get()
                 try:
                     command = self.registry.find(text.split(maxsplit=1)[0])
-                    if command and command.name in {"/new", "/session"} and self.activity.busy:
+                    if (
+                        command
+                        and command.name in {"/new", "/session", "/login"}
+                        and self.activity.busy
+                    ):
                         self.transcript.user(text)
                         self.transcript.note(
                             f"{command.name} is unavailable while working. "
@@ -562,6 +599,8 @@ class PreviewApp:
                             cancel()
                             if live_task is not None:
                                 await live_task
+                        if self.login_requested:
+                            await self.login_pi()
                         if self.session_requested:
                             await self.choose_session(output, session)
                         if self.inspector_requested is not None:

@@ -24,6 +24,7 @@ def make_app(width=80):
         (
             "/",
             [
+                "/login",
                 "/help",
                 "/tools",
                 "/errors",

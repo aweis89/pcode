@@ -91,8 +91,28 @@ def create_agent(model: str, workspace: Path) -> Agent:
         if model.startswith("openai-codex:")
         else model
     )
+    defer_model_check = False
+    if model.startswith("anthropic:"):
+        from pcode.auth import anthropic_model
+
+        auth_source = os.environ.get("PCODE_ANTHROPIC_AUTH", "api-key").strip()
+        if auth_source == "pi":
+            from pcode.pi_auth import PiAnthropicModel
+
+            # Explicit source selection: do not silently bill another credential.
+            resolved = PiAnthropicModel(model)
+        elif auth_source in {"", "api-key"}:
+            key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+            if key:
+                resolved = anthropic_model(model, key)
+            else:
+                # Allow the terminal to open so /login is reachable without credentials.
+                defer_model_check = True
+        else:
+            raise ValueError("PCODE_ANTHROPIC_AUTH must be api-key or pi.")
     return Agent(
         resolved,
+        defer_model_check=defer_model_check,
         name="pcode",
         capabilities=[create_coder(workspace)],
         instructions=(
