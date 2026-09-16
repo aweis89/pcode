@@ -66,3 +66,26 @@ def test_modal_scroll_resize_and_restore_editor(pane):
     modal(pane, "30/30 calls")
     pane("send-keys", "-t", "preview:0.0", "C-c")
     assert input_rows(capture(pane, "draft must survive", columns=70)) == 1
+
+
+@pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
+def test_mouse_wheel_scrolls_details_and_restores_editor(pane):
+    capture(pane, "❯")
+    pane("set-option", "-g", "mouse", "on")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/tools")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    modal(pane, "30/30 calls")
+    assert pane("display-message", "-p", "-t", "preview:0.0", "#{mouse_any_flag}").strip() == "1"
+    # Inject the SGR reports a mouse-enabled tmux forwards to the application.
+    # Click the detail pane, then wheel down without any keyboard focus/scroll keys.
+    pane("send-keys", "-t", "preview:0.0", "-l", "\x1b[<0;70;10M\x1b[<0;70;10m")
+    for _ in range(45):
+        pane("send-keys", "-t", "preview:0.0", "-l", "\x1b[<65;70;10M")
+        time.sleep(0.04)
+    modal(pane, "DETAIL 29 LINE 040")
+    for _ in range(60):
+        pane("send-keys", "-t", "preview:0.0", "-l", "\x1b[<64;70;10M")
+        time.sleep(0.04)
+    modal(pane, "Arguments")
+    pane("send-keys", "-t", "preview:0.0", "Escape")
+    assert input_rows(capture(pane, "draft must survive")) == 1

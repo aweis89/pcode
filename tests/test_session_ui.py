@@ -24,6 +24,7 @@ def test_popup_keyboard(keys, expected):
                 input=pipe,
                 output=DummyOutput(),
             )
+            assert dialog.mouse_support()
             task = asyncio.create_task(dialog.run_async())
             await asyncio.sleep(0.05)
             pipe.send_text(keys)
