@@ -1,0 +1,137 @@
+"""The editor footer is context, not a second keyboard-help menu."""
+
+import subprocess
+from io import StringIO
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from rich.cells import cell_len
+from rich.console import Console
+
+from pcode.app import PreviewApp
+from pcode.runtime import PreviewRuntime
+
+
+def make_app(workspace, monkeypatch, *, model=None, width=100):
+    monkeypatch.setattr(
+        "pcode.app.get_app",
+        lambda: SimpleNamespace(
+            output=SimpleNamespace(get_size=lambda: SimpleNamespace(columns=width))
+        ),
+    )
+    stream = StringIO()
+    app = PreviewApp(
+        workspace=workspace,
+        model=model,
+        runtime=PreviewRuntime(),
+        console=Console(file=stream, width=120, color_system=None),
+    )
+    return app, stream
+
+
+def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    app, _ = make_app(tmp_path / "p/pcode", monkeypatch, model="openai:gpt-5")
+    app.branch = "master"
+    assert app.toolbar()[0][1] == " ~/p/pcode master · gpt-5 · effort: default"
+    app.runtime.agent = SimpleNamespace(
+        model=SimpleNamespace(settings={"openai_reasoning_effort": "low"}),
+        model_settings={"openai_reasoning_effort": "high"},
+    )
+    assert app.toolbar()[0][1].endswith("gpt-5 · effort: high")
+    app.runtime.agent.model_settings = None
+    assert app.toolbar()[0][1].endswith("effort: low")
+
+
+def test_preview_home_and_help(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    app, stream = make_app(tmp_path, monkeypatch)
+    assert app.toolbar()[0][1] == " ~ · preview · effort: n/a"
+    app.handle("/help")
+    help_text = stream.getvalue()
+    for hint in (
+        "/ commands",
+        "Enter send",
+        "Alt+Enter newline",
+        "Ctrl+D exit",
+        "Enter queues",
+        "cancel",
+    ):
+        assert hint in help_text
+        assert hint not in app.toolbar()[0][1]
+
+
+def test_footer_outside_home_and_busy(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    app, _ = make_app(tmp_path, monkeypatch, width=200)
+    app.activity.busy = True
+    app.activity.queued = 2
+    text = app.toolbar()[0][1]
+    assert str(tmp_path) in text
+    assert text.endswith("preview · effort: n/a · working · 2 queued")
+    assert "Ctrl" not in text
+
+
+@pytest.mark.parametrize("width", [20, 40, 60, 100])
+def test_long_unicode_path_stays_one_row(tmp_path, monkeypatch, width):
+    app, _ = make_app(tmp_path / ("界" * 100 + "\npath"), monkeypatch, width=width)
+    text = app.toolbar()[0][1]
+    assert cell_len(text) <= width
+    assert "\n" not in text
+    if width >= 40:
+        assert "preview · effort: n/a" in text
+
+
+def test_narrow_busy_footer_keeps_model_effort_and_activity(tmp_path, monkeypatch):
+    app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=35)
+    app.activity.busy = True
+    text = app.toolbar()[0][1]
+    assert text == " local · effort: default · working"
+    assert cell_len(text) <= 35
+
+
+def test_branch_refresh_handles_switches_detached_and_non_repo(tmp_path, monkeypatch):
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
+
+    git("init", "-b", "main")
+    app, _ = make_app(tmp_path, monkeypatch)
+    app.refresh_branch()
+    assert app.branch == "main"  # Even an unborn branch has a useful name.
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "Test",
+    )
+    git("checkout", "-b", "feature")
+    app.refresh_branch()
+    assert app.branch == "feature"
+    git("checkout", "--detach")
+    app.refresh_branch()
+    assert app.branch == git("rev-parse", "--short", "HEAD")
+    elsewhere = tmp_path / "outside"
+    elsewhere.mkdir()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    app.workspace = elsewhere
+    app.refresh_branch()
+    assert app.branch == ""
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError(), subprocess.TimeoutExpired("git", 1)])
+def test_git_unavailable_does_not_break_footer(tmp_path, monkeypatch, error):
+    app, _ = make_app(tmp_path, monkeypatch)
+    app.branch = "old"
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr("pcode.app.subprocess.run", fail)
+    app.refresh_branch()
+    assert app.branch == ""
+    assert "preview" in app.toolbar()[0][1]

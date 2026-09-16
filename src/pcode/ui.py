@@ -577,7 +577,7 @@ class Transcript:
             table.add_row(command.name, command.description)
         self.print(table)
         self.print()
-        self.note("Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
+        self.note("/ commands · Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note("During a run: type a draft · Enter queues · Ctrl+C/Ctrl+D cancel, keep draft.")

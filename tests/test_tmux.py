@@ -57,7 +57,8 @@ def capture(pane, expected, *, running=False, columns=None):
             and len(lines) >= 2
             and lines[-2].startswith("└")
             and (columns is None or len(lines[-2]) == columns)
-            and ("Ctrl+C cancel" if running else "Ctrl+D exit") in lines[-1]
+            and "effort:" in lines[-1]
+            and (("working" in lines[-1]) == running)
         ):
             return screen
         time.sleep(0.05)
@@ -66,7 +67,7 @@ def capture(pane, expected, *, running=False, columns=None):
 
 def input_rows(screen):
     lines = screen.splitlines()
-    assert "Ctrl+D exit" in lines[-1] or "Ctrl+C cancel" in lines[-1], screen
+    assert "effort:" in lines[-1], screen
     assert lines[-2].startswith("└"), screen
     cursor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
     top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("┌"))
@@ -345,7 +346,7 @@ def test_cursor_is_hidden_while_committing_stream_and_returns_to_draft(pane):
         if "CURSOR_LINE_" in screen and not any(line.startswith("│❯") for line in lines):
             samples += 1
             assert not visible, snapshot
-        if "CURSOR_STREAM_DONE" in screen and "Ctrl+D exit" in lines[-1]:
+        if "CURSOR_STREAM_DONE" in screen and "effort:" in lines[-1] and "working" not in lines[-1]:
             assert visible, snapshot
             assert lines[y].startswith("│❯ draft text"), snapshot
             assert x == 9, snapshot  # Three-cell prompt plus 'draft '.
