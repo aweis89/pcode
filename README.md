@@ -320,6 +320,21 @@ request-count limits are explicitly disabled; there is no monetary budget guard.
 The latest Harness website describes a newer Coder composition than the pinned
 0.31.x release. Implementation follows the installed release's public API.
 
+## Reasoning effort
+
+For OpenAI/Codex models, use **Ctrl+N** to increase effort and **Ctrl+P** to
+decrease it, or `/effort low|medium|high|xhigh`. `/effort` shows the current
+setting; `/effort default` removes the override. Slash completion includes these
+values, and the footer shows the selected effort.
+
+Shortcuts stop at the lowest/highest level rather than wrapping. From the
+unspecified provider default, they use medium as the starting point (Ctrl+N
+selects high; Ctrl+P selects low). Changes apply to the **next turn**, not an
+in-progress run, and preserve your draft. Up/Down still navigate history and
+completions. Model support varies; not every model accepts every effort level.
+Effort overrides are in-memory, survive `/new`, and are not saved with sessions.
+Preview and non-OpenAI providers do not support this control.
+
 ## Validate
 
 ```sh

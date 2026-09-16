@@ -310,10 +310,23 @@ def create_prompt(
     transcript: "Transcript | None" = None,
     on_submit=None,
     on_cancel=None,
+    on_effort=None,
     **kwargs,
 ) -> PromptSession:
     activity = activity or Activity()
     keys = KeyBindings()
+
+    if on_effort is not None:
+
+        @keys.add("c-n", filter=~is_searching)
+        def increase_effort(event: KeyPressEvent) -> None:
+            on_effort(1)
+            event.app.invalidate()
+
+        @keys.add("c-p", filter=~is_searching)
+        def decrease_effort(event: KeyPressEvent) -> None:
+            on_effort(-1)
+            event.app.invalidate()
 
     @keys.add("enter", filter=~is_searching)
     def submit(event: KeyPressEvent) -> None:
@@ -647,6 +660,7 @@ class Transcript:
         self.print()
         self.note("/ commands · Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
+        self.note("Ctrl+N increase effort · Ctrl+P decrease effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note("During a run: type a draft · Enter queues · Ctrl+C/Ctrl+D cancel, keep draft.")
         self.note("Cancellation clears queued messages. Use terminal/tmux scrollback for history.")

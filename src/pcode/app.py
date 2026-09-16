@@ -77,6 +77,12 @@ class PreviewApp:
             Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
             Command("/demo", "Sample Markdown, code, diff, and tool output", self.demo),
             Command("/theme", "Switch palette: dark / light", self.theme, tuple(PALETTES)),
+            Command(
+                "/effort",
+                "Reasoning effort: low / medium / high / xhigh / default",
+                self.effort,
+                ("low", "medium", "high", "xhigh", "default"),
+            ),
             Command("/context", "Model, workspace, and session usage", self.context),
             Command("/new", "Start a new saved conversation; keep transcript", self.new),
             Command("/session", "Choose a saved session to resume", self.select_session),
@@ -138,6 +144,50 @@ class PreviewApp:
     def theme(self, argument: str) -> None:
         self.transcript.theme = argument or ("light" if self.transcript.theme == "dark" else "dark")
         self.transcript.note(f"Theme: {self.transcript.theme}. Existing output is unchanged.")
+
+    def current_effort(self) -> str:
+        if not self.model:
+            return "n/a"
+        agent = getattr(self.runtime, "agent", None)
+        settings = getattr(getattr(agent, "model", None), "settings", None) or {}
+        settings = {**settings, **(getattr(agent, "model_settings", None) or {})}
+        return settings.get("openai_reasoning_effort", "default")
+
+    def effort(self, argument: str) -> None:
+        value = argument.strip().lower()
+        if not value:
+            self.transcript.note(
+                f"Effort: {self.current_effort()}. Usage: /effort low|medium|high|xhigh|default"
+            )
+            return
+        if value not in ("low", "medium", "high", "xhigh", "default"):
+            self.transcript.note("Usage: /effort low|medium|high|xhigh|default")
+            return
+        agent = getattr(self.runtime, "agent", None)
+        provider = (self.model or "").split(":", 1)[0]
+        if agent is None or provider not in (
+            "openai",
+            "openai-chat",
+            "openai-responses",
+            "openai-codex",
+        ):
+            self.transcript.note("Effort control requires an OpenAI/Codex model.")
+            return
+        # Replace rather than mutate: an active run keeps its captured settings.
+        settings = dict(agent.model_settings or {})
+        if value == "default":
+            settings.pop("openai_reasoning_effort", None)
+        else:
+            settings["openai_reasoning_effort"] = value
+        agent.model_settings = settings
+        self.transcript.note(f"Effort: {self.current_effort()} (next turn).")
+
+    def adjust_effort(self, direction: int) -> None:
+        levels = ("low", "medium", "high", "xhigh")
+        current = self.current_effort()
+        # The provider default is unspecified; use medium as the starting point.
+        index = levels.index(current) if current in levels else 1
+        self.effort(levels[max(0, min(len(levels) - 1, index + direction))])
 
     def context(self, argument: str) -> None:
         if self.model:
@@ -335,10 +385,7 @@ class PreviewApp:
         location = plain(directory, limit=None)
         if self.branch:
             location += f" {self.branch}"
-        agent = getattr(self.runtime, "agent", None)
-        settings = getattr(getattr(agent, "model", None), "settings", None) or {}
-        settings = {**settings, **(getattr(agent, "model_settings", None) or {})}
-        effort = settings.get("openai_reasoning_effort", "default") if self.model else "n/a"
+        effort = self.current_effort()
         model = self.model.split(":", 1)[-1] if self.model else "preview"
         details = plain(f"{model} · effort: {effort}", limit=None)
         if self.activity.busy:
@@ -535,6 +582,7 @@ class PreviewApp:
             transcript=self.transcript,
             on_submit=submit,
             on_cancel=cancel,
+            on_effort=self.adjust_effort,
             bottom_toolbar=self.toolbar,
         )
         output = TerminalOutput(
