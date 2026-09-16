@@ -8,10 +8,10 @@ import sys
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness import Coder
-from pydantic_ai_harness.step_persistence import RunRecord, ToolEffectRecord
+from pydantic_ai_harness.step_persistence import ContinuableSnapshot, RunRecord, ToolEffectRecord
 
 from pcode.diagnostics import error_details
 from pcode.live import AgentRuntime, error_message
@@ -150,7 +150,8 @@ def test_http_failure_after_tool_keeps_tool_result_and_diagnostics(tmp_path, mon
         saved.close()
 
 
-def test_resume_refuses_unknown_tool_effects(tmp_path):
+@pytest.mark.parametrize("tool_name", ["write_file", "edit_file", "run_command", "unknown_tool"])
+def test_resume_refuses_unknown_tool_effects(tmp_path, tool_name):
     saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
 
     async def run():
@@ -159,7 +160,7 @@ def test_resume_refuses_unknown_tool_effects(tmp_path):
             ToolEffectRecord(
                 run_id="crashed",
                 tool_call_id="call-1",
-                tool_name="write_file",
+                tool_name=tool_name,
                 status="started",
             )
         )
@@ -249,3 +250,63 @@ def test_diagnostics_redact_provider_secrets_and_keep_failure_reason(monkeypatch
     assert "hidden" not in encoded
     assert "must not be recorded" not in encoded
     assert detail["provider_param"] == "prompt_cache_breakpoint"
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["read_file", "list_directory", "search_files", "find_files", "file_info", "read_tool_result"],
+)
+@pytest.mark.parametrize("checkpoint_in_prior_run", [False, True])
+def test_resume_abandons_interrupted_reads_without_replaying(
+    tmp_path, tool_name, checkpoint_in_prior_run
+):
+    saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
+
+    async def run():
+        history = [ModelRequest(parts=[UserPromptPart("saved checkpoint")])]
+        await saved.store.register_run(RunRecord(run_id="prior", conversation_id=saved.info.id))
+        await saved.store.register_run(RunRecord(run_id="crashed", conversation_id=saved.info.id))
+        await saved.store.save_snapshot(
+            ContinuableSnapshot(
+                run_id="prior" if checkpoint_in_prior_run else "crashed",
+                step_index=0,
+                messages=history,
+            )
+        )
+        await saved.store.save_snapshot(
+            ContinuableSnapshot(
+                run_id="crashed",
+                step_index=1,
+                state="interrupted",
+                messages=[ModelRequest(parts=[UserPromptPart("unsafe partial history")])],
+            )
+        )
+        await saved.store.record_tool_effect(
+            ToolEffectRecord(
+                run_id="crashed",
+                tool_call_id="read-1",
+                tool_name=tool_name,
+                status="started",
+            )
+        )
+        assert await saved.recover() == history
+        # Recovery must not rewrite the historical effect as successful.
+        effects = await saved.store.list_unresolved_tool_effects(run_id="crashed")
+        assert len(effects) == 1
+        assert effects[0].status == "started"
+        # A mixed batch must still block on its potentially mutating tool.
+        await saved.store.record_tool_effect(
+            ToolEffectRecord(
+                run_id="crashed",
+                tool_call_id="write-1",
+                tool_name="write_file",
+                status="started",
+            )
+        )
+        with pytest.raises(SessionError, match="Interrupted tool effects"):
+            await saved.recover()
+
+    try:
+        asyncio.run(run())
+    finally:
+        saved.close()
