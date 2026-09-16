@@ -14,7 +14,6 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.search import stop_search
 from prompt_toolkit.styles import Style
-from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame
 from rich.console import Console
 from rich.markdown import Markdown
@@ -118,34 +117,14 @@ class TerminalOutput:
 
     def _wrap_tail(self) -> None:
         width = max(1, self.app.output.get_size().columns)
-        while get_cwidth(self.tail) > width:
-            cells = 0
-            fitting = 0
-            boundary = 0
-            seen_text = False
-            for index, char in enumerate(self.tail):
-                size = get_cwidth(char)
-                if size and cells + size > width:
-                    break
-                cells += size
-                fitting = index + 1
-                # Don't treat leading code indentation as a word separator.
-                if char == " " and seen_text:
-                    boundary = fitting
-                elif char != " ":
-                    seen_text = True
-            # A word wider than the pane must split. Always make progress even
-            # if one wide character cannot fit in a one-column terminal.
-            if fitting and self.tail[fitting : fitting + 1] == " ":
-                # A separator immediately after a full line belongs to the wrap,
-                # not the next word (where it would waste a column).
-                cut, remainder = fitting, fitting + 1
-            elif boundary:
-                cut, remainder = boundary - 1, boundary
-            else:
-                cut = remainder = fitting or 1
-            self._literal(self.tail[:cut] + "\n")
-            self.tail = self.tail[remainder:]
+        lines = Text(self.tail).wrap(self.console, width, overflow="fold")
+        if len(lines) > 1:
+            for line in lines[:-1]:
+                self._literal(line.plain.rstrip(" ") + "\n")
+            self.tail = lines[-1].plain
+        # With only one row, retain the original tail: Rich may trim a trailing
+        # separator at the right edge, but the next delta still needs that space
+        # to distinguish two words. Only committed rows become immutable.
 
     def finish(self, fallback: str = "") -> None:
         # Message is a completion marker, not a second rendering of the answer.
