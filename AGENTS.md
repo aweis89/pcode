@@ -1,6 +1,8 @@
 # Development notes
 
-- Commit code changes after making them.
+- Always commit code changes after making them, and push them.
+
+- Run `make install` after changes so the installed `pcode` tool env picks them up.
 
 - Before changing terminal or agent integrations, consult [the dependency reference guide](docs/dependencies.md) for official docs, installed-source discovery, and version-verification guidance.
 
