@@ -153,7 +153,9 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     assert input_rows(streaming) == 1
     assert "COMMITTED LINE" in streaming
     assert any(
-        line.endswith(" hello") and line[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" for line in streaming.splitlines()
+        line.rstrip("│ ").endswith(" hello")
+        and line.startswith(tuple("│" + f for f in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+        for line in streaming.splitlines()
     )
     before = streaming.splitlines().index("FIRST STREAM CHUNK")
     completed = capture(pane, "LIVE ANSWER COMPLETE")
@@ -484,7 +486,9 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     assert "Tasks ·" not in screen and "Tools" not in screen
     lines = screen.splitlines()
     first_task = next(i for i, line in enumerate(lines) if "Task 6" in line)
-    assert lines[first_task - 1].startswith("┌")
+    assert lines[first_task - 2].startswith("┌")
+    assert lines[first_task - 1].startswith("│")
+    assert lines[first_task - 1].rstrip("│ ").endswith(" h")
     assert all(
         line.startswith("│") and line.endswith("│") for line in lines[first_task : first_task + 5]
     )
@@ -505,7 +509,9 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     pane("send-keys", "-t", "preview:0.0", "Enter")
     screen = capture(pane, "Context reset")
     assert "Tasks ·" not in screen
-    assert screen.count("┌") == screen.count("└") == 1
+    assert "Task 0" not in screen
+    assert "✓ h" in screen  # Last prompt remains visible after clearing tasks.
+    assert screen.count("┌") == screen.count("└") == 2
 
 
 PAUSED_PREVIEW_SCRIPT = """
@@ -536,7 +542,9 @@ def test_paused_preview_reflows_on_resize_without_more_tokens(pane):
         # Check the active preview region, not resize ghosting in old history
         # (covered separately by the existing strict-xfail regression).
         lines = screen[: screen.rindex("┌")].splitlines()
-        assert lines.pop().endswith(" h")  # Pinned active prompt, above the editor.
+        assert lines.pop().startswith("└")
+        assert lines.pop().rstrip("│ ").endswith(" h")  # Prompt-only task widget.
+        assert lines.pop().startswith("┌")
         tail_row = max(i for i, line in enumerate(lines) if line.strip())
         expected_length = 61 % columns or columns
         assert lines[tail_row] == "x" * (expected_length - 11) + "PAUSED_TAIL", screen
@@ -574,7 +582,7 @@ app.run()
 
 
 @pytest.mark.parametrize("pane", [TOOLS_SCRIPT], indirect=True)
-def test_recent_tools_are_nested_inside_headerless_task_widget(pane):
+def test_recent_tools_are_nested_below_prompt_header_in_task_widget(pane):
     initial = capture(pane, "A task")
     assert "Tools" not in initial and "Tasks ·" not in initial
     assert initial.count("┌") == initial.count("└") == 2
@@ -582,23 +590,23 @@ def test_recent_tools_are_nested_inside_headerless_task_widget(pane):
     screen = capture(pane, "⟳ Run", running=True)
     lines = screen.splitlines()
     task = next(i for i, line in enumerate(lines) if "A task" in line)
-    assert lines[task - 1].startswith("┌")
-    assert lines[task + 1].startswith("│      ✓ Read · file_09.py")
-    assert lines[task + 4].startswith("│      ! Read failed · file_12.py")
-    assert lines[task + 5].startswith("│      ⟳ Run")
-    assert lines[task + 6].startswith("└")
-    assert lines[task + 7].endswith(" h")  # Pinned active prompt.
-    assert lines[task + 8].startswith("┌")  # Editor, not another Tools widget.
+    assert lines[task - 2].startswith("┌")
+    assert lines[task - 1].rstrip("│ ").endswith(" h")
+    assert lines[task + 1].startswith("│      ✓ Read · file_11.py")
+    assert lines[task + 2].startswith("│      ! Read failed · file_12.py")
+    assert lines[task + 3].startswith("│      ⟳ Run")
+    assert lines[task + 4].startswith("└")
+    assert lines[task + 5].startswith("┌")  # Editor, not another Tools widget.
     assert "Tools" not in screen and "Tasks ·" not in screen
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert "file_01.py" not in history
-    assert history.count("file_09.py") == 1
+    assert history.count("file_11.py") == 1
     assert "INSPECTABLE ERROR" not in history
 
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width, height in ((40, 20), (100, 32), (40, 14)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
-        count = 5 if height >= 20 else 4
+        count = 3
         deadline = time.monotonic() + 3
         while True:
             screen = capture(pane, "A task", running=True, columns=width)
@@ -648,7 +656,7 @@ def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
             marker = f"RESIZE_TRANSCRIPT_{i:03d}"
             assert history.count(marker) == 1, f"Lost or duplicated {marker}:\n{history}"
         history = single_editor_history(pane, "A task", frames=2)
-        assert history.count("file_09.py") == 1
+        assert history.count("file_11.py") == 1
 
 
 @pytest.mark.parametrize(
