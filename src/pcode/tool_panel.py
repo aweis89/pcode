@@ -103,7 +103,7 @@ def task_panel_rows(items: list[dict], tools: ToolHistory, budget: int, active_i
     if budget <= 0:
         return []
     finished = bool(items) and all(item["status"] in {"completed", "cancelled"} for item in items)
-    tool_count = 0 if finished else min(5, len(tools.calls), max(0, budget - bool(items)))
+    tool_count = 0 if finished else min(3, len(tools.calls), max(0, budget - bool(items)))
     task_count = min(5, len(items), budget - tool_count)
     active = next((i for i, item in enumerate(items) if item["status"] == "in_progress"), None)
     anchor = active if active is not None else 0
