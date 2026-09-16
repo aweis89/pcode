@@ -3,13 +3,16 @@
 import argparse
 import asyncio
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 from prompt_toolkit.application import get_app
 from prompt_toolkit.styles import DynamicStyle
+from rich.cells import cell_len
 from rich.console import Console
 from rich.rule import Rule
+from rich.text import Text
 
 from pcode.commands import Command, CommandRegistry
 from pcode.runtime import (
@@ -21,6 +24,7 @@ from pcode.runtime import (
     ToolStarted,
     ToolSummary,
 )
+from pcode.tool_display import plain
 from pcode.ui import PALETTES, Activity, TerminalOutput, Transcript, create_prompt
 
 
@@ -41,6 +45,7 @@ class PreviewApp:
         self.model = model
         self.resuming = resume
         self.workspace = (workspace or Path.cwd()).resolve()
+        self.branch = ""
         self.session_dir = saved_session.directory.parent if saved_session else session_dir
         self.preview = PreviewRuntime()
         self.runtime = runtime or self.preview
@@ -175,19 +180,54 @@ class PreviewApp:
     def quit(self, argument: str) -> None:
         self.running = False
 
+    def refresh_branch(self) -> None:
+        """Read only Git metadata; called off the UI thread, never during rendering."""
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.workspace), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            if result.returncode == 1:  # Detached HEAD: show its short commit instead.
+                result = subprocess.run(
+                    ["git", "-C", str(self.workspace), "rev-parse", "--short", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=1,
+                )
+            self.branch = plain(result.stdout.strip(), limit=None) if result.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            self.branch = ""
+
     def toolbar(self):
         width = get_app().output.get_size().columns
+        try:
+            relative = self.workspace.relative_to(Path.home())
+            directory = "~" if relative == Path(".") else f"~/{relative}"
+        except ValueError:
+            directory = str(self.workspace)
+        location = plain(directory, limit=None)
+        if self.branch:
+            location += f" {self.branch}"
+        agent = getattr(self.runtime, "agent", None)
+        settings = getattr(getattr(agent, "model", None), "settings", None) or {}
+        settings = {**settings, **(getattr(agent, "model_settings", None) or {})}
+        effort = settings.get("openai_reasoning_effort", "default") if self.model else "n/a"
+        model = self.model.split(":", 1)[-1] if self.model else "preview"
+        details = plain(f"{model} · effort: {effort}", limit=None)
         if self.activity.busy:
-            queued = f" · {self.activity.queued} queued" if self.activity.queued else ""
-            text = f" working · Ctrl+C cancel · Enter queues{queued}"
-            if width >= 100 and self.activity.status:
-                text += f" · {self.activity.status}"
-        elif width < 60:
-            text = f" {'coder' if self.model else 'preview'} · /help · Ctrl+D exit"
-        else:
-            mode = "coder" if self.model else "preview"
-            text = f" {mode} · Enter send · Alt+Enter newline · / commands · Ctrl+D exit"
-        return [("class:bottom-toolbar.text", text)]
+            details += " · working"
+            if self.activity.queued:
+                details += f" · {self.activity.queued} queued"
+        # Keep the model/effort visible before spending space on a long path.
+        path_width = max(0, width - cell_len(details) - 4)
+        path = Text(location if path_width else "")
+        if path_width:
+            path.truncate(path_width, overflow="ellipsis")
+        text = Text(f" {path.plain} · {details}" if path.plain else f" {details}")
+        text.truncate(width, overflow="ellipsis")
+        return [("class:bottom-toolbar.text", text.plain)]
 
     def handle(self, text: str) -> bool:
         """Handle commands/preview synchronously; return whether a live run is needed."""
@@ -347,7 +387,14 @@ class PreviewApp:
         self.transcript.output = output
         session.app.style = DynamicStyle(lambda: self.transcript.palette.prompt_style())
 
+        async def watch_branch():
+            while True:
+                await asyncio.to_thread(self.refresh_branch)
+                session.app.invalidate()
+                await asyncio.sleep(2)
+
         def start():
+            session.app.create_background_task(watch_branch())
             session.app.create_background_task(output.run())
             session.app.create_background_task(consume())
 
