@@ -81,14 +81,17 @@ class Activity:
     plan: list[dict] = field(default_factory=list)
     tools: ToolHistory = field(default_factory=ToolHistory)
 
-    def prompt_fragments(self, spinner: str):
+    def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
         style = "bold ansired" if self.prompt_state == "failed" else "class:prompt"
         suffix = {"failed": " · failed", "cancelled": " · cancelled"}.get(self.prompt_state, "")
-        return [
-            (style, icons.get(self.prompt_state, "❯") + " "),
-            ("", plain(self.prompt, limit=None) + suffix),
-        ]
+        # Measure terminal cells, not characters, so wide Unicode fits too.
+        prefix = Text(icons.get(self.prompt_state, "❯") + " ")
+        prefix.truncate(max(0, width), overflow="crop")
+        text = Text(plain(self.prompt, limit=None) + suffix)
+        remaining = max(0, width - prefix.cell_len)
+        text.truncate(remaining, overflow="ellipsis" if remaining else "crop")
+        return [(style, prefix.plain), ("", text.plain)]
 
     def preview(self):
         return [("", self.text)]
@@ -399,7 +402,10 @@ def create_prompt(
     current_prompt = ConditionalContainer(
         Window(
             FormattedTextControl(
-                lambda: activity.prompt_fragments(plan_spinner.render(monotonic()).plain),
+                lambda: activity.prompt_fragments(
+                    plan_spinner.render(monotonic()).plain,
+                    session.app.output.get_size().columns - 2,
+                ),
                 show_cursor=False,
             ),
             height=1,

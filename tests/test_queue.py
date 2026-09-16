@@ -126,9 +126,34 @@ def test_prompt_indicator(state, icon):
     from pcode.ui import Activity
 
     activity = Activity(prompt="first\nsecond\x1b", prompt_state=state)
-    fragments = activity.prompt_fragments("⠋")
+    fragments = activity.prompt_fragments("⠋", 80)
     assert fragments[0][1] == icon + " "
     assert fragments[1][1].startswith("first second ")
     if state == "failed":
         assert "ansired" in fragments[0][0]
         assert fragments[1][1].endswith(" · failed")
+
+
+@pytest.mark.parametrize("width", [0, 1, 2, 3, 12, 40, 100])
+@pytest.mark.parametrize("state", ["running", "done", "failed", "cancelled"])
+def test_prompt_indicator_truncates_to_terminal_width(width, state):
+    from rich.cells import cell_len
+
+    from pcode.ui import Activity
+
+    prompt = "Work on 界面\n" * 30
+    activity = Activity(prompt=prompt, prompt_state=state)
+    fragments = activity.prompt_fragments("⠋", width)
+    rendered = "".join(text for _, text in fragments)
+    assert "\n" not in rendered
+    assert cell_len(rendered) <= width
+    if width > 2:
+        assert rendered.endswith("…")
+    assert activity.prompt == prompt
+
+
+def test_prompt_indicator_keeps_short_prompt_intact():
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running")
+    assert activity.prompt_fragments("⠋", 9) == [("class:prompt", "⠋ "), ("", "Fix bug")]
