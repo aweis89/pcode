@@ -46,6 +46,7 @@ class PreviewApp:
     ) -> None:
         self.model = model
         self.resuming = resume
+        self.save_sessions = save or saved_session is not None
         self.workspace = (workspace or Path.cwd()).resolve()
         self.branch = ""
         self.session_dir = saved_session.directory.parent if saved_session else session_dir
@@ -71,9 +72,13 @@ class PreviewApp:
         self.inspector_requested: str | None = None
         self.session_requested = False
         self.login_requested = False
+        self.model_requested = False
         self.registry = CommandRegistry()
         for command in (
             Command("/login", "Reuse pi's Anthropic login", self.login, ("pi",)),
+            Command(
+                "/model", "Choose a model (Ctrl+L); starts a new conversation", self.select_model
+            ),
             Command("/help", "Commands and keyboard shortcuts", self.help),
             Command("/tools", "Inspect tool calls and their results", self.tools, ("failed",)),
             Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
@@ -92,6 +97,80 @@ class PreviewApp:
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
         ):
             self.registry.register(command)
+
+    def select_model(self, argument: str) -> None:
+        self.model_requested = True
+
+    async def switch_model(self, model: str) -> None:
+        from pcode.agent import create_agent
+        from pcode.live import AgentRuntime
+        from pcode.sessions import SavedSession
+
+        if self.activity.busy or self.activity.queued_prompts:
+            raise ValueError("Cannot change models while working or messages are queued.")
+        if model == self.model:
+            self.transcript.note(f"Already using {model}.")
+            return
+        # Construct first: a missing provider/login must leave the old session intact.
+        agent = await asyncio.to_thread(create_agent, model, self.workspace)
+        save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
+        root = self.session_dir
+        workspace = self.workspace
+        runtime = AgentRuntime(
+            agent,
+            session_factory=(lambda: SavedSession.create(model, workspace, root)) if save else None,
+        )
+        close = getattr(self.runtime, "close", None)
+        if close is not None:
+            close()
+        self.runtime = runtime
+        self.model = model
+        self.save_sessions = save
+        self.resuming = False
+        self.activity.plan = []
+        self.activity.tools.clear()
+        self.activity.prompt = ""
+        self.activity.prompt_state = ""
+        self.activity.status = ""
+        self.transcript.print(Rule("New conversation", style=self.transcript.palette.muted))
+        self.transcript.note(f"Model: {model}. Context reset; transcript and draft are unchanged.")
+        self.show_startup_context()
+
+    async def choose_model(self, output: TerminalOutput, session) -> None:
+        from pcode.model_ui import ModelPicker
+        from pcode.models import active_providers, model_catalog
+
+        self.model_requested = False
+        providers = await asyncio.to_thread(active_providers, self.model)
+        if not providers:
+            self.transcript.note(
+                "No active model providers. Use /login for pi Anthropic auth, "
+                "set ANTHROPIC_API_KEY, or run codex login."
+            )
+            return
+        if os.environ.get("PCODE_LLM_PROXY", "").strip():
+            self.transcript.note("PCODE_LLM_PROXY limits model selection to Codex.")
+        values = model_catalog(providers, self.model)
+        await output.flush()
+        async with output.lock:
+            async with in_terminal():
+                stdin = getattr(session.app.input, "stdin", None)
+                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
+                try:
+                    picker = ModelPicker(
+                        values,
+                        providers,
+                        current=self.model,
+                        input=modal_input,
+                        output=session.app.output,
+                        style=session.app.style,
+                    )
+                    model = await picker.run()
+                finally:
+                    if modal_input is not session.app.input:
+                        modal_input.close()
+        if model is not None:
+            await self.switch_model(model)
 
     def login(self, argument: str) -> None:
         if self.model and not self.model.startswith("anthropic:"):
@@ -585,7 +664,7 @@ class PreviewApp:
                     command = self.registry.find(text.split(maxsplit=1)[0])
                     if (
                         command
-                        and command.name in {"/new", "/session", "/login"}
+                        and command.name in {"/new", "/session", "/login", "/model"}
                         and self.activity.busy
                     ):
                         self.transcript.user(text)
@@ -599,6 +678,8 @@ class PreviewApp:
                             cancel()
                             if live_task is not None:
                                 await live_task
+                        if self.model_requested:
+                            await self.choose_model(output, session)
                         if self.login_requested:
                             await self.login_pi()
                         if self.session_requested:
@@ -668,6 +749,7 @@ class PreviewApp:
             on_submit=submit,
             on_cancel=cancel,
             on_effort=self.adjust_effort,
+            on_model=lambda: submit("/model"),
             bottom_toolbar=self.toolbar,
         )
         output = TerminalOutput(

@@ -315,10 +315,17 @@ def create_prompt(
     on_submit=None,
     on_cancel=None,
     on_effort=None,
+    on_model=None,
     **kwargs,
 ) -> PromptSession:
     activity = activity or Activity()
     keys = KeyBindings()
+
+    if on_model is not None:
+
+        @keys.add("c-l", filter=~is_searching)
+        def choose_model(event: KeyPressEvent) -> None:
+            on_model()
 
     if on_effort is not None:
 
@@ -664,6 +671,7 @@ class Transcript:
         self.print()
         self.note("/ commands · Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
+        self.note("Ctrl+L choose model (new conversation)")
         self.note("Ctrl+N increase effort · Ctrl+P decrease effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note("During a run: type a draft · Enter queues · Ctrl+C/Ctrl+D cancel, keep draft.")

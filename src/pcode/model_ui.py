@@ -1,0 +1,121 @@
+"""Searchable, temporary model picker; never owns the main editor's buffer."""
+
+import re
+
+from prompt_toolkit.application import Application
+from prompt_toolkit.data_structures import Point
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.widgets import Dialog, Label, TextArea
+
+from pcode.models import PROVIDERS
+
+
+class ModelPicker:
+    def __init__(self, models, providers, *, current=None, input=None, output=None, style=None):
+        self.models = list(models)
+        self.providers = set(providers)
+        self.current = current
+        self.selected = 0
+        self.matches = list(models)
+        self.search = TextArea(height=1, prompt="Filter: ", multiline=False)
+        self.search.buffer.on_text_changed += self.filter
+        rows = FormattedTextControl(
+            self.fragments, get_cursor_position=lambda: Point(x=0, y=self.selected)
+        )
+        keys = KeyBindings()
+
+        @keys.add("up", eager=True)
+        @keys.add("c-p", eager=True)
+        def previous(event):
+            self.selected = max(0, self.selected - 1)
+
+        @keys.add("down", eager=True)
+        @keys.add("c-n", eager=True)
+        def next_model(event):
+            self.selected = min(max(0, len(self.matches) - 1), self.selected + 1)
+
+        @keys.add("enter", eager=True)
+        def accept(event):
+            if self.matches:
+                event.app.exit(result=self.matches[self.selected])
+
+        @keys.add("escape", eager=True)
+        @keys.add("c-c")
+        @keys.add("c-d")
+        @keys.add("c-l")
+        def cancel(event):
+            event.app.exit(result=None)
+
+        dialog = Dialog(
+            title="Choose model",
+            body=HSplit(
+                [
+                    Label("↑/↓ select · Enter apply · Esc cancel", dont_extend_height=True),
+                    self.search,
+                    Window(
+                        rows,
+                        height=Dimension(min=3, max=14),
+                        dont_extend_height=True,
+                        wrap_lines=False,
+                        always_hide_cursor=True,
+                    ),
+                    Label(
+                        "Local suggestions; access depends on your account.\n"
+                        "Type provider:model-id for a custom model.\n"
+                        "Changing model starts a NEW conversation; old sessions remain saved.",
+                        dont_extend_height=True,
+                    ),
+                ],
+                padding=1,
+            ),
+            with_background=True,
+        )
+        self.app = Application(
+            layout=Layout(dialog, focused_element=self.search),
+            key_bindings=keys,
+            full_screen=True,
+            input=input,
+            output=output,
+            style=style,
+        )
+
+    def filter(self, buffer):
+        query = buffer.text.strip()
+        terms = query.lower().split()
+        self.matches = [name for name in self.models if all(t in name.lower() for t in terms)]
+        provider, _, name = query.partition(":")
+        if (
+            provider in self.providers
+            and name
+            and re.fullmatch(r"[A-Za-z0-9_.:/-]+", name)
+            and query not in self.matches
+        ):
+            self.matches.insert(0, query)
+        self.selected = 0
+
+    def fragments(self):
+        if not self.matches:
+            return [("class:plan", "No matches. Try another filter or provider:model-id.")]
+        result = []
+        for index, name in enumerate(self.matches):
+            provider, _, model = name.partition(":")
+            marker = " · current" if name == self.current else ""
+            if name not in self.models:
+                marker += " · custom"
+            style = "class:completion-menu.completion.current" if index == self.selected else ""
+            result.append(
+                (
+                    style,
+                    f"{'›' if index == self.selected else ' '} "
+                    f"{PROVIDERS.get(provider, provider)} · {model}{marker}",
+                )
+            )
+            if index < len(self.matches) - 1:
+                result.append(("", "\n"))
+        return result
+
+    async def run(self):
+        return await self.app.run_async()
