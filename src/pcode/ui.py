@@ -216,5 +216,5 @@ class Transcript:
         self.note("Enter accepts a selected completion; press again to send.")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note("During a run: Ctrl+C/Ctrl+D cancel; editing resumes when the run finishes.")
-        self.note("History is in memory only. Mouse selection stays with your terminal.")
+        self.note("Input history is in memory only. Mouse selection stays with your terminal.")
         self.console.print()

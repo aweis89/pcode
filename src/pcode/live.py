@@ -1,5 +1,6 @@
 """Translate Pydantic streams to UI-independent application events."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from uuid import uuid4
 
@@ -18,23 +19,91 @@ from pydantic_ai import (
 )
 from pydantic_ai.messages import ModelMessage, RetryPromptPart
 from pydantic_ai.usage import UsageLimits
+from pydantic_ai_harness.step_persistence import StepPersistence
 
+from pcode.diagnostics import error_details
 from pcode.runtime import Event, Message, RunStatus, TextDelta, ToolSummary
+from pcode.sessions import SavedSession, SessionError
 
 
 class AgentRuntime:
-    def __init__(self, agent: Agent) -> None:
+    def __init__(self, agent: Agent, session: SavedSession | None = None) -> None:
         self.agent = agent
-        self.reset()
+        self.session = session
+        self._clear()
+
+    def _clear(self) -> None:
+        info = self.session.info if self.session else None
+        self.history: list[ModelMessage] = []
+        self.conversation_id = info.id if info else str(uuid4())
+        self.turns = info.turns if info else 0
+        self.input_tokens = info.input_tokens if info else 0
+        self.output_tokens = info.output_tokens if info else 0
+        self.recovery_blocked = ""
 
     def reset(self) -> None:
-        self.history: list[ModelMessage] = []
-        self.conversation_id = str(uuid4())
-        self.turns = 0
-        self.input_tokens = 0
-        self.output_tokens = 0
+        if self.session:
+            old = self.session
+            from pathlib import Path
+
+            self.session = SavedSession.create(
+                old.info.model, Path(old.info.workspace), old.directory.parent
+            )
+            old.close()
+        self._clear()
+
+    async def restore(self) -> None:
+        if self.session:
+            self.history = await self.session.recover()
+
+    def close(self) -> None:
+        if self.session:
+            self.session.close()
 
     async def stream(self, prompt: str) -> AsyncIterator[Event]:
+        if self.recovery_blocked:
+            raise SessionError(self.recovery_blocked)
+        saved = self.session
+        run_id = str(uuid4())
+        if saved:
+            saved.append("turn_started", prompt=prompt, run_id=run_id, sync=True)
+            saved.info.status = "running"
+            saved.save_info()
+        try:
+            async for event in self._stream(prompt, run_id):
+                if saved:
+                    saved.event(event)
+                yield event
+        except BaseException as error:
+            if saved:
+                cancelled = isinstance(
+                    error, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit)
+                )
+                saved.append(
+                    "turn_cancelled" if cancelled else "turn_failed",
+                    run_id=run_id,
+                    error=error_details(error),
+                    sync=True,
+                )
+                saved.info.status = "cancelled" if cancelled else "failed"
+                saved.save_info()
+                try:
+                    # Keep completed tool results even if the *following* request
+                    # failed. Never silently re-run a side effect on retry.
+                    self.history = await saved.recover()
+                except SessionError as recovery_error:
+                    self.recovery_blocked = str(recovery_error)
+            raise
+        else:
+            if saved:
+                saved.append("turn_completed", run_id=run_id, sync=True)
+                saved.info.status = "complete"
+                saved.info.turns = self.turns
+                saved.info.input_tokens = self.input_tokens
+                saved.info.output_tokens = self.output_tokens
+                saved.save_info()
+
+    async def _stream(self, prompt: str, run_id: str) -> AsyncIterator[Event]:
         emitted_text = False
         tools: dict[str, str] = {}
         # Unlike run_stream(), this completes the tool loop even when the model
@@ -43,6 +112,8 @@ class AgentRuntime:
             prompt,
             message_history=self.history,
             conversation_id=self.conversation_id,
+            run_id=run_id,
+            capabilities=[StepPersistence(store=self.session.store)] if self.session else [],
             usage_limits=UsageLimits(request_limit=30),
         ) as events:
             async for event in events:
@@ -82,8 +153,8 @@ class AgentRuntime:
                     result = event.result
                     if result.output and not emitted_text:
                         yield Message(str(result.output))
-                    # Only commit history from complete runs. A failed/cancelled
-                    # turn cannot leave unmatched tool calls in the next request.
+                    # Full successful history. The outer persistence wrapper also
+                    # recovers settled tool-boundary snapshots after failures.
                     self.history = result.all_messages()
                     self.turns += 1
                     self.input_tokens += result.usage.input_tokens
@@ -95,6 +166,8 @@ def error_message(error: Exception) -> str:
     if isinstance(error, BaseExceptionGroup) and error.exceptions:
         return error_message(error.exceptions[0])
     name = type(error).__name__
+    if isinstance(error, SessionError):
+        return str(error)
     if name == "UserError" and "Codex CLI credentials" in str(error):
         return "Provider login missing or invalid. Run `codex login`, then restart pcode."
     if name == "CredentialsRefreshError":
@@ -115,7 +188,10 @@ def error_message(error: Exception) -> str:
         return f"Authentication failed ({name}). Refresh your provider login and restart."
     status = getattr(error, "status_code", None)
     if status is not None:
-        return f"Provider request failed (HTTP {status}). Check model access and authentication."
+        details = error_details(error)
+        detail = details.get("provider_message", "")
+        suffix = f" {detail}" if detail else " See the saved session diagnostics."
+        return f"Provider request failed (HTTP {status}).{suffix}"
     if isinstance(error, ImportError):
         return "Provider dependency missing. Install its pydantic-ai-slim extra and try again."
     return f"Run failed ({name}). Check the model string, provider credentials, and connectivity."

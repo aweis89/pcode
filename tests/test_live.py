@@ -18,11 +18,20 @@ from pcode.runtime import Message, RunStatus, TextDelta, ToolSummary
 from pcode.ui import create_prompt
 
 
-def test_model_string_is_passed_unchanged(tmp_path):
-    with patch("pcode.agent.Agent") as constructor:
+def test_codex_uses_native_model_with_only_cache_override(tmp_path):
+    with patch("pcode.agent.Agent") as constructor, patch("pcode.agent.OpenAICodexModel") as model:
         create_agent("openai-codex:gpt-5.6-luna", tmp_path)
-    assert constructor.call_args.args == ("openai-codex:gpt-5.6-luna",)
+    model.assert_called_once_with(
+        "gpt-5.6-luna", profile={"openai_supports_prompt_cache_breakpoints": False}
+    )
+    assert constructor.call_args.args == (model.return_value,)
     assert isinstance(constructor.call_args.kwargs["capabilities"][0], Coder)
+
+
+def test_other_model_strings_are_passed_unchanged(tmp_path):
+    with patch("pcode.agent.Agent") as constructor:
+        create_agent("openai:example", tmp_path)
+    assert constructor.call_args.args == ("openai:example",)
 
 
 def test_stream_runs_real_coder_read_tool_and_retains_history(tmp_path):

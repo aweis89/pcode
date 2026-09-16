@@ -21,7 +21,7 @@ def make_app(width=80):
 @pytest.mark.parametrize(
     "text, expected",
     [
-        ("/", ["/help", "/demo", "/theme", "/context", "/new", "/quit"]),
+        ("/", ["/help", "/demo", "/theme", "/context", "/new", "/sessions", "/quit"]),
         ("/de", ["/demo"]),
         ("/theme ", ["dark", "light"]),
         ("/theme l", ["light"]),

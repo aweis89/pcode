@@ -11,9 +11,14 @@ With [uv](https://docs.astral.sh/uv/) installed, from this directory:
 uv run pcode -m openai-codex:gpt-5.6-luna
 ```
 
-`-m` / `--model` passes the model string directly to Pydantic's `Agent`. Nothing
-is remapped to a different model or provider. The current directory is the Coder
-workspace; select another repository with `-C`:
+`-m` / `--model` selects the Pydantic model/provider without remapping either name.
+For `openai-codex:`, pcode constructs the native model with one profile override:
+explicit prompt-cache breakpoints are disabled. Pydantic AI 2.43.0 advertises them
+for this model family, but the subscription endpoint rejects the marker added by
+Harness Planning after `write_plan` with HTTP 400. Authentication and streaming
+still use the native provider, not a custom transport.
+
+The current directory is the Coder workspace; select another repository with `-C`:
 
 ```sh
 uv run pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
@@ -27,7 +32,8 @@ pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
 ```
 
 Try asking: `What does this repository do? Read the README and cite relevant files.`
-Follow-up messages retain the conversation in memory. `/new` resets model context.
+Live conversations save automatically. `/new` starts a new saved conversation
+without deleting the old one.
 
 ### Authentication
 
@@ -63,6 +69,54 @@ can run arbitrary code. Files and code returned by tools are sent to the selecte
 model. Background processes started by tools can outlive a turn; cancelling a run
 is not an undo of completed tool effects.
 
+## Sessions and debugging
+
+```sh
+uv run pcode --sessions
+uv run pcode --resume latest
+uv run pcode --resume SESSION_ID
+uv run pcode -m openai-codex:gpt-5.6-sol --no-save  # opt out for a sensitive session
+```
+
+Resume accepts an unambiguous ID prefix (at least 8 characters) and restores the
+saved model, workspace, and structured message history. It prints recent transcript
+blocks and waits for your next message; it does not automatically re-run tools.
+A different explicit `-m` or `-C` is rejected on resume. Only one process may open
+a session for writing. `/sessions` lists sessions from inside the terminal too.
+
+Default location: `$XDG_STATE_HOME/pcode/sessions`, or
+`~/.local/state/pcode/sessions`. Override with `--session-dir PATH` or
+`PCODE_SESSION_DIR`. Each session directory contains:
+
+- `session.json`: model, workspace, timestamps, completed-turn usage, and package versions.
+- `steps.sqlite3`: Harness `StepPersistence` events, full Pydantic message snapshots
+  (including tool arguments/results and provider reasoning metadata), and a tool-effect ledger.
+- `transcript.jsonl`: submitted prompts, streamed text, completed blocks/tool summaries,
+  and structured failure diagnostics (HTTP status, provider code/parameter/message).
+
+Session directories are mode 0700 and data files are 0600. **These files contain
+conversation and repository content in plaintext.** They stay outside the repo by
+default; do not commit or share them without inspection. No HTTP headers, provider
+credential store, or auth tokens are deliberately captured. Error diagnostics
+redact known token formats, credential assignments, and credential values from
+the environment; this is best-effort, not a guarantee that arbitrary sensitive
+text can be recognized. Model snapshots retain their content faithfully for replay,
+so sensitive material pasted by you or returned by a tool can still be stored.
+Use `--no-save` when that is inappropriate. Delete a closed session's directory
+to remove it; there is no automatic retention policy yet.
+
+Checkpoints are saved by Harness at settled tool boundaries, not just when an
+answer succeeds. If the request after a completed tool fails, its tool result is
+retained for the next turn and for resume. Interrupted streaming text is retained
+in the journal, even when it cannot become a safe model checkpoint. Resume uses
+the most recent settled checkpoint. If a tool was in flight at a crash and its
+outcome is unknown, resume refuses rather than risking a repeated side effect;
+inspect the ledger before proceeding. Checkpoints do not restore files, running
+processes, or capability-local state such as the in-memory planner.
+
+Nothing from sessions run before this feature was installed can be reconstructed
+from disk; those earlier conversations were memory-only.
+
 ## Offline preview and commands
 
 ```sh
@@ -80,7 +134,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   `/theme` alone toggles.
 - `/help`: command list and keyboard shortcuts.
 - `/context`: current model, workspace, completed turns, and token usage.
-- `/new`: reset the conversation without clearing scrollback or input history.
+- `/new`: start a new saved conversation without clearing scrollback or input history.
+- `/sessions`: list saved conversations and resume instructions.
 - `/quit` (alias `/exit`): exit.
 
 ### Keys and layout
@@ -103,8 +158,9 @@ During generation, a small temporary region above the prompt shows live text or
 current activity. Finalized text blocks become Rich Markdown in ordinary terminal
 scrollback, printed once. Completed tools get concise summaries rather than raw
 output dumps. The prompt is read-only during a run; cancellation restores editing.
-Input history and model history are in memory only. A failed or cancelled turn is
-not added to the next model request, although its completed tool effects remain.
+Editor history remains in memory; live model messages and transcript events are
+saved unless `--no-save` is set. Failed/cancelled runs recover settled checkpoints
+when safe. Cancellation never undoes completed tool effects.
 
 ## Small architecture
 
@@ -113,6 +169,9 @@ not added to the next model request, although its completed tool effects remain.
 - `src/pcode/live.py`: `run_stream_events()` adapter, history, and usage. It runs the
   whole tool loop, including when the model emits text before tool calls.
 - `src/pcode/runtime.py`: plain application events and offline fixtures.
+- `src/pcode/sessions.py`: private manifests/journals, session locking, and the
+  official Harness SQLite step store; recovery uses its settled snapshots.
+- `src/pcode/diagnostics.py`: structured provider errors with best-effort redaction.
 - `src/pcode/ui.py`: prompt_toolkit editor, bottom-aligned layout, temporary live
   output, and Rich finalized transcript rendering.
 - `src/pcode/commands.py`: registry shared by dispatch, help, and completion.
@@ -124,8 +183,7 @@ area. No full-screen conversation viewport, alternate screen, custom cursor
 positioning, or manually reserved scroll region. Existing transcript is never
 repainted. Bottom placement relies on ordinary terminal cursor-position reports.
 
-Approvals, persistent sessions, queued prompts, model pickers, and MCP management
-are not implemented yet. Each run is capped at 30 model requests as a basic guard
+Approvals, queued prompts, model pickers, and MCP management are not implemented yet. Each run is capped at 30 model requests as a basic guard
 against runaway tool loops, not a monetary budget.
 
 ## References
@@ -148,7 +206,11 @@ uv run ruff format --check .
 
 Tests require no API keys or paid model calls. They cover completion, keybindings,
 Unicode/narrow output, streaming, history/reset, cancellation, and actual Coder
-file reads using Pydantic's `FunctionModel`. PTY tests check clean startup/exit
+file reads using Pydantic's `FunctionModel`. Session tests cover round-trip history,
+post-tool failures, safe diagnostics, file permissions, locking, torn journals,
+and refusal to resume unresolved side effects. A native-provider wire test checks
+that explicit cache markers are omitted while streaming/store settings are retained.
+PTY tests check clean startup/exit
 without alternate-screen or scroll-region sequences. When tmux is installed,
 isolated-server tests measure prompt height and bottom placement through splits,
 streaming, cancellation, and replies, and check transcript retention.
