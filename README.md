@@ -47,6 +47,19 @@ With [uv](https://docs.astral.sh/uv/) installed, from this directory:
 uv run pcode -m openai-codex:gpt-5.6-luna
 ```
 
+Selecting a model with `/model` (Ctrl+L) saves it as the default for future
+startups. `/effort` and Ctrl+N/Ctrl+P also save the selected reasoning effort
+and current model. Preferences live in `~/.config/pcode/preferences.json`
+(or `$XDG_CONFIG_HOME/pcode/preferences.json` when set), independently of saved
+conversations and `--no-save`. Run `pcode` with no model argument to reuse the
+saved model; without a saved default it opens the offline preview. The saved
+effort applies to OpenAI/Codex models, including new and resumed conversations;
+`/effort default` restores provider-default behavior. Delete the preferences file
+to reset these defaults. `--demo` always stays offline.
+
+`-m` / `--model` overrides the saved model for that launch; `--resume` uses the
+session's model. Neither changes the saved default by itself.
+
 `-m` / `--model` selects the Pydantic model/provider without remapping either name.
 For `openai-codex:`, pcode constructs the native model with one profile override:
 explicit prompt-cache breakpoints are disabled. Pydantic AI 2.43.0 advertises them
