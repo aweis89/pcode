@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from pcode.models import active_providers, model_catalog
+from pcode.models import active_providers, model_catalog, model_sort_key
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +52,7 @@ def test_proxy_limits_providers(monkeypatch):
 
 def test_catalog_uses_installed_sdk_and_keeps_custom_current():
     models = model_catalog({"anthropic", "openai-codex"}, "anthropic:custom-id")
-    assert models[0] == "anthropic:custom-id"
+    assert "anthropic:custom-id" in models
     assert "anthropic:claude-opus-5" in models
     assert "openai-codex:gpt-5.6-luna" in models
     assert len(models) == len(set(models))
@@ -60,3 +60,25 @@ def test_catalog_uses_installed_sdk_and_keeps_custom_current():
     assert all("chat-latest" not in name for name in models)
     assert model_catalog(set()) == []
     assert all(name.startswith("anthropic:") for name in model_catalog({"anthropic"}))
+
+
+def test_numeric_version_sort_newest_first_with_alias_before_snapshots():
+    expected = [
+        "anthropic:claude-opus-5",
+        "anthropic:claude-opus-4-10",
+        "anthropic:claude-opus-4-9",
+        "anthropic:claude-opus-4-5",
+        "anthropic:claude-opus-4-5-20251101",
+        "anthropic:claude-opus-4-5-20251001",
+        "anthropic:claude-sonnet-5",
+        "openai-codex:gpt-5.10",
+        "openai-codex:gpt-5.9",
+        "openai-codex:gpt-5.6-luna",
+    ]
+    assert sorted(reversed(expected), key=model_sort_key) == expected
+
+
+def test_current_model_does_not_override_version_order():
+    current = "anthropic:claude-opus-4-5"
+    models = model_catalog({"anthropic"}, current)
+    assert models.index("anthropic:claude-opus-5") < models.index(current)

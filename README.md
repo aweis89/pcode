@@ -141,7 +141,9 @@ flow. Existing environment settings are not overwritten in your shell.
 ### Choose a model in the terminal
 
 Use **`/model`** or **Ctrl+L** to open the searchable model picker. Type to filter,
-use ↑/↓ to select, and press Enter to apply. Escape, Ctrl+C, or Ctrl+L closes the
+use ↑/↓ to select, and press Enter to apply. Filtering matches both provider and
+model names, including joined word prefixes: `anthopus` finds Anthropic Opus,
+`codluna` finds Codex Luna, and `opus anth` works too. Escape, Ctrl+C, or Ctrl+L closes the
 picker without changing the model or editor draft. For a model not in the catalog,
 type its full `provider:model-id` (for example `anthropic:claude-opus-5`).
 
@@ -153,6 +155,12 @@ The picker currently supports configured **Anthropic** and **OpenAI Codex** prov
 - Codex is enabled when its CLI credential file exists (`CODEX_HOME` is honored).
   Opening the picker checks file presence only, not its contents or validity.
 - With `PCODE_LLM_PROXY` set, only Codex is offered; unset it to select Anthropic.
+
+Models are grouped by provider and family, with numeric versions sorted newest
+first (Opus 5 before Opus 4.8; 4.10 before 4.9). Filtering preserves that order.
+The current model is marked, not pinned above newer versions; undated aliases
+precede dated snapshots of the same version. This uses model IDs, not release-date
+metadata across different families.
 
 Suggestions come from the installed Pydantic AI catalog (Anthropic and selected
 GPT-5 coding/base variants for Codex). Opening the picker makes **no network
