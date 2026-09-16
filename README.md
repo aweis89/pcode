@@ -89,9 +89,54 @@ depends on your account. Authentication failures are displayed without raw
 provider bodies or credential values.
 
 For ordinary OpenAI API models, use an `openai:...` string and supply
-`OPENAI_API_KEY` through your environment. Only the OpenAI provider extra is
-installed by default. Other Pydantic model strings require their provider extras
-and corresponding authentication.
+`OPENAI_API_KEY` through your environment. For Anthropic API models, use
+`anthropic:<model-id>` and supply `ANTHROPIC_API_KEY` through your environment.
+Use the exact API model ID available to your account; pcode does not remap aliases.
+Both the OpenAI and Anthropic provider extras are installed by default, including
+with `make install`. Run `make install` again to refresh an existing editable
+installation after dependency changes. Other Pydantic model strings require their
+provider extras and corresponding authentication.
+
+### Reuse an existing pi Anthropic login
+
+If you already logged in to Anthropic in pi, explicitly select that credential:
+
+```sh
+make install
+env -u PCODE_LLM_PROXY PCODE_ANTHROPIC_AUTH=pi pcode -m anthropic:<model-id>
+```
+
+Alternatively, enter `/login` (or `/login pi`) in an idle Anthropic session to switch its current
+model to pi authentication without discarding history. In offline preview this
+checks the credential; launch with the environment setting above to use a live
+model. There is no API-key entry UI or pcode-managed credential storage.
+For ordinary API-key access, set `ANTHROPIC_API_KEY` in your environment.
+Login is unavailable while a run or queued prompts are active.
+For OpenAI Codex, continue to use `codex login`.
+
+- Reads the `anthropic` entry in `~/.pi/agent/auth.json` at runtime. Honors
+  `PI_CODING_AGENT_DIR` for a custom pi directory. No pi credential file is read
+  unless you select pi authentication.
+- Supports a stored OAuth access token or literal API key. Does not execute pi's
+  shell-command/API-key expressions or resolve provider-specific environment maps.
+- Pi selection overrides `ANTHROPIC_API_KEY`. Missing, invalid,
+  or expired pi credentials produce an error, never a fallback to another account.
+- Uses OAuth Bearer authentication with pi-compatible beta headers and system
+  preamble; API keys retain ordinary API-key authentication. OAuth compatibility
+  follows [pi's transport](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/api/anthropic-messages.ts),
+  including its Claude Code wire identity markers. This is not an official
+  third-party OAuth integration, and server compatibility/entitlements can change.
+- Never copies credentials into pcode storage, changes pi's file, or uses its
+  refresh token. Re-reads the access credential for every request/retry. If it
+  expires, refresh it by using/logging in to pi, then retry in pcode. If pi changes
+  credential type, run `/login pi` again or restart pcode.
+- Sends model requests to `https://api.anthropic.com`; this adapter does not honor
+  `ANTHROPIC_BASE_URL`. Billing and model access remain those of the pi credential.
+
+Pi auth selection is process-local, not stored in sessions. Supply
+`PCODE_ANTHROPIC_AUTH=pi` again when resuming in a new process (or export it in your
+shell). Use `PCODE_ANTHROPIC_AUTH=api-key` or unset it for the normal environment API-key
+flow. Existing environment settings are not overwritten in your shell.
 
 ### Model-only HTTP proxy
 

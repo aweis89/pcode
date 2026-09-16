@@ -290,8 +290,11 @@ def error_message(error: Exception) -> str:
     """Don't print raw provider bodies/validation inputs; they can contain secrets."""
     if isinstance(error, BaseExceptionGroup) and error.exceptions:
         return error_message(error.exceptions[0])
+    from pcode.auth import LoginError
+
     name = type(error).__name__
-    if isinstance(error, SessionError):
+    if isinstance(error, (SessionError, LoginError)):
+        # LoginError contains only fixed, sanitized setup/refresh guidance.
         return str(error)
     if name == "UserError" and "Codex CLI credentials" in str(error):
         return "Provider login missing or invalid. Run `codex login`, then restart pcode."
