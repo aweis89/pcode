@@ -250,6 +250,8 @@ class PreviewApp:
     async def run_live(self, output: TerminalOutput, text: str) -> bool:
         from pcode.live import error_message
 
+        self.activity.prompt = text
+        self.activity.prompt_state = "running"
         self.activity.status = "Waiting for model…"
         failure = None
         cancelled = False
@@ -279,6 +281,8 @@ class PreviewApp:
             output.finish()
             self.activity.tools.interrupt_running()
             self.activity.status = ""
+        self.activity.prompt_state = "cancelled" if cancelled else "failed" if failure else "done"
+        output.app.invalidate()
         if cancelled:
             self.transcript.note("Run cancelled. Completed tool effects are not undone.")
         elif failure:
@@ -343,6 +347,8 @@ class PreviewApp:
                 success = True
                 try:
                     if self.handle(text):
+                        self.activity.prompt = text
+                        self.activity.prompt_state = "running"
                         live_task = asyncio.create_task(self.run_live(output, text))
                         try:
                             success = await live_task
@@ -351,6 +357,7 @@ class PreviewApp:
                             if not session.app.is_running:
                                 return
                             success = False
+                            self.activity.prompt_state = "cancelled"
                             self.transcript.note(
                                 "Run cancelled. Completed tool effects are not undone."
                             )

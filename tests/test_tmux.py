@@ -142,9 +142,13 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     streaming = capture(pane, "FIRST STREAM CHUNK", running=True)
     assert input_rows(streaming) == 1
     assert "COMMITTED LINE" in streaming
+    assert any(
+        line.endswith(" hello") and line[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" for line in streaming.splitlines()
+    )
     before = streaming.splitlines().index("FIRST STREAM CHUNK")
     completed = capture(pane, "LIVE ANSWER COMPLETE")
     assert input_rows(completed) == 1
+    assert "✓ hello" in completed
     assert completed.splitlines().index("FIRST STREAM CHUNK") == before
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert history.count("FIRST STREAM CHUNK") == 1
@@ -522,6 +526,7 @@ def test_paused_preview_reflows_on_resize_without_more_tokens(pane):
         # Check the active preview region, not resize ghosting in old history
         # (covered separately by the existing strict-xfail regression).
         lines = screen[: screen.rindex("┌")].splitlines()
+        assert lines.pop().endswith(" h")  # Pinned active prompt, above the editor.
         tail_row = max(i for i, line in enumerate(lines) if line.strip())
         expected_length = 61 % columns or columns
         assert lines[tail_row] == "x" * (expected_length - 11) + "PAUSED_TAIL", screen
@@ -572,7 +577,8 @@ def test_recent_tools_are_nested_inside_headerless_task_widget(pane):
     assert lines[task + 4].startswith("│      ! Read failed · file_12.py")
     assert lines[task + 5].startswith("│      ⟳ Run")
     assert lines[task + 6].startswith("└")
-    assert lines[task + 7].startswith("┌")  # Editor, not another Tools widget.
+    assert lines[task + 7].endswith(" h")  # Pinned active prompt.
+    assert lines[task + 8].startswith("┌")  # Editor, not another Tools widget.
     assert "Tools" not in screen and "Tasks ·" not in screen
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert "file_01.py" not in history
@@ -633,3 +639,22 @@ def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
             assert history.count(marker) == 1, f"Lost or duplicated {marker}:\n{history}"
         history = single_editor_history(pane, "A task", frames=2)
         assert history.count("file_09.py") == 1
+
+
+@pytest.mark.parametrize(
+    "pane",
+    [
+        LIVE_SCRIPT.replace(
+            'yield "\\n\\nLIVE ANSWER COMPLETE"', 'raise RuntimeError("model broke")'
+        )
+    ],
+    indirect=True,
+)
+def test_failed_prompt_indicator_stays_visible(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "hello")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    capture(pane, "FIRST STREAM CHUNK", running=True)
+    failed = capture(pane, "! hello · failed")
+    assert input_rows(failed) == 1
+    assert "Run failed" in failed
