@@ -32,6 +32,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode.commands import CommandRegistry, SlashCompleter
+from pcode.input_keys import configure_newline_keys
 from pcode.preferences import load_preferences
 from pcode.runtime import Event, Message, ToolSummary
 from pcode.task_prompt import TaskPrompt
@@ -533,6 +534,7 @@ def create_prompt(
     on_thinking=None,
     **kwargs,
 ) -> PromptSession:
+    configure_newline_keys()
     activity = activity or Activity()
     keys = KeyBindings()
 

@@ -331,3 +331,21 @@ application receives SIGWINCH, just as for the task panel. Resize tests inspect
 the live frame nearest the editor; no-resize tests assert no reasoning in history.
 Do not claim the terminal history is a secure store or that application cleanup
 can erase terminal-owned history from arbitrary resizes.
+
+### Explicit newline key encodings
+
+`input_keys.py` registers narrow VT100 aliases before constructing a prompt:
+CSI-u and xterm modifyOtherKeys Ctrl+J / Shift+Enter become `Keys.ControlJ`.
+Verified against prompt_toolkit 3.0.53: CSI-u is not decoded by default, and
+`ESC [ 27 ; 2 ; 13 ~` otherwise maps to `ControlM` (submit). Registration uses
+its process-global `ANSI_SEQUENCES` table and clears the private
+`_IS_PREFIX_OF_LONGER_MATCH_CACHE`; recheck these internals on upgrades.
+No keyboard protocol is enabled and this is not general Kitty support.
+
+Inspiration: [pi-vim](https://github.com/lajarre/pi-vim/blob/main/index.ts)
+passes insert-mode input to Pi's editor and implements `o`/`O` with explicit
+newline insertion; [Pi's key decoder](https://github.com/earendil-works/pi/blob/main/packages/tui/src/keys.ts)
+distinguishes legacy, CSI-u, and modifyOtherKeys input. We retain prompt_toolkit's
+native vi `o`/`O` bindings. Pipe-input tests cover both editing modes and prompt
+implementations; real-tmux tests retain CPR, multiline height, Escape, and resize
+checks for each supported newline encoding.
