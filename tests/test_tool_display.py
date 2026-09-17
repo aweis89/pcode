@@ -140,7 +140,8 @@ def test_compact_rows_and_old_and_new_event_shapes():
     transcript.events((old, ToolSummary(**asdict(new))))
     assert stream.getvalue().splitlines() == [
         "  ✓ Read  a.py · 2 lines",
-        "  ! Run  pytest → exit 1  0.2s",
+        "✗ Run failed",
+        "  pytest → exit 1",
     ]
 
 

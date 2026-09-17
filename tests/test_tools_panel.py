@@ -111,8 +111,9 @@ def test_errors_are_retained_without_numbered_expansion_and_reset_clears_them():
         command="pytest -q",
         error="FAILED test_example: missing module",
     )
-    app.transcript.events((event,))
-    assert stream.getvalue() == ""
+    app.present_events((event,))
+    assert "✗ Run failed" in stream.getvalue()
+    assert event.error in stream.getvalue()
     assert app.activity.tools.calls[0].event.error == event.error
     assert "! Run failed" in app.activity.tools.calls[0].line()
     assert app.registry.find("/tools") is not None

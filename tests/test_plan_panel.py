@@ -152,7 +152,8 @@ def test_app_routes_plan_to_panel_not_transcript_and_preserves_errors():
             assert await app.run_live(output, "Start")
         assert app.activity.plan == items
         assert "Plan updated" not in stream.getvalue()
-        assert "No changes applied" not in stream.getvalue()
+        assert "✗ update_task_status failed" in stream.getvalue()
+        assert "No changes applied" in stream.getvalue()
         assert len(app.activity.tools.calls) == 1
         assert app.activity.tools.calls[0].event.failed
         assert app.activity.tools.calls[0].event.detail == "No changes applied"

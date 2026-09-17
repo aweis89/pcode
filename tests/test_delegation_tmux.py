@@ -52,7 +52,7 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
         assert input_rows(screen) == 1
         assert "keep draft" in screen
     pane("send-keys", "-t", "preview:0.0", "C-c")
-    screen = capture(pane, "Run cancelled.")
+    screen = capture(pane, "! Run cancelled")
     assert "Delegate · interrupted" in screen
     assert "⟳ Delegate" not in screen
     assert input_rows(screen) == 1

@@ -565,6 +565,27 @@ committed blocks are not rewritten, so reference links defined in later blocks
 cannot retroactively update earlier output. `--demo`
 remains a noninteractive print-and-exit command.
 
+**Transcript means persistent scrollback.** Anything written to `Transcript` should
+remain in normal terminal/tmux history. Assistant prose uses Rich Markdown;
+submitted prompts and compact error/warning notices use literal Rich renderables,
+not Markdown or panels. All persistent writes share the existing batched terminal
+handoff. Ordinary informational notes remain subdued.
+
+`PreviewApp.present_events()` routes tool starts and completions into mutable tool
+history. At completion, the adapter's semantic `ToolSummary.failed` flag also
+selects exceptional outcomes for persistent diagnostics (including non-zero shell
+exits and failed tests/builds/lint/typechecks). Successful routine tools remain
+live-only; explicit demo/inspection output is separate. Failure excerpts are
+bounded and sanitized by the existing tool adapter. An exceptional completion
+flushes pending assistant prose before its diagnostic, preserving event order.
+
+Core events have no Rich or prompt_toolkit dependencies. Raw reasoning tokens are
+not transcript content: the stream adapter currently reduces thinking events to a
+transient `RunStatus("Thinking…")`, owned by the live UI. Future small/expanded
+thinking views should remain there; any intentionally retained reasoning summary
+must be distinct from the raw stream. Plans, status, dialogs, and editor state also
+remain mutable, outside `Transcript`.
+
 Approvals, model pickers, and MCP management are not implemented yet. Model
 request-count limits are explicitly disabled; there is no monetary budget guard.
 

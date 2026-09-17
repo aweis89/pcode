@@ -83,9 +83,10 @@ def test_error_is_indented_literal_text_and_survives_event_round_trip():
     transcript = Transcript(Console(file=stream, width=100, color_system=None))
     transcript.events((ToolSummary(**asdict(event)),))
     assert stream.getvalue().splitlines() == [
-        "  ! Run  pytest -q → exit 1  0.5s",
-        "      [stderr] missing module",
-        "        traceback context",
+        "✗ Run failed",
+        "  pytest -q → exit 1",
+        "  [stderr] missing module",
+        "    traceback context",
     ]
     assert ToolSummary(**{"name": "run_command", "detail": "old summary"}).error == ""
 
@@ -136,31 +137,13 @@ def test_command_errors_reach_live_events_and_saved_transcript(tmp_path, mode):
 
 
 @pytest.mark.parametrize("command", ["", "pytest -q"])
-def test_failed_command_summary_uses_normal_color(command):
+def test_failed_command_summary_uses_semantic_error_color(command):
     stream = StringIO()
-    console = Console(file=stream, force_terminal=True, color_system="truecolor")
-    transcript = Transcript(console)
-    event = ToolSummary("run_command", "pytest -q → exit 1", failed=True, command=command)
-    transcript.events((event,))
-    failed_output = stream.getvalue()
-    assert "exit 1" in failed_output
-    assert "! Run" in failed_output
-    stream.seek(0)
-    stream.truncate()
-    transcript.events((ToolSummary("run_command", event.detail, command=command),))
-    # The status remains visible without an attention-grabbing failure color.
-    import re
-
-    assert re.findall(r"\x1b\[[\d;]*m", failed_output) == re.findall(
-        r"\x1b\[[\d;]*m", stream.getvalue()
+    transcript = Transcript(Console(file=stream, force_terminal=True, color_system="truecolor"))
+    transcript.events(
+        (ToolSummary("run_command", "pytest -q → exit 1", failed=True, command=command),)
     )
-
-
-def test_failed_tool_panel_uses_muted_color():
-    from pcode.ui import PALETTES
-
-    for palette in PALETTES.values():
-        style = palette.prompt_style()
-        assert style.get_attrs_for_style_str("class:tool.failed") == style.get_attrs_for_style_str(
-            "class:plan"
-        )
+    output = stream.getvalue()
+    assert "✗ Run failed" in output
+    assert "pytest -q" in output
+    assert "\x1b[1;31m" in output

@@ -112,9 +112,9 @@ def test_edit_and_queue_during_generation(outcome):
         assert printed.count("partial") == 1
         assert "private provider body" not in printed
         if outcome == "cancel":
-            assert "Run cancelled" in printed
+            assert "! Run cancelled" in printed
         elif outcome == "failure":
-            assert "Run failed" in printed
+            assert "✗ Agent failed" in printed
         else:
             assert printed.count("second answer") == 1
 
