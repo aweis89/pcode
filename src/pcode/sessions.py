@@ -17,12 +17,6 @@ from pydantic_ai_harness.step_persistence import SqliteStepStore, StepEvent, Too
 
 from pcode.diagnostics import redact, versions
 
-# Only audited, read-only built-ins may be abandoned at a complete checkpoint.
-# Unknown tools (including shell commands) remain unsafe regardless of arguments.
-READ_ONLY_TOOLS = frozenset(
-    {"read_file", "list_directory", "search_files", "find_files", "file_info", "read_tool_result"}
-)
-
 
 class SessionError(ValueError):
     pass
@@ -218,17 +212,14 @@ class SavedSession:
         self.append(type(event).__name__, **asdict(event))
 
     async def recover(self):
+        """Restore settled history without replaying tools or resolving their effects.
+
+        Interrupted tools may have changed the workspace. Keep their ledger entries
+        intact for diagnostics, but do not require review to continue the session.
+        """
         runs = await self.store.list_runs(conversation_id=self.info.id)
         for run in reversed(runs):
-            unresolved = await self.store.list_unresolved_tool_effects(run_id=run.run_id)
-            unsafe = [effect for effect in unresolved if effect.tool_name not in READ_ONLY_TOOLS]
-            if unsafe:
-                raise SessionError(
-                    "Interrupted tool effects need review before resume. "
-                    f"Inspect {self.directory / 'steps.sqlite3'}; no tools were replayed."
-                )
             # Never opt into interrupted snapshots: they can contain pending calls.
-            # Leave the effect ledger intact; abandoning a read is not completing it.
             snapshot = await self.store.latest_snapshot(run_id=run.run_id)
             if snapshot is not None:
                 return snapshot.messages
