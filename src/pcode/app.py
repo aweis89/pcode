@@ -157,8 +157,6 @@ class PreviewApp:
                 "set ANTHROPIC_API_KEY, or run codex login."
             )
             return
-        if os.environ.get("PCODE_LLM_PROXY", "").strip():
-            self.transcript.note("PCODE_LLM_PROXY limits model selection to Codex.")
         values = model_catalog(providers, self.model)
         await output.flush()
         async with output.lock:

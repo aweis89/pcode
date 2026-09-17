@@ -44,10 +44,11 @@ def test_codex_presence_not_contents(monkeypatch, tmp_path):
     assert active_providers("anthropic:custom") == {"anthropic", "openai-codex"}
 
 
-def test_proxy_limits_providers(monkeypatch):
+def test_proxy_does_not_limit_providers(monkeypatch):
     monkeypatch.setenv("PCODE_LLM_PROXY", "http://localhost:8080")
     monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "pi")
-    assert active_providers("openai-codex:custom") == {"openai-codex"}
+    monkeypatch.setenv("PCODE_MERIDIAN_BASE_URL", "http://localhost:8888")
+    assert active_providers("openai-codex:custom") == {"openai-codex", "anthropic", "meridian"}
 
 
 def test_catalog_uses_installed_sdk_and_keeps_custom_current():

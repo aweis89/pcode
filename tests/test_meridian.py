@@ -35,7 +35,7 @@ def test_picker_discovery(monkeypatch):
     monkeypatch.delenv("PCODE_MERIDIAN_BASE_URL")
     assert "meridian" in active_providers("meridian:custom")
     monkeypatch.setenv("PCODE_LLM_PROXY", "http://localhost:8080")
-    assert "meridian" not in active_providers("meridian:custom")
+    assert "meridian" in active_providers("meridian:custom")
 
 
 def test_picker_catalog_and_custom():
@@ -133,7 +133,13 @@ def test_switch_model_routes_stream_and_tools_to_meridian(monkeypatch, tmp_path)
     asyncio.run(run())
 
 
-def test_forward_proxy_conflict(monkeypatch, tmp_path):
+def test_codex_proxy_does_not_affect_meridian(monkeypatch, tmp_path):
     monkeypatch.setenv("PCODE_LLM_PROXY", "http://localhost:8080")
-    with pytest.raises(ValueError, match="only openai-codex"):
-        create_agent("meridian:claude-opus-5", tmp_path)
+    agent = create_agent("meridian:claude-opus-5", tmp_path)
+    assert isinstance(agent.model._provider, MeridianProvider)
+
+    async def close():
+        async with agent:
+            pass
+
+    asyncio.run(close())

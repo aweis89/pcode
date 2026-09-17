@@ -77,8 +77,6 @@ def create_coder(workspace: Path) -> CombinedCapability:
 
 def create_agent(model: str, workspace: Path) -> Agent:
     proxy = os.environ.get("PCODE_LLM_PROXY", "").strip()
-    if proxy and not model.startswith("openai-codex:"):
-        raise ValueError("PCODE_LLM_PROXY currently supports only openai-codex: models")
     # Subscription endpoints reject the explicit cache markers that Harness
     # Planning adds after write_plan. Keep the native provider/auth/model name;
     # override only this advertised capability (verified against AI 2.43.0).
