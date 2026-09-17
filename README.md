@@ -346,11 +346,16 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/demo`: fictional Markdown, code, diff, table, and tool summaries; never calls
   the model, even in live mode, and does not enter its conversation history.
 - `/theme light` or `/theme dark`: change the input and future output palette.
-  `/theme` alone toggles. Rich output uses your terminal’s ANSI colors and default
-  background, including inline code; fenced code uses `ansi_light` / `ansi_dark`.
-  The input/completion palette still follows the selected light/dark mode. Run
-  `/demo` after switching to preview headings, links, quotes, tables, Python,
-  and diffs. Existing scrollback is not repainted.
+  `/theme` alone toggles. By default, Rich headings, links, quotes, inline code,
+  and tables follow this palette; fenced code uses `nord` (dark) / `friendly`
+  (light). Normal body text and the overall background remain terminal-native.
+- `/colors terminal`: opt into terminal-defined ANSI colors with unpainted code
+  backgrounds and `ansi_dark` / `ansi_light` syntax. `/colors palette` restores
+  the default coordinated palette; `/colors` shows the current selection.
+  This affects Rich output, not the input/completion palette. You can also start
+  with `--color-style terminal` (default: `--color-style palette`). Run `/demo`
+  after switching to compare headings, links, quotes, tables, Python, and diffs.
+  Existing scrollback is not repainted.
 - `/help`: command list and keyboard shortcuts.
 - `/model`: searchable model picker for configured providers (keeps the conversation).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.

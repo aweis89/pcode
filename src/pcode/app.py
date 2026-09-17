@@ -28,7 +28,7 @@ from pcode.runtime import (
     ToolSummary,
 )
 from pcode.tool_display import plain
-from pcode.ui import PALETTES, Activity, TerminalOutput, Transcript, create_prompt
+from pcode.ui import COLOR_STYLES, PALETTES, Activity, TerminalOutput, Transcript, create_prompt
 
 
 class PreviewApp:
@@ -37,6 +37,7 @@ class PreviewApp:
         theme: str = "dark",
         console: Console | None = None,
         *,
+        color_style: str = "palette",
         model: str | None = None,
         workspace: Path | None = None,
         runtime=None,
@@ -71,7 +72,9 @@ class PreviewApp:
         if agent is not None and model:
             apply_effort(agent, model, load_preferences().get("effort"))
         self.activity = Activity()
-        self.transcript = Transcript(console or Console(), theme, activity=self.activity)
+        self.transcript = Transcript(
+            console or Console(), theme, activity=self.activity, color_style=color_style
+        )
         self.running = True
         self.inspector_requested: str | None = None
         self.session_requested = False
@@ -86,6 +89,7 @@ class PreviewApp:
             Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
             Command("/demo", "Sample Markdown, code, diff, and tool output", self.demo),
             Command("/theme", "Switch palette: dark / light", self.theme, tuple(PALETTES)),
+            Command("/colors", "Rich colors: palette / terminal", self.colors, COLOR_STYLES),
             Command(
                 "/effort",
                 "Reasoning effort: low / medium / high / xhigh / default",
@@ -266,6 +270,13 @@ class PreviewApp:
     def theme(self, argument: str) -> None:
         self.transcript.theme = argument or ("light" if self.transcript.theme == "dark" else "dark")
         self.transcript.note(f"Theme: {self.transcript.theme}. Existing output is unchanged.")
+
+    def colors(self, argument: str) -> None:
+        if argument:
+            self.transcript.color_style = argument
+        self.transcript.note(
+            f"Colors: {self.transcript.color_style}. Existing output is unchanged."
+        )
 
     def current_effort(self) -> str:
         if not self.model:
@@ -766,7 +777,8 @@ class PreviewApp:
             self.transcript.console,
             self.activity,
             session.app,
-            code_theme=lambda: self.transcript.palette.syntax,
+            code_theme=lambda: self.transcript.code_theme,
+            rich_theme=lambda: self.transcript.rich_theme,
         )
         self.transcript.output = output
         session.app.style = DynamicStyle(lambda: self.transcript.palette.prompt_style())
@@ -807,6 +819,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Streaming terminal with a Coder agent")
     parser.add_argument("--theme", choices=PALETTES, default="dark")
     parser.add_argument(
+        "--color-style",
+        choices=COLOR_STYLES,
+        default="palette",
+        help="Rich output colors (default: palette; terminal uses ANSI colors)",
+    )
+    parser.add_argument(
         "-m",
         "--model",
         help="Pydantic Agent model string; omitted = saved default or offline preview",
@@ -829,7 +847,7 @@ def main() -> None:
     from pcode.sessions import SavedSession, SessionError, list_sessions
 
     if args.sessions:
-        console = Transcript(Console(), args.theme)
+        console = Transcript(Console(), args.theme, color_style=args.color_style)
         records = list_sessions(args.session_dir)
         if not records:
             console.note("No saved sessions.")
@@ -838,7 +856,7 @@ def main() -> None:
         return
     if args.demo:
         # --demo never constructs a provider, even when -m is also supplied.
-        app = PreviewApp(theme=args.theme)
+        app = PreviewApp(theme=args.theme, color_style=args.color_style)
         app.transcript.welcome()
         # There is no mutable panel in the non-interactive sample.
         app.transcript.events(app.preview.demo(), show_tools=True)
@@ -867,6 +885,7 @@ def main() -> None:
             raise SessionError("Workspace must be an existing directory.")
         app = PreviewApp(
             theme=args.theme,
+            color_style=args.color_style,
             model=args.model,
             workspace=workspace,
             saved_session=saved,

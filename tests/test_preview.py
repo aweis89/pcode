@@ -31,6 +31,7 @@ def make_app(width=80):
                 "/errors",
                 "/demo",
                 "/theme",
+                "/colors",
                 "/effort",
                 "/context",
                 "/new",
@@ -42,6 +43,8 @@ def make_app(width=80):
         ("/de", ["/demo"]),
         ("/theme ", ["dark", "light"]),
         ("/theme l", ["light"]),
+        ("/colors ", ["palette", "terminal"]),
+        ("/colors t", ["terminal"]),
         ("/ex", ["/quit"]),
         ("hello /", []),
         ("/demo\n/", []),
@@ -84,9 +87,11 @@ def test_dispatch_theme_errors_reset_and_exit():
 
 @pytest.mark.parametrize("width", [24, 40, 80, 120])
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_rendering_fits_terminal(width, theme):
+@pytest.mark.parametrize("color_style", ["palette", "terminal"])
+def test_rendering_fits_terminal(width, theme, color_style):
     app, stream = make_app(width)
     app.transcript.theme = theme
+    app.transcript.color_style = color_style
     app.transcript.welcome()
     app.help("")
     app.demo("")
