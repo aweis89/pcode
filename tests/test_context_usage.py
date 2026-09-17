@@ -86,3 +86,23 @@ def test_zero_usage_after_compaction_keeps_the_checkpoint_estimate():
     with patch("pcode.context_usage.context_window", return_value=100_000):
         estimate = compact_tokens(context_estimate(history))
         assert context_label("test:example", history) == f" · ctx: ~{estimate}/100k"
+
+
+def test_completed_request_updates_live_context_without_changing_replay_history():
+    import asyncio
+    from types import SimpleNamespace
+
+    from pydantic_ai.models import ModelRequestParameters
+
+    from pcode.compaction import AutoCompaction
+
+    history = [ModelRequest(parts=[UserPromptPart("do work")])]
+    runtime = SimpleNamespace(history=[], session=object(), context_history=None)
+    hook = AutoCompaction(runtime, "run")
+    request = SimpleNamespace(messages=history, model_request_parameters=ModelRequestParameters())
+    completed = response(12_500, cache_read_tokens=8_000)
+    asyncio.run(hook.after_model_request(None, request_context=request, response=completed))
+    with patch("pcode.context_usage.context_window", return_value=272_000):
+        assert context_label("test:model", runtime.context_history) == " · ctx: 12.5k/272k"
+    assert runtime.history == []
+    assert len(history) == 1
