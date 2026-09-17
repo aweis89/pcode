@@ -20,7 +20,8 @@ from pcode.ui import create_prompt
 
 
 @pytest.mark.parametrize(
-    "outcome", ["success", "burst", "failure", "cancel", "early-cancel", "quit"]
+    "outcome",
+    ["success", "success-idle", "noop", "burst", "failure", "cancel", "early-cancel", "quit"],
 )
 def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
     async def run():
@@ -41,7 +42,7 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
                     await finish.wait()
                     if outcome == "failure":
                         raise ValueError("summary unavailable")
-                    return CompactionResult([], 50000, 12000, True)
+                    return CompactionResult([], 50000, 12000, outcome != "noop")
                 finally:
                     cleaned.set()
 
@@ -82,6 +83,8 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
                     + ("continue after summary\r" if outcome == "burst" else "")
                 )
                 await started.wait()
+                assert app.activity.prompt == "/compact keep {tests}"
+                assert app.activity.prompt_state == "running"
                 pipe.send_text("/new\r/tree\r/compact again\r")
                 await wait_for(lambda: "/tree is unavailable" in output.getvalue())
                 assert calls == [("compact", "keep {tests}")]
@@ -89,9 +92,10 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
                     pipe.send_text("/quit\r")
                     await cleaned.wait()
                     return
-                if outcome != "burst":
+                if outcome not in {"burst", "success-idle", "noop"}:
                     pipe.send_text("continue after summary\r")
-                await wait_for(lambda: bool(app.activity.queued_prompts))
+                if outcome not in {"success-idle", "noop"}:
+                    await wait_for(lambda: bool(app.activity.queued_prompts))
                 assert len(calls) == 1
                 if outcome == "cancel":
                     pipe.send_text("\x03")
@@ -104,6 +108,9 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
                 else:
                     assert len(calls) == 1
                     assert not app.activity.queued_prompts
+                    assert app.activity.prompt == "/compact keep {tests}"
+                    expected = {"cancel": "cancelled", "failure": "failed"}.get(outcome, "done")
+                    assert app.activity.prompt_state == expected
                 pipe.send_text("/quit\r")
 
             with patch("pcode.app.create_prompt", prompt):
@@ -111,8 +118,10 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
         text = output.getvalue()
         if outcome == "early-cancel":
             assert not calls
-        elif outcome in {"success", "burst"}:
+        elif outcome in {"success", "success-idle", "burst"}:
             assert "50k → ~12k" in text
+        elif outcome == "noop":
+            assert "Nothing to compact" in text
         elif outcome == "failure":
             assert "Compaction failed" in text
         else:
