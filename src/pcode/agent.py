@@ -120,6 +120,12 @@ def create_agent(model: str, workspace: Path) -> Agent:
     return Agent(
         resolved,
         defer_model_check=defer_model_check,
+        # Codex does not emit visible reasoning unless summaries are requested.
+        # Always receive them so Ctrl+T can reveal the preview mid-turn; the
+        # display preference remains local and never changes reasoning effort.
+        model_settings=(
+            {"openai_reasoning_summary": "auto"} if model.startswith("openai-codex:") else None
+        ),
         name="pcode",
         instructions=(
             "Responses are displayed in a terminal with Markdown rendering "
