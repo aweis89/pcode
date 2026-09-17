@@ -1,0 +1,78 @@
+"""Mirrored command output must reach scrollback without stretching the prompt."""
+
+import shutil
+import time
+
+import pytest
+from test_tmux import capture, input_rows
+from test_tmux import pane as pane
+
+pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+
+SCRIPT = r"""
+import asyncio, os, tempfile
+# Never touch the developer's saved defaults: Ctrl+S persists its choice.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
+from pcode.app import PreviewApp
+from pcode.runtime import Message, ToolStarted, ToolSummary
+
+OUTPUT = "[stdout]\n" + "\n".join(f"OUTPUT_LINE_{i:02d}" for i in range(4)) + "\n[exit code: 0]"
+
+class Runtime:
+    session = None
+    turns = 0
+
+    async def stream(self, prompt):
+        self.turns += 1
+        yield ToolStarted("run_command", "printf", "one", command="printf MIRRORED_COMMAND")
+        await asyncio.sleep(0.05)
+        yield ToolSummary(
+            "run_command",
+            "printf MIRRORED_COMMAND → exit 0",
+            call_id="one",
+            elapsed_seconds=0.4,
+            command="printf MIRRORED_COMMAND",
+            result=OUTPUT,
+        )
+        yield Message(f"TURN_{self.turns}_DONE")
+
+    def reset(self):
+        pass
+
+app = PreviewApp(model="test:local", runtime=Runtime())
+app.activity.plan = [{"id": "one", "content": "A task", "status": "in_progress"}]
+app.run()
+"""
+
+
+@pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
+def test_ctrl_s_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pane):
+    assert input_rows(capture(pane, "❯")) == 1
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "TURN_1_DONE")
+    assert "OUTPUT_LINE_00" not in screen
+    assert "✓ Run" in screen  # The compact one-line summary, not a mirrored block.
+    assert input_rows(screen) == 1
+
+    pane("send-keys", "-t", "preview:0.0", "C-s")
+    screen = capture(pane, "Command output in scrollback: on")
+    assert input_rows(screen) == 1
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "TURN_2_DONE")
+    assert "› Run · 0.4s" in screen
+    assert "$ printf MIRRORED_COMMAND" in screen
+    assert "OUTPUT_LINE_03" in screen
+    assert input_rows(screen) == 1
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert "OUTPUT_LINE_00" in history
+
+    for columns in (40, 100, 35):
+        pane("resize-window", "-t", "preview:0", "-x", str(columns))
+        assert input_rows(capture(pane, "❯", columns=columns)) == 1
+    pane("send-keys", "-t", "preview:0.0", "C-s")
+    screen = capture(pane, "Command output in scrollback: off", columns=35)
+    assert input_rows(screen) == 1
+    pane("send-keys", "-t", "preview:0.0", "-l", "kept draft")
+    time.sleep(0.2)
+    screen = capture(pane, "kept draft", columns=35)
+    assert input_rows(screen) == 1
