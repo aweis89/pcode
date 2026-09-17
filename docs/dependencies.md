@@ -80,9 +80,23 @@ a credential store. The slim install omits `websockets`, but FastMCP 4.0.4's
 callback server explicitly selects Uvicorn's `websockets-sansio` implementation.
 Pcode adds `websockets>=15.0.1,<17` (verified with 16.1.1) so browser callbacks
 actually start; mocked OAuth exchange tests alone would miss this dependency.
-Keep both mocked-provider tests and real loopback callback success/cancellation
-tests in `tests/test_mcp_oauth.py`. Tests must not open the real browser, contact
-a real service, or read real credential stores.
+`src/pcode/mcp_oauth.py` supplies a narrow `OAuth` subclass to own the callback
+listener. FastMCP 4.0.4 probes and closes its port at construction, then binds it
+much later; a collision causes Uvicorn 0.53.0 to raise `SystemExit(3)` in a child
+task. Pcode reserves an IPv4 loopback socket before registration and passes that
+same socket to `Server.serve(sockets=...)`. The embedded server does not capture
+process signals and converts startup `SystemExit` inside the child task into a
+normal error. This avoids both the port race and interference with Ctrl+C.
+If a previously registered redirect port is occupied, pcode fails normally with
+instructions to disable/re-enable rather than silently changing a registered URI.
+The adapter uses FastMCP's `token_storage_adapter`, the SDK's
+`context.client_metadata.redirect_uris`, and Uvicorn's `capture_signals` hook;
+recheck these installed-source APIs on upgrades. OAuth protocol handling, PKCE,
+state validation, token exchange, and refresh remain in FastMCP/the MCP SDK.
+Keep mocked-provider tests, real loopback success/cancellation tests, deliberate
+port-collision tests, and the full MCP-client startup-failure subprocess test in
+`tests/test_mcp_oauth.py`. Tests must not open the real browser, contact a real
+service, or read real credential stores.
 FastMCP defaults `StdioTransport.keep_alive` to `True`: pcode explicitly sets it
 to `False` so turn cleanup closes subprocesses. Keep the real-stdio tests in
 `tests/test_mcp.py` for success, failure, cancellation, and reconnection. Filtering
