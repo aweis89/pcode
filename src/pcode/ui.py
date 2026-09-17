@@ -94,6 +94,12 @@ class Activity:
         self.prompt_state = ""
         self.status = ""
 
+    def plan_rows(self, budget: int, spinner: str):
+        # Persisted task status describes unfinished work, not a live request.
+        # Use the turn lifecycle rather than busy, which also includes queued input.
+        icon = spinner if self.prompt_state == "running" else "○"
+        return task_panel_rows(self.plan, self.tools, budget, icon)
+
     def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
         style = "bold ansired" if self.prompt_state == "failed" else "class:prompt"
@@ -435,9 +441,7 @@ def create_prompt(
         # Share one height budget instead of stacking separate Tools and Tasks
         # panels. Leave space for the live tail, completion menu, and editor.
         budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
-        return task_panel_rows(
-            activity.plan, activity.tools, budget, plan_spinner.render(monotonic()).plain
-        )
+        return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
     def plan_height() -> int:
         rows = plan_rows()
