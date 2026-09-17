@@ -294,7 +294,7 @@ def test_modal_result_is_applied_only_on_accept(monkeypatch, selection):
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
-    app = PreviewApp(model=MODELS[0], runtime=Mock(), console=Console(file=StringIO()))
+    app = PreviewApp(model=MODELS[0], runtime=Mock(agent=None), console=Console(file=StringIO()))
     app.model_requested = True
     switch = AsyncMock()
     app.switch_model = switch
