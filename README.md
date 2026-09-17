@@ -468,17 +468,19 @@ pcode config set editing_mode vi
 
 You can also run `/config set editing_mode vi` in a session, then restart pcode.
 The editor starts in insert mode; press Escape for normal mode and `i` or `a` to
-resume inserting. Standard vi motions and editing commands are available.
+resume inserting. Use `o` / `O` in normal mode to open a line below / above
+and enter insert mode. Standard vi motions and editing commands are available.
 Enter still submits (or accepts a selected completion), and Ctrl+J inserts a
 newline. Escape is prioritized in vi mode: Escape followed by Enter submits,
 rather than inserting a newline. Alt+Enter is therefore a newline shortcut only
 in Emacs mode. Other pcode application shortcuts retain their existing behavior.
 
-To use **Shift+Enter for newline**, configure your terminal to send Ctrl+J (the
-single LF byte, hex `0a`, often written `\x0a`) for Shift+Enter. This is a terminal
-key mapping, not a pcode setting. Without that mapping, many terminals send the
-same sequence for Enter and Shift+Enter, so both submit. Verify the mapping inside
-tmux too if you use it; Ctrl+J itself is always available as the fallback.
+**Shift+Enter inserts a newline** when your terminal sends a distinct CSI-u or
+xterm modifyOtherKeys sequence. Ctrl+J supports both the traditional LF byte and
+those extended encodings. If your terminal sends ordinary Enter for Shift+Enter,
+pcode cannot distinguish them: configure Shift+Enter to send Ctrl+J (the single
+LF byte, hex `0a`, often written `\x0a`). This is a terminal key mapping, not a
+pcode setting; verify it inside tmux too if you use it.
 
 Vi mode uses a 100 ms terminal escape-sequence timeout and an eager Escape binding.
 This avoids waiting for an Alt-key chord before entering normal mode; particularly

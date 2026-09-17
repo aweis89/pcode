@@ -32,6 +32,8 @@ def test_saved_editing_mode_reaches_prompt(mode):
     [
         (True, "hello world\x1b0dw\r", "world"),
         (True, "hello\x1b0iX\r", "Xhello"),
+        (True, "hello\x1bo world\r", "hello\n world"),
+        (True, "hello\x1bOworld\r", "world\nhello"),
         (True, "hello\nworld\r", "hello\nworld"),
         (False, "hello\nworld\r", "hello\nworld"),
         (False, "hello\x1b\rworld\r", "hello\nworld"),
@@ -93,6 +95,39 @@ def test_transcript_editor_bindings(vi_mode, keys, expected, cursor):
             assert snapshots[-1][0] == cursor
             if keys.endswith("bb"):
                 assert snapshots[-1][1] == InputMode.NAVIGATION
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("transcript", [False, True])
+@pytest.mark.parametrize("vi_mode", [False, True])
+@pytest.mark.parametrize(
+    "newline",
+    ["\n", "\x1b[106;5u", "\x1b[27;5;106~", "\x1b[13;2u", "\x1b[27;2;13~"],
+)
+def test_terminal_newline_encodings(transcript, vi_mode, newline):
+    async def run():
+        with create_pipe_input() as pipe:
+            submitted = []
+
+            def submit(text):
+                submitted.append(text)
+                prompt.app.exit()
+
+            prompt = create_prompt(
+                CommandRegistry(),
+                vi_mode=vi_mode,
+                input=pipe,
+                output=DummyOutput(),
+                transcript=Transcript(Console(file=StringIO())) if transcript else None,
+                on_submit=submit if transcript else None,
+            )
+            pipe.send_text("first" + newline + "second\r")
+            if transcript:
+                await asyncio.wait_for(prompt.app.run_async(), timeout=3)
+                assert submitted == ["first\nsecond"]
+            else:
+                assert await asyncio.wait_for(prompt.prompt_async(), timeout=3) == "first\nsecond"
 
     asyncio.run(run())
 
