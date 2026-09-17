@@ -80,9 +80,7 @@ class PreviewApp:
         self.registry = CommandRegistry()
         for command in (
             Command("/login", "Reuse pi's Anthropic login", self.login, ("pi",)),
-            Command(
-                "/model", "Choose a model (Ctrl+L); starts a new conversation", self.select_model
-            ),
+            Command("/model", "Choose a model (Ctrl+L); keep the conversation", self.select_model),
             Command("/help", "Commands and keyboard shortcuts", self.help),
             Command("/tools", "Inspect tool calls and their results", self.tools, ("failed",)),
             Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
@@ -128,21 +126,25 @@ class PreviewApp:
         save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
         root = self.session_dir
         workspace = self.workspace
-        runtime = AgentRuntime(
-            agent,
-            session_factory=(lambda: SavedSession.create(model, workspace, root)) if save else None,
-        )
-        close = getattr(self.runtime, "close", None)
-        if close is not None:
-            close()
-        self.runtime = runtime
+        factory = (lambda: SavedSession.create(model, workspace, root)) if save else None
+        if isinstance(self.runtime, AgentRuntime):
+            saved = self.runtime.session
+            if saved is not None:
+                previous_model = saved.info.model
+                saved.info.model = model
+                try:
+                    saved.save_info()
+                except OSError:
+                    saved.info.model = previous_model
+                    raise
+            self.runtime.replace_agent(agent)
+            self.runtime.session_factory = factory
+        else:
+            self.runtime = AgentRuntime(agent, session_factory=factory)
         self.model = model
         self.persist_defaults(model=model)
         self.save_sessions = save
-        self.resuming = False
-        self.activity.reset()
-        self.transcript.print(Rule("New conversation", style=self.transcript.palette.muted))
-        self.transcript.note(f"Model: {model}. Context reset; transcript and draft are unchanged.")
+        self.transcript.note(f"Model: {model}. Continuing the current conversation.")
         self.show_startup_context()
 
     async def choose_model(self, output: TerminalOutput, session) -> None:

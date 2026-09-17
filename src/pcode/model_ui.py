@@ -91,7 +91,7 @@ class ModelPicker:
                     Label(
                         "Local suggestions; access depends on your account.\n"
                         "Type provider:model-id for a custom model.\n"
-                        "Changing model starts a NEW conversation; old sessions remain saved.",
+                        "Changing model continues the current conversation.",
                         dont_extend_height=True,
                     ),
                 ],

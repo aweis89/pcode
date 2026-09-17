@@ -182,14 +182,15 @@ availability and credentials when you use the model. Custom IDs are accepted onl
 for providers enabled in the picker. If none are configured, use `/login`, set
 `ANTHROPIC_API_KEY`, or run `codex login` first.
 
-**Changing models starts a new conversation.** The old saved session remains
-available through `/session`; its model and history are not rewritten. Visible
-transcript and editor draft remain, but model context, plan, tool panel, and
-reasoning settings reset. Selecting the current model is a no-op. The new session
-is saved lazily on its first prompt, and `--no-save` still applies. A failed switch
-leaves the old conversation intact. Model selection is disabled while a run or
-queued messages are active. This also works from offline preview to start a live
-conversation without restarting pcode.
+**Changing models continues the current conversation.** Message history, session ID,
+plan, tool panel, usage totals, transcript, and editor draft are preserved. The
+saved session records the selected model so resuming uses it too. Model-specific
+settings are rebuilt for the selected model. Use `/new` to start over instead.
+Selecting the current model is a no-op; `--no-save` still applies, and sessions
+are saved lazily on their first prompt. A failed switch leaves the old conversation
+intact. Model selection is disabled while a run or queued messages are active.
+This also works from offline preview to start a live conversation without
+restarting pcode.
 
 ### Local Meridian provider
 
@@ -347,7 +348,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/theme light` or `/theme dark`: change the input and future output palette.
   `/theme` alone toggles.
 - `/help`: command list and keyboard shortcuts.
-- `/model`: searchable model picker for configured providers (starts a new conversation).
+- `/model`: searchable model picker for configured providers (keeps the conversation).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed` or `/errors`: open the same inspector filtered to failures.
 - `/context`: current model, workspace, completed turns, and token usage.
@@ -363,7 +364,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 | Enter | Send (queue during generation), or accept a selected completion |
 | Alt+Enter | Newline (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
-| Ctrl+L | Choose a model (idle only; starts a new conversation) |
+| Ctrl+L | Choose a model (idle only; keeps the conversation) |
 | Ctrl+R | Search this process's input history |
 | Ctrl+C | Discard idle input; during generation, cancel without deleting the draft |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
