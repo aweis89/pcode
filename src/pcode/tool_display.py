@@ -180,10 +180,10 @@ def command_error(content: object) -> str:
         lines.pop()
     if not lines or lines == ["(no output)"]:
         return "No error output returned."
-    truncated = len(lines) > 8
-    excerpt = "\n".join(lines[-8:])
-    if len(excerpt) > 1600:
-        excerpt = excerpt[-1600:]
+    truncated = len(lines) > 200
+    excerpt = "\n".join(lines[-200:])
+    if len(excerpt) > 32000:
+        excerpt = excerpt[-32000:]
         truncated = True
     return ("… earlier error output truncated\n" if truncated else "") + excerpt
 
