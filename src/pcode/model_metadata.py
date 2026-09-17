@@ -1,4 +1,4 @@
-"""Context metadata, not pricing. Network refreshes never run during rendering.
+"""Context and output metadata, not pricing. Refreshes never run during rendering.
 
 Public Models.dev metadata is cached on disk. Authenticated metadata is cached
 per model instance only: one account/proxy must not inherit another's limits.
@@ -162,10 +162,11 @@ def parse_anthropic(data, fetched_at: float) -> ModelLimits | None:
     if not isinstance(data, dict):
         return None
     input_limit = positive_int(data.get("max_input_tokens"))
-    if input_limit:
+    output_limit = positive_int(data.get("max_tokens"))
+    if input_limit or output_limit:
         return ModelLimits(
             input=input_limit,
-            output=positive_int(data.get("max_tokens")),
+            output=output_limit,
             source="anthropic",
             fetched_at=fetched_at,
         )

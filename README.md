@@ -880,6 +880,22 @@ Previews are redacted and terminal-control sanitized. Failure excerpts remain vi
 There is currently no command to expand previews or show full command outputs.
 
 
+### Model output limits
+
+Anthropic requires a `max_tokens` ceiling for each response, including thinking
+and tool-call arguments. Pcode resolves that ceiling from the serving model's
+metadata on each request (also for delegated agents and after model switches).
+Authenticated metadata takes precedence; public catalog limits are used only for
+matching provider endpoints. If no output limit is known, pcode uses 16,384 tokens
+instead of Pydantic AI's 4,096-token fallback. Explicit model settings take precedence,
+and other providers keep their existing defaults.
+
+This is a ceiling, not a requested response length or reasoning budget. Thinking
+visibility and effort settings do not change it. The compaction summarizer retains
+its separate, smaller output budget. Automatic compaction accounts for the resolved
+ceiling, but reserves at most half the working window so small context overrides
+remain usable. Provider limits still apply; truncation is not automatically retried.
+
 ### Context compaction
 
 `/compact` makes a tool-free LLM call using the current model/provider credentials.
