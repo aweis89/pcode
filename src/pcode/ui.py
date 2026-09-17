@@ -12,14 +12,14 @@ from prompt_toolkit.application import Application, get_app, in_terminal
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.filters import Always, Condition, has_focus, is_searching
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
-from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.output import Output, create_output
 from prompt_toolkit.search import stop_search
 from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import Frame
+from prompt_toolkit.widgets import Frame, Label
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.spinner import Spinner
@@ -166,6 +166,12 @@ class Activity:
         # Use the turn lifecycle rather than busy, which also includes queued input.
         icon = spinner if self.prompt_state == "running" else "○"
         return task_panel_rows(self.plan, self.tools, budget, icon)
+
+    def panel_title(self) -> str:
+        if not self.plan:
+            return "Tools"
+        completed = sum(item.get("status") == "completed" for item in self.plan)
+        return f"Tasks {completed}/{len(self.plan)} done"
 
     def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
@@ -524,18 +530,35 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(activity.prompt)),
     )
-    plan = ConditionalContainer(
-        Frame(
-            Window(
-                FormattedTextControl(plan_text),
-                height=lambda: len(plan_rows()),
-                dont_extend_height=True,
-                wrap_lines=False,
-            ),
-            height=lambda: len(plan_rows()) + 2,
+    plan_frame = Frame(
+        Window(
+            FormattedTextControl(plan_text),
+            height=lambda: len(plan_rows()),
+            dont_extend_height=True,
+            wrap_lines=False,
         ),
-        filter=Condition(lambda: bool(plan_rows())),
+        height=lambda: len(plan_rows()) + 2,
     )
+    # Frame centers its title and has no alignment option. Replace only its
+    # top border with a fixed left prefix and an expanding right border.
+    plan_frame.container.children[0] = VSplit(
+        [
+            Window(FormattedTextControl("┌─| "), width=4, style="class:frame.border"),
+            Label(
+                lambda: panel_fragments(
+                    [("bold", activity.panel_title())],
+                    session.app.output.get_size().columns - 10,
+                ),
+                style="class:frame.label",
+                dont_extend_width=True,
+            ),
+            Window(FormattedTextControl(" |"), width=2, style="class:frame.border"),
+            Window(char="─", style="class:frame.border"),
+            Window(char="┐", width=1, style="class:frame.border"),
+        ],
+        height=1,
+    )
+    plan = ConditionalContainer(plan_frame, filter=Condition(lambda: bool(plan_rows())))
     # Keep the turn and its activity adjacent even when the root layout justifies
     # the transcript and editor across the remaining terminal height.
     activity_panel = HSplit([current_prompt, plan])
