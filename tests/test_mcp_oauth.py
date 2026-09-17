@@ -222,6 +222,7 @@ def test_native_oauth_failure_or_cancellation_never_exchanges_a_code(mode):
                     await client.get(URL)
         assert provider.grants == []
         assert await auth.token_storage_adapter.get_tokens() is None
+        assert auth._callback_socket is None
 
     asyncio.run(run())
 
@@ -266,5 +267,171 @@ def test_native_loopback_callback_closes_listener(cancel):
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
+
+    asyncio.run(run())
+
+
+def test_callback_port_collision_is_replaced_before_registration():
+    """Reproduce a port being taken after /mcp enable, before OAuth starts."""
+    import signal
+    import socket
+
+    async def run():
+        auth = build_toolset("remote", {"url": URL, "auth": "oauth"}).wrapped.client.transport.auth
+        provider = FakeOAuthProvider()
+        browser_task = None
+        original_signals = [signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)]
+        registered_redirects = []
+
+        async def http(request):
+            if request.url.path == "/register":
+                redirect = json.loads(request.content)["redirect_uris"][0]
+                registered_redirects.append(redirect)
+                # This must be an owned listening socket, not a free-port probe.
+                with socket.socket() as competing:
+                    competing.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    with pytest.raises(OSError):
+                        competing.bind(("127.0.0.1", urlsplit(redirect).port))
+            return await provider.http(request)
+
+        async def browser_callback():
+            redirect = provider.authorization["redirect_uri"][0]
+            assert registered_redirects == [redirect]
+            assert urlsplit(redirect).hostname == "127.0.0.1"
+            async with httpx2.AsyncClient(trust_env=False, timeout=5) as client:
+                response = await client.get(
+                    redirect,
+                    params={
+                        "code": "fake-authorization-code",
+                        "state": provider.authorization["state"][0],
+                    },
+                )
+                assert response.status_code == 200
+
+        async def redirect(url):
+            nonlocal browser_task
+            await provider.redirect(url)
+            browser_task = asyncio.create_task(browser_callback())
+
+        auth.context.redirect_handler = redirect
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            old_port = occupied.getsockname()[1]
+            auth.redirect_port = old_port
+            try:
+                async with httpx2.AsyncClient(
+                    auth=auth, transport=httpx2.MockTransport(http)
+                ) as client:
+                    assert (await client.get(URL)).status_code == 200
+                await browser_task
+                assert auth.redirect_port != old_port
+                assert occupied.fileno() != -1  # Never close someone else's listener.
+                assert auth._callback_socket is None
+                with socket.socket() as reusable:
+                    reusable.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    reusable.bind(("127.0.0.1", auth.redirect_port))
+                assert original_signals == [
+                    signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
+                ]
+            finally:
+                if browser_task is not None and not browser_task.done():
+                    browser_task.cancel()
+                    await asyncio.gather(browser_task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_registered_port_collision_is_recoverable_without_browser():
+    import socket
+
+    async def run():
+        auth = build_toolset("remote", {"url": URL, "auth": "oauth"}).wrapped.client.transport.auth
+        provider = FakeOAuthProvider()
+        async with httpx2.AsyncClient(auth=auth, transport=provider.install(auth)) as client:
+            assert (await client.get(URL)).status_code == 200
+        # Model a server requiring a new authorization while the original redirect
+        # is registered. Silently changing its port would violate that registration.
+        with socket.socket() as occupied:
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            occupied.bind(("127.0.0.1", auth.redirect_port))
+            occupied.listen()
+            with pytest.raises(RuntimeError, match="Disable and re-enable"):
+                await auth._reserve_callback()
+        assert provider.browser_visits == 1
+        assert auth._callback_socket is None
+
+    asyncio.run(run())
+
+
+async def _exercise_callback_startup_failure():
+    """Run in a child process: a regressed SystemExit must not kill pytest itself."""
+    from unittest.mock import patch
+
+    from pcode.diagnostics import error_details
+
+    toolset = build_toolset("remote", {"url": URL, "auth": "oauth"})
+    transport = toolset.wrapped.client.transport
+    auth = transport.auth
+    provider = FakeOAuthProvider()
+    auth.context.redirect_handler = provider.redirect
+    transport.httpx_client_factory = lambda **kwargs: httpx2.AsyncClient(
+        transport=httpx2.MockTransport(provider.http), **kwargs
+    )
+
+    async def fail_startup(self, sockets=None):
+        raise SystemExit(3)
+
+    loop_errors = []
+    asyncio.get_running_loop().set_exception_handler(
+        lambda loop, context: loop_errors.append(context)
+    )
+    with patch("uvicorn.Server.serve", fail_startup):
+        try:
+            async with toolset:
+                raise AssertionError("Broken callback server unexpectedly connected")
+        except Exception as error:
+            assert "callback server could not start" in str(error_details(error))
+        else:
+            raise AssertionError("Expected a normal, recoverable exception")
+    await asyncio.sleep(0)
+    assert auth._callback_socket is None
+    assert not loop_errors
+    print("callback failure handled without terminating pcode")
+
+
+def test_embedded_callback_systemexit_does_not_kill_mcp_client():
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = (
+        "import asyncio, runpy; "
+        f"ns = runpy.run_path({str(Path(__file__).resolve())!r}); "
+        "asyncio.run(ns['_exercise_callback_startup_failure']())"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=15
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "callback failure handled" in result.stdout
+    assert "unhandled exception during asyncio.run() shutdown" not in result.stderr
+
+
+def test_callback_timeout_releases_reserved_port():
+    import socket
+
+    from pcode.diagnostics import error_details
+
+    async def run():
+        auth = build_toolset("remote", {"url": URL, "auth": "oauth"}).wrapped.client.transport.auth
+        auth._callback_timeout = 0.05
+        with pytest.raises(Exception) as error:
+            await auth.callback_handler()
+        assert error_details(error.value)["type"] == "TimeoutError"
+        assert auth._callback_socket is None
+        with socket.socket() as reusable:
+            reusable.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            reusable.bind(("127.0.0.1", auth.redirect_port))
 
     asyncio.run(run())

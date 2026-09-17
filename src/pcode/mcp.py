@@ -116,7 +116,7 @@ def build_toolset(name: str, raw: Any):
             )
             toolset = MCPToolset(transport, id=name)
         else:
-            # FastMCP owns PKCE, browser/callback handling, refresh, and an in-memory
+            # FastMCP owns PKCE, browser sign-in, refresh, and an in-memory
             # token store. Surface its storage lifetime in our UI/docs, not a raw
             # warning that would interrupt the prompt. Do not suppress other warnings.
             with warnings.catch_warnings():
@@ -125,7 +125,10 @@ def build_toolset(name: str, raw: Any):
                     message="Using in-memory token storage -- tokens will be lost.*",
                     category=UserWarning,
                 )
-                toolset = MCPToolset(config.url, id=name, headers=config.headers, auth=config.auth)
+                from pcode.mcp_oauth import LoopbackOAuth
+
+                auth = LoopbackOAuth() if config.auth == "oauth" else None
+                toolset = MCPToolset(config.url, id=name, headers=config.headers, auth=auth)
         return toolset.prefixed(f"mcp_{name}")
     except (ValueError, TypeError):
         raise ValueError(
