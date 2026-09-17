@@ -94,6 +94,22 @@ class AgentRuntime:
             if isinstance(capability, Planning):
                 capability.store_resolver = lambda ctx: self.plan_store
 
+    async def refresh_context(self) -> None:
+        """Refresh optional metadata outside rendering and before model requests."""
+        from pydantic_ai.models import infer_model
+
+        from pcode.model_metadata import refresh_context
+
+        if isinstance(self.agent.model, str):
+            try:
+                # Retain the resolved provider so the UI and future requests
+                # share its identity-scoped metadata, including deferred login.
+                self.agent.model = infer_model(self.agent.model)
+            except Exception:
+                # Optional discovery must not prevent reaching /login.
+                pass
+        await refresh_context(self.agent.model)
+
     def startup_context(self) -> list[str]:
         """Report only repository context configured on this agent."""
         from pcode.repo_context import AutomaticRepoContext
@@ -293,6 +309,7 @@ class AgentRuntime:
                 self.tree.nodes[run_id].history = deepcopy(self.history)
 
     async def _stream(self, prompt: str, run_id: str) -> AsyncIterator[Event]:
+        await self.refresh_context()
         plan_items = [item.model_dump(mode="json") for item in await self.plan_store.get_items()]
         preview = (
             StreamingPlanPreview()

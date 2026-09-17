@@ -34,6 +34,7 @@ def make_app(workspace, monkeypatch, *, model=None, width=100):
 
 
 def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
+    monkeypatch.setattr("pcode.context_usage.context_window", lambda model: 400_000)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, _ = make_app(tmp_path / "p/pcode", monkeypatch, model="openai:gpt-5")
     app.branch = "master"
@@ -191,6 +192,7 @@ def test_footer_provider_and_context(tmp_path, monkeypatch, model):
 
 @pytest.mark.parametrize("width", [1, 20, 40, 60, 100])
 def test_provider_and_context_stay_one_row(tmp_path, monkeypatch, width):
+    monkeypatch.setattr("pcode.context_usage.context_window", lambda model: 1_000_000)
     app, _ = make_app(
         tmp_path / ("界" * 100), monkeypatch, model="anthropic:claude-sonnet-4-6", width=width
     )

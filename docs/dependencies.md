@@ -163,16 +163,47 @@ requests or authentication.
 
 ### Context indicator
 
-`src/pcode/context_usage.py` uses installed `genai-prices` 0.1.7's public
-`calc_price(Usage(...), model_ref, provider_id=...)` and the returned
-`model.context_window` metadata. Verified against installed `__init__.py`,
-`data_snapshot.py`, and `types.py`: the default snapshot is bundled, lookup raises
-`LookupError` for unknown providers/models, and no updater is started by pcode.
-Source: https://github.com/pydantic/genai-prices . The catalog is advisory, not
-an account-specific API limit; Codex is mapped to OpenAI and unknown proxies are
-not guessed. Pydantic AI 2.43.0 `RequestUsage.input_tokens` already includes
-cache read/write tokens (see installed `pydantic_ai/usage.py`). Use only the last
-response's input usage, never cumulative run/session billing usage.
+`src/pcode/model_metadata.py` resolves context limits; `context_usage.py` and
+`compaction.py` share its synchronous memory-only lookup. Refreshes run outside
+rendering. Preserve input, output, default context, opt-in maximum, source, and
+fetch timestamp separately. Unknown deployments must not inherit a familiar
+model name's direct-API limit. An explicit `PCODE_CONTEXT_WINDOW` applies to both
+consumers and is capped by known input/maximum limits.
+
+- Public catalog: [Models.dev JSON](https://models.dev/api.json) and
+  [schema](https://github.com/anomalyco/models.dev/blob/dev/README.md).
+  Normalize only limits and provider routes, not costs. Cache atomically under
+  `XDG_CACHE_HOME` for 24 hours; retain stale data on failure.
+- Anthropic: [Models API](https://platform.claude.com/docs/en/api/models),
+  `GET /v1/models/{model}`, fields `max_input_tokens` and `max_tokens` (nullable).
+  Use the actual SDK client to preserve base URL, auth and pi credential rotation.
+  Pi OAuth needs its existing beta headers and must not borrow direct-API fallback
+  limits. This does not imply official support for third-party subscription use.
+- Codex: [first-party models endpoint implementation](https://github.com/openai/codex/blob/f1affbac/codex-rs/codex-api/src/endpoint/models.rs),
+  `GET /models?client_version=…` relative to the provider's Codex base URL.
+  The live backend filters model availability by version: 0.99.0 omitted
+  `gpt-6-astra`, whereas 0.154.0 returned its 272k default / 872k maximum.
+  Use verified fallback 0.154.0 or a newer semantic `client_version` from
+  `$CODEX_HOME/models_cache.json` (default `~/.codex/`); read only the version hint,
+  never reuse cached limits/availability from a potentially different account.
+  This is a versioned backend protocol, not a stable public API. Reverify on
+  upgrades. Use `context_window` as the default and `max_context_window` only for
+  explicit overrides. Never map `openai-codex` to `openai`.
+- Verified Pydantic AI 2.43.0 (project) and 2.44.0 (installed tool) provide `Model.provider`, provider context-manager
+  ownership, and `provider.client`. Codex's httpx2 auth handles credential loading,
+  refresh, and one-shot 401 replay; use that same SDK client, including its proxy.
+  Verified `AsyncOpenAI.get` / `AsyncAnthropic.get` accept `cast_to=dict[str, Any]`
+  and per-request `timeout`, `max_retries`, headers and query parameters. Bare
+  `cast_to=dict` fails in installed Anthropic 1.6.0. Do not clone pi's custom SDK
+  client with `with_options`, which requires constructor arguments it cannot infer.
+
+Native metadata is kept in memory per exact model instance, not in a shared
+account cache. Three-second fetch deadlines and one-minute failure backoff prevent
+metadata from breaking chat; cancellation must still propagate. Adapter tests use
+synthetic credentials/MockTransport, not live authenticated requests. The Astra version-filter diagnosis was
+  additionally verified with read-only live catalog requests (no model inference).
+Pydantic AI `RequestUsage.input_tokens` includes cache read/write tokens already;
+show only the latest response's input usage, never cumulative billing usage.
 
 
 ### Context compaction
