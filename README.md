@@ -401,9 +401,14 @@ marks unfinished calls as interrupted, not undone. Rows show a status icon, tool
 name, elapsed time, and truncated path/command summary, without call numbers or
 run counters. The latest ten calls remain in bounded internal history, and saved
 session resume restores this history independently of conversation replay.
-Successful planning operations update the task rows without duplicate tool rows;
-failed planning operations remain visible as failed calls. Plans and tools persist
-across turns and saved-session resumes; `/new` clears both.
+Task additions and status changes preview as soon as their fields arrive in the
+model's streamed tool arguments, without waiting for the full response or tool
+execution. These previews are display-only: tool results reconcile them to the
+confirmed plan, and cancellation or failure discards any unconfirmed preview.
+Only confirmed plans are saved. Successful planning operations update the task
+rows without duplicate tool rows; failed planning operations remain visible as
+failed calls. Plans and tools persist across turns and saved-session resumes;
+`/new` clears both.
 Routine tool summaries no longer enter conversation scrollback. `/tools` opens a
 read-only alternate-screen inspector, separate from this ten-call activity panel.
 It retains all live conversation calls, including successful planning operations.

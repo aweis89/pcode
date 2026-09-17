@@ -21,6 +21,7 @@ from pcode.commands import Command, CommandRegistry
 from pcode.preferences import apply_effort, load_preferences, save_preferences
 from pcode.runtime import (
     Message,
+    PlanPreview,
     PlanUpdated,
     PreviewRuntime,
     RunStatus,
@@ -749,6 +750,8 @@ class PreviewApp:
                         self.activity.status = event.text
                     elif isinstance(event, PlanUpdated):
                         self.activity.plan = event.items
+                    elif isinstance(event, PlanPreview):
+                        self.activity.plan_preview = event.items
                     elif isinstance(event, (ToolStarted, ToolSummary)):
                         # Tool activity is mutable UI state, not a model-text boundary.
                         self.transcript.events((event,))
@@ -763,6 +766,7 @@ class PreviewApp:
         except Exception as error:
             failure = error
         finally:
+            self.activity.plan_preview = None
             output.end_turn()
             self.activity.tools.interrupt_running()
             self.activity.status = ""
