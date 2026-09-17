@@ -72,3 +72,57 @@ def test_save_failure_does_not_discard_selection():
         app.effort("high")
     assert app.current_effort() == "high"
     assert "Could not save defaults" in app.transcript.console.file.getvalue()
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_theme_persists_and_restores_completion_palette(theme):
+    from pcode.ui import PALETTES
+
+    save_preferences(model="test:saved", effort="high")
+    app = PreviewApp(console=Console(file=StringIO()))
+    app.handle(f"/theme {theme}")
+    reopened = PreviewApp(console=Console(file=StringIO()))
+    assert reopened.transcript.theme == theme
+    style = dict(reopened.transcript.palette.prompt_style().style_rules)
+    assert style["completion-menu"] == (
+        f"bg:{PALETTES[theme].surface} {PALETTES[theme].foreground}"
+    )
+    assert load_preferences() == {"model": "test:saved", "effort": "high", "theme": theme}
+    save_preferences(effort="low")
+    assert load_preferences()["theme"] == theme
+
+
+def test_theme_toggle_persists_and_invalid_selection_does_not_change_default():
+    app = PreviewApp(theme="dark", console=Console(file=StringIO()))
+    app.handle("/theme")
+    assert load_preferences()["theme"] == "light"
+    app.handle("/theme invalid")
+    assert load_preferences()["theme"] == "light"
+
+
+@pytest.mark.parametrize("arguments, expected", [([], "light"), (["--theme", "dark"], "dark")])
+def test_theme_startup_default_and_explicit_override(monkeypatch, arguments, expected):
+    save_preferences(theme="light")
+    monkeypatch.setattr(sys, "argv", ["pcode", "--demo", *arguments])
+    with patch("pcode.app.PreviewApp") as app:
+        main()
+    assert app.call_args.kwargs["theme"] == expected
+    assert load_preferences()["theme"] == "light"
+
+
+@pytest.mark.parametrize("value", ["invalid", None, [], 42])
+def test_invalid_saved_theme_falls_back_to_dark(value):
+    import json
+
+    path = preferences_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"theme": value}))
+    assert PreviewApp(console=Console(file=StringIO())).transcript.theme == "dark"
+
+
+def test_theme_save_failure_keeps_current_selection():
+    app = PreviewApp(console=Console(file=StringIO()))
+    with patch("pcode.app.save_preferences", side_effect=PermissionError):
+        app.theme("light")
+    assert app.transcript.theme == "light"
+    assert "Could not save defaults" in app.transcript.console.file.getvalue()
