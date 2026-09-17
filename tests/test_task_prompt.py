@@ -58,3 +58,22 @@ def test_live_submission_does_not_echo_quote_before_response():
     app = PreviewApp(model="test:local", runtime=object(), console=Console(file=stream))
     assert app.handle("waiting prompt")
     assert stream.getvalue() == ""
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_live_prompt_uses_muted_notice_style_without_changing_editor(theme):
+    from pcode.ui import PALETTES, Activity
+
+    palette = PALETTES[theme]
+    console = Console(file=StringIO())
+    with console.use_theme(palette.rich_theme()):
+        notice_style = console.get_style("pcode.muted")
+    prompt_style = palette.prompt_style()
+    activity = Activity(prompt="A quiet prompt", prompt_state="running")
+    for style, _ in activity.prompt_fragments("⠋", 80):
+        attrs = prompt_style.get_attrs_for_style_str(style)
+        assert attrs.color == notice_style.color.name.lstrip("#")
+        assert not attrs.bold
+    editor_attrs = prompt_style.get_attrs_for_style_str("class:prompt")
+    assert editor_attrs.color == palette.accent.lstrip("#")
+    assert editor_attrs.bold
