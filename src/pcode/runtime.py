@@ -18,6 +18,8 @@ class ToolStarted:
     run_id: str = ""
     started_at: str = ""
     process_id: str = ""
+    parent_call_id: str = ""
+    activity: str = ""
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class ToolSummary:
     run_id: str = ""
     outcome: str = ""
     process_id: str = ""
+    parent_call_id: str = ""
 
 
 @dataclass(frozen=True)

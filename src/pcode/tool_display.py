@@ -7,6 +7,7 @@ from pathlib import Path
 from pcode.diagnostics import redact
 
 LABELS = {
+    "delegate_task": "Delegate",
     "read_file": "Read",
     "write_file": "Write",
     "edit_file": "Edit",
@@ -75,6 +76,14 @@ def command_preview(value: str) -> str:
 
 
 def target(name: str, args: dict) -> str:
+    if name == "delegate_task":
+        agent = args.get("agent_name")
+        task = args.get("task")
+        return (
+            (plain(argument(agent), 60) if isinstance(agent, str) else "agent unavailable")
+            + " · "
+            + (plain(argument(task), 160) if isinstance(task, str) else "assignment unavailable")
+        )
     if name in {"run_command", "start_command"}:
         command = args.get("command")
         return command_preview(command) if isinstance(command, str) else "command unavailable"
@@ -203,6 +212,10 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
     if failed:
         prefix = "Retry requested" if outcome == "retry" else "Failed"
         result = f"{prefix} · {failure_reason(content)}"
+    elif name == "delegate_task":
+        # A normal return without a lifecycle end can be a rejected delegation
+        # (e.g. max_calls exhausted), not proof the child completed.
+        result = "Returned"
     elif name == "read_file":
         numbers = re.findall(r"^\s*(\d+)\t", text, re.MULTILINE)
         result = (
@@ -318,3 +331,14 @@ PLAN_TOOLS = frozenset(
         "get_available_tasks",
     }
 )
+
+
+def delegation_detail(args: dict, outcome: str) -> tuple[str, bool]:
+    state = {
+        "ok": "Completed",
+        "timeout": "Timed out",
+        "budget": "Usage budget exhausted",
+        "failed": "Failed",
+        "contained": "Child failed",
+    }.get(outcome, "Did not complete")
+    return f"{target('delegate_task', args)} → {state}", outcome != "ok"
