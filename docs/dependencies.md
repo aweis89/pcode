@@ -173,3 +173,29 @@ an account-specific API limit; Codex is mapped to OpenAI and unknown proxies are
 not guessed. Pydantic AI 2.43.0 `RequestUsage.input_tokens` already includes
 cache read/write tokens (see installed `pydantic_ai/usage.py`). Use only the last
 response's input usage, never cumulative run/session billing usage.
+
+
+### Context compaction
+
+`src/pcode/compaction.py` uses installed Harness 0.31.0's `SummarizingCompaction`
+and `compact_now(strategy, messages, model=..., focus=..., usage=...)`. Consult
+[Harness compaction](https://pydantic.dev/docs/ai/harness/compaction/) and inspect
+`pydantic_ai_harness/compaction/_manual.py`, `_summarizing_compaction.py`, and
+`_shared.py` in the installed environment. Pcode isolates private token/cutoff helpers
+and `drain_summary_events` here; verify these on upgrades. Streaming the dedicated,
+tool-free summary request is required for streaming-only subscription endpoints.
+Use the actual resolved model object to retain custom auth/proxy behavior.
+
+Installed Coder includes `ClearToolResults(max_fraction=0.7)`; pcode removes it to
+avoid discarding evidence before summarization. The installed summarizer defaults
+to 500 characters per tool result, which pcode explicitly raises to 16,000. Its
+`keep_tokens` cutoff can retain an oversized final tool batch, so pcode detects that
+case and summarizes the whole settled history with `keep_messages=0` instead.
+
+Manual checkpoints serialize `ModelMessage`s into a private, fsynced journal event
+that creates/selects one immutable conversation-tree node. Automatic compaction
+uses the public `ContinuableSnapshot` / `StepStore.save_snapshot` API before the
+next model request; subsequent Harness `StepPersistence` snapshots supersede it.
+Never use synthetic agent runs to install summaries or overwrite original snapshots.
+Keep tests for immediate restart, branch isolation, failure/cancellation, safe tool
+pairs, mid-tool-loop compaction, and stale usage anchors after rewriting history.

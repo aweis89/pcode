@@ -118,7 +118,7 @@ def test_input_only_grows_for_text(pane, split):
 
     pane("send-keys", "-t", "preview:0.0", "C-c")
     pane("send-keys", "-t", "preview:0.0", "-l", "/")
-    screen = capture(pane, "\n /demo ")
+    screen = capture(pane, "\n /help ")
     assert input_rows(screen) == 1
     assert screen.index("\n /demo ") < screen.rindex("┌")  # Menu above the fixed frame.
 

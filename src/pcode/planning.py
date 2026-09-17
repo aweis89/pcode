@@ -18,8 +18,10 @@ class IdentifiedPlanning(Planning):
         result = await super().after_tool_execute(
             ctx, call=call, tool_def=tool_def, args=args, result=result
         )
-        if call.tool_name == "write_plan" and isinstance(result, str) and result.startswith(
-            "Plan updated:"
+        if (
+            call.tool_name == "write_plan"
+            and isinstance(result, str)
+            and result.startswith("Plan updated:")
         ):
             items = await self.resolve_store(ctx).get_items()
             if items:

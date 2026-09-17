@@ -41,9 +41,17 @@ def context_label(model: str, history: Sequence[ModelMessage]) -> str:
     # Input usage already includes cache reads/writes in Pydantic AI. Do not add
     # them again, sum previous requests, or count output as input context.
     # Deriving from history also follows resume, /new, and conversation checkout.
+    from pcode.compaction import MARKER, CompactionError, context_estimate, effective_window
+
+    try:
+        window = effective_window(model)
+    except CompactionError:
+        window = context_window(model)  # Invalid config must not break terminal rendering.
     used = 0
     for message in reversed(history):
+        if (message.metadata or {}).get(MARKER):
+            return f" · ctx: ~{compact_tokens(context_estimate(history))}/{compact_tokens(window)}"
         if isinstance(message, ModelResponse):
             used = message.usage.input_tokens
             break
-    return f" · ctx: {compact_tokens(used)}/{compact_tokens(context_window(model))}"
+    return f" · ctx: {compact_tokens(used)}/{compact_tokens(window)}"
