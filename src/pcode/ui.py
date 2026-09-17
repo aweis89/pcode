@@ -32,6 +32,7 @@ from rich.theme import Theme
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.runtime import Event, Message, ToolSummary
 from pcode.task_prompt import TaskPrompt
+from pcode.theme import detect_theme
 from pcode.tool_display import command_preview, command_text, label, plain
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
 from pcode.transcript_notice import TranscriptNotice
@@ -773,6 +774,7 @@ class Transcript:
         self.activity = activity
         self.console = console
         self.theme = theme
+        self.detected_theme = detect_theme()
         self.color_style = color_style
         self.output: TerminalOutput | None = None
 
@@ -784,8 +786,12 @@ class Transcript:
                 self.console.print(*objects)
 
     @property
+    def resolved_theme(self) -> str:
+        return self.detected_theme if self.theme == "auto" else self.theme
+
+    @property
     def palette(self) -> Palette:
-        return PALETTES[self.theme]
+        return PALETTES[self.resolved_theme]
 
     @property
     def rich_theme(self) -> Theme:
@@ -793,7 +799,9 @@ class Transcript:
 
     @property
     def code_theme(self) -> str:
-        return f"ansi_{self.theme}" if self.color_style == "terminal" else self.palette.syntax
+        return (
+            f"ansi_{self.resolved_theme}" if self.color_style == "terminal" else self.palette.syntax
+        )
 
     def welcome(self, model: str | None = None, workspace: str = "") -> None:
         self.print()

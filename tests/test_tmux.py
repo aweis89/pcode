@@ -83,10 +83,10 @@ def test_footer_theme_switch_keeps_editor_compact(pane):
         pane("send-keys", "-t", "preview:0.0", "-l", f"/colors {colors}")
         pane("send-keys", "-t", "preview:0.0", "Enter")
         assert input_rows(capture(pane, f"Colors: {colors}.")) == 1
-        for theme in ("light", "dark"):
+        for theme in ("light", "dark", "auto"):
             pane("send-keys", "-t", "preview:0.0", "-l", f"/theme {theme}")
             pane("send-keys", "-t", "preview:0.0", "Enter")
-            screen = capture(pane, f"Theme: {theme}.")
+            screen = capture(pane, "Theme: auto (" if theme == "auto" else f"Theme: {theme}.")
             assert input_rows(screen) == 1
             assert "preview · effort: n/a" in screen.splitlines()[-1]
             pane("send-keys", "-t", "preview:0.0", "-l", "/demo")

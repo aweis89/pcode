@@ -31,8 +31,9 @@ from pcode.runtime import (
     ToolStarted,
     ToolSummary,
 )
+from pcode.theme import THEMES
 from pcode.tool_display import plain
-from pcode.ui import COLOR_STYLES, PALETTES, Activity, TerminalOutput, Transcript, create_prompt
+from pcode.ui import COLOR_STYLES, Activity, TerminalOutput, Transcript, create_prompt
 
 
 class PreviewApp:
@@ -112,7 +113,7 @@ class PreviewApp:
                 self.show_thinking,
                 ("on", "off"),
             ),
-            Command("/theme", "Switch palette: dark / light", self.theme, tuple(PALETTES)),
+            Command("/theme", "Switch palette: dark / light / auto", self.theme, THEMES),
             Command("/colors", "Rich colors: palette / terminal", self.colors, COLOR_STYLES),
             Command(
                 "/effort",
@@ -384,9 +385,14 @@ class PreviewApp:
         self.present_events(self.preview.demo())
 
     def theme(self, argument: str) -> None:
-        self.transcript.theme = argument or ("light" if self.transcript.theme == "dark" else "dark")
+        self.transcript.theme = argument or (
+            "light" if self.transcript.resolved_theme == "dark" else "dark"
+        )
         self.persist_defaults(theme=self.transcript.theme)
-        self.transcript.note(f"Theme: {self.transcript.theme}. Existing output is unchanged.")
+        selected = self.transcript.theme
+        if selected == "auto":
+            selected += f" ({self.transcript.resolved_theme})"
+        self.transcript.note(f"Theme: {selected}. Existing output is unchanged.")
 
     def colors(self, argument: str) -> None:
         if argument:
@@ -1267,9 +1273,7 @@ class PreviewApp:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Streaming terminal with a Coder agent")
-    parser.add_argument(
-        "--theme", choices=PALETTES, default=load_preferences().get("theme", "dark")
-    )
+    parser.add_argument("--theme", choices=THEMES, default=load_preferences().get("theme", "dark"))
     parser.add_argument(
         "--color-style",
         choices=COLOR_STYLES,
