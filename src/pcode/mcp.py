@@ -142,13 +142,21 @@ class MCPState:
     def __init__(self) -> None:
         self.enabled: dict[str, Any] = {}
 
-    def enable(self, name: str) -> None:
+    async def enable(self, name: str) -> None:
         if name in self.enabled:
             return
         servers = configured_servers()
         if name not in servers:
             raise ValueError(f"Unknown MCP server '{name}'. Use /mcp list.")
-        self.enabled[name] = build_toolset(name, servers[name])
+        toolset = build_toolset(name, servers[name])
+        # Only OAuth needs an enable-time connection. Entering the MCP toolset
+        # initializes the server and completes native auth without a model call.
+        # Publish it only after successful login AND connection cleanup, retaining
+        # the same OAuth object (and in-memory tokens) for subsequent turns.
+        if getattr(toolset.wrapped.client.transport, "auth", None) is not None:
+            async with toolset:
+                pass
+        self.enabled[name] = toolset
 
     def disable(self, name: str) -> None:
         # No config read: disabling must work even if the config was removed or broken.

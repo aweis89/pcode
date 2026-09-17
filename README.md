@@ -614,13 +614,18 @@ FastMCP. No separate auth tool, Pi token import, or custom OAuth flow is needed:
 }
 ```
 
-Replace the placeholder URL with your server, then `/mcp enable my-service` and
-send a prompt. On the next turn, the client discovers the server's OAuth settings,
-opens your default browser if sign-in is needed, and waits for approval through a
-temporary localhost callback server. Finish sign-in in the browser; Ctrl+C cancels
-an active turn, including a pending login. Listing or enabling alone does not
-contact the service or open a browser. This requires a browser and a reachable
-local callback; there is no headless/device-code login command.
+Replace the placeholder URL with your server, then run `/mcp enable my-service`.
+The command immediately connects, discovers the server's OAuth settings, and opens
+your default browser if sign-in is needed. Finish sign-in in the browser through
+the temporary localhost callback server. **No prompt or model request is needed.**
+The server becomes enabled only after authentication and MCP initialization succeed;
+failure or Ctrl+C leaves it off. `/quit` also cancels a pending login.
+
+The input remains editable and `/mcp list` stays available during sign-in. Queued
+prompts wait for successful activation; failure or cancellation clears them rather
+than running without the requested tools. `/mcp list` itself never connects or
+opens a browser. This requires a browser and a reachable local callback; there is
+no headless/device-code login command.
 
 - Pydantic AI's `MCPToolset(auth="oauth")` delegates PKCE, dynamic client registration,
   callback/state validation, token refresh, and authenticated requests to FastMCP
@@ -644,9 +649,10 @@ local callback; there is no headless/device-code login command.
 - `/mcp enable NAME` makes that server's tools available on subsequent turns in
   the **current conversation**, including all tool/model steps within a turn.
   Switching models keeps the selection. Repeating `enable` is a no-op.
-- Connections start on the next turn, not when listing or enabling. They close
-  after each turn, including failures and cancellation; local subprocesses do
-  not stay running between turns. Enabled servers reconnect on the next turn.
+- OAuth servers connect during `/mcp enable`, then disconnect while retaining
+  their in-memory tokens. Non-OAuth servers still connect only on the next turn.
+  All enabled servers reconnect for each turn and close afterward, including on
+  failure or cancellation; local subprocesses do not stay running between turns.
 - `/mcp disable NAME` removes those tools from subsequent model requests. MCP
   selection cannot change during an active turn. To reload a server after editing
   its configuration or environment, disable and enable it again.

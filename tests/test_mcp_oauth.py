@@ -58,23 +58,44 @@ def test_oauth_allows_non_auth_headers():
     assert toolset.wrapped.client.transport.headers == {"X-Tenant": "test"}
 
 
-def test_activation_does_not_persist_tokens_or_read_disabled_credentials():
+def test_activation_does_not_persist_tokens_or_read_disabled_credentials(monkeypatch):
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"mcpServers": {"remote": {"url": URL, "auth": "oauth"}}}))
     before = path.read_bytes()
-    state = MCPState()
-    assert state.toolsets() == []
-    state.enable("remote")
-    first = state.enabled["remote"].wrapped.client.transport.auth
-    state.enable("remote")
-    assert state.enabled["remote"].wrapped.client.transport.auth is first
-    state.disable("remote")
-    assert state.toolsets() == []
-    state.enable("remote")
-    assert state.enabled["remote"].wrapped.client.transport.auth is not first
-    assert path.read_bytes() == before
-    assert list(path.parent.iterdir()) == [path]
+    providers = []
+
+    def configured_toolset(name, raw):
+        toolset = build_toolset(name, raw)
+        provider = FakeMCPOAuthProvider()
+        provider.install_toolset(toolset)
+        providers.append(provider)
+        return toolset
+
+    monkeypatch.setattr("pcode.mcp.build_toolset", configured_toolset)
+
+    async def run():
+        state = MCPState()
+        assert state.toolsets() == []
+        await state.enable("remote")
+        first = state.enabled["remote"].wrapped.client.transport.auth
+        assert providers[0].browser_visits == 1
+        await state.enable("remote")
+        assert len(providers) == 1
+        assert state.enabled["remote"].wrapped.client.transport.auth is first
+        # Ordinary subsequent MCP connections use the already authenticated client.
+        async with state.enabled["remote"]:
+            pass
+        assert providers[0].browser_visits == 1
+        state.disable("remote")
+        assert state.toolsets() == []
+        await state.enable("remote")
+        assert state.enabled["remote"].wrapped.client.transport.auth is not first
+        assert providers[1].browser_visits == 1
+        assert path.read_bytes() == before
+        assert list(path.parent.iterdir()) == [path]
+
+    asyncio.run(run())
 
 
 class FakeOAuthProvider:
@@ -433,5 +454,129 @@ def test_callback_timeout_releases_reserved_port():
         with socket.socket() as reusable:
             reusable.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             reusable.bind(("127.0.0.1", auth.redirect_port))
+
+    asyncio.run(run())
+
+
+class FakeMCPOAuthProvider(FakeOAuthProvider):
+    """Fake OAuth provider plus the real MCP HTTP initialization exchange."""
+
+    async def http(self, request):
+        if (
+            str(request.url) == URL
+            and request.headers.get("Authorization") == f"Bearer {self.access_token}"
+        ):
+            if request.method != "POST":
+                return httpx2.Response(405)
+            message = json.loads(request.content)
+            if "id" not in message:
+                return httpx2.Response(202)
+            if message["method"] == "initialize":
+                result = {
+                    "protocolVersion": message["params"]["protocolVersion"],
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "fake-oauth", "version": "1"},
+                }
+            elif message["method"] == "tools/list":
+                result = {"tools": []}
+            else:
+                result = {}
+            return httpx2.Response(
+                200, json={"jsonrpc": "2.0", "id": message["id"], "result": result}
+            )
+        return await super().http(request)
+
+    def install_toolset(self, toolset):
+        transport = toolset.wrapped.client.transport
+        self.install(transport.auth)
+        transport.httpx_client_factory = lambda **kwargs: httpx2.AsyncClient(
+            transport=httpx2.MockTransport(self.http), **kwargs
+        )
+
+
+@pytest.mark.parametrize("mode", ["denied", "bad-state", "wait"])
+def test_enable_oauth_failure_or_cancel_leaves_server_off(monkeypatch, mode):
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mcpServers": {"remote": {"url": URL, "auth": "oauth"}}}))
+
+    async def run():
+        state = MCPState()
+        toolset = build_toolset("remote", {"url": URL, "auth": "oauth"})
+        provider = FakeMCPOAuthProvider()
+        provider.callback_mode = mode
+        provider.install_toolset(toolset)
+        monkeypatch.setattr("pcode.mcp.build_toolset", lambda name, raw: toolset)
+        if mode == "wait":
+            task = asyncio.create_task(state.enable("remote"))
+            try:
+                await asyncio.wait_for(provider.callback_started.wait(), 5)
+                assert state.toolsets() == []
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        else:
+            with pytest.raises(Exception):
+                await state.enable("remote")
+        assert state.toolsets() == []
+        assert toolset.wrapped.client.transport.auth._callback_socket is None
+        # Retry after failure/cancellation should succeed, without poisoning the client.
+        provider.callback_mode = "success"
+        await state.enable("remote")
+        assert state.toolsets() == [toolset]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
+def test_enable_publishes_only_after_connection_teardown(monkeypatch, outcome):
+    from types import SimpleNamespace
+
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mcpServers": {"remote": {"url": URL, "auth": "oauth"}}}))
+
+    async def run():
+        exiting = asyncio.Event()
+        finish = asyncio.Event()
+
+        class Connection:
+            wrapped = SimpleNamespace(
+                client=SimpleNamespace(transport=SimpleNamespace(auth=object()))
+            )
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                exiting.set()
+                await finish.wait()
+                if outcome == "failure":
+                    raise RuntimeError("Connection teardown failed")
+
+        connection = Connection()
+        monkeypatch.setattr("pcode.mcp.build_toolset", lambda name, raw: connection)
+        state = MCPState()
+        task = asyncio.create_task(state.enable("remote"))
+        try:
+            await asyncio.wait_for(exiting.wait(), 5)
+            assert state.toolsets() == []
+            if outcome == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            elif outcome == "failure":
+                finish.set()
+                with pytest.raises(RuntimeError, match="teardown failed"):
+                    await task
+            else:
+                finish.set()
+                await task
+            assert state.toolsets() == ([connection] if outcome == "success" else [])
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(run())

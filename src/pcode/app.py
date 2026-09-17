@@ -84,6 +84,8 @@ class PreviewApp:
         self.session_requested = False
         self.tree_requested = False
         self.login_requested = False
+        self.mcp_enable_requested: str | None = None
+        self.mcp_enabling: str | None = None
         self.model_requested = False
         self.registry = CommandRegistry()
         for command in (
@@ -402,21 +404,33 @@ class PreviewApp:
             return
         if len(parts) != 2 or parts[0] not in {"enable", "disable"}:
             raise ValueError("Usage: /mcp list | /mcp enable NAME | /mcp disable NAME")
-        if self.activity.busy:
+        # Slash commands precede queued (not yet running) prompts. In particular,
+        # an enable + prompt submitted in one input batch must authenticate first.
+        if self.mcp_enabling or (
+            self.activity.busy
+            and (self.activity.prompt_state == "running" or not self.activity.queued)
+        ):
             raise ValueError("MCP cannot be changed while working. Cancel or wait, then retry.")
         if state is None:
             raise ValueError("MCP requires a live model. Start pcode with -m PROVIDER:MODEL.")
         action, name = parts
         if action == "enable":
-            state.enable(name)
-            self.transcript.note(
-                f"MCP '{name}' enabled for this conversation; connects on the next turn. "
-                "Its tools can perform actions with the server's permissions. "
-                "OAuth servers may open your browser for sign-in; tokens are kept in memory only."
-            )
+            if name in enabled:
+                self.transcript.note(f"MCP '{name}' is already enabled.")
+            else:
+                self.mcp_enable_requested = name
         else:
             state.disable(name)
             self.transcript.note(f"MCP '{name}' disabled. Earlier results remain in history.")
+
+    async def enable_mcp(self, name: str) -> None:
+        """Authorize outside the model loop; publish only a successfully enabled server."""
+        await self.runtime.mcp.enable(name)
+        self.transcript.note(
+            f"MCP '{name}' enabled for this conversation. "
+            "Its tools can perform actions with the server's permissions. "
+            "OAuth tokens are kept in memory only."
+        )
 
     def new(self, argument: str) -> None:
         self.runtime.reset()
@@ -779,11 +793,18 @@ class PreviewApp:
         command_idle = asyncio.Event()
         command_idle.set()
         live_task = None
+        mcp_task = None
+        mcp_idle = asyncio.Event()
+        mcp_idle.set()
         queue_generation = 0
+        pending_mcp = 0
 
         def clear_queue():
-            nonlocal queue_generation
+            nonlocal queue_generation, pending_mcp
             queue_generation += 1
+            if pending_mcp:
+                self.transcript.note("Pending MCP enable command cancelled.")
+                pending_mcp = 0
             count = len(self.activity.queued_prompts)
             while not queue.empty():
                 queue.get_nowait()
@@ -794,19 +815,27 @@ class PreviewApp:
 
         def cancel():
             clear_queue()
-            if live_task is not None and not live_task.done():
-                # Repeated interrupts must not interrupt persistence/cleanup.
-                if not live_task.cancelling():
-                    live_task.cancel()
+            active = [task for task in (live_task, mcp_task) if task and not task.done()]
+            if active:
+                # Repeated interrupts must not interrupt persistence/auth cleanup.
+                for task in active:
+                    if not task.cancelling():
+                        task.cancel()
             else:
                 self.activity.busy = False
                 self.transcript.note("Run cancelled. Completed tool effects are not undone.")
 
         def submit(text):
+            nonlocal pending_mcp
             text = text.strip()
             if text.startswith("/"):
-                commands.put_nowait(text)
+                commands.put_nowait((queue_generation, text))
                 command_idle.clear()
+                if text.split()[:2] == ["/mcp", "enable"]:
+                    pending_mcp += 1
+                    # Enter + Ctrl+C in one input batch must cancel activation
+                    # before its command worker has had a chance to start OAuth.
+                    self.activity.busy = True
             elif text:
                 queue.put_nowait((queue_generation, text))
                 self.activity.queued_prompts.append(text)
@@ -815,10 +844,55 @@ class PreviewApp:
                 # the pending request rather than clearing the user's draft.
                 self.activity.busy = True
 
-        async def consume_commands():
-            while self.running:
-                text = await commands.get()
+        def start_mcp_enable(name):
+            nonlocal mcp_task
+            mcp_idle.clear()
+            self.mcp_enabling = name
+            self.activity.busy = True
+            self.activity.status = f"Enabling MCP '{name}' — complete browser sign-in if prompted…"
+            self.transcript.note(
+                f"Enabling MCP '{name}'. OAuth sign-in happens now if needed; "
+                "Ctrl+C cancels. No model request is made."
+            )
+
+            def finished(task):
+                nonlocal mcp_task
+                success = False
                 try:
+                    task.result()
+                    success = True
+                except asyncio.CancelledError:
+                    self.transcript.note(f"MCP '{name}' sign-in cancelled; server remains off.")
+                except Exception as error:
+                    from pcode.live import error_message
+
+                    self.transcript.note(f"MCP '{name}' remains off: {error_message(error)}")
+                finally:
+                    if not success:
+                        clear_queue()
+                    self.activity.busy = bool(self.activity.queued_prompts) or bool(pending_mcp)
+                    self.activity.status = ""
+                    mcp_task = None
+                    self.mcp_enabling = None
+                    mcp_idle.set()
+                    session.app.invalidate()
+
+            mcp_task = asyncio.create_task(self.enable_mcp(name))
+            # A done callback also handles cancellation before the coroutine starts.
+            mcp_task.add_done_callback(finished)
+
+        async def consume_commands():
+            nonlocal pending_mcp
+            while self.running:
+                generation, text = await commands.get()
+                try:
+                    if text.split()[:2] == ["/mcp", "enable"]:
+                        if generation != queue_generation:
+                            continue
+                        pending_mcp -= 1
+                        self.activity.busy = bool(self.activity.queued_prompts) or any(
+                            task is not None and not task.done() for task in (live_task, mcp_task)
+                        )
                     command = self.registry.find(text.split(maxsplit=1)[0])
                     if (
                         command
@@ -831,10 +905,15 @@ class PreviewApp:
                         )
                     else:
                         self.handle(text)
+                        if self.mcp_enable_requested is not None:
+                            name = self.mcp_enable_requested
+                            self.mcp_enable_requested = None
+                            start_mcp_enable(name)
                         if not self.running:
                             cancel()
-                            if live_task is not None:
-                                await live_task
+                            active = [task for task in (live_task, mcp_task) if task is not None]
+                            if active:
+                                await asyncio.gather(*active, return_exceptions=True)
                         if self.model_requested:
                             await self.choose_model(output, session)
                         if self.login_requested:
@@ -850,6 +929,8 @@ class PreviewApp:
 
                     self.transcript.note(error_message(error))
                 finally:
+                    if pending_mcp:
+                        self.activity.busy = True
                     if commands.empty():
                         command_idle.set()
                 await output.flush()
@@ -860,8 +941,10 @@ class PreviewApp:
             nonlocal live_task
             while self.running:
                 await command_idle.wait()
+                await mcp_idle.wait()
                 generation, text = await queue.get()
                 await command_idle.wait()
+                await mcp_idle.wait()
                 if not self.running:
                     return
                 if generation != queue_generation:
@@ -896,7 +979,7 @@ class PreviewApp:
                     return
                 if not success:
                     clear_queue()
-                self.activity.busy = bool(self.activity.queued_prompts)
+                self.activity.busy = bool(self.activity.queued_prompts) or bool(pending_mcp)
                 await output.flush()
                 if not self.running:
                     session.app.exit()
@@ -935,6 +1018,10 @@ class PreviewApp:
         try:
             await session.app.run_async(pre_run=start)
         finally:
+            if mcp_task is not None:
+                if not mcp_task.done() and not mcp_task.cancelling():
+                    mcp_task.cancel()
+                await asyncio.gather(mcp_task, return_exceptions=True)
             await output.flush()
             self.transcript.output = None
         saved = getattr(self.runtime, "session", None)
