@@ -1,6 +1,7 @@
 """Editable prompt with append-only output in the terminal's normal scrollback."""
 
 import asyncio
+import os
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.output import Output, create_output
+from prompt_toolkit.renderer import Renderer
 from prompt_toolkit.search import stop_search
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame, Label
@@ -275,6 +277,82 @@ class CursorSafeOutput:
                 if self._visible:
                     self.output.show_cursor()
                 self.output.flush()
+
+
+class ReflowAwareRenderer(Renderer):
+    """Erase every physical row tmux produced from the last layout on narrowing.
+
+    prompt_toolkit paints full-width rows with autowrap disabled, so tmux does
+    not flag them as wrapped. On a narrowing resize tmux still splits any row
+    whose used cells exceed the new width, before the app sees SIGWINCH, and
+    keeps the cursor inside its split row. The stock erase then moves up by the
+    old logical row count and leaves the top of the old layout on screen. Count
+    the split rows instead. Partial clears never shrink tmux's used-cell count;
+    only the column-zero full erase does, so track the widest write per row
+    since the last erase.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._row_extents: dict[int, int] = {}
+        super().__init__(*args, **kwargs)
+
+    def reset(self, _scroll: bool = False, leave_alternate_screen: bool = True) -> None:
+        self._row_extents = {}
+        super().reset(_scroll, leave_alternate_screen)
+
+    def render(self, app, layout, is_done: bool = False) -> None:
+        super().render(app, layout, is_done)
+        screen, size, has_style = self._last_screen, self._last_size, self._style_string_has_style
+        if screen is None or size is None or has_style is None:
+            return
+        for y in range(screen.height):
+            extent = 0
+            for x, cell in screen.data_buffer[y].items():
+                if cell.char != " " or has_style[cell.style]:
+                    extent = max(extent, min(x, size.columns - 1) + (cell.width or 1))
+            if extent > self._row_extents.get(y, 0):
+                self._row_extents[y] = extent
+
+    def _reflowed_rows_above_cursor(self) -> int | None:
+        """Physical rows above the cursor after tmux narrowed the pane, else None."""
+        if not os.environ.get("TMUX") or self._last_size is None or self._in_alternate_screen:
+            return None
+        columns = self.output.get_size().columns
+        if columns < 1 or columns >= self._last_size.columns:
+            return None
+        cursor = self._cursor_pos
+        rows = 0
+        for y in range(cursor.y):
+            rows += max(1, -(-self._row_extents.get(y, 0) // columns))
+        extent = self._row_extents.get(cursor.y, 0)
+        if extent > columns:
+            # tmux keeps the cursor in its split piece, or after the last one.
+            rows += cursor.x // columns if cursor.x < extent else (extent - 1) // columns
+        return rows
+
+    def erase(self, leave_alternate_screen: bool = True) -> None:
+        rows = self._reflowed_rows_above_cursor()
+        if rows is None:
+            super().erase(leave_alternate_screen)
+            return
+        output = self.output
+        output.cursor_backward(self._cursor_pos.x)
+        output.cursor_up(rows)
+        output.erase_down()
+        output.reset_attributes()
+        output.enable_autowrap()
+        output.flush()
+        self.reset(leave_alternate_screen=leave_alternate_screen)
+
+
+def install_reflow_renderer(app: Application) -> None:
+    app.renderer = ReflowAwareRenderer(
+        app._merged_style,
+        app.output,
+        full_screen=False,
+        mouse_support=False,
+        cpr_not_supported_callback=app.cpr_not_supported_callback,
+    )
 
 
 class TerminalOutput:
@@ -673,6 +751,7 @@ def create_prompt(
             output=editor_app.output,
             mouse_support=False,
         )
+    install_reflow_renderer(session.app)
 
     return session
 
