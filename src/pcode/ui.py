@@ -167,6 +167,12 @@ class Activity:
         icon = spinner if self.prompt_state == "running" else "○"
         return task_panel_rows(self.plan, self.tools, budget, icon)
 
+    def panel_title(self) -> str:
+        if not self.plan:
+            return "Tools"
+        completed = sum(item.get("status") == "completed" for item in self.plan)
+        return f"Tasks {completed}/{len(self.plan)} done"
+
     def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
         style = "bold ansired" if self.prompt_state == "failed" else "class:prompt"
@@ -468,7 +474,7 @@ def create_prompt(
 
     def frame_height() -> int:
         size = session.app.output.get_size()
-        available = max(1, size.rows - 4 - plan_height() - len(queue_rows()))
+        available = max(1, size.rows - 4 - activity_height() - len(queue_rows()))
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
         return min(text_height, available) + 2
 
@@ -485,9 +491,9 @@ def create_prompt(
         budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
         return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
-    def plan_height() -> int:
+    def activity_height() -> int:
         rows = plan_rows()
-        return len(rows) + bool(activity.prompt) + 2 if rows or activity.prompt else 0
+        return bool(activity.prompt) + (len(rows) + 2 if rows else 0)
 
     def plan_text():
         return panel_fragments(plan_rows(), session.app.output.get_size().columns - 2)
@@ -497,7 +503,7 @@ def create_prompt(
             FormattedTextControl(
                 lambda: activity.prompt_fragments(
                     prompt_spinner.render(monotonic()).plain,
-                    session.app.output.get_size().columns - 2,
+                    session.app.output.get_size().columns,
                 ),
                 show_cursor=False,
             ),
@@ -509,21 +515,23 @@ def create_prompt(
     )
     plan = ConditionalContainer(
         Frame(
-            HSplit(
-                [
-                    current_prompt,
-                    Window(
-                        FormattedTextControl(plan_text),
-                        height=lambda: len(plan_rows()),
-                        dont_extend_height=True,
-                        wrap_lines=False,
-                    ),
-                ]
+            Window(
+                FormattedTextControl(plan_text),
+                height=lambda: len(plan_rows()),
+                dont_extend_height=True,
+                wrap_lines=False,
             ),
-            height=plan_height,
+            title=lambda: panel_fragments(
+                [("bold", activity.panel_title())],
+                session.app.output.get_size().columns - 10,
+            ),
+            height=lambda: len(plan_rows()) + 2,
         ),
-        filter=Condition(lambda: bool(activity.prompt or activity.plan or activity.tools.calls)),
+        filter=Condition(lambda: bool(plan_rows())),
     )
+    # Keep the turn and its activity adjacent even when the root layout justifies
+    # the transcript and editor across the remaining terminal height.
+    activity_panel = HSplit([current_prompt, plan])
 
     def queue_rows():
         budget = min(4, max(1, session.app.output.get_size().rows // 4))
@@ -545,7 +553,7 @@ def create_prompt(
         max_height=6, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
     )
     menu.content.dont_extend_height = Always()
-    children = [menu, search, plan, queued, Frame(editor, height=frame_height)]
+    children = [menu, search, activity_panel, queued, Frame(editor, height=frame_height)]
     if transcript is not None:
         children.insert(0, Window())
 

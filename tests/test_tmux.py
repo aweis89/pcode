@@ -160,8 +160,7 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     assert input_rows(streaming) == 1
     assert "COMMITTED LINE" in streaming
     assert any(
-        line.rstrip("│ ").endswith(" hello")
-        and line.startswith(tuple("│" + f for f in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+        line.endswith(" hello") and line.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
         for line in streaming.splitlines()
     )
     assert "FIRST STREAM CHUNK" not in streaming
@@ -491,9 +490,10 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     assert "Tasks ·" not in screen and "Tools" not in screen
     lines = screen.splitlines()
     first_task = next(i for i, line in enumerate(lines) if "Task 6" in line)
-    assert lines[first_task - 2].startswith("┌")
-    assert lines[first_task - 1].startswith("│")
-    assert lines[first_task - 1].rstrip("│ ").endswith(" h")
+    assert lines[first_task - 2].endswith(" h")
+    assert not lines[first_task - 2].startswith("│")
+    assert lines[first_task - 1].startswith("┌")
+    assert "Tasks 0/12 done" in lines[first_task - 1]
     assert all(
         line.startswith("│") and line.endswith("│") for line in lines[first_task : first_task + 5]
     )
@@ -503,6 +503,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     pane("send-keys", "-t", "preview:0.0", "-l", "editable draft")
     pane("split-window", split, "-t", "preview:0.0", "cat")
     completed = capture(pane, "✓ Task 0")
+    assert "Tasks 12/12 done" in completed
     assert input_rows(completed) == 1
     assert completed.count("┌") == completed.count("└") == 2
     pane("kill-pane", "-t", "preview:0.1")
@@ -581,7 +582,7 @@ app.run()
 
 
 @pytest.mark.parametrize("pane", [TOOLS_SCRIPT], indirect=True)
-def test_recent_tools_are_nested_below_prompt_header_in_task_widget(pane):
+def test_prompt_sits_above_task_header_and_nested_tools(pane):
     initial = capture(pane, "A task")
     assert "Tools" not in initial and "Tasks ·" not in initial
     assert initial.count("┌") == initial.count("└") == 2
@@ -589,8 +590,10 @@ def test_recent_tools_are_nested_below_prompt_header_in_task_widget(pane):
     screen = capture(pane, "⟳ Run", running=True)
     lines = screen.splitlines()
     task = next(i for i, line in enumerate(lines) if "A task" in line)
-    assert lines[task - 2].startswith("┌")
-    assert lines[task - 1].rstrip("│ ").endswith(" h")
+    assert lines[task - 2].endswith(" h")
+    assert not lines[task - 2].startswith("│")
+    assert lines[task - 1].startswith("┌")
+    assert "Tasks 0/1 done" in lines[task - 1]
     assert lines[task + 1].startswith("│      ✓ Read · file_11.py")
     assert lines[task + 2].startswith("│      ! Read failed · file_12.py")
     assert lines[task + 3].startswith("│      ⟳ Run")
@@ -688,12 +691,11 @@ def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
         screen = capture(pane, "❯", running=True, columns=columns)
         lines = screen.splitlines()
         editor_top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
-        assert lines[editor_top - 3].startswith("┌")
-        header = lines[editor_top - 2]
-        assert header.startswith("│") and header.endswith("…│")
+        header = lines[editor_top - 1]
+        assert not header.startswith("│") and header.endswith("…")
         assert "LONG PROMPT" in header
         assert len(header) == columns
-        assert lines[editor_top - 1].startswith("└")
+        assert screen.count("┌") == screen.count("└") == 1
         assert input_rows(screen) == 1
 
 
@@ -715,11 +717,33 @@ def test_queued_messages_stay_directly_above_editor(pane):
         assert lines[editor_top - 2].startswith("Queued: first queued message")
         assert lines[editor_top - 2].endswith("…")
         assert lines[editor_top - 1] == "Queued: second queued message"
-        assert lines[editor_top - 3].startswith("└")
-        assert "active prompt" in lines[editor_top - 4]
+        assert "active prompt" in lines[editor_top - 3]
+        assert not lines[editor_top - 3].startswith("│")
         assert "│❯ keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "Run cancelled.")
     assert "Queued:" not in screen
     assert "│❯ keep draft" in screen
+
+
+@pytest.mark.parametrize(
+    "pane",
+    [
+        TOOLS_SCRIPT.replace(
+            'app.activity.plan = [{"id": "one", "content": "A task", "status": "in_progress"}]', ""
+        )
+    ],
+    indirect=True,
+)
+def test_tools_only_box_has_header_below_unboxed_prompt(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "⟳ Run", running=True)
+    lines = screen.splitlines()
+    top = next(i for i, line in enumerate(lines) if line.startswith("┌") and "Tools" in line)
+    assert lines[top - 1].endswith(" h")
+    assert not lines[top - 1].startswith("│")
+    assert lines[top + 1].startswith("│  ✓ Read")
+    assert "Tasks" not in screen
+    assert input_rows(screen) == 1
