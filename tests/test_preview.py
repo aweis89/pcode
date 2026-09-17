@@ -32,6 +32,7 @@ def make_app(width=80):
                 "/errors",
                 "/demo",
                 "/config",
+                "/show-thinking",
                 "/theme",
                 "/colors",
                 "/effort",

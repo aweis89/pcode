@@ -871,3 +871,19 @@ source history available rather than falling back to destructive truncation.
 Pcode removes Coder's default clearing of old tool results at 70% context usage so
 that evidence is not discarded before the summarizer sees it. With auto-compaction
 off, use `/compact` proactively or `/new` for unrelated work.
+
+### Transient thinking preview
+
+Press **Ctrl+T** to show or hide a compact reasoning preview. The toggle saves your
+preference. `/show-thinking on` and `/show-thinking off` also change the current
+view and save the default; `/show-thinking` reports the current setting.
+You can also set the startup default with
+`pcode config set show_thinking on` (or `off`, the default). Like other `/config`
+defaults, this takes effect in new sessions; Ctrl+T changes the current view.
+
+Raw reasoning goes directly to a bounded, mutable prompt_toolkit UI buffer, not
+through transcript events or permanent terminal output. The preview is cleared
+on completion, cancellation, failure, and conversation reset. Hiding the view
+keeps the current turn's rolling buffer so it can be shown again. This does not
+change model reasoning effort or the runtime's existing saved model-message
+history. An expanded reasoning view is not implemented.
