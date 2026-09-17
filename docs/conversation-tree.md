@@ -13,17 +13,21 @@ This follows the user/assistant selection model of
 - **Escape / Ctrl+C / Ctrl+D:** close the picker without changing context or the draft.
 
 The picker starts on the active position, marked `← active`. It shows every branch
-in depth-first order. Existing descendants are never deleted when you select an
-ancestor or submit a different continuation. For example:
+in depth-first order. Messages on the same path stay aligned; indentation increases
+only where the conversation splits into branches, not with every message or turn.
+Existing descendants are never deleted when you select an ancestor or submit a
+different continuation. For example:
 
 ```text
 Conversation start
-└─ user: Explain the failing test
-   └─ assistant: The parser rejects empty input
-      ├─ user: Fix the parser
-      │  └─ assistant: Updated the parser
-      └─ user: Instead, change the test
-         └─ assistant: Updated the test ← active
+user: Explain the failing test
+assistant: The parser rejects empty input
+├─ user: Fix the parser
+│  assistant: Updated the parser
+│  user: Run the tests
+│  assistant: Tests pass
+└─ user: Instead, change the test
+   assistant: Updated the test ← active
 ```
 
 Select either assistant response to return to that branch. Select either user
