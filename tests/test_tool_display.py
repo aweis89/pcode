@@ -137,10 +137,12 @@ def test_compact_rows_and_old_and_new_event_shapes():
     old = ToolSummary("read_file", "a.py · 2 lines")
     new = ToolSummary("run_command", "pytest → exit 1", True, "call-2", 0.25)
     transcript.events((old, ToolSummary(**asdict(new))))
-    assert stream.getvalue().splitlines() == [
+    assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
         "  ✓ Read  a.py · 2 lines",
         "✗ Run failed",
-        "  pytest → exit 1",
+        "",
+        "   pytest → exit 1",
+        "",
     ]
 
 

@@ -829,7 +829,9 @@ class Transcript:
 
     def error(self, text: str, *, title: str = "Error") -> None:
         if self.error_scrollback:
-            self.print(TranscriptNotice(text, "error", title, self.error_scrollback_lines))
+            self.print(
+                TranscriptNotice(text, "error", title, self.error_scrollback_lines, self.code_theme)
+            )
 
     def warning(self, text: str) -> None:
         self.print(TranscriptNotice(text, "warning", "Warning"))
