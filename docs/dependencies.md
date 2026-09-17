@@ -259,3 +259,13 @@ Do not store identity in the provider's default headers: children share models
 and HTTP clients, including during parallel delegation. Non-Meridian requests
 must remain untouched. `tests/test_meridian.py` exercises HTTP serialization,
 tool loops, resume from history, and parallel child identity separation.
+
+Meridian 1.71.1's passthrough transform does not advertise `supportsThinking`;
+its stream path strips thinking blocks unless `thinkingPassthrough` is enabled.
+The default is false. Inspect the running proxy's effective settings with a
+read-only GET of `/settings/api/features` (the `passthrough` entry), or use its
+`/settings` UI. Do not silently change global proxy settings from a display toggle.
+`tests/test_meridian.py` covers both forwarded and absent thinking blocks through
+Anthropic SSE decoding and `AgentRuntime`'s transient sink, without putting raw
+reasoning into application transcript events. Saved model-message history remains
+separate and can contain provider reasoning, as described in the README.

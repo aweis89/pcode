@@ -195,6 +195,12 @@ class PreviewApp:
             self.set_show_thinking(argument == "on")
         state = "on" if self.activity.show_thinking else "off"
         self.transcript.note(f"Show thinking: {state}. Usage: /show-thinking on|off (Ctrl+T)")
+        if self.activity.show_thinking and (self.model or "").startswith("meridian:"):
+            self.transcript.note(
+                "Meridian must forward thinking blocks for this preview to show content. "
+                "Check passthrough → Thinking Passthrough in Meridian's /settings page; "
+                "this toggle only changes pcode's display."
+            )
 
     def persist_defaults(self, **updates: str) -> None:
         try:

@@ -69,3 +69,17 @@ def test_show_thinking_command_changes_view_and_saves_default(tmp_path, monkeypa
         Document("/show-thinking "), CompleteEvent()
     )
     assert [item.text for item in completions] == ["on", "off"]
+
+
+def test_meridian_thinking_toggle_explains_upstream_requirement(tmp_path, monkeypatch):
+    from io import StringIO
+
+    from rich.console import Console
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output))
+    app.model = "meridian:claude-fable-5-1"
+    assert app.registry.dispatch("/show-thinking on")
+    assert "Thinking Passthrough" in output.getvalue()
+    assert "only changes pcode's display" in output.getvalue()

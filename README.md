@@ -263,6 +263,29 @@ pcode—not Meridian's built-in agent—executes the supplied tools. There is no
 fallback to direct Anthropic requests if the proxy is unavailable.
 `PCODE_LLM_PROXY` is ignored when using Meridian; that setting applies only to Codex.
 
+Each request also carries `x-litellm-session-id`, derived from the current pcode
+conversation ID. Tool rounds and saved-session resume reuse it; `/new` and
+independent delegates get separate identities, even when delegates run in parallel.
+For Meridian 1.71.1, telemetry should show `lineage=continuation` on ordinary
+follow-up tool rounds. Repeated `independent-request:headerless-tool-result` means
+the running client is missing this integration; restart pcode after upgrading
+(already-running Python processes do not reload it).
+
+**Thinking visibility:** `/show-thinking on` only controls pcode's local preview.
+Meridian must also forward thinking blocks. In the proxy's `/settings` page
+(default: <http://127.0.0.1:3456/settings>), inspect the **passthrough** adapter's
+**Thinking Passthrough** option. Meridian 1.71.1 defaults this to off. Enabling it
+changes that proxy adapter for other clients too, so pcode does not modify it
+automatically. Forwarding is separate from enabling model thinking or setting
+effort; a model that emits no thinking blocks still has nothing to preview.
+
+When a spinner is silent, compare Meridian's request telemetry: queue wait,
+time to first byte, upstream duration, status/error, and lineage. An early first
+byte is not necessarily visible text, and a large output-token count alone does
+not prove what happened during the pause. The UI's “Waiting for model…” means no
+new displayable event, not necessarily an idle upstream connection.
+
+
 ### Model-only HTTP proxy
 
 Set `PCODE_LLM_PROXY` to route **Codex model requests only** through an HTTP proxy:
