@@ -58,7 +58,9 @@ def capture(pane, expected, *, running=False, columns=None):
             and lines[-2].startswith("└")
             and (columns is None or len(lines[-2]) == columns)
             and "effort:" in lines[-1]
-            and (("working" in lines[-1]) == running)
+            # The full provider:model leaves only a truncated activity label
+            # at 35 columns. Keep exercising actual CPR/layout at that width.
+            and (("working" in lines[-1] or lines[-1].endswith(" · wo…")) == running)
         ):
             return screen
         time.sleep(0.05)

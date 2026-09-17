@@ -670,12 +670,18 @@ class PreviewApp:
         if self.branch:
             location += f" {self.branch}"
         effort = self.current_effort()
-        model = self.model.split(":", 1)[-1] if self.model else "preview"
+        model = self.model if self.model else "preview"
         details = plain(f"{model} · effort: {effort}", limit=None)
+        context = ""
+        if self.model:
+            from pcode.context_usage import context_label
+
+            context = context_label(self.model, getattr(self.runtime, "history", ()))
         if self.activity.busy:
             details += " · working"
             if self.activity.queued:
                 details += f" · {self.activity.queued} queued"
+        details += context
         # Keep the model/effort visible before spending space on a long path.
         path_width = max(0, width - cell_len(details) - 4)
         path = Text(location if path_width else "")
@@ -694,6 +700,7 @@ class PreviewApp:
             segments.extend([("text", " · "), ("activity", "working")])
             if self.activity.queued:
                 segments.extend([("text", " · "), ("activity", f"{self.activity.queued} queued")])
+        segments.append(("text", context))
         # Slice the already cell-truncated text, preserving its ellipsis and the
         # same narrow-terminal priorities without splitting wide characters.
         fragments = []
