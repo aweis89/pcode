@@ -55,9 +55,10 @@ def test_catalog_uses_installed_sdk_and_keeps_custom_current():
     assert "anthropic:custom-id" in models
     assert "anthropic:claude-opus-5" in models
     assert "openai-codex:gpt-5.6-luna" in models
+    assert "openai-codex:gpt-6-astra" in models
+    assert "openai-codex:gpt-5-chat-latest" in models
     assert len(models) == len(set(models))
     assert all(name.startswith(("anthropic:", "openai-codex:")) for name in models)
-    assert all("chat-latest" not in name for name in models)
     assert model_catalog(set()) == []
     assert all(name.startswith("anthropic:") for name in model_catalog({"anthropic"}))
 
