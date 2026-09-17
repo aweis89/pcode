@@ -62,7 +62,8 @@ def test_invalid_url_is_redacted(monkeypatch, url):
     assert url not in str(error.value)
 
 
-def test_switch_model_routes_stream_and_tools_to_meridian(monkeypatch, tmp_path):
+@pytest.mark.parametrize("forward_thinking", [False, True])
+def test_switch_model_routes_stream_and_tools_to_meridian(monkeypatch, tmp_path, forward_thinking):
     monkeypatch.setenv("PCODE_MERIDIAN_BASE_URL", "http://127.0.0.1:4567")
     requests = []
 
@@ -102,6 +103,35 @@ def test_switch_model_routes_stream_and_tools_to_meridian(monkeypatch, tmp_path)
             ),
             ("message_stop", {}),
         ]
+        if forward_thinking:
+            # A real Anthropic SSE thinking block, not a synthetic runtime event.
+            for _, payload in events:
+                if "index" in payload:
+                    payload["index"] += 1
+            events[1:1] = [
+                (
+                    "content_block_start",
+                    {
+                        "index": 0,
+                        "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                    },
+                ),
+                (
+                    "content_block_delta",
+                    {
+                        "index": 0,
+                        "delta": {"type": "thinking_delta", "thinking": "PRIVATE_REASONING"},
+                    },
+                ),
+                (
+                    "content_block_delta",
+                    {
+                        "index": 0,
+                        "delta": {"type": "signature_delta", "signature": "synthetic-signature"},
+                    },
+                ),
+                ("content_block_stop", {"index": 0}),
+            ]
         data = "".join(
             f"event: {kind}\ndata: {json.dumps({'type': kind, **payload})}\n\n"
             for kind, payload in events
@@ -129,6 +159,18 @@ def test_switch_model_routes_stream_and_tools_to_meridian(monkeypatch, tmp_path)
                     assert await result.get_output() == "Hello"
             assert agent.model._provider.client._client.is_closed
         assert len(requests) == 2
+        from pcode.runtime import RunStatus
+
+        thinking = []
+        app.runtime.thinking_sink = thinking.append
+        events = [event async for event in app.runtime.stream("hello")]
+        assert ("PRIVATE_REASONING" in "".join(thinking)) is forward_thinking
+        assert (
+            any(isinstance(e, RunStatus) and e.text == "Thinking…" for e in events)
+            is forward_thinking
+        )
+        assert "PRIVATE_REASONING" not in repr(events)
+        assert requests[-1].headers["x-litellm-session-id"] == app.runtime.conversation_id
         app.runtime.close()
 
     asyncio.run(run())
