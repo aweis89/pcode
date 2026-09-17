@@ -77,12 +77,19 @@ def input_rows(screen):
 
 def test_footer_theme_switch_keeps_editor_compact(pane):
     assert input_rows(capture(pane, "❯")) == 1
-    for theme in ("light", "dark"):
-        pane("send-keys", "-t", "preview:0.0", "-l", f"/theme {theme}")
+    for colors in ("terminal", "palette"):
+        pane("send-keys", "-t", "preview:0.0", "-l", f"/colors {colors}")
         pane("send-keys", "-t", "preview:0.0", "Enter")
-        screen = capture(pane, f"Theme: {theme}.")
-        assert input_rows(screen) == 1
-        assert "preview · effort: n/a" in screen.splitlines()[-1]
+        assert input_rows(capture(pane, f"Colors: {colors}.")) == 1
+        for theme in ("light", "dark"):
+            pane("send-keys", "-t", "preview:0.0", "-l", f"/theme {theme}")
+            pane("send-keys", "-t", "preview:0.0", "Enter")
+            screen = capture(pane, f"Theme: {theme}.")
+            assert input_rows(screen) == 1
+            assert "preview · effort: n/a" in screen.splitlines()[-1]
+            pane("send-keys", "-t", "preview:0.0", "-l", "/demo")
+            pane("send-keys", "-t", "preview:0.0", "Enter")
+            assert input_rows(capture(pane, "No files were")) == 1
 
 
 def test_transcript_uses_terminal_scrollback(pane):

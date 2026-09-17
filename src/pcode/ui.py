@@ -43,6 +43,35 @@ class Palette:
     syntax: str
 
     @cache
+    def rich_theme(self) -> Theme:
+        # Body text/background remain terminal-native; accents and bounded code
+        # surfaces are explicitly paired for the selected appearance.
+        return Theme(
+            {
+                "pcode.accent": self.accent,
+                "pcode.brand": f"bold {self.accent}",
+                "pcode.muted": self.muted,
+                "markdown.code": f"{self.foreground} on {self.surface}",
+                "markdown.code_block": self.foreground,
+                "markdown.block_quote": f"italic {self.muted}",
+                "markdown.h1": f"bold underline {self.accent}",
+                "markdown.h2": f"bold {self.accent}",
+                "markdown.h3": f"bold {self.accent}",
+                "markdown.h4": f"italic {self.accent}",
+                "markdown.h5": f"italic {self.accent}",
+                "markdown.h6": self.muted,
+                "markdown.h7": f"italic {self.muted}",
+                "markdown.hr": self.muted,
+                "markdown.link": f"underline {self.accent}",
+                "markdown.link_url": f"underline {self.accent}",
+                "markdown.list": self.accent,
+                "markdown.item.number": self.accent,
+                "markdown.table.border": self.muted,
+                "markdown.table.header": f"bold {self.accent}",
+            }
+        )
+
+    @cache
     def prompt_style(self) -> Style:
         # Palette is immutable. Reuse the Style so DynamicStyle's identity-based
         # invalidation hash changes only with the palette, not on every redraw.
@@ -77,9 +106,12 @@ class Palette:
 
 
 PALETTES = {
-    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "ansi_dark"),
-    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "ansi_light"),
+    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "nord"),
+    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "friendly"),
 }
+
+
+COLOR_STYLES = ("palette", "terminal")
 
 
 # Rich owns scrollback, not the prompt palette. Use terminal-defined ANSI colors
@@ -218,13 +250,22 @@ class TerminalOutput:
     across a network await: the editor must keep receiving input while streaming.
     """
 
-    def __init__(self, console: Console, activity: Activity, app: Application, *, code_theme=None):
+    def __init__(
+        self,
+        console: Console,
+        activity: Activity,
+        app: Application,
+        *,
+        code_theme=None,
+        rich_theme=None,
+    ):
         self.console = console
         self.activity = activity
         self.app = app
         self.tail = ""
         self.streamed = False
-        self.code_theme = code_theme or (lambda: "ansi_dark")
+        self.code_theme = code_theme or (lambda: PALETTES["dark"].syntax)
+        self.rich_theme = rich_theme or PALETTES["dark"].rich_theme
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
@@ -337,7 +378,7 @@ class TerminalOutput:
                         # Rich's public buffer context coalesces the batch's
                         # prints (including separators) into one output flush.
                         # Keep it synchronous and inside the single-writer handoff.
-                        with self.console, self.console.use_theme(TERMINAL_THEME):
+                        with self.console, self.console.use_theme(self.rich_theme()):
                             for objects, end, soft_wrap in pending:
                                 self.console.print(
                                     *objects, end=end, soft_wrap=soft_wrap, width=width
@@ -603,23 +644,37 @@ def create_prompt(
 
 class Transcript:
     def __init__(
-        self, console: Console, theme: str = "dark", *, activity: Activity | None = None
+        self,
+        console: Console,
+        theme: str = "dark",
+        *,
+        activity: Activity | None = None,
+        color_style: str = "palette",
     ) -> None:
         self.activity = activity
         self.console = console
         self.theme = theme
+        self.color_style = color_style
         self.output: TerminalOutput | None = None
 
     def print(self, *objects) -> None:
         if self.output is not None:
             self.output.print(*objects)
         else:
-            with self.console.use_theme(TERMINAL_THEME):
+            with self.console.use_theme(self.rich_theme):
                 self.console.print(*objects)
 
     @property
     def palette(self) -> Palette:
         return PALETTES[self.theme]
+
+    @property
+    def rich_theme(self) -> Theme:
+        return TERMINAL_THEME if self.color_style == "terminal" else self.palette.rich_theme()
+
+    @property
+    def code_theme(self) -> str:
+        return f"ansi_{self.theme}" if self.color_style == "terminal" else self.palette.syntax
 
     def welcome(self, model: str | None = None, workspace: str = "") -> None:
         self.print()
@@ -676,7 +731,7 @@ class Transcript:
                     self.output.app.invalidate()
                 continue
             if isinstance(event, Message):
-                self.print(Markdown(event.markdown, code_theme=self.palette.syntax))
+                self.print(Markdown(event.markdown, code_theme=self.code_theme))
                 self.print()
             elif isinstance(event, ToolSummary):
                 if event.command:

@@ -173,7 +173,7 @@ def test_markdown_structures_match_static_renderer_across_chunk_boundaries():
         for source in samples:
             expected = StringIO()
             console = Console(file=expected, color_system=None, width=40)
-            console.print(Markdown(source, code_theme="ansi_dark"))
+            console.print(Markdown(source, code_theme="nord"))
             console.print()
             for chunks in ([source], list(source)):
                 output, stream = make_output(width=40)
