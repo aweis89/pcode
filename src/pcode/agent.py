@@ -19,6 +19,7 @@ from pydantic_ai_harness.subagents import SubAgent, SubAgents
 
 from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.llm_proxy import ProxiedCodexProvider
+from pcode.meridian import MeridianSessionIdentity
 from pcode.planning import IdentifiedPlanning
 from pcode.repo_context import AutomaticRepoContext
 from pcode.usage_limits import UnlimitedRequests
@@ -53,9 +54,14 @@ def create_coder(workspace: Path) -> CombinedCapability:
         for capability in coder.capabilities
     ]
     coder.capabilities.append(DelegationReporting())
+    coder.capabilities.append(MeridianSessionIdentity())
     for capability in coder.capabilities:
         if isinstance(capability, SubAgents):
             capability.event_stream_handler = stream_child_activity
+            capability.shared_capabilities = [
+                *capability.shared_capabilities,
+                MeridianSessionIdentity(),
+            ]
         if isinstance(capability, Shell):
             # An empty allowlist alone can still leave Harness's default denylist.
             capability.allowed_commands = []
