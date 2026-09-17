@@ -27,6 +27,7 @@ class Setting:
 
 SETTINGS = {
     "show_thinking": Setting("off", ("on", "off")),
+    "editing_mode": Setting("emacs", ("emacs", "vi")),
     "theme": Setting("dark", ("dark", "light", "auto")),
     "autocompact": Setting("off", ("on", "off")),
     "effort": Setting("default", EFFORTS),

@@ -26,6 +26,7 @@ def test_defaults_and_path_do_not_create_files():
     assert json.loads(configure([])) == {
         "show_thinking": "off",
         "theme": "dark",
+        "editing_mode": "emacs",
         "autocompact": "off",
         "effort": "default",
         "model": None,
@@ -38,6 +39,8 @@ def test_defaults_and_path_do_not_create_files():
     "key,value",
     [
         ("theme", "light"),
+        ("editing_mode", "vi"),
+        ("editing_mode", "emacs"),
         ("autocompact", "on"),
         ("effort", "high"),
         ("model", "test:local"),
@@ -62,6 +65,7 @@ def test_set_get_unset(key, value):
         ["get", "unknown"],
         ["unset", "unknown"],
         ["set", "theme", "blue"],
+        ["set", "editing_mode", "vim"],
         ["set", "autocompact", "true"],
         ["set", "effort", "max"],
         ["set", "model", ""],
