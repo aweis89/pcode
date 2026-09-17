@@ -41,10 +41,9 @@ def context_label(model: str, history: Sequence[ModelMessage]) -> str:
     # Input usage already includes cache reads/writes in Pydantic AI. Do not add
     # them again, sum previous requests, or count output as input context.
     # Deriving from history also follows resume, /new, and conversation checkout.
-    used = None
+    used = 0
     for message in reversed(history):
         if isinstance(message, ModelResponse):
-            # Zero commonly means a provider did not report usage.
-            used = message.usage.input_tokens or None
+            used = message.usage.input_tokens
             break
-    return f" · ctx: ~{compact_tokens(used)}/{compact_tokens(context_window(model))}"
+    return f" · ctx: {compact_tokens(used)}/{compact_tokens(context_window(model))}"
