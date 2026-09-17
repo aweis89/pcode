@@ -152,27 +152,34 @@ class Activity:
     prompt: str = ""
     prompt_state: str = ""
     plan: list[dict] = field(default_factory=list)
+    plan_preview: list[dict] | None = None
     tools: ToolHistory = field(default_factory=ToolHistory)
 
     def reset(self) -> None:
         """Clear the panel for a new conversation, keeping the draft and queue."""
         self.plan = []
+        self.plan_preview = None
         self.tools.clear()
         self.prompt = ""
         self.prompt_state = ""
         self.status = ""
 
+    @property
+    def displayed_plan(self) -> list[dict]:
+        return self.plan if self.plan_preview is None else self.plan_preview
+
     def plan_rows(self, budget: int, spinner: str):
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
         icon = spinner if self.prompt_state == "running" else "○"
-        return task_panel_rows(self.plan, self.tools, budget, icon)
+        return task_panel_rows(self.displayed_plan, self.tools, budget, icon)
 
     def panel_title(self) -> str:
-        if not self.plan:
+        items = self.displayed_plan
+        if not items:
             return "Tools"
-        completed = sum(item.get("status") == "completed" for item in self.plan)
-        return f"Tasks {completed}/{len(self.plan)}"
+        completed = sum(item.get("status") == "completed" for item in items)
+        return f"Tasks {completed}/{len(items)}"
 
     def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}

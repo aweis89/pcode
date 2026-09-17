@@ -33,9 +33,11 @@ from pcode.conversation_tree import ConversationTree
 from pcode.diagnostics import error_details
 from pcode.inspection import ToolArchive, capture
 from pcode.mcp import MCPState
+from pcode.plan_preview import StreamingPlanPreview
 from pcode.runtime import (
     Event,
     Message,
+    PlanPreview,
     PlanUpdated,
     RunStatus,
     TextDelta,
@@ -178,6 +180,10 @@ class AgentRuntime:
         try:
             async with aclosing(self._stream(prompt, run_id)) as stream:
                 async for event in stream:
+                    if isinstance(event, PlanPreview):
+                        # Unexecuted arguments must never enter replay/tree history.
+                        yield event
+                        continue
                     if saved:
                         saved.event(event)
                     if saved is None:
@@ -231,6 +237,11 @@ class AgentRuntime:
 
     async def _stream(self, prompt: str, run_id: str) -> AsyncIterator[Event]:
         plan_items = [item.model_dump(mode="json") for item in await self.plan_store.get_items()]
+        preview = (
+            StreamingPlanPreview()
+            if any(isinstance(c, Planning) for c in self.agent.root_capability.capabilities)
+            else None
+        )
         emitted_text = False
         tools: dict[str, tuple[str, dict, float]] = {}
 
@@ -352,6 +363,9 @@ class AgentRuntime:
                     self.turns += 1
                     self.input_tokens += result.usage.input_tokens
                     self.output_tokens += result.usage.output_tokens
+                if preview is not None:
+                    if (update := preview.update(event, plan_items)) is not None:
+                        yield update
 
 
 def error_message(error: Exception) -> str:
