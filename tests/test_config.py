@@ -31,7 +31,7 @@ def test_defaults_and_path_do_not_create_files():
         "error_scrollback_lines": "20",
         "regenerate_on_resize": "on",
         "command_scrollback": "off",
-        "command_scrollback_lines": "40",
+        "command_scrollback_lines": "20",
         "theme": "dark",
         "editing_mode": "emacs",
         "autocompact": "off",

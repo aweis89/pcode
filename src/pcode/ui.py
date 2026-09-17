@@ -980,7 +980,7 @@ class Transcript:
         self.error_scrollback = preferences.get("error_scrollback", "on") == "on"
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
         self.command_scrollback = preferences.get("command_scrollback", "off") == "on"
-        self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "40"))
+        self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
         self.activity = activity
         self.console = console
         self.theme = theme

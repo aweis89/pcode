@@ -40,7 +40,8 @@ def test_enabled_option_mirrors_command_and_output():
     )
     assert view.command_output(event) is True
     lines = [line.rstrip() for line in stream.getvalue().splitlines()]
-    assert lines[0] == "✓ Run · 0.2s"
+    assert lines[0] == lines[-1] == "─" * 80
+    assert lines[1] == "✓ Run · 0.2s"
     assert "  $ pytest -q" in lines
     assert "  2 passed" in lines
     assert "  [exit code: 0]" in lines
@@ -122,13 +123,13 @@ def test_command_scrollback_lines_bounds_rows_and_keeps_tail(limit):
         )
     )
     lines = stream.getvalue().splitlines()
-    assert lines[0] == "✓ Run"
-    assert len(lines) == limit + 2  # Heading and command are outside the output budget.
-    assert lines[1].strip() == "$ noisy"
-    assert f"{62 - limit} earlier output rows omitted" in lines[2]
-    assert "earlier error output" not in lines[2]
-    if limit > 1:
-        assert lines[-1].strip() == "final line"
+    assert lines[0] == lines[-1] == "─" * 45
+    assert lines[1] == "✓ Run"
+    assert len(lines) == limit + 5  # Borders, heading, command, and omission marker.
+    assert lines[2].strip() == "$ noisy"
+    assert f"{61 - limit} earlier output rows omitted" in lines[3]
+    assert "earlier error output" not in lines[3]
+    assert lines[-2].strip() == "final line"
 
 
 def test_settings_round_trip_through_config():
@@ -140,7 +141,7 @@ def test_settings_round_trip_through_config():
     configure(["unset", "command_scrollback"])
     configure(["unset", "command_scrollback_lines"])
     assert configure(["get", "command_scrollback"]) == "off"
-    assert configure(["get", "command_scrollback_lines"]) == "40"
+    assert configure(["get", "command_scrollback_lines"]) == "20"
     with pytest.raises(ValueError):
         configure(["set", "command_scrollback", "yes"])
     with pytest.raises(ValueError):
@@ -265,11 +266,13 @@ def test_output_keeps_leading_indentation_and_markdown_literal_without_padding()
         )
     )
     assert stream.getvalue().splitlines() == [
+        "─" * 80,
         "✓ Run",
         "  $ echo hi",
         "      # heading",
         "  ```",
         "  [bold]x[/bold]",
+        "─" * 80,
     ]
 
 
@@ -305,10 +308,27 @@ def test_command_highlighting_and_failure_color_do_not_style_output_as_code():
     block = CommandTranscript("echo '$HOME'", "[bold]literal[/bold]", "Run", failed=True)
     with view.console.use_theme(view.rich_theme):
         parts = list(block.__rich_console__(view.console, view.console.options))
-        assert isinstance(parts[0], Text)
-        assert parts[0].style == "pcode.error"
+        assert isinstance(parts[1], Text)
+        assert parts[1].style == "pcode.error"
         segments = list(view.console.render(block))
     command_segments = [segment for segment in segments if "$HOME" in segment.text]
     assert command_segments and command_segments[0].style.color is not None
     output_segments = [segment for segment in segments if "[bold]literal[/bold]" in segment.text]
     assert output_segments and not output_segments[0].style
+
+
+def test_default_budget_retains_last_twenty_output_rows():
+    save_preferences(command_scrollback="on")
+    view, stream = transcript()
+    view.command_output(
+        ToolSummary(
+            "run_command",
+            "run",
+            command="noisy",
+            result="\n".join(f"row {i}" for i in range(50)),
+        )
+    )
+    lines = stream.getvalue().splitlines()
+    assert view.command_scrollback_lines == 20
+    assert "30 earlier output rows omitted" in lines[3]
+    assert [line.strip() for line in lines[4:-1]] == [f"row {i}" for i in range(30, 50)]

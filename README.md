@@ -1037,7 +1037,7 @@ shell tool call and its captured output** into permanent terminal scrollback:
 
 ```sh
 pcode config set command_scrollback on        # Mirror commands and output (default off)
-pcode config set command_scrollback_lines 80  # Positive integer; default 40
+pcode config set command_scrollback_lines 80  # Positive integer; default 20
 pcode config set command_scrollback off       # Restore failure-only scrollback
 ```
 
@@ -1063,10 +1063,10 @@ Details:
   instead of the shorter `error_scrollback` excerpt; `error_scrollback` still
   governs every other failure.
 - Output is redacted and sanitized before display, then bounded to
-  `command_scrollback_lines` wrapped output rows, including an omission marker
-  that counts omitted rendered rows. The command is always retained outside this
-  budget; output keeps its tail (a budget of one shows only the marker when
-  truncated). The capture step retains its own 128 KiB payload bound.
+  `command_scrollback_lines` wrapped output rows (default 20), taken from the end.
+  A separate omission marker counts omitted rendered rows. The command, marker,
+  and subtle top/bottom borders are outside this budget, so even a budget of one
+  retains the final output row. The capture step retains its own 128 KiB payload bound.
 - Verbose commands can push earlier conversation out of terminal history, so
   raise your terminal or tmux scrollback limit before enabling this.
 
