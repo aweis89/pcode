@@ -830,3 +830,52 @@ def test_streamed_task_preview_has_real_prompt_height_and_cancels_cleanly(pane):
     assert screen.count("┌") == screen.count("└") == 1
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert "STREAMED_TASK" not in history
+
+
+THINKING_SCRIPT = r"""
+import asyncio
+from pydantic_ai import Agent
+from pydantic_ai.models.function import DeltaThinkingPart, FunctionModel
+from pcode.app import PreviewApp
+from pcode.live import AgentRuntime
+
+async def model(messages, info):
+    yield {0: DeltaThinkingPart(content="TRANSIENT_REASONING_ONLY")}
+    await asyncio.sleep(1)
+    yield "Public answer while thinking is visible\n\n"
+    await asyncio.sleep(60)
+
+runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+app = PreviewApp(model="test:local", runtime=runtime)
+app.activity.show_thinking = False
+app.persist_defaults = lambda **updates: None
+app.run()
+"""
+
+
+@pytest.mark.parametrize("pane", [THINKING_SCRIPT], indirect=True)
+def test_thinking_toggle_is_content_sized_and_never_enters_scrollback(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "❯", running=True)
+    assert "TRANSIENT_REASONING_ONLY" not in screen
+    pane("send-keys", "-t", "preview:0.0", "C-t")
+    screen = capture(pane, "TRANSIENT_REASONING_ONLY", running=True)
+    assert input_rows(screen) == 1
+    capture(pane, "Public answer while thinking is visible", running=True)
+    for width, height in ((80, 24), (120, 40)):
+        pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
+        screen = capture(pane, "TRANSIENT_REASONING_ONLY", running=True, columns=width)
+        assert input_rows(screen) == 1
+    pane("send-keys", "-t", "preview:0.0", "C-t")
+    time.sleep(0.2)
+    screen = capture(pane, "❯", running=True)
+    assert "TRANSIENT_REASONING_ONLY" not in screen
+    pane("send-keys", "-t", "preview:0.0", "C-t")
+    capture(pane, "TRANSIENT_REASONING_ONLY", running=True)
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    screen = capture(pane, "Run cancelled")
+    assert "TRANSIENT_REASONING_ONLY" not in screen
+    assert input_rows(screen) == 1
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert "TRANSIENT_REASONING_ONLY" not in history

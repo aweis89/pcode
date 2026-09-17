@@ -288,7 +288,7 @@ def test_ui_cancellation_cleans_up_generation_and_accepts_next_input():
     asyncio.run(run())
 
 
-def test_raw_thinking_is_reduced_to_transient_status_only():
+def test_raw_thinking_only_reaches_dedicated_sink_not_events():
     from pydantic_ai.models.function import DeltaThinkingPart
 
     async def model(messages, info):
@@ -299,10 +299,52 @@ def test_raw_thinking_is_reduced_to_transient_status_only():
     async def run():
         runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
         try:
+            thinking = []
+            runtime.thinking_sink = thinking.append
             events = [event async for event in runtime.stream("hello")]
+            assert "".join(thinking) == "private raw reasoning more private reasoning"
             assert RunStatus("Thinking…") in events
             assert not any("private" in repr(event) for event in events)
             assert Message("Public **answer**") in events
+        finally:
+            runtime.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ["done", "error", "cancel"])
+def test_thinking_ui_sink_is_cleared_and_never_printed(outcome):
+    from pydantic_ai.models.function import DeltaThinkingPart
+
+    async def run():
+        async def model(messages, info):
+            yield {0: DeltaThinkingPart(content="PRIVATE_REASONING_SENTINEL")}
+            assert app.activity.thinking == "PRIVATE_REASONING_SENTINEL"
+            if outcome == "error":
+                raise RuntimeError("model failed")
+            if outcome == "cancel":
+                raise asyncio.CancelledError
+            yield "Public answer"
+
+        output = StringIO()
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+        app = PreviewApp(
+            model="test:local", runtime=runtime, console=Console(file=output, color_system=None)
+        )
+        app.activity.show_thinking = True
+        try:
+            with create_pipe_input() as pipe:
+                session = create_prompt(
+                    app.registry, activity=app.activity, input=pipe, output=DummyOutput()
+                )
+                writer = TerminalOutput(app.transcript.console, session.app)
+                app.transcript.output = writer
+                assert await app.run_live(writer, "hello") == (outcome == "done")
+                await writer.flush()
+            assert app.activity.thinking == ""
+            runtime.thinking_sink("late content")
+            assert app.activity.thinking == ""
+            assert "PRIVATE_REASONING_SENTINEL" not in output.getvalue()
         finally:
             runtime.close()
 
