@@ -1,6 +1,5 @@
 """Context is the last request's input, never accumulated billing totals."""
 
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -35,16 +34,30 @@ def test_unknown_model_does_not_guess_capacity():
     assert context_label("unknown-provider:gpt-5", [response(100)]) == " · ctx: 100/?"
 
 
-def test_codex_uses_openai_catalog_and_caches_lookup():
-    context_window.cache_clear()
-    with patch("pcode.context_usage.calc_price") as lookup:
-        lookup.return_value = SimpleNamespace(model=SimpleNamespace(context_window=400_000))
-        assert context_window("openai-codex:example") == 400_000
-        assert context_window("openai-codex:example") == 400_000
-        assert lookup.call_count == 1
-        assert lookup.call_args.args[1] == "example"
-        assert lookup.call_args.kwargs == {"provider_id": "openai"}
-    context_window.cache_clear()
+def test_codex_never_borrows_openai_limits(monkeypatch):
+    from pcode.model_metadata import ModelLimits, catalog
+
+    catalog.public["openai:example"] = ModelLimits(context=1_050_000)
+    assert context_window("openai:example") == 1_050_000
+    assert context_window("openai-codex:example") is None
+
+
+def test_display_and_compaction_share_override(monkeypatch):
+    from pcode.compaction import effective_window
+
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "272000")
+    assert context_window("unknown-provider:example") == 272_000
+    assert effective_window("unknown-provider:example") == 272_000
+    assert context_label("unknown-provider:example", []) == " · ctx: 0/272k"
+
+
+def test_invalid_override_does_not_crash_rendering(monkeypatch):
+    from pcode.compaction import CompactionError, effective_window
+
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "invalid")
+    assert context_label("unknown-provider:example", []) == " · ctx: 0/?"
+    with pytest.raises(CompactionError, match="positive token count"):
+        effective_window("unknown-provider:example")
 
 
 @pytest.mark.parametrize(
@@ -62,3 +75,14 @@ def test_codex_uses_openai_catalog_and_caches_lookup():
 )
 def test_compact_tokens(tokens, label):
     assert compact_tokens(tokens) == label
+
+
+def test_zero_usage_after_compaction_keeps_the_checkpoint_estimate():
+    from pcode.compaction import MARKER, context_estimate
+
+    checkpoint = response(50_000)
+    checkpoint.metadata = {MARKER: {"tokens": 20_000}}
+    history = [checkpoint, response(0)]
+    with patch("pcode.context_usage.context_window", return_value=100_000):
+        estimate = compact_tokens(context_estimate(history))
+        assert context_label("test:example", history) == f" · ctx: ~{estimate}/100k"
