@@ -888,12 +888,17 @@ def test_thinking_toggle_is_content_sized_and_never_enters_scrollback(pane):
     indirect=True,
 )
 def test_vi_newline_and_escape_keep_editor_compact(pane):
-    assert input_rows(capture(pane, "❯")) == 1
+    screen = capture(pane, "INSERT")
+    assert "┌─ INSERT " in screen
+    assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "first")
     pane("send-keys", "-t", "preview:0.0", "C-j")
     pane("send-keys", "-t", "preview:0.0", "-l", "second")
     assert input_rows(capture(pane, "second")) == 2
     pane("send-keys", "-t", "preview:0.0", "Escape")
+    screen = capture(pane, "NORMAL")
+    assert "┌─ NORMAL " in screen
+    assert input_rows(screen) == 2
     # Normal-mode dd removes the second line rather than inserting literal 'dd'.
     pane("send-keys", "-t", "preview:0.0", "-l", "dd")
     deadline = time.monotonic() + 3
@@ -904,6 +909,8 @@ def test_vi_newline_and_escape_keep_editor_compact(pane):
         time.sleep(0.05)
     assert input_rows(screen) == 1
     assert "second" not in screen
+    pane("send-keys", "-t", "preview:0.0", "-l", "i")
+    assert input_rows(capture(pane, "INSERT")) == 1
 
 
 @pytest.mark.parametrize(
