@@ -153,8 +153,7 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     assert input_rows(streaming) == 1
     assert "COMMITTED LINE" in streaming
     assert any(
-        line.rstrip("│ ").endswith(" hello")
-        and line.startswith(tuple("│" + f for f in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+        line.rstrip("│ ").endswith(" hello") and line.startswith(tuple("│" + f for f in "◜◠◝◞◡◟"))
         for line in streaming.splitlines()
     )
     before = streaming.splitlines().index("FIRST STREAM CHUNK")
