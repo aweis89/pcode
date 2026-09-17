@@ -241,3 +241,21 @@ thinking settings. The model profile's `anthropic_supports_xhigh_effort` selects
 native `xhigh`; otherwise pcode maps its top level to `max`. Support for effort
 and its highest levels varies by model; do not infer support from the route alone.
 See [Anthropic effort](https://platform.claude.com/docs/en/build-with-claude/effort).
+
+### Meridian conversation identity
+
+Verified against installed Meridian 1.71.1, Pydantic AI 2.44.0, and Harness 0.31.0:
+Meridian's `passthrough` adapter reads `x-litellm-session-id` (not
+`x-session-affinity`). Without it, client-owned tool-result rounds take the
+`independent-request:headerless-tool-result` path and start fresh SDK sessions,
+replaying history instead of resuming native turns.
+
+`MeridianSessionIdentity.before_model_request` copies request settings/headers and
+supplies Pydantic's `RunContext.conversation_id`. The runtime already preserves
+that ID on saved resume and model changes, and rotates it on `/new`. Harness's
+`SubAgents.shared_capabilities` applies the same policy to every child, including
+disk-defined agents: fresh child runs have their own Pydantic conversation IDs.
+Do not store identity in the provider's default headers: children share models
+and HTTP clients, including during parallel delegation. Non-Meridian requests
+must remain untouched. `tests/test_meridian.py` exercises HTTP serialization,
+tool loops, resume from history, and parallel child identity separation.

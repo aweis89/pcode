@@ -1,9 +1,13 @@
 """Anthropic-compatible Meridian transport with client-owned tool execution."""
 
 import os
+from dataclasses import replace
 
 import httpx2
 from anthropic import AsyncAnthropic
+from pydantic_ai import RunContext
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
@@ -59,3 +63,24 @@ def meridian_model(model: str) -> AnthropicModel:
     if not name.strip():
         raise ValueError("Meridian requires a model ID: meridian:<model-id>")
     return AnthropicModel(name, provider=MeridianProvider())
+
+
+class MeridianSessionIdentity(AbstractCapability):
+    """Bind requests, not shared clients, to the current conversation.
+
+    Harness children inherit the model but get fresh Pydantic conversation IDs.
+    This also preserves identity across saved-session resume and model switches.
+    """
+
+    async def before_model_request(
+        self, ctx: RunContext, request_context: ModelRequestContext
+    ) -> ModelRequestContext:
+        if request_context.model.system != "meridian":
+            return request_context
+        settings = dict(request_context.model_settings or {})
+        headers = dict(settings.get("extra_headers") or {})
+        # Headers are case-insensitive; never leave an alternate-cased stale ID.
+        headers = {k: v for k, v in headers.items() if k.lower() != "x-litellm-session-id"}
+        headers["x-litellm-session-id"] = ctx.conversation_id
+        settings["extra_headers"] = headers
+        return replace(request_context, model_settings=settings)
