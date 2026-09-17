@@ -49,7 +49,7 @@ def make_app(width=80):
         ("/ses", ["/session"]),
         ("/sessions", []),
         ("/de", ["/demo"]),
-        ("/theme ", ["dark", "light"]),
+        ("/theme ", ["dark", "light", "auto"]),
         ("/theme l", ["light"]),
         ("/colors ", ["palette", "terminal"]),
         ("/colors t", ["terminal"]),
@@ -85,7 +85,7 @@ def test_dispatch_theme_errors_reset_and_exit():
         app.handle(text)
     assert app.runtime.turns == 2
     assert app.transcript.theme == "light"
-    assert "Usage: /theme [dark|light]" in stream.getvalue()
+    assert "Usage: /theme [dark|light|auto]" in stream.getvalue()
     assert "Unknown command" in stream.getvalue()
     app.handle("/new")
     assert app.runtime.turns == 0
