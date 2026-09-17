@@ -82,7 +82,10 @@ class PreviewApp:
         agent = getattr(self.runtime, "agent", None)
         if agent is not None and model:
             apply_effort(agent, model, load_preferences().get("effort"))
-        self.activity = Activity(show_thinking=load_preferences().get("show_thinking") == "on")
+        self.activity = Activity(
+            show_thinking=load_preferences().get("show_thinking") == "on",
+            thinking_lines=int(load_preferences().get("thinking_lines", "10")),
+        )
         if agent is not None and model:
             apply_thinking(agent, model, self.activity.show_thinking)
         self.transcript = Transcript(

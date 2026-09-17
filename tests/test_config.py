@@ -25,6 +25,7 @@ def test_defaults_and_path_do_not_create_files():
     assert configure(["path"]) == str(preferences_path())
     assert json.loads(configure([])) == {
         "show_thinking": "off",
+        "thinking_lines": "10",
         "error_scrollback": "on",
         "error_scrollback_lines": "20",
         "theme": "dark",
