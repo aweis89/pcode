@@ -776,10 +776,11 @@ def create_prompt(
     )
     menu.content.dont_extend_height = Always()
     editor_frame = Frame(editor, height=frame_height)
-    # Replace only the top border: the badge must not add a row or alter CPR sizing.
-    editor_frame.container.children[0] = VSplit(
+    # Replace only the bottom border: the badge must not add a row or alter CPR sizing.
+    editor_frame.container.children[-1] = VSplit(
         [
-            Window(FormattedTextControl("┌─"), width=2, style="class:frame.border"),
+            Window(char="└", width=1, style="class:frame.border"),
+            Window(char="─", style="class:frame.border"),
             ConditionalContainer(
                 Label(
                     lambda: editor_mode_label(session.app),
@@ -788,8 +789,7 @@ def create_prompt(
                 ),
                 filter=Condition(lambda: session.app.editing_mode == EditingMode.VI),
             ),
-            Window(char="─", style="class:frame.border"),
-            Window(char="┐", width=1, style="class:frame.border"),
+            Window(FormattedTextControl("─┘"), width=2, style="class:frame.border"),
         ],
         height=1,
     )
