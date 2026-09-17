@@ -640,12 +640,9 @@ RESIZE_TRANSCRIPT_SCRIPT = TOOLS_SCRIPT.replace(
 )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="tmux narrowing reflows old task rows beyond prompt_toolkit's resize erase",
-)
 @pytest.mark.parametrize("pane", [RESIZE_TRANSCRIPT_SCRIPT], indirect=True)
 def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
+    """tmux splits old full-width rows on narrowing; the erase must cover them."""
     capture(pane, "A task")
     pane("resize-window", "-t", "preview:0", "-x", "240", "-y", "40")
     capture(pane, "A task", columns=240)
