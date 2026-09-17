@@ -6,6 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
+from contextlib import aclosing
 from pathlib import Path
 
 from prompt_toolkit.application import get_app, in_terminal
@@ -98,6 +99,14 @@ class PreviewApp:
                 "Reasoning effort: low / medium / high / xhigh / default",
                 self.effort,
                 ("low", "medium", "high", "xhigh", "default"),
+            ),
+            Command(
+                "/mcp",
+                "MCP servers: list / enable NAME / disable NAME (default off)",
+                self.mcp,
+                ("list", "enable", "disable"),
+                free_arguments=True,
+                argument_provider=self.mcp_arguments,
             ),
             Command("/context", "Model, workspace, and session usage", self.context),
             Command("/new", "Start a new saved conversation; keep transcript", self.new),
@@ -350,11 +359,65 @@ class PreviewApp:
                 "Canned replies only. Start with -m PROVIDER:MODEL for a real agent."
             )
 
+    def mcp_arguments(self) -> tuple[str, ...]:
+        from pcode.mcp import configured_servers
+
+        state = getattr(self.runtime, "mcp", None)
+        enabled = state.enabled if state else {}
+        try:
+            names = configured_servers()
+        except ValueError:
+            names = {}
+        return (
+            "list",
+            *(f"enable {name}" for name in sorted(names)),
+            *(f"disable {name}" for name in sorted(enabled)),
+        )
+
+    def mcp(self, argument: str) -> None:
+        from pcode.mcp import config_path, configured_servers
+
+        parts = argument.split()
+        state = getattr(self.runtime, "mcp", None)
+        enabled = state.enabled if state else {}
+        if not parts or parts == ["list"]:
+            self.transcript.note(f"MCP config: {config_path()}")
+            try:
+                names = configured_servers()
+            except ValueError as error:
+                self.transcript.note(str(error))
+                names = {}
+            for name in sorted(names.keys() | enabled.keys()):
+                status = "enabled" if name in enabled else "off"
+                self.transcript.note(f"{name}: {status}")
+            if not names and not enabled:
+                self.transcript.note("No MCP servers configured. Add an mcpServers object here.")
+            self.transcript.note("MCP defaults to off. Use /mcp enable NAME or /mcp disable NAME.")
+            return
+        if len(parts) != 2 or parts[0] not in {"enable", "disable"}:
+            raise ValueError("Usage: /mcp list | /mcp enable NAME | /mcp disable NAME")
+        if self.activity.busy:
+            raise ValueError("MCP cannot be changed while working. Cancel or wait, then retry.")
+        if state is None:
+            raise ValueError("MCP requires a live model. Start pcode with -m PROVIDER:MODEL.")
+        action, name = parts
+        if action == "enable":
+            state.enable(name)
+            self.transcript.note(
+                f"MCP '{name}' enabled for this conversation; connects on the next turn. "
+                "Its tools can perform actions with the server's permissions."
+            )
+        else:
+            state.disable(name)
+            self.transcript.note(f"MCP '{name}' disabled. Earlier results remain in history.")
+
     def new(self, argument: str) -> None:
         self.runtime.reset()
         self.activity.reset()
         self.transcript.print(Rule("New conversation", style="pcode.muted"))
-        self.transcript.note("Context reset. Input history and transcript are unchanged.")
+        self.transcript.note(
+            "Context reset; MCP servers are off. Input history and transcript are unchanged."
+        )
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")
 
@@ -587,23 +650,24 @@ class PreviewApp:
         failure = None
         cancelled = False
         try:
-            async for event in self.runtime.stream(text):
-                if isinstance(event, TextDelta):
-                    output.delta(event.text)
-                    self.activity.status = "Responding…"
-                elif isinstance(event, RunStatus):
-                    self.activity.status = event.text
-                elif isinstance(event, PlanUpdated):
-                    self.activity.plan = event.items
-                elif isinstance(event, (ToolStarted, ToolSummary)):
-                    # Tool activity is mutable UI state, not a model-text boundary.
-                    self.transcript.events((event,))
-                elif isinstance(event, Message):
-                    output.finish(event.markdown)
-                else:
-                    output.finish()
-                    self.transcript.events((event,))
-                output.app.invalidate()
+            async with aclosing(self.runtime.stream(text)) as stream:
+                async for event in stream:
+                    if isinstance(event, TextDelta):
+                        output.delta(event.text)
+                        self.activity.status = "Responding…"
+                    elif isinstance(event, RunStatus):
+                        self.activity.status = event.text
+                    elif isinstance(event, PlanUpdated):
+                        self.activity.plan = event.items
+                    elif isinstance(event, (ToolStarted, ToolSummary)):
+                        # Tool activity is mutable UI state, not a model-text boundary.
+                        self.transcript.events((event,))
+                    elif isinstance(event, Message):
+                        output.finish(event.markdown)
+                    else:
+                        output.finish()
+                        self.transcript.events((event,))
+                    output.app.invalidate()
         except asyncio.CancelledError:
             cancelled = True
         except Exception as error:

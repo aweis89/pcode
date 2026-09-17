@@ -14,6 +14,8 @@ class Command:
     handler: Callable[[str], None]
     arguments: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
+    free_arguments: bool = False
+    argument_provider: Callable[[], tuple[str, ...]] | None = None
 
 
 class CommandRegistry:
@@ -37,7 +39,7 @@ class CommandRegistry:
         if command is None:
             return False
         argument = parts[1].strip() if len(parts) > 1 else ""
-        if argument and argument not in command.arguments:
+        if argument and not command.free_arguments and argument not in command.arguments:
             usage = "|".join(command.arguments)
             raise ValueError(f"Usage: {command.name}" + (f" [{usage}]" if usage else ""))
         command.handler(argument)
@@ -64,6 +66,9 @@ class SlashCompleter(Completer):
         name, prefix = text.split(maxsplit=1) if len(text.split()) > 1 else (text.strip(), "")
         command = self.registry.find(name)
         if command:
-            for argument in command.arguments:
+            arguments = (
+                command.argument_provider() if command.argument_provider else command.arguments
+            )
+            for argument in arguments:
                 if argument.startswith(prefix):
                     yield Completion(argument, start_position=-len(prefix))
