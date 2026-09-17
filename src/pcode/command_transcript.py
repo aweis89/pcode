@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from rich.console import Console, ConsoleOptions, RenderResult
+from rich.rule import Rule
 from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.text import Text
@@ -20,6 +21,7 @@ class CommandTranscript:
     shell_command: bool = True
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        yield Rule(style="pcode.muted")
         elapsed = f" · {self.elapsed_seconds:.1f}s" if self.elapsed_seconds is not None else ""
         status = "✗" if self.failed else "✓"
         title = f"{self.title} failed" if self.failed else self.title
@@ -51,7 +53,7 @@ class CommandTranscript:
 
         lines = console.render_lines(Text(self.output), body_options, pad=False)
         if self.max_lines is not None and len(lines) > self.max_lines:
-            retained = max(0, self.max_lines - 1)
+            retained = max(0, self.max_lines)
             omitted = len(lines) - retained
             marker = Text(f"… {omitted} earlier output rows omitted", style="pcode.muted")
             marker.truncate(body_options.max_width, overflow="ellipsis")
@@ -61,3 +63,4 @@ class CommandTranscript:
             yield Segment(indent)
             yield from line
             yield Segment.line()
+        yield Rule(style="pcode.muted")

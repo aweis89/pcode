@@ -34,7 +34,7 @@ SETTINGS = {
     "error_scrollback_lines": Setting("20", positive_integer=True),
     "regenerate_on_resize": Setting("on", ("on", "off")),
     "command_scrollback": Setting("off", ("on", "off")),
-    "command_scrollback_lines": Setting("40", positive_integer=True),
+    "command_scrollback_lines": Setting("20", positive_integer=True),
     "show_thinking": Setting("off", ("on", "off")),
     "thinking_lines": Setting("10", positive_integer=True),
     "thinking_display": Setting("compact", ("compact", "expanded")),
