@@ -49,7 +49,7 @@ upstream tests, examples, and documentation sources.
 - **Permanent terminal output:** `src/pcode/ui.py` and `src/pcode/tool_display.py`.
   Start with [Rich Console](https://rich.readthedocs.io/en/stable/console.html),
   Markdown, Syntax, and Text; inspect `rich/console.py` as needed.
-  Rich owns permanent output; prompt_toolkit owns the mutable prompt and live tail.
+  Rich owns permanent output; prompt_toolkit owns the mutable prompt and activity panels.
 - **Agent creation and streaming:** `src/pcode/agent.py` and `src/pcode/live.py`.
   Start with [Pydantic AI streaming events](https://ai.pydantic.dev/agents/#streaming-all-events).
   Relevant installed source includes `pydantic_ai/agent/`, `messages.py`,

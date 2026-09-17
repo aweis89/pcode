@@ -148,7 +148,7 @@ def test_app_routes_plan_to_panel_not_transcript_and_preserves_errors():
         app = PreviewApp(model="test:local", runtime=Runtime(), console=Console(file=stream))
         with create_pipe_input() as pipe:
             prompt = create_prompt(app.registry, input=pipe, output=DummyOutput())
-            output = TerminalOutput(app.transcript.console, app.activity, prompt.app)
+            output = TerminalOutput(app.transcript.console, prompt.app)
             assert await app.run_live(output, "Start")
         assert app.activity.plan == items
         assert "Plan updated" not in stream.getvalue()

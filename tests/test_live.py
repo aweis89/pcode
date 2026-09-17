@@ -236,7 +236,7 @@ def test_ui_stream_commits_final_message_only_once():
             session = create_prompt(
                 app.registry, activity=app.activity, input=pipe, output=DummyOutput()
             )
-            writer = TerminalOutput(app.transcript.console, app.activity, session.app)
+            writer = TerminalOutput(app.transcript.console, session.app)
             app.transcript.output = writer
             assert await asyncio.wait_for(app.run_live(writer, "hello"), timeout=5)
             await writer.flush()
@@ -271,7 +271,7 @@ def test_ui_cancellation_cleans_up_generation_and_accepts_next_input():
             session = create_prompt(
                 app.registry, activity=app.activity, input=pipe, output=DummyOutput()
             )
-            writer = TerminalOutput(app.transcript.console, app.activity, session.app)
+            writer = TerminalOutput(app.transcript.console, session.app)
             app.transcript.output = writer
             task = asyncio.create_task(app.run_live(writer, "start"))
             await asyncio.wait_for(started.wait(), timeout=5)
