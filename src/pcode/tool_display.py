@@ -316,6 +316,10 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
     return (f"{where} → {result}" if where and result else where or result), failed
 
 
+# Shell-facing tools whose captured output can be mirrored into scrollback.
+COMMAND_TOOLS = frozenset({"run_command", "start_command", "check_command", "stop_command"})
+
+
 # Successful planning calls update the pinned panel; failures remain in scrollback.
 PLAN_TOOLS = frozenset(
     {

@@ -454,6 +454,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 | Tab / arrows | Browse completion; arrows also navigate input/history |
 | Ctrl+L | Choose a model (idle only; keeps the conversation) |
 | Ctrl+R | Search this process's input history |
+| Ctrl+S | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard idle input; during generation, cancel without deleting the draft |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
 
@@ -1002,3 +1003,53 @@ affect only error scrollback, including replayed failed-tool events; warnings an
 cancellation notices remain visible. Saved diagnostics are not disabled or trimmed
 by these display settings. Command diagnostics retain a separate safety bound of
 200 lines / 32,000 characters, after redaction.
+
+### Command output in scrollback
+
+By default, successful tool calls stay in the mutable tool panel and only
+failures reach scrollback. Enable `command_scrollback` to mirror **every settled
+shell tool call and its captured output** into permanent terminal scrollback:
+
+```sh
+pcode config set command_scrollback on        # Mirror commands and output (default off)
+pcode config set command_scrollback_lines 80  # Positive integer; default 40
+pcode config set command_scrollback off       # Restore failure-only scrollback
+```
+
+Each mirrored block shows the tool label, elapsed time, the invocation on a `$`
+line, and the tool's captured output in a fenced literal code block:
+
+```text
+› Run · 0.4s
+  $ pytest -q
+  2 passed in 0.31s
+  [exit code: 0]
+```
+
+Details:
+
+- It covers `run_command`, `start_command`, `check_command`, and `stop_command`,
+  including calls made by delegated sub-agents. Other tools are unaffected.
+- Blocks are written when a call settles, not incrementally while it runs, so
+  output appears once per call rather than line by line.
+- Failed commands print one mirrored block containing the full captured output
+  instead of the shorter `error_scrollback` excerpt; `error_scrollback` still
+  governs every other failure.
+- Output is redacted and sanitized before display, then bounded to
+  `command_scrollback_lines` wrapped body rows, keeping the tail with a
+  truncation marker. The capture step retains its own 128 KiB payload bound.
+- Verbose commands can push earlier conversation out of terminal history, so
+  raise your terminal or tmux scrollback limit before enabling this.
+
+Press **Ctrl+S** to turn mirroring on or off for the rest of the session; it also
+saves the default, so the next launch starts in the state you left.
+`/show-commands on` and `/show-commands off` do the same, and `/show-commands`
+reports the current state. A toggle applies to the next command that settles;
+scrollback already written is never rewritten.
+
+Ctrl+S replaces prompt_toolkit's forward incremental search. Ctrl+R still opens
+history search, which is the search binding this terminal documents. prompt_toolkit
+disables terminal XON/XOFF flow control while the prompt is active, so Ctrl+S
+reaches the application instead of pausing terminal output.
+
+These settings also work through `/config` and apply on the next launch.

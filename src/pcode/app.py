@@ -125,6 +125,12 @@ class PreviewApp:
                 self.show_thinking,
                 ("on", "off"),
             ),
+            Command(
+                "/show-commands",
+                "Mirror commands and output to scrollback: on / off (Ctrl+S)",
+                self.show_commands,
+                ("on", "off"),
+            ),
             Command("/theme", "Switch palette: dark / light / auto", self.theme, THEMES),
             Command("/colors", "Rich colors: palette / terminal", self.colors, COLOR_STYLES),
             Command(
@@ -222,6 +228,27 @@ class PreviewApp:
                 "Check passthrough → Thinking Passthrough in Meridian's /settings page; "
                 "this toggle only changes pcode's display."
             )
+
+    def toggle_command_scrollback(self) -> None:
+        self.set_command_scrollback(not self.transcript.command_scrollback)
+        self.show_commands("")
+
+    def set_command_scrollback(self, shown: bool) -> None:
+        # Applies to the next settled command; already-written scrollback stays.
+        self.transcript.command_scrollback = shown
+        self.persist_defaults(command_scrollback="on" if shown else "off")
+        if self.transcript.output is not None:
+            self.transcript.output.app.invalidate()
+
+    def show_commands(self, argument: str) -> None:
+        if argument:
+            if argument not in ("on", "off"):
+                raise ValueError("Usage: /show-commands on|off")
+            self.set_command_scrollback(argument == "on")
+        state = "on" if self.transcript.command_scrollback else "off"
+        self.transcript.note(
+            f"Command output in scrollback: {state}. Usage: /show-commands on|off (Ctrl+S)"
+        )
 
     def persist_defaults(self, **updates: str) -> None:
         try:
@@ -398,8 +425,11 @@ class PreviewApp:
                     self.transcript.output.app.invalidate()
                 # Decide only after completion. The adapter's failed flag includes
                 # non-zero shell exits, retries, and known tool validation failures.
-                if isinstance(event, ToolSummary) and event.failed:
-                    self.transcript.events((event,))
+                if isinstance(event, ToolSummary):
+                    # With command_scrollback on, the mirrored block already
+                    # carries the full output, so skip the error excerpt too.
+                    if not self.transcript.command_output(event) and event.failed:
+                        self.transcript.events((event,))
             else:
                 self.transcript.events((event,))
 
@@ -881,8 +911,11 @@ class PreviewApp:
                     elif isinstance(event, PlanPreview):
                         self.activity.plan_preview = event.items
                     elif isinstance(event, (ToolStarted, ToolSummary)):
-                        # Only exceptional completions also become persistent output.
-                        if isinstance(event, ToolSummary) and event.failed:
+                        # Only exceptional completions also become persistent
+                        # output, unless command mirroring is enabled.
+                        if isinstance(event, ToolSummary) and (
+                            event.failed or self.transcript.streams_command(event)
+                        ):
                             output.finish()
                         self.present_events((event,))
                     elif isinstance(event, Message):
@@ -1243,6 +1276,7 @@ class PreviewApp:
             on_submit=submit,
             on_cancel=cancel,
             on_thinking=self.set_show_thinking,
+            on_commands=self.toggle_command_scrollback,
             on_effort=self.adjust_effort,
             on_model=lambda: submit("/model"),
             bottom_toolbar=self.toolbar,

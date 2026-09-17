@@ -37,7 +37,7 @@ from pcode.preferences import load_preferences
 from pcode.runtime import Event, Message, ToolSummary
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
-from pcode.tool_display import command_preview, command_text, label, plain
+from pcode.tool_display import COMMAND_TOOLS, command_preview, command_text, label, plain
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
 from pcode.transcript_notice import TranscriptNotice
 
@@ -576,6 +576,7 @@ def create_prompt(
     on_effort=None,
     on_model=None,
     on_thinking=None,
+    on_commands=None,
     **kwargs,
 ) -> PromptSession:
     configure_newline_keys()
@@ -588,6 +589,14 @@ def create_prompt(
         if on_thinking is not None:
             on_thinking(activity.show_thinking)
         event.app.invalidate()
+
+    if on_commands is not None:
+        # Overrides prompt_toolkit's forward incremental search; Ctrl+R still
+        # opens history search, which is the binding this terminal advertises.
+        @keys.add("c-s", filter=~is_searching)
+        def toggle_command_scrollback(event: KeyPressEvent) -> None:
+            on_commands()
+            event.app.invalidate()
 
     if on_model is not None:
 
@@ -926,6 +935,8 @@ class Transcript:
         preferences = load_preferences()
         self.error_scrollback = preferences.get("error_scrollback", "on") == "on"
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
+        self.command_scrollback = preferences.get("command_scrollback", "off") == "on"
+        self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "40"))
         self.activity = activity
         self.console = console
         self.theme = theme
@@ -982,6 +993,36 @@ class Transcript:
             self.print(
                 TranscriptNotice(text, "error", title, self.error_scrollback_lines, self.code_theme)
             )
+
+    def streams_command(self, event: Event) -> bool:
+        """Report whether this settled tool will be mirrored into scrollback."""
+        return (
+            self.command_scrollback
+            and isinstance(event, ToolSummary)
+            and event.name in COMMAND_TOOLS
+        )
+
+    def command_output(self, event: ToolSummary) -> bool:
+        """Mirror a command and its captured output; report whether anything printed."""
+        if not self.streams_command(event):
+            return False
+        invocation = (
+            command_text(event.command) if event.command else plain(event.detail, limit=None)
+        )
+        # Live results arrive redacted and length-bounded from the capture step;
+        # sanitize again so replayed or synthesized events cannot emit controls.
+        output = command_text(event.result or "").strip() or "(no output)"
+        elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
+        self.print(
+            TranscriptNotice(
+                f"$ {invocation}\n{output}",
+                "command",
+                f"{label(event.name)}{' failed' if event.failed else ''}{elapsed}",
+                self.command_scrollback_lines,
+                self.code_theme,
+            )
+        )
+        return True
 
     def warning(self, text: str) -> None:
         self.print(TranscriptNotice(text, "warning", "Warning"))
@@ -1072,6 +1113,7 @@ class Transcript:
         self.note("/ commands · Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
         self.note("Ctrl+T show/hide transient thinking (saves default)")
+        self.note("Ctrl+S mirror commands and their output to scrollback (saves default)")
         self.note("Ctrl+L choose model (keep conversation)")
         self.note("Ctrl+N increase effort · Ctrl+P decrease effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
