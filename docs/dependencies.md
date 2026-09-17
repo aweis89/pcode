@@ -269,3 +269,17 @@ read-only GET of `/settings/api/features` (the `passthrough` entry), or use its
 Anthropic SSE decoding and `AgentRuntime`'s transient sink, without putting raw
 reasoning into application transcript events. Saved model-message history remains
 separate and can contain provider reasoning, as described in the README.
+
+### Codex thinking preview
+
+Verified Pydantic AI 2.43.0's `OpenAICodexModel` inherits the Responses model's
+`openai_reasoning_summary` setting. `_build_reasoning` serializes `"auto"` as
+`reasoning.summary`; without it, reasoning effort alone does not request visible
+summary text. Pcode requests summaries for Codex independently of `show_thinking`
+so the local preview can be enabled mid-turn. This requests provider-exposed
+summaries, not raw internal reasoning, and does not change effort. Other routes
+are unchanged. See the setting's installed-source documentation in
+`pydantic_ai/models/openai.py` and
+[OpenAI reasoning summaries](https://platform.openai.com/docs/guides/reasoning#reasoning-summaries).
+`tests/test_codex_profile.py` checks the serialized request and preservation across
+effort changes; runtime sink and terminal visibility are covered separately.
