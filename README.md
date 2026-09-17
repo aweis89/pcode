@@ -532,15 +532,16 @@ The latest Harness website describes a newer Coder composition than the pinned
 
 The line below the editor shows the workspace/branch, full `provider:model`
 identifier, reasoning effort, and activity. Live models also show context, for
-example `ctx: ~12.5k/200k` (tokens used / catalog capacity).
+example `ctx: 12.5k/200k` (tokens used / catalog capacity).
 
 Used context is the **latest completed request's input tokens**, including cached
 input, not cumulative session usage. It updates after a turn and follows the
 selected conversation history when resuming or navigating branches. It does not
 include unsent drafts, subsequent tool results, or a response still streaming.
-The `~` marks an approximation: totals come from the bundled model catalog and
+Totals are approximate: they come from the bundled model catalog and
 can differ from account/API-specific limits (Codex uses OpenAI model metadata).
-`?` means usage has not been reported yet or the catalog has no known capacity.
+Used context shows `0` when the conversation is empty or usage has not been
+reported yet. A `?` total means the catalog has no known capacity.
 Long paths shrink first; narrow terminals may truncate trailing context details.
 `/context` continues to show cumulative session input/output usage.
 

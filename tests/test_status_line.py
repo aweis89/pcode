@@ -39,17 +39,17 @@ def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
     app.branch = "master"
     assert (
         fragment_list_to_text(app.toolbar())
-        == " ~/p/pcode master · openai:gpt-5 · effort: default · ctx: ~?/400k"
+        == " ~/p/pcode master · openai:gpt-5 · effort: default · ctx: 0/400k"
     )
     app.runtime.agent = SimpleNamespace(
         model=SimpleNamespace(settings={"openai_reasoning_effort": "low"}),
         model_settings={"openai_reasoning_effort": "high"},
     )
     assert fragment_list_to_text(app.toolbar()).endswith(
-        "openai:gpt-5 · effort: high · ctx: ~?/400k"
+        "openai:gpt-5 · effort: high · ctx: 0/400k"
     )
     app.runtime.agent.model_settings = None
-    assert fragment_list_to_text(app.toolbar()).endswith("effort: low · ctx: ~?/400k")
+    assert fragment_list_to_text(app.toolbar()).endswith("effort: low · ctx: 0/400k")
 
 
 def test_preview_home_and_help(tmp_path, monkeypatch):
@@ -184,9 +184,9 @@ def test_footer_provider_and_context(tmp_path, monkeypatch, model):
     app.runtime.history = [ModelResponse(parts=[], usage=RequestUsage(input_tokens=12_500))]
     text = fragment_list_to_text(app.toolbar())
     assert model in text
-    assert "ctx: ~12.5k/" in text
+    assert "ctx: 12.5k/" in text
     app.runtime.history = []
-    assert "ctx: ~?/" in fragment_list_to_text(app.toolbar())
+    assert "ctx: 0/" in fragment_list_to_text(app.toolbar())
 
 
 @pytest.mark.parametrize("width", [1, 20, 40, 60, 100])
@@ -199,4 +199,4 @@ def test_provider_and_context_stay_one_row(tmp_path, monkeypatch, width):
     if width >= 60:
         assert "anthropic:claude-sonnet-4-6" in text
     if width >= 100:
-        assert "ctx: ~?/1m" in text
+        assert "ctx: 0/1m" in text
