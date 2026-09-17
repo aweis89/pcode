@@ -26,6 +26,8 @@ def load_preferences() -> dict[str, str]:
         result["model"] = data["model"]
     if data.get("effort") in EFFORTS:
         result["effort"] = data["effort"]
+    if data.get("theme") in ("dark", "light"):
+        result["theme"] = data["theme"]
     return result
 
 
