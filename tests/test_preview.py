@@ -43,10 +43,11 @@ def make_app(width=80):
                 "/new",
                 "/tree",
                 "/session",
-                "/sessions",
                 "/quit",
             ],
         ),
+        ("/ses", ["/session"]),
+        ("/sessions", []),
         ("/de", ["/demo"]),
         ("/theme ", ["dark", "light"]),
         ("/theme l", ["light"]),
@@ -188,3 +189,13 @@ def test_tool_command_is_not_available():
     for text in ("/tool", "/tool 1"):
         app.handle(text)
     assert stream.getvalue().count("Unknown command") == 2
+
+
+def test_sessions_command_removed():
+    app, stream = make_app()
+    assert app.registry.find("/session") is not None
+    assert app.registry.find("/sessions") is None
+    app.handle("/help")
+    assert "/sessions" not in stream.getvalue()
+    assert not app.handle("/sessions")
+    assert "Unknown command" in stream.getvalue()

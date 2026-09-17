@@ -32,7 +32,7 @@ def test_first_prompt_creates_session_once(tmp_path, save):
             console=Console(file=output, color_system=None),
         )
     try:
-        for text in ("", "   ", "/help", "/context", "/sessions", "/new", "/new"):
+        for text in ("", "   ", "/help", "/context", "/session", "/new", "/new"):
             assert not app.handle(text)
         assert app.runtime.session is None
         assert not root.exists()

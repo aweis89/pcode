@@ -144,7 +144,6 @@ class PreviewApp:
             Command("/new", "Start a new saved conversation; keep transcript", self.new),
             Command("/tree", "Navigate and fork the conversation interactively", self.select_tree),
             Command("/session", "Choose a saved session to resume", self.select_session),
-            Command("/sessions", "List saved sessions and resume instructions", self.sessions),
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
         ):
             self.registry.register(command)
@@ -673,18 +672,6 @@ class PreviewApp:
                         modal_input.close()
         if identity is not None:
             await self.resume_session(identity)
-
-    def sessions(self, argument: str) -> None:
-        from pcode.sessions import list_sessions
-
-        saved = getattr(self.runtime, "session", None)
-        root = saved.directory.parent if saved else self.session_dir
-        records = list_sessions(root)
-        if not records:
-            self.transcript.note("No saved sessions.")
-        for info in records[:20]:
-            self.transcript.note(f"{info.id}  {info.status}  {info.model}  {info.workspace}")
-        self.transcript.note("Restart with: pcode --resume SESSION_ID (or --resume latest)")
 
     def replay(self) -> None:
         from pcode.diagnostics import redact

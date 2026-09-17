@@ -363,7 +363,7 @@ A different explicit `-m` or `-C` is rejected on resume. Only one process may op
 a session for writing. `/session` opens a popup of saved conversations in the current
 workspace, labeled by their first prompt (newest first). Use ↑/↓ and Enter to
 resume in place, or Esc to cancel. Resuming restores the saved model, history,
-and plan. `/sessions` lists sessions from inside the terminal too.
+and plan.
 
 Default location: `$XDG_STATE_HOME/pcode/sessions`, or
 `~/.local/state/pcode/sessions`. Override with `--session-dir PATH` or
@@ -437,7 +437,6 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/session`: choose a saved conversation by its first prompt and resume it in place.
 - `/tree`: [browse and fork the conversation](docs/conversation-tree.md); select a user prompt to
   edit it, or an assistant response to continue from there. Existing branches are kept.
-- `/sessions`: list saved conversations and resume instructions.
 - `/quit` (alias `/exit`): exit.
 
 ### Keys and layout
