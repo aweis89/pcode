@@ -32,7 +32,10 @@ def test_saved_editing_mode_reaches_prompt(mode):
     [
         (True, "hello world\x1b0dw\r", "world"),
         (True, "hello\x1b0iX\r", "Xhello"),
-        (True, "hello\x1b\rworld\r", "hello\nworld"),
+        (True, "hello\nworld\r", "hello\nworld"),
+        (False, "hello\nworld\r", "hello\nworld"),
+        (False, "hello\x1b\rworld\r", "hello\nworld"),
+        (True, "hello\x1b\r", "hello"),
         (False, "hello\x01X\r", "Xhello"),
     ],
 )
@@ -53,7 +56,12 @@ def test_editor_bindings(vi_mode, keys, expected):
     [
         (True, "one two three\x1bbb", "one two three", 4),
         (True, "hello\x1b0iX", "Xhello", 1),
-        (True, "hello\x1b\rworld", "hello\nworld", 11),
+        (True, "hello\nworld", "hello\nworld", 11),
+        (False, "hello\nworld", "hello\nworld", 11),
+        (False, "hello\x1b\rworld", "hello\nworld", 11),
+        (True, "hello\x1b", "hello", 4),
+        (True, "hello\x1b[D!", "hell!o", 5),
+        (True, "hello\x1b0vll\x1biX", "heXllo", 3),
         (False, "hello\x01X", "Xhello", 1),
     ],
 )
@@ -85,5 +93,36 @@ def test_transcript_editor_bindings(vi_mode, keys, expected, cursor):
             assert snapshots[-1][0] == cursor
             if keys.endswith("bb"):
                 assert snapshots[-1][1] == InputMode.NAVIGATION
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("transcript", [False, True])
+def test_vi_escape_alone_is_responsive(transcript):
+    async def run():
+        with create_pipe_input() as pipe:
+            prompt = create_prompt(
+                CommandRegistry(),
+                vi_mode=True,
+                input=pipe,
+                output=DummyOutput(),
+                transcript=Transcript(Console(file=StringIO())) if transcript else None,
+            )
+            # A long key-binding timeout must not delay the eager Escape binding.
+            prompt.app.timeoutlen = 10
+            assert prompt.app.ttimeoutlen == 0.1
+
+            async def feed():
+                pipe.send_text("hello\x1b")
+                while prompt.app.vi_state.input_mode != InputMode.NAVIGATION:
+                    await asyncio.sleep(0.01)
+                assert prompt.default_buffer.text == "hello"
+                assert prompt.default_buffer.cursor_position == 4
+                prompt.app.exit()
+
+            await asyncio.wait_for(
+                prompt.app.run_async(pre_run=lambda: prompt.app.create_background_task(feed())),
+                timeout=2,
+            )
 
     asyncio.run(run())

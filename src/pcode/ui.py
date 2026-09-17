@@ -11,8 +11,10 @@ from time import monotonic
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app, in_terminal
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.filters import Always, Condition, has_focus, is_searching
+from prompt_toolkit.enums import EditingMode
+from prompt_toolkit.filters import Always, Condition, has_focus, is_searching, vi_mode
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
@@ -546,7 +548,19 @@ def create_prompt(
         else:
             buffer.validate_and_handle()
 
-    @keys.add("escape", "enter", filter=~is_searching)
+    @keys.add("escape", filter=vi_mode & ~is_searching, eager=True)
+    def normal_mode(event: KeyPressEvent) -> None:
+        # Match native vi Escape semantics, without waiting for Alt bindings.
+        buffer = event.current_buffer
+        state = event.app.vi_state
+        if state.input_mode in (InputMode.INSERT, InputMode.REPLACE):
+            buffer.cursor_position += buffer.document.get_cursor_left_position()
+        state.input_mode = InputMode.NAVIGATION
+        if buffer.selection_state:
+            buffer.exit_selection()
+
+    @keys.add("c-j", filter=~is_searching)
+    @keys.add("escape", "enter", filter=~vi_mode & ~is_searching)
     def newline(event: KeyPressEvent) -> None:
         event.current_buffer.insert_text("\n")
 
@@ -754,6 +768,9 @@ def create_prompt(
             output=editor_app.output,
             mouse_support=False,
         )
+    if session.app.editing_mode == EditingMode.VI:
+        # Allow terminal escape sequences to arrive, without a half-second pause.
+        session.app.ttimeoutlen = 0.1
     install_reflow_renderer(session.app)
 
     return session
