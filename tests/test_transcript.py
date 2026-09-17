@@ -4,6 +4,7 @@ import asyncio
 from io import StringIO
 from types import SimpleNamespace
 
+import pytest
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
@@ -346,5 +347,48 @@ def test_empty_turn_drops_deferred_quote_without_leaking_to_next_turn():
         output.end_turn()
         await output.flush()
         assert rendered(stream) == "Run cancelled.\n\n▌ next prompt\n\nNext answer\n\n"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("width_changes", [True, False])
+def test_resize_replay_debounces_width_changes_and_ignores_height(monkeypatch, width_changes):
+    async def run():
+        output, _ = make_output()
+        sizes = iter([(24, 80), (30, 80), (30, 60), (30, 40)] + [(30, 40)] * 8)
+        current = Size(rows=24, columns=80)
+        clock = 0.0
+        replays = []
+        output.resize_replay = lambda: None
+        output.app.output.get_size = lambda: current
+        output.regenerate = lambda replay: replays.append((clock, replay))
+
+        async def wait_for(awaitable, *, timeout):
+            nonlocal current, clock
+            awaitable.close()
+            rows, columns = next(sizes)
+            current = Size(rows=rows, columns=columns if width_changes else 80)
+            clock += timeout
+            raise TimeoutError
+
+        async def sleep(delay):
+            pass
+
+        async def flush():
+            if clock >= 1.0:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr("pcode.ui.monotonic", lambda: clock)
+        monkeypatch.setattr("pcode.ui.asyncio.wait_for", wait_for)
+        monkeypatch.setattr("pcode.ui.asyncio.sleep", sleep)
+        output.flush = flush
+        try:
+            await output.run()
+        except asyncio.CancelledError:
+            pass
+        assert len(replays) == int(width_changes)
+        if width_changes:
+            assert replays[0][0] >= 0.65
+            assert replays[0][1] is output.resize_replay
 
     asyncio.run(run())
