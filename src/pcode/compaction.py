@@ -8,7 +8,7 @@ import json
 from copy import deepcopy
 from dataclasses import dataclass
 
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import infer_model
 from pydantic_ai.usage import RunUsage
@@ -22,6 +22,7 @@ from pydantic_ai_harness.compaction._summarizing_compaction import drain_summary
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, is_provider_valid
 
 from pcode.context_usage import compact_tokens
+from pcode.output_limits import ModelOutputLimits
 
 MARKER = "pcode.compaction.v1"
 SCHEMAS = "pcode.request-schemas.v1"
@@ -190,6 +191,10 @@ class AutoCompaction(AbstractCapability):
         self.runtime = runtime
         self.run_id = run_id
 
+    def get_ordering(self):
+        # Reserve the actual resolved output ceiling, not the adapter's fallback.
+        return CapabilityOrdering(wrapped_by=[ModelOutputLimits])
+
     async def after_model_request(self, ctx, *, request_context, response):
         response.metadata = {
             **(response.metadata or {}),
@@ -213,7 +218,13 @@ class AutoCompaction(AbstractCapability):
         if window is None:
             return request_context
         settings = request_context.model_settings or {}
-        reserve = max(min(16_384, window // 5), settings.get("max_tokens") or 0)
+        # A model's output ceiling can exceed a user-selected working window.
+        # It is not a promise to generate that many tokens: leave useful input
+        # space instead of making the compaction threshold zero or negative.
+        reserve = min(
+            window // 2,
+            max(min(16_384, window // 5), settings.get("max_tokens") or 0),
+        )
         threshold = min(int(window * 0.8), window - reserve)
         before = context_estimate(
             request_context.messages, request_context.model_request_parameters
