@@ -171,7 +171,7 @@ class Activity:
         if not self.plan:
             return "Tools"
         completed = sum(item.get("status") == "completed" for item in self.plan)
-        return f"Tasks {completed}/{len(self.plan)} done"
+        return f"Tasks {completed}/{len(self.plan)}"
 
     def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
