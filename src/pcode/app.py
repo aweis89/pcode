@@ -696,8 +696,6 @@ class PreviewApp:
         text = text.strip()
         if not text:
             return False
-        if self.model and not text.startswith("/"):
-            return True
         self.transcript.user(text)
         if text.startswith("/"):
             try:
@@ -705,6 +703,8 @@ class PreviewApp:
                     self.transcript.note("Unknown command. Type /help to see available commands.")
             except ValueError as error:
                 self.transcript.note(str(error))
+        elif self.model:
+            return True
         else:
             self.transcript.events(self.preview.reply(text))
         return False
@@ -712,7 +712,6 @@ class PreviewApp:
     async def run_live(self, output: TerminalOutput, text: str) -> bool:
         from pcode.live import error_message
 
-        output.begin_turn(text)
         self.activity.prompt = text
         self.activity.prompt_state = "running"
         self.activity.status = "Waiting for model…"
@@ -742,7 +741,7 @@ class PreviewApp:
         except Exception as error:
             failure = error
         finally:
-            output.end_turn()
+            output.finish()
             self.activity.tools.interrupt_running()
             self.activity.status = ""
         self.activity.prompt_state = "cancelled" if cancelled else "failed" if failure else "done"
