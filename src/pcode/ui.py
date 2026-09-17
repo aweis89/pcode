@@ -643,6 +643,7 @@ class Transcript:
         self.print(Text(text, style="pcode.muted"))
 
     def user(self, text: str) -> None:
+        self.print()
         self.print(TaskPrompt(text))
         self.print()
 
