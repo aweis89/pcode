@@ -230,3 +230,14 @@ next model request; subsequent Harness `StepPersistence` snapshots supersede it.
 Never use synthetic agent runs to install summaries or overwrite original snapshots.
 Keep tests for immediate restart, branch isolation, failure/cancellation, safe tool
 pairs, mid-tool-loop compaction, and stale usage anchors after rewriting history.
+
+### Reasoning effort
+
+`preferences.apply_effort` uses `openai_reasoning_effort` for OpenAI/Codex and
+`anthropic_effort` for Anthropic/Meridian (including the pi-auth adapter).
+Verified Pydantic AI 2.43.0's `AnthropicModelSettings.anthropic_effort` and
+`AnthropicModel._build_output_config` send `output_config.effort` without changing
+thinking settings. The model profile's `anthropic_supports_xhigh_effort` selects
+native `xhigh`; otherwise pcode maps its top level to `max`. Support for effort
+and its highest levels varies by model; do not infer support from the route alone.
+See [Anthropic effort](https://platform.claude.com/docs/en/build-with-claude/effort).
