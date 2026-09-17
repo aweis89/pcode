@@ -4,6 +4,8 @@ import asyncio
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
+from copy import deepcopy
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -27,6 +29,7 @@ from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
 from pydantic_ai_harness.step_persistence import StepPersistence
 
+from pcode.conversation_tree import ConversationTree
 from pcode.diagnostics import error_details
 from pcode.inspection import ToolArchive, capture
 from pcode.mcp import MCPState
@@ -88,6 +91,7 @@ class AgentRuntime:
 
     def _clear(self) -> None:
         info = self.session.info if self.session else None
+        self.tree = self.session.tree if self.session else ConversationTree()
         self.inspections = ToolArchive()
         self.history: list[ModelMessage] = []
         self.conversation_id = info.id if info else str(uuid4())
@@ -111,6 +115,37 @@ class AgentRuntime:
                 [PlanItem.model_validate(item) for item in self.session.latest_plan()]
             )
 
+    async def navigate(self, identity: str | None, *, edit: bool = False) -> str:
+        """Restore a safe checkpoint without running a model or replaying tools."""
+        if self.recovery_blocked:
+            raise SessionError(self.recovery_blocked)
+        self.tree.path(identity)
+        node = self.tree.nodes[identity] if identity else None
+        target = node.parent if edit and node else identity
+        draft = node.prompt if edit and node else ""
+        history = (
+            await self.session.history_at(target)
+            if self.session
+            else deepcopy(self.tree.nodes[target].history or [])
+            if target
+            else []
+        )
+        plan = InMemoryPlanStore()
+        await plan.set_items(
+            [
+                PlanItem.model_validate(item)
+                for item in (self.tree.nodes[target].plan if target else [])
+            ]
+        )
+        # Publish the cursor only after all restoration/validation succeeds.
+        if self.session:
+            self.session.append("tree_selected", node_id=target, sync=True)
+        else:
+            self.tree.active = target
+        self.history = history
+        self.plan_store = plan
+        return draft
+
     def close(self) -> None:
         if self.session:
             self.session.close()
@@ -121,18 +156,32 @@ class AgentRuntime:
         if self.session is None and self.session_factory is not None:
             self.session = self.session_factory()
             self.conversation_id = self.session.info.id
+            self.tree = self.session.tree
         saved = self.session
         run_id = str(uuid4())
         if saved:
-            saved.append("turn_started", prompt=prompt, run_id=run_id, sync=True)
+            saved.append(
+                "turn_started", prompt=prompt, run_id=run_id, parent_id=self.tree.active, sync=True
+            )
             saved.info.status = "running"
             saved.save_info()
+        else:
+            self.tree.consume(
+                {
+                    "kind": "turn_started",
+                    "prompt": prompt,
+                    "run_id": run_id,
+                    "parent_id": self.tree.active,
+                }
+            )
         self.inspections.run_id = run_id
         try:
             async with aclosing(self._stream(prompt, run_id)) as stream:
                 async for event in stream:
                     if saved:
                         saved.event(event)
+                    if saved is None:
+                        self.tree.consume({"kind": type(event).__name__, **asdict(event)})
                     if saved is None and isinstance(event, (ToolStarted, ToolSummary)):
                         self.inspections.event(event)
                     yield event
@@ -160,6 +209,12 @@ class AgentRuntime:
                     self.history = await saved.recover()
                 except SessionError as recovery_error:
                     self.recovery_blocked = str(recovery_error)
+            else:
+                cancelled = isinstance(
+                    error, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit)
+                )
+                self.tree.consume({"kind": "turn_cancelled" if cancelled else "turn_failed"})
+                self.tree.nodes[run_id].history = deepcopy(self.history)
             raise
         else:
             self.inspections.settle("unknown")
@@ -170,6 +225,9 @@ class AgentRuntime:
                 saved.info.input_tokens = self.input_tokens
                 saved.info.output_tokens = self.output_tokens
                 saved.save_info()
+            else:
+                self.tree.consume({"kind": "turn_completed"})
+                self.tree.nodes[run_id].history = deepcopy(self.history)
 
     async def _stream(self, prompt: str, run_id: str) -> AsyncIterator[Event]:
         plan_items = [item.model_dump(mode="json") for item in await self.plan_store.get_items()]

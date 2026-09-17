@@ -15,6 +15,7 @@ from filelock import FileLock, Timeout
 from pydantic import BaseModel
 from pydantic_ai_harness.step_persistence import SqliteStepStore, StepEvent, ToolEffectRecord
 
+from pcode.conversation_tree import ConversationTree
 from pcode.diagnostics import redact, versions
 
 
@@ -145,6 +146,9 @@ class SavedSession:
             for name in ("steps.sqlite3", "transcript.jsonl", "session.json"):
                 private_file(directory / name)
             self.store = PrivateStepStore(database=directory / "steps.sqlite3")
+            self.tree = ConversationTree()
+            for record in self.records():
+                self.tree.consume(record)
         except BaseException:
             self.lock.release()
             raise
@@ -208,8 +212,41 @@ class SavedSession:
             if sync:
                 os.fsync(file.fileno())
 
+        self.tree.consume(record)
+
     def event(self, event) -> None:
         self.append(type(event).__name__, **asdict(event))
+
+    def records(self):
+        """Read intact records; a hard kill may leave a torn final append."""
+        with (self.directory / "transcript.jsonl").open(encoding="utf-8", errors="replace") as file:
+            for line in file:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    yield record
+
+    def active_records(self):
+        selected = set(self.tree.path(self.tree.active))
+        run_id = None
+        for record in self.records():
+            if record.get("kind") == "turn_started":
+                run_id = record.get("run_id")
+            if not self.tree.nodes or run_id in selected:
+                yield record
+
+    async def history_at(self, identity: str | None):
+        path = self.tree.path(identity)
+        for run_id in reversed(path):
+            # Never opt into interrupted snapshots with pending tool calls.
+            snapshot = await self.store.latest_snapshot(run_id=run_id)
+            if snapshot is not None:
+                return snapshot.messages
+            if self.tree.nodes[run_id].status == "completed":
+                raise SessionError("The selected turn's checkpoint is missing; branch unchanged.")
+        return []
 
     async def recover(self):
         """Restore settled history without replaying tools or resolving their effects.
@@ -217,9 +254,11 @@ class SavedSession:
         Interrupted tools may have changed the workspace. Keep their ledger entries
         intact for diagnostics, but do not require review to continue the session.
         """
+        if self.tree.nodes:
+            return await self.history_at(self.tree.active)
+        # Compatibility with sessions whose journal predates run IDs.
         runs = await self.store.list_runs(conversation_id=self.info.id)
         for run in reversed(runs):
-            # Never opt into interrupted snapshots: they can contain pending calls.
             snapshot = await self.store.latest_snapshot(run_id=run.run_id)
             if snapshot is not None:
                 return snapshot.messages
@@ -228,58 +267,42 @@ class SavedSession:
     def latest_plan(self) -> list[dict]:
         """Recover UI/tool state even when the last update predates replay's limit."""
         items = []
-        with (self.directory / "transcript.jsonl").open(encoding="utf-8") as file:
-            for line in file:
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if record.get("kind") == "PlanUpdated":
-                    items = record["items"]
+        for record in self.active_records():
+            if record.get("kind") == "PlanUpdated":
+                items = record["items"]
         return items
 
     def tool_events(self):
         """Stream tool lifecycle records independently of the transcript replay limit."""
-        with (self.directory / "transcript.jsonl").open(encoding="utf-8", errors="replace") as file:
-            for line in file:
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if record.get("kind") in {
-                    "ToolStarted",
-                    "ToolSummary",
-                    "turn_started",
-                    "turn_completed",
-                    "turn_cancelled",
-                    "turn_failed",
-                }:
-                    yield record
+        for record in self.active_records():
+            if record.get("kind") in {
+                "ToolStarted",
+                "ToolSummary",
+                "turn_started",
+                "turn_completed",
+                "turn_cancelled",
+                "turn_failed",
+            }:
+                yield record
 
     def recent_transcript(self, limit: int = 40) -> list[dict]:
         """UI replay, distinct from the complete model history stored by Harness."""
         records = deque(maxlen=limit)
         partial = ""
-        with (self.directory / "transcript.jsonl").open(encoding="utf-8", errors="replace") as file:
-            for line in file:
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    # A hard kill can truncate only the final append.
-                    continue
-                kind = record.get("kind")
-                if kind == "TextDelta":
-                    partial += record["text"]
-                elif kind == "Message":
+        for record in self.active_records():
+            kind = record.get("kind")
+            if kind == "TextDelta":
+                partial += record["text"]
+            elif kind == "Message":
+                partial = ""
+                records.append(record)
+            elif kind in ("turn_failed", "turn_cancelled", "turn_started"):
+                if partial:
+                    records.append({"kind": "partial", "markdown": partial})
                     partial = ""
-                    records.append(record)
-                elif kind in ("turn_failed", "turn_cancelled", "turn_started"):
-                    if partial:
-                        records.append({"kind": "partial", "markdown": partial})
-                        partial = ""
-                    records.append(record)
-                elif kind == "ToolSummary":
-                    records.append(record)
+                records.append(record)
+            elif kind == "ToolSummary":
+                records.append(record)
         if partial:
             records.append({"kind": "partial", "markdown": partial})
         return list(records)
