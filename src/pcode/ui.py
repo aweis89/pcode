@@ -158,6 +158,7 @@ TERMINAL_THEME = Theme(
 @dataclass
 class Activity:
     show_thinking: bool = False
+    thinking_lines: int = 10
     thinking: str = ""
     busy: bool = False
     status: str = ""
@@ -173,16 +174,21 @@ class Activity:
         """UI-only rolling buffer; never route this through Transcript/events."""
         self.thinking = (self.thinking + text)[-8192:]
 
-    def thinking_rows(self) -> list[tuple[str, str]]:
-        if not self.show_thinking or not self.thinking:
+    def thinking_rows(self, width: int = 80, height: int | None = None) -> list[tuple[str, str]]:
+        """Wrap by terminal cells and follow the tail without retaining scrollback."""
+        limit = self.thinking_lines if height is None else min(self.thinking_lines, height)
+        if not self.show_thinking or not self.thinking or limit <= 0:
             return []
-        # Plain, single-line preview: no terminal controls or provider metadata.
-        return [
-            (
-                "class:bottom-toolbar.text",
-                "Thinking · Ctrl+T to hide: " + plain(self.thinking[-240:], limit=None),
-            )
-        ]
+        # Strip ANSI before sanitizing other controls, preserving real newlines.
+        clean = re.sub(
+            r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])",
+            "",
+            self.thinking,
+        )
+        text = "\n".join(plain(line, limit=None) for line in clean.split("\n"))
+        width = max(1, width)
+        rows = Text(text).wrap(Console(width=width), width, overflow="fold", no_wrap=False)
+        return [("class:bottom-toolbar.text", row.plain) for row in rows[-limit:]]
 
     def reset(self) -> None:
         """Clear the panel for a new conversation, keeping the draft and queue."""
@@ -657,10 +663,27 @@ def create_prompt(
         budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
         return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
+    def thinking_rows():
+        size = session.app.output.get_size()
+        plans = plan_rows()
+        # Reserve the task frame, current prompt, queue, editor, toolbar and
+        # breathing room before spending the remaining height on reasoning.
+        available = (
+            size.rows
+            - (len(plans) + 2 if plans else 0)
+            - bool(activity.prompt)
+            - len(queue_rows())
+            - 8
+        )
+        return activity.thinking_rows(size.columns - 2, max(0, available))
+
     def activity_height() -> int:
         rows = plan_rows()
+        thoughts = thinking_rows()
         return (
-            bool(activity.prompt) + (len(rows) + 2 if rows else 0) + len(activity.thinking_rows())
+            bool(activity.prompt)
+            + (len(rows) + 2 if rows else 0)
+            + (len(thoughts) + 2 if thoughts else 0)
         )
 
     def plan_text():
@@ -713,15 +736,24 @@ def create_prompt(
     # Keep the turn and its activity adjacent even when the root layout justifies
     # the transcript and editor across the remaining terminal height.
     thinking = ConditionalContainer(
-        Window(
-            FormattedTextControl(lambda: activity.thinking_rows(), show_cursor=False),
-            height=1,
-            dont_extend_height=True,
-            wrap_lines=False,
+        Frame(
+            Window(
+                FormattedTextControl(
+                    lambda: panel_fragments(
+                        thinking_rows(), session.app.output.get_size().columns - 2
+                    ),
+                    show_cursor=False,
+                ),
+                height=lambda: len(thinking_rows()),
+                dont_extend_height=True,
+                wrap_lines=False,
+            ),
+            title="Thinking · Ctrl+T to hide",
+            height=lambda: len(thinking_rows()) + 2,
         ),
-        filter=Condition(lambda: bool(activity.thinking_rows())),
+        filter=Condition(lambda: bool(thinking_rows())),
     )
-    activity_panel = HSplit([current_prompt, plan, thinking])
+    activity_panel = HSplit([thinking, current_prompt, plan])
 
     def queue_rows():
         budget = min(4, max(1, session.app.output.get_size().rows // 4))
