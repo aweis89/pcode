@@ -64,14 +64,14 @@ def test_only_selected_config_is_expanded_and_validated(monkeypatch):
     state = MCPState()
     assert state.toolsets() == []
     assert set(configured_servers()) == {"good", "missing", "invalid"}
-    state.enable("good")
+    asyncio.run(state.enable("good"))
     original = state.toolsets()
-    state.enable("good")
+    asyncio.run(state.enable("good"))
     assert state.toolsets() == original
     with pytest.raises(ValueError, match="Missing MCP environment variable"):
-        state.enable("missing")
+        asyncio.run(state.enable("missing"))
     with pytest.raises(ValueError) as error:
-        state.enable("invalid")
+        asyncio.run(state.enable("invalid"))
     assert "secret-value" not in str(error.value)
     assert set(state.enabled) == {"good"}
     config_path().write_text("broken")
@@ -140,13 +140,25 @@ def make_app(tmp_path):
     return app, output
 
 
+def handle_command(app, text):
+    result = app.handle(text)
+    if app.mcp_enable_requested is not None:
+        name = app.mcp_enable_requested
+        app.mcp_enable_requested = None
+        try:
+            asyncio.run(app.enable_mcp(name))
+        except Exception as error:
+            app.transcript.note(str(error))
+    return result
+
+
 def test_commands_completion_reset_and_model_switch(tmp_path):
     write_config({"docs": {"command": sys.executable}, "other": {"url": "https://example.com/mcp"}})
     app, output = make_app(tmp_path)
-    app.handle("/mcp")
+    handle_command(app, "/mcp")
     assert "docs: off" in output.getvalue()
     assert "other: off" in output.getvalue()
-    app.handle("/mcp enable docs")
+    handle_command(app, "/mcp enable docs")
     assert set(app.runtime.mcp.enabled) == {"docs"}
     completer = SlashCompleter(app.registry)
 
@@ -156,16 +168,16 @@ def test_commands_completion_reset_and_model_switch(tmp_path):
     assert completions("/mcp en") == ["enable docs", "enable other"]
     assert completions("/mcp disable ") == ["disable docs"]
     assert completions("/mcp enable d") == ["enable docs"]
-    assert app.handle("/mcp enable missing") is False
+    assert handle_command(app, "/mcp enable missing") is False
     assert "Unknown MCP server" in output.getvalue()
-    app.handle("/mcp once docs")
+    handle_command(app, "/mcp once docs")
     assert "Usage: /mcp" in output.getvalue()
-    app.handle("/mcp disable docs")
+    handle_command(app, "/mcp disable docs")
     assert app.runtime.mcp.toolsets() == []
-    app.handle("/mcp enable docs")
+    handle_command(app, "/mcp enable docs")
     app.runtime.replace_agent(Agent("test"))
     assert set(app.runtime.mcp.enabled) == {"docs"}
-    app.handle("/new")
+    handle_command(app, "/new")
     assert app.runtime.mcp.toolsets() == []
     assert AgentRuntime(Agent("test")).mcp.toolsets() == []
 
@@ -174,23 +186,23 @@ def test_busy_rejects_changes_but_allows_listing(tmp_path):
     write_config({"docs": {"command": sys.executable}})
     app, output = make_app(tmp_path)
     app.activity.busy = True
-    app.handle("/mcp enable docs")
+    handle_command(app, "/mcp enable docs")
     assert app.runtime.mcp.toolsets() == []
     assert "cannot be changed while working" in output.getvalue()
-    app.handle("/mcp list")
+    handle_command(app, "/mcp list")
     assert "docs: off" in output.getvalue()
 
 
 def test_list_and_disable_survive_broken_config(tmp_path):
     path = write_config({"docs": {"command": sys.executable}})
     app, output = make_app(tmp_path)
-    app.handle("/mcp enable docs")
+    handle_command(app, "/mcp enable docs")
     path.write_text("broken")
-    app.handle("/mcp list")
+    handle_command(app, "/mcp list")
     assert "Cannot read MCP configuration" in output.getvalue()
     assert "docs: enabled" in output.getvalue()
     assert app.mcp_arguments() == ("list", "disable docs")
-    app.handle("/mcp disable docs")
+    handle_command(app, "/mcp disable docs")
     assert app.runtime.mcp.toolsets() == []
 
 
@@ -267,7 +279,7 @@ def test_real_stdio_tools_only_on_enabled_turns(stdio_server):
         await turn()
         assert not stdio_server.exists()
         assert requests == [set()]
-        runtime.mcp.enable("local")
+        await runtime.mcp.enable("local")
         assert not stdio_server.exists()
         await turn()
         assert requests[-2:] == [{"mcp_local_echo"}, {"mcp_local_echo"}]
@@ -297,7 +309,7 @@ def test_real_stdio_cleanup_on_error_or_cancel(stdio_server, cancel):
         yield  # make this a streaming generator
 
     runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
-    runtime.mcp.enable("local")
+    asyncio.run(runtime.mcp.enable("local"))
 
     async def run():
         async def turn():
@@ -323,7 +335,7 @@ def test_real_stdio_cleanup_on_early_stream_close(stdio_server):
         await asyncio.Event().wait()
 
     runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
-    runtime.mcp.enable("local")
+    asyncio.run(runtime.mcp.enable("local"))
 
     async def run():
         stream = runtime.stream("hello")
@@ -348,7 +360,7 @@ def test_cancel_during_mcp_work(stdio_server, phase):
         }
 
     runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
-    runtime.mcp.enable("local")
+    asyncio.run(runtime.mcp.enable("local"))
 
     async def run():
         async def turn():
@@ -375,8 +387,8 @@ def test_partial_startup_failure_closes_connected_server(stdio_server):
         yield
 
     runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
-    runtime.mcp.enable("local")
-    runtime.mcp.enable("unused")
+    asyncio.run(runtime.mcp.enable("local"))
+    asyncio.run(runtime.mcp.enable("unused"))
 
     async def run():
         with pytest.raises(Exception):
