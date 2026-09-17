@@ -1,4 +1,5 @@
 from io import StringIO
+from unittest.mock import patch
 
 import pytest
 from prompt_toolkit.completion import CompleteEvent
@@ -85,6 +86,25 @@ def test_dispatch_theme_errors_reset_and_exit():
     assert app.runtime.turns == 0
     app.handle("/exit")
     assert not app.running
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["/tree", "/new", "/help", "/demo", "/theme light", "/theme invalid", "/missing", "/exit"],
+)
+def test_commands_are_not_echoed_as_prompts(command):
+    app, _ = make_app()
+    with patch.object(app.transcript, "user", wraps=app.transcript.user) as user:
+        assert not app.handle(f"  {command}  ")
+        user.assert_not_called()
+
+
+def test_preview_prompt_is_still_echoed():
+    app, stream = make_app()
+    with patch.object(app.transcript, "user", wraps=app.transcript.user) as user:
+        assert not app.handle("  hello  ")
+        user.assert_called_once_with("hello")
+    assert "hello" in stream.getvalue()
 
 
 @pytest.mark.parametrize("width", [24, 40, 80, 120])
