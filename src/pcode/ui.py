@@ -150,6 +150,8 @@ TERMINAL_THEME = Theme(
 
 @dataclass
 class Activity:
+    show_thinking: bool = False
+    thinking: str = ""
     busy: bool = False
     status: str = ""
     queued: int = 0
@@ -160,8 +162,24 @@ class Activity:
     plan_preview: list[dict] | None = None
     tools: ToolHistory = field(default_factory=ToolHistory)
 
+    def append_thinking(self, text: str) -> None:
+        """UI-only rolling buffer; never route this through Transcript/events."""
+        self.thinking = (self.thinking + text)[-8192:]
+
+    def thinking_rows(self) -> list[tuple[str, str]]:
+        if not self.show_thinking or not self.thinking:
+            return []
+        # Plain, single-line preview: no terminal controls or provider metadata.
+        return [
+            (
+                "class:bottom-toolbar.text",
+                "Thinking · Ctrl+T to hide: " + plain(self.thinking[-240:], limit=None),
+            )
+        ]
+
     def reset(self) -> None:
         """Clear the panel for a new conversation, keeping the draft and queue."""
+        self.thinking = ""
         self.plan = []
         self.plan_preview = None
         self.tools.clear()
@@ -408,10 +426,18 @@ def create_prompt(
     on_cancel=None,
     on_effort=None,
     on_model=None,
+    on_thinking=None,
     **kwargs,
 ) -> PromptSession:
     activity = activity or Activity()
     keys = KeyBindings()
+
+    @keys.add("c-t", filter=~is_searching)
+    def toggle_thinking(event: KeyPressEvent) -> None:
+        activity.show_thinking = not activity.show_thinking
+        if on_thinking is not None:
+            on_thinking(activity.show_thinking)
+        event.app.invalidate()
 
     if on_model is not None:
 
@@ -523,7 +549,9 @@ def create_prompt(
 
     def activity_height() -> int:
         rows = plan_rows()
-        return bool(activity.prompt) + (len(rows) + 2 if rows else 0)
+        return (
+            bool(activity.prompt) + (len(rows) + 2 if rows else 0) + len(activity.thinking_rows())
+        )
 
     def plan_text():
         return panel_fragments(plan_rows(), session.app.output.get_size().columns - 2)
@@ -574,7 +602,16 @@ def create_prompt(
     plan = ConditionalContainer(plan_frame, filter=Condition(lambda: bool(plan_rows())))
     # Keep the turn and its activity adjacent even when the root layout justifies
     # the transcript and editor across the remaining terminal height.
-    activity_panel = HSplit([current_prompt, plan])
+    thinking = ConditionalContainer(
+        Window(
+            FormattedTextControl(lambda: activity.thinking_rows(), show_cursor=False),
+            height=1,
+            dont_extend_height=True,
+            wrap_lines=False,
+        ),
+        filter=Condition(lambda: bool(activity.thinking_rows())),
+    )
+    activity_panel = HSplit([current_prompt, plan, thinking])
 
     def queue_rows():
         budget = min(4, max(1, session.app.output.get_size().rows // 4))
@@ -789,6 +826,7 @@ class Transcript:
         self.print()
         self.note("/ commands · Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
+        self.note("Ctrl+T show/hide transient thinking (saves default)")
         self.note("Ctrl+L choose model (keep conversation)")
         self.note("Ctrl+N increase effort · Ctrl+P decrease effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")

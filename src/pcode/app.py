@@ -75,7 +75,7 @@ class PreviewApp:
         agent = getattr(self.runtime, "agent", None)
         if agent is not None and model:
             apply_effort(agent, model, load_preferences().get("effort"))
-        self.activity = Activity()
+        self.activity = Activity(show_thinking=load_preferences().get("show_thinking") == "on")
         self.transcript = Transcript(
             console or Console(),
             theme or load_preferences().get("theme", "dark"),
@@ -105,6 +105,12 @@ class PreviewApp:
                 self.config,
                 free_arguments=True,
                 argument_provider=config_arguments,
+            ),
+            Command(
+                "/show-thinking",
+                "Show transient thinking: on / off (Ctrl+T)",
+                self.show_thinking,
+                ("on", "off"),
             ),
             Command("/theme", "Switch palette: dark / light", self.theme, tuple(PALETTES)),
             Command("/colors", "Rich colors: palette / terminal", self.colors, COLOR_STYLES),
@@ -175,6 +181,20 @@ class PreviewApp:
         except OSError as error:
             raise ValueError(f"Could not access global defaults: {error}") from None
         self.transcript.note(result)
+
+    def set_show_thinking(self, shown: bool) -> None:
+        self.activity.show_thinking = shown
+        self.persist_defaults(show_thinking="on" if shown else "off")
+        if self.transcript.output is not None:
+            self.transcript.output.app.invalidate()
+
+    def show_thinking(self, argument: str) -> None:
+        if argument:
+            if argument not in ("on", "off"):
+                raise ValueError("Usage: /show-thinking on|off")
+            self.set_show_thinking(argument == "on")
+        state = "on" if self.activity.show_thinking else "off"
+        self.transcript.note(f"Show thinking: {state}. Usage: /show-thinking on|off (Ctrl+T)")
 
     def persist_defaults(self, **updates: str) -> None:
         try:
@@ -811,6 +831,8 @@ class PreviewApp:
     async def run_live(self, output: TerminalOutput, text: str) -> bool:
         from pcode.live import error_message
 
+        self.activity.thinking = ""
+        self.runtime.thinking_sink = self.activity.append_thinking
         output.begin_turn(text)
         self.activity.prompt = text
         self.activity.prompt_state = "running"
@@ -851,6 +873,8 @@ class PreviewApp:
         except Exception as error:
             failure = error
         finally:
+            self.runtime.thinking_sink = lambda text: None
+            self.activity.thinking = ""
             self.activity.plan_preview = None
             output.end_turn()
             self.activity.tools.interrupt_running()
@@ -1194,6 +1218,7 @@ class PreviewApp:
             transcript=self.transcript,
             on_submit=submit,
             on_cancel=cancel,
+            on_thinking=self.set_show_thinking,
             on_effort=self.adjust_effort,
             on_model=lambda: submit("/model"),
             bottom_toolbar=self.toolbar,

@@ -24,6 +24,7 @@ from pcode.preferences import (
 def test_defaults_and_path_do_not_create_files():
     assert configure(["path"]) == str(preferences_path())
     assert json.loads(configure([])) == {
+        "show_thinking": "off",
         "theme": "dark",
         "autocompact": "off",
         "effort": "default",
