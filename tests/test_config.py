@@ -25,6 +25,8 @@ def test_defaults_and_path_do_not_create_files():
     assert configure(["path"]) == str(preferences_path())
     assert json.loads(configure([])) == {
         "show_thinking": "off",
+        "error_scrollback": "on",
+        "error_scrollback_lines": "20",
         "theme": "dark",
         "editing_mode": "emacs",
         "autocompact": "off",
@@ -221,3 +223,19 @@ def test_config_completion(prefix, expected):
     app = PreviewApp(console=Console(file=StringIO()))
     completions = SlashCompleter(app.registry).get_completions(Document(prefix), CompleteEvent())
     assert expected in [completion.text for completion in completions]
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "many", "", " 20", "２０"])
+def test_error_scrollback_lines_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        configure(["set", "error_scrollback_lines", value])
+    assert configure(["get", "error_scrollback_lines"]) == "20"
+
+
+def test_error_scrollback_settings_round_trip():
+    configure(["set", "error_scrollback_lines", "35"])
+    configure(["set", "error_scrollback", "off"])
+    assert load_preferences()["error_scrollback_lines"] == "35"
+    assert load_preferences()["error_scrollback"] == "off"
+    configure(["unset", "error_scrollback_lines"])
+    assert configure(["get", "error_scrollback_lines"]) == "20"
