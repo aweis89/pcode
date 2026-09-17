@@ -285,3 +285,66 @@ def test_unfinished_text_and_noop_flush_do_not_invalidate():
         assert rendered(stream) == "hello\nworld\nagain\n\n"
 
     asyncio.run(run())
+
+
+def test_turn_quote_waits_for_first_visible_block_and_is_printed_once():
+    async def run():
+        output, stream = make_output()
+        output.begin_turn("literal **prompt**")
+        await output.flush()
+        assert stream.getvalue() == ""
+        output.delta("First partial")
+        await output.flush()
+        assert stream.getvalue() == ""
+        output.print("Unrelated notice")
+        await output.flush()
+        assert rendered(stream) == "Unrelated notice\n"
+        output.delta(" response\n\n")
+        await output.flush()
+        assert (
+            rendered(stream)
+            == "Unrelated notice\n\n▌ literal **prompt**\nFirst partial response\n\n"
+        )
+        output.finish("First partial response")
+        output.finish("Second message")
+        output.end_turn()
+        await output.flush()
+        assert stream.getvalue().count("▌ literal **prompt**") == 1
+        assert rendered(stream).endswith("Second message\n\n")
+
+    asyncio.run(run())
+
+
+def test_turn_quote_attaches_to_fallback_or_interrupted_partial_response():
+    async def run():
+        output, stream = make_output()
+        output.begin_turn("fallback prompt")
+        output.finish("Fallback message")
+        output.end_turn()
+        output.begin_turn("interrupted prompt")
+        output.delta("Partial reply")
+        output.end_turn()
+        await output.flush()
+        assert rendered(stream) == (
+            "\n▌ fallback prompt\nFallback message\n\n\n▌ interrupted prompt\nPartial reply\n\n"
+        )
+
+    asyncio.run(run())
+
+
+def test_empty_turn_drops_deferred_quote_without_leaking_to_next_turn():
+    async def run():
+        output, stream = make_output()
+        output.begin_turn("unanswered prompt")
+        output.delta(" \n\n")
+        output.end_turn()
+        await output.flush()
+        assert stream.getvalue() == ""
+        output.print("Run cancelled.")
+        output.begin_turn("next prompt")
+        output.finish("Next answer")
+        output.end_turn()
+        await output.flush()
+        assert rendered(stream) == "Run cancelled.\n\n▌ next prompt\nNext answer\n\n"
+
+    asyncio.run(run())
