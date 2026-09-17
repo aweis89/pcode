@@ -749,7 +749,10 @@ class PreviewApp:
             from pcode.context_usage import context_label
 
             resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
-            context = context_label(resolved or self.model, getattr(self.runtime, "history", ()))
+            history = getattr(self.runtime, "context_history", None)
+            if history is None:
+                history = getattr(self.runtime, "history", ())
+            context = context_label(resolved or self.model, history)
         if self.activity.busy:
             details += " · working"
             if self.activity.queued:

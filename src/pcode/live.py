@@ -125,6 +125,7 @@ class AgentRuntime:
         self.tree = self.session.tree if self.session else ConversationTree()
         self.inspections = ToolArchive()
         self.history: list[ModelMessage] = []
+        self.context_history: list[ModelMessage] | None = None
         self.conversation_id = info.id if info else str(uuid4())
         self.turns = info.turns if info else 0
         self.input_tokens = info.input_tokens if info else 0
@@ -307,6 +308,9 @@ class AgentRuntime:
             else:
                 self.tree.consume({"kind": "turn_completed"})
                 self.tree.nodes[run_id].history = deepcopy(self.history)
+
+        finally:
+            self.context_history = None
 
     async def _stream(self, prompt: str, run_id: str) -> AsyncIterator[Event]:
         await self.refresh_context()

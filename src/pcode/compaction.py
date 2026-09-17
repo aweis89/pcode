@@ -195,6 +195,9 @@ class AutoCompaction(AbstractCapability):
             **(response.metadata or {}),
             SCHEMAS: schema_tokens(request_context.model_request_parameters),
         }
+        # Display completed request usage immediately, even while tools run.
+        # Keep this separate from replay history: tool calls aren't settled yet.
+        self.runtime.context_history = [*request_context.messages, response]
         return response
 
     async def before_model_request(self, ctx, request_context):
@@ -202,6 +205,7 @@ class AutoCompaction(AbstractCapability):
         # --no-save mode there is no StepPersistence recovery to do this for us.
         if not self.runtime.session and is_provider_valid(request_context.messages):
             self.runtime.history = deepcopy(request_context.messages)
+        self.runtime.context_history = list(request_context.messages)
         from pcode.model_metadata import refresh_context
 
         await refresh_context(request_context.model)
