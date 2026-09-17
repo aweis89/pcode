@@ -22,25 +22,17 @@ from pcode.repo_context import AutomaticRepoContext
 
 
 def create_coder(workspace: Path) -> CombinedCapability:
-    """Keep repository context local, but allow file tools outside the workspace."""
+    """Compose Harness's Coder with pcode's repository context and planning."""
     workspace = workspace.resolve()
-    root = Path(workspace.anchor)
-    path_guidance = (
-        f"The working repository is {workspace}. File tools are rooted at {root}, "
-        "not the repository: use absolute paths for file operations, including searches. "
-        "Scope searches to the working repository unless the task needs another directory. "
-    )
     explorer = Agent(
         name="explorer",
         description="Explore the codebase and answer questions without modifying anything",
-        instructions=path_guidance + "Answer with concrete paths and evidence. "
-        "Never read or print credential values or secret-bearing files.",
         capabilities=[
-            FileSystem(root, read_only=True),
+            FileSystem(workspace, read_only=True),
             AutomaticRepoContext(workspace_dir=workspace),
         ],
     )
-    coder = Coder(workspace, subagents=[SubAgent(explorer)], instructions=path_guidance)
+    coder = Coder(workspace, subagents=[SubAgent(explorer)])
     # Supply discovery in each run's context, not as a model-driven tool call.
     coder.capabilities = [
         AutomaticRepoContext(workspace_dir=workspace)
@@ -56,12 +48,8 @@ def create_coder(workspace: Path) -> CombinedCapability:
         else capability
         for capability in coder.capabilities
     ]
-    # Coder has no separate filesystem-root option in Harness 0.31. Configure
-    # its public FileSystem capability without moving Shell or RepoContext.
     for capability in coder.capabilities:
-        if isinstance(capability, FileSystem):
-            capability.root_dir = root
-        elif isinstance(capability, Shell):
+        if isinstance(capability, Shell):
             # An empty allowlist alone can still leave Harness's default denylist.
             capability.allowed_commands = []
             capability.denied_commands = []
@@ -117,11 +105,4 @@ def create_agent(model: str, workspace: Path) -> Agent:
         defer_model_check=defer_model_check,
         name="pcode",
         capabilities=[create_coder(workspace)],
-        instructions=(
-            "Answer repository questions using concrete file paths and evidence. "
-            "Do not edit files or perform other mutations unless the user asks for them. "
-            "Never read or print credential values: avoid .env, .envrc, credential files, "
-            "private keys, token files, kubeconfigs, and secret-bearing tfvars. "
-            "Inspect variable names only when needed. Do not expose secrets in tool calls."
-        ),
     )

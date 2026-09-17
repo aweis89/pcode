@@ -258,24 +258,27 @@ including when resuming a session.
 ### Tool permissions
 
 **Live mode enables actual Coder file edits and shell tools. There is no approval
-UI or sandbox yet.** Use a trusted repository and a safe working environment.
-The agent is instructed to answer questions without changing files unless asked,
-and to avoid credential contents, but instructions are not an enforcement boundary.
+UI.** pcode does not implement its own permission model and does not use prompt
+text as a safety control. Permission management is out of scope: run pcode inside
+a sandboxing wrapper (a container, VM, or an OS sandbox such as `sandbox-exec`
+or `bwrap`) when you need enforcement, and otherwise use a trusted repository and
+a safe working environment.
 
-File tools can access paths outside the selected workspace by default, subject to
-OS permissions and Harness's protected-file rules. They are rooted at the
-filesystem root (`/` on macOS/Linux); the agent is instructed to use absolute
-paths and scope repository searches to the workspace. Shell commands and repository
-instructions still use the selected workspace. The explorer has the same path
-access but remains read-only. This applies to new processes, including resumed
-sessions; it does not reconfigure tools in an already-running process.
+File tools are scoped to the selected workspace by Harness's `FileSystem`
+capability: paths resolve relative to the workspace root, traversal above it is
+rejected, and protected patterns such as `.git/`, `.env`, `*.pem`, `*.key`, and
+`**/secrets*` are read-only through these tools. The explorer subagent shares that
+root but exposes only read-only file tools. Shell commands run with the workspace
+as their working directory but are not confined to it: they can still read or
+modify anything the OS allows, including files protected by the file tools.
 
 This project pins Harness 0.31.x. Its Coder composition includes filesystem,
 shell, repository context, planning, an explorer subagent, and context management.
-Its default command allowlist is not a sandbox: permitted interpreters/build tools
-can run arbitrary code. Files and code returned by tools are sent to the selected
-model. Background processes started by tools can outlive a turn; cancelling a run
-is not an undo of completed tool effects.
+pcode clears Harness's default command allowlist, so `run_command` accepts any
+command: treat it as arbitrary code execution as the invoking user. Files and
+code returned by tools are sent to the selected model. Background processes
+started by tools can outlive a turn; cancelling a run is not an undo of
+completed tool effects.
 
 ## Sessions and debugging
 

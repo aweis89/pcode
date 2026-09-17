@@ -1,5 +1,6 @@
 import asyncio
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -7,7 +8,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import CombinedCapability
-from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness import Coder
 from rich.console import Console
@@ -92,7 +93,8 @@ def test_stream_runs_real_coder_read_tool_and_retains_history(tmp_path):
     asyncio.run(run())
 
 
-def test_coder_can_read_and_write_outside_workspace(tmp_path):
+@pytest.mark.parametrize("outside_path", ["absolute", "relative", "symlink"])
+def test_coder_tools_are_scoped_to_the_workspace(tmp_path, outside_path):
     import json
 
     from pydantic_ai_harness.filesystem import FileSystem
@@ -101,14 +103,23 @@ def test_coder_can_read_and_write_outside_workspace(tmp_path):
 
     workspace = tmp_path / "repo"
     workspace.mkdir()
+    (workspace / "inside.txt").write_text("inside marker")
     outside = tmp_path / "outside.txt"
     outside.write_text("outside marker")
-    output = tmp_path / "written.txt"
+    (workspace / "link.txt").symlink_to(outside)
+    requested_path = {
+        "absolute": str(outside),
+        "relative": "../outside.txt",
+        "symlink": "link.txt",
+    }[outside_path]
     coder = create_coder(workspace)
     assert next(c for c in coder.capabilities if isinstance(c, Shell)).cwd == workspace
     context = next(c for c in coder.capabilities if isinstance(c, RepoContext))
     assert context.workspace_dir == workspace
     filesystem = next(c for c in coder.capabilities if isinstance(c, FileSystem))
+    # File tools enforce their workspace root without prompt-level path guidance.
+    # This does not confine shell commands.
+    assert Path(filesystem.root_dir) == workspace
     assert filesystem.protected_patterns
     requests = 0
 
@@ -116,27 +127,28 @@ def test_coder_can_read_and_write_outside_workspace(tmp_path):
         nonlocal requests
         requests += 1
         if requests == 1:
-            yield {0: DeltaToolCall(name="read_file", json_args=json.dumps({"path": str(outside)}))}
+            yield {
+                0: DeltaToolCall(name="read_file", json_args=json.dumps({"path": requested_path}))
+            }
         elif requests == 2:
+            parts = [p for message in messages for p in message.parts]
+            # The sibling read is refused by the capability, not by prompt text.
+            assert not any("outside marker" in str(getattr(p, "content", "")) for p in parts)
+            retries = [p for p in parts if isinstance(p, RetryPromptPart)]
+            assert any("outside the root directory" in str(p.content) for p in retries)
+            yield {0: DeltaToolCall(name="read_file", json_args=json.dumps({"path": "inside.txt"}))}
+        else:
             results = [
                 p for message in messages for p in message.parts if isinstance(p, ToolReturnPart)
             ]
-            assert any("outside marker" in str(p.content) for p in results)
-            yield {
-                0: DeltaToolCall(
-                    name="write_file",
-                    json_args=json.dumps({"path": str(output), "content": "done"}),
-                )
-            }
-        else:
+            assert any("inside marker" in str(p.content) for p in results)
             yield "Finished"
 
     runtime = AgentRuntime(Agent(FunctionModel(stream_function=model), capabilities=[coder]))
 
     async def run():
-        events = [event async for event in runtime.stream("Read and write outside the repository")]
+        events = [event async for event in runtime.stream("Read inside and outside the repository")]
         assert Message("Finished") in events
-        assert output.read_text() == "done"
 
     asyncio.run(run())
 
