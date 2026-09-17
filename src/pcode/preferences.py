@@ -34,6 +34,7 @@ SETTINGS = {
     "error_scrollback_lines": Setting("20", positive_integer=True),
     "show_thinking": Setting("off", ("on", "off")),
     "thinking_lines": Setting("10", positive_integer=True),
+    "thinking_display": Setting("compact", ("compact", "expanded")),
     "editing_mode": Setting("emacs", ("emacs", "vi")),
     "theme": Setting("dark", ("dark", "light", "auto")),
     "autocompact": Setting("off", ("on", "off")),

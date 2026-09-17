@@ -131,3 +131,48 @@ def test_thinking_lines_preference_validates_and_restores():
     activity = Activity(thinking_lines=5)
     activity.reset()
     assert activity.thinking_lines == 5
+
+
+def test_compact_summary_prefers_latest_heading_and_removes_markdown():
+    activity = Activity(show_thinking=True)
+    activity.plan = [{"content": "Investigate", "status": "in_progress"}]
+    activity.start_thinking()
+    activity.append_thinking("**Inspecting workspace**\n\nA longer summary paragraph.")
+    assert activity.thinking_summary() == "Inspecting workspace"
+    assert activity.panel_heading().endswith(" · Inspecting workspace")
+    activity.start_thinking()
+    activity.append_thinking("")  # Signature-only blocks don't erase useful status.
+    assert activity.thinking_summary() == "Inspecting workspace"
+    activity.start_thinking()
+    activity.append_thinking("**Locating ")
+    assert activity.thinking_summary() == "Locating"
+    activity.append_thinking("root evidence**")
+    assert activity.thinking_summary() == "Locating root evidence"
+    assert "paragraph.\n\n**Locating" in activity.thinking
+    activity.show_thinking = False
+    assert activity.panel_heading() == activity.panel_title()
+    activity.show_thinking = True
+    activity.thinking_display = "expanded"
+    assert activity.panel_heading() == activity.panel_title()
+    assert activity.thinking_rows()
+    activity.reset()
+    assert activity.thinking_summary() == ""
+    assert activity.thinking_latest == ""
+
+
+def test_compact_plain_summary_uses_latest_line_and_sanitizes_controls():
+    activity = Activity(show_thinking=True)
+    activity.append_thinking("old line\n\x1b[31mnew `file_name.py`\x1b[0m\x00")
+    assert activity.thinking_summary() == "new file_name.py"
+
+
+def test_thinking_display_default_and_configuration():
+    import pytest
+
+    from pcode.config import configure
+
+    assert PreviewApp().activity.thinking_display == "compact"
+    configure(["set", "thinking_display", "expanded"])
+    assert PreviewApp().activity.thinking_display == "expanded"
+    with pytest.raises(ValueError, match="compact, expanded"):
+        configure(["set", "thinking_display", "other"])

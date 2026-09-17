@@ -349,3 +349,33 @@ def test_thinking_ui_sink_is_cleared_and_never_printed(outcome):
             runtime.close()
 
     asyncio.run(run())
+
+
+def test_thinking_block_boundaries_reach_only_transient_sink():
+    from pydantic_ai.models.function import DeltaThinkingPart
+
+    from pcode.ui import Activity
+
+    async def model(messages, info):
+        yield {0: DeltaThinkingPart(content="**First summary**")}
+        yield {1: DeltaThinkingPart(content="**Second ")}
+        yield {1: DeltaThinkingPart(content="summary**")}
+        yield "Public answer"
+
+    async def run():
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+        activity = Activity(show_thinking=True)
+        runtime.thinking_start_sink = activity.start_thinking
+        runtime.thinking_sink = activity.append_thinking
+        try:
+            events = [event async for event in runtime.stream("hello")]
+            assert activity.thinking == "**First summary**\n\n**Second summary**"
+            assert activity.thinking_summary() == "Second summary"
+            assert not any(
+                "First summary" in repr(event) or "Second summary" in repr(event)
+                for event in events
+            )
+        finally:
+            runtime.close()
+
+    asyncio.run(run())
