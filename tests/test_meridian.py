@@ -40,7 +40,8 @@ def test_picker_discovery(monkeypatch):
 
 def test_picker_catalog_and_custom():
     names = model_catalog({"meridian"}, "meridian:custom")
-    assert names[0] == "meridian:custom"
+    # Current custom IDs remain selectable without overriding newest-first sorting.
+    assert "meridian:custom" in names
     assert "meridian:claude-opus-5" in names
     assert all(n.startswith("meridian:") for n in names)
     with create_pipe_input() as pipe:

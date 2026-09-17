@@ -87,6 +87,7 @@ class PreviewApp:
         self.session_requested = False
         self.tree_requested = False
         self.login_requested = False
+        self.compact_requested: str | None = None
         self.mcp_enable_requested: str | None = None
         self.mcp_enabling: str | None = None
         self.model_requested = False
@@ -121,6 +122,18 @@ class PreviewApp:
                 free_arguments=True,
                 argument_provider=self.mcp_arguments,
             ),
+            Command(
+                "/compact",
+                "Summarize older context [optional focus]",
+                self.compact,
+                free_arguments=True,
+            ),
+            Command(
+                "/autocompact",
+                "Automatic LLM compaction: on / off (default off)",
+                self.autocompact,
+                ("on", "off"),
+            ),
             Command("/context", "Model, workspace, and session usage", self.context),
             Command("/new", "Start a new saved conversation; keep transcript", self.new),
             Command("/tree", "Navigate and fork the conversation interactively", self.select_tree),
@@ -129,6 +142,32 @@ class PreviewApp:
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
         ):
             self.registry.register(command)
+
+    def compact(self, argument: str, *, before_queue: bool = False) -> None:
+        if not self.model or not hasattr(self.runtime, "compact"):
+            raise ValueError("/compact requires a live model session.")
+        if not before_queue and (self.activity.busy or self.activity.queued_prompts):
+            raise ValueError("/compact is unavailable while working. Cancel or wait, then retry.")
+        self.compact_requested = argument
+
+    def autocompact(self, argument: str) -> None:
+        if not self.model or not hasattr(self.runtime, "auto_compact"):
+            raise ValueError("/autocompact requires a live model session.")
+        if argument:
+            if self.activity.busy or self.activity.queued_prompts:
+                raise ValueError("Change /autocompact while idle.")
+            from pcode.compaction import effective_window
+
+            window = effective_window(self.runtime.agent.model)
+            if argument == "on" and window is None:
+                raise ValueError(
+                    "Unknown context window. Set PCODE_CONTEXT_WINDOW to the deployment's "
+                    "token limit before enabling automatic compaction."
+                )
+            self.runtime.auto_compact = argument == "on"
+            self.persist_defaults(autocompact=argument)
+        state = "on" if self.runtime.auto_compact else "off"
+        self.transcript.note(f"Automatic compaction: {state}. Usage: /autocompact on|off")
 
     def config(self, argument: str) -> None:
         try:
@@ -369,6 +408,11 @@ class PreviewApp:
                 f"{self.runtime.input_tokens}/{self.runtime.output_tokens}"
             )
             self.transcript.note("Coder tools enabled; no sandbox.")
+            self.transcript.note(
+                "Automatic compaction: "
+                + ("on" if getattr(self.runtime, "auto_compact", False) else "off")
+                + " · /compact [focus] · /autocompact on|off"
+            )
             if self.runtime.session:
                 self.transcript.note(f"Session: {self.runtime.session.info.id}")
                 self.transcript.note(f"Saved in: {self.runtime.session.directory}")
@@ -757,6 +801,12 @@ class PreviewApp:
         self.activity.prompt = text
         self.activity.prompt_state = "running"
         self.activity.status = "Waiting for model…"
+
+        def compaction_notice(text):
+            self.activity.status = text
+            self.transcript.note(text)
+
+        self.runtime.compaction_notice = compaction_notice
         failure = None
         cancelled = False
         try:
@@ -824,17 +874,24 @@ class PreviewApp:
         command_idle.set()
         live_task = None
         mcp_task = None
+        compact_task = None
+        compact_idle = asyncio.Event()
+        compact_idle.set()
+        pending_compact = 0
         mcp_idle = asyncio.Event()
         mcp_idle.set()
         queue_generation = 0
         pending_mcp = 0
 
         def clear_queue():
-            nonlocal queue_generation, pending_mcp
+            nonlocal queue_generation, pending_mcp, pending_compact
             queue_generation += 1
             if pending_mcp:
                 self.transcript.note("Pending MCP enable command cancelled.")
                 pending_mcp = 0
+            if pending_compact:
+                self.transcript.note("Pending compaction cancelled.")
+                pending_compact = 0
             count = len(self.activity.queued_prompts)
             while not queue.empty():
                 queue.get_nowait()
@@ -845,7 +902,9 @@ class PreviewApp:
 
         def cancel():
             clear_queue()
-            active = [task for task in (live_task, mcp_task) if task and not task.done()]
+            active = [
+                task for task in (live_task, mcp_task, compact_task) if task and not task.done()
+            ]
             if active:
                 # Repeated interrupts must not interrupt persistence/auth cleanup.
                 for task in active:
@@ -856,11 +915,20 @@ class PreviewApp:
                 self.transcript.note("Run cancelled. Completed tool effects are not undone.")
 
         def submit(text):
-            nonlocal pending_mcp
+            nonlocal pending_mcp, pending_compact
             text = text.strip()
             if text.startswith("/"):
-                commands.put_nowait((queue_generation, text))
+                commands.put_nowait(
+                    (
+                        queue_generation,
+                        text,
+                        not self.activity.busy and not self.activity.queued_prompts,
+                    )
+                )
                 command_idle.clear()
+                if text.split()[0] == "/compact":
+                    pending_compact += 1
+                    self.activity.busy = True
                 if text.split()[:2] == ["/mcp", "enable"]:
                     pending_mcp += 1
                     # Enter + Ctrl+C in one input batch must cancel activation
@@ -900,7 +968,11 @@ class PreviewApp:
                 finally:
                     if not success:
                         clear_queue()
-                    self.activity.busy = bool(self.activity.queued_prompts) or bool(pending_mcp)
+                    self.activity.busy = (
+                        bool(self.activity.queued_prompts)
+                        or bool(pending_mcp)
+                        or bool(pending_compact)
+                    )
                     self.activity.status = ""
                     mcp_task = None
                     self.mcp_enabling = None
@@ -911,37 +983,113 @@ class PreviewApp:
             # A done callback also handles cancellation before the coroutine starts.
             mcp_task.add_done_callback(finished)
 
-        async def consume_commands():
-            nonlocal pending_mcp
-            while self.running:
-                generation, text = await commands.get()
+        def start_compact(focus):
+            nonlocal compact_task
+            compact_idle.clear()
+            self.activity.busy = True
+            self.activity.status = "Compacting context…"
+            self.transcript.note("Compacting context with the current model. Ctrl+C cancels.")
+
+            def finished(task):
+                nonlocal compact_task
+                success = False
                 try:
+                    result = task.result()
+                    self.transcript.note(result.description())
+                    success = True
+                except asyncio.CancelledError:
+                    self.transcript.note("Compaction cancelled; history unchanged.")
+                except Exception as error:
+                    from pcode.live import error_message
+
+                    self.transcript.note(f"Compaction failed: {error_message(error)}")
+                finally:
+                    if not success:
+                        clear_queue()
+                    compact_task = None
+                    self.activity.busy = (
+                        bool(self.activity.queued_prompts)
+                        or bool(pending_mcp)
+                        or bool(pending_compact)
+                    )
+                    self.activity.status = ""
+                    compact_idle.set()
+                    session.app.invalidate()
+
+            compact_task = asyncio.create_task(self.runtime.compact(focus))
+            compact_task.add_done_callback(finished)
+
+        async def consume_commands():
+            nonlocal pending_mcp, pending_compact
+            while self.running:
+                generation, text, submitted_idle = await commands.get()
+                try:
+                    if text.split()[0] == "/compact":
+                        if generation != queue_generation:
+                            continue
+                        pending_compact -= 1
+                        self.activity.busy = bool(self.activity.queued_prompts) or any(
+                            task is not None and not task.done()
+                            for task in (live_task, mcp_task, compact_task)
+                        )
                     if text.split()[:2] == ["/mcp", "enable"]:
                         if generation != queue_generation:
                             continue
                         pending_mcp -= 1
                         self.activity.busy = bool(self.activity.queued_prompts) or any(
-                            task is not None and not task.done() for task in (live_task, mcp_task)
+                            task is not None and not task.done()
+                            for task in (live_task, mcp_task, compact_task)
                         )
                     command = self.registry.find(text.split(maxsplit=1)[0])
+                    before_queue = (
+                        command is not None
+                        and command.name == "/compact"
+                        and submitted_idle
+                        and not any(
+                            task is not None and not task.done()
+                            for task in (live_task, mcp_task, compact_task)
+                        )
+                    )
                     if (
                         command
-                        and command.name in {"/new", "/session", "/tree", "/login", "/model"}
+                        and command.name
+                        in {
+                            "/new",
+                            "/session",
+                            "/tree",
+                            "/login",
+                            "/model",
+                            "/compact",
+                            "/autocompact",
+                        }
                         and (self.activity.busy or self.activity.queued)
+                        and not before_queue
                     ):
                         self.transcript.note(
                             f"{command.name} is unavailable while working. "
                             "Cancel with Ctrl+C or wait for the run to finish, then retry."
                         )
                     else:
-                        self.handle(text)
+                        if before_queue:
+                            parts = text.split(maxsplit=1)
+                            self.compact(parts[1] if len(parts) > 1 else "", before_queue=True)
+                        else:
+                            self.handle(text)
+                        if self.compact_requested is not None:
+                            focus = self.compact_requested
+                            self.compact_requested = None
+                            start_compact(focus)
                         if self.mcp_enable_requested is not None:
                             name = self.mcp_enable_requested
                             self.mcp_enable_requested = None
                             start_mcp_enable(name)
                         if not self.running:
                             cancel()
-                            active = [task for task in (live_task, mcp_task) if task is not None]
+                            active = [
+                                task
+                                for task in (live_task, mcp_task, compact_task)
+                                if task is not None
+                            ]
                             if active:
                                 await asyncio.gather(*active, return_exceptions=True)
                         if self.model_requested:
@@ -959,7 +1107,7 @@ class PreviewApp:
 
                     self.transcript.note(error_message(error))
                 finally:
-                    if pending_mcp:
+                    if pending_mcp or pending_compact:
                         self.activity.busy = True
                     if commands.empty():
                         command_idle.set()
@@ -972,9 +1120,11 @@ class PreviewApp:
             while self.running:
                 await command_idle.wait()
                 await mcp_idle.wait()
+                await compact_idle.wait()
                 generation, text = await queue.get()
                 await command_idle.wait()
                 await mcp_idle.wait()
+                await compact_idle.wait()
                 if not self.running:
                     return
                 if generation != queue_generation:
@@ -1009,7 +1159,9 @@ class PreviewApp:
                     return
                 if not success:
                     clear_queue()
-                self.activity.busy = bool(self.activity.queued_prompts) or bool(pending_mcp)
+                self.activity.busy = (
+                    bool(self.activity.queued_prompts) or bool(pending_mcp) or bool(pending_compact)
+                )
                 await output.flush()
                 if not self.running:
                     session.app.exit()
@@ -1048,6 +1200,10 @@ class PreviewApp:
         try:
             await session.app.run_async(pre_run=start)
         finally:
+            if compact_task is not None:
+                if not compact_task.done() and not compact_task.cancelling():
+                    compact_task.cancel()
+                await asyncio.gather(compact_task, return_exceptions=True)
             if mcp_task is not None:
                 if not mcp_task.done() and not mcp_task.cancelling():
                     mcp_task.cancel()

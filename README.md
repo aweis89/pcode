@@ -405,6 +405,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed` or `/errors`: open the same inspector filtered to failures.
 - `/context`: current model, workspace, completed turns, and token usage.
+- `/compact [focus]`: summarize older context with the current model; keep recent history.
+- `/autocompact on|off`: opt into automatic LLM compaction (saved user preference; default off).
 - `/new`: start a new saved conversation without clearing the on-screen transcript or input history.
 - `/session`: choose a saved conversation by its first prompt and resume it in place.
 - `/tree`: [browse and fork the conversation](docs/conversation-tree.md); select a user prompt to
@@ -763,3 +765,66 @@ Shell tool calls show a compact two-row preview with their result and duration.
 Long arguments and embedded scripts are abbreviated; short commands remain readable.
 Previews are redacted and terminal-control sanitized. Failure excerpts remain visible.
 There is currently no command to expand previews or show full command outputs.
+
+
+### Context compaction
+
+`/compact` makes a tool-free LLM call using the current model/provider credentials.
+Optional instructions add focus without replacing the standard continuation summary:
+
+```text
+/compact
+/compact Preserve auth debugging findings, exact file paths, and failing tests
+/autocompact on
+/autocompact off
+```
+
+The summary preserves goals and constraints, decisions, current state, exact artifacts,
+verification results, and next steps/blockers. Recent messages are retained verbatim
+with a token budget (up to 20k, scaled down for smaller windows); a single oversized
+settled tool batch is summarized too rather than splitting its call/result pair.
+Repeated compaction updates the previous summary. Summarizer tool-result input is
+capped at 16k characters per result rather than Harness's default 500 characters.
+Summaries are lossy: original tool results remain available through the session/tool
+history, and the model should re-read source files when exact details matter.
+
+Manual compaction requires an idle live session. Ctrl+C cancels it; queued prompts
+wait until it finishes and are cleared on cancellation/failure. Short histories are
+a no-op. Empty, invalid, or non-shrinking summaries are rejected without changing
+active history. The result shows estimated before/after tokens; the context indicator
+uses `~` until a new provider response supplies a measured count. Summary requests
+contribute to session usage totals, not the completed-user-turn count.
+
+Each successful manual compaction adds a selectable `/tree` checkpoint on the current
+branch. It survives restart immediately, even without a subsequent prompt. Original
+checkpoints, sibling branches, plan IDs/state, transcript, and tool-effect records are
+retained. Navigating to a compaction checkpoint never runs a model or replays tools.
+Unsaved sessions keep the same checkpoint in memory. Compaction is not deletion or
+redaction of the saved conversation.
+
+Automatic compaction is **off by default**. `/autocompact on` saves a user preference
+in `~/.config/pcode/preferences.json` (or `$XDG_CONFIG_HOME/pcode/preferences.json`).
+When enabled, pcode checks before every model request, including inside tool loops,
+using provider usage plus estimated new input/tool results and tool schemas. It
+triggers around 80% of the deployment window, with additional output headroom.
+Automatic summaries are persisted as safe checkpoints of the current run before the
+next request. If compaction cannot make enough room, the run stops with an error;
+it does not loop over summaries, silently drop history, or replay completed tools.
+There is no automatic retry of provider context-overflow errors in this version.
+
+Model catalog windows are advisory. Unknown deployments skip automatic compaction;
+enabling it interactively requires a known window or an explicit override. For a
+custom proxy, gated model window, or incorrect catalog entry, set the actual limit:
+
+```sh
+PCODE_CONTEXT_WINDOW=128000 pcode --model your-provider:your-model
+```
+
+The override applies to the current process, including model switches; update it if
+you change to a deployment with a different limit. A summary can still fail if the
+existing history itself is too large for the summarizer request. Failure leaves the
+source history available rather than falling back to destructive truncation.
+
+Pcode removes Coder's default clearing of old tool results at 70% context usage so
+that evidence is not discarded before the summarizer sees it. With auto-compaction
+off, use `/compact` proactively or `/new` for unrelated work.

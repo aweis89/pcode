@@ -9,6 +9,7 @@ from pydantic_ai.capabilities import CombinedCapability
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai_harness import Coder
+from pydantic_ai_harness.compaction import ClearToolResults
 from pydantic_ai_harness.exa import ExaSearch
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.planning import Planning
@@ -66,7 +67,11 @@ def create_coder(workspace: Path) -> CombinedCapability:
     if os.environ.get("EXA_API_KEY", "").strip():
         coder.capabilities.append(ExaSearch())
     # Recompose so instruction sources track replaced/added capabilities too.
-    return CombinedCapability(coder.capabilities)
+    # Summarize evidence before discarding it. Coder defaults to clearing old
+    # tool results at 70%, which otherwise runs before pcode compaction.
+    return CombinedCapability(
+        [c for c in coder.capabilities if not isinstance(c, ClearToolResults)]
+    )
 
 
 def create_agent(model: str, workspace: Path) -> Agent:

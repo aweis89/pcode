@@ -12,7 +12,8 @@ class TurnNode:
     status: str = "interrupted"
     response: str = ""
     plan: list[dict] = field(default_factory=list)
-    # Only unsaved sessions need an in-memory message checkpoint.
+    kind: str = "turn"
+    # Unsaved turns and durable compaction checkpoints carry message history.
     history: list | None = None
 
 
@@ -44,6 +45,24 @@ class ConversationTree:
                 plan=deepcopy(self.nodes[parent].plan) if parent else [],
             )
             self.active = self.recording = identity
+        elif kind == "compaction_checkpoint":
+            from pydantic_ai.messages import ModelMessagesTypeAdapter
+
+            identity, parent = record["node_id"], record["parent_id"]
+            self.path(parent)
+            history = ModelMessagesTypeAdapter.validate_python(record["messages"])
+            self.nodes[identity] = TurnNode(
+                identity,
+                parent,
+                record.get("focus", ""),
+                status="completed",
+                response=f"Context compacted: ~{record['before']} → ~{record['after']} tokens",
+                plan=deepcopy(record["plan"]),
+                history=history,
+                kind="compaction",
+            )
+            self.active = identity
+            self.recording = None
         elif kind == "tree_selected":
             self.path(record["node_id"])
             self.active = record["node_id"]
@@ -83,18 +102,19 @@ class ConversationTree:
             if len(prefix) > 24:
                 prefix = "… " + prefix[-22:]
             connector = ("└─ " if last else "├─ ") if fork else ""
-            rows.append(
-                (
-                    (node.id, True),
-                    prefix + connector + "user: " + excerpt(node.prompt),
+            if node.kind != "compaction":
+                rows.append(
+                    (
+                        (node.id, True),
+                        prefix + connector + "user: " + excerpt(node.prompt),
+                    )
                 )
-            )
             continuation = prefix + (("   " if last else "│  ") if fork else "")
             rows.append(
                 (
                     (node.id, False),
                     continuation
-                    + "assistant: "
+                    + ("compaction: " if node.kind == "compaction" else "assistant: ")
                     + excerpt(node.response or f"[{node.status}; last safe checkpoint]")
                     + (f" [{node.status}]" if node.response and node.status != "completed" else "")
                     + (" ← active" if node.id == self.active else ""),

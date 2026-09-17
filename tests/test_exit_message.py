@@ -26,7 +26,8 @@ def test_exit_reports_active_session_resume_command(tmp_path, monkeypatch, custo
         # The active session can change after startup (new turn or /session).
         app.runtime.session = (
             SimpleNamespace(info=SimpleNamespace(id=identity), directory=root / identity)
-            if saved else None
+            if saved
+            else None
         )
 
     prompt.app.run_async.side_effect = exit_prompt
