@@ -68,6 +68,21 @@ Consult [Pydantic AI MCP](https://ai.pydantic.dev/mcp/client/) and
 [FastMCP client transports](https://gofastmcp.com/clients/transports), then inspect
 installed `pydantic_ai/mcp.py` and `fastmcp/client/transports/stdio.py`.
 The `[mcp]` extra currently resolves `fastmcp-slim` 4.0.4 and `mcp` 2.2.0.
+OAuth is already supported by `MCPToolset(auth="oauth")` in installed 2.43.0;
+FastMCP resolves it to `fastmcp.client.auth.OAuth`. Consult
+[FastMCP OAuth](https://gofastmcp.com/clients/auth/oauth) and inspect installed
+`fastmcp/client/auth/oauth.py`, `fastmcp/client/transports/http.py`, and
+`mcp/client/auth/oauth2.py`. In 4.0.4, default storage is **in-memory**, not disk;
+the helper manages browser authorization, PKCE, callback validation, and refresh.
+Do not assume older FastMCP documentation about persistent token caches applies.
+Pcode intentionally uses that default rather than reading Pi credentials or adding
+a credential store. The slim install omits `websockets`, but FastMCP 4.0.4's
+callback server explicitly selects Uvicorn's `websockets-sansio` implementation.
+Pcode adds `websockets>=15.0.1,<17` (verified with 16.1.1) so browser callbacks
+actually start; mocked OAuth exchange tests alone would miss this dependency.
+Keep both mocked-provider tests and real loopback callback success/cancellation
+tests in `tests/test_mcp_oauth.py`. Tests must not open the real browser, contact
+a real service, or read real credential stores.
 FastMCP defaults `StdioTransport.keep_alive` to `True`: pcode explicitly sets it
 to `False` so turn cleanup closes subprocesses. Keep the real-stdio tests in
 `tests/test_mcp.py` for success, failure, cancellation, and reconnection. Filtering

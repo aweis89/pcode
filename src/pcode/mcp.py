@@ -3,8 +3,9 @@
 import json
 import os
 import re
+import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
@@ -70,13 +71,14 @@ class ServerConfig(BaseModel):
     cwd: str | None = None
     url: str | None = None
     headers: dict[str, str] | None = None
+    auth: Literal["oauth"] | None = None
 
     @model_validator(mode="after")
     def transport(self):
         if bool(self.command) == bool(self.url):
             raise ValueError("Specify exactly one of command or url.")
         if self.command:
-            if not self.command.strip() or self.headers is not None:
+            if not self.command.strip() or self.headers is not None or self.auth is not None:
                 raise ValueError("Invalid stdio options.")
         else:
             if any(item is not None for item in (self.command, self.args, self.env, self.cwd)):
@@ -84,6 +86,8 @@ class ServerConfig(BaseModel):
             parsed = urlsplit(self.url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 raise ValueError("Expected an HTTP(S) URL.")
+            if self.auth and any(key.lower() == "authorization" for key in self.headers or {}):
+                raise ValueError("OAuth cannot be combined with an Authorization header.")
         return self
 
 
@@ -95,7 +99,7 @@ def build_toolset(name: str, raw: Any):
         # Pydantic errors include input values: never print credentials from config.
         raise ValueError(
             f"Invalid MCP server '{name}'. Use command/args/env/cwd for stdio or url/headers "
-            "for HTTP; other fields are not supported."
+            'for HTTP (optional auth: "oauth"); other fields are not supported.'
         ) from None
     from fastmcp.client.transports import StdioTransport
     from pydantic_ai.mcp import MCPToolset
@@ -112,7 +116,16 @@ def build_toolset(name: str, raw: Any):
             )
             toolset = MCPToolset(transport, id=name)
         else:
-            toolset = MCPToolset(config.url, id=name, headers=config.headers)
+            # FastMCP owns PKCE, browser/callback handling, refresh, and an in-memory
+            # token store. Surface its storage lifetime in our UI/docs, not a raw
+            # warning that would interrupt the prompt. Do not suppress other warnings.
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="Using in-memory token storage -- tokens will be lost.*",
+                    category=UserWarning,
+                )
+                toolset = MCPToolset(config.url, id=name, headers=config.headers, auth=config.auth)
         return toolset.prefixed(f"mcp_{name}")
     except (ValueError, TypeError):
         raise ValueError(

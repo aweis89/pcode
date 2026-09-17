@@ -10,6 +10,8 @@ dependencies = [
     "pydantic-ai-harness[exa]>=0.31.0,<0.32",
     "pydantic-ai-slim[anthropic,mcp,openai]>=2.43.0,<3",
     "rich>=14,<15",
+    # FastMCP 4.x OAuth callback server selects Uvicorn's websockets-sansio protocol.
+    "websockets>=15.0.1,<17",
 ]
 
 [project.scripts]
