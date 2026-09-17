@@ -94,7 +94,7 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 
 | Key | Built-in default | Values |
 | --- | --- | --- |
-| `theme` | `dark` | `dark`, `light` |
+| `theme` | `dark` | `dark`, `light`, `auto` |
 | `autocompact` | `off` | `on`, `off` |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
@@ -405,6 +405,7 @@ from disk; those earlier conversations were memory-only.
 uv run pcode                 # no model, canned replies only
 uv run pcode --demo          # print a sample and exit, no terminal/auth needed
 uv run pcode --theme light   # light input palette
+uv run pcode --theme auto    # detect terminal background at startup
 ```
 
 Type `/` to open the command menu, then narrow it by typing. Use Tab or the
@@ -412,7 +413,11 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 
 - `/demo`: fictional Markdown, code, diff, table, and tool summaries; never calls
   the model, even in live mode, and does not enter its conversation history.
-- `/theme light` or `/theme dark`: change the input and future output palette.
+- `/theme light`, `/theme dark`, or `/theme auto`: change the input and future output palette.
+  Auto uses the terminal background detected at startup with an OSC 11 query,
+  falling back to `COLORFGBG`, then dark when unavailable (including redirected
+  output). Restart pcode after changing your terminal background. Save auto mode
+  with `/theme auto` or `pcode config set theme auto`; the built-in default remains dark.
   `/theme` alone toggles. By default, Rich headings, links, quotes, inline code,
   and tables follow this palette; fenced code uses `nord` (dark) / `friendly`
   (light). Normal body text and the overall background remain terminal-native.

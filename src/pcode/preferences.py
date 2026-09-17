@@ -27,7 +27,7 @@ class Setting:
 
 SETTINGS = {
     "show_thinking": Setting("off", ("on", "off")),
-    "theme": Setting("dark", ("dark", "light")),
+    "theme": Setting("dark", ("dark", "light", "auto")),
     "autocompact": Setting("off", ("on", "off")),
     "effort": Setting("default", EFFORTS),
     "model": Setting(None),
