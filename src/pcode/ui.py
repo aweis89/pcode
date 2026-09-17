@@ -28,10 +28,11 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode.commands import CommandRegistry, SlashCompleter
-from pcode.runtime import Event, Message, ToolStarted, ToolSummary
+from pcode.runtime import Event, Message, ToolSummary
 from pcode.task_prompt import TaskPrompt
 from pcode.tool_display import command_preview, command_text, label, plain
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
+from pcode.transcript_notice import TranscriptNotice
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,8 @@ class Palette:
                 "pcode.accent": self.accent,
                 "pcode.brand": f"bold {self.accent}",
                 "pcode.muted": self.muted,
+                "pcode.error": "bold red",
+                "pcode.warning": "bold yellow",
                 "markdown.code": f"{self.foreground} on {self.surface}",
                 "markdown.code_block": self.foreground,
                 "markdown.block_quote": f"italic {self.muted}",
@@ -124,6 +127,8 @@ TERMINAL_THEME = Theme(
         "pcode.accent": "cyan",
         "pcode.brand": "bold cyan",
         "pcode.muted": "default",
+        "pcode.error": "bold red",
+        "pcode.warning": "bold yellow",
         "markdown.code": "bold cyan",
         "markdown.code_block": "default",
         "markdown.block_quote": "italic default",
@@ -636,6 +641,11 @@ def create_prompt(
 
 
 class Transcript:
+    """Persistent Rich output: anything written here belongs in terminal scrollback.
+
+    Mutable activity and event routing belong to the application, not this writer.
+    """
+
     def __init__(
         self,
         console: Console,
@@ -688,6 +698,17 @@ class Transcript:
     def note(self, text: str) -> None:
         self.print(Text(text, style="pcode.muted"))
 
+    def error(self, text: str, *, title: str = "Error") -> None:
+        self.print(TranscriptNotice(text, "error", title))
+
+    def warning(self, text: str) -> None:
+        self.print(TranscriptNotice(text, "warning", "Warning"))
+
+    def cancelled(self) -> None:
+        self.print(
+            TranscriptNotice("Completed tool effects are not undone.", "cancelled", "Run cancelled")
+        )
+
     def user(self, text: str) -> None:
         self.print()
         self.print(TaskPrompt(text))
@@ -719,26 +740,28 @@ class Transcript:
 
     def events(self, events: tuple[Event, ...], *, show_tools: bool = False) -> None:
         for event in events:
-            if isinstance(event, (ToolStarted, ToolSummary)) and self.activity and not show_tools:
-                self.activity.tools.record(event)
-                if self.output is not None:
-                    self.output.app.invalidate()
-                continue
             if isinstance(event, Message):
                 self.print(Markdown(event.markdown, code_theme=self.code_theme))
                 self.print()
             elif isinstance(event, ToolSummary):
+                if event.failed:
+                    detail = (
+                        command_preview(event.command)
+                        if event.command
+                        else plain(event.detail, limit=None)
+                    )
+                    if event.error:
+                        detail += "\n" + "\n".join(
+                            plain(line, limit=None) for line in event.error.splitlines()
+                        )
+                    self.error(detail, title=f"{label(event.name)} failed")
+                    continue
                 if event.command:
                     if show_tools:
                         self.print(Text(f"{label(event.name)} · {plain(event.detail, limit=None)}"))
                         self.print(Text(command_text(event.command)))
                     else:
                         self.command_summary(event)
-                    if event.failed and event.error:
-                        for line in event.error.splitlines():
-                            self.print(
-                                Text("      " + plain(line, limit=None), style="pcode.muted")
-                            )
                     continue
                 self.print(
                     Text.assemble(
@@ -755,9 +778,6 @@ class Transcript:
                         ),
                     )
                 )
-                if event.failed and event.error:
-                    for line in event.error.splitlines():
-                        self.print(Text("      " + plain(line, limit=None), style="pcode.muted"))
 
     def help(self, registry: CommandRegistry) -> None:
         table = Table(box=None, padding=(0, 2), show_header=False)

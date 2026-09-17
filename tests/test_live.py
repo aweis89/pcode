@@ -286,3 +286,24 @@ def test_ui_cancellation_cleans_up_generation_and_accepts_next_input():
         assert "Run cancelled" in output.getvalue()
 
     asyncio.run(run())
+
+
+def test_raw_thinking_is_reduced_to_transient_status_only():
+    from pydantic_ai.models.function import DeltaThinkingPart
+
+    async def model(messages, info):
+        yield {0: DeltaThinkingPart(content="private raw reasoning")}
+        yield {0: DeltaThinkingPart(content=" more private reasoning")}
+        yield "Public **answer**"
+
+    async def run():
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+        try:
+            events = [event async for event in runtime.stream("hello")]
+            assert RunStatus("Thinking…") in events
+            assert not any("private" in repr(event) for event in events)
+            assert Message("Public **answer**") in events
+        finally:
+            runtime.close()
+
+    asyncio.run(run())
