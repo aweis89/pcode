@@ -3,6 +3,7 @@
 import asyncio
 import re
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -28,6 +29,7 @@ from pydantic_ai_harness.step_persistence import StepPersistence
 
 from pcode.diagnostics import error_details
 from pcode.inspection import ToolArchive, capture
+from pcode.mcp import MCPState
 from pcode.runtime import (
     Event,
     Message,
@@ -94,6 +96,7 @@ class AgentRuntime:
         self.output_tokens = info.output_tokens if info else 0
         self.recovery_blocked = ""
         self.plan_store = InMemoryPlanStore()
+        self.mcp = MCPState()
 
     def reset(self) -> None:
         if self.session:
@@ -126,12 +129,13 @@ class AgentRuntime:
             saved.save_info()
         self.inspections.run_id = run_id
         try:
-            async for event in self._stream(prompt, run_id):
-                if saved:
-                    saved.event(event)
-                if saved is None and isinstance(event, (ToolStarted, ToolSummary)):
-                    self.inspections.event(event)
-                yield event
+            async with aclosing(self._stream(prompt, run_id)) as stream:
+                async for event in stream:
+                    if saved:
+                        saved.event(event)
+                    if saved is None and isinstance(event, (ToolStarted, ToolSummary)):
+                        self.inspections.event(event)
+                    yield event
         except BaseException as error:
             self.inspections.settle(
                 "interrupted"
@@ -191,6 +195,7 @@ class AgentRuntime:
             self.agent.run_stream_events(
                 prompt,
                 message_history=self.history,
+                toolsets=self.mcp.toolsets(),
                 conversation_id=self.conversation_id,
                 run_id=run_id,
                 capabilities=[StepPersistence(store=self.session.store)] if self.session else [],

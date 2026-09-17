@@ -540,6 +540,82 @@ completions. Model support varies; not every model accepts every effort level.
 Effort overrides are in-memory, survive `/new`, and are not saved with sessions.
 Preview and non-OpenAI providers do not support this control.
 
+## MCP servers (explicit opt-in)
+
+MCP is **off by default**, with no automatic discovery. Configuring a server does
+not start it or add its tool definitions to model requests. Use:
+
+```text
+/mcp list
+/mcp enable fetch
+/mcp disable fetch
+```
+
+`/mcp` also lists servers and the configuration path. Tab completion includes
+configured server names for `enable` and active names for `disable`. These are
+local commands; they do not make a model request. Enable servers individually.
+
+Create `~/.config/pcode/mcp.json` (or `$XDG_CONFIG_HOME/pcode/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    },
+    "internal": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${INTERNAL_MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+The remote URL is a placeholder; replace it with your server's endpoint. The
+`fetch` example requires `uvx` on PATH and downloads/runs `mcp-server-fetch` on
+first use. Only configure and enable servers you trust.
+
+Set `PCODE_MCP_CONFIG=/absolute/path/to/mcp.json` to use a different file.
+Repository MCP files are **not** loaded automatically. The JSON uses an
+`mcpServers` object, with each server configured for exactly one transport:
+
+- **Local stdio:** `command`, optional `args` (string array), `env` (string map),
+  and `cwd`. Commands are executed directly, not through a shell. Relative paths
+  are resolved from pcode's launch directory; prefer absolute paths.
+- **Remote HTTP/SSE:** `url` and optional `headers` (string map). Transport is
+  inferred from the URL by the MCP client. No interactive OAuth setup is provided.
+
+Server names start with a letter and contain letters, digits, `_`, or `-` (up to
+32 characters). Unsupported server fields are rejected on enable rather than
+silently ignored. String values support `${VARIABLE}` and `${VARIABLE:-default}`.
+Only the selected server's variables are expanded, at enable time, so missing
+credentials for an unused server do not block ordinary work. Keep secrets in the
+environment rather than the JSON file.
+
+### Activation and token usage
+
+- `/mcp enable NAME` makes that server's tools available on subsequent turns in
+  the **current conversation**, including all tool/model steps within a turn.
+  Switching models keeps the selection. Repeating `enable` is a no-op.
+- Connections start on the next turn, not when listing or enabling. They close
+  after each turn, including failures and cancellation; local subprocesses do
+  not stay running between turns. Enabled servers reconnect on the next turn.
+- `/mcp disable NAME` removes those tools from subsequent model requests. MCP
+  selection cannot change during an active turn. To reload a server after editing
+  its configuration or environment, disable and enable it again.
+- New conversations (`/new`), resumed conversations, and application restarts
+  start with **all servers off**. Activation is never saved in session files or
+  user defaults. `/mcp list` shows the current state.
+- Off servers contribute **no MCP tool schemas or server instructions**. Enabled
+  tools are namespaced as `mcp_NAME_TOOL`; their schemas and results consume
+  context normally. Disabling does not erase earlier tool results from history.
+- Enabling authorizes the agent to use the server's tools with that server's
+  permissions, including write actions. There is no additional per-call approval
+  or sandbox. Server instructions are not automatically added to the prompt.
+
 ## Validate
 
 ```sh

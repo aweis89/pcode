@@ -8,7 +8,7 @@ dependencies = [
     "httpx2>=2.13,<3",
     "prompt-toolkit>=3.0.52,<4",
     "pydantic-ai-harness[exa]>=0.31.0,<0.32",
-    "pydantic-ai-slim[anthropic,openai]>=2.43.0,<3",
+    "pydantic-ai-slim[anthropic,mcp,openai]>=2.43.0,<3",
     "rich>=14,<15",
 ]
 
