@@ -36,6 +36,7 @@ def make_app(width=80):
                 "/mcp",
                 "/context",
                 "/new",
+                "/tree",
                 "/session",
                 "/sessions",
                 "/quit",

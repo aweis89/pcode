@@ -82,6 +82,7 @@ class PreviewApp:
         self.running = True
         self.inspector_requested: str | None = None
         self.session_requested = False
+        self.tree_requested = False
         self.login_requested = False
         self.model_requested = False
         self.registry = CommandRegistry()
@@ -110,6 +111,7 @@ class PreviewApp:
             ),
             Command("/context", "Model, workspace, and session usage", self.context),
             Command("/new", "Start a new saved conversation; keep transcript", self.new),
+            Command("/tree", "Navigate and fork the conversation interactively", self.select_tree),
             Command("/session", "Choose a saved session to resume", self.select_session),
             Command("/sessions", "List saved sessions and resume instructions", self.sessions),
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
@@ -250,6 +252,10 @@ class PreviewApp:
             for call in self.activity.tools.calls:
                 archive.event(call.event)
             archive.settle("unknown")
+        tree = getattr(self.runtime, "tree", None)
+        if tree is not None:
+            selected = set(tree.path(tree.active))
+            archive.calls = [call for call in archive.calls if call.run_id in selected]
         await output.flush()
         # One terminal owner: drain permanent output, suspend the editor, and
         # hold the writer lock until the alternate screen has been restored.
@@ -455,6 +461,67 @@ class PreviewApp:
         self.activity.prompt = ""
         self.replay()
 
+    def select_tree(self, argument: str) -> None:
+        if self.activity.busy or self.activity.queued:
+            raise ValueError("/tree is unavailable while working or messages are queued.")
+        self.tree_requested = True
+
+    async def navigate_tree(self, identity: str | None, *, edit: bool = False) -> str:
+        if self.activity.busy or self.activity.queued:
+            raise ValueError("/tree is unavailable while working or messages are queued.")
+        draft = await self.runtime.navigate(identity, edit=edit)
+        self.activity.reset()
+        self.transcript.print(Rule("Conversation branch", style="pcode.muted"))
+        self.transcript.note(
+            "Context switched; previous branches are kept. File changes and tool effects "
+            "are not undone. Earlier scrollback is unchanged."
+        )
+        if self.runtime.session:
+            self.replay()
+        else:
+            from pcode.diagnostics import redact
+
+            tree = self.runtime.tree
+            for node_id in tree.path(tree.active):
+                node = tree.nodes[node_id]
+                self.transcript.user(redact(node.prompt))
+                if node.response:
+                    self.transcript.events((Message(redact(node.response)),))
+            self.activity.plan = tree.nodes[tree.active].plan if tree.active else []
+        return draft
+
+    async def choose_tree(self, output: TerminalOutput, session) -> None:
+        from pcode.tree_ui import tree_dialog
+
+        self.tree_requested = False
+        tree = getattr(self.runtime, "tree", None)
+        if tree is None or not tree.nodes:
+            self.transcript.note("No conversation turns yet. Send a message to start a tree.")
+            return
+        await output.flush()
+        async with output.lock:
+            async with in_terminal():
+                stdin = getattr(session.app.input, "stdin", None)
+                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
+                try:
+                    dialog = tree_dialog(
+                        tree,
+                        input=modal_input,
+                        output=session.app.output,
+                        style=session.app.style,
+                    )
+                    selection = await dialog.run_async()
+                finally:
+                    if modal_input is not session.app.input:
+                        modal_input.close()
+        if selection is not None:
+            identity, edit = selection
+            draft = await self.navigate_tree(identity, edit=edit)
+            # A cancelled picker leaves the editor alone. Only user selection prefills it.
+            if edit:
+                session.default_buffer.text = draft
+                session.default_buffer.cursor_position = len(draft)
+
     async def choose_session(self, output: TerminalOutput, session) -> None:
         from pcode.diagnostics import redact
         from pcode.session_ui import session_dialog
@@ -629,6 +696,8 @@ class PreviewApp:
         text = text.strip()
         if not text:
             return False
+        if self.model and not text.startswith("/"):
+            return True
         self.transcript.user(text)
         if text.startswith("/"):
             try:
@@ -636,8 +705,6 @@ class PreviewApp:
                     self.transcript.note("Unknown command. Type /help to see available commands.")
             except ValueError as error:
                 self.transcript.note(str(error))
-        elif self.model:
-            return True
         else:
             self.transcript.events(self.preview.reply(text))
         return False
@@ -645,6 +712,7 @@ class PreviewApp:
     async def run_live(self, output: TerminalOutput, text: str) -> bool:
         from pcode.live import error_message
 
+        output.begin_turn(text)
         self.activity.prompt = text
         self.activity.prompt_state = "running"
         self.activity.status = "Waiting for model…"
@@ -674,7 +742,7 @@ class PreviewApp:
         except Exception as error:
             failure = error
         finally:
-            output.finish()
+            output.end_turn()
             self.activity.tools.interrupt_running()
             self.activity.status = ""
         self.activity.prompt_state = "cancelled" if cancelled else "failed" if failure else "done"
@@ -754,8 +822,8 @@ class PreviewApp:
                     command = self.registry.find(text.split(maxsplit=1)[0])
                     if (
                         command
-                        and command.name in {"/new", "/session", "/login", "/model"}
-                        and self.activity.busy
+                        and command.name in {"/new", "/session", "/tree", "/login", "/model"}
+                        and (self.activity.busy or self.activity.queued)
                     ):
                         self.transcript.user(text)
                         self.transcript.note(
@@ -772,6 +840,8 @@ class PreviewApp:
                             await self.choose_model(output, session)
                         if self.login_requested:
                             await self.login_pi()
+                        if self.tree_requested:
+                            await self.choose_tree(output, session)
                         if self.session_requested:
                             await self.choose_session(output, session)
                         if self.inspector_requested is not None:
