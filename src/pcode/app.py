@@ -20,7 +20,7 @@ from rich.text import Text
 from pcode.commands import Command, CommandRegistry
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_arguments, configure
-from pcode.preferences import apply_effort, load_preferences, save_preferences
+from pcode.preferences import apply_effort, effort_setting, load_preferences, save_preferences
 from pcode.runtime import (
     Message,
     PlanPreview,
@@ -180,7 +180,7 @@ class PreviewApp:
         try:
             save_preferences(**updates)
         except (OSError, ValueError):
-            self.transcript.note("Could not save defaults; this selection applies only here.")
+            self.transcript.warning("Could not save defaults; this selection applies only here.")
 
     def select_model(self, argument: str) -> None:
         self.model_requested = True
@@ -284,9 +284,9 @@ class PreviewApp:
                 "For future launches use PCODE_ANTHROPIC_AUTH=pi pcode -m anthropic:<model-id>."
             )
         except LoginError as error:
-            self.transcript.note(str(error))
+            self.transcript.error(str(error))
         except Exception:
-            self.transcript.note("Could not use pi login. No credential details were logged.")
+            self.transcript.error("Could not use pi login. No credential details were logged.")
 
     def tools(self, argument: str) -> None:
         self.inspector_requested = argument
@@ -341,8 +341,22 @@ class PreviewApp:
     def help(self, argument: str) -> None:
         self.transcript.help(self.registry)
 
+    def present_events(self, events) -> None:
+        """Route live tool activity separately from permanent transcript writes."""
+        for event in events:
+            if isinstance(event, (ToolStarted, ToolSummary)):
+                self.activity.tools.record(event)
+                if self.transcript.output is not None:
+                    self.transcript.output.app.invalidate()
+                # Decide only after completion. The adapter's failed flag includes
+                # non-zero shell exits, retries, and known tool validation failures.
+                if isinstance(event, ToolSummary) and event.failed:
+                    self.transcript.events((event,))
+            else:
+                self.transcript.events((event,))
+
     def demo(self, argument: str) -> None:
-        self.transcript.events(self.preview.demo())
+        self.present_events(self.preview.demo())
 
     def theme(self, argument: str) -> None:
         self.transcript.theme = argument or ("light" if self.transcript.theme == "dark" else "dark")
@@ -362,7 +376,8 @@ class PreviewApp:
         agent = getattr(self.runtime, "agent", None)
         settings = getattr(getattr(agent, "model", None), "settings", None) or {}
         settings = {**settings, **(getattr(agent, "model_settings", None) or {})}
-        return settings.get("openai_reasoning_effort", "default")
+        effort = settings.get(effort_setting(self.model), "default")
+        return "xhigh" if effort == "max" else effort
 
     def effort(self, argument: str) -> None:
         value = argument.strip().lower()
@@ -375,22 +390,13 @@ class PreviewApp:
             self.transcript.note("Usage: /effort low|medium|high|xhigh|default")
             return
         agent = getattr(self.runtime, "agent", None)
-        provider = (self.model or "").split(":", 1)[0]
-        if agent is None or provider not in (
-            "openai",
-            "openai-chat",
-            "openai-responses",
-            "openai-codex",
-        ):
-            self.transcript.note("Effort control requires an OpenAI/Codex model.")
+        if agent is None or effort_setting(self.model) is None:
+            self.transcript.note(
+                "Effort control requires an OpenAI/Codex, Anthropic, or Meridian model."
+            )
             return
         # Replace rather than mutate: an active run keeps its captured settings.
-        settings = dict(agent.model_settings or {})
-        if value == "default":
-            settings.pop("openai_reasoning_effort", None)
-        else:
-            settings["openai_reasoning_effort"] = value
-        agent.model_settings = settings
+        apply_effort(agent, self.model, value)
         self.persist_defaults(model=self.model, effort=value)
         self.transcript.note(f"Effort: {self.current_effort()} (next turn).")
 
@@ -455,7 +461,7 @@ class PreviewApp:
             try:
                 names = configured_servers()
             except ValueError as error:
-                self.transcript.note(str(error))
+                self.transcript.error(str(error))
                 names = {}
             for name in sorted(names.keys() | enabled.keys()):
                 status = "enabled" if name in enabled else "off"
@@ -667,7 +673,7 @@ class PreviewApp:
             elif kind in ("Message", "partial"):
                 self.transcript.events((Message(redact(record["markdown"])),))
                 if kind == "partial":
-                    self.transcript.note("[Partial output from an interrupted run]")
+                    self.transcript.warning("[Partial output from an interrupted run]")
 
         # Tool history is independent of the bounded conversation replay. Replay
         # lifecycle events so concurrency order and interrupted starts survive.
@@ -789,12 +795,14 @@ class PreviewApp:
         if text.startswith("/"):
             try:
                 if not self.registry.dispatch(text):
-                    self.transcript.note("Unknown command. Type /help to see available commands.")
+                    self.transcript.warning(
+                        "Unknown command. Type /help to see available commands."
+                    )
             except ValueError as error:
-                self.transcript.note(str(error))
+                self.transcript.error(str(error))
         else:
             self.transcript.user(text)
-            self.transcript.events(self.preview.reply(text))
+            self.present_events(self.preview.reply(text))
         return False
 
     async def run_live(self, output: TerminalOutput, text: str) -> bool:
@@ -825,8 +833,10 @@ class PreviewApp:
                     elif isinstance(event, PlanPreview):
                         self.activity.plan_preview = event.items
                     elif isinstance(event, (ToolStarted, ToolSummary)):
-                        # Tool activity is mutable UI state, not a model-text boundary.
-                        self.transcript.events((event,))
+                        # Only exceptional completions also become persistent output.
+                        if isinstance(event, ToolSummary) and event.failed:
+                            output.finish()
+                        self.present_events((event,))
                     elif isinstance(event, Message):
                         output.finish(event.markdown)
                     else:
@@ -845,13 +855,13 @@ class PreviewApp:
         self.activity.prompt_state = "cancelled" if cancelled else "failed" if failure else "done"
         output.app.invalidate()
         if cancelled:
-            self.transcript.note("Run cancelled. Completed tool effects are not undone.")
+            self.transcript.cancelled()
         elif failure:
-            self.transcript.note(error_message(failure))
+            self.transcript.error(error_message(failure), title="Agent failed")
         if (cancelled or failure) and self.runtime.session:
             self.transcript.note(f"Session and diagnostics: {self.runtime.session.directory}")
             if self.runtime.recovery_blocked:
-                self.transcript.note(self.runtime.recovery_blocked)
+                self.transcript.warning(self.runtime.recovery_blocked)
         return not (cancelled or failure)
 
     def show_startup_context(self) -> None:
@@ -893,10 +903,10 @@ class PreviewApp:
             nonlocal queue_generation, pending_mcp, pending_compact
             queue_generation += 1
             if pending_mcp:
-                self.transcript.note("Pending MCP enable command cancelled.")
+                self.transcript.warning("Pending MCP enable command cancelled.")
                 pending_mcp = 0
             if pending_compact:
-                self.transcript.note("Pending compaction cancelled.")
+                self.transcript.warning("Pending compaction cancelled.")
                 pending_compact = 0
             count = len(self.activity.queued_prompts)
             while not queue.empty():
@@ -918,7 +928,7 @@ class PreviewApp:
                         task.cancel()
             else:
                 self.activity.busy = False
-                self.transcript.note("Run cancelled. Completed tool effects are not undone.")
+                self.transcript.cancelled()
 
         def submit(text):
             nonlocal pending_mcp, pending_compact
@@ -966,11 +976,11 @@ class PreviewApp:
                     task.result()
                     success = True
                 except asyncio.CancelledError:
-                    self.transcript.note(f"MCP '{name}' sign-in cancelled; server remains off.")
+                    self.transcript.warning(f"MCP '{name}' sign-in cancelled; server remains off.")
                 except Exception as error:
                     from pcode.live import error_message
 
-                    self.transcript.note(f"MCP '{name}' remains off: {error_message(error)}")
+                    self.transcript.error(f"MCP '{name}' remains off: {error_message(error)}")
                 finally:
                     if not success:
                         clear_queue()
@@ -1008,12 +1018,12 @@ class PreviewApp:
                     success = True
                 except asyncio.CancelledError:
                     self.activity.prompt_state = "cancelled"
-                    self.transcript.note("Compaction cancelled; history unchanged.")
+                    self.transcript.warning("Compaction cancelled; history unchanged.")
                 except Exception as error:
                     from pcode.live import error_message
 
                     self.activity.prompt_state = "failed"
-                    self.transcript.note(f"Compaction failed: {error_message(error)}")
+                    self.transcript.error(error_message(error), title="Compaction failed")
                 finally:
                     if not success:
                         clear_queue()
@@ -1076,7 +1086,7 @@ class PreviewApp:
                         and (self.activity.busy or self.activity.queued)
                         and not before_queue
                     ):
-                        self.transcript.note(
+                        self.transcript.warning(
                             f"{command.name} is unavailable while working. "
                             "Cancel with Ctrl+C or wait for the run to finish, then retry."
                         )
@@ -1116,7 +1126,7 @@ class PreviewApp:
                 except Exception as error:
                     from pcode.live import error_message
 
-                    self.transcript.note(error_message(error))
+                    self.transcript.error(error_message(error))
                 finally:
                     if pending_mcp or pending_compact:
                         self.activity.busy = True
@@ -1156,13 +1166,11 @@ class PreviewApp:
                                 return
                             success = False
                             self.activity.prompt_state = "cancelled"
-                            self.transcript.note(
-                                "Run cancelled. Completed tool effects are not undone."
-                            )
+                            self.transcript.cancelled()
                 except Exception as error:
                     from pcode.live import error_message
 
-                    self.transcript.note(error_message(error))
+                    self.transcript.error(error_message(error), title="Agent failed")
                     success = False
                 finally:
                     live_task = None

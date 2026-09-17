@@ -186,7 +186,7 @@ def test_stream_resize_and_cancellation(pane):
     pane("send-keys", "-t", "preview:0.0", "-l", "next input")
     capture(pane, "❯ next input", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
-    cancelled = capture(pane, "Run cancelled.")
+    cancelled = capture(pane, "! Run cancelled")
     assert input_rows(cancelled) == 1
     assert "❯ next input" in cancelled
 
@@ -214,7 +214,7 @@ def test_immediate_cancellation_unlocks_editor(pane):
     capture(pane, "❯")
     # Deliver submission and cancellation together, before the model task can start.
     pane("send-keys", "-t", "preview:0.0", "h", "Enter", "C-c")
-    capture(pane, "Run cancelled.")
+    capture(pane, "! Run cancelled")
     pane("send-keys", "-t", "preview:0.0", "-l", "editable again")
     assert input_rows(capture(pane, "editable again")) == 1
 
@@ -607,7 +607,8 @@ def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert "file_01.py" not in history
     assert history.count("file_11.py") == 1
-    assert "INSPECTABLE ERROR" not in history
+    assert history.count("INSPECTABLE ERROR") == 1
+    assert "✗ Read failed" in history
 
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width, height in ((40, 20), (100, 32), (40, 14)):
@@ -628,7 +629,7 @@ def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
         assert "keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
-    screen = capture(pane, "Run cancelled.")
+    screen = capture(pane, "! Run cancelled")
     assert "Run · interrupted" in screen
     assert "│❯ keep draft" in screen
 
@@ -727,7 +728,7 @@ def test_queued_messages_stay_directly_above_editor(pane):
         assert "│❯ keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
-    screen = capture(pane, "Run cancelled.")
+    screen = capture(pane, "! Run cancelled")
     assert "Queued:" not in screen
     assert "│❯ keep draft" in screen
 
