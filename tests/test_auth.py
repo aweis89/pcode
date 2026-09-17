@@ -1,5 +1,6 @@
 """Environment auth and login dispatch without accessing real credentials."""
 
+import asyncio
 from io import StringIO
 from unittest.mock import Mock
 
@@ -19,6 +20,7 @@ def isolated_credentials(monkeypatch):
 
 def test_anthropic_can_start_without_key(tmp_path):
     app = PreviewApp(model="anthropic:test-model", workspace=tmp_path)
+    asyncio.run(app._initialize_runtime())
     assert app.handle("/login") is False
     assert app.login_requested is True
     app.runtime.close()

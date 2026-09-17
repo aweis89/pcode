@@ -192,6 +192,7 @@ def test_thinking_on_can_open_anthropic_without_credentials(monkeypatch, tmp_pat
     app = PreviewApp(
         model="anthropic:claude-opus-4-7", workspace=tmp_path, console=Console(file=StringIO())
     )
+    asyncio.run(app._initialize_runtime())
     try:
         assert app.runtime.agent.model_settings["anthropic_thinking"] == {"type": "adaptive"}
     finally:
