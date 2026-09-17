@@ -64,6 +64,12 @@ upstream tests, examples, and documentation sources.
 
 `src/pcode/mcp.py` uses Pydantic AI 2.43.0's `MCPToolset` and FastMCP's
 `StdioTransport`; `src/pcode/live.py` supplies only enabled toolsets per run.
+`MCPState.enable()` is async: for OAuth it enters/exits the prefixed MCP toolset
+before publishing it as enabled. `MCPToolset.__aenter__` initializes the remote
+client and completes OAuth without an agent/model run. Reuse the same toolset
+object afterward so its OAuth tokens survive connection teardown. Other transports
+remain lazy. The app runs activation separately from model turns, with a queue
+gate and Ctrl+C/quit cleanup; keep the real-prompt tests in `tests/test_mcp_enable.py`.
 Consult [Pydantic AI MCP](https://ai.pydantic.dev/mcp/client/) and
 [FastMCP client transports](https://gofastmcp.com/clients/transports), then inspect
 installed `pydantic_ai/mcp.py` and `fastmcp/client/transports/stdio.py`.
