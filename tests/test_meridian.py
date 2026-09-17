@@ -144,3 +144,167 @@ def test_codex_proxy_does_not_affect_meridian(monkeypatch, tmp_path):
             pass
 
     asyncio.run(close())
+
+
+def test_session_identity_survives_tool_rounds_resume_and_parallel_delegation(
+    monkeypatch, tmp_path
+):
+    """Exercise real Harness delegation and the Anthropic HTTP serialization."""
+    from collections import defaultdict
+
+    (tmp_path / "sample.txt").write_text("evidence")
+    requests = defaultdict(list)
+
+    def handle(request):
+        identity = request.headers["x-litellm-session-id"]
+        body = json.loads(request.content)
+        requests[identity].append(body)
+        parent = any(t["name"] == "delegate_task" for t in body["tools"])
+        if len(requests[identity]) == 1:
+            calls = (
+                [
+                    ("delegate_task", {"agent_name": "explorer", "task": f"Read sample.txt {i}"})
+                    for i in range(2)
+                ]
+                if parent
+                else [("read_file", {"path": "sample.txt"})]
+            )
+            content = [
+                {"type": "tool_use", "id": f"call_{i}", "name": name, "input": args}
+                for i, (name, args) in enumerate(calls)
+            ]
+            stop = "tool_use"
+        else:
+            content = [{"type": "text", "text": "Done"}]
+            stop = "end_turn"
+        if body.get("stream"):
+            events = [
+                (
+                    "message_start",
+                    {
+                        "message": {
+                            "id": "msg_test",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": body["model"],
+                            "content": [],
+                            "usage": {"input_tokens": 1, "output_tokens": 0},
+                        }
+                    },
+                )
+            ]
+            for index, block in enumerate(content):
+                start = {**block, "input": {}} if block["type"] == "tool_use" else block
+                events.append(("content_block_start", {"index": index, "content_block": start}))
+                if block["type"] == "tool_use":
+                    events.append(
+                        (
+                            "content_block_delta",
+                            {
+                                "index": index,
+                                "delta": {
+                                    "type": "input_json_delta",
+                                    "partial_json": json.dumps(block["input"]),
+                                },
+                            },
+                        )
+                    )
+                events.append(("content_block_stop", {"index": index}))
+            events.extend(
+                [
+                    (
+                        "message_delta",
+                        {"delta": {"stop_reason": stop}, "usage": {"output_tokens": 1}},
+                    ),
+                    ("message_stop", {}),
+                ]
+            )
+            data = "".join(
+                f"event: {kind}\ndata: {json.dumps({'type': kind, **payload})}\n\n"
+                for kind, payload in events
+            )
+            return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=data)
+        return httpx2.Response(
+            200,
+            json={
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": body["model"],
+                "content": content,
+                "stop_reason": stop,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    original = httpx2.AsyncClient
+
+    class Client(original):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs, transport=httpx2.MockTransport(handle))
+
+    monkeypatch.setattr("pcode.meridian.httpx2.AsyncClient", Client)
+
+    async def run():
+        agent = create_agent("meridian:claude-opus-5", tmp_path)
+        async with agent:
+            result = await agent.run("Explore", conversation_id="saved-conversation")
+        assert result.output == "Done"
+        assert len(requests) == 3
+        assert all(len(rounds) == 2 for rounds in requests.values())
+        children = set(requests) - {"saved-conversation"}
+        # A newly constructed agent simulates process restart/resume from history.
+        resumed = create_agent("meridian:claude-opus-5", tmp_path)
+        async with resumed:
+            await resumed.run("Continue", message_history=result.all_messages())
+            await resumed.run("New conversation", conversation_id="new-conversation")
+        assert len(requests["saved-conversation"]) == 3
+        assert len(requests["new-conversation"]) == 2
+        assert len(set(requests) - children - {"saved-conversation", "new-conversation"}) == 2
+        # Child runs never receive the parent's history or another child's history.
+        for identity, rounds in requests.items():
+            if identity not in {"saved-conversation", "new-conversation"}:
+                assert len(rounds[0]["messages"]) == 1
+
+    asyncio.run(run())
+
+
+def test_identity_is_request_local_and_meridian_only():
+    from types import SimpleNamespace
+
+    from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
+    from pydantic_ai.models.test import TestModel
+
+    from pcode.meridian import MeridianSessionIdentity
+
+    class Model(TestModel):
+        @property
+        def system(self):
+            return "meridian"
+
+    settings = {"extra_headers": {"X-LiteLLM-Session-ID": "stale", "other": "keep"}}
+    request = ModelRequestContext(
+        model=Model(),
+        messages=[],
+        model_settings=settings,
+        model_request_parameters=ModelRequestParameters(),
+    )
+
+    async def run():
+        capability = MeridianSessionIdentity()
+        first, second = await asyncio.gather(
+            *[
+                capability.before_model_request(SimpleNamespace(conversation_id=identity), request)
+                for identity in ("one", "two")
+            ]
+        )
+        assert first.model_settings["extra_headers"] == {
+            "x-litellm-session-id": "one",
+            "other": "keep",
+        }
+        assert second.model_settings["extra_headers"]["x-litellm-session-id"] == "two"
+        assert settings["extra_headers"]["X-LiteLLM-Session-ID"] == "stale"
+        request.model = TestModel()
+        assert await capability.before_model_request(SimpleNamespace(), request) is request
+
+    asyncio.run(run())
