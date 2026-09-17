@@ -11,6 +11,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Dialog, Label, TextArea
 
 from pcode.models import PROVIDERS
+from pcode.popup_ui import popup_container, popup_style
 
 
 def matches_model(term: str, model: str) -> bool:
@@ -100,12 +101,12 @@ class ModelPicker:
             with_background=True,
         )
         self.app = Application(
-            layout=Layout(dialog, focused_element=self.search),
+            layout=Layout(popup_container(dialog), focused_element=self.search),
             key_bindings=keys,
             full_screen=True,
             input=input,
             output=output,
-            style=style,
+            style=popup_style(style),
         )
 
     def filter(self, buffer):
@@ -131,7 +132,7 @@ class ModelPicker:
             marker = " · current" if name == self.current else ""
             if name not in self.models:
                 marker += " · custom"
-            style = "class:completion-menu.completion.current" if index == self.selected else ""
+            style = "class:selected" if index == self.selected else ""
             result.append(
                 (
                     style,

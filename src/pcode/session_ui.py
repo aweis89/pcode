@@ -6,6 +6,8 @@ from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit
 from prompt_toolkit.widgets import Dialog, Label, RadioList
 
+from pcode.popup_ui import popup_container, popup_style
+
 
 def session_dialog(values, *, input=None, output=None, style=None):
     choices = RadioList(values, select_on_focus=True)
@@ -33,11 +35,11 @@ def session_dialog(values, *, input=None, output=None, style=None):
         with_background=True,
     )
     return Application(
-        layout=Layout(dialog, focused_element=choices),
+        layout=Layout(popup_container(dialog), focused_element=choices),
         key_bindings=bindings,
         full_screen=True,
         mouse_support=True,
         input=input,
         output=output,
-        style=style,
+        style=popup_style(style),
     )
