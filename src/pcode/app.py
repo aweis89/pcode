@@ -34,7 +34,7 @@ from pcode.ui import COLOR_STYLES, PALETTES, Activity, TerminalOutput, Transcrip
 class PreviewApp:
     def __init__(
         self,
-        theme: str = "dark",
+        theme: str | None = None,
         console: Console | None = None,
         *,
         color_style: str = "palette",
@@ -73,7 +73,10 @@ class PreviewApp:
             apply_effort(agent, model, load_preferences().get("effort"))
         self.activity = Activity()
         self.transcript = Transcript(
-            console or Console(), theme, activity=self.activity, color_style=color_style
+            console or Console(),
+            theme or load_preferences().get("theme", "dark"),
+            activity=self.activity,
+            color_style=color_style,
         )
         self.running = True
         self.inspector_requested: str | None = None
@@ -269,6 +272,7 @@ class PreviewApp:
 
     def theme(self, argument: str) -> None:
         self.transcript.theme = argument or ("light" if self.transcript.theme == "dark" else "dark")
+        self.persist_defaults(theme=self.transcript.theme)
         self.transcript.note(f"Theme: {self.transcript.theme}. Existing output is unchanged.")
 
     def colors(self, argument: str) -> None:
@@ -817,7 +821,9 @@ class PreviewApp:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Streaming terminal with a Coder agent")
-    parser.add_argument("--theme", choices=PALETTES, default="dark")
+    parser.add_argument(
+        "--theme", choices=PALETTES, default=load_preferences().get("theme", "dark")
+    )
     parser.add_argument(
         "--color-style",
         choices=COLOR_STYLES,
