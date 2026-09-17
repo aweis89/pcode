@@ -104,5 +104,12 @@ def create_agent(model: str, workspace: Path) -> Agent:
         resolved,
         defer_model_check=defer_model_check,
         name="pcode",
+        instructions=(
+            "Responses are displayed in a terminal with Markdown rendering "
+            "and syntax highlighting. "
+            "Use fenced code blocks with a language tag for multiline code or shell examples, "
+            "and inline backticks for identifiers and short commands. Close all code fences. "
+            "Write ordinary prose outside code blocks."
+        ),
         capabilities=[create_coder(workspace)],
     )
