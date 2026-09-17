@@ -543,16 +543,16 @@ def create_prompt(
     # top border with a fixed left prefix and an expanding right border.
     plan_frame.container.children[0] = VSplit(
         [
-            Window(FormattedTextControl("┌─| "), width=4, style="class:frame.border"),
+            Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
             Label(
                 lambda: panel_fragments(
                     [("bold", activity.panel_title())],
-                    session.app.output.get_size().columns - 10,
+                    session.app.output.get_size().columns - 8,
                 ),
                 style="class:frame.label",
                 dont_extend_width=True,
             ),
-            Window(FormattedTextControl(" |"), width=2, style="class:frame.border"),
+            Window(FormattedTextControl(" "), width=1, style="class:frame.border"),
             Window(char="─", style="class:frame.border"),
             Window(char="┐", width=1, style="class:frame.border"),
         ],
