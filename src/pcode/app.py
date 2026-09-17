@@ -18,6 +18,8 @@ from rich.rule import Rule
 from rich.text import Text
 
 from pcode.commands import Command, CommandRegistry
+from pcode.config import USAGE as CONFIG_USAGE
+from pcode.config import config_arguments, configure
 from pcode.preferences import apply_effort, load_preferences, save_preferences
 from pcode.runtime import (
     Message,
@@ -96,6 +98,13 @@ class PreviewApp:
             Command("/tools", "Inspect tool calls and their results", self.tools, ("failed",)),
             Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
             Command("/demo", "Sample Markdown, code, diff, and tool output", self.demo),
+            Command(
+                "/config",
+                "Inspect or edit global defaults (next launch)",
+                self.config,
+                free_arguments=True,
+                argument_provider=config_arguments,
+            ),
             Command("/theme", "Switch palette: dark / light", self.theme, tuple(PALETTES)),
             Command("/colors", "Rich colors: palette / terminal", self.colors, COLOR_STYLES),
             Command(
@@ -121,10 +130,17 @@ class PreviewApp:
         ):
             self.registry.register(command)
 
+    def config(self, argument: str) -> None:
+        try:
+            result = configure(shlex.split(argument))
+        except OSError as error:
+            raise ValueError(f"Could not access global defaults: {error}") from None
+        self.transcript.note(result)
+
     def persist_defaults(self, **updates: str) -> None:
         try:
             save_preferences(**updates)
-        except OSError:
+        except (OSError, ValueError):
             self.transcript.note("Could not save defaults; this selection applies only here.")
 
     def select_model(self, argument: str) -> None:
@@ -1081,7 +1097,20 @@ def main() -> None:
     parser.add_argument(
         "--no-save", action="store_true", help="Keep this live session in memory only"
     )
+    subparsers = parser.add_subparsers(dest="command")
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Inspect or edit global defaults without starting a session",
+        description=f"Global defaults. Usage: pcode {CONFIG_USAGE}",
+    )
+    config_parser.add_argument("arguments", nargs="*", metavar="ARG")
     args = parser.parse_args()
+    if args.command == "config":
+        try:
+            print(configure(args.arguments))
+        except (OSError, ValueError) as error:
+            parser.exit(2, f"{error}\n")
+        return
     if args.resume and (args.no_save or args.demo):
         parser.error("--resume cannot be combined with --no-save or --demo")
     from pcode.sessions import SavedSession, SessionError, list_sessions
