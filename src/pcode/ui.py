@@ -52,6 +52,7 @@ class Palette:
     foreground: str
     selected: str
     syntax: str
+    task_heading: str
 
     @cache
     def rich_theme(self) -> Theme:
@@ -91,6 +92,7 @@ class Palette:
         return Style.from_dict(
             {
                 "plan": self.muted,
+                "plan.heading": f"{self.task_heading} bold",
                 "plan.active": f"{self.accent} bold",
                 "tool.failed": self.muted,
                 "prompt": f"{self.accent} bold",
@@ -121,8 +123,8 @@ class Palette:
 
 
 PALETTES = {
-    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "nord"),
-    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "friendly"),
+    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "nord", "#c4b5fd"),
+    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "friendly", "#7c3aed"),
 }
 
 
@@ -821,7 +823,12 @@ def create_prompt(
             Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
             Label(
                 lambda: panel_fragments(
-                    [("bold", activity.panel_heading())],
+                    [
+                        (
+                            "class:plan.heading" if activity.displayed_plan else "bold",
+                            activity.panel_heading(),
+                        )
+                    ],
                     session.app.output.get_size().columns - 8,
                 ),
                 style="class:frame.label",
