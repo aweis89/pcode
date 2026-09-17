@@ -4,14 +4,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.commands import CommandRegistry
 from pcode.preferences import save_preferences
-from pcode.ui import create_prompt
+from pcode.ui import Transcript, create_prompt
 
 
 @pytest.mark.parametrize("mode", [None, "emacs", "vi"])
@@ -44,3 +46,44 @@ def test_editor_bindings(vi_mode, keys, expected):
             return await asyncio.wait_for(prompt.prompt_async(), timeout=3)
 
     assert asyncio.run(run()) == expected
+
+
+@pytest.mark.parametrize(
+    "vi_mode,keys,expected,cursor",
+    [
+        (True, "one two three\x1bbb", "one two three", 4),
+        (True, "hello\x1b0iX", "Xhello", 1),
+        (True, "hello\x1b\rworld", "hello\nworld", 11),
+        (False, "hello\x01X", "Xhello", 1),
+    ],
+)
+def test_transcript_editor_bindings(vi_mode, keys, expected, cursor):
+    async def run():
+        with create_pipe_input() as pipe:
+            submitted = []
+            snapshots = []
+
+            def submit(text):
+                submitted.append(text)
+                snapshots.append(
+                    (prompt.default_buffer.cursor_position, prompt.app.vi_state.input_mode)
+                )
+                prompt.app.exit()
+
+            prompt = create_prompt(
+                CommandRegistry(),
+                vi_mode=vi_mode,
+                input=pipe,
+                output=DummyOutput(),
+                transcript=Transcript(Console(file=StringIO())),
+                on_submit=submit,
+            )
+            assert prompt.app.editing_mode == (EditingMode.VI if vi_mode else EditingMode.EMACS)
+            pipe.send_text(keys + "\r")
+            await asyncio.wait_for(prompt.app.run_async(), timeout=3)
+            assert submitted == [expected]
+            assert snapshots[-1][0] == cursor
+            if keys.endswith("bb"):
+                assert snapshots[-1][1] == InputMode.NAVIGATION
+
+    asyncio.run(run())

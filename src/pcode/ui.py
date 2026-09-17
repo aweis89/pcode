@@ -30,6 +30,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode.commands import CommandRegistry, SlashCompleter
+from pcode.preferences import load_preferences
 from pcode.runtime import Event, Message, ToolSummary
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
@@ -747,6 +748,7 @@ def create_prompt(
             min_redraw_interval=1 / 30,
             refresh_interval=editor_app.refresh_interval,
             key_bindings=editor_app.key_bindings,
+            editing_mode=editor_app.editing_mode,
             style=editor_app.style,
             input=editor_app.input,
             output=editor_app.output,
@@ -771,6 +773,9 @@ class Transcript:
         activity: Activity | None = None,
         color_style: str = "palette",
     ) -> None:
+        preferences = load_preferences()
+        self.error_scrollback = preferences.get("error_scrollback", "on") == "on"
+        self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
         self.activity = activity
         self.console = console
         self.theme = theme
@@ -823,7 +828,8 @@ class Transcript:
         self.print(Text(text, style="pcode.muted"))
 
     def error(self, text: str, *, title: str = "Error") -> None:
-        self.print(TranscriptNotice(text, "error", title))
+        if self.error_scrollback:
+            self.print(TranscriptNotice(text, "error", title, self.error_scrollback_lines))
 
     def warning(self, text: str) -> None:
         self.print(TranscriptNotice(text, "warning", "Warning"))
