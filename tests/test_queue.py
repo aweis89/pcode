@@ -131,8 +131,8 @@ def test_prompt_indicator(state, icon):
     fragments = activity.prompt_fragments("⠋", 80)
     assert fragments[0][1] == icon + " "
     assert fragments[1][1].startswith("first second ")
+    assert all(style == "class:activity.prompt" for style, _ in fragments)
     if state == "failed":
-        assert "ansired" in fragments[0][0]
         assert fragments[1][1].endswith(" · failed")
 
 
@@ -158,7 +158,10 @@ def test_prompt_indicator_keeps_short_prompt_intact():
     from pcode.ui import Activity
 
     activity = Activity(prompt="Fix bug", prompt_state="running")
-    assert activity.prompt_fragments("⠋", 9) == [("class:prompt", "⠋ "), ("", "Fix bug")]
+    assert activity.prompt_fragments("⠋", 9) == [
+        ("class:activity.prompt", "⠋ "),
+        ("class:activity.prompt", "Fix bug"),
+    ]
 
 
 def test_queue_previews_are_ordered_bounded_and_single_line():
