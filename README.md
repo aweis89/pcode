@@ -1053,8 +1053,10 @@ Details:
 Press **Ctrl+S** to turn mirroring on or off for the rest of the session; it also
 saves the default, so the next launch starts in the state you left.
 `/show-commands on` and `/show-commands off` do the same, and `/show-commands`
-reports the current state. A toggle applies to the next command that settles;
-scrollback already written is never rewritten.
+reports the current state. Toggling rebuilds the retained scrollback immediately:
+turn it on to reveal earlier captured commands and their outputs; turn it off to
+remove those blocks (failed commands still follow `error_scrollback`). No commands
+are rerun. Future completions use the same setting.
 
 Ctrl+S replaces prompt_toolkit's forward incremental search. Ctrl+R still opens
 history search, which is the search binding this terminal documents. prompt_toolkit
@@ -1062,3 +1064,34 @@ disables terminal XON/XOFF flow control while the prompt is active, so Ctrl+S
 reaches the application instead of pausing terminal output.
 
 These settings also work through `/config` and apply on the next launch.
+
+### Regenerating the terminal transcript
+
+`/redraw` rebuilds the retained transcript at the current terminal width and with
+current display settings. Ctrl+S, `/show-commands on|off`, `/theme`, and `/colors`
+use the same replay mechanism. The draft, active tool panel, and unfinished model
+text are preserved; replay neither calls tools nor changes model history.
+
+To also rebuild automatically after a terminal resize settles:
+
+```sh
+pcode config set regenerate_on_resize on  # Default off; applies on next launch
+```
+
+Resize replay is debounced to avoid rebuilding on every intermediate size during
+a drag. Without it, the editor still resizes normally; `/redraw` remains available
+for an explicit transcript reflow.
+
+**Terminal-history warning:** regeneration clears the terminal's visible screen
+and scrollback, including shell output from before pcode started. It then rebuilds
+only the transcript retained by this pcode process. This uses the normal-screen
+ANSI erase-scrollback sequence (verified in tmux); terminals that ignore that
+sequence may leave older copies in history. Redirected/non-terminal output is not
+cleared or replayed.
+
+The in-memory replay log retains the latest **2,000 presentation entries**,
+including hidden command results. An entry can be a Markdown block, a completed
+tool result, a notice, or a separator. If older entries have been evicted, replay
+shows an omission notice. Saved sessions and diagnostics are unaffected. Session
+resume still loads its existing bounded transcript preview; replay does not load
+missing command payloads or reconstruct the complete on-disk session archive.

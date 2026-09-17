@@ -33,6 +33,7 @@ def test_terminal_completion_resize_interrupt_and_exit(columns):
         child.send("/demo\r")
         child.expect_exact("No files were")
         child.expect_exact("\x1b[?25h")  # A completed prompt repaint; PTYs do not answer CPR.
+        assert "\x1b[3J" not in log.getvalue()  # Ordinary writes remain append-only.
         child.setwinsize(24, 32)
         child.send("/theme light\r")
         child.expect_exact("Theme: light.")
@@ -47,7 +48,7 @@ def test_terminal_completion_resize_interrupt_and_exit(columns):
         assert "\x1b[?1049h" not in output  # Output stays in normal scrollback.
         assert "\x1b[?1049l" not in output
         assert "\x1b[?1047h" not in output
-        assert "\x1b[3J" not in output  # No scrollback erasure.
+        assert "\x1b[3J" in output  # Theme changes rebuild retained scrollback.
         assert not re.search(r"\x1b\[\d*;\d*r", output)  # No scroll region.
         assert "Traceback" not in output
     finally:

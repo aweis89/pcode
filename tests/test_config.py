@@ -29,6 +29,7 @@ def test_defaults_and_path_do_not_create_files():
         "thinking_display": "compact",
         "error_scrollback": "on",
         "error_scrollback_lines": "20",
+        "regenerate_on_resize": "off",
         "command_scrollback": "off",
         "command_scrollback_lines": "40",
         "theme": "dark",
