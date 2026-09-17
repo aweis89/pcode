@@ -54,8 +54,8 @@ and current model. Preferences live in `~/.config/pcode/preferences.json`
 conversations and `--no-save`. Run `pcode` with no model argument to reuse the
 saved model; without a saved default it opens the offline preview. The saved
 effort applies to OpenAI/Codex models, including new and resumed conversations;
-`/effort default` restores provider-default behavior. Delete the preferences file
-to reset these defaults. `--demo` always stays offline.
+`/effort default` restores provider-default behavior. Use `pcode config unset KEY`
+to reset an individual default. `--demo` always stays offline.
 
 `-m` / `--model` overrides the saved model for that launch; `--resume` uses the
 session's model. Neither changes the saved default by itself.
@@ -66,6 +66,49 @@ explicit prompt-cache breakpoints are disabled. Pydantic AI 2.43.0 advertises th
 for this model family, but the subscription endpoint rejects the marker added by
 Harness Planning after `write_plan` with HTTP 400. Authentication and streaming
 still use the native provider, not a custom transport.
+
+### Global configuration
+
+Global defaults are shared across workspaces in `~/.config/pcode/preferences.json`
+(or `$XDG_CONFIG_HOME/pcode/preferences.json`). No migration or second config file
+is needed. Inspect and edit them without opening a terminal UI or connecting a model:
+
+```sh
+pcode config                     # List effective startup defaults as JSON
+pcode config path                # Print the resolved config path
+pcode config get theme
+pcode config set theme light
+pcode config set autocompact on
+pcode config set effort high
+pcode config set model openai-codex:gpt-5.6-luna
+pcode config unset model          # Remove saved model; return to offline preview
+pcode config unset theme          # Restore built-in dark theme
+```
+
+The same commands are available inside pcode as `/config`, with tab completion:
+`/config set theme light`, `/config get autocompact`, `/config unset effort`, etc.
+**Config edits affect the next launch, not the running conversation.** To change
+an active setting and save its default immediately, use `/theme`, `/effort`,
+`/model`, or `/autocompact` instead. CLI overrides such as `--theme` and `--model`
+do not rewrite global defaults, and resumed sessions retain their own model.
+
+| Key | Built-in default | Values |
+| --- | --- | --- |
+| `theme` | `dark` | `dark`, `light` |
+| `autocompact` | `off` | `on`, `off` |
+| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex only) |
+| `model` | `null` (offline preview) | A model name, normally `provider:model` |
+
+Automatic compaction still requires a known context window; setting its global
+preference does not validate a particular model or trigger a compaction. For custom
+deployments, use `PCODE_CONTEXT_WINDOW` as described below. `/colors` / `--color-style`
+remain session-only; MCP configuration and credentials are separate from these
+non-secret defaults.
+
+Writes are atomic and serialized across terminals. Unknown JSON keys are preserved;
+invalid setting values fall back to built-in defaults. Normal startup tolerates a
+malformed file, but config commands report it and refuse to overwrite it: use
+`pcode config path` to find and repair it first. Invalid commands exit nonzero.
 
 The current directory is the Coder workspace; select another repository with `-C`:
 
