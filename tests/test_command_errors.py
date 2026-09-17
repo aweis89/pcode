@@ -86,9 +86,9 @@ def test_error_is_fenced_literal_text_and_survives_event_round_trip():
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
         "✗ Run failed",
         "",
-        "   pytest -q → exit 1",
-        "   [stderr] missing module",
-        "     traceback context",
+        " pytest -q → exit 1",
+        " [stderr] missing module",
+        "   traceback context",
         "",
     ]
     assert ToolSummary(**{"name": "run_command", "detail": "old summary"}).error == ""
@@ -215,15 +215,13 @@ def test_error_code_block_matches_markdown_theme_and_preserves_fences(theme):
     )
     transcript.error(text)
     output = Text.from_ansi(stream.getvalue()).plain.splitlines()
-    assert [line[3:].rstrip() for line in output[2:-1]] == text.splitlines()
+    assert [line[1:].rstrip() for line in output[2:-1]] == text.splitlines()
     # Compare the actual styled block with the same Markdown path used for model output.
     expected = StringIO()
-    Console(file=expected, width=88, force_terminal=True, color_system="truecolor").print(
+    Console(file=expected, width=90, force_terminal=True, color_system="truecolor").print(
         Markdown("`````text\n" + text + "\n`````", code_theme=transcript.code_theme)
     )
-    assert "\n".join(line[2:] for line in stream.getvalue().splitlines()[1:]) == (
-        expected.getvalue().rstrip("\n")
-    )
+    assert "\n".join(stream.getvalue().splitlines()[1:]) == (expected.getvalue().rstrip("\n"))
 
 
 @pytest.mark.parametrize("width", [1, 2, 3, 4, 5, 10, 30])
@@ -237,3 +235,19 @@ def test_error_code_block_handles_narrow_panes(width):
     assert all(len(line) <= width for line in lines)
     # The heading can wrap; the body remains bounded plus optional padding.
     assert len(lines) <= len("✗ Error") + 3 + 2
+
+
+def test_error_code_block_background_starts_at_left_edge_and_keeps_inner_indent():
+    stream = StringIO()
+    transcript = Transcript(
+        Console(file=stream, width=40, force_terminal=True, color_system="truecolor")
+    )
+    transcript.error("unindented\n    indented")
+    rows = stream.getvalue().splitlines()[1:]
+    for row in rows:
+        styled = Text.from_ansi(row)
+        # Includes the padding rows: the first column belongs to the code block.
+        assert styled.get_style_at_offset(transcript.console, 0).bgcolor is not None
+        assert len(styled.plain) == 40
+    assert Text.from_ansi(rows[1]).plain.rstrip() == " unindented"
+    assert Text.from_ansi(rows[2]).plain.rstrip() == "     indented"
