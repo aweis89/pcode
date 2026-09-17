@@ -19,14 +19,23 @@ def redact(text: str) -> str:
         if len(value) >= 8 and re.search(r"TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY", name):
             text = text.replace(value, "[redacted]")
     text = re.sub(r"(?i)\bBearer\s+[^\s\"',;}]+", "Bearer [redacted]", text)
+    text = re.sub(r"(?i)(https?://)[^/\s@]+@", r"\1[redacted]@", text)
     text = _TOKEN.sub("[redacted]", text)
     text = _ASSIGNMENT.sub(r"\1[redacted]", text)
     return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
 
 
 def error_details(error: BaseException) -> dict:
-    while isinstance(error, BaseExceptionGroup) and error.exceptions:
-        error = error.exceptions[0]
+    """Keep bounded, redacted causes without traceback locals or request objects."""
+    return _error_details(error, set())
+
+
+def _error_details(error: BaseException, seen: set[int]) -> dict:
+    if id(error) in seen or len(seen) >= 16:
+        return {"type": type(error).__name__, "truncated": True}
+    seen.add(id(error))
+    if isinstance(error, BaseExceptionGroup) and error.exceptions:
+        return _error_details(error.exceptions[0], seen)
     result = {"type": type(error).__name__}
     status = getattr(error, "status_code", None)
     if isinstance(status, int):
@@ -41,6 +50,10 @@ def error_details(error: BaseException) -> dict:
                     result[f"provider_{key}"] = redact(value)[:4000]
     if "provider_message" not in result:
         result["message"] = redact(str(error))[:4000]
+    if error.__cause__ is not None:
+        result["cause"] = _error_details(error.__cause__, seen)
+    elif error.__context__ is not None and not error.__suppress_context__:
+        result["context"] = _error_details(error.__context__, seen)
     return result
 
 
