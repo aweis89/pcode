@@ -20,6 +20,7 @@ from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.llm_proxy import ProxiedCodexProvider
 from pcode.planning import IdentifiedPlanning
 from pcode.repo_context import AutomaticRepoContext
+from pcode.usage_limits import UnlimitedRequests
 
 
 def create_coder(workspace: Path) -> CombinedCapability:
@@ -29,6 +30,7 @@ def create_coder(workspace: Path) -> CombinedCapability:
         name="explorer",
         description="Explore the codebase and answer questions without modifying anything",
         capabilities=[
+            UnlimitedRequests(),
             FileSystem(workspace, read_only=True),
             AutomaticRepoContext(workspace_dir=workspace),
         ],
