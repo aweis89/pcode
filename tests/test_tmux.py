@@ -774,7 +774,7 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 
 
 @pytest.mark.parametrize("pane", [DEFERRED_PROMPT_SCRIPT], indirect=True)
-def test_scrollback_quote_waits_for_model_block_without_extra_blank_line(pane):
+def test_scrollback_quote_waits_for_model_block_with_blank_line_after_quote(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "deferred prompt")
     pane("send-keys", "-t", "preview:0.0", "Enter")
@@ -785,7 +785,7 @@ def test_scrollback_quote_waits_for_model_block_without_extra_blank_line(pane):
     assert "FIRST MODEL" not in history
     assert input_rows(waiting) == 1
     response = capture(pane, "FIRST MODEL MESSAGE", running=True)
-    assert "▌ deferred prompt\nFIRST MODEL MESSAGE" in response
+    assert "▌ deferred prompt\n\nFIRST MODEL MESSAGE" in response
     assert input_rows(response) == 1
     capture(pane, "✓ deferred prompt")
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")

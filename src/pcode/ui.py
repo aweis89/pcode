@@ -286,6 +286,7 @@ class TerminalOutput:
             if self._turn_prompt is not None:
                 self.print()
                 self.print(TaskPrompt(self._turn_prompt))
+                self.print()
                 self._turn_prompt = None
             self.print(Markdown(source, code_theme=self.code_theme()))
             self.print()
@@ -659,6 +660,7 @@ class Transcript:
     def user(self, text: str) -> None:
         self.print()
         self.print(TaskPrompt(text))
+        self.print()
 
     def command_summary(self, event: ToolSummary) -> None:
         result = (

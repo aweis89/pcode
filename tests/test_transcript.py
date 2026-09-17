@@ -303,7 +303,7 @@ def test_turn_quote_waits_for_first_visible_block_and_is_printed_once():
         await output.flush()
         assert (
             rendered(stream)
-            == "Unrelated notice\n\n▌ literal **prompt**\nFirst partial response\n\n"
+            == "Unrelated notice\n\n▌ literal **prompt**\n\nFirst partial response\n\n"
         )
         output.finish("First partial response")
         output.finish("Second message")
@@ -326,7 +326,7 @@ def test_turn_quote_attaches_to_fallback_or_interrupted_partial_response():
         output.end_turn()
         await output.flush()
         assert rendered(stream) == (
-            "\n▌ fallback prompt\nFallback message\n\n\n▌ interrupted prompt\nPartial reply\n\n"
+            "\n▌ fallback prompt\n\nFallback message\n\n\n▌ interrupted prompt\n\nPartial reply\n\n"
         )
 
     asyncio.run(run())
@@ -345,6 +345,6 @@ def test_empty_turn_drops_deferred_quote_without_leaking_to_next_turn():
         output.finish("Next answer")
         output.end_turn()
         await output.flush()
-        assert rendered(stream) == "Run cancelled.\n\n▌ next prompt\nNext answer\n\n"
+        assert rendered(stream) == "Run cancelled.\n\n▌ next prompt\n\nNext answer\n\n"
 
     asyncio.run(run())
