@@ -324,10 +324,11 @@ Checkpoints are saved by Harness at settled tool boundaries, not just when an
 answer succeeds. If the request after a completed tool fails, its tool result is
 retained for the next turn and for resume. Interrupted streaming text is retained
 in the journal, even when it cannot become a safe model checkpoint. Resume uses
-the most recent settled checkpoint. If a tool was in flight at a crash and its
-outcome is unknown, resume refuses rather than risking a repeated side effect;
-inspect the ledger before proceeding. Checkpoints do not restore files, running
-processes, or capability-local state such as the in-memory planner.
+the most recent settled checkpoint without requiring review of interrupted tools.
+Pending tool calls are not automatically replayed, and their unknown outcomes
+remain in the diagnostic ledger. Interrupted tools may already have changed the
+workspace; resuming does not undo those effects. Checkpoints do not restore files,
+running processes, or capability-local state such as the in-memory planner.
 
 Nothing from sessions run before this feature was installed can be reconstructed
 from disk; those earlier conversations were memory-only.
@@ -669,8 +670,9 @@ Tests require no API keys or paid model calls. They cover completion, keybinding
 Unicode/narrow output, streaming, history/reset, cancellation, and actual Coder
 file reads using Pydantic's `FunctionModel`. Session tests cover round-trip history,
 post-tool failures, safe diagnostics, file permissions, locking, torn journals,
-and refusal to resume unresolved side effects. A native-provider wire test checks
-that explicit cache markers are omitted while streaming/store settings are retained.
+and resuming interrupted tools without replaying them or clearing their effect
+ledger. A native-provider wire test checks that explicit cache markers are omitted
+while streaming/store settings are retained.
 PTY tests check clean startup/exit without an alternate screen. Queue tests verify
 serial turns, failures, cancellation, and draft/cursor preservation. When tmux is
 installed, isolated-server tests measure prompt height and bottom placement
