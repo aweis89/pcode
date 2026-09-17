@@ -10,6 +10,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Frame, Label, TextArea
 
 from pcode.inspection import ToolArchive
+from pcode.popup_ui import popup_container, popup_style
 
 
 class ToolInspector:
@@ -88,10 +89,11 @@ class ToolInspector:
             ]
         )
         self.app = Application(
-            layout=Layout(root, focused_element=self.list),
+            layout=Layout(popup_container(root), focused_element=self.list),
             key_bindings=keys,
             full_screen=True,
             mouse_support=True,
+            style=popup_style(app_options.pop("style", None)),
             **app_options,
         )
         self.refresh()
