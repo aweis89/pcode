@@ -938,9 +938,11 @@ history. An expanded reasoning view is not implemented.
 
 ### Error logs in scrollback
 
-Errors and failed-tool diagnostics use Rich highlighting (literal text, not markup).
-By default, each error shows at most **20 wrapped body lines**, in addition to its
-heading. Long logs keep their tail and include a truncation marker within that limit.
+Errors and failed-tool diagnostics render as fenced Markdown code blocks using
+Rich and the active code theme. Logs stay literal, even if they contain Markdown
+or backticks. By default, each error shows at most **20 wrapped body lines**, plus
+its heading and two code-block padding rows. Long logs keep their tail and include
+a truncation marker within that limit.
 
 ```sh
 pcode config set error_scrollback_lines 40  # Positive integer; default 20

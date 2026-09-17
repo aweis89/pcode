@@ -22,8 +22,8 @@ def test_notices_are_literal_compact_and_readable_without_color(theme, color_sty
     transcript.warning("Context window nearly full")
     transcript.cancelled()
     transcript.note("Ordinary notice")
-    assert stream.getvalue() == (
-        "✗ Agent failed\n  [red]**literal**[/red]\n  Connection reset\n"
+    assert "\n".join(line.rstrip() for line in stream.getvalue().splitlines()) + "\n" == (
+        "✗ Agent failed\n\n   [red]**literal**[/red]\n   Connection reset\n\n"
         "! Warning\n  Context window nearly full\n"
         "! Run cancelled\n  Completed tool effects are not undone.\nOrdinary notice\n"
     )
@@ -64,7 +64,13 @@ def test_tool_persistence_is_decided_on_completion(command, exit_code):
     )
     assert len(app.activity.tools.calls) == 1
     if exit_code:
-        assert stream.getvalue() == f"✗ Run failed\n  {command}\n  diagnostic\n"
+        assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
+            "✗ Run failed",
+            "",
+            f"   {command}",
+            "   diagnostic",
+            "",
+        ]
     else:
         assert stream.getvalue() == ""
 
