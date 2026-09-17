@@ -59,7 +59,7 @@ def test_ctrl_s_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pa
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "TURN_2_DONE")
-    assert "› Run · 0.4s" in screen
+    assert "✓ Run · 0.4s" in screen
     assert "$ printf MIRRORED_COMMAND" in screen
     assert "OUTPUT_LINE_03" in screen
     assert input_rows(screen) == 1
@@ -109,7 +109,7 @@ def test_toggle_rebuilds_existing_history_without_rerunning_commands(pane):
 RESIZE_SCRIPT = SCRIPT.replace(
     "from pcode.app import PreviewApp",
     "from pcode.preferences import save_preferences\n"
-    'save_preferences(regenerate_on_resize="on", command_scrollback="on")\n'
+    'save_preferences(command_scrollback="on")\n'
     "from pcode.app import PreviewApp",
 )
 
@@ -122,7 +122,7 @@ def test_resize_replay_reflows_history_without_duplicates_or_stretched_editor(pa
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(width))
-        # Let the opt-in debounce and handoff both run under real CPR.
+        # Let the default debounce and handoff both run under real CPR.
         time.sleep(0.8)
         screen = capture(pane, "keep draft", columns=width)
         assert input_rows(screen) == 1

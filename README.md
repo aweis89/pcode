@@ -1088,10 +1088,11 @@ current display settings. Ctrl+S, `/show-commands on|off`, `/theme`, and `/color
 use the same replay mechanism. The draft, active tool panel, and unfinished model
 text are preserved; replay neither calls tools nor changes model history.
 
-To also rebuild automatically after a terminal resize settles:
+The transcript also rebuilds automatically after a terminal **width** change
+settles. Height-only changes do not trigger replay. To disable automatic replay:
 
 ```sh
-pcode config set regenerate_on_resize on  # Default off; applies on next launch
+pcode config set regenerate_on_resize off  # Default on; applies on next launch
 ```
 
 Resize replay is debounced to avoid rebuilding on every intermediate size during
