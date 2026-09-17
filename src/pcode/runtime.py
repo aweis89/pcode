@@ -52,7 +52,14 @@ class PlanUpdated:
     items: list[dict]
 
 
-Event = Message | ToolStarted | ToolSummary | TextDelta | RunStatus | PlanUpdated
+@dataclass(frozen=True)
+class PlanPreview:
+    """Display-only streamed plan; None restores the authoritative snapshot."""
+
+    items: list[dict] | None
+
+
+Event = Message | ToolStarted | ToolSummary | TextDelta | RunStatus | PlanUpdated | PlanPreview
 
 
 class PreviewRuntime:

@@ -792,3 +792,40 @@ def test_scrollback_quote_waits_for_model_block_with_blank_line_after_quote(pane
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert history.count("▌ deferred prompt") == 1
     assert history.count("FIRST MODEL MESSAGE") == 1
+
+
+STREAMED_PLAN_SCRIPT = r"""
+import asyncio
+from pydantic_ai import Agent
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai_harness.planning import Planning
+from pcode.app import PreviewApp
+from pcode.live import AgentRuntime
+
+async def model(messages, info):
+    yield {0: DeltaToolCall(name="write_plan", json_args=
+        '{"items":[{"content":"STREAMED_TASK", "status":"in_progress"},')}
+    # Neither the arguments nor the model response ever finish before cancellation.
+    await asyncio.sleep(60)
+
+runtime = AgentRuntime(Agent(FunctionModel(stream_function=model), capabilities=[Planning()]))
+PreviewApp(model="test:local", runtime=runtime).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [STREAMED_PLAN_SCRIPT], indirect=True)
+def test_streamed_task_preview_has_real_prompt_height_and_cancels_cleanly(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "STREAMED_TASK", running=True)
+    assert "Tasks 0/1" in screen
+    assert input_rows(screen) == 1
+    assert screen.count("┌") == screen.count("└") == 2
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    screen = capture(pane, "Run cancelled")
+    assert "STREAMED_TASK" not in screen
+    assert "Tasks 0/1" not in screen
+    assert input_rows(screen) == 1
+    assert screen.count("┌") == screen.count("└") == 1
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert "STREAMED_TASK" not in history
