@@ -60,6 +60,24 @@ upstream tests, examples, and documentation sources.
   the installed `pydantic_ai_harness` implementation for the capabilities used.
   Verify Coder's actual tool composition, planning, and step-persistence APIs.
 
+### Delegation activity
+
+`src/pcode/delegation.py` bridges Harness 0.31.0's `SubAgents.event_stream_handler`
+into the parent's event stream. The handler receives a **child** `RunContext`,
+not the parent tool identity; `DelegationReporting.wrap_tool_execute` binds the
+parent context with a `ContextVar`, reset in `finally`, so parallel children do
+not share attribution. Only child tool boundaries and phase labels are forwarded,
+never child text/thinking deltas. Inspect installed `subagents/_toolset.py` and
+`subagents/_events.py` before changing this integration.
+
+`live.py` consumes `DelegationStartEvent`/`DelegationEndEvent` by `tool_call_id`.
+Use the structured delegation outcome: timeout/budget limits can return ordinary
+successful tool strings. A max-calls refusal emits no lifecycle events; cancellation
+and uncontained errors may omit the end event, so keep turn-end interruption cleanup.
+Child tool IDs are scoped by parent call ID, and persisted tool events retain
+`parent_call_id` for replay. The panel pins active delegates within its existing
+row budget; keep `tests/test_delegation_tmux.py` exercising real CPR and resize.
+
 ### MCP integration
 
 `src/pcode/mcp.py` uses Pydantic AI 2.43.0's `MCPToolset` and FastMCP's

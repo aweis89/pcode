@@ -621,6 +621,8 @@ class PreviewApp:
                         redact(record["detail"]),
                         record["call_id"],
                         redact(record.get("command", "")),
+                        parent_call_id=record.get("parent_call_id", ""),
+                        activity=redact(record.get("activity", "")),
                     )
                 )
             else:
@@ -633,6 +635,7 @@ class PreviewApp:
                         record.get("elapsed_seconds"),
                         redact(record.get("error", "")),
                         redact(record.get("command", "")),
+                        parent_call_id=record.get("parent_call_id", ""),
                     )
                 )
         self.activity.tools.interrupt_running()

@@ -14,8 +14,9 @@ from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
-from pydantic_ai_harness.subagents import SubAgent
+from pydantic_ai_harness.subagents import SubAgent, SubAgents
 
+from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.llm_proxy import ProxiedCodexProvider
 from pcode.planning import IdentifiedPlanning
 from pcode.repo_context import AutomaticRepoContext
@@ -48,7 +49,10 @@ def create_coder(workspace: Path) -> CombinedCapability:
         else capability
         for capability in coder.capabilities
     ]
+    coder.capabilities.append(DelegationReporting())
     for capability in coder.capabilities:
+        if isinstance(capability, SubAgents):
+            capability.event_stream_handler = stream_child_activity
         if isinstance(capability, Shell):
             # An empty allowlist alone can still leave Harness's default denylist.
             capability.allowed_commands = []
