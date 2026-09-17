@@ -935,3 +935,21 @@ on completion, cancellation, failure, and conversation reset. Hiding the view
 keeps the current turn's rolling buffer so it can be shown again. This does not
 change model reasoning effort or the runtime's existing saved model-message
 history. An expanded reasoning view is not implemented.
+
+### Error logs in scrollback
+
+Errors and failed-tool diagnostics use Rich highlighting (literal text, not markup).
+By default, each error shows at most **20 wrapped body lines**, in addition to its
+heading. Long logs keep their tail and include a truncation marker within that limit.
+
+```sh
+pcode config set error_scrollback_lines 40  # Positive integer; default 20
+pcode config set error_scrollback off      # Hide error blocks entirely
+pcode config set error_scrollback on       # Restore error blocks (default)
+```
+
+These settings also work through `/config` and apply on the next launch. They
+affect only error scrollback, including replayed failed-tool events; warnings and
+cancellation notices remain visible. Saved diagnostics are not disabled or trimmed
+by these display settings. Command diagnostics retain a separate safety bound of
+200 lines / 32,000 characters, after redaction.

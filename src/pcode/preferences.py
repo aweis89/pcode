@@ -16,9 +16,13 @@ OPENAI_PROVIDERS = ("openai", "openai-chat", "openai-responses", "openai-codex")
 class Setting:
     default: str | None
     choices: tuple[str, ...] = ()
+    positive_integer: bool = False
 
     def validate(self, key: str, value: str) -> None:
-        if self.choices:
+        if self.positive_integer:
+            if not value.isascii() or not value.isdecimal() or int(value) < 1:
+                raise ValueError(f"{key} must be a positive integer.")
+        elif self.choices:
             if value not in self.choices:
                 raise ValueError(f"{key} must be one of: {', '.join(self.choices)}")
         elif not value or any(char.isspace() for char in value):
@@ -26,6 +30,8 @@ class Setting:
 
 
 SETTINGS = {
+    "error_scrollback": Setting("on", ("on", "off")),
+    "error_scrollback_lines": Setting("20", positive_integer=True),
     "show_thinking": Setting("off", ("on", "off")),
     "editing_mode": Setting("emacs", ("emacs", "vi")),
     "theme": Setting("dark", ("dark", "light", "auto")),
