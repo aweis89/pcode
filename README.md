@@ -175,9 +175,9 @@ The current model is marked, not pinned above newer versions; undated aliases
 precede dated snapshots of the same version. This uses model IDs, not release-date
 metadata across different families.
 
-Suggestions come from the installed Pydantic AI catalog (Anthropic and selected
-GPT-5 coding/base variants for Codex). Opening the picker makes **no network
-requests**. This is not an account-entitlement list: the provider checks model
+Suggestions come from the installed Pydantic AI catalog (Anthropic models and
+all OpenAI model IDs for Codex). Opening the picker makes **no network requests**.
+This is not an account-entitlement list: the provider checks model
 availability and credentials when you use the model. Custom IDs are accepted only
 for providers enabled in the picker. If none are configured, use `/login`, set
 `ANTHROPIC_API_KEY`, or run `codex login` first.

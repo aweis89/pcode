@@ -47,13 +47,9 @@ def model_catalog(providers: set[str], current: str | None = None) -> list[str]:
             models.add(name)
         if provider == "anthropic" and "meridian" in providers:
             models.add(f"meridian:{model}")
-        # Codex accepts OpenAI model IDs, but has no separate SDK catalog. Suggest
-        # GPT-5 base/coding variants, not dated, ChatGPT, pro, audio, or nano IDs.
-        if (
-            "openai-codex" in providers
-            and provider == "openai"
-            and re.fullmatch(r"gpt-5(?:\.\d+)?(?:-codex(?:-max)?|-luna|-sol|-terra|-mini)?", model)
-        ):
+        # Codex has no separate SDK catalog, so expose every OpenAI model ID and
+        # let the provider enforce account access and model compatibility.
+        if "openai-codex" in providers and provider == "openai":
             models.add(f"openai-codex:{model}")
     if current and current.partition(":")[0] in providers:
         models.add(current)
