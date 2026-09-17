@@ -31,7 +31,9 @@ class TranscriptNotice:
         yield Text(f"{symbol} {self.title}", style=style)
         if not self.text:
             return
-        indent = "  " if options.max_width > 2 else ""
+        # Error code-block backgrounds start at the terminal edge; keep Rich
+        # padding and the log's own indentation inside the block unchanged.
+        indent = "  " if self.kind != "error" and options.max_width > 2 else ""
         body_options = options.update(width=max(1, options.max_width - len(indent)))
         # Rich's Markdown code blocks have one padding row/column on each side.
         # Fall back to literal text only when the pane cannot fit that padding.
