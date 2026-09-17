@@ -50,7 +50,7 @@ class Palette:
             {
                 "plan": self.muted,
                 "plan.active": f"{self.accent} bold",
-                "tool.failed": "bold ansired",
+                "tool.failed": self.muted,
                 "prompt": f"{self.accent} bold",
                 "frame.border": self.muted,
                 # Keep foreground and background paired with the terminal theme:
@@ -646,7 +646,7 @@ class Transcript:
         elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
         header = Text(
             f"  {'!' if event.failed else '✓'} {label(event.name)}{result}{elapsed}",
-            style="bold red" if event.failed else "pcode.accent",
+            style="pcode.accent",
             no_wrap=True,
             overflow="ellipsis",
         )
@@ -688,7 +688,7 @@ class Transcript:
                     Text.assemble(
                         (
                             f"  {'!' if event.failed else '✓'} {label(event.name)}  ",
-                            "bold red" if event.failed else "pcode.accent",
+                            "pcode.accent",
                         ),
                         (plain(event.detail, limit=None), "pcode.muted"),
                         (
