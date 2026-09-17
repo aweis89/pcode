@@ -876,3 +876,53 @@ def test_thinking_toggle_is_content_sized_and_never_enters_scrollback(pane):
     assert input_rows(screen) == 1
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert "TRANSIENT_REASONING_ONLY" not in history
+
+
+@pytest.mark.parametrize(
+    "pane",
+    [
+        "from pcode.preferences import save_preferences; "
+        "save_preferences(editing_mode='vi'); "
+        "from pcode.app import main; main()"
+    ],
+    indirect=True,
+)
+def test_vi_newline_and_escape_keep_editor_compact(pane):
+    assert input_rows(capture(pane, "❯")) == 1
+    pane("send-keys", "-t", "preview:0.0", "-l", "first")
+    pane("send-keys", "-t", "preview:0.0", "C-j")
+    pane("send-keys", "-t", "preview:0.0", "-l", "second")
+    assert input_rows(capture(pane, "second")) == 2
+    pane("send-keys", "-t", "preview:0.0", "Escape")
+    # Normal-mode dd removes the second line rather than inserting literal 'dd'.
+    pane("send-keys", "-t", "preview:0.0", "-l", "dd")
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        screen = capture(pane, "first")
+        if input_rows(screen) == 1:
+            break
+        time.sleep(0.05)
+    assert input_rows(screen) == 1
+    assert "second" not in screen
+
+
+@pytest.mark.parametrize(
+    "pane",
+    [
+        "from pcode.preferences import save_preferences; "
+        "save_preferences(editing_mode='vi'); "
+        "from pcode.app import main; main()"
+    ],
+    indirect=True,
+)
+def test_vi_word_motion_and_newline_keep_editor_compact(pane):
+    assert input_rows(capture(pane, "❯")) == 1
+    pane("send-keys", "-t", "preview:0.0", "-l", "one two three")
+    pane("send-keys", "-t", "preview:0.0", "Escape")
+    pane("send-keys", "-t", "preview:0.0", "-l", "bbiX")
+    assert input_rows(capture(pane, "one Xtwo three")) == 1
+    pane("send-keys", "-t", "preview:0.0", "C-j")
+    pane("send-keys", "-t", "preview:0.0", "-l", "NEWLINE")
+    assert input_rows(capture(pane, "NEWLINEtwo three")) == 2
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    assert input_rows(capture(pane, "Input discarded")) == 1

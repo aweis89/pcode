@@ -449,7 +449,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 | Key | Action |
 | --- | --- |
 | Enter | Send (queue during generation), or accept a selected completion |
-| Alt+Enter | Newline (Esc followed by Enter also works) |
+| Ctrl+J | Newline (map Shift+Enter to this in your terminal) |
+| Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
 | Ctrl+L | Choose a model (idle only; keeps the conversation) |
 | Ctrl+R | Search this process's input history |
@@ -468,8 +469,20 @@ pcode config set editing_mode vi
 You can also run `/config set editing_mode vi` in a session, then restart pcode.
 The editor starts in insert mode; press Escape for normal mode and `i` or `a` to
 resume inserting. Standard vi motions and editing commands are available.
-Enter still submits (or accepts a selected completion), and Alt+Enter inserts a
-newline. Pcode's application shortcuts retain their existing behavior.
+Enter still submits (or accepts a selected completion), and Ctrl+J inserts a
+newline. Escape is prioritized in vi mode: Escape followed by Enter submits,
+rather than inserting a newline. Alt+Enter is therefore a newline shortcut only
+in Emacs mode. Other pcode application shortcuts retain their existing behavior.
+
+To use **Shift+Enter for newline**, configure your terminal to send Ctrl+J (the
+single LF byte, hex `0a`, often written `\x0a`) for Shift+Enter. This is a terminal
+key mapping, not a pcode setting. Without that mapping, many terminals send the
+same sequence for Enter and Shift+Enter, so both submit. Verify the mapping inside
+tmux too if you use it; Ctrl+J itself is always available as the fallback.
+
+Vi mode uses a 100 ms terminal escape-sequence timeout and an eager Escape binding.
+This avoids waiting for an Alt-key chord before entering normal mode; particularly
+slow or fragmented terminal connections may need a longer timeout in future.
 
 Restore the default with `pcode config set editing_mode emacs` or
 `pcode config unset editing_mode`.
