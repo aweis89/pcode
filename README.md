@@ -346,7 +346,11 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/demo`: fictional Markdown, code, diff, table, and tool summaries; never calls
   the model, even in live mode, and does not enter its conversation history.
 - `/theme light` or `/theme dark`: change the input and future output palette.
-  `/theme` alone toggles.
+  `/theme` alone toggles. Rich output uses your terminal’s ANSI colors and default
+  background, including inline code; fenced code uses `ansi_light` / `ansi_dark`.
+  The input/completion palette still follows the selected light/dark mode. Run
+  `/demo` after switching to preview headings, links, quotes, tables, Python,
+  and diffs. Existing scrollback is not repainted.
 - `/help`: command list and keyboard shortcuts.
 - `/model`: searchable model picker for configured providers (keeps the conversation).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
