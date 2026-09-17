@@ -988,6 +988,8 @@ class PreviewApp:
             compact_idle.clear()
             self.activity.busy = True
             self.activity.status = "Compacting context…"
+            self.activity.prompt = "/compact" + (f" {focus}" if focus else "")
+            self.activity.prompt_state = "running"
             self.transcript.note("Compacting context with the current model. Ctrl+C cancels.")
 
             def finished(task):
@@ -996,12 +998,15 @@ class PreviewApp:
                 try:
                     result = task.result()
                     self.transcript.note(result.description())
+                    self.activity.prompt_state = "done"
                     success = True
                 except asyncio.CancelledError:
+                    self.activity.prompt_state = "cancelled"
                     self.transcript.note("Compaction cancelled; history unchanged.")
                 except Exception as error:
                     from pcode.live import error_message
 
+                    self.activity.prompt_state = "failed"
                     self.transcript.note(f"Compaction failed: {error_message(error)}")
                 finally:
                     if not success:
