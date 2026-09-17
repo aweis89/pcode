@@ -31,6 +31,7 @@ def test_first_prompt_creates_session_once(tmp_path, save):
             session_dir=root,
             console=Console(file=output, color_system=None),
         )
+        asyncio.run(app._initialize_runtime())
     try:
         for text in ("", "   ", "/help", "/context", "/session", "/new", "/new"):
             assert not app.handle(text)
@@ -76,6 +77,7 @@ def test_quitting_without_prompt_does_not_create_session(tmp_path):
             session_dir=root,
             console=Console(file=StringIO()),
         )
+        asyncio.run(app._initialize_runtime())
     app.handle("/quit")
     app.runtime.close()
     assert not root.exists()

@@ -602,6 +602,15 @@ when safe. Cancellation never undoes completed tool effects.
 
 ## Small architecture
 
+For a new interactive session, the editor opens before the live backend is ready.
+Agent imports and construction run in a worker thread; the toolbar shows `starting`
+and you can type immediately. Submitted prompts and agent-dependent commands wait
+for initialization; Ctrl+C clears queued work. Optional model metadata refresh runs
+in the background, outside the first-paint path. Resume still opens and validates
+the saved session before the editor starts, then gates requests on recovery.
+Shutdown waits for in-flight construction to finish so late-created runtimes are
+cleaned up rather than abandoned.
+
 - `src/pcode/agent.py`: `Agent(model, capabilities=[Coder(workspace)])` definition;
   independent of the terminal.
 - `src/pcode/live.py`: `run_stream_events()` adapter, history, and usage. It runs the

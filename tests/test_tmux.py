@@ -942,3 +942,62 @@ def test_vi_word_motion_and_newline_keep_editor_compact(pane):
     assert input_rows(capture(pane, "NEWLINEtwo three")) == 2
     pane("send-keys", "-t", "preview:0.0", "C-c")
     assert input_rows(capture(pane, "Input discarded")) == 1
+
+
+STARTUP_SCRIPT = r"""
+import asyncio
+import os
+import time
+from pathlib import Path
+from pcode.app import PreviewApp
+from pcode.runtime import Message
+
+root = Path(os.environ['XDG_CONFIG_HOME']).parent
+
+class Runtime:
+    session = None
+    recovery_blocked = ''
+
+    async def refresh_context(self):
+        (root / 'metadata-started').touch()
+        await asyncio.Event().wait()
+
+    async def stream(self, text):
+        yield Message('Startup response received')
+
+    def close(self):
+        pass
+
+class App(PreviewApp):
+    def _create_runtime(self):
+        deadline = time.monotonic() + 15
+        while not (root / 'release-startup').exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError('test did not release initialization')
+            time.sleep(0.01)
+        return Runtime()
+
+App(model='test:local').run()
+"""
+
+
+@pytest.mark.parametrize("pane", [STARTUP_SCRIPT], indirect=True)
+def test_startup_keeps_real_cpr_editor_editable_and_compact(pane, tmp_path):
+    assert input_rows(capture(pane, "starting")) == 1
+    pane("send-keys", "-t", "preview:0.0", "-l", "draft before agent is ready")
+    screen = capture(pane, "draft before agent is ready")
+    assert "starting" in screen
+    assert input_rows(screen) == 1
+    pane("resize-window", "-t", "preview:0", "-x", "80", "-y", "40")
+    assert input_rows(capture(pane, "draft before agent is ready", columns=80)) == 1
+    (tmp_path / "release-startup").touch()
+    deadline = time.monotonic() + 5
+    while not (tmp_path / "metadata-started").exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    assert input_rows(capture(pane, "draft before agent is ready", columns=80)) == 1
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    assert input_rows(capture(pane, "Startup response received", columns=80)) == 1
+    # Metadata is still blocked, but further typing and the CPR height are unaffected.
+    pane("send-keys", "-t", "preview:0.0", "-l", "next draft")
+    assert input_rows(capture(pane, "next draft", columns=80)) == 1

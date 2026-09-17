@@ -65,20 +65,10 @@ class PreviewApp:
         self.session_dir = saved_session.directory.parent if saved_session else session_dir
         self.preview = PreviewRuntime()
         self.runtime = runtime or self.preview
-        if model and runtime is None:
-            from pcode.agent import create_agent
-            from pcode.live import AgentRuntime
-            from pcode.sessions import SavedSession
-
-            self.runtime = AgentRuntime(
-                create_agent(model, self.workspace),
-                saved_session,
-                session_factory=(
-                    (lambda: SavedSession.create(model, self.workspace, session_dir))
-                    if save
-                    else None
-                ),
-            )
+        self._saved_session = saved_session
+        self._needs_runtime = bool(model and runtime is None)
+        self._startup_pending = self._needs_runtime or resume
+        self._startup_error: Exception | None = None
         agent = getattr(self.runtime, "agent", None)
         if agent is not None and model:
             apply_effort(agent, model, load_preferences().get("effort"))
@@ -166,6 +156,46 @@ class PreviewApp:
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
         ):
             self.registry.register(command)
+
+    def _create_runtime(self):
+        """Import and construct the backend off the terminal's event loop."""
+        from pcode.agent import create_agent
+        from pcode.live import AgentRuntime
+        from pcode.sessions import SavedSession
+
+        return AgentRuntime(
+            create_agent(self.model, self.workspace),
+            self._saved_session,
+            session_factory=(
+                lambda: SavedSession.create(self.model, self.workspace, self.session_dir)
+            )
+            if self.save_sessions
+            else None,
+        )
+
+    async def _initialize_runtime(self) -> None:
+        if self._needs_runtime:
+            # A cancelled to_thread await does not stop its thread. Keep ownership
+            # until it finishes so a late-created runtime cannot leak on exit.
+            task = asyncio.create_task(asyncio.to_thread(self._create_runtime))
+            try:
+                runtime = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                try:
+                    runtime = await task
+                except Exception:
+                    pass
+                else:
+                    runtime.close()
+                raise
+            self.runtime = runtime
+            self._needs_runtime = False
+            agent = getattr(runtime, "agent", None)
+            if agent is not None:
+                apply_effort(agent, self.model, load_preferences().get("effort"))
+                apply_thinking(agent, self.model, self.activity.show_thinking)
+        if self.resuming:
+            await self.runtime.restore()
 
     def compact(self, argument: str, *, before_queue: bool = False) -> None:
         if not self.model or not hasattr(self.runtime, "compact"):
@@ -817,7 +847,7 @@ class PreviewApp:
         model = self.model if self.model else "preview"
         details = plain(f"{model} · effort: {effort}", limit=None)
         context = ""
-        if self.model:
+        if self.model and not self._startup_pending and self._startup_error is None:
             from pcode.context_usage import context_label
 
             resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
@@ -825,6 +855,8 @@ class PreviewApp:
             if history is None:
                 history = getattr(self.runtime, "history", ())
             context = context_label(resolved or self.model, history)
+        if self._startup_pending:
+            details += " · starting"
         if self.activity.busy:
             details += " · working"
             if self.activity.queued:
@@ -844,6 +876,8 @@ class PreviewApp:
         segments.extend(
             [("model", model_text), ("text", plain(f" · effort: {effort}", limit=None))]
         )
+        if self._startup_pending:
+            segments.extend([("text", " · "), ("activity", "starting")])
         if self.activity.busy:
             segments.extend([("text", " · "), ("activity", "working")])
             if self.activity.queued:
@@ -957,19 +991,11 @@ class PreviewApp:
     async def run_async(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
-        if self.resuming:
-            await self.runtime.restore()
-        refresh = getattr(self.runtime, "refresh_context", None)
-        if refresh is not None:
-            await refresh()
         self.transcript.welcome(self.model, str(self.workspace))
-        self.show_startup_context()
-        if self.model and self.runtime.session:
-            self.transcript.note(f"Saving session: {self.runtime.session.info.id}")
-        if self.resuming:
-            self.replay()
+        ready = asyncio.Event()
         queue = asyncio.Queue()
         commands = asyncio.Queue()
+        startup_commands = []
         command_idle = asyncio.Event()
         command_idle.set()
         live_task = None
@@ -983,9 +1009,53 @@ class PreviewApp:
         queue_generation = 0
         pending_mcp = 0
 
+        async def refresh_metadata():
+            refresh = getattr(self.runtime, "refresh_context", None)
+            if refresh is not None:
+                try:
+                    await refresh()
+                except Exception:
+                    # Optional metadata must not take down a usable editor.
+                    pass
+                finally:
+                    session.app.invalidate()
+
+        async def initialize():
+            try:
+                await self._initialize_runtime()
+                self.show_startup_context()
+                saved = getattr(self.runtime, "session", None)
+                if self.model and saved:
+                    self.transcript.note(f"Saving session: {saved.info.id}")
+                if self.resuming:
+                    self.replay()
+            except Exception as error:
+                self._startup_error = error
+                try:
+                    from pcode.live import error_message
+
+                    message = error_message(error)
+                except ImportError:
+                    message = "Provider dependency missing. Reinstall pcode and try again."
+                self.transcript.error(message, title="Agent startup failed")
+                clear_queue()
+                self.activity.busy = False
+            else:
+                session.app.create_background_task(refresh_metadata())
+            finally:
+                self._startup_pending = False
+                ready.set()
+                for command in startup_commands:
+                    commands.put_nowait(command)
+                startup_commands.clear()
+                session.app.invalidate()
+
         def clear_queue():
             nonlocal queue_generation, pending_mcp, pending_compact
             queue_generation += 1
+            startup_commands.clear()
+            if commands.empty():
+                command_idle.set()
             if pending_mcp:
                 self.transcript.warning("Pending MCP enable command cancelled.")
                 pending_mcp = 0
@@ -1017,6 +1087,11 @@ class PreviewApp:
         def submit(text):
             nonlocal pending_mcp, pending_compact
             text = text.strip()
+            if not ready.is_set() and text in {"/quit", "/exit"}:
+                # Do not strand exit behind a command waiting for initialization.
+                self.running = False
+                session.app.exit()
+                return
             if text.startswith("/"):
                 commands.put_nowait(
                     (
@@ -1129,6 +1204,26 @@ class PreviewApp:
             while self.running:
                 generation, text, submitted_idle = await commands.get()
                 try:
+                    if text.split()[0] not in {
+                        "/quit",
+                        "/exit",
+                        "/help",
+                        "/theme",
+                        "/colors",
+                        "/show-thinking",
+                        "/show-commands",
+                        "/config",
+                    }:
+                        if not ready.is_set():
+                            # Keep consuming frontend-only commands while backend
+                            # commands wait, preserving their order for readiness.
+                            startup_commands.append((generation, text, submitted_idle))
+                            continue
+                        if generation != queue_generation:
+                            continue
+                        if self._startup_error is not None:
+                            self.transcript.warning("Agent startup failed; restart pcode to retry.")
+                            continue
                     if text.split()[0] == "/compact":
                         if generation != queue_generation:
                             continue
@@ -1214,7 +1309,7 @@ class PreviewApp:
                 finally:
                     if pending_mcp or pending_compact:
                         self.activity.busy = True
-                    if commands.empty():
+                    if commands.empty() and not startup_commands:
                         command_idle.set()
                 await output.flush()
                 if not self.running and session.app.is_running:
@@ -1222,11 +1317,17 @@ class PreviewApp:
 
         async def consume():
             nonlocal live_task
+            await ready.wait()
             while self.running:
                 await command_idle.wait()
                 await mcp_idle.wait()
                 await compact_idle.wait()
                 generation, text = await queue.get()
+                if self._startup_error is not None:
+                    clear_queue()
+                    self.activity.busy = False
+                    self.transcript.warning("Agent startup failed; restart pcode to retry.")
+                    continue
                 await command_idle.wait()
                 await mcp_idle.wait()
                 await compact_idle.wait()
@@ -1298,6 +1399,7 @@ class PreviewApp:
                 await asyncio.sleep(2)
 
         def start():
+            session.app.create_background_task(initialize())
             session.app.create_background_task(watch_branch())
             session.app.create_background_task(output.run())
             session.app.create_background_task(consume())
@@ -1373,9 +1475,9 @@ def main() -> None:
         return
     if args.resume and (args.no_save or args.demo):
         parser.error("--resume cannot be combined with --no-save or --demo")
-    from pcode.sessions import SavedSession, SessionError, list_sessions
-
     if args.sessions:
+        from pcode.sessions import list_sessions
+
         console = Transcript(Console(), args.theme, color_style=args.color_style)
         records = list_sessions(args.session_dir)
         if not records:
@@ -1396,6 +1498,8 @@ def main() -> None:
     app = None
     try:
         if args.resume:
+            from pcode.sessions import SavedSession, SessionError
+
             saved = SavedSession.open(args.resume, args.session_dir)
             if args.model and args.model != saved.info.model:
                 raise SessionError(
@@ -1411,7 +1515,7 @@ def main() -> None:
             args.model = load_preferences().get("model")
         workspace = args.workspace or Path.cwd()
         if not workspace.is_dir():
-            raise SessionError("Workspace must be an existing directory.")
+            raise ValueError("Workspace must be an existing directory.")
         app = PreviewApp(
             theme=args.theme,
             color_style=args.color_style,
@@ -1428,7 +1532,7 @@ def main() -> None:
 
         parser.exit(2, error_message(error) + "\n")
     finally:
-        if app is not None and app.model:
+        if app is not None and app.model and hasattr(app.runtime, "close"):
             app.runtime.close()
         if saved is not None:
             saved.close()
