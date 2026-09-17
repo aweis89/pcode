@@ -53,7 +53,7 @@ and current model. Preferences live in `~/.config/pcode/preferences.json`
 (or `$XDG_CONFIG_HOME/pcode/preferences.json` when set), independently of saved
 conversations and `--no-save`. Run `pcode` with no model argument to reuse the
 saved model; without a saved default it opens the offline preview. The saved
-effort applies to OpenAI/Codex models, including new and resumed conversations;
+effort applies to OpenAI/Codex, Anthropic, and Meridian models, including new and resumed conversations;
 `/effort default` restores provider-default behavior. Use `pcode config unset KEY`
 to reset an individual default. `--demo` always stays offline.
 
@@ -96,7 +96,7 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 | --- | --- | --- |
 | `theme` | `dark` | `dark`, `light` |
 | `autocompact` | `off` | `on`, `off` |
-| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex only) |
+| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
 
 Automatic compaction still requires a known context window; setting its global
@@ -633,7 +633,7 @@ Long paths shrink first; narrow terminals may truncate trailing context details.
 
 ## Reasoning effort
 
-For OpenAI/Codex models, use **Ctrl+N** to increase effort and **Ctrl+P** to
+For OpenAI/Codex, Anthropic, and Meridian models, use **Ctrl+N** to increase effort and **Ctrl+P** to
 decrease it, or `/effort low|medium|high|xhigh`. `/effort` shows the current
 setting; `/effort default` removes the override. Slash completion includes these
 values, and the footer shows the selected effort.
@@ -644,7 +644,11 @@ selects high; Ctrl+P selects low). Changes apply to the **next turn**, not an
 in-progress run, and preserve your draft. Up/Down still navigate history and
 completions. Model support varies; not every model accepts every effort level.
 Effort overrides are in-memory, survive `/new`, and are not saved with sessions.
-Preview and non-OpenAI providers do not support this control.
+On Anthropic and Meridian, `xhigh` uses the native level when supported by the
+model profile, otherwise it sends Anthropic’s `max` effort. Older models may not
+support effort or the highest level; provider validation still applies. This
+control sets effort without changing the model’s thinking configuration.
+Preview and other providers do not support this control.
 
 ## MCP servers (explicit opt-in)
 

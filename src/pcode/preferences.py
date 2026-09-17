@@ -104,12 +104,26 @@ def _write_preferences(path: Path, data: dict) -> None:
             Path(name).unlink(missing_ok=True)
 
 
+def effort_setting(model: str | None) -> str | None:
+    provider = (model or "").split(":", 1)[0]
+    if provider in OPENAI_PROVIDERS:
+        return "openai_reasoning_effort"
+    if provider in ("anthropic", "meridian"):
+        return "anthropic_effort"
+    return None
+
+
 def apply_effort(agent, model: str, effort: str | None) -> None:
-    if effort not in EFFORTS or model.split(":", 1)[0] not in OPENAI_PROVIDERS:
+    key = effort_setting(model)
+    if effort not in EFFORTS or key is None:
         return
     settings = dict(agent.model_settings or {})
     if effort == "default":
-        settings.pop("openai_reasoning_effort", None)
+        settings.pop(key, None)
     else:
-        settings["openai_reasoning_effort"] = effort
+        # Older Claude models call their highest effort "max", not "xhigh".
+        profile = getattr(getattr(agent, "model", None), "profile", {}) or {}
+        if key == "anthropic_effort" and effort == "xhigh":
+            effort = "xhigh" if profile.get("anthropic_supports_xhigh_effort") else "max"
+        settings[key] = effort
     agent.model_settings = settings

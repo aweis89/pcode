@@ -25,7 +25,11 @@ def test_effort_persists_and_restores():
     app.effort("high")
     assert load_preferences() == {"model": "openai-codex:test", "effort": "high"}
     assert make_app().current_effort() == "high"
-    assert make_app("anthropic:test").runtime.agent.model_settings is None
+    for provider in ("anthropic", "meridian"):
+        assert make_app(f"{provider}:test").runtime.agent.model_settings == {
+            "anthropic_effort": "high"
+        }
+    assert make_app("google:test").runtime.agent.model_settings is None
     app.effort("default")
     assert make_app().current_effort() == "default"
     assert load_preferences()["effort"] == "default"
