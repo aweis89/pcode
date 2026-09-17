@@ -156,7 +156,7 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "hello")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    streaming = capture(pane, "FIRST STREAM CHUNK", running=True)
+    streaming = capture(pane, "COMMITTED LINE", running=True)
     assert input_rows(streaming) == 1
     assert "COMMITTED LINE" in streaming
     assert any(
@@ -164,14 +164,14 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
         and line.startswith(tuple("│" + f for f in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
         for line in streaming.splitlines()
     )
-    before = streaming.splitlines().index("FIRST STREAM CHUNK")
+    assert "FIRST STREAM CHUNK" not in streaming
     completed = capture(pane, "LIVE ANSWER COMPLETE")
     assert input_rows(completed) == 1
     assert "✓ hello" in completed
-    assert completed.splitlines().index("FIRST STREAM CHUNK") == before
+    assert "FIRST STREAM CHUNK" in completed
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert history.count("FIRST STREAM CHUNK") == 1
-    assert "❯ hello" in history
+    assert "▌ hello" in history
 
 
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
@@ -179,9 +179,9 @@ def test_stream_resize_and_cancellation(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "hello")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    capture(pane, "FIRST STREAM CHUNK", running=True)
+    capture(pane, "COMMITTED LINE", running=True)
     pane("split-window", "-v", "-t", "preview:0.0", "cat")
-    assert input_rows(capture(pane, "FIRST STREAM CHUNK", running=True)) == 1
+    assert input_rows(capture(pane, "❯", running=True)) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "next input")
     capture(pane, "❯ next input", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
@@ -194,7 +194,7 @@ def test_stream_resize_and_cancellation(pane):
 def test_draft_and_cursor_survive_stream_completion_and_width_resize(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    capture(pane, "FIRST STREAM CHUNK", running=True)
+    capture(pane, "COMMITTED LINE", running=True)
     pane("send-keys", "-t", "preview:0.0", "-l", "draft text")
     pane("send-keys", "-t", "preview:0.0", "Left", "Left", "Left", "Left")
     capture(pane, "❯ draft text", running=True)
@@ -218,15 +218,11 @@ def test_immediate_cancellation_unlocks_editor(pane):
     assert input_rows(capture(pane, "editable again")) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="prompt_toolkit's resize erase can leave the live line behind after frame reflow",
-)
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
 def test_width_resize_does_not_leave_a_copy_of_unfinished_line(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    capture(pane, "FIRST STREAM CHUNK", running=True)
+    capture(pane, "COMMITTED LINE", running=True)
     pane("split-window", "-h", "-t", "preview:0.0", "cat")
     capture(pane, "LIVE ANSWER COMPLETE")
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
@@ -267,7 +263,8 @@ PreviewApp(model="test:local", runtime=runtime).run()
 def test_long_stream_remains_in_scrollback_without_truncation(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    capture(pane, "TAIL_MARKER", running=True)
+    screen = capture(pane, "LINE_079", running=True)
+    assert "TAIL_MARKER" not in screen
     pane("send-keys", "-t", "preview:0.0", "-l", "still editable")
     screen = capture(pane, "FINISHED")
     assert "❯ still editable" in screen
@@ -401,10 +398,11 @@ PreviewApp(model="test:local", runtime=runtime).run()
 
 
 @pytest.mark.parametrize("pane", [MARKDOWN_SCRIPT], indirect=True)
-def test_markdown_code_preview_stays_bounded_and_commits_once(pane):
+def test_markdown_code_stays_hidden_until_committed_once(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    screen = capture(pane, "PREVIEW_MARKER", running=True)
+    screen = capture(pane, "Styled response", running=True)
+    assert "PREVIEW_MARKER" not in screen
     assert input_rows(screen) == 1
     assert "**Styled response**" not in screen
     assert "value_000" not in screen  # Still buffered, not a pane-sized live block.
@@ -522,7 +520,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     assert screen.count("┌") == screen.count("└") == 1
 
 
-PAUSED_PREVIEW_SCRIPT = """
+PAUSED_STREAM_SCRIPT = """
 import asyncio
 from pydantic_ai import Agent
 from pydantic_ai.models.function import FunctionModel
@@ -538,25 +536,18 @@ PreviewApp(model="test:local", runtime=runtime).run()
 """
 
 
-@pytest.mark.parametrize("pane", [PAUSED_PREVIEW_SCRIPT], indirect=True)
-def test_paused_preview_reflows_on_resize_without_more_tokens(pane):
+@pytest.mark.parametrize("pane", [PAUSED_STREAM_SCRIPT], indirect=True)
+def test_paused_stream_stays_hidden_on_resize_without_more_tokens(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    capture(pane, "PAUSED_TAIL", running=True)
+    capture(pane, "COMMITTED MARKER", running=True)
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for columns in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(columns))
-        screen = capture(pane, "PAUSED_TAIL", running=True, columns=columns)
-        # Check the active preview region, not resize ghosting in old history
-        # (covered separately by the existing strict-xfail regression).
-        lines = screen[: screen.rindex("┌")].splitlines()
-        assert lines.pop().startswith("└")
-        assert lines.pop().rstrip("│ ").endswith(" h")  # Prompt-only task widget.
-        assert lines.pop().startswith("┌")
-        tail_row = max(i for i, line in enumerate(lines) if line.strip())
-        expected_length = 61 % columns or columns
-        assert lines[tail_row] == "x" * (expected_length - 11) + "PAUSED_TAIL", screen
-        assert tail_row == 0 or not lines[tail_row - 1].strip(), screen
+        screen = capture(pane, "❯", running=True, columns=columns)
+        history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+        assert "PAUSED_TAIL" not in history
+        assert "x" * 20 not in history
         assert "│❯ keep draft" in screen
         assert input_rows(screen) == 1
 
@@ -680,21 +671,21 @@ def test_failed_prompt_indicator_stays_visible(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "hello")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    capture(pane, "FIRST STREAM CHUNK", running=True)
+    capture(pane, "COMMITTED LINE", running=True)
     failed = capture(pane, "! hello · failed")
     assert input_rows(failed) == 1
     assert "Run failed" in failed
 
 
-@pytest.mark.parametrize("pane", [PAUSED_PREVIEW_SCRIPT], indirect=True)
+@pytest.mark.parametrize("pane", [PAUSED_STREAM_SCRIPT], indirect=True)
 def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "LONG PROMPT " * 30)
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    capture(pane, "PAUSED_TAIL", running=True)
+    capture(pane, "COMMITTED MARKER", running=True)
     for columns in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(columns))
-        screen = capture(pane, "PAUSED_TAIL", running=True, columns=columns)
+        screen = capture(pane, "❯", running=True, columns=columns)
         lines = screen.splitlines()
         editor_top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
         assert lines[editor_top - 3].startswith("┌")
@@ -706,12 +697,12 @@ def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
         assert input_rows(screen) == 1
 
 
-@pytest.mark.parametrize("pane", [PAUSED_PREVIEW_SCRIPT], indirect=True)
+@pytest.mark.parametrize("pane", [PAUSED_STREAM_SCRIPT], indirect=True)
 def test_queued_messages_stay_directly_above_editor(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "active prompt")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    capture(pane, "PAUSED_TAIL", running=True)
+    capture(pane, "COMMITTED MARKER", running=True)
     for text in ("first queued message " * 10, "second queued message"):
         pane("send-keys", "-t", "preview:0.0", "-l", text)
         pane("send-keys", "-t", "preview:0.0", "Enter")

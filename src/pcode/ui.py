@@ -29,6 +29,7 @@ from rich.theme import Theme
 
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.runtime import Event, Message, ToolStarted, ToolSummary
+from pcode.task_prompt import TaskPrompt
 from pcode.tool_display import command_preview, command_text, label, plain
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
 
@@ -144,7 +145,6 @@ TERMINAL_THEME = Theme(
 @dataclass
 class Activity:
     busy: bool = False
-    text: str = ""
     status: str = ""
     queued: int = 0
     queued_prompts: list[str] = field(default_factory=list)
@@ -189,9 +189,6 @@ class Activity:
         if remaining > 0:
             rows.append(("class:plan", f"… {remaining} more queued"))
         return rows
-
-    def preview(self):
-        return [("", self.text)]
 
 
 @Output.register
@@ -244,7 +241,7 @@ class CursorSafeOutput:
 
 
 class TerminalOutput:
-    """Commit completed Markdown blocks once; keep a bounded unfinished preview.
+    """Commit completed Markdown blocks once; buffer unfinished text.
 
     All writes run through one batched terminal handoff. Never hold the handoff
     across a network await: the editor must keep receiving input while streaming.
@@ -253,14 +250,12 @@ class TerminalOutput:
     def __init__(
         self,
         console: Console,
-        activity: Activity,
         app: Application,
         *,
         code_theme=None,
         rich_theme=None,
     ):
         self.console = console
-        self.activity = activity
         self.app = app
         self.tail = ""
         self.streamed = False
@@ -269,11 +264,6 @@ class TerminalOutput:
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
-        # Freeze the visible source at flush boundaries: a redraw while waiting
-        # for a terminal handoff must not hide text that is not committed yet.
-        self._preview_source = ""
-        self._preview_key: tuple[str, int] | None = None
-        self._preview_text = ""
 
     def print(self, *objects) -> None:
         self.pending.append((objects, "\n", False))
@@ -333,24 +323,6 @@ class TerminalOutput:
             self._commit("".join(lines[:end]))
             self.tail = "".join(lines[end:])
 
-    def _preview(self) -> str:
-        # Only one display row belongs to prompt_toolkit. Keep the complete
-        # source separately so clipping never loses text from final scrollback.
-        width = max(1, self.app.output.get_size().columns)
-        key = (self._preview_source, width)
-        if key != self._preview_key:
-            rows = Text(self._preview_source).wrap(self.console, width, overflow="fold")
-            self._preview_text = rows[-1].plain if rows else ""
-            self._preview_key = key
-        return self._preview_text
-
-    def refresh_preview(self) -> bool:
-        """Reflow the last flushed preview on resize, without scheduling a redraw."""
-        text = self._preview()
-        changed = text != self.activity.text
-        self.activity.text = text
-        return changed
-
     def finish(self, fallback: str = "") -> None:
         # Message is a completion marker, not a second copy of streamed text.
         if not self.streamed and fallback:
@@ -372,8 +344,6 @@ class TerminalOutput:
                         # Snapshot after entering: input/model events can arrive while
                         # in_terminal waits for CPR, but not during these sync writes.
                         pending, self.pending = self.pending, []
-                        self._preview_source = self.tail
-                        self.refresh_preview()
                         width = max(1, self.app.output.get_size().columns)
                         # Rich's public buffer context coalesces the batch's
                         # prints (including separators) into one output flush.
@@ -384,10 +354,6 @@ class TerminalOutput:
                                     *objects, end=end, soft_wrap=soft_wrap, width=width
                                 )
                 # in_terminal already repainted the editor on exit.
-            else:
-                self._preview_source = self.tail
-                if self.refresh_preview():
-                    self.app.invalidate()
             self.changed.clear()
 
     async def run(self) -> None:
@@ -515,7 +481,7 @@ def create_prompt(
 
     def plan_rows():
         # Share one height budget instead of stacking separate Tools and Tasks
-        # panels. Leave space for the live tail, completion menu, and editor.
+        # panels. Leave space for the completion menu and editor.
         budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
         return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
@@ -579,21 +545,9 @@ def create_prompt(
         max_height=6, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
     )
     menu.content.dont_extend_height = Always()
-    live = ConditionalContainer(
-        Window(
-            FormattedTextControl(activity.preview, show_cursor=False),
-            height=1,
-            wrap_lines=False,
-            dont_extend_height=True,
-        ),
-        filter=Condition(lambda: bool(activity.text)),
-    )
-    # The unfinished line belongs directly after committed output, not in a
-    # preview beside the editor. Put spare height BELOW it to avoid a jump when
-    # that line is committed to scrollback. The editor stays bottom-aligned.
-    children = [live, menu, search, plan, queued, Frame(editor, height=frame_height)]
+    children = [menu, search, plan, queued, Frame(editor, height=frame_height)]
     if transcript is not None:
-        children.insert(1, Window())
+        children.insert(0, Window())
 
         def accept(buffer):
             text = buffer.text
@@ -632,13 +586,6 @@ def create_prompt(
             mouse_support=False,
         )
 
-        def refresh_preview(app):
-            # SIGWINCH redraws must reflow a paused stream too. Updating before
-            # layout also lets the live row's visibility filter see the new text.
-            if transcript.output is not None:
-                transcript.output.refresh_preview()
-
-        session.app.before_render += refresh_preview
     return session
 
 
@@ -696,7 +643,7 @@ class Transcript:
         self.print(Text(text, style="pcode.muted"))
 
     def user(self, text: str) -> None:
-        self.print(Text.assemble(("❯ ", "pcode.brand"), text))
+        self.print(TaskPrompt(text))
         self.print()
 
     def command_summary(self, event: ToolSummary) -> None:
