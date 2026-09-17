@@ -235,18 +235,24 @@ def test_commands_run_while_model_waits(inspector_command):
             with (
                 patch("pcode.app.create_prompt", prompt),
                 patch("pcode.inspector_ui.ToolInspector", browser),
+                patch.object(app.transcript, "user", wraps=app.transcript.user) as user,
             ):
                 task = asyncio.create_task(app.run_async())
                 try:
                     await wait_for(lambda: session is not None and session.app.is_running)
                     pipe.send_text("first\r")
                     await asyncio.wait_for(started.wait(), 5)
-                    pipe.send_text("/theme light\r/help\r/new\r/session\r/nope\r/theme invalid\r")
+                    user.reset_mock()
+                    pipe.send_text(
+                        "/theme light\r/help\r/new\r/session\r/tree\r/nope\r/theme invalid\r"
+                    )
                     await wait_for(lambda: "Usage: /theme" in printed.getvalue())
                     assert app.transcript.theme == "light"
                     assert "Unknown command" in printed.getvalue()
                     assert "/new is unavailable while working" in printed.getvalue()
                     assert "/session is unavailable while working" in printed.getvalue()
+                    assert "/tree is unavailable while working" in printed.getvalue()
+                    user.assert_not_called()
                     assert app.activity.busy
                     assert app.activity.queued_prompts == []
                     assert calls == ["first"]

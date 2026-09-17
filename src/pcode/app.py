@@ -698,7 +698,6 @@ class PreviewApp:
             return False
         if self.model and not text.startswith("/"):
             return True
-        self.transcript.user(text)
         if text.startswith("/"):
             try:
                 if not self.registry.dispatch(text):
@@ -706,6 +705,7 @@ class PreviewApp:
             except ValueError as error:
                 self.transcript.note(str(error))
         else:
+            self.transcript.user(text)
             self.transcript.events(self.preview.reply(text))
         return False
 
@@ -825,7 +825,6 @@ class PreviewApp:
                         and command.name in {"/new", "/session", "/tree", "/login", "/model"}
                         and (self.activity.busy or self.activity.queued)
                     ):
-                        self.transcript.user(text)
                         self.transcript.note(
                             f"{command.name} is unavailable while working. "
                             "Cancel with Ctrl+C or wait for the run to finish, then retry."
