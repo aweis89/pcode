@@ -40,10 +40,10 @@ def test_enabled_option_mirrors_command_and_output():
     )
     assert view.command_output(event) is True
     lines = [line.rstrip() for line in stream.getvalue().splitlines()]
-    assert lines[0] == "› Run · 0.2s"
-    assert " $ pytest -q" in lines
-    assert " 2 passed" in lines
-    assert " [exit code: 0]" in lines
+    assert lines[0] == "✓ Run · 0.2s"
+    assert "  $ pytest -q" in lines
+    assert "  2 passed" in lines
+    assert "  [exit code: 0]" in lines
 
 
 def test_mirroring_covers_process_tools_and_empty_output():
@@ -51,7 +51,7 @@ def test_mirroring_covers_process_tools_and_empty_output():
     view, stream = transcript()
     assert view.command_output(ToolSummary("check_command", "process → running", result="")) is True
     assert "(no output)" in stream.getvalue()
-    assert "› Check" in stream.getvalue()
+    assert "✓ Check" in stream.getvalue()
 
 
 def test_mirroring_ignores_tools_without_commands():
@@ -74,7 +74,7 @@ def test_failed_commands_report_failure_in_the_mirrored_block():
         error="ModuleNotFoundError: example",
     )
     assert view.command_output(event) is True
-    assert "› Run failed" in stream.getvalue()
+    assert "✗ Run failed" in stream.getvalue()
     assert "ModuleNotFoundError: example" in stream.getvalue()
 
 
@@ -93,8 +93,8 @@ def test_mirrored_failure_replaces_the_error_excerpt_block():
     )
     app.present_events((event,))
     output = stream.getvalue()
-    assert "› Run failed" in output
-    assert "✗ Run failed" not in output
+    assert "✗ Run failed" in output
+    assert output.count("✗ Run failed") == 1
     assert "kept context" in output
     # The pinned tool panel keeps its own record regardless of scrollback.
     assert app.activity.tools.calls[0].event.error == event.error
@@ -122,12 +122,13 @@ def test_command_scrollback_lines_bounds_rows_and_keeps_tail(limit):
         )
     )
     lines = stream.getvalue().splitlines()
-    assert lines[0] == "› Run"
-    assert len(lines) == limit + 3  # Heading and code-block padding.
-    assert "truncated" in lines[2]
+    assert lines[0] == "✓ Run"
+    assert len(lines) == limit + 2  # Heading and command are outside the output budget.
+    assert lines[1].strip() == "$ noisy"
+    assert f"{62 - limit} earlier output rows omitted" in lines[2]
     assert "earlier error output" not in lines[2]
     if limit > 1:
-        assert lines[-2].strip() == "final line"
+        assert lines[-1].strip() == "final line"
 
 
 def test_settings_round_trip_through_config():
@@ -207,10 +208,10 @@ def test_toggled_mirroring_takes_effect_on_the_next_settled_command():
         "run_command", "echo → exit 0", call_id="one", command="echo hi", result="hi"
     )
     app.present_events((event,))
-    assert "› Run" not in stream.getvalue()
+    assert "✓ Run" not in stream.getvalue()
     app.toggle_command_scrollback()
     app.present_events((event,))
-    assert "› Run" in stream.getvalue()
+    assert "✓ Run" in stream.getvalue()
     assert "$ echo hi" in stream.getvalue()
 
 
@@ -231,3 +232,83 @@ def test_mirrored_output_is_sanitized_and_literal():
     assert "[bold]literal[/bold]" in output
     assert "\x1b" not in output
     assert "\u202e" not in output
+
+
+@pytest.mark.parametrize("width", [1, 2, 3, 12, 45, 80])
+def test_command_block_wraps_without_losing_command_or_literal_indentation(width):
+    from rich.cells import cell_len
+
+    save_preferences(command_scrollback="on", command_scrollback_lines="3")
+    view, stream = transcript(width=width)
+    view.command_output(
+        ToolSummary(
+            "run_command",
+            "run",
+            command="printf '界 hello'\necho done",
+            result="    [bold]literal[/bold]\n```\n# heading\n" + "tail " * 40,
+        )
+    )
+    lines = stream.getvalue().splitlines()
+    assert all(cell_len(line) <= width for line in lines)
+    joined = "".join(line.strip() for line in lines)
+    assert "printf" in joined and "echodone" in joined.replace(" ", "")
+    if width == 80:
+        assert "earlier output rows omitted" in stream.getvalue()
+
+
+def test_output_keeps_leading_indentation_and_markdown_literal_without_padding():
+    save_preferences(command_scrollback="on")
+    view, stream = transcript()
+    view.command_output(
+        ToolSummary(
+            "run_command", "run", command="echo hi", result="    # heading\n```\n[bold]x[/bold]"
+        )
+    )
+    assert stream.getvalue().splitlines() == [
+        "✓ Run",
+        "  $ echo hi",
+        "      # heading",
+        "  ```",
+        "  [bold]x[/bold]",
+    ]
+
+
+def test_process_details_are_not_presented_as_shell_source():
+    save_preferences(command_scrollback="on")
+    view, stream = transcript()
+    view.command_output(ToolSummary("check_command", "process → running", result="still running"))
+    assert "$" not in stream.getvalue()
+    assert "process → running" in stream.getvalue()
+
+
+def test_command_replay_uses_current_theme_and_output_budget():
+    from pcode.command_transcript import CommandTranscript
+
+    save_preferences(command_scrollback="on")
+    view, _ = transcript()
+    view.tool_result(ToolSummary("run_command", "run", command="echo hi", result="one\ntwo\nthree"))
+    view.theme = "light"
+    view.command_scrollback_lines = 1
+    blocks = [obj for objects, _, _ in view.replay() for obj in objects]
+    block = next(obj for obj in blocks if isinstance(obj, CommandTranscript))
+    assert block.code_theme == view.code_theme
+    assert block.max_lines == 1
+    assert block.command == "echo hi"
+
+
+def test_command_highlighting_and_failure_color_do_not_style_output_as_code():
+    from rich.text import Text
+
+    from pcode.command_transcript import CommandTranscript
+
+    view, _ = transcript()
+    block = CommandTranscript("echo '$HOME'", "[bold]literal[/bold]", "Run", failed=True)
+    with view.console.use_theme(view.rich_theme):
+        parts = list(block.__rich_console__(view.console, view.console.options))
+        assert isinstance(parts[0], Text)
+        assert parts[0].style == "pcode.error"
+        segments = list(view.console.render(block))
+    command_segments = [segment for segment in segments if "$HOME" in segment.text]
+    assert command_segments and command_segments[0].style.color is not None
+    output_segments = [segment for segment in segments if "[bold]literal[/bold]" in segment.text]
+    assert output_segments and not output_segments[0].style

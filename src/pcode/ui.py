@@ -31,6 +31,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import load_preferences
@@ -1002,7 +1003,7 @@ class Transcript:
             Markdown(obj.markup, code_theme=self.code_theme)
             if isinstance(obj, Markdown)
             else replace(obj, code_theme=self.code_theme)
-            if isinstance(obj, TranscriptNotice)
+            if isinstance(obj, (TranscriptNotice, CommandTranscript))
             else obj
             for obj in objects
         )
@@ -1102,15 +1103,19 @@ class Transcript:
         )
         # Live results arrive redacted and length-bounded from the capture step;
         # sanitize again so replayed or synthesized events cannot emit controls.
-        output = command_text(event.result or "").strip() or "(no output)"
-        elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
+        output = command_text(event.result or "").rstrip("\n")
+        if not output.strip():
+            output = "(no output)"
         self.print(
-            TranscriptNotice(
-                f"$ {invocation}\n{output}",
-                "command",
-                f"{label(event.name)}{' failed' if event.failed else ''}{elapsed}",
-                self.command_scrollback_lines,
-                self.code_theme,
+            CommandTranscript(
+                command=invocation,
+                output=output,
+                title=label(event.name),
+                failed=event.failed,
+                elapsed_seconds=event.elapsed_seconds,
+                max_lines=self.command_scrollback_lines,
+                code_theme=self.code_theme,
+                shell_command=bool(event.command),
             )
         )
         return True
