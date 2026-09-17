@@ -935,34 +935,45 @@ Pcode removes Coder's default clearing of old tool results at 70% context usage 
 that evidence is not discarded before the summarizer sees it. With auto-compaction
 off, use `/compact` proactively or `/new` for unrelated work.
 
-### Transient thinking preview
+### Transient reasoning summary
 
-Press **Ctrl+T** to show or hide a bordered, streaming **Thinking** box above the
-current prompt, tasks, and editor. It wraps text, preserves paragraph breaks, and
-follows the latest **10 lines** by default (plus the box borders). It grows with
-content and shrinks in small panes to leave room for tasks and input. The toggle saves your
-preference. `/show-thinking on` and `/show-thinking off` also change the current
-view and save the default; `/show-thinking` reports the current setting.
-You can also set the startup default with
-`pcode config set show_thinking on` (or `off`, the default). Like other `/config`
-defaults, this takes effect in new sessions; Ctrl+T changes the current view.
+Press **Ctrl+T** to show or hide the provider's visible reasoning summary.
+The default **compact** view places the latest heading next to the task/tool
+header, for example `Tasks 0/3 · Locating root evidence`. Markdown heading/bold
+markers are removed and long text is clipped to the available terminal width.
+When no task/tool panel exists yet, the summary uses a single unbordered line
+above the current prompt. It does not add a separate box or take a task row.
 
-Raw reasoning goes directly to a bounded, mutable prompt_toolkit UI buffer, not
-through transcript events or permanent terminal output. The preview is cleared
-on completion, cancellation, failure, and conversation reset. Hiding the view
-keeps the current turn's rolling buffer so it can be shown again. This does not
-change model reasoning effort or the runtime's existing saved model-message
-history. Configure the maximum number of visible content lines with:
+These are provider-exposed summaries, not raw internal reasoning tokens. They
+may be empty, a short heading, or several paragraphs. The compact view prefers
+the latest heading in the current thinking block, falling back to its latest
+nonempty line. A new nonempty block replaces the compact label; signature-only
+blocks do not erase it. The **expanded** view retains the complete visible text
+within its bounded rolling buffer and follows the latest wrapped lines:
 
 ```sh
-pcode config set thinking_lines 10  # Positive integer; default 10
+pcode config set thinking_display compact   # Default: summary beside Tasks/Tools
+pcode config set thinking_display expanded  # Opt into a separate multiline box
+pcode config set thinking_lines 10          # Expanded view's maximum content rows
 ```
 
-You can also use `/config set thinking_lines 10`; like other defaults, the line
-limit applies on the next launch. The underlying rolling buffer is bounded to
-8,192 characters. This is a live tail, not a scrollable reasoning transcript.
-As with other normal-screen panels, aggressive tmux resizing can move old widget
-rows into terminal history before pcode can erase them.
+The expanded box sits above the current prompt/tasks, preserves paragraph breaks,
+grows with content, and shrinks in small panes to leave room for tasks and input.
+The line limit excludes borders. These settings also work through `/config` and
+apply on the next launch; they do not request more verbose provider summaries.
+
+`/show-thinking on` and `/show-thinking off` change current visibility and save the
+default; `/show-thinking` reports it. `pcode config set show_thinking on` sets the
+startup default (`off` by default). Ctrl+T changes visibility immediately.
+
+Visible summary text goes directly to bounded, mutable prompt_toolkit UI state,
+not through transcript events or permanent terminal output. It is cleared on
+completion, cancellation, failure, and conversation reset. Hiding the view keeps
+the current turn's buffers so it can be shown again. Each buffer is bounded to
+8,192 characters. This is a live preview, not a scrollable reasoning transcript.
+It does not change the selected reasoning effort or existing saved model-message
+history. As with other normal-screen panels, aggressive tmux resizing can move
+old widget rows into terminal history before pcode can erase them.
 
 For direct Anthropic models, enabling the view also requests thinking on the
 next turn (adaptive where supported, otherwise a 2,048-token budget). This can

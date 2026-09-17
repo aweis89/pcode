@@ -314,8 +314,8 @@ and [adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/ad
 
 ### Multiline thinking frame
 
-The thinking view is a content-sized `Frame` above the current prompt and task
-panel. `thinking_lines` defaults to 10 content rows, excluding borders. Wrap the
+The opt-in expanded thinking view is a content-sized `Frame` above the current
+prompt and task panel. `thinking_lines` defaults to 10 content rows, excluding borders. Wrap the
 bounded buffer with Rich `Text.wrap` before taking the tail, using terminal-cell
 width rather than character count. Strip ANSI/control sequences while retaining
 newlines; do not interpret streamed content as prompt_toolkit markup.
@@ -349,3 +349,31 @@ distinguishes legacy, CSI-u, and modifyOtherKeys input. We retain prompt_toolkit
 native vi `o`/`O` bindings. Pipe-input tests cover both editing modes and prompt
 implementations; real-tmux tests retain CPR, multiline height, Escape, and resize
 checks for each supported newline encoding.
+
+
+### Compact provider-summary presentation
+
+[OpenAI's reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)
+describes exposed reasoning summaries, not raw internal tokens.
+[Its Responses API example](https://developers.openai.com/cookbook/examples/responses_api/reasoning_items)
+illustrates a bold heading followed by prose (an archived example, not a current
+model-support guarantee). `summary="auto"` does not mean "heading only" or promise
+a particular length or update frequency. Installed Pydantic AI 2.43.0 maps decoded
+summary content to `ThinkingPart`/`ThinkingPartDelta` and serializes the Codex
+`openai_reasoning_summary` setting; do not invent missing provider text.
+
+[Anthropic's current thinking guide](https://platform.claude.com/docs/en/build-with-claude/thinking)
+also calls visible thinking text a summary and documents empty blocks when
+`display="omitted"`. Neither event names nor reasoning-token usage prove visible
+text exists. Website model/display defaults may be newer than installed adapters;
+this presentation change deliberately does not modify provider request settings.
+
+`thinking_display=compact` is the default: append a sanitized heading from the
+latest nonempty block to the existing Tasks/Tools frame title. Without a panel,
+use one unbordered row. `expanded` opts into the multiline view; `thinking_lines`
+only limits that view. These are local presentation settings, not provider summary
+verbosity. A separate transient start-of-block callback preserves block boundaries
+without journaling text or changing application events. Signature-only starts do
+not clear visible status. Clear both buffers and callbacks on every exit path.
+Keep real-tmux tests for compact title updates, the no-task fallback, toggling,
+resize, and the expanded frame's CPR height budget.
