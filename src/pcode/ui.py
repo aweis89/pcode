@@ -167,12 +167,6 @@ class Activity:
         icon = spinner if self.prompt_state == "running" else "○"
         return task_panel_rows(self.plan, self.tools, budget, icon)
 
-    def panel_title(self) -> str:
-        if not self.plan:
-            return "Tools"
-        completed = sum(item.get("status") == "completed" for item in self.plan)
-        return f"Tasks {completed}/{len(self.plan)} done"
-
     def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
         style = "bold ansired" if self.prompt_state == "failed" else "class:prompt"
@@ -536,10 +530,6 @@ def create_prompt(
                 height=lambda: len(plan_rows()),
                 dont_extend_height=True,
                 wrap_lines=False,
-            ),
-            title=lambda: panel_fragments(
-                [("bold", activity.panel_title())],
-                session.app.output.get_size().columns - 10,
             ),
             height=lambda: len(plan_rows()) + 2,
         ),
