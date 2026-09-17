@@ -135,3 +135,32 @@ def apply_effort(agent, model: str, effort: str | None) -> None:
             effort = "xhigh" if profile.get("anthropic_supports_xhigh_effort") else "max"
         settings[key] = effort
     agent.model_settings = settings
+
+
+def apply_thinking(agent, model: str, shown: bool) -> None:
+    """Request visible Anthropic thinking on future turns, not just a UI preview."""
+    if not model.startswith("anthropic:"):
+        return
+    current = getattr(agent, "model_settings", None)
+    if not shown and not current:
+        return
+    settings = dict(current or {})
+    if shown:
+        from pydantic_ai.profiles.anthropic import anthropic_model_profile
+
+        # Before /login, Agent.model can still be an unresolved string. Looking
+        # up its profile must not force credential loading just to open the UI.
+        profile = getattr(agent.model, "profile", None)
+        if profile is None:
+            profile = anthropic_model_profile(model.removeprefix("anthropic:")) or {}
+        settings["anthropic_thinking"] = (
+            {"type": "adaptive"}
+            if profile.get("anthropic_supports_adaptive_thinking")
+            else {"type": "enabled", "budget_tokens": 2048}
+        )
+        # The legacy budget is below the adapter's default max_tokens (4096).
+        # Do not change effort or output limits as a side effect of visibility.
+    else:
+        settings.pop("anthropic_thinking", None)
+    # Replace instead of mutating settings captured by an in-flight run.
+    agent.model_settings = settings or None

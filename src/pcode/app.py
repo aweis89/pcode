@@ -20,7 +20,13 @@ from rich.text import Text
 from pcode.commands import Command, CommandRegistry
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_arguments, configure
-from pcode.preferences import apply_effort, effort_setting, load_preferences, save_preferences
+from pcode.preferences import (
+    apply_effort,
+    apply_thinking,
+    effort_setting,
+    load_preferences,
+    save_preferences,
+)
 from pcode.runtime import (
     Message,
     PlanPreview,
@@ -77,6 +83,8 @@ class PreviewApp:
         if agent is not None and model:
             apply_effort(agent, model, load_preferences().get("effort"))
         self.activity = Activity(show_thinking=load_preferences().get("show_thinking") == "on")
+        if agent is not None and model:
+            apply_thinking(agent, model, self.activity.show_thinking)
         self.transcript = Transcript(
             console or Console(),
             theme or load_preferences().get("theme", "dark"),
@@ -184,6 +192,9 @@ class PreviewApp:
 
     def set_show_thinking(self, shown: bool) -> None:
         self.activity.show_thinking = shown
+        agent = getattr(self.runtime, "agent", None)
+        if agent is not None and self.model:
+            apply_thinking(agent, self.model, shown)
         self.persist_defaults(show_thinking="on" if shown else "off")
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
@@ -195,6 +206,12 @@ class PreviewApp:
             self.set_show_thinking(argument == "on")
         state = "on" if self.activity.show_thinking else "off"
         self.transcript.note(f"Show thinking: {state}. Usage: /show-thinking on|off (Ctrl+T)")
+        if (self.model or "").startswith("anthropic:"):
+            self.transcript.note(
+                "Anthropic thinking request: "
+                + ("enabled" if self.activity.show_thinking else "provider default")
+                + " (next turn). Enabling thinking can increase latency and token usage."
+            )
         if self.activity.show_thinking and (self.model or "").startswith("meridian:"):
             self.transcript.note(
                 "Meridian must forward thinking blocks for this preview to show content. "
@@ -225,6 +242,7 @@ class PreviewApp:
         # Construct first: a missing provider/login must leave the old session intact.
         agent = await asyncio.to_thread(create_agent, model, self.workspace)
         apply_effort(agent, model, load_preferences().get("effort"))
+        apply_thinking(agent, model, self.activity.show_thinking)
         save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
         root = self.session_dir
         workspace = self.workspace
@@ -559,6 +577,7 @@ class PreviewApp:
                 raise SessionError("Workspace differs; refusing cross-repo resume.")
             agent = create_agent(saved.info.model, self.workspace)
             apply_effort(agent, saved.info.model, load_preferences().get("effort"))
+            apply_thinking(agent, saved.info.model, self.activity.show_thinking)
             runtime = AgentRuntime(agent, saved)
             await runtime.restore()
             await runtime.refresh_context()

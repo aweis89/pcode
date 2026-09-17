@@ -283,3 +283,31 @@ are unchanged. See the setting's installed-source documentation in
 [OpenAI reasoning summaries](https://platform.openai.com/docs/guides/reasoning#reasoning-summaries).
 `tests/test_codex_profile.py` checks the serialized request and preservation across
 effort changes; runtime sink and terminal visibility are covered separately.
+
+### Anthropic thinking requests
+
+For direct `anthropic:` routes (API-key and pi authentication), `show_thinking=on`
+now also opts into thinking generation on the next turn. `preferences.apply_thinking`
+uses the installed model profile's `anthropic_supports_adaptive_thinking` flag:
+adaptive models receive `anthropic_thinking={"type": "adaptive"}`; older models
+receive `{"type": "enabled", "budget_tokens": 2048}`, below the adapter's default
+4096 output-token limit. This requires a thinking-capable model. Adaptive models
+can choose not to think on a particular response. Enabling thinking can increase
+latency and token usage; this does not modify the separately selected effort.
+
+Verified against Pydantic AI 2.43.0's `AnthropicModel.prepare_request`,
+`_translate_thinking`, and `_messages_create`. The profile check is important:
+newer models reject budgeted thinking. Before login, use `anthropic_model_profile`
+without forcing credential resolution. Settings dictionaries are replaced, not
+mutated, so in-flight requests are unaffected; off removes the opt-in and restores
+the provider default. Startup, model switching, session resume, `/show-thinking`,
+and Ctrl+T apply the same policy. Meridian remains display-only and still requires
+proxy-side Thinking Passthrough; never change its global settings automatically.
+
+`tests/test_anthropic_thinking.py` checks serialized adaptive/budgeted requests,
+real Anthropic SSE decoding into the transient preview sink with both direct and
+pi adapters, off/on/off transitions, preserved effort, deferred login, switching,
+and resume. Thinking remains excluded from transcript events, but saved model
+message history can contain provider thinking as before. See
+[Anthropic extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
+and [adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking).
