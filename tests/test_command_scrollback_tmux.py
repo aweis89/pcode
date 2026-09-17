@@ -59,7 +59,7 @@ def test_ctrl_s_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pa
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "TURN_2_DONE")
-    assert "✓ Run · 0.4s" in screen
+    assert "› Run · 0.4s" in screen
     assert "$ printf MIRRORED_COMMAND" in screen
     assert "OUTPUT_LINE_03" in screen
     assert input_rows(screen) == 1
