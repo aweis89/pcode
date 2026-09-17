@@ -105,13 +105,12 @@ def test_safe_result_metrics(name, args, content, expected, failed):
     assert result_detail(name, args, content, "success") == (expected, failed)
 
 
-def test_retry_is_not_reported_as_retrying_and_hides_error_body():
+def test_retry_is_not_reported_as_retrying_and_shows_error_body():
     detail, failed = result_detail(
         "read_file", {"path": "a.py"}, "No such file: private text", "retry"
     )
     assert failed
-    assert detail == "a.py → Retry requested · File not found"
-    assert "private text" not in detail
+    assert detail == "a.py → Retry requested · No such file: private text"
 
 
 def test_targets_are_relative_bounded_and_show_shell_arguments(tmp_path, monkeypatch):
@@ -224,9 +223,9 @@ def test_retry_feedback_and_actual_success_have_separate_summaries():
         events = [e async for e in AgentRuntime(agent).stream("Try")]
         summaries = [e for e in events if isinstance(e, ToolSummary)]
         assert summaries[0].failed
-        assert summaries[0].detail == "Retry requested · Invalid tool arguments"
+        assert summaries[0].detail == "Retry requested · Invalid arguments: private text"
         assert not summaries[1].failed
-        assert all("private text" not in e.detail for e in summaries)
+        assert "private text" not in summaries[1].detail
 
     asyncio.run(run())
 
@@ -381,3 +380,60 @@ def test_web_tools_show_inputs_in_targets_and_results(name, args, expected):
     )
     assert expected in stream.getvalue()
     assert "Succeeded" not in stream.getvalue()
+
+
+@pytest.mark.parametrize("outcome", ["retry", "failed"])
+def test_tool_failure_shows_workspace_boundary_in_transcript(outcome):
+    message = "Path '/' resolves outside the root directory."
+    detail, failed = result_detail("list_directory", {"path": "/"}, message, outcome)
+    assert failed
+    assert message in detail
+    stream = StringIO()
+    Transcript(Console(file=stream, width=120, color_system=None)).events(
+        (ToolSummary("list_directory", detail, failed=failed),)
+    )
+    assert message in stream.getvalue()
+    assert "details withheld" not in stream.getvalue()
+
+
+def test_tool_failure_preserves_feedback_but_redacts_credentials(monkeypatch):
+    monkeypatch.setenv("TEST_API_KEY", "synthetic-environment-credential")
+    message = (
+        "\x1b[31mAccess rejected\x1b[0m for /tmp/repo: "
+        "synthetic-environment-credential; password='two word secret'; "
+        "Bearer synthetic-bearer-value\nTry a workspace-relative path."
+    )
+    detail, failed = result_detail("read_file", {}, message, "retry")
+    assert failed
+    assert "Access rejected" in detail
+    assert "/tmp/repo" in detail
+    assert "Try a workspace-relative path." in detail
+    for secret in ("synthetic-environment-credential", "two word secret", "synthetic-bearer-value"):
+        assert secret not in detail
+    assert "\x1b" not in detail
+
+
+def test_tool_validation_failure_shows_location_and_message_without_raw_input():
+    detail, failed = result_detail(
+        "read_file",
+        {},
+        [
+            {
+                "loc": ("path",),
+                "msg": "Input should be a valid string",
+                "input": {"private": "raw input"},
+            }
+        ],
+        "retry",
+    )
+    assert failed
+    assert detail == ". → Retry requested · path: Input should be a valid string"
+    assert "raw input" not in detail
+
+
+@pytest.mark.parametrize("content", [None, "", []])
+def test_empty_tool_failure_has_explicit_fallback(content):
+    assert result_detail("read_file", {}, content, "retry") == (
+        ". → Retry requested · No error details returned.",
+        True,
+    )

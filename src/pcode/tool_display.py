@@ -122,19 +122,18 @@ def target(name: str, args: dict) -> str:
 
 
 def failure_reason(content: object) -> str:
-    # Classify without echoing exception bodies or validation inputs.
-    text = str(content).lower()
-    for needles, reason in (
-        (("no such file", "file not found"), "File not found"),
-        (("permission denied", "not permitted"), "Permission denied"),
-        (("timed out", "timeout"), "Timed out"),
-        (("command not found", "executable not found"), "Executable not found"),
-        (("hash mismatch", "conflict", "has changed"), "File changed; refresh before editing"),
-        (("validation", "invalid", "required"), "Invalid tool arguments"),
-    ):
-        if any(needle in text for needle in needles):
-            return reason
-    return "Tool could not complete; details withheld"
+    """Show actionable tool feedback, not a lossy classification of the error."""
+    if isinstance(content, list):
+        # Pydantic validation errors include raw inputs; retain their locations
+        # and messages without dumping those inputs into the transcript.
+        text = "\n".join(
+            f"{'.'.join(map(str, item.get('loc', ())))}: {item['msg']}".lstrip(": ")
+            for item in content
+            if isinstance(item, dict) and isinstance(item.get("msg"), str)
+        )
+    else:
+        text = str(content) if content is not None else ""
+    return command_text(text).strip() or "No error details returned."
 
 
 _ANSI = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]")
