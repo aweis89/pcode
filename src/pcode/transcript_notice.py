@@ -13,7 +13,7 @@ from rich.text import Text
 @dataclass(frozen=True)
 class TranscriptNotice:
     text: str
-    kind: Literal["error", "warning", "cancelled"]
+    kind: Literal["error", "warning", "cancelled", "command"]
     title: str
     max_lines: int | None = None
     code_theme: str = "monokai"
@@ -26,18 +26,19 @@ class TranscriptNotice:
         return Markdown(f"{fence}text\n{text}\n{fence}", code_theme=self.code_theme)
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        symbol = "✗" if self.kind == "error" else "!"
-        style = "pcode.error" if self.kind == "error" else "pcode.warning"
+        symbol = {"error": "✗", "command": "›"}.get(self.kind, "!")
+        style = {"error": "pcode.error", "command": "pcode.accent"}.get(self.kind, "pcode.warning")
         yield Text(f"{symbol} {self.title}", style=style)
         if not self.text:
             return
-        # Error code-block backgrounds start at the terminal edge; keep Rich
+        # Logged code-block backgrounds start at the terminal edge; keep Rich
         # padding and the log's own indentation inside the block unchanged.
-        indent = "  " if self.kind != "error" and options.max_width > 2 else ""
+        logged = self.kind in {"error", "command"}
+        indent = "  " if not logged and options.max_width > 2 else ""
         body_options = options.update(width=max(1, options.max_width - len(indent)))
         # Rich's Markdown code blocks have one padding row/column on each side.
         # Fall back to literal text only when the pane cannot fit that padding.
-        fenced = self.kind == "error" and body_options.max_width > 2
+        fenced = logged and body_options.max_width > 2
         body = self._code_block(self.text) if fenced else Text(self.text)
         lines = console.render_lines(body, body_options, pad=False)
         top, bottom = (lines[:1], lines[-1:]) if fenced else ([], [])
@@ -46,7 +47,8 @@ class TranscriptNotice:
         if self.max_lines is not None and len(lines) > self.max_lines:
             # Bound wrapped content rows, including the omission marker, while
             # preserving the code block's padding and the final failure details.
-            marker = Text("… earlier error output truncated", style="pcode.muted")
+            kind = "error " if self.kind == "error" else ""
+            marker = Text(f"… earlier {kind}output truncated", style="pcode.muted")
             marker.truncate(
                 max(1, body_options.max_width - (2 if fenced else 0)), overflow="ellipsis"
             )
