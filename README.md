@@ -456,6 +456,24 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 | Ctrl+C | Discard idle input; during generation, cancel without deleting the draft |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
 
+### Optional vi editing
+
+The prompt uses Emacs-style editing by default. Enable vi bindings for subsequent
+launches with:
+
+```sh
+pcode config set editing_mode vi
+```
+
+You can also run `/config set editing_mode vi` in a session, then restart pcode.
+The editor starts in insert mode; press Escape for normal mode and `i` or `a` to
+resume inserting. Standard vi motions and editing commands are available.
+Enter still submits (or accepts a selected completion), and Alt+Enter inserts a
+newline. Pcode's application shortcuts retain their existing behavior.
+
+Restore the default with `pcode config set editing_mode emacs` or
+`pcode config unset editing_mode`.
+
 The input is bottom-aligned from startup, with one editable line plus its border.
 It expands upward for wrapped text or explicit newlines, and shrinks when text is
 removed. Completion appears above the frame. Very long input scrolls within the

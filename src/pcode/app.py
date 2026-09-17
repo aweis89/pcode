@@ -1221,6 +1221,7 @@ class PreviewApp:
             on_effort=self.adjust_effort,
             on_model=lambda: submit("/model"),
             bottom_toolbar=self.toolbar,
+            vi_mode=load_preferences().get("editing_mode", "emacs") == "vi",
         )
         output = TerminalOutput(
             self.transcript.console,
