@@ -265,6 +265,7 @@ class TerminalOutput:
         self.app = app
         self.tail = ""
         self.streamed = False
+        self._turn_prompt: str | None = None
         self.code_theme = code_theme or (lambda: PALETTES["dark"].syntax)
         self.rich_theme = rich_theme or PALETTES["dark"].rich_theme
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
@@ -275,8 +276,23 @@ class TerminalOutput:
         self.pending.append((objects, "\n", False))
         self.changed.set()
 
+    def begin_turn(self, prompt: str) -> None:
+        # A waiting turn already has a live prompt above the activity panel.
+        # Keep its scrollback quote attached to the first visible model block,
+        # not the first token (which may remain buffered for a while).
+        self._turn_prompt = prompt
+
+    def end_turn(self) -> None:
+        self.finish()
+        # Empty, failed, or cancelled turns must not leak a quote into a later turn.
+        self._turn_prompt = None
+
     def _commit(self, source: str) -> None:
         if source.strip():
+            if self._turn_prompt is not None:
+                self.print()
+                self.print(TaskPrompt(self._turn_prompt))
+                self._turn_prompt = None
             self.print(Markdown(source, code_theme=self.code_theme()))
             self.print()
 
@@ -653,7 +669,6 @@ class Transcript:
     def user(self, text: str) -> None:
         self.print()
         self.print(TaskPrompt(text))
-        self.print()
 
     def command_summary(self, event: ToolSummary) -> None:
         result = (

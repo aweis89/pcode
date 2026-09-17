@@ -747,3 +747,42 @@ def test_tools_only_box_has_header_below_unboxed_prompt(pane):
     assert lines[top + 1].startswith("│  ✓ Read")
     assert "Tasks" not in screen
     assert input_rows(screen) == 1
+
+
+DEFERRED_PROMPT_SCRIPT = """
+import asyncio
+from pcode.app import PreviewApp
+from pcode.runtime import TextDelta, ToolStarted, Message
+
+class Runtime:
+    session = None
+    async def stream(self, prompt):
+        yield ToolStarted("read_file", "WAITING FOR FIRST MESSAGE", "one")
+        yield TextDelta("FIRST MODEL")
+        await asyncio.sleep(2)
+        yield TextDelta(" MESSAGE\\n\\n")
+        await asyncio.sleep(2)
+        yield Message("FIRST MODEL MESSAGE")
+
+PreviewApp(model="test:local", runtime=Runtime()).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [DEFERRED_PROMPT_SCRIPT], indirect=True)
+def test_scrollback_quote_waits_for_model_block_without_extra_blank_line(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "deferred prompt")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    waiting = capture(pane, "WAITING FOR FIRST MESSAGE", running=True)
+    assert waiting.count("deferred prompt") == 1
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert "▌ deferred prompt" not in history
+    assert "FIRST MODEL" not in history
+    assert input_rows(waiting) == 1
+    response = capture(pane, "FIRST MODEL MESSAGE", running=True)
+    assert "▌ deferred prompt\nFIRST MODEL MESSAGE" in response
+    assert input_rows(response) == 1
+    capture(pane, "✓ deferred prompt")
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert history.count("▌ deferred prompt") == 1
+    assert history.count("FIRST MODEL MESSAGE") == 1
