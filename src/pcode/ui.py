@@ -82,6 +82,7 @@ class Palette:
                 "plan.active": f"{self.accent} bold",
                 "tool.failed": self.muted,
                 "prompt": f"{self.accent} bold",
+                "activity.prompt": self.muted,
                 "frame.border": self.muted,
                 # Keep foreground and background paired with the terminal theme:
                 # the app palette may still be dark on a light terminal.
@@ -175,7 +176,7 @@ class Activity:
 
     def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
-        style = "bold ansired" if self.prompt_state == "failed" else "class:prompt"
+        style = "class:activity.prompt"
         suffix = {"failed": " · failed", "cancelled": " · cancelled"}.get(self.prompt_state, "")
         # Measure terminal cells, not characters, so wide Unicode fits too.
         prefix = Text(icons.get(self.prompt_state, "❯") + " ")
@@ -183,7 +184,7 @@ class Activity:
         text = Text(plain(self.prompt, limit=None) + suffix)
         remaining = max(0, width - prefix.cell_len)
         text.truncate(remaining, overflow="ellipsis" if remaining else "crop")
-        return [(style, prefix.plain), ("", text.plain)]
+        return [(style, prefix.plain), (style, text.plain)]
 
     def queue_rows(self, budget: int):
         """Show the next queued prompts, leaving room for the editor on short panes."""
