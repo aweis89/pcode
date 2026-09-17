@@ -36,6 +36,8 @@ def make_app(width=80):
                 "/colors",
                 "/effort",
                 "/mcp",
+                "/compact",
+                "/autocompact",
                 "/context",
                 "/new",
                 "/tree",

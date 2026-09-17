@@ -357,7 +357,8 @@ def test_visible_inputs_reach_running_and_completed_events(name, args, result, e
 )
 def test_successful_commands_have_no_redundant_status(content):
     assert result_detail("run_command", {"command": "echo hi"}, content, "success") == (
-        "echo hi", False
+        "echo hi",
+        False,
     )
 
 

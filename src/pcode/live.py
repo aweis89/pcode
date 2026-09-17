@@ -24,18 +24,20 @@ from pydantic_ai import (
     ThinkingPart,
     ThinkingPartDelta,
 )
-from pydantic_ai.messages import ModelMessage, RetryPromptPart
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, RetryPromptPart
+from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
 from pydantic_ai_harness.step_persistence import StepPersistence
 from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent
 
+from pcode.compaction import AutoCompaction, summarize
 from pcode.conversation_tree import ConversationTree
 from pcode.delegation import ChildActivity
 from pcode.diagnostics import error_details
 from pcode.inspection import ToolArchive, capture
 from pcode.mcp import MCPState
 from pcode.plan_preview import StreamingPlanPreview
+from pcode.preferences import load_preferences
 from pcode.runtime import (
     Event,
     Message,
@@ -78,6 +80,8 @@ class AgentRuntime:
                 return SavedSession.create(model, workspace, root)
 
         self.session_factory = session_factory
+        self.auto_compact = load_preferences().get("autocompact") == "on"
+        self.compaction_notice = lambda text: None
         self._clear()
         self.replace_agent(agent)
 
@@ -157,6 +161,42 @@ class AgentRuntime:
         self.plan_store = plan
         return draft
 
+    async def compact(self, focus: str = ""):
+        """Persist a new branch-local context checkpoint before publishing it."""
+        if self.recovery_blocked:
+            raise SessionError(self.recovery_blocked)
+        usage = RunUsage()
+        try:
+            async with self.agent:
+                result = await summarize(
+                    self.history, model=self.agent.model, focus=focus or None, usage=usage
+                )
+        finally:
+            # A cancelled/failed summary can still have incurred provider usage.
+            self.input_tokens += usage.input_tokens
+            self.output_tokens += usage.output_tokens
+            if self.session:
+                self.session.info.input_tokens = self.input_tokens
+                self.session.info.output_tokens = self.output_tokens
+                self.session.save_info()
+        if not result.changed:
+            return result
+        record = {
+            "node_id": str(uuid4()),
+            "parent_id": self.tree.active,
+            "focus": focus,
+            "messages": ModelMessagesTypeAdapter.dump_python(result.messages, mode="json"),
+            "plan": [item.model_dump(mode="json") for item in await self.plan_store.get_items()],
+            "before": result.before,
+            "after": result.after,
+        }
+        if self.session:
+            self.session.append("compaction_checkpoint", sync=True, **record)
+        else:
+            self.tree.consume({"kind": "compaction_checkpoint", **record})
+        self.history = result.messages
+        return result
+
     def close(self) -> None:
         if self.session:
             self.session.close()
@@ -186,6 +226,7 @@ class AgentRuntime:
                 }
             )
         self.inspections.run_id = run_id
+        self._compaction_usage = RunUsage()
         try:
             async with aclosing(self._stream(prompt, run_id)) as stream:
                 async for event in stream:
@@ -201,6 +242,13 @@ class AgentRuntime:
                         self.inspections.event(event)
                     yield event
         except BaseException as error:
+            # Successful runs account for nested summary usage through result.usage.
+            # A failed next request must not hide the summary's already incurred cost.
+            self.input_tokens += self._compaction_usage.input_tokens
+            self.output_tokens += self._compaction_usage.output_tokens
+            if saved:
+                saved.info.input_tokens = self.input_tokens
+                saved.info.output_tokens = self.output_tokens
             self.inspections.settle(
                 "interrupted"
                 if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit))
@@ -280,7 +328,10 @@ class AgentRuntime:
                 toolsets=self.mcp.toolsets(),
                 conversation_id=self.conversation_id,
                 run_id=run_id,
-                capabilities=[StepPersistence(store=self.session.store)] if self.session else [],
+                capabilities=(
+                    ([StepPersistence(store=self.session.store)] if self.session else [])
+                    + ([AutoCompaction(self, run_id)] if self.auto_compact else [])
+                ),
                 # Explicitly disable the cap; omitting this restores the library default.
                 usage_limits=UsageLimits(request_limit=None),
             ) as events,
@@ -433,7 +484,10 @@ def error_message(error: Exception) -> str:
     if isinstance(error, BaseExceptionGroup) and error.exceptions:
         return error_message(error.exceptions[0])
     from pcode.auth import LoginError
+    from pcode.compaction import CompactionError
 
+    if isinstance(error, CompactionError):
+        return str(error)
     name = type(error).__name__
     if isinstance(error, (SessionError, LoginError)):
         # LoginError contains only fixed, sanitized setup/refresh guidance.

@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 from collections import deque
+from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -240,6 +241,9 @@ class SavedSession:
     async def history_at(self, identity: str | None):
         path = self.tree.path(identity)
         for run_id in reversed(path):
+            node = self.tree.nodes[run_id]
+            if node.kind == "compaction":
+                return deepcopy(node.history)
             # Never opt into interrupted snapshots with pending tool calls.
             snapshot = await self.store.latest_snapshot(run_id=run_id)
             if snapshot is not None:
@@ -266,6 +270,8 @@ class SavedSession:
 
     def latest_plan(self) -> list[dict]:
         """Recover UI/tool state even when the last update predates replay's limit."""
+        if self.tree.nodes:
+            return deepcopy(self.tree.nodes[self.tree.active].plan) if self.tree.active else []
         items = []
         for record in self.active_records():
             if record.get("kind") == "PlanUpdated":

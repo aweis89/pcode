@@ -26,7 +26,7 @@ def test_terminal_completion_resize_interrupt_and_exit(columns):
     try:
         child.expect_exact("\x1b[?25h")  # A completed prompt repaint; PTYs do not answer CPR.
         child.send("/")
-        child.expect_exact("/demo")  # Menu appears without pressing Tab.
+        child.expect_exact("/help")  # Menu appears without pressing Tab.
         child.sendcontrol("c")
         child.expect_exact("Input discarded.")
         child.expect_exact("\x1b[?25h")  # A completed prompt repaint; PTYs do not answer CPR.
