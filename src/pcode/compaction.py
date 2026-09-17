@@ -5,7 +5,6 @@ Harness 0.31's private counting helpers are isolated here. Unlike its default
 """
 
 import json
-import os
 from copy import deepcopy
 from dataclasses import dataclass
 
@@ -52,19 +51,13 @@ class CompactionError(ValueError):
 
 
 def effective_window(model) -> int | None:
-    override = os.environ.get("PCODE_CONTEXT_WINDOW", "").strip()
-    if override:
-        try:
-            value = int(override)
-        except ValueError:
-            raise CompactionError("PCODE_CONTEXT_WINDOW must be a positive token count.") from None
-        if value < 4096:
-            raise CompactionError("PCODE_CONTEXT_WINDOW must be at least 4096 tokens.")
-        return value
-    name = model if isinstance(model, str) else model.model_id
     from pcode.context_usage import context_window
+    from pcode.model_metadata import ContextWindowError
 
-    return context_window(name)
+    try:
+        return context_window(model)
+    except ContextWindowError as exc:
+        raise CompactionError(str(exc)) from None
 
 
 def schema_tokens(parameters) -> int:
@@ -132,7 +125,10 @@ class CompactionResult:
 
 async def summarize(messages, *, model, focus=None, usage=None, window=None, parameters=None):
     """Return a validated candidate without mutating or publishing the source history."""
+    from pcode.model_metadata import refresh_context
+
     model = infer_model(model) if isinstance(model, str) else model
+    await refresh_context(model)
     window = window or effective_window(model)
     keep = min(20_000, window // 8) if window else 12_000
     before = context_estimate(messages, parameters)
@@ -206,6 +202,9 @@ class AutoCompaction(AbstractCapability):
         # --no-save mode there is no StepPersistence recovery to do this for us.
         if not self.runtime.session and is_provider_valid(request_context.messages):
             self.runtime.history = deepcopy(request_context.messages)
+        from pcode.model_metadata import refresh_context
+
+        await refresh_context(request_context.model)
         window = effective_window(request_context.model)
         if window is None:
             return request_context

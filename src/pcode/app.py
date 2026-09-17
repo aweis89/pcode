@@ -218,6 +218,7 @@ class PreviewApp:
         else:
             self.runtime = AgentRuntime(agent, session_factory=factory)
         self.model = model
+        await self.runtime.refresh_context()
         self.persist_defaults(model=model)
         self.save_sessions = save
         self.transcript.note(f"Model: {model}. Continuing the current conversation.")
@@ -523,6 +524,7 @@ class PreviewApp:
             apply_effort(agent, saved.info.model, load_preferences().get("effort"))
             runtime = AgentRuntime(agent, saved)
             await runtime.restore()
+            await runtime.refresh_context()
         except BaseException:
             saved.close()
             raise
@@ -740,7 +742,8 @@ class PreviewApp:
         if self.model:
             from pcode.context_usage import context_label
 
-            context = context_label(self.model, getattr(self.runtime, "history", ()))
+            resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
+            context = context_label(resolved or self.model, getattr(self.runtime, "history", ()))
         if self.activity.busy:
             details += " · working"
             if self.activity.queued:
@@ -862,6 +865,9 @@ class PreviewApp:
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         if self.resuming:
             await self.runtime.restore()
+        refresh = getattr(self.runtime, "refresh_context", None)
+        if refresh is not None:
+            await refresh()
         self.transcript.welcome(self.model, str(self.workspace))
         self.show_startup_context()
         if self.model and self.runtime.session:

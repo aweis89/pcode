@@ -582,16 +582,31 @@ The latest Harness website describes a newer Coder composition than the pinned
 
 The line below the editor shows the workspace/branch, full `provider:model`
 identifier, reasoning effort, and activity. Live models also show context, for
-example `ctx: 12.5k/200k` (tokens used / catalog capacity).
+example `ctx: 12.5k/200k` (tokens used / effective working window).
 
 Used context is the **latest completed request's input tokens**, including cached
 input, not cumulative session usage. It updates after a turn and follows the
 selected conversation history when resuming or navigating branches. It does not
 include unsent drafts, subsequent tool results, or a response still streaming.
-Totals are approximate: they come from the bundled model catalog and
-can differ from account/API-specific limits (Codex uses OpenAI model metadata).
+The working window is shared with compaction. Pcode first uses metadata from the
+actual serving provider: Codex's authenticated models endpoint or Anthropic's
+Models API. Otherwise it uses an exact provider/model match from
+[Models.dev](https://models.dev/), where the serving endpoint matches. Codex never
+borrows ordinary OpenAI API limits, and custom proxies or Anthropic subscription
+OAuth do not silently inherit direct-API limits. Catalog values remain advisory.
+When separate input and combined-context ceilings are available, the smaller
+ceiling is used; output capacity is retained separately, not added to input.
+
+Metadata refreshes happen outside rendering, on startup, model selection, and
+before requests when stale. Public metadata is cached for 24 hours in
+`$XDG_CACHE_HOME/pcode/model-context-v1.json` (default `~/.cache/pcode/`). Native
+metadata is cached for one hour **in memory per model instance**, not across
+accounts or processes. Fetches have a three-second deadline and failures retain
+last-known values with a one-minute retry backoff. No pricing is loaded into the
+context cache or displayed. Unknown limits show `?`; a first run offline can thus
+show `?`, and Codex needs a successful native lookup or an explicit override.
 Used context shows `0` when the conversation is empty or usage has not been
-reported yet. A `?` total means the catalog has no known capacity.
+reported yet.
 Long paths shrink first; narrow terminals may truncate trailing context details.
 `/context` continues to show cumulative session input/output usage.
 
@@ -820,8 +835,11 @@ custom proxy, gated model window, or incorrect catalog entry, set the actual lim
 PCODE_CONTEXT_WINDOW=128000 pcode --model your-provider:your-model
 ```
 
-The override applies to the current process, including model switches; update it if
-you change to a deployment with a different limit. A summary can still fail if the
+The override applies to both the status line and compaction in the current process,
+including model switches; update it if you change deployments. It is capped by
+known provider input/maximum-context limits. For Codex, a larger window is only
+used explicitly when its metadata advertises that maximum; pcode does not opt into
+long context just because a generic model catalog advertises it. A summary can still fail if the
 existing history itself is too large for the summarizer request. Failure leaves the
 source history available rather than falling back to destructive truncation.
 
