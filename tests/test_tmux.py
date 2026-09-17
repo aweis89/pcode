@@ -493,7 +493,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     assert lines[first_task - 2].endswith(" h")
     assert not lines[first_task - 2].startswith("│")
     assert lines[first_task - 1].startswith("┌")
-    assert lines[first_task - 1].startswith("┌─| Tasks 0/12 |")
+    assert lines[first_task - 1].startswith("┌─ Tasks 0/12 ─")
     assert all(
         line.startswith("│") and line.endswith("│") for line in lines[first_task : first_task + 5]
     )
@@ -503,7 +503,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     pane("send-keys", "-t", "preview:0.0", "-l", "editable draft")
     pane("split-window", split, "-t", "preview:0.0", "cat")
     completed = capture(pane, "✓ Task 0")
-    assert any(line.startswith("┌─| Tasks 12/12 |") for line in completed.splitlines())
+    assert any(line.startswith("┌─ Tasks 12/12 ─") for line in completed.splitlines())
     assert "│✓ Task 0" in completed
     assert input_rows(completed) == 1
     assert completed.count("┌") == completed.count("└") == 2
@@ -585,7 +585,7 @@ app.run()
 @pytest.mark.parametrize("pane", [TOOLS_SCRIPT], indirect=True)
 def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
     initial = capture(pane, "A task")
-    assert "Tools" not in initial and "┌─| Tasks 0/1 |" in initial
+    assert "Tools" not in initial and "┌─ Tasks 0/1 ─" in initial
     assert initial.count("┌") == initial.count("└") == 2
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "⟳ Run", running=True)
@@ -594,7 +594,7 @@ def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
     assert lines[task - 2].endswith(" h")
     assert not lines[task - 2].startswith("│")
     assert lines[task - 1].startswith("┌")
-    assert lines[task - 1].startswith("┌─| Tasks 0/1 |")
+    assert lines[task - 1].startswith("┌─ Tasks 0/1 ─")
     assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
     assert lines[task + 1].startswith("│    ✓ Read · file_11.py")
     assert lines[task + 2].startswith("│    ! Read failed · file_12.py")
@@ -745,7 +745,7 @@ def test_tools_only_box_has_left_aligned_header_below_unboxed_prompt(pane):
     screen = capture(pane, "⟳ Run", running=True)
     lines = screen.splitlines()
     top = next(i for i, line in enumerate(lines) if line.startswith("┌"))
-    assert lines[top].startswith("┌─| Tools |")
+    assert lines[top].startswith("┌─ Tools ─")
     assert lines[top - 1].endswith(" h")
     assert not lines[top - 1].startswith("│")
     assert lines[top + 1].startswith("│✓ Read")
