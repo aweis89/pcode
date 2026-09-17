@@ -30,8 +30,6 @@ def active_providers(current: str | None) -> set[str]:
             active.add("openai-codex")
     except OSError:
         pass
-    if os.environ.get("PCODE_LLM_PROXY", "").strip():
-        active.intersection_update({"openai-codex"})
     return active
 
 

@@ -167,7 +167,7 @@ The picker currently supports configured **Anthropic** and **OpenAI Codex** prov
   Pi reuse remains opt-in; opening the picker never reads pi credentials.
 - Codex is enabled when its CLI credential file exists (`CODEX_HOME` is honored).
   Opening the picker checks file presence only, not its contents or validity.
-- With `PCODE_LLM_PROXY` set, only Codex is offered; unset it to select Anthropic.
+- `PCODE_LLM_PROXY` applies only to Codex and does not restrict model selection.
 
 Models are grouped by provider and family, with numeric versions sorted newest
 first (Opus 5 before Opus 4.8; 4.10 before 4.9). Filtering preserves that order.
@@ -216,8 +216,8 @@ access; the proxy must already be running.
 
 Requests use the Anthropic streaming API with `x-meridian-agent: passthrough`, so
 pcode—not Meridian's built-in agent—executes the supplied tools. There is no
-fallback to direct Anthropic requests if the proxy is unavailable. Unset
-`PCODE_LLM_PROXY` when using Meridian: that separate setting remains Codex-only.
+fallback to direct Anthropic requests if the proxy is unavailable.
+`PCODE_LLM_PROXY` is ignored when using Meridian; that setting applies only to Codex.
 
 ### Model-only HTTP proxy
 
@@ -228,8 +228,9 @@ PCODE_LLM_PROXY=http://127.0.0.1:8080 pcode --model openai-codex:gpt-5.6-sol
 ```
 
 HTTP and HTTPS proxy URLs are supported (HTTPS model traffic uses CONNECT).
-This currently supports `openai-codex:` models only; setting it with another
-provider produces an error rather than silently sending model requests directly.
+This applies to `openai-codex:` models only. Other providers ignore this setting
+and retain their normal routing. You can leave it set when resuming a non-Codex
+session or switching providers in the model picker.
 An unset or blank value preserves the normal provider behavior.
 
 The dedicated model client ignores global proxy settings, including `NO_PROXY`,
