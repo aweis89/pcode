@@ -60,6 +60,20 @@ upstream tests, examples, and documentation sources.
   the installed `pydantic_ai_harness` implementation for the capabilities used.
   Verify Coder's actual tool composition, planning, and step-persistence APIs.
 
+### MCP integration
+
+`src/pcode/mcp.py` uses Pydantic AI 2.43.0's `MCPToolset` and FastMCP's
+`StdioTransport`; `src/pcode/live.py` supplies only enabled toolsets per run.
+Consult [Pydantic AI MCP](https://ai.pydantic.dev/mcp/client/) and
+[FastMCP client transports](https://gofastmcp.com/clients/transports), then inspect
+installed `pydantic_ai/mcp.py` and `fastmcp/client/transports/stdio.py`.
+The `[mcp]` extra currently resolves `fastmcp-slim` 4.0.4 and `mcp` 2.2.0.
+FastMCP defaults `StdioTransport.keep_alive` to `True`: pcode explicitly sets it
+to `False` so turn cleanup closes subprocesses. Keep the real-stdio tests in
+`tests/test_mcp.py` for success, failure, cancellation, and reconnection. Filtering
+schemas alone is insufficient to prevent disabled servers from connecting;
+disabled servers must not enter the agent's toolset collection at all.
+
 ## Verification workflow and known pitfalls
 
 1. Check the installed version against `uv.lock`.

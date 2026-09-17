@@ -33,6 +33,7 @@ def make_app(width=80):
                 "/theme",
                 "/colors",
                 "/effort",
+                "/mcp",
                 "/context",
                 "/new",
                 "/session",
