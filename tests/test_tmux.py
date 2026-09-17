@@ -887,13 +887,16 @@ def test_thinking_toggle_is_content_sized_and_never_enters_scrollback(pane):
     ],
     indirect=True,
 )
-def test_vi_newline_and_escape_keep_editor_compact(pane):
+@pytest.mark.parametrize(
+    "newline", ["\n", "\x1b[106;5u", "\x1b[27;5;106~", "\x1b[13;2u", "\x1b[27;2;13~"]
+)
+def test_vi_newline_and_escape_keep_editor_compact(pane, newline):
     screen = capture(pane, "INSERT")
     assert screen.splitlines()[-2].endswith(" INSERT ─┘")
     assert "INSERT" not in screen.split("│❯")[0]
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "first")
-    pane("send-keys", "-t", "preview:0.0", "C-j")
+    pane("send-keys", "-t", "preview:0.0", "-l", newline)
     pane("send-keys", "-t", "preview:0.0", "-l", "second")
     assert input_rows(capture(pane, "second")) == 2
     pane("send-keys", "-t", "preview:0.0", "Escape")
