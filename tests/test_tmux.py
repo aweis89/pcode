@@ -889,7 +889,8 @@ def test_thinking_toggle_is_content_sized_and_never_enters_scrollback(pane):
 )
 def test_vi_newline_and_escape_keep_editor_compact(pane):
     screen = capture(pane, "INSERT")
-    assert "┌─ INSERT " in screen
+    assert screen.splitlines()[-2].endswith(" INSERT ─┘")
+    assert "INSERT" not in screen.split("│❯")[0]
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "first")
     pane("send-keys", "-t", "preview:0.0", "C-j")
@@ -897,7 +898,7 @@ def test_vi_newline_and_escape_keep_editor_compact(pane):
     assert input_rows(capture(pane, "second")) == 2
     pane("send-keys", "-t", "preview:0.0", "Escape")
     screen = capture(pane, "NORMAL")
-    assert "┌─ NORMAL " in screen
+    assert screen.splitlines()[-2].endswith(" NORMAL ─┘")
     assert input_rows(screen) == 2
     # Normal-mode dd removes the second line rather than inserting literal 'dd'.
     pane("send-keys", "-t", "preview:0.0", "-l", "dd")
@@ -911,6 +912,11 @@ def test_vi_newline_and_escape_keep_editor_compact(pane):
     assert "second" not in screen
     pane("send-keys", "-t", "preview:0.0", "-l", "i")
     assert input_rows(capture(pane, "INSERT")) == 1
+    for width, height in ((80, 24), (120, 40)):
+        pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
+        screen = capture(pane, "INSERT", columns=width)
+        assert screen.splitlines()[-2].endswith(" INSERT ─┘")
+        assert input_rows(screen) == 1
 
 
 @pytest.mark.parametrize(
