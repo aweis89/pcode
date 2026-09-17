@@ -430,10 +430,10 @@ def create_prompt(
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
         return min(text_height, available) + 2
 
-    plan_spinner = Spinner("dots")
+    plan_spinner = Spinner("arc")
     # Give the prompt line its own glyph so it reads as the overall turn, not as
     # another in-progress task row.
-    prompt_spinner = Spinner("arc")
+    prompt_spinner = Spinner("dots")
     # Animate active tasks and update running tool elapsed times during pauses.
     session.app.refresh_interval = min(plan_spinner.interval, prompt_spinner.interval) / 1000
 

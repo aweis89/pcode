@@ -153,7 +153,8 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     assert input_rows(streaming) == 1
     assert "COMMITTED LINE" in streaming
     assert any(
-        line.rstrip("│ ").endswith(" hello") and line.startswith(tuple("│" + f for f in "◜◠◝◞◡◟"))
+        line.rstrip("│ ").endswith(" hello")
+        and line.startswith(tuple("│" + f for f in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
         for line in streaming.splitlines()
     )
     before = streaming.splitlines().index("FIRST STREAM CHUNK")
@@ -472,7 +473,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "Task 8", running=True)
-    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    frames = "◜◠◝◞◡◟"
     first_frame = next(frame for frame in frames if f"{frame} Task 8" in screen)
     deadline = time.monotonic() + 1
     while time.monotonic() < deadline:
