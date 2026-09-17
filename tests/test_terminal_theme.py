@@ -46,7 +46,6 @@ def test_demo_colors_after_theme_and_style_switches(queued, color_style):
         app = PreviewApp(console=console)
         output = TerminalOutput(
             console,
-            app.activity,
             SimpleNamespace(output=CursorSafeOutput(DummyOutput()), invalidate=lambda: None),
             code_theme=lambda: app.transcript.code_theme,
             rich_theme=lambda: app.transcript.rich_theme,
@@ -91,7 +90,6 @@ def test_streamed_demo_uses_selected_styles(theme, keyword, color_style):
         app = PreviewApp(console=console, theme=theme, color_style=color_style)
         output = TerminalOutput(
             console,
-            app.activity,
             SimpleNamespace(output=CursorSafeOutput(DummyOutput()), invalidate=lambda: None),
             code_theme=lambda: app.transcript.code_theme,
             rich_theme=lambda: app.transcript.rich_theme,

@@ -494,20 +494,20 @@ when safe. Cancellation never undoes completed tool effects.
   official Harness SQLite step store; recovery uses its settled snapshots.
 - `src/pcode/diagnostics.py`: structured provider errors with best-effort redaction.
 - `src/pcode/ui.py`: prompt_toolkit editor and bottom-aligned layout, plus a batched
-  terminal writer for committed Markdown blocks and a bounded unfinished preview.
+  terminal writer for committed Markdown blocks.
 - `src/pcode/commands.py`: registry shared by dispatch, help, and completion.
 - `src/pcode/inspection.py`: bounded inspection projection and lazy journal index.
 - `src/pcode/inspector_ui.py`: alternate-screen tool selection, filters, and scrollable details.
 - `src/pcode/app.py`: CLI and asynchronous composition.
 
-prompt_toolkit owns only the live tail, menus, and editor in the normal screen.
+prompt_toolkit owns the activity panels, menus, and editor in the normal screen.
 `TerminalOutput` batches writes through `in_terminal()` at up to 30 updates per
 second, briefly repainting the prompt without resetting its buffer or cursor.
 It never holds a terminal handoff across a model/network wait. Rich renders completed
 Markdown blocks (including highlighted code and tables) once into scrollback. The
-unfinished block has a plain-text preview capped at one row; lists, quotes, and
-open code blocks may remain buffered until a following block or the end of the
-response. Cancellation and tool boundaries flush any remaining text. Already
+unfinished block stays hidden until ready; lists, quotes, and open code blocks
+may remain buffered until a following block or the end of the response. The
+running-prompt spinner and task/tool activity remain visible while text is buffered. Cancellation and tool boundaries flush any remaining text. Already
 committed blocks are not rewritten, so reference links defined in later blocks
 cannot retroactively update earlier output. `--demo`
 remains a noninteractive print-and-exit command.

@@ -86,7 +86,7 @@ def test_tools_do_not_commit_model_tail_or_enqueue_permanent_output():
     stream = StringIO()
     app = PreviewApp(model="test:local", runtime=Runtime(), console=Console(file=stream))
     terminal_app = SimpleNamespace(output=CursorSafeOutput(DummyOutput()), invalidate=lambda: None)
-    output = TerminalOutput(app.transcript.console, app.activity, terminal_app)
+    output = TerminalOutput(app.transcript.console, terminal_app)
     app.transcript.output = output
 
     async def run():
@@ -148,7 +148,7 @@ def test_cancelled_run_marks_outstanding_tool_interrupted():
 
     app = PreviewApp(model="test:local", runtime=Runtime(), console=Console(file=StringIO()))
     terminal_app = SimpleNamespace(output=CursorSafeOutput(DummyOutput()), invalidate=lambda: None)
-    output = TerminalOutput(app.transcript.console, app.activity, terminal_app)
+    output = TerminalOutput(app.transcript.console, terminal_app)
     assert not asyncio.run(app.run_live(output, "go"))
     assert app.activity.tools.calls[0].interrupted
     assert not app.activity.tools.calls[0].running

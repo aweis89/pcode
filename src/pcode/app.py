@@ -779,7 +779,6 @@ class PreviewApp:
         )
         output = TerminalOutput(
             self.transcript.console,
-            self.activity,
             session.app,
             code_theme=lambda: self.transcript.code_theme,
             rich_theme=lambda: self.transcript.rich_theme,

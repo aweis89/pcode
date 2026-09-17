@@ -1,4 +1,4 @@
-"""Append-only output and partial-line rendering without a real terminal."""
+"""Append-only output and buffered streaming without a real terminal."""
 
 import asyncio
 from io import StringIO
@@ -9,7 +9,7 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 from rich.markdown import Markdown
 
-from pcode.ui import Activity, CursorSafeOutput, TerminalOutput
+from pcode.ui import CursorSafeOutput, TerminalOutput
 
 
 def make_output(width=80):
@@ -17,7 +17,7 @@ def make_output(width=80):
     terminal = DummyOutput()
     terminal.get_size = lambda: Size(rows=24, columns=width)
     app = SimpleNamespace(output=CursorSafeOutput(terminal), invalidate=lambda: None)
-    output = TerminalOutput(Console(file=stream, color_system=None), Activity(), app)
+    output = TerminalOutput(Console(file=stream, color_system=None), app)
     return output, stream
 
 
@@ -31,15 +31,15 @@ def test_complete_blocks_commit_once_and_final_message_is_not_reprinted():
         output.delta("**hello**\n\npartial")
         await output.flush()
         assert rendered(stream) == "hello\n\n"
-        assert output.activity.text == "partial"
+        assert output.tail == "partial"
         output.delta(" answer")
         await output.flush()
         assert rendered(stream) == "hello\n\n"
-        assert output.activity.text == "partial answer"
+        assert output.tail == "partial answer"
         output.finish("**hello**\n\npartial answer")
         await output.flush()
         assert rendered(stream) == "hello\n\npartial answer\n\n"
-        assert output.activity.text == ""
+        assert output.tail == ""
         output.finish()
         await output.flush()
         assert stream.getvalue().count("partial answer") == 1
@@ -203,20 +203,19 @@ def test_fence_blank_lines_stay_buffered_until_closing_fence():
     asyncio.run(run())
 
 
-def test_unfinished_preview_is_bounded_and_finish_preserves_all_source():
+def test_unfinished_block_is_hidden_and_finish_preserves_all_source():
     async def run():
         output, stream = make_output(width=20)
         source = "\n".join(f"line_{i:03d}" for i in range(100))
         output.delta(source)
         await output.flush()
-        assert len(output.activity.text.splitlines()) <= 1
-        assert "line_099" in output.activity.text
+        assert output.tail == source
         assert stream.getvalue() == ""
         output.finish()  # Also used for cancellation and tool boundaries.
         await output.flush()
         for i in range(100):
             assert stream.getvalue().count(f"line_{i:03d}") == 1
-        assert output.activity.text == ""
+        assert output.tail == ""
 
     asyncio.run(run())
 
@@ -268,42 +267,21 @@ def test_pending_prints_share_one_rich_write_and_flush():
     asyncio.run(run())
 
 
-def test_unchanged_preview_is_cached_and_noop_flush_does_not_invalidate(monkeypatch):
-    from rich.text import Text
-
+def test_unfinished_text_and_noop_flush_do_not_invalidate():
     async def run():
-        output, _ = make_output(width=10)
-        wraps = []
+        output, stream = make_output(width=10)
         invalidations = []
-        original_wrap = Text.wrap
-
-        def wrap(self, *args, **kwargs):
-            wraps.append(self.plain)
-            return original_wrap(self, *args, **kwargs)
-
-        monkeypatch.setattr(Text, "wrap", wrap)
         output.app.invalidate = lambda: invalidations.append(True)
-        output.delta("hello world again")
-        await output.flush()
-        assert output.activity.text == "again"
+        for chunk in ("hello", " world", " again"):
+            output.delta(chunk)
+            await output.flush()
         for _ in range(5):
             await output.flush()
-            output.refresh_preview()
-        assert len(wraps) == 1
-        assert len(invalidations) == 1
-
-        output.app.output.get_size = lambda: Size(rows=24, columns=20)
-        assert output.refresh_preview()
-        assert output.activity.text == "hello world again"
-        assert len(wraps) == 2
-        # Before-render callbacks must not recursively invalidate.
-        assert len(invalidations) == 1
-
-        # Newly committed source isn't visible until the output handoff.
-        output.delta("\n\nnext")
-        output.refresh_preview()
-        assert output.activity.text == "hello world again"
+        assert invalidations == []
+        assert stream.getvalue() == ""
+        assert output.tail == "hello world again"
+        output.finish()
         await output.flush()
-        assert output.activity.text == "next"
+        assert rendered(stream) == "hello\nworld\nagain\n\n"
 
     asyncio.run(run())
