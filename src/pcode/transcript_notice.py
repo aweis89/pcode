@@ -13,7 +13,7 @@ from rich.text import Text
 @dataclass(frozen=True)
 class TranscriptNotice:
     text: str
-    kind: Literal["error", "warning", "cancelled", "command"]
+    kind: Literal["error", "warning", "cancelled"]
     title: str
     max_lines: int | None = None
     code_theme: str = "monokai"
@@ -26,14 +26,14 @@ class TranscriptNotice:
         return Markdown(f"{fence}text\n{text}\n{fence}", code_theme=self.code_theme)
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        symbol = {"error": "✗", "command": "›"}.get(self.kind, "!")
-        style = {"error": "pcode.error", "command": "pcode.accent"}.get(self.kind, "pcode.warning")
+        symbol = "✗" if self.kind == "error" else "!"
+        style = "pcode.error" if self.kind == "error" else "pcode.warning"
         yield Text(f"{symbol} {self.title}", style=style)
         if not self.text:
             return
         # Logged code-block backgrounds start at the terminal edge; keep Rich
         # padding and the log's own indentation inside the block unchanged.
-        logged = self.kind in {"error", "command"}
+        logged = self.kind == "error"
         indent = "  " if not logged and options.max_width > 2 else ""
         body_options = options.update(width=max(1, options.max_width - len(indent)))
         # Rich's Markdown code blocks have one padding row/column on each side.

@@ -1041,11 +1041,13 @@ pcode config set command_scrollback_lines 80  # Positive integer; default 40
 pcode config set command_scrollback off       # Restore failure-only scrollback
 ```
 
-Each mirrored block shows the tool label, elapsed time, the invocation on a `$`
-line, and the tool's captured output in a fenced literal code block:
+Each mirrored block shows a success/failure indicator, the tool label, elapsed
+time, and a shell-highlighted invocation on a `$` line. Captured output stays
+literal, with its indentation preserved and no Markdown parsing or extra block
+padding. Process polling details without a command are shown without a `$` prefix:
 
 ```text
-› Run · 0.4s
+✓ Run · 0.4s
   $ pytest -q
   2 passed in 0.31s
   [exit code: 0]
@@ -1061,8 +1063,10 @@ Details:
   instead of the shorter `error_scrollback` excerpt; `error_scrollback` still
   governs every other failure.
 - Output is redacted and sanitized before display, then bounded to
-  `command_scrollback_lines` wrapped body rows, keeping the tail with a
-  truncation marker. The capture step retains its own 128 KiB payload bound.
+  `command_scrollback_lines` wrapped output rows, including an omission marker
+  that counts omitted rendered rows. The command is always retained outside this
+  budget; output keeps its tail (a budget of one shows only the marker when
+  truncated). The capture step retains its own 128 KiB payload bound.
 - Verbose commands can push earlier conversation out of terminal history, so
   raise your terminal or tmux scrollback limit before enabling this.
 
