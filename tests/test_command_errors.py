@@ -71,7 +71,7 @@ def test_command_error_keeps_bounded_tail_with_notice():
     assert huge.endswith("END")
 
 
-def test_error_is_indented_literal_text_and_survives_event_round_trip():
+def test_error_is_fenced_literal_text_and_survives_event_round_trip():
     event = ToolSummary(
         "run_command",
         "pytest -q → exit 1",
@@ -83,11 +83,13 @@ def test_error_is_indented_literal_text_and_survives_event_round_trip():
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=100, color_system=None))
     transcript.events((ToolSummary(**asdict(event)),))
-    assert stream.getvalue().splitlines() == [
+    assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
         "✗ Run failed",
-        "  pytest -q → exit 1",
-        "  [stderr] missing module",
-        "    traceback context",
+        "",
+        "   pytest -q → exit 1",
+        "   [stderr] missing module",
+        "     traceback context",
+        "",
     ]
     assert ToolSummary(**{"name": "run_command", "detail": "old summary"}).error == ""
 
@@ -160,17 +162,17 @@ def test_error_scrollback_limits_wrapped_rows_and_keeps_tail(limit):
     transcript.error("prefix " * 400 + "\nfinal cause")
     lines = stream.getvalue().splitlines()
     assert lines[0] == "✗ Error"
-    assert len(lines) == limit + 1
-    assert "truncated" in lines[1]
+    assert len(lines) == limit + 3  # Heading and code-block padding.
+    assert "truncated" in lines[2]
     if limit > 1:
-        assert lines[-1] == "  final cause"
+        assert lines[-2].strip() == "final cause"
 
 
 def test_default_error_scrollback_limit():
     stream = StringIO()
     Transcript(Console(file=stream)).error("\n".join(str(i) for i in range(60)))
-    assert len(stream.getvalue().splitlines()) == 21
-    assert stream.getvalue().splitlines()[-1] == "  59"
+    assert len(stream.getvalue().splitlines()) == 23
+    assert stream.getvalue().splitlines()[-2].strip() == "59"
 
 
 def test_hidden_errors_do_not_hide_warnings_or_change_events():
@@ -191,11 +193,47 @@ def test_hidden_errors_do_not_hide_warnings_or_change_events():
     assert "Run cancelled" in stream.getvalue()
 
 
-def test_error_body_uses_rich_highlighting_without_markup():
+def test_error_body_uses_markdown_code_block_without_interpreting_markup():
     stream = StringIO()
     transcript = Transcript(Console(file=stream, force_terminal=True, color_system="truecolor"))
     transcript.error("[bold]literal[/bold] code=123 False")
-    body = stream.getvalue().splitlines()[1]
+    body = stream.getvalue().splitlines()[2]
     assert "[bold]" in Text.from_ansi(body).plain
     assert "[/bold]" in Text.from_ansi(body).plain
     assert "\x1b[" in body
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_error_code_block_matches_markdown_theme_and_preserves_fences(theme):
+    from rich.markdown import Markdown
+
+    text = "```python\nprint('oops')\n```\n````\n# literal heading\n[link](https://example.com)"
+    stream = StringIO()
+    transcript = Transcript(
+        Console(file=stream, width=90, force_terminal=True, color_system="truecolor"),
+        theme=theme,
+    )
+    transcript.error(text)
+    output = Text.from_ansi(stream.getvalue()).plain.splitlines()
+    assert [line[3:].rstrip() for line in output[2:-1]] == text.splitlines()
+    # Compare the actual styled block with the same Markdown path used for model output.
+    expected = StringIO()
+    Console(file=expected, width=88, force_terminal=True, color_system="truecolor").print(
+        Markdown("`````text\n" + text + "\n`````", code_theme=transcript.code_theme)
+    )
+    assert "\n".join(line[2:] for line in stream.getvalue().splitlines()[1:]) == (
+        expected.getvalue().rstrip("\n")
+    )
+
+
+@pytest.mark.parametrize("width", [1, 2, 3, 4, 5, 10, 30])
+def test_error_code_block_handles_narrow_panes(width):
+    from pcode.preferences import save_preferences
+
+    save_preferences(error_scrollback_lines="3")
+    stream = StringIO()
+    Transcript(Console(file=stream, width=width, color_system=None)).error("long log " * 100)
+    lines = stream.getvalue().splitlines()
+    assert all(len(line) <= width for line in lines)
+    # The heading can wrap; the body remains bounded plus optional padding.
+    assert len(lines) <= len("✗ Error") + 3 + 2
