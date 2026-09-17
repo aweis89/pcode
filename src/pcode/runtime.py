@@ -80,7 +80,12 @@ class PreviewRuntime:
             ToolSummary("Read", "example/greeting.py · 8 lines · preview only"),
             ToolSummary("Edit", "example/greeting.py · +2 −1 · preview only"),
             Message(
-                "The greeting now handles an empty name:\n\n"
+                "## Terminal-native colors\n\n"
+                "The greeting now handles an empty name with `greet(name)`. "
+                "Here is **bold**, *italic*, and a "
+                "[Rich documentation link](https://rich.readthedocs.io/).\n\n"
+                "> Quotes and inline code use your terminal colors, "
+                "without a painted background.\n\n"
                 "```python\n"
                 "def greet(name: str) -> str:\n"
                 '    name = name.strip() or "world"\n'
@@ -97,7 +102,9 @@ class PreviewRuntime:
                 "| empty | Hello, world! |\n"
                 "| `世界` | Hello, 世界! |\n\n"
                 "- Markdown, code, and this table reflow when the terminal is resized.\n"
-                "- Use PageUp/PageDown to scroll and Ctrl+End to follow new output.\n\n"
+                "- Try `/theme light` or `/theme dark`, "
+                "then `/demo` again to compare syntax colors.\n"
+                "- Use terminal/tmux scrollback to compare previous output.\n\n"
                 "**No files were read or changed, and no tests were executed.**"
             ),
         )

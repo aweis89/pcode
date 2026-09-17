@@ -338,7 +338,7 @@ class PreviewApp:
     def new(self, argument: str) -> None:
         self.runtime.reset()
         self.activity.reset()
-        self.transcript.print(Rule("New conversation", style=self.transcript.palette.muted))
+        self.transcript.print(Rule("New conversation", style="pcode.muted"))
         self.transcript.note("Context reset. Input history and transcript are unchanged.")
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")

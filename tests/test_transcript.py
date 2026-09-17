@@ -173,7 +173,7 @@ def test_markdown_structures_match_static_renderer_across_chunk_boundaries():
         for source in samples:
             expected = StringIO()
             console = Console(file=expected, color_system=None, width=40)
-            console.print(Markdown(source, code_theme="nord"))
+            console.print(Markdown(source, code_theme="ansi_dark"))
             console.print()
             for chunks in ([source], list(source)):
                 output, stream = make_output(width=40)
@@ -225,10 +225,10 @@ def test_streamed_markdown_emits_styles_and_uses_selected_code_theme():
     async def run():
         output, stream = make_output()
         output.console = Console(file=stream, force_terminal=True, color_system="truecolor")
-        output.code_theme = lambda: "friendly"
+        output.code_theme = lambda: "ansi_light"
         output.delta("**bold**\n\n```python\nx = 1\n```\n")
         assert any(
-            isinstance(obj, Markdown) and obj.code_theme == "friendly"
+            isinstance(obj, Markdown) and obj.code_theme == "ansi_light"
             for objects, _, _ in output.pending
             for obj in objects
         )

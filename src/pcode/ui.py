@@ -25,6 +25,7 @@ from rich.markdown import Markdown
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
+from rich.theme import Theme
 
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.runtime import Event, Message, ToolStarted, ToolSummary
@@ -69,9 +70,36 @@ class Palette:
 
 
 PALETTES = {
-    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "nord"),
-    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "friendly"),
+    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "ansi_dark"),
+    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "ansi_light"),
 }
+
+
+# Rich owns scrollback, not the prompt palette. Use terminal-defined ANSI colors
+# and leave the background alone so output fits either terminal appearance.
+# In particular, Rich's default inline code paints a black background.
+TERMINAL_THEME = Theme(
+    {
+        "pcode.accent": "cyan",
+        "pcode.brand": "bold cyan",
+        "pcode.muted": "default",
+        "markdown.code": "bold cyan",
+        "markdown.code_block": "default",
+        "markdown.block_quote": "italic default",
+        "markdown.h1": "bold underline",
+        "markdown.h2": "bold",
+        "markdown.h3": "bold cyan",
+        "markdown.h4": "italic cyan",
+        "markdown.h5": "italic",
+        "markdown.h6": "italic",
+        "markdown.h7": "italic",
+        "markdown.hr": "default",
+        "markdown.link": "underline blue",
+        "markdown.link_url": "underline blue",
+        "markdown.table.border": "cyan",
+        "markdown.table.header": "bold",
+    }
+)
 
 
 @dataclass
@@ -189,7 +217,7 @@ class TerminalOutput:
         self.app = app
         self.tail = ""
         self.streamed = False
-        self.code_theme = code_theme or (lambda: "nord")
+        self.code_theme = code_theme or (lambda: "ansi_dark")
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
@@ -302,7 +330,7 @@ class TerminalOutput:
                         # Rich's public buffer context coalesces the batch's
                         # prints (including separators) into one output flush.
                         # Keep it synchronous and inside the single-writer handoff.
-                        with self.console:
+                        with self.console, self.console.use_theme(TERMINAL_THEME):
                             for objects, end, soft_wrap in pending:
                                 self.console.print(
                                     *objects, end=end, soft_wrap=soft_wrap, width=width
@@ -579,7 +607,8 @@ class Transcript:
         if self.output is not None:
             self.output.print(*objects)
         else:
-            self.console.print(*objects)
+            with self.console.use_theme(TERMINAL_THEME):
+                self.console.print(*objects)
 
     @property
     def palette(self) -> Palette:
@@ -589,8 +618,8 @@ class Transcript:
         self.print()
         self.print(
             Text.assemble(
-                ("pcode", f"bold {self.palette.accent}"),
-                (f"  /  {model or 'UI preview'}", self.palette.muted),
+                ("pcode", "pcode.brand"),
+                (f"  /  {model or 'UI preview'}", "pcode.muted"),
             )
         )
         if model:
@@ -602,10 +631,10 @@ class Transcript:
         self.print()
 
     def note(self, text: str) -> None:
-        self.print(Text(text, style=self.palette.muted))
+        self.print(Text(text, style="pcode.muted"))
 
     def user(self, text: str) -> None:
-        self.print(Text.assemble(("❯ ", f"bold {self.palette.accent}"), text))
+        self.print(Text.assemble(("❯ ", "pcode.brand"), text))
         self.print()
 
     def command_summary(self, event: ToolSummary) -> None:
@@ -617,13 +646,13 @@ class Transcript:
         elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
         header = Text(
             f"  {'!' if event.failed else '✓'} {label(event.name)}{result}{elapsed}",
-            style="bold red" if event.failed else self.palette.accent,
+            style="bold red" if event.failed else "pcode.accent",
             no_wrap=True,
             overflow="ellipsis",
         )
         preview = Text(
             "    " + command_preview(event.command),
-            style=self.palette.muted,
+            style="pcode.muted",
             no_wrap=True,
             overflow="ellipsis",
         )
@@ -652,33 +681,31 @@ class Transcript:
                     if event.failed and event.error:
                         for line in event.error.splitlines():
                             self.print(
-                                Text("      " + plain(line, limit=None), style=self.palette.muted)
+                                Text("      " + plain(line, limit=None), style="pcode.muted")
                             )
                     continue
                 self.print(
                     Text.assemble(
                         (
                             f"  {'!' if event.failed else '✓'} {label(event.name)}  ",
-                            "bold red" if event.failed else self.palette.accent,
+                            "bold red" if event.failed else "pcode.accent",
                         ),
-                        (plain(event.detail, limit=None), self.palette.muted),
+                        (plain(event.detail, limit=None), "pcode.muted"),
                         (
                             f"  {event.elapsed_seconds:.1f}s"
                             if event.elapsed_seconds is not None
                             else "",
-                            self.palette.muted,
+                            "pcode.muted",
                         ),
                     )
                 )
                 if event.failed and event.error:
                     for line in event.error.splitlines():
-                        self.print(
-                            Text("      " + plain(line, limit=None), style=self.palette.muted)
-                        )
+                        self.print(Text("      " + plain(line, limit=None), style="pcode.muted"))
 
     def help(self, registry: CommandRegistry) -> None:
         table = Table(box=None, padding=(0, 2), show_header=False)
-        table.add_column(style=self.palette.accent, no_wrap=True)
+        table.add_column(style="pcode.accent", no_wrap=True)
         table.add_column()
         for command in registry.commands:
             table.add_row(command.name, command.description)
