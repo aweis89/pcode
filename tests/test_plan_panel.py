@@ -252,10 +252,10 @@ def test_unfinished_task_only_spins_during_live_turn(state, busy):
     ("statuses", "title"),
     [
         ([], "Tools"),
-        (["pending", "in_progress", "pending"], "Tasks 0/3 done"),
-        (["completed", "in_progress", "pending"], "Tasks 1/3 done"),
-        (["completed"] * 3, "Tasks 3/3 done"),
-        (["completed", "cancelled", "blocked"], "Tasks 1/3 done"),
+        (["pending", "in_progress", "pending"], "Tasks 0/3"),
+        (["completed", "in_progress", "pending"], "Tasks 1/3"),
+        (["completed"] * 3, "Tasks 3/3"),
+        (["completed", "cancelled", "blocked"], "Tasks 1/3"),
     ],
 )
 def test_panel_title_counts_completed_tasks(statuses, title):
