@@ -83,3 +83,51 @@ def test_meridian_thinking_toggle_explains_upstream_requirement(tmp_path, monkey
     assert app.registry.dispatch("/show-thinking on")
     assert "Thinking Passthrough" in output.getvalue()
     assert "only changes pcode's display" in output.getvalue()
+
+
+def test_thinking_box_follows_latest_lines_and_preserves_paragraphs():
+    activity = Activity(show_thinking=True, thinking_lines=3)
+    activity.append_thinking("old line\nfirst\n\nlast")
+    assert [text for _, text in activity.thinking_rows()] == ["first", "", "last"]
+    activity.append_thinking(" token\nnewest")
+    assert [text for _, text in activity.thinking_rows()] == ["", "last token", "newest"]
+    assert [text for _, text in activity.thinking_rows(height=1)] == ["newest"]
+    assert activity.thinking_rows(height=0) == []
+
+
+def test_thinking_box_wraps_before_taking_tail_and_handles_wide_characters():
+    from rich.cells import cell_len
+
+    activity = Activity(show_thinking=True, thinking_lines=2)
+    activity.append_thinking("abcdefghij界界界界")
+    rows = [text for _, text in activity.thinking_rows(width=4)]
+    assert len(rows) == 2
+    assert all(cell_len(row) <= 4 for row in rows)
+    assert "".join(rows).endswith("界界界")
+    assert len(activity.thinking_rows(width=80)) == 1
+
+
+def test_thinking_box_strips_ansi_but_keeps_newlines():
+    activity = Activity(show_thinking=True)
+    activity.append_thinking("\x1b[31mfirst\x1b[0m\nsecond\r\x00\x1b]0;title\x07")
+    rows = [text for _, text in activity.thinking_rows()]
+    assert rows[0] == "first"
+    assert rows[1].strip() == "second"
+    assert len(rows) == 2
+
+
+def test_thinking_lines_preference_validates_and_restores():
+    import pytest
+
+    from pcode.config import configure
+
+    assert SETTINGS["thinking_lines"].default == "10"
+    assert PreviewApp().activity.thinking_lines == 10
+    configure(["set", "thinking_lines", "5"])
+    assert PreviewApp().activity.thinking_lines == 5
+    for invalid in ("0", "-1", "1.5", "many"):
+        with pytest.raises(ValueError, match="positive integer"):
+            configure(["set", "thinking_lines", invalid])
+    activity = Activity(thinking_lines=5)
+    activity.reset()
+    assert activity.thinking_lines == 5

@@ -311,3 +311,23 @@ and resume. Thinking remains excluded from transcript events, but saved model
 message history can contain provider thinking as before. See
 [Anthropic extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
 and [adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking).
+
+### Multiline thinking frame
+
+The thinking view is a content-sized `Frame` above the current prompt and task
+panel. `thinking_lines` defaults to 10 content rows, excluding borders. Wrap the
+bounded buffer with Rich `Text.wrap` before taking the tail, using terminal-cell
+width rather than character count. Strip ANSI/control sequences while retaining
+newlines; do not interpret streamed content as prompt_toolkit markup.
+
+Verified prompt_toolkit 3.0.53 accepts callable `Frame.height` and `Window.height`.
+Use explicit content and frame heights (`rows` and `rows + 2`), with the same
+row calculation in the overall activity budget, to avoid CPR stretching. The
+thinking height budget leaves room for the task frame, queue, editor, and footer.
+`tests/test_thinking_tmux.py` covers configurable bounds, real CPR, resize,
+toggling, and cancellation; the existing single-block thinking regression remains.
+Aggressive tmux shrink/reflow can copy old panel rows into history before the
+application receives SIGWINCH, just as for the task panel. Resize tests inspect
+the live frame nearest the editor; no-resize tests assert no reasoning in history.
+Do not claim the terminal history is a secure store or that application cleanup
+can erase terminal-owned history from arbitrary resizes.

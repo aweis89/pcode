@@ -935,7 +935,10 @@ off, use `/compact` proactively or `/new` for unrelated work.
 
 ### Transient thinking preview
 
-Press **Ctrl+T** to show or hide a compact reasoning preview. The toggle saves your
+Press **Ctrl+T** to show or hide a bordered, streaming **Thinking** box above the
+current prompt, tasks, and editor. It wraps text, preserves paragraph breaks, and
+follows the latest **10 lines** by default (plus the box borders). It grows with
+content and shrinks in small panes to leave room for tasks and input. The toggle saves your
 preference. `/show-thinking on` and `/show-thinking off` also change the current
 view and save the default; `/show-thinking` reports the current setting.
 You can also set the startup default with
@@ -947,7 +950,25 @@ through transcript events or permanent terminal output. The preview is cleared
 on completion, cancellation, failure, and conversation reset. Hiding the view
 keeps the current turn's rolling buffer so it can be shown again. This does not
 change model reasoning effort or the runtime's existing saved model-message
-history. An expanded reasoning view is not implemented.
+history. Configure the maximum number of visible content lines with:
+
+```sh
+pcode config set thinking_lines 10  # Positive integer; default 10
+```
+
+You can also use `/config set thinking_lines 10`; like other defaults, the line
+limit applies on the next launch. The underlying rolling buffer is bounded to
+8,192 characters. This is a live tail, not a scrollable reasoning transcript.
+As with other normal-screen panels, aggressive tmux resizing can move old widget
+rows into terminal history before pcode can erase them.
+
+For direct Anthropic models, enabling the view also requests thinking on the
+next turn (adaptive where supported, otherwise a 2,048-token budget). This can
+increase latency and token usage. Turning it off removes that request and
+restores provider defaults; an in-flight request is unchanged. Codex requests
+provider-exposed reasoning summaries independently of visibility. Meridian still
+requires thinking generation upstream and **Thinking Passthrough** in its proxy
+settings; pcode does not change the proxy's global settings.
 
 ### Error logs in scrollback
 
