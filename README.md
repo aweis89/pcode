@@ -423,6 +423,9 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   with `--color-style terminal` (default: `--color-style palette`). Run `/demo`
   after switching to compare headings, links, quotes, tables, Python, and diffs.
   Existing scrollback is not repainted.
+- Session, conversation-tree, model, and tool popups share terminal-default
+  backgrounds and text, with reverse-video selection highlights. They follow your
+  terminal background automatically, independently of `/theme` and `/colors`.
 - `/help`: command list and keyboard shortcuts.
 - `/model`: searchable model picker for configured providers (keeps the conversation).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
