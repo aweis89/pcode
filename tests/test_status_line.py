@@ -37,14 +37,19 @@ def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, _ = make_app(tmp_path / "p/pcode", monkeypatch, model="openai:gpt-5")
     app.branch = "master"
-    assert fragment_list_to_text(app.toolbar()) == " ~/p/pcode master · gpt-5 · effort: default"
+    assert (
+        fragment_list_to_text(app.toolbar())
+        == " ~/p/pcode master · openai:gpt-5 · effort: default · ctx: ~?/400k"
+    )
     app.runtime.agent = SimpleNamespace(
         model=SimpleNamespace(settings={"openai_reasoning_effort": "low"}),
         model_settings={"openai_reasoning_effort": "high"},
     )
-    assert fragment_list_to_text(app.toolbar()).endswith("gpt-5 · effort: high")
+    assert fragment_list_to_text(app.toolbar()).endswith(
+        "openai:gpt-5 · effort: high · ctx: ~?/400k"
+    )
     app.runtime.agent.model_settings = None
-    assert fragment_list_to_text(app.toolbar()).endswith("effort: low")
+    assert fragment_list_to_text(app.toolbar()).endswith("effort: low · ctx: ~?/400k")
 
 
 def test_preview_home_and_help(tmp_path, monkeypatch):
@@ -87,11 +92,12 @@ def test_long_unicode_path_stays_one_row(tmp_path, monkeypatch, width):
 
 
 def test_narrow_busy_footer_keeps_model_effort_and_activity(tmp_path, monkeypatch):
-    app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=35)
+    app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=40)
     app.activity.busy = True
     text = fragment_list_to_text(app.toolbar())
-    assert text == " local · effort: default · working"
-    assert cell_len(text) <= 35
+    assert text.startswith(" test:local · effort: default · working")
+    assert text.endswith("…")
+    assert cell_len(text) <= 40
 
 
 def test_branch_refresh_handles_switches_detached_and_non_repo(tmp_path, monkeypatch):
@@ -164,6 +170,33 @@ def test_footer_segments_highlight_context_and_activity(tmp_path, monkeypatch):
     app.activity.queued = 2
     fragments = app.toolbar()
     assert ("class:bottom-toolbar.location", str(tmp_path)) in fragments
-    assert ("class:bottom-toolbar.model", "local") in fragments
+    assert ("class:bottom-toolbar.model", "test:local") in fragments
     assert ("class:bottom-toolbar.activity", "working") in fragments
     assert ("class:bottom-toolbar.activity", "2 queued") in fragments
+
+
+@pytest.mark.parametrize("model", ["anthropic:claude-sonnet-4-6", "openai-codex:gpt-5"])
+def test_footer_provider_and_context(tmp_path, monkeypatch, model):
+    from pydantic_ai.messages import ModelResponse
+    from pydantic_ai.usage import RequestUsage
+
+    app, _ = make_app(tmp_path, monkeypatch, model=model, width=200)
+    app.runtime.history = [ModelResponse(parts=[], usage=RequestUsage(input_tokens=12_500))]
+    text = fragment_list_to_text(app.toolbar())
+    assert model in text
+    assert "ctx: ~12.5k/" in text
+    app.runtime.history = []
+    assert "ctx: ~?/" in fragment_list_to_text(app.toolbar())
+
+
+@pytest.mark.parametrize("width", [1, 20, 40, 60, 100])
+def test_provider_and_context_stay_one_row(tmp_path, monkeypatch, width):
+    app, _ = make_app(
+        tmp_path / ("界" * 100), monkeypatch, model="anthropic:claude-sonnet-4-6", width=width
+    )
+    text = fragment_list_to_text(app.toolbar())
+    assert cell_len(text) <= width
+    if width >= 60:
+        assert "anthropic:claude-sonnet-4-6" in text
+    if width >= 100:
+        assert "ctx: ~?/1m" in text

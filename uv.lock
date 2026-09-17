@@ -1035,6 +1035,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
+    { name = "genai-prices" },
     { name = "httpx2" },
     { name = "prompt-toolkit" },
     { name = "pydantic-ai-harness", extra = ["exa"] },
@@ -1053,6 +1054,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "filelock", specifier = ">=3.16,<4" },
+    { name = "genai-prices", specifier = ">=0.1.7,<0.2" },
     { name = "httpx2", specifier = ">=2.13,<3" },
     { name = "prompt-toolkit", specifier = ">=3.0.52,<4" },
     { name = "pydantic-ai-harness", extras = ["exa"], specifier = ">=0.31.0,<0.32" },
