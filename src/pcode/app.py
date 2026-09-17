@@ -405,7 +405,8 @@ class PreviewApp:
             state.enable(name)
             self.transcript.note(
                 f"MCP '{name}' enabled for this conversation; connects on the next turn. "
-                "Its tools can perform actions with the server's permissions."
+                "Its tools can perform actions with the server's permissions. "
+                "OAuth servers may open your browser for sign-in; tokens are kept in memory only."
             )
         else:
             state.disable(name)

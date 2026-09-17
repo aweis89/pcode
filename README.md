@@ -586,7 +586,7 @@ Repository MCP files are **not** loaded automatically. The JSON uses an
   and `cwd`. Commands are executed directly, not through a shell. Relative paths
   are resolved from pcode's launch directory; prefer absolute paths.
 - **Remote HTTP/SSE:** `url` and optional `headers` (string map). Transport is
-  inferred from the URL by the MCP client. No interactive OAuth setup is provided.
+  inferred from the URL by the MCP client. Add `"auth": "oauth"` for browser sign-in.
 
 Server names start with a letter and contain letters, digits, `_`, or `-` (up to
 32 characters). Unsupported server fields are rejected on enable rather than
@@ -594,6 +594,47 @@ silently ignored. String values support `${VARIABLE}` and `${VARIABLE:-default}`
 Only the selected server's variables are expanded, at enable time, so missing
 credentials for an unused server do not block ordinary work. Keep secrets in the
 environment rather than the JSON file.
+
+### OAuth sign-in
+
+Remote servers can use the browser-based OAuth support built into Pydantic AI and
+FastMCP. No separate auth tool, Pi token import, or custom OAuth flow is needed:
+
+```json
+{
+  "mcpServers": {
+    "my-service": {
+      "url": "https://mcp.example.com/mcp",
+      "auth": "oauth"
+    }
+  }
+}
+```
+
+Replace the placeholder URL with your server, then `/mcp enable my-service` and
+send a prompt. On the next turn, the client discovers the server's OAuth settings,
+opens your default browser if sign-in is needed, and waits for approval through a
+temporary localhost callback server. Finish sign-in in the browser; Ctrl+C cancels
+an active turn, including a pending login. Listing or enabling alone does not
+contact the service or open a browser. This requires a browser and a reachable
+local callback; there is no headless/device-code login command.
+
+- Pydantic AI's `MCPToolset(auth="oauth")` delegates PKCE, dynamic client registration,
+  callback/state validation, token refresh, and authenticated requests to FastMCP
+  and the MCP SDK. Servers must support that client flow; pre-registered client IDs,
+  custom scopes, and fixed callback ports are not exposed in pcode's config yet.
+- **Credentials are in memory only.** They are reused across turns while the server
+  stays enabled. Disable/re-enable, `/new`, session resume, or process restart
+  creates a fresh OAuth client and may require browser sign-in again. Closing a
+  turn's connection does not discard the enabled client's tokens. No OAuth tokens
+  are written to pcode's configuration, session files, or a persistent token store.
+- Pi's `"auth": "oauth"` server definitions are compatible, but Pi's saved OAuth
+  credentials and approvals are not imported. This is a separate authorization.
+- Do not combine OAuth with an `Authorization` header. Non-auth headers may be used
+  alongside OAuth. For a static bearer token, continue using `headers` with an
+  environment variable reference instead of `auth`.
+- Disabling a server drops pcode's reference to its OAuth client; it does not revoke
+  the server-side grant. Revoke access through the service if needed.
 
 ### Activation and token usage
 
