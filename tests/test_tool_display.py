@@ -141,7 +141,7 @@ def test_compact_rows_and_old_and_new_event_shapes():
         "  ✓ Read  a.py · 2 lines",
         "✗ Run failed",
         "",
-        "   pytest → exit 1",
+        " pytest → exit 1",
         "",
     ]
 
