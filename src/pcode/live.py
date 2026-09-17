@@ -5,7 +5,7 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -28,8 +28,10 @@ from pydantic_ai.messages import ModelMessage, RetryPromptPart
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
 from pydantic_ai_harness.step_persistence import StepPersistence
+from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent
 
 from pcode.conversation_tree import ConversationTree
+from pcode.delegation import ChildActivity
 from pcode.diagnostics import error_details
 from pcode.inspection import ToolArchive, capture
 from pcode.mcp import MCPState
@@ -45,7 +47,14 @@ from pcode.runtime import (
     ToolSummary,
 )
 from pcode.sessions import SavedSession, SessionError
-from pcode.tool_display import command_error, command_text, label, result_detail, target
+from pcode.tool_display import (
+    command_error,
+    command_text,
+    delegation_detail,
+    label,
+    result_detail,
+    target,
+)
 
 
 class AgentRuntime:
@@ -244,6 +253,9 @@ class AgentRuntime:
         )
         emitted_text = False
         tools: dict[str, tuple[str, dict, float]] = {}
+        delegates: dict[str, ToolStarted] = {}
+        child_tools: dict[str, ToolStarted] = {}
+        delegation_ends: dict[str, DelegationEndEvent] = {}
 
         def activity() -> RunStatus:
             if not tools:
@@ -251,7 +263,8 @@ class AgentRuntime:
             if len(tools) == 1:
                 name, args, _ = next(iter(tools.values()))
                 where = target(name, args)
-                return RunStatus(f"Running {name}" + (f" · {where}" if where else "") + "…")
+                title = label(name) if name == "delegate_task" else name
+                return RunStatus(f"Running {title}" + (f" · {where}" if where else "") + "…")
             names = ", ".join(label(item[0]) for item in list(tools.values())[:3])
             return RunStatus(f"Running {len(tools)} tools · {names}…")
 
@@ -273,7 +286,40 @@ class AgentRuntime:
             ) as events,
         ):
             async for event in events:
-                if isinstance(event, PartStartEvent):
+                if isinstance(event, DelegationStartEvent):
+                    if start := delegates.get(event.tool_call_id):
+                        start = replace(start, activity="Waiting for model")
+                        delegates[event.tool_call_id] = start
+                        yield start
+                elif isinstance(event, DelegationEndEvent):
+                    delegation_ends[event.tool_call_id] = event
+                    # Timeouts/budget stops can leave a child's tool without a
+                    # result. Settle it before the parent resumes its tool loop.
+                    for call_id, child in list(child_tools.items()):
+                        if child.parent_call_id == event.tool_call_id:
+                            yield ToolSummary(
+                                child.name,
+                                child.detail + " → Interrupted",
+                                failed=True,
+                                call_id=call_id,
+                                run_id=run_id,
+                                outcome="interrupted",
+                                parent_call_id=child.parent_call_id,
+                            )
+                            del child_tools[call_id]
+                elif isinstance(event, ChildActivity):
+                    if start := delegates.get(event.tool_call_id):
+                        if event.activity != start.activity:
+                            start = replace(start, activity=event.activity)
+                            delegates[event.tool_call_id] = start
+                            yield start
+                        if event.child is not None:
+                            if isinstance(event.child, ToolStarted):
+                                child_tools[event.child.call_id] = event.child
+                            else:
+                                child_tools.pop(event.child.call_id, None)
+                            yield event.child
+                elif isinstance(event, PartStartEvent):
                     if isinstance(event.part, TextPart):
                         yield TextDelta(event.part.content)
                     elif isinstance(event.part, ThinkingPart):
@@ -293,7 +339,7 @@ class AgentRuntime:
                     except (ValueError, TypeError):
                         args = {}
                     tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
-                    yield ToolStarted(
+                    start = ToolStarted(
                         event.part.tool_name,
                         target(event.part.tool_name, args),
                         event.part.tool_call_id,
@@ -306,6 +352,9 @@ class AgentRuntime:
                         and isinstance(args.get("command"), str)
                         else "",
                     )
+                    if event.part.tool_name == "delegate_task":
+                        delegates[event.part.tool_call_id] = start
+                    yield start
                     yield activity()
                 elif isinstance(event, FunctionToolResultEvent):
                     name, args, started = tools.pop(
@@ -316,6 +365,17 @@ class AgentRuntime:
                         "retry" if isinstance(event.part, RetryPromptPart) else event.part.outcome
                     )
                     detail, failed = result_detail(name, args, event.part.content, outcome)
+                    delegates.pop(event.tool_call_id, None)
+                    end = delegation_ends.pop(event.tool_call_id, None)
+                    if end is not None:
+                        outcome = end.outcome
+                        detail, failed = delegation_detail(args, outcome)
+                    elif name == "delegate_task" and outcome == "success":
+                        # Harness returns max_calls refusals as normal strings,
+                        # with no lifecycle events because no child was launched.
+                        outcome = "not_started"
+                        detail = target(name, args) + " → Not started"
+                        failed = True
                     # Read the store after every settled tool: covers granular,
                     # batched, and future plan mutations without parsing results.
                     items = [

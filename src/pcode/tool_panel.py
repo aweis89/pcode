@@ -30,6 +30,8 @@ class ToolCall:
             command_preview(event.command) if event.command else plain(event.detail, limit=None)
         )
         state = " · interrupted" if self.interrupted else ""
+        if self.running and event.activity:
+            state += f" · {plain(event.activity)}"
         # Keep failures visible even when the command itself consumes the row.
         name = label(event.name) + (" failed" if getattr(event, "failed", False) else "")
         return f"{icon} {name}{state}{timing} · {detail}"
@@ -58,6 +60,9 @@ class ToolHistory:
                 None,
             )
         if call is not None:
+            if event.name == "delegate_task" and all(c is not call for c in self.calls):
+                self.calls.append(call)
+                del self.calls[:-10]
             call.event = event
             call.interrupted = False
         else:
@@ -71,6 +76,10 @@ class ToolHistory:
                 self._running.pop(event.call_id, None)
 
     def interrupt_running(self) -> None:
+        for call in self._running.values():
+            if call.event.name == "delegate_task" and all(c is not call for c in self.calls):
+                self.calls.append(call)
+                del self.calls[:-10]
         for call in [*self.calls, *self._running.values()]:
             if call.running:
                 call.interrupted = True
@@ -81,13 +90,31 @@ class ToolHistory:
         self._running.clear()
 
     def rows(self, count: int, *, nested: bool = False):
-        visible = self.calls[-count:] if count else []
+        # Running delegates remain addressable even after their history row is
+        # evicted. Reserve their rows before displaying any recent tool chatter.
+        pinned = [c for c in self._running.values() if c.event.name == "delegate_task"]
+        visible = [(c, False) for c in pinned[:count]]
+        remaining = max(0, count - len(visible))
+        if pinned:
+            for parent in pinned[:count]:
+                children = [c for c in self.calls if c.event.parent_call_id == parent.event.call_id]
+                # At most two child rows per parent and never exceed panel height.
+                children = children[-min(2, remaining) :] if remaining else []
+                index = next(i for i, (c, _) in enumerate(visible) if c is parent) + 1
+                visible[index:index] = [(c, True) for c in children]
+                remaining -= len(children)
+        recent = [
+            c for c in self.calls if not c.event.parent_call_id and all(c is not p for p in pinned)
+        ]
+        if remaining:
+            visible.extend((c, False) for c in recent[-remaining:])
         lines = []
-        for call in visible:
+        for call, child in visible:
             style = "class:tool.failed" if getattr(call.event, "failed", False) else "class:plan"
             if call.running:
                 style = "class:plan.active"
-            lines.append((style, ("    " if nested else "") + call.line()))
+            indent = ("    " if nested else "") + ("    " if child else "")
+            lines.append((style, indent + call.line()))
         return lines
 
 
@@ -103,7 +130,12 @@ def task_panel_rows(items: list[dict], tools: ToolHistory, budget: int, active_i
     if budget <= 0:
         return []
     finished = bool(items) and all(item["status"] in {"completed", "cancelled"} for item in items)
-    tool_count = 0 if finished else min(3, len(tools.calls), max(0, budget - bool(items)))
+    active_delegate = any(c.event.name == "delegate_task" for c in tools._running.values())
+    tool_count = (
+        0
+        if finished and not active_delegate
+        else min(3, len(tools.calls), max(0, budget - bool(items)))
+    )
     task_count = min(5, len(items), budget - tool_count)
     active = next((i for i, item in enumerate(items) if item["status"] == "in_progress"), None)
     anchor = active if active is not None else 0
