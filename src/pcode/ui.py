@@ -60,8 +60,15 @@ class Palette:
                 "bottom-toolbar.location": "fg:default bold",
                 "bottom-toolbar.model": "fg:default",
                 "bottom-toolbar.activity": "fg:default bold",
+                "completion-menu": f"bg:{self.surface} {self.foreground}",
                 "completion-menu.completion": f"bg:{self.surface} {self.foreground}",
-                "completion-menu.completion.current": f"bg:{self.selected} {self.accent} bold",
+                # The toolkit's selected-row default uses reverse; explicitly
+                # disable it so light themes keep dark text on a light surface.
+                "completion-menu.completion.current": (
+                    f"noreverse bg:{self.selected} {self.accent} bold"
+                ),
+                "completion-menu scrollbar.background": f"bg:{self.surface}",
+                "completion-menu scrollbar.button": f"bg:{self.selected}",
                 "completion-menu.meta.completion": f"bg:{self.surface} {self.muted}",
                 "completion-menu.meta.completion.current": f"bg:{self.selected} {self.foreground}",
                 "auto-suggestion": self.muted,
