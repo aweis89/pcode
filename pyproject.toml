@@ -5,6 +5,7 @@ description = "A streaming terminal for Pydantic AI"
 requires-python = ">=3.11"
 dependencies = [
     "filelock>=3.16,<4",
+    "genai-prices>=0.1.7,<0.2",
     "httpx2>=2.13,<3",
     "prompt-toolkit>=3.0.52,<4",
     "pydantic-ai-harness[exa]>=0.31.0,<0.32",

@@ -142,3 +142,16 @@ Specific traps already encountered here:
 Inspect library source and package metadata, not credential stores, `.env`
 files, private keys, or token files. API discovery should not require live model
 requests or authentication.
+
+### Context indicator
+
+`src/pcode/context_usage.py` uses installed `genai-prices` 0.1.7's public
+`calc_price(Usage(...), model_ref, provider_id=...)` and the returned
+`model.context_window` metadata. Verified against installed `__init__.py`,
+`data_snapshot.py`, and `types.py`: the default snapshot is bundled, lookup raises
+`LookupError` for unknown providers/models, and no updater is started by pcode.
+Source: https://github.com/pydantic/genai-prices . The catalog is advisory, not
+an account-specific API limit; Codex is mapped to OpenAI and unknown proxies are
+not guessed. Pydantic AI 2.43.0 `RequestUsage.input_tokens` already includes
+cache read/write tokens (see installed `pydantic_ai/usage.py`). Use only the last
+response's input usage, never cumulative run/session billing usage.
