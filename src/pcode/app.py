@@ -28,6 +28,7 @@ from pcode.preferences import (
     save_preferences,
 )
 from pcode.runtime import (
+    CommandOutput,
     Message,
     PlanPreview,
     PlanUpdated,
@@ -38,7 +39,7 @@ from pcode.runtime import (
     ToolSummary,
 )
 from pcode.theme import THEMES
-from pcode.tool_display import plain
+from pcode.tool_display import COMMAND_TOOLS, plain
 from pcode.ui import COLOR_STYLES, Activity, TerminalOutput, Transcript, create_prompt
 
 
@@ -455,13 +456,17 @@ class PreviewApp:
     def present_events(self, events) -> None:
         """Route live tool activity separately from permanent transcript writes."""
         for event in events:
-            if isinstance(event, (ToolStarted, ToolSummary)):
+            if isinstance(event, CommandOutput):
+                self.activity.command_outputs.pop(event.call_id, None)
+                self.activity.command_outputs[event.call_id] = event
+            elif isinstance(event, (ToolStarted, ToolSummary)):
                 self.activity.tools.record(event)
                 if self.transcript.output is not None:
                     self.transcript.output.app.invalidate()
                 # Decide only after completion. The adapter's failed flag includes
                 # non-zero shell exits, retries, and known tool validation failures.
                 if isinstance(event, ToolSummary):
+                    self.activity.command_outputs.pop(event.call_id, None)
                     self.transcript.tool_result(event)
             else:
                 self.transcript.events((event,))
@@ -941,6 +946,8 @@ class PreviewApp:
                     if isinstance(event, TextDelta):
                         output.delta(event.text)
                         self.activity.status = "Responding…"
+                    elif isinstance(event, CommandOutput):
+                        self.present_events((event,))
                     elif isinstance(event, RunStatus):
                         self.activity.status = event.text
                     elif isinstance(event, PlanUpdated):
@@ -948,10 +955,10 @@ class PreviewApp:
                     elif isinstance(event, PlanPreview):
                         self.activity.plan_preview = event.items
                     elif isinstance(event, (ToolStarted, ToolSummary)):
-                        # Only exceptional completions also become persistent
-                        # output, unless command mirroring is enabled.
+                        # Hidden commands, including failures, do not interrupt prose.
                         if isinstance(event, ToolSummary) and (
-                            event.failed or self.transcript.streams_command(event)
+                            (event.failed and event.name not in COMMAND_TOOLS)
+                            or self.transcript.streams_command(event)
                         ):
                             output.finish()
                         self.present_events((event,))
@@ -969,6 +976,7 @@ class PreviewApp:
             self.runtime.thinking_sink = lambda text: None
             self.runtime.thinking_start_sink = lambda: None
             self.activity.clear_thinking()
+            self.activity.command_outputs.clear()
             self.activity.plan_preview = None
             output.end_turn()
             self.activity.tools.interrupt_running()

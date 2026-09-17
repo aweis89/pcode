@@ -1019,26 +1019,23 @@ a truncation marker within that limit.
 
 ```sh
 pcode config set error_scrollback_lines 40  # Positive integer; default 20
-pcode config set error_scrollback off      # Hide error blocks entirely
-pcode config set error_scrollback on       # Restore error blocks (default)
 ```
 
-These settings also work through `/config` and apply on the next launch. They
-affect only error scrollback, including replayed failed-tool events; warnings and
-cancellation notices remain visible. Saved diagnostics are not disabled or trimmed
+This line limit also works through `/config` and applies on the next launch.
+Application errors and non-command tool failures remain visible, as do warnings
+and cancellation notices. Command failures follow command visibility below. Saved diagnostics are not disabled or trimmed
 by these display settings. Command diagnostics retain a separate safety bound of
 200 lines / 32,000 characters, after redaction.
 
 ### Command output in scrollback
 
-By default, successful tool calls stay in the mutable tool panel and only
-failures reach scrollback. Enable `command_scrollback` to mirror **every settled
+By default, commands stay in the mutable tool panel, including failures. Enable `command_scrollback` to mirror **every settled
 shell tool call and its captured output** into permanent terminal scrollback:
 
 ```sh
 pcode config set command_scrollback on        # Mirror commands and output (default off)
-pcode config set command_scrollback_lines 80  # Positive integer; default 40
-pcode config set command_scrollback off       # Restore failure-only scrollback
+pcode config set command_scrollback_lines 80  # Positive integer; default 20
+pcode config set command_scrollback off       # Hide all commands, including failures
 ```
 
 Each mirrored block shows a success/failure indicator, the tool label, elapsed
@@ -1057,16 +1054,23 @@ Details:
 
 - It covers `run_command`, `start_command`, `check_command`, and `stop_command`,
   including calls made by delegated sub-agents. Other tools are unaffected.
-- Blocks are written when a call settles, not incrementally while it runs, so
-  output appears once per call rather than line by line.
-- Failed commands print one mirrored block containing the full captured output
-  instead of the shorter `error_scrollback` excerpt; `error_scrollback` still
-  governs every other failure.
+- Active `run_command` calls show a live tail above the prompt, refreshed as
+  complete stdout/stderr lines arrive. The preview follows the same Ctrl+S setting
+  and line limit, shrinking when needed to fit the terminal. For parallel calls,
+  the most recently updated command is shown; all calls remain in the tool panel.
+  Programs that buffer their own output must flush it (for example, `python -u`).
+- On completion the transient preview disappears and one bordered result is
+  written to scrollback, without duplicate streamed lines. Preview updates are
+  not saved in session history. Background `start_command` processes still expose
+  output through `check_command` / `stop_command`, rather than live previews.
+- Failed commands follow the same show/hide setting as successful commands.
+  When shown, they print one block containing captured output (or the saved
+  diagnostic if output is unavailable). There is no separate error visibility option.
 - Output is redacted and sanitized before display, then bounded to
-  `command_scrollback_lines` wrapped output rows, including an omission marker
-  that counts omitted rendered rows. The command is always retained outside this
-  budget; output keeps its tail (a budget of one shows only the marker when
-  truncated). The capture step retains its own 128 KiB payload bound.
+  `command_scrollback_lines` wrapped output rows (default 20), taken from the end.
+  A separate omission marker counts omitted rendered rows. The command, marker,
+  and subtle top/bottom borders are outside this budget, so even a budget of one
+  retains the final output row. The capture step retains its own 128 KiB payload bound.
 - Verbose commands can push earlier conversation out of terminal history, so
   raise your terminal or tmux scrollback limit before enabling this.
 
@@ -1075,7 +1079,7 @@ saves the default, so the next launch starts in the state you left.
 `/show-commands on` and `/show-commands off` do the same, and `/show-commands`
 reports the current state. Toggling rebuilds the retained scrollback immediately:
 turn it on to reveal earlier captured commands and their outputs; turn it off to
-remove those blocks (failed commands still follow `error_scrollback`). No commands
+remove all command blocks, including failures. No commands
 are rerun. Future completions use the same setting.
 
 Ctrl+S replaces prompt_toolkit's forward incremental search. Ctrl+R still opens

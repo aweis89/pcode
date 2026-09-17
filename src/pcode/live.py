@@ -39,6 +39,7 @@ from pcode.mcp import MCPState
 from pcode.plan_preview import StreamingPlanPreview
 from pcode.preferences import load_preferences
 from pcode.runtime import (
+    CommandOutput,
     Event,
     Message,
     PlanPreview,
@@ -49,6 +50,7 @@ from pcode.runtime import (
     ToolSummary,
 )
 from pcode.sessions import SavedSession, SessionError
+from pcode.shell import CommandOutputEvent
 from pcode.tool_display import (
     command_error,
     command_text,
@@ -250,7 +252,7 @@ class AgentRuntime:
         try:
             async with aclosing(self._stream(prompt, run_id)) as stream:
                 async for event in stream:
-                    if isinstance(event, PlanPreview):
+                    if isinstance(event, (PlanPreview, CommandOutput)):
                         # Unexecuted arguments must never enter replay/tree history.
                         yield event
                         continue
@@ -394,6 +396,8 @@ class AgentRuntime:
                             else:
                                 child_tools.pop(event.child.call_id, None)
                             yield event.child
+                elif isinstance(event, CommandOutputEvent):
+                    yield CommandOutput(event.call_id, event.command, event.output)
                 elif isinstance(event, PartStartEvent):
                     if isinstance(event.part, TextPart):
                         yield TextDelta(event.part.content)

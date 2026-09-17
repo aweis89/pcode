@@ -377,3 +377,25 @@ without journaling text or changing application events. Signature-only starts do
 not clear visible status. Clear both buffers and callbacks on every exit path.
 Keep real-tmux tests for compact title updates, the no-task fallback, toggling,
 resize, and the expanded frame's CPR height budget.
+
+
+## Live shell output
+
+`src/pcode/shell.py` adapts the installed Harness **0.31.0** `ShellToolset`:
+`Shell.get_toolset()` is synchronous and takes no context; `for_run(ctx)` must
+return a fresh streaming subclass, and `call_tool(name, tool_args, ctx, tool)`
+provides the context for `ctx.emit(CapabilityEvent)`. The stock `run_command`
+uses nested AnyIO pipe readers but has no output callback. Our alternate drain
+retains command validation, environment filtering, cwd capture, process groups,
+timeout handling, result formatting, and the inherited result cap. Compare it
+against the installed `shell/_toolset.py` when upgrading Harness. Background
+process methods remain inherited, without live file polling.
+
+Snapshots are throttled to 10 Hz and emitted only on changes. Wait for complete
+lines, sanitize before clipping, and redact unfinished quoted credentials and
+private-key blocks before displaying any tail. `CommandOutput` is transient:
+bypass session/tree journals, remove the per-call preview on completion, and
+clear all previews on cancellation/failure/reset. The UI shares the terminal
+height budget with reasoning, tasks, queue, and editor. Keep real-tmux tests
+for live output before completion, toggling, resize/CPR, and cancellation;
+PTY tests with CPR disabled cannot prove compact prompt height.
