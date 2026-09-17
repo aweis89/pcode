@@ -21,18 +21,18 @@ def test_last_request_includes_cache_without_double_counting():
         ModelRequest(parts=[UserPromptPart("next draft")]),
     ]
     with patch("pcode.context_usage.context_window", return_value=200_000):
-        assert context_label("anthropic:example", history) == " · ctx: ~12.5k/200k"
+        assert context_label("anthropic:example", history) == " · ctx: 12.5k/200k"
         # Checkout/resume uses the selected history; clearing doesn't retain usage.
-        assert context_label("anthropic:example", history[:1]) == " · ctx: ~10k/200k"
-        assert context_label("anthropic:example", []) == " · ctx: ~?/200k"
-        assert context_label("anthropic:example", [response(0)]) == " · ctx: ~?/200k"
+        assert context_label("anthropic:example", history[:1]) == " · ctx: 10k/200k"
+        assert context_label("anthropic:example", []) == " · ctx: 0/200k"
+        assert context_label("anthropic:example", [response(0)]) == " · ctx: 0/200k"
 
 
 def test_unknown_model_does_not_guess_capacity():
     assert context_window("unknown-provider:gpt-5") is None
     assert context_window("openai:nonexistent-model-for-test") is None
     assert context_window("unqualified-model") is None
-    assert context_label("unknown-provider:gpt-5", [response(100)]) == " · ctx: ~100/?"
+    assert context_label("unknown-provider:gpt-5", [response(100)]) == " · ctx: 100/?"
 
 
 def test_codex_uses_openai_catalog_and_caches_lookup():
