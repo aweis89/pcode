@@ -85,6 +85,7 @@ class PreviewApp:
         self.activity = Activity(
             show_thinking=load_preferences().get("show_thinking") == "on",
             thinking_lines=int(load_preferences().get("thinking_lines", "10")),
+            thinking_display=load_preferences().get("thinking_display", "compact"),
         )
         if agent is not None and model:
             apply_thinking(agent, model, self.activity.show_thinking)
@@ -852,8 +853,9 @@ class PreviewApp:
     async def run_live(self, output: TerminalOutput, text: str) -> bool:
         from pcode.live import error_message
 
-        self.activity.thinking = ""
+        self.activity.clear_thinking()
         self.runtime.thinking_sink = self.activity.append_thinking
+        self.runtime.thinking_start_sink = self.activity.start_thinking
         output.begin_turn(text)
         self.activity.prompt = text
         self.activity.prompt_state = "running"
@@ -895,7 +897,8 @@ class PreviewApp:
             failure = error
         finally:
             self.runtime.thinking_sink = lambda text: None
-            self.activity.thinking = ""
+            self.runtime.thinking_start_sink = lambda: None
+            self.activity.clear_thinking()
             self.activity.plan_preview = None
             output.end_turn()
             self.activity.tools.interrupt_running()

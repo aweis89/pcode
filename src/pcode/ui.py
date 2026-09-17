@@ -160,7 +160,10 @@ TERMINAL_THEME = Theme(
 class Activity:
     show_thinking: bool = False
     thinking_lines: int = 10
+    thinking_display: str = "compact"
     thinking: str = ""
+    thinking_latest: str = ""
+    _thinking_pending: bool = False
     busy: bool = False
     status: str = ""
     queued: int = 0
@@ -173,27 +176,68 @@ class Activity:
 
     def append_thinking(self, text: str) -> None:
         """UI-only rolling buffer; never route this through Transcript/events."""
+        if not text:
+            return
+        if self._thinking_pending:
+            self.thinking_latest = ""
+            if self.thinking:
+                self.thinking += "\n\n"
+            self._thinking_pending = False
         self.thinking = (self.thinking + text)[-8192:]
+        self.thinking_latest = (self.thinking_latest + text)[-8192:]
+
+    def start_thinking(self) -> None:
+        # Empty/signature-only blocks must not erase the last visible summary.
+        self._thinking_pending = True
+
+    def clear_thinking(self) -> None:
+        self.thinking = ""
+        self.thinking_latest = ""
+        self._thinking_pending = False
+
+    @staticmethod
+    def clean_thinking(text: str) -> str:
+        clean = re.sub(
+            r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])",
+            "",
+            text,
+        )
+        return "\n".join(plain(line, limit=None) for line in clean.split("\n"))
+
+    def thinking_summary(self) -> str:
+        if not self.show_thinking:
+            return ""
+        lines = [
+            line.strip()
+            for line in self.clean_thinking(self.thinking_latest).splitlines()
+            if line.strip()
+        ]
+        if not lines:
+            return ""
+        # Providers often stream a Markdown heading followed by a paragraph.
+        # Prefer the latest heading; otherwise preview the latest nonempty line.
+        headings = [line for line in lines if line.startswith(("**", "#"))]
+        text = (headings or lines)[-1]
+        return re.sub(r"\*\*|__|`", "", text).strip("#* ")
+
+    def panel_heading(self) -> str:
+        title = self.panel_title()
+        summary = self.thinking_summary() if self.thinking_display == "compact" else ""
+        return f"{title} · {summary}" if summary else title
 
     def thinking_rows(self, width: int = 80, height: int | None = None) -> list[tuple[str, str]]:
         """Wrap by terminal cells and follow the tail without retaining scrollback."""
         limit = self.thinking_lines if height is None else min(self.thinking_lines, height)
         if not self.show_thinking or not self.thinking or limit <= 0:
             return []
-        # Strip ANSI before sanitizing other controls, preserving real newlines.
-        clean = re.sub(
-            r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])",
-            "",
-            self.thinking,
-        )
-        text = "\n".join(plain(line, limit=None) for line in clean.split("\n"))
+        text = self.clean_thinking(self.thinking)
         width = max(1, width)
         rows = Text(text).wrap(Console(width=width), width, overflow="fold", no_wrap=False)
         return [("class:bottom-toolbar.text", row.plain) for row in rows[-limit:]]
 
     def reset(self) -> None:
         """Clear the panel for a new conversation, keeping the draft and queue."""
-        self.thinking = ""
+        self.clear_thinking()
         self.plan = []
         self.plan_preview = None
         self.tools.clear()
@@ -666,6 +710,8 @@ def create_prompt(
         return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
     def thinking_rows():
+        if activity.thinking_display != "expanded":
+            return []
         size = session.app.output.get_size()
         plans = plan_rows()
         # Reserve the task frame, current prompt, queue, editor, toolbar and
@@ -679,6 +725,12 @@ def create_prompt(
         )
         return activity.thinking_rows(size.columns - 2, max(0, available))
 
+    def summary_rows():
+        if activity.thinking_display != "compact" or plan_rows():
+            return []
+        summary = activity.thinking_summary()
+        return [("class:plan", "Summary · " + summary)] if summary else []
+
     def activity_height() -> int:
         rows = plan_rows()
         thoughts = thinking_rows()
@@ -686,6 +738,7 @@ def create_prompt(
             bool(activity.prompt)
             + (len(rows) + 2 if rows else 0)
             + (len(thoughts) + 2 if thoughts else 0)
+            + len(summary_rows())
         )
 
     def plan_text():
@@ -722,7 +775,7 @@ def create_prompt(
             Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
             Label(
                 lambda: panel_fragments(
-                    [("bold", activity.panel_title())],
+                    [("bold", activity.panel_heading())],
                     session.app.output.get_size().columns - 8,
                 ),
                 style="class:frame.label",
@@ -750,12 +803,24 @@ def create_prompt(
                 dont_extend_height=True,
                 wrap_lines=False,
             ),
-            title="Thinking · Ctrl+T to hide",
+            title="Reasoning summary · Ctrl+T to hide",
             height=lambda: len(thinking_rows()) + 2,
         ),
         filter=Condition(lambda: bool(thinking_rows())),
     )
-    activity_panel = HSplit([thinking, current_prompt, plan])
+    summary = ConditionalContainer(
+        Window(
+            FormattedTextControl(
+                lambda: panel_fragments(summary_rows(), session.app.output.get_size().columns),
+                show_cursor=False,
+            ),
+            height=1,
+            dont_extend_height=True,
+            wrap_lines=False,
+        ),
+        filter=Condition(lambda: bool(summary_rows())),
+    )
+    activity_panel = HSplit([thinking, summary, current_prompt, plan])
 
     def queue_rows():
         budget = min(4, max(1, session.app.output.get_size().rows // 4))
