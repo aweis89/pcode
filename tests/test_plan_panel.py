@@ -246,3 +246,22 @@ def test_unfinished_task_only_spins_during_live_turn(state, busy):
 
     activity.prompt_state = "done"
     assert activity.plan_rows(10, "⠙") == first
+
+
+@pytest.mark.parametrize(
+    ("statuses", "title"),
+    [
+        ([], "Tools"),
+        (["pending", "in_progress", "pending"], "Tasks 0/3 done"),
+        (["completed", "in_progress", "pending"], "Tasks 1/3 done"),
+        (["completed"] * 3, "Tasks 3/3 done"),
+        (["completed", "cancelled", "blocked"], "Tasks 1/3 done"),
+    ],
+)
+def test_panel_title_counts_completed_tasks(statuses, title):
+    from pcode.ui import Activity
+
+    activity = Activity(plan=[{"status": status} for status in statuses])
+    assert activity.panel_title() == title
+    activity.reset()
+    assert activity.panel_title() == "Tools"

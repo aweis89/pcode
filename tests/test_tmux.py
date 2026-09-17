@@ -487,13 +487,13 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
         time.sleep(0.03)
     else:
         pytest.fail("Active plan spinner did not animate while waiting for a tool")
-    assert "Tasks" not in screen and "Tools" not in screen
+    assert "Tasks ·" not in screen and "Tools" not in screen
     lines = screen.splitlines()
     first_task = next(i for i, line in enumerate(lines) if "Task 6" in line)
     assert lines[first_task - 2].endswith(" h")
     assert not lines[first_task - 2].startswith("│")
     assert lines[first_task - 1].startswith("┌")
-    assert set(lines[first_task - 1]) == {"┌", "─", "┐"}
+    assert lines[first_task - 1].startswith("┌─| Tasks 0/12 done |")
     assert all(
         line.startswith("│") and line.endswith("│") for line in lines[first_task : first_task + 5]
     )
@@ -503,7 +503,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     pane("send-keys", "-t", "preview:0.0", "-l", "editable draft")
     pane("split-window", split, "-t", "preview:0.0", "cat")
     completed = capture(pane, "✓ Task 0")
-    assert "Tasks" not in completed
+    assert any(line.startswith("┌─| Tasks 12/12 done |") for line in completed.splitlines())
     assert "│✓ Task 0" in completed
     assert input_rows(completed) == 1
     assert completed.count("┌") == completed.count("└") == 2
@@ -583,9 +583,9 @@ app.run()
 
 
 @pytest.mark.parametrize("pane", [TOOLS_SCRIPT], indirect=True)
-def test_prompt_sits_above_headerless_tasks_and_nested_tools(pane):
+def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
     initial = capture(pane, "A task")
-    assert "Tools" not in initial and "Tasks" not in initial
+    assert "Tools" not in initial and "┌─| Tasks 0/1 done |" in initial
     assert initial.count("┌") == initial.count("└") == 2
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "⟳ Run", running=True)
@@ -594,14 +594,14 @@ def test_prompt_sits_above_headerless_tasks_and_nested_tools(pane):
     assert lines[task - 2].endswith(" h")
     assert not lines[task - 2].startswith("│")
     assert lines[task - 1].startswith("┌")
-    assert set(lines[task - 1]) == {"┌", "─", "┐"}
+    assert lines[task - 1].startswith("┌─| Tasks 0/1 done |")
     assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
     assert lines[task + 1].startswith("│    ✓ Read · file_11.py")
     assert lines[task + 2].startswith("│    ! Read failed · file_12.py")
     assert lines[task + 3].startswith("│    ⟳ Run")
     assert lines[task + 4].startswith("└")
     assert lines[task + 5].startswith("┌")  # Editor, not another Tools widget.
-    assert "Tools" not in screen and "Tasks" not in screen
+    assert "Tools" not in screen and "Tasks ·" not in screen
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert "file_01.py" not in history
     assert history.count("file_11.py") == 1
@@ -739,14 +739,13 @@ def test_queued_messages_stay_directly_above_editor(pane):
     ],
     indirect=True,
 )
-def test_tools_only_box_is_headerless_below_unboxed_prompt(pane):
+def test_tools_only_box_has_left_aligned_header_below_unboxed_prompt(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "⟳ Run", running=True)
     lines = screen.splitlines()
     top = next(i for i, line in enumerate(lines) if line.startswith("┌"))
-    assert set(lines[top]) == {"┌", "─", "┐"}
-    assert "Tools" not in screen
+    assert lines[top].startswith("┌─| Tools |")
     assert lines[top - 1].endswith(" h")
     assert not lines[top - 1].startswith("│")
     assert lines[top + 1].startswith("│✓ Read")
