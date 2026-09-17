@@ -237,12 +237,12 @@ def test_unfinished_task_only_spins_during_live_turn(state, busy):
     # is queued. Do not rewrite the persisted task's status to stop animation.
     first = activity.plan_rows(10, "⠋")
     assert first == activity.plan_rows(10, "⠙")
-    assert first == [("class:plan.active", "  ○ Unfinished task")]
+    assert first == [("class:plan.active", "○ Unfinished task")]
     assert items[0]["status"] == "in_progress"
 
     activity.prompt_state = "running"
-    assert activity.plan_rows(10, "⠋") == [("class:plan.active", "  ⠋ Unfinished task")]
-    assert activity.plan_rows(10, "⠙") == [("class:plan.active", "  ⠙ Unfinished task")]
+    assert activity.plan_rows(10, "⠋") == [("class:plan.active", "⠋ Unfinished task")]
+    assert activity.plan_rows(10, "⠙") == [("class:plan.active", "⠙ Unfinished task")]
 
     activity.prompt_state = "done"
     assert activity.plan_rows(10, "⠙") == first

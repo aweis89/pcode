@@ -32,7 +32,7 @@ class ToolCall:
         state = " · interrupted" if self.interrupted else ""
         # Keep failures visible even when the command itself consumes the row.
         name = label(event.name) + (" failed" if getattr(event, "failed", False) else "")
-        return f"  {icon} {name}{state}{timing} · {detail}"
+        return f"{icon} {name}{state}{timing} · {detail}"
 
 
 @dataclass
@@ -121,7 +121,7 @@ def task_panel_rows(items: list[dict], tools: ToolHistory, budget: int, active_i
         status = item["status"]
         style = "class:plan.active" if status == "in_progress" else "class:plan"
         content = plain(item["content"], limit=None)
-        lines.append((style, f"  {icons.get(status, '○')} {content}"))
+        lines.append((style, f"{icons.get(status, '○')} {content}"))
         if index == active:
             lines.extend(tools.rows(tool_count, nested=True))
     if active is None:

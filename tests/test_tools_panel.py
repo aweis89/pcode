@@ -33,7 +33,7 @@ def test_history_retains_ten_calls_and_shows_five_without_numbers():
     assert [call.event.call_id for call in history.calls] == [str(i) for i in range(2, 12)]
     lines = "".join(text for _, text in panel_fragments(history.rows(5), 100)).splitlines()
     assert len(lines) == 5
-    assert all(line.startswith("  ✓ Read ·") for line in lines)
+    assert all(line.startswith("✓ Read ·") for line in lines)
     assert "/tools" not in "".join(lines)
     assert "file_7.py" in lines[0]
     assert "file_11.py" in lines[-1]
@@ -205,16 +205,16 @@ def test_recent_tools_follow_active_task_without_headers_or_empty_rows():
     ]
     lines = task_panel_rows(items, history, 10, "⟳")
     assert [text for _, text in lines] == [
-        "  ✓ Inspect",
-        "  ⟳ Implement",
-        "      ✓ Read · example.py",
-        "  ○ Validate",
+        "✓ Inspect",
+        "⟳ Implement",
+        "    ✓ Read · example.py",
+        "○ Validate",
     ]
     items[1]["status"] = "completed"
     items[2]["status"] = "in_progress"
     assert [text for _, text in task_panel_rows(items, history, 10, "⟳")][-2:] == [
-        "  ⟳ Validate",
-        "      ✓ Read · example.py",
+        "⟳ Validate",
+        "    ✓ Read · example.py",
     ]
     history.clear()
     assert len(task_panel_rows(items, history, 10, "⟳")) == 3
@@ -228,9 +228,9 @@ def test_without_active_task_tools_are_root_rows_not_children_of_inactive_task(s
     items = [{"id": "one", "content": "A task", "status": status}]
     assert task_panel_rows(items, history, 10, "⟳")[-1] == (
         "class:plan",
-        "  ✓ Read · example.py",
+        "✓ Read · example.py",
     )
-    assert task_panel_rows([], history, 10, "⟳") == [("class:plan", "  ✓ Read · example.py")]
+    assert task_panel_rows([], history, 10, "⟳") == [("class:plan", "✓ Read · example.py")]
 
 
 @pytest.mark.parametrize("budget", [1, 2, 4, 6, 10])
@@ -245,7 +245,7 @@ def test_finished_plan_hides_tools_and_retains_task_rows(budget, final_status):
 
     items[-1]["status"] = final_status
     expected = [
-        ("class:plan", f"  {'–' if item['status'] == 'cancelled' else '✓'} {item['content']}")
+        ("class:plan", f"{'–' if item['status'] == 'cancelled' else '✓'} {item['content']}")
         for item in items[:budget]
     ]
     assert task_panel_rows(items, history, budget, "⟳") == expected
@@ -264,10 +264,10 @@ def test_shared_task_tool_budget_keeps_active_item_and_latest_calls_visible(budg
     lines = task_panel_rows(items, history, budget, "⟳")
     assert len(lines) <= budget
     text = [text for _, text in lines]
-    active = text.index("  ⟳ Task 8")
+    active = text.index("⟳ Task 8")
     count = min(3, budget - 1)
     assert sum("Read ·" in line for line in text) == count
-    assert all(line.startswith("      ✓ Read") for line in text[active + 1 : active + 1 + count])
+    assert all(line.startswith("    ✓ Read") for line in text[active + 1 : active + 1 + count])
     if count:
-        assert text[active + count] == "      ✓ Read · file_9.py"
+        assert text[active + count] == "    ✓ Read · file_9.py"
     assert all("Tasks ·" not in line and "Tools" not in line for line in text)

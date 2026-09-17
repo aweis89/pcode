@@ -504,6 +504,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     pane("split-window", split, "-t", "preview:0.0", "cat")
     completed = capture(pane, "✓ Task 0")
     assert "Tasks 12/12 done" in completed
+    assert "│✓ Task 0" in completed
     assert input_rows(completed) == 1
     assert completed.count("┌") == completed.count("└") == 2
     pane("kill-pane", "-t", "preview:0.1")
@@ -594,9 +595,10 @@ def test_prompt_sits_above_task_header_and_nested_tools(pane):
     assert not lines[task - 2].startswith("│")
     assert lines[task - 1].startswith("┌")
     assert "Tasks 0/1 done" in lines[task - 1]
-    assert lines[task + 1].startswith("│      ✓ Read · file_11.py")
-    assert lines[task + 2].startswith("│      ! Read failed · file_12.py")
-    assert lines[task + 3].startswith("│      ⟳ Run")
+    assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
+    assert lines[task + 1].startswith("│    ✓ Read · file_11.py")
+    assert lines[task + 2].startswith("│    ! Read failed · file_12.py")
+    assert lines[task + 3].startswith("│    ⟳ Run")
     assert lines[task + 4].startswith("└")
     assert lines[task + 5].startswith("┌")  # Editor, not another Tools widget.
     assert "Tools" not in screen and "Tasks ·" not in screen
@@ -619,7 +621,8 @@ def test_prompt_sits_above_task_header_and_nested_tools(pane):
                 break
             assert time.monotonic() < deadline, screen
             time.sleep(0.05)
-        assert all(line.startswith("│      ") for line in lines[task + 1 : task + count + 1])
+        assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
+        assert all(line.startswith("│    ") for line in lines[task + 1 : task + count + 1])
         assert "keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
@@ -744,7 +747,7 @@ def test_tools_only_box_has_header_below_unboxed_prompt(pane):
     top = next(i for i, line in enumerate(lines) if line.startswith("┌") and "Tools" in line)
     assert lines[top - 1].endswith(" h")
     assert not lines[top - 1].startswith("│")
-    assert lines[top + 1].startswith("│  ✓ Read")
+    assert lines[top + 1].startswith("│✓ Read")
     assert "Tasks" not in screen
     assert input_rows(screen) == 1
 
