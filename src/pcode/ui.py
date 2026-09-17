@@ -1,10 +1,10 @@
-"""Editable prompt with append-only output in the terminal's normal scrollback."""
+"""Editable prompt with replayable output in the terminal's normal scrollback."""
 
 import asyncio
 import os
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 from time import monotonic
 
@@ -39,6 +39,7 @@ from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
 from pcode.tool_display import COMMAND_TOOLS, command_preview, command_text, label, plain
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
+from pcode.transcript_log import TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
 
 
@@ -451,6 +452,15 @@ class TerminalOutput:
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
+        self.commit_print = self.print
+        self._regenerate = None
+        self.resize_replay = None
+
+    def regenerate(self, replay) -> None:
+        # Coalesce requests. Snapshot only inside the handoff so arrivals during
+        # the CPR await are included exactly once, including queued writes.
+        self._regenerate = replay
+        self.changed.set()
 
     def print(self, *objects) -> None:
         self.pending.append((objects, "\n", False))
@@ -470,12 +480,12 @@ class TerminalOutput:
     def _commit(self, source: str) -> None:
         if source.strip():
             if self._turn_prompt is not None:
-                self.print()
-                self.print(TaskPrompt(self._turn_prompt))
-                self.print()
+                self.commit_print()
+                self.commit_print(TaskPrompt(self._turn_prompt))
+                self.commit_print()
                 self._turn_prompt = None
-            self.print(Markdown(source, code_theme=self.code_theme()))
-            self.print()
+            self.commit_print(Markdown(source, code_theme=self.code_theme()))
+            self.commit_print()
 
     def delta(self, text: str) -> None:
         if not text:
@@ -538,7 +548,7 @@ class TerminalOutput:
 
     async def flush(self) -> None:
         async with self.lock:
-            if self.pending:
+            if self.pending or self._regenerate is not None:
                 # Renderer.reset() shows the cursor at the transcript position
                 # both when erasing and before repainting. Suppress those shows
                 # until in_terminal has restored the editor and its cursor.
@@ -546,7 +556,17 @@ class TerminalOutput:
                     async with in_terminal():
                         # Snapshot after entering: input/model events can arrive while
                         # in_terminal waits for CPR, but not during these sync writes.
-                        pending, self.pending = self.pending, []
+                        if self._regenerate is not None:
+                            pending = self._regenerate()
+                            self._regenerate = None
+                            self.pending.clear()
+                            # in_terminal has erased/reset the editor. Clear the
+                            # normal-screen history and home before replay; its
+                            # exit will request fresh CPR and restore the draft.
+                            self.app.output.write_raw("\x1b[H\x1b[2J\x1b[3J")
+                            self.app.output.flush()
+                        else:
+                            pending, self.pending = self.pending, []
                         width = max(1, self.app.output.get_size().columns)
                         # Rich's public buffer context coalesces the batch's
                         # prints (including separators) into one output flush.
@@ -560,8 +580,24 @@ class TerminalOutput:
             self.changed.clear()
 
     async def run(self) -> None:
+        size = self.app.output.get_size()
+        resized_at = None
         while True:
-            await self.changed.wait()
+            # Poll only when resize replay is enabled. Debounce resize storms;
+            # the renderer continues handling the editor normally meanwhile.
+            if self.resize_replay is None:
+                await self.changed.wait()
+            else:
+                try:
+                    await asyncio.wait_for(self.changed.wait(), timeout=0.1)
+                except TimeoutError:
+                    pass
+                current = self.app.output.get_size()
+                if current != size:
+                    size, resized_at = current, monotonic()
+                elif resized_at is not None and monotonic() - resized_at >= 0.25:
+                    self.regenerate(self.resize_replay)
+                    resized_at = None
             await asyncio.sleep(1 / 30)
             await self.flush()
 
@@ -942,14 +978,67 @@ class Transcript:
         self.theme = theme
         self.detected_theme = detect_theme()
         self.color_style = color_style
-        self.output: TerminalOutput | None = None
+        self._output: TerminalOutput | None = None
+        self.regenerate_on_resize = preferences.get("regenerate_on_resize", "off") == "on"
+        self.log = TranscriptLog()
+        self._replay_sink: list | None = None
 
+    @property
+    def output(self) -> TerminalOutput | None:
+        return self._output
+
+    @output.setter
+    def output(self, output: TerminalOutput | None) -> None:
+        self._output = output
+        if output is not None:
+            output.commit_print = self.print
+            if self.regenerate_on_resize and self.console.is_terminal:
+                output.resize_replay = self.replay
+
+    @recorded
     def print(self, *objects) -> None:
-        if self.output is not None:
+        # Resolve theme-dependent renderables again on every replay.
+        objects = tuple(
+            Markdown(obj.markup, code_theme=self.code_theme)
+            if isinstance(obj, Markdown)
+            else replace(obj, code_theme=self.code_theme)
+            if isinstance(obj, TranscriptNotice)
+            else obj
+            for obj in objects
+        )
+        if self._replay_sink is not None:
+            self._replay_sink.append((objects, "\n", False))
+        elif self.output is not None:
             self.output.print(*objects)
         else:
             with self.console.use_theme(self.rich_theme):
                 self.console.print(*objects)
+
+    @recorded
+    def tool_result(self, event: ToolSummary) -> None:
+        """Retain hidden results too; choose one representation on each replay."""
+        if not self.command_output(event) and event.failed:
+            self.events((event,))
+
+    def replay(self) -> list:
+        """Project the retained log with current settings, without recording again."""
+        sink = []
+        self._replay_sink = sink
+        self.log.recording = False
+        try:
+            if self.log.dropped:
+                self.note("Earlier transcript entries omitted from this regenerated view.")
+            for method, args, kwargs in self.log.entries:
+                getattr(self, method)(*args, **kwargs)
+        finally:
+            self.log.recording = True
+            self._replay_sink = None
+        return sink
+
+    def regenerate(self) -> None:
+        """Request an atomic rebuild; never emit terminal escapes into redirected output."""
+        if self.output is not None and self.console.is_terminal:
+            self.output.regenerate(self.replay)
 
     @property
     def resolved_theme(self) -> str:
@@ -988,6 +1077,7 @@ class Transcript:
     def note(self, text: str) -> None:
         self.print(Text(text, style="pcode.muted"))
 
+    @recorded
     def error(self, text: str, *, title: str = "Error") -> None:
         if self.error_scrollback:
             self.print(
@@ -1002,6 +1092,7 @@ class Transcript:
             and event.name in COMMAND_TOOLS
         )
 
+    @recorded
     def command_output(self, event: ToolSummary) -> bool:
         """Mirror a command and its captured output; report whether anything printed."""
         if not self.streams_command(event):
@@ -1061,6 +1152,7 @@ class Transcript:
         self.print(header)
         self.print(preview)
 
+    @recorded
     def events(self, events: tuple[Event, ...], *, show_tools: bool = False) -> None:
         for event in events:
             if isinstance(event, Message):
@@ -1113,7 +1205,10 @@ class Transcript:
         self.note("/ commands · Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
         self.note("Ctrl+T show/hide transient thinking (saves default)")
-        self.note("Ctrl+S mirror commands and their output to scrollback (saves default)")
+        self.note("Ctrl+S rebuild scrollback with/without command output (saves default)")
+        self.note(
+            "/redraw rebuilds retained output; regeneration clears pre-pcode terminal history."
+        )
         self.note("Ctrl+L choose model (keep conversation)")
         self.note("Ctrl+N increase effort · Ctrl+P decrease effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")

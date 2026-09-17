@@ -76,3 +76,56 @@ def test_ctrl_s_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pa
     time.sleep(0.2)
     screen = capture(pane, "kept draft", columns=35)
     assert input_rows(screen) == 1
+
+
+@pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
+def test_toggle_rebuilds_existing_history_without_rerunning_commands(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    capture(pane, "TURN_1_DONE")
+    pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
+
+    def history():
+        return pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+
+    for enabled in (True, False, True, False):
+        pane("send-keys", "-t", "preview:0.0", "C-s")
+        # Wait for the coalesced terminal handoff, not an old toggle notice.
+        deadline = time.monotonic() + 3
+        while True:
+            screen = capture(pane, "keep draft")
+            text = history()
+            if ("OUTPUT_LINE_03" in text) == enabled:
+                break
+            assert time.monotonic() < deadline, text
+            time.sleep(0.05)
+        assert input_rows(screen) == 1
+        assert text.count("TURN_1_DONE") == 1
+        assert "TURN_2_DONE" not in text
+        assert text.count("OUTPUT_LINE_00") == int(enabled)
+        assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "0"
+
+
+RESIZE_SCRIPT = SCRIPT.replace(
+    "from pcode.app import PreviewApp",
+    "from pcode.preferences import save_preferences\n"
+    'save_preferences(regenerate_on_resize="on", command_scrollback="on")\n'
+    "from pcode.app import PreviewApp",
+)
+
+
+@pytest.mark.parametrize("pane", [RESIZE_SCRIPT], indirect=True)
+def test_resize_replay_reflows_history_without_duplicates_or_stretched_editor(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    capture(pane, "TURN_1_DONE")
+    pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
+    for width in (40, 100, 35):
+        pane("resize-window", "-t", "preview:0", "-x", str(width))
+        # Let the opt-in debounce and handoff both run under real CPR.
+        time.sleep(0.8)
+        screen = capture(pane, "keep draft", columns=width)
+        assert input_rows(screen) == 1
+        history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+        assert history.count("OUTPUT_LINE_00") == 1
+        assert history.count("TURN_1_DONE") == 1

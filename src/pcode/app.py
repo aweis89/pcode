@@ -103,6 +103,11 @@ class PreviewApp:
             Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
             Command("/demo", "Sample Markdown, code, diff, and tool output", self.demo),
             Command(
+                "/redraw",
+                "Rebuild retained scrollback (clears terminal history)",
+                lambda _: self.transcript.regenerate(),
+            ),
+            Command(
                 "/config",
                 "Inspect or edit global defaults (next launch)",
                 self.config,
@@ -264,9 +269,10 @@ class PreviewApp:
         self.show_commands("")
 
     def set_command_scrollback(self, shown: bool) -> None:
-        # Applies to the next settled command; already-written scrollback stays.
+        # Reproject retained results as well as future completions.
         self.transcript.command_scrollback = shown
         self.persist_defaults(command_scrollback="on" if shown else "off")
+        self.transcript.regenerate()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
 
@@ -456,10 +462,7 @@ class PreviewApp:
                 # Decide only after completion. The adapter's failed flag includes
                 # non-zero shell exits, retries, and known tool validation failures.
                 if isinstance(event, ToolSummary):
-                    # With command_scrollback on, the mirrored block already
-                    # carries the full output, so skip the error excerpt too.
-                    if not self.transcript.command_output(event) and event.failed:
-                        self.transcript.events((event,))
+                    self.transcript.tool_result(event)
             else:
                 self.transcript.events((event,))
 
@@ -474,14 +477,14 @@ class PreviewApp:
         selected = self.transcript.theme
         if selected == "auto":
             selected += f" ({self.transcript.resolved_theme})"
-        self.transcript.note(f"Theme: {selected}. Existing output is unchanged.")
+        self.transcript.note(f"Theme: {selected}.")
+        self.transcript.regenerate()
 
     def colors(self, argument: str) -> None:
         if argument:
             self.transcript.color_style = argument
-        self.transcript.note(
-            f"Colors: {self.transcript.color_style}. Existing output is unchanged."
-        )
+        self.transcript.note(f"Colors: {self.transcript.color_style}.")
+        self.transcript.regenerate()
 
     def current_effort(self) -> str:
         if not self.model:
