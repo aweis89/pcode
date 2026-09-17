@@ -364,6 +364,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/context`: current model, workspace, completed turns, and token usage.
 - `/new`: start a new saved conversation without clearing the on-screen transcript or input history.
 - `/session`: choose a saved conversation by its first prompt and resume it in place.
+- `/tree`: [browse and fork the conversation](docs/conversation-tree.md); select a user prompt to
+  edit it, or an assistant response to continue from there. Existing branches are kept.
 - `/sessions`: list saved conversations and resume instructions.
 - `/quit` (alias `/exit`): exit.
 
