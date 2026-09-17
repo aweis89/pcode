@@ -70,28 +70,31 @@ class ConversationTree:
         children: dict[str | None, list[TurnNode]] = {}
         for node in self.nodes.values():
             children.setdefault(node.parent, []).append(node)
-        # Iterative traversal also handles very long sessions.
+        # Iterative traversal also handles very long sessions. Only a fork adds
+        # a level: user/assistant pairs and single-child continuations stay aligned.
+        roots = children.get(None, [])
         pending = [
-            (node, "", i == len(children.get(None, [])) - 1)
-            for i, node in reversed(list(enumerate(children.get(None, []))))
+            (node, "", len(roots) > 1, i == len(roots) - 1)
+            for i, node in reversed(list(enumerate(roots)))
         ]
         while pending:
-            node, prefix, last = pending.pop()
-            # Keep labels visible even hundreds of turns into a linear branch.
+            node, prefix, fork, last = pending.pop()
+            # Keep labels visible even with many nested forks.
             if len(prefix) > 24:
                 prefix = "… " + prefix[-22:]
+            connector = ("└─ " if last else "├─ ") if fork else ""
             rows.append(
                 (
                     (node.id, True),
-                    prefix + ("└─ " if last else "├─ ") + "user: " + excerpt(node.prompt),
+                    prefix + connector + "user: " + excerpt(node.prompt),
                 )
             )
-            continuation = prefix + ("   " if last else "│  ")
+            continuation = prefix + (("   " if last else "│  ") if fork else "")
             rows.append(
                 (
                     (node.id, False),
                     continuation
-                    + "└─ assistant: "
+                    + "assistant: "
                     + excerpt(node.response or f"[{node.status}; last safe checkpoint]")
                     + (f" [{node.status}]" if node.response and node.status != "completed" else "")
                     + (" ← active" if node.id == self.active else ""),
@@ -99,7 +102,7 @@ class ConversationTree:
             )
             descendants = children.get(node.id, [])
             pending.extend(
-                (child, continuation + "   ", i == len(descendants) - 1)
+                (child, continuation, len(descendants) > 1, i == len(descendants) - 1)
                 for i, child in reversed(list(enumerate(descendants)))
             )
         return rows

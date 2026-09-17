@@ -325,13 +325,51 @@ finally:
     }
 
 
-def test_long_linear_tree_keeps_labels_visible():
+def test_long_linear_tree_keeps_messages_aligned():
     tree = ConversationTree()
     for i in range(100):
         tree.consume({"kind": "turn_started", "run_id": str(i), "prompt": f"Question {i}"})
-    row = tree.rows()[-2][1]
-    assert row.index("user:") < 30
-    assert "Question 99" in row
+    for (identity, edit), label in tree.rows()[1:]:
+        assert label.startswith("user: " if edit else "assistant: ")
+    assert tree.rows()[-2][1] == "user: Question 99"
+
+
+def test_only_forks_add_indentation_and_keep_sibling_guides():
+    tree = ConversationTree()
+    for identity, parent in [
+        ("a", None),
+        ("b", "a"),
+        ("c", "b"),
+        ("d", "c"),
+        ("e", "c"),
+        ("f", "b"),
+        ("g", "f"),
+        ("h", "g"),
+    ]:
+        tree.consume(
+            {"kind": "turn_started", "run_id": identity, "parent_id": parent, "prompt": identity}
+        )
+        tree.consume({"kind": "Message", "markdown": "Answer " + identity})
+        tree.consume({"kind": "turn_completed"})
+    assert [label for _, label in tree.rows()] == [
+        "Conversation start",
+        "user: a",
+        "assistant: Answer a",
+        "user: b",
+        "assistant: Answer b",
+        "├─ user: c",
+        "│  assistant: Answer c",
+        "│  ├─ user: d",
+        "│  │  assistant: Answer d",
+        "│  └─ user: e",
+        "│     assistant: Answer e",
+        "└─ user: f",
+        "   assistant: Answer f",
+        "   user: g",
+        "   assistant: Answer g",
+        "   user: h",
+        "   assistant: Answer h ← active",
+    ]
 
 
 @pytest.mark.parametrize("save", [False, True])
