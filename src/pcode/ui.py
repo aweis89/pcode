@@ -33,7 +33,7 @@ from rich.theme import Theme
 
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
-from pcode.edit_transcript import EditTranscript
+from pcode.edit_transcript import EditTranscript, edit_preview_rows
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import load_preferences
 from pcode.runtime import CommandOutput, Event, Message, Thinking, ToolSummary
@@ -917,12 +917,16 @@ def create_prompt(
             else "$ " + command_preview(event.command)
         )
         body = event.text if edits else event.output
-        rows = Text(command_text(body)).wrap(
-            Console(width=width), width, overflow="fold", no_wrap=False
-        )
-        commands = [("class:plan", title)] + [
-            ("class:bottom-toolbar.text", row.plain) for row in rows[-budget:]
-        ]
+        if edits:
+            rows = edit_preview_rows(body, width, transcript.code_theme)
+        else:
+            rows = [
+                ("class:bottom-toolbar.text", row.plain)
+                for row in Text(command_text(body)).wrap(
+                    Console(width=width), width, overflow="fold", no_wrap=False
+                )
+            ]
+        commands = [("class:plan", title), *rows[-budget:]]
         return plans, commands, editor_height
 
     def plan_rows():
