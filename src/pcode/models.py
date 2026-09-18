@@ -17,9 +17,12 @@ def active_providers(current: str | None) -> set[str]:
         active.add(current.partition(":")[0])
     if os.environ.get("PCODE_MERIDIAN_BASE_URL", "").strip() or shutil.which("meridian"):
         active.add("meridian")
-    source = os.environ.get("PCODE_ANTHROPIC_AUTH", "api-key").strip()
-    if source == "pi" or (
-        source in {"", "api-key"} and os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    from pcode.anthropic_oauth import anthropic_auth_source
+
+    # Resolution checks for a stored login file, never its contents.
+    source = anthropic_auth_source()
+    if source in {"pi", "oauth"} or (
+        source == "api-key" and os.environ.get("ANTHROPIC_API_KEY", "").strip()
     ):
         active.add("anthropic")
     # Only check existence, never read a credential to populate the picker.

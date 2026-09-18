@@ -174,7 +174,7 @@ def test_public_api_limits_do_not_leak_to_proxies_or_pi_oauth():
             assert service.window(direct) == 922_000
             assert service.window(proxy) is None
             assert service.window(anthropic) == 200_000
-            anthropic._pi_oauth = True
+            anthropic._subscription_oauth = True
             assert service.window(anthropic) is None
             assert catalog_key("openai-responses:example") == "openai:example"
             assert catalog_key("unknown:example") == "unknown:example"

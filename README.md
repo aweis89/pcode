@@ -155,22 +155,62 @@ with `make install`. Run `make install` again to refresh an existing editable
 installation after dependency changes. Other Pydantic model strings require their
 provider extras and corresponding authentication.
 
+### Sign in with your Anthropic account
+
+Enter **`/login`** in an idle session to sign in with your Anthropic subscription.
+pcode prints the authorization URL, opens `claude.ai` in your browser, receives the
+authorization code on a loopback callback, and exchanges it for tokens. A current
+Anthropic session in the browser makes this a single approval click. The active
+conversation keeps its history and switches to the new credential.
+
+```sh
+make install
+pcode -m anthropic:<model-id>   # then: /login
+```
+
+- PKCE (S256) authorization-code flow against the public Claude Code client, with
+  a `http://localhost:54545/callback` redirect. Set `PCODE_OAUTH_CALLBACK_PORT`
+  when that port is taken; the callback must be reachable from the browser (over
+  SSH, forward it with `ssh -L 54545:localhost:54545`). The callback accepts only
+  a code whose `state` matches this sign-in; anything else gets an error page and
+  the sign-in keeps waiting. Sign-in times out after five minutes.
+- Tokens are stored in `~/.config/pcode/credentials.json` (`XDG_CONFIG_HOME` and
+  `PCODE_CREDENTIALS_FILE` are honored), written atomically with owner-only (0600)
+  permissions. pcode owns this refresh token: expiry is renewed automatically, five
+  minutes early, serialized across pcode processes, and again on a 401. Refreshing
+  never blocks the terminal and failures never print bodies or token values.
+- **`/logout`** removes the stored credential. Sign-in and sign-out are unavailable
+  while a run or queued prompts are active.
+- Later launches use the stored login automatically, ahead of `ANTHROPIC_API_KEY`.
+  Set `PCODE_ANTHROPIC_AUTH=api-key` to force environment API-key access, or
+  `PCODE_ANTHROPIC_AUTH=oauth` to require this login.
+- Uses OAuth Bearer authentication with Claude Code beta headers, user agent, and
+  system preamble, and sends requests to `https://api.anthropic.com` regardless of
+  `ANTHROPIC_BASE_URL`. This authenticates as the public Claude Code client against
+  an endpoint scoped to it: compatibility support, not an official third-party OAuth
+  integration. Entitlements, quotas, and server behavior can change at any time; the
+  supported path remains `ANTHROPIC_API_KEY`.
+- No API key is minted, and nothing is written to another tool's credential store.
+
+For OpenAI Codex, continue to use `codex login`.
+
 ### Reuse an existing pi Anthropic login
 
-If you already logged in to Anthropic in pi, explicitly select that credential:
+Signing in above needs no other agent installed. If you would rather reuse a
+credential you already have in pi, select it explicitly:
 
 ```sh
 make install
 env -u PCODE_LLM_PROXY PCODE_ANTHROPIC_AUTH=pi pcode -m anthropic:<model-id>
 ```
 
-Alternatively, enter `/login` (or `/login pi`) in an idle Anthropic session to switch its current
+Alternatively, enter `/login pi` in an idle Anthropic session to switch its current
 model to pi authentication without discarding history. In offline preview this
 checks the credential; launch with the environment setting above to use a live
-model. There is no API-key entry UI or pcode-managed credential storage.
-For ordinary API-key access, set `ANTHROPIC_API_KEY` in your environment.
+model. There is no API-key entry UI; pcode's own credential storage holds only
+its own `/login` tokens, never pi's. For ordinary API-key access, set
+`ANTHROPIC_API_KEY` in your environment.
 Login is unavailable while a run or queued prompts are active.
-For OpenAI Codex, continue to use `codex login`.
 
 - Reads the `anthropic` entry in `~/.pi/agent/auth.json` at runtime. Honors
   `PI_CODING_AGENT_DIR` for a custom pi directory. No pi credential file is read
@@ -208,8 +248,9 @@ type its full `provider:model-id` (for example `anthropic:claude-opus-5`).
 The picker currently supports configured **Anthropic** and **OpenAI Codex** providers:
 
 - The current provider is included even when using a custom model ID.
-- Anthropic is enabled by `ANTHROPIC_API_KEY`, `PCODE_ANTHROPIC_AUTH=pi`, or `/login`.
-  Pi reuse remains opt-in; opening the picker never reads pi credentials.
+- Anthropic is enabled by a stored `/login` credential, `ANTHROPIC_API_KEY`, or
+  `PCODE_ANTHROPIC_AUTH=pi`. Detection checks for the stored file's presence only:
+  opening the picker never reads pcode's or pi's credentials.
 - Codex is enabled when its CLI credential file exists (`CODEX_HOME` is honored).
   Opening the picker checks file presence only, not its contents or validity.
 - `PCODE_LLM_PROXY` applies only to Codex and does not restrict model selection.
@@ -477,6 +518,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   backgrounds and text, with reverse-video selection highlights. They follow your
   terminal background automatically, independently of `/theme` and `/colors`.
 - `/help`: command list and keyboard shortcuts.
+- `/login`: sign in to Anthropic in a browser (`/login pi` reuses pi's credential);
+  `/logout` removes pcode's stored login. Both require an idle conversation.
 - `/model`: searchable model picker for configured providers (keeps the conversation;
   applies from the next request when chosen mid-run).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
@@ -640,7 +683,7 @@ pending message count. Steering messages join the next model request; queue-mode
 messages run in order after the current turn finishes. Ctrl+S cycles send modes. Slash commands use a separate async
 handler, so help, inspection, theme, context, and effort controls remain available
 while the model works. `/model` also opens while working and applies from the next
-request. `/new`, `/session`, and `/login` require an idle conversation: cancel
+request. `/new`, `/session`, `/login`, and `/logout` require an idle conversation: cancel
 or wait, then retry. `/quit` (or `/exit`) cancels the active run and waits for its
 cleanup before exiting. Ctrl+C or Ctrl+D cancels the current turn, clears queued
 messages, and preserves the unsubmitted draft and cursor. A failed turn also

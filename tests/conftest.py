@@ -64,6 +64,10 @@ def isolated_preferences(monkeypatch, tmp_path):
     """Tests must neither consume nor overwrite the user's saved defaults."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.delenv("PCODE_MCP_CONFIG", raising=False)
+    # A developer's real Anthropic sign-in must never be read, refreshed, or
+    # removed by the suite; XDG_CONFIG_HOME above already redirects the default.
+    monkeypatch.delenv("PCODE_CREDENTIALS_FILE", raising=False)
+    monkeypatch.delenv("PCODE_OAUTH_CALLBACK_PORT", raising=False)
 
 
 @pytest.fixture(autouse=True)

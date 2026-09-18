@@ -13,6 +13,7 @@ from pcode.app import PreviewApp
 
 @pytest.fixture(autouse=True)
 def isolated_credentials(monkeypatch):
+    # conftest redirects XDG_CONFIG_HOME, so no stored sign-in is visible here.
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("PCODE_LLM_PROXY", raising=False)
     monkeypatch.delenv("PCODE_ANTHROPIC_AUTH", raising=False)
@@ -22,7 +23,7 @@ def test_anthropic_can_start_without_key(tmp_path):
     app = PreviewApp(model="anthropic:test-model", workspace=tmp_path)
     asyncio.run(app._initialize_runtime())
     assert app.handle("/login") is False
-    assert app.login_requested is True
+    assert app.login_requested == "anthropic"
     app.runtime.close()
 
 
@@ -34,6 +35,12 @@ def test_environment_key_used(monkeypatch, tmp_path):
     factory.assert_called_once_with("anthropic:test-model", "synthetic-test-key")
 
 
+def test_unknown_auth_source_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "something-else")
+    with pytest.raises(ValueError, match="api-key, oauth, or pi"):
+        create_agent("anthropic:test-model", tmp_path)
+
+
 def test_other_provider_login_does_not_request_pi():
     buffer = StringIO()
     app = PreviewApp(model="test", runtime=Mock(), console=Console(file=buffer))
@@ -42,7 +49,15 @@ def test_other_provider_login_does_not_request_pi():
     assert "Anthropic only" in buffer.getvalue()
 
 
-def test_preview_login_requests_pi():
+def test_preview_login_requests_browser_sign_in():
     app = PreviewApp(console=Console(file=StringIO()))
     app.handle("/login")
-    assert app.login_requested is True
+    assert app.login_requested == "anthropic"
+
+
+def test_unknown_login_source_is_rejected():
+    buffer = StringIO()
+    app = PreviewApp(console=Console(file=buffer))
+    app.handle("/login codex")
+    assert app.login_requested is None
+    assert "Usage: /login" in buffer.getvalue()

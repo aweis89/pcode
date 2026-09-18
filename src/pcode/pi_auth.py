@@ -15,12 +15,23 @@ from anthropic import AsyncAnthropic
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
-from pcode.auth import LoginError
+from pcode.auth import (
+    OAUTH_BETAS,
+    OAUTH_PREAMBLE,
+    OAUTH_USER_AGENT,
+    LoginError,
+    SubscriptionOAuthWire,
+)
 
-# Compatibility markers used by pi's Anthropic OAuth transport, not API-key traffic.
-OAUTH_BETAS = {"claude-code-20250219", "oauth-2025-04-20"}
-OAUTH_PREAMBLE = "You are Claude Code, Anthropic's official CLI for Claude."
-OAUTH_USER_AGENT = "claude-cli/2.1.251"
+# Re-exported for callers that already import the wire markers from this adapter.
+__all__ = [
+    "OAUTH_BETAS",
+    "OAUTH_PREAMBLE",
+    "OAUTH_USER_AGENT",
+    "PiAnthropicModel",
+    "pi_auth_path",
+    "read_pi_credential",
+]
 
 
 @dataclass(frozen=True)
@@ -96,39 +107,15 @@ class PiAnthropicClient(AsyncAnthropic):
         return {"X-Api-Key": credential.value}
 
 
-class PiAnthropicModel(AnthropicModel):
-    """Pydantic transport with the OAuth wire markers used by pi.
-
-    Pydantic's message mapping is a private integration seam, covered by wire tests.
-    This is compatibility support, not a claim of official third-party OAuth support.
-    """
+class PiAnthropicModel(SubscriptionOAuthWire, AnthropicModel):
+    """Pydantic transport with the OAuth wire markers used by pi."""
 
     def __init__(self, model: str, *, path: Path | None = None, http_client=None):
         path = path if path is not None else pi_auth_path()
         credential = read_pi_credential(path)
-        self._pi_oauth = credential.kind == "oauth"
+        self._subscription_oauth = credential.kind == "oauth"
         client = PiAnthropicClient(path, credential.kind, http_client=http_client)
         super().__init__(
             model.removeprefix("anthropic:"),
             provider=AnthropicProvider(anthropic_client=client),
         )
-
-    async def _map_message(self, messages, model_request_parameters, model_settings):
-        system, mapped = await super()._map_message(
-            messages, model_request_parameters, model_settings
-        )
-        if self._pi_oauth:
-            blocks = (
-                ([{"type": "text", "text": system}] if system else [])
-                if isinstance(system, str)
-                else list(system)
-            )
-            system = [{"type": "text", "text": OAUTH_PREAMBLE}, *blocks]
-        return system, mapped
-
-    def _get_betas_and_extra_headers(self, *args, **kwargs):
-        betas, headers = super()._get_betas_and_extra_headers(*args, **kwargs)
-        if self._pi_oauth:
-            betas.update(OAUTH_BETAS)
-            headers.update({"User-Agent": OAUTH_USER_AGENT, "x-app": "cli"})
-        return betas, headers
