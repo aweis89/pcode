@@ -39,6 +39,30 @@ This requires an existing project environment. Typical source locations are
 version. Installed packages contain implementation and docstrings, but may omit
 upstream tests, examples, and documentation sources.
 
+### Local Harness checkout
+
+A full Harness clone already exists at `~/p/pydantic-ai-harness` (remote
+`upstream` is `pydantic/pydantic-ai-harness`; `origin` is a personal fork). Read
+it instead of fetching the website when you need the `docs/`, `tests/`,
+`examples/`, or `integration_tests/` trees that the installed wheel omits —
+`docs/coder.md`, `docs/repo-context.md`, `docs/compaction.md`,
+`docs/subagents.md`, and `docs/shell.md` cover the capabilities pcode composes.
+
+Confirm the checkout matches the pin before trusting it; it is a working tree on
+a local branch, not a pinned artifact:
+
+```sh
+git -C ~/p/pydantic-ai-harness rev-parse HEAD
+grep pydantic-ai-harness pyproject.toml
+```
+
+If those differ, read at the pinned commit (`git -C ~/p/pydantic-ai-harness show
+<sha>:docs/coder.md`) rather than the working tree, and fetch `upstream` first if
+the commit is missing. Installed `site-packages` still decides what actually
+runs: the clone is for docs, tests, and history, not a substitute for verifying
+the installed source. Do not build or install pcode from it — the dependency is
+pinned by SHA.
+
 ## Where to look for this project
 
 - **Interactive UI:** `src/pcode/ui.py`, `src/pcode/commands.py`, and
@@ -251,9 +275,10 @@ endpoint, or read the developer's credential file; `tests/conftest.py` redirects
    installed source. Prefer release-matched docs where available; `stable`,
    `latest`, and upstream `main` are not guarantees of compatibility.
 3. For upstream examples, tests, or internals, browse the matching release tag
-   or commit. If deeper debugging warrants a local checkout, keep it outside
-   this project's normal source tree and record its revision. Do not clone or
-   install dependencies merely to read an API already available locally.
+   or commit. Harness already has a local clone (see "Local Harness checkout");
+   for other dependencies, keep any checkout outside this project's normal
+   source tree and record its revision. Do not clone or install dependencies
+   merely to read an API already available locally.
 4. Validate changes with this repository's relevant regression tests (see
    `README.md`, "Validate"). Documentation alone cannot establish terminal behavior.
 
