@@ -58,7 +58,8 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
         assert history(pane).count(f"REASONING_{i:02d}") == 1
     lines = history(pane).splitlines()
     first = next(i for i, line in enumerate(lines) if "REASONING_00" in line)
-    assert all(f"REASONING_{i:02d}" in lines[first + i] for i in range(30))
+    assert all(f"REASONING_{i:02d}" in lines[first + 2 * i] for i in range(30))
+    assert all(not lines[first + 2 * i + 1].strip() for i in range(29))
     assert "**REASONING" not in history(pane)
     pane("send-keys", "-t", "preview:0.0", "draft preserved")
     pane("send-keys", "-t", "preview:0.0", "C-t")
