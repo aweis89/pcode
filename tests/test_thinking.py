@@ -19,7 +19,7 @@ def rendered(transcript):
     with console.use_theme(transcript.rich_theme):
         for objects, end, soft_wrap in transcript.replay():
             console.print(*objects, end=end, soft_wrap=soft_wrap)
-    return buffer.getvalue()
+    return "\n".join(line.rstrip() for line in buffer.getvalue().split("\n"))
 
 
 def test_thinking_retained_without_old_tail_limit_and_hidden_by_default():
@@ -120,9 +120,11 @@ def test_streaming_lines_are_retained_once_and_keep_answer_order():
             app.transcript.output = writer
             writer.begin_turn("Question")
             writer.thinking_delta("First ")
-            writer.thinking_delta("line\nSecond line\nPartial")
+            writer.thinking_delta("line\nSecond line\n\nPartial")
             await writer.flush()
-            assert "First line\nSecond line" in buffer.getvalue()
+            assert "First line\nSecond line" in "\n".join(
+                line.rstrip() for line in buffer.getvalue().splitlines()
+            )
             assert "Partial" not in buffer.getvalue()
             writer.finish_thinking("First line\nSecond line\nPartial")
             writer.delta("Answer\n\n")
@@ -148,55 +150,87 @@ def test_streaming_lines_are_retained_once_and_keep_answer_order():
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
 @pytest.mark.parametrize("color_style", ["palette", "terminal"])
-def test_thinking_style_is_dim_and_theme_aware(theme, color_style):
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Readable thinking",
+        "**Bold** and *italic*",
+        "# Heading",
+        "- item",
+        "```python\nprint(1)\n```",
+    ],
+)
+def test_thinking_style_is_dim_and_theme_aware(theme, color_style, source):
     console = Console(file=StringIO(), force_terminal=True)
     transcript = Transcript(
         console, theme=theme, color_style=color_style, activity=Activity(show_thinking=True)
     )
-    transcript.thinking("Readable thinking\n")
+    transcript.thinking(source)
     with console.use_theme(transcript.rich_theme):
         segments = list(console.render(transcript.replay()[0][0][0]))
-    text = next(s for s in segments if "Readable thinking" in s.text)
-    assert text.style.dim
-    if color_style == "palette":
-        assert text.style.color.triplet.hex == transcript.palette.muted
+    visible = [segment for segment in segments if segment.text.strip()]
+    assert visible
+    for segment in visible:
+        assert segment.style.dim
+        if color_style == "palette":
+            assert segment.style.color.triplet.hex == transcript.palette.muted
+    if source.startswith("**"):
+        assert next(segment for segment in visible if "Bold" in segment.text).style.bold
 
 
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
-        ("**Inspecting workspace**", "Inspecting workspace"),
-        ("  **Inspecting workspace**  \n\n", "  Inspecting workspace  \n\n"),
-        ("**Heading**\n\nBody with **inline bold**.\n", "Heading\n\nBody with **inline bold**.\n"),
+        ("**Inspecting workspace**", "Inspecting workspace\n"),
+        ("**Heading**\n\nBody with **inline bold**.\n", "Heading\nBody with inline bold.\n"),
         ("**First**\n**Second**\n", "First\nSecond\n"),
-        ("**Unclosed", "**Unclosed"),
-        ("Unopened**", "Unopened**"),
-        ("Plain **inline** text", "Plain **inline** text"),
-        ("*Single*", "*Single*"),
+        ("**Unclosed", "**Unclosed\n"),
+        ("Unopened**", "Unopened**\n"),
+        ("Plain **inline** text", "Plain inline text\n"),
+        ("*Single* and `code`", "Single and code\n"),
         ("", ""),
     ],
 )
-def test_thinking_unwraps_paired_heading_markers_only_for_display(source, expected):
+def test_thinking_renders_compact_markdown_only_for_display(source, expected):
     buffer = StringIO()
-    transcript = Transcript(Console(file=buffer), activity=Activity(show_thinking=True))
+    transcript = Transcript(Console(file=buffer, width=60), activity=Activity(show_thinking=True))
     transcript.thinking(source)
-    assert buffer.getvalue() == expected
     assert rendered(transcript) == expected
+    assert buffer.getvalue() == render_raw(transcript)
     assert transcript.log.entries[0][1] == (source,)
 
 
-def test_streamed_thinking_unwraps_markers_split_across_deltas():
+def render_raw(transcript):
     buffer = StringIO()
-    transcript = Transcript(Console(file=buffer), activity=Activity(show_thinking=True))
+    console = Console(file=buffer, width=60)
+    with console.use_theme(transcript.rich_theme):
+        for objects, end, soft_wrap in transcript.replay():
+            console.print(*objects, end=end, soft_wrap=soft_wrap)
+    return buffer.getvalue()
+
+
+def test_streamed_thinking_renders_split_markdown_and_buffers_code_and_lists():
+    buffer = StringIO()
+    transcript = Transcript(Console(file=buffer, width=60), activity=Activity(show_thinking=True))
     with create_pipe_input() as pipe:
         app = PreviewApp()
         prompt = create_prompt(app.registry, input=pipe, output=DummyOutput())
         writer = TerminalOutput(transcript.console, prompt.app)
         writer.commit_thinking = transcript.thinking
-        for chunk in ["*", "*First", "*", "*\n*", "*Second*", "*"]:
+        for chunk in ["*", "*First", "*", "*\n\n*", "*Second*", "*\n\n"]:
             writer.thinking_delta(chunk)
-        writer.finish_thinking("**First**\n**Second**")
-        assert buffer.getvalue() == "First\nSecond\n\n"
-        assert rendered(transcript) == buffer.getvalue()
+        assert rendered(transcript) == "First\nSecond\n"
+        writer.thinking_delta("```python\nprint('hello')\n")
+        assert "hello" not in buffer.getvalue()
+        writer.thinking_delta("```\n")
+        assert "hello" in buffer.getvalue()
+        writer.thinking_delta("- one\n\n- two\n")
+        assert "one" not in buffer.getvalue()
+        writer.finish_thinking("ignored streamed fallback")
+        assert "one" in buffer.getvalue()
+        assert "two" in buffer.getvalue()
+        assert "ignored streamed fallback" not in buffer.getvalue()
+        assert buffer.getvalue() == render_raw(transcript)
+        assert all(line.strip() for line in buffer.getvalue().splitlines())
         writer.finish_thinking("**Fallback**")
-        assert buffer.getvalue().endswith("Fallback\n\n")
+        assert rendered(transcript).endswith("Fallback\n")
