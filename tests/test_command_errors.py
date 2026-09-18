@@ -71,7 +71,7 @@ def test_command_error_keeps_bounded_tail_with_notice():
     assert huge.endswith("END")
 
 
-def test_error_is_fenced_literal_text_and_survives_event_round_trip():
+def test_command_diagnostic_survives_event_round_trip_and_uses_output_fallback():
     event = ToolSummary(
         "run_command",
         "pytest -q → exit 1",
@@ -82,14 +82,15 @@ def test_error_is_fenced_literal_text_and_survives_event_round_trip():
     )
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=100, color_system=None))
+    transcript.command_scrollback = True
     transcript.events((ToolSummary(**asdict(event)),))
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
-        "✗ Run failed",
-        "",
-        " pytest -q → exit 1",
-        " [stderr] missing module",
-        "   traceback context",
-        "",
+        "─" * 100,
+        "✗ Run failed · 0.5s",
+        "  pytest -q → exit 1",
+        "  [stderr] missing module",
+        "    traceback context",
+        "─" * 100,
     ]
     assert ToolSummary(**{"name": "run_command", "detail": "old summary"}).error == ""
 
@@ -141,6 +142,9 @@ def test_command_errors_reach_live_events_and_saved_transcript(tmp_path, mode):
 
 @pytest.mark.parametrize("command", ["", "pytest -q"])
 def test_failed_command_summary_uses_semantic_error_color(command):
+    from pcode.preferences import save_preferences
+
+    save_preferences(command_scrollback="on")
     stream = StringIO()
     transcript = Transcript(Console(file=stream, force_terminal=True, color_system="truecolor"))
     transcript.events(
@@ -148,7 +152,7 @@ def test_failed_command_summary_uses_semantic_error_color(command):
     )
     output = stream.getvalue()
     assert "✗ Run failed" in output
-    assert "pytest -q" in output
+    assert "pytest -q" in Text.from_ansi(output).plain
     assert "\x1b[1;31m" in output
 
 
@@ -175,17 +179,20 @@ def test_default_error_scrollback_limit():
     assert stream.getvalue().splitlines()[-2].strip() == "59"
 
 
-def test_hidden_errors_do_not_hide_warnings_or_change_events():
-    from pcode.preferences import save_preferences
+def test_legacy_error_visibility_is_ignored_and_hidden_commands_keep_events():
 
-    save_preferences(error_scrollback="off")
+    from pcode.preferences import preferences_path
+
+    preferences_path().parent.mkdir(parents=True, exist_ok=True)
+    preferences_path().write_text('{"error_scrollback": "off"}')
     stream = StringIO()
     transcript = Transcript(Console(file=stream))
     event = ToolSummary("run_command", "exit 1", failed=True, error="saved diagnostic")
     before = asdict(event)
     transcript.error("runtime failure")
     transcript.events((event,))
-    assert stream.getvalue() == ""
+    assert "runtime failure" in stream.getvalue()
+    assert "saved diagnostic" not in stream.getvalue()
     assert asdict(event) == before
     transcript.warning("still visible")
     transcript.cancelled()

@@ -139,10 +139,6 @@ def test_compact_rows_and_old_and_new_event_shapes():
     transcript.events((old, ToolSummary(**asdict(new))))
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
         "  ✓ Read  a.py · 2 lines",
-        "✗ Run failed",
-        "",
-        " pytest → exit 1",
-        "",
     ]
 
 
@@ -264,7 +260,7 @@ def test_long_command_is_compact_without_numbers_or_details_hint():
     detail, failed = result_detail("run_command", {"command": command}, "(no output)", "success")
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=60, color_system=None))
-    transcript.events((ToolSummary("run_command", detail, failed, command=command),))
+    transcript.command_summary(ToolSummary("run_command", detail, failed, command=command))
     output = stream.getvalue()
     assert "…" in output
     assert "tests/test_example_19.py" not in output
@@ -280,7 +276,7 @@ def test_multiline_command_preview_is_compact_and_sanitized():
     command = "python - <<'PY'\n    print('hello')\nPY"
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=80, color_system=None))
-    transcript.events((ToolSummary("run_command", "script → exit 0", command=command),))
+    transcript.command_summary(ToolSummary("run_command", "script → exit 0", command=command))
     assert "print('hello')" not in stream.getvalue()
     assert "1 more lines" not in stream.getvalue()
     assert "2 more lines" in stream.getvalue()
