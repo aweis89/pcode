@@ -164,6 +164,7 @@ TERMINAL_THEME = Theme(
 
 @dataclass
 class Activity:
+    show_tasks: bool = True
     show_thinking: bool = False
     busy: bool = False
     status: str = ""
@@ -194,6 +195,8 @@ class Activity:
         return self.plan if self.plan_preview is None else self.plan_preview
 
     def plan_rows(self, budget: int, spinner: str):
+        if not self.show_tasks:
+            return []
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
         icon = spinner if self.prompt_state == "running" else "○"
@@ -582,6 +585,7 @@ def create_prompt(
     on_cancel=None,
     on_effort=None,
     on_model=None,
+    on_tasks=None,
     on_thinking=None,
     on_commands=None,
     **kwargs,
@@ -589,6 +593,13 @@ def create_prompt(
     configure_newline_keys()
     activity = activity or Activity()
     keys = KeyBindings()
+
+    @keys.add("c-o", filter=~is_searching)
+    def toggle_tasks(event: KeyPressEvent) -> None:
+        activity.show_tasks = not activity.show_tasks
+        if on_tasks is not None:
+            on_tasks(activity.show_tasks)
+        event.app.invalidate()
 
     @keys.add("c-t", filter=~is_searching)
     def toggle_thinking(event: KeyPressEvent) -> None:
