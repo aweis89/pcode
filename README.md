@@ -1054,8 +1054,15 @@ Details:
 
 - It covers `run_command`, `start_command`, `check_command`, and `stop_command`,
   including calls made by delegated sub-agents. Other tools are unaffected.
-- Blocks are written when a call settles, not incrementally while it runs, so
-  output appears once per call rather than line by line.
+- Active `run_command` calls show a live tail above the prompt, refreshed as
+  complete stdout/stderr lines arrive. The preview follows the same Ctrl+S setting
+  and line limit, shrinking when needed to fit the terminal. For parallel calls,
+  the most recently updated command is shown; all calls remain in the tool panel.
+  Programs that buffer their own output must flush it (for example, `python -u`).
+- On completion the transient preview disappears and one bordered result is
+  written to scrollback, without duplicate streamed lines. Preview updates are
+  not saved in session history. Background `start_command` processes still expose
+  output through `check_command` / `stop_command`, rather than live previews.
 - Failed commands follow the same show/hide setting as successful commands.
   When shown, they print one block containing captured output (or the saved
   diagnostic if output is unavailable). There is no separate error visibility option.

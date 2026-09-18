@@ -35,7 +35,7 @@ from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import load_preferences
-from pcode.runtime import Event, Message, ToolSummary
+from pcode.runtime import CommandOutput, Event, Message, ToolSummary
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
 from pcode.tool_display import COMMAND_TOOLS, command_preview, command_text, label, plain
@@ -177,6 +177,7 @@ class Activity:
     plan: list[dict] = field(default_factory=list)
     plan_preview: list[dict] | None = None
     tools: ToolHistory = field(default_factory=ToolHistory)
+    command_outputs: dict[str, CommandOutput] = field(default_factory=dict)
 
     def append_thinking(self, text: str) -> None:
         """UI-only rolling buffer; never route this through Transcript/events."""
@@ -242,6 +243,7 @@ class Activity:
     def reset(self) -> None:
         """Clear the panel for a new conversation, keeping the draft and queue."""
         self.clear_thinking()
+        self.command_outputs.clear()
         self.plan = []
         self.plan_preview = None
         self.tools.clear()
@@ -757,6 +759,33 @@ def create_prompt(
         budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
         return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
+    def command_rows():
+        if transcript is None or not transcript.command_scrollback or not activity.command_outputs:
+            return []
+        size = session.app.output.get_size()
+        plans = plan_rows()
+        available = max(
+            0,
+            size.rows
+            - (len(plans) + 2 if plans else 0)
+            - bool(activity.prompt)
+            - len(queue_rows())
+            - 10,
+        )
+        if available < 2:
+            return []
+        budget = min(transcript.command_scrollback_lines, available - 1)
+        # Parallel calls remain attributed; the most recently updated call gets
+        # the preview, while the tool panel continues to list every active call.
+        event = next(reversed(activity.command_outputs.values()))
+        width = max(1, size.columns - 2)
+        rows = Text(command_text(event.output)).wrap(
+            Console(width=width), width, overflow="fold", no_wrap=False
+        )
+        return [("class:plan", "$ " + command_preview(event.command))] + [
+            ("class:bottom-toolbar.text", row.plain) for row in rows[-budget:]
+        ]
+
     def thinking_rows():
         if activity.thinking_display != "expanded":
             return []
@@ -769,6 +798,7 @@ def create_prompt(
             - (len(plans) + 2 if plans else 0)
             - bool(activity.prompt)
             - len(queue_rows())
+            - (len(command_rows()) + 2 if command_rows() else 0)
             - 8
         )
         return activity.thinking_rows(size.columns - 2, max(0, available))
@@ -787,6 +817,7 @@ def create_prompt(
             + (len(rows) + 2 if rows else 0)
             + (len(thoughts) + 2 if thoughts else 0)
             + len(summary_rows())
+            + (len(command_rows()) + 2 if command_rows() else 0)
         )
 
     def plan_text():
@@ -873,7 +904,25 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(summary_rows())),
     )
-    activity_panel = HSplit([thinking, summary, current_prompt, plan])
+    commands = ConditionalContainer(
+        Frame(
+            Window(
+                FormattedTextControl(
+                    lambda: panel_fragments(
+                        command_rows(), session.app.output.get_size().columns - 2
+                    ),
+                    show_cursor=False,
+                ),
+                height=lambda: len(command_rows()),
+                dont_extend_height=True,
+                wrap_lines=False,
+            ),
+            title="Command output · running · Ctrl+S to hide",
+            height=lambda: len(command_rows()) + 2,
+        ),
+        filter=Condition(lambda: bool(command_rows())),
+    )
+    activity_panel = HSplit([commands, thinking, summary, current_prompt, plan])
 
     def queue_rows():
         budget = min(4, max(1, session.app.output.get_size().rows // 4))

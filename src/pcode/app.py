@@ -28,6 +28,7 @@ from pcode.preferences import (
     save_preferences,
 )
 from pcode.runtime import (
+    CommandOutput,
     Message,
     PlanPreview,
     PlanUpdated,
@@ -455,13 +456,17 @@ class PreviewApp:
     def present_events(self, events) -> None:
         """Route live tool activity separately from permanent transcript writes."""
         for event in events:
-            if isinstance(event, (ToolStarted, ToolSummary)):
+            if isinstance(event, CommandOutput):
+                self.activity.command_outputs.pop(event.call_id, None)
+                self.activity.command_outputs[event.call_id] = event
+            elif isinstance(event, (ToolStarted, ToolSummary)):
                 self.activity.tools.record(event)
                 if self.transcript.output is not None:
                     self.transcript.output.app.invalidate()
                 # Decide only after completion. The adapter's failed flag includes
                 # non-zero shell exits, retries, and known tool validation failures.
                 if isinstance(event, ToolSummary):
+                    self.activity.command_outputs.pop(event.call_id, None)
                     self.transcript.tool_result(event)
             else:
                 self.transcript.events((event,))
@@ -941,6 +946,8 @@ class PreviewApp:
                     if isinstance(event, TextDelta):
                         output.delta(event.text)
                         self.activity.status = "Responding…"
+                    elif isinstance(event, CommandOutput):
+                        self.present_events((event,))
                     elif isinstance(event, RunStatus):
                         self.activity.status = event.text
                     elif isinstance(event, PlanUpdated):
@@ -969,6 +976,7 @@ class PreviewApp:
             self.runtime.thinking_sink = lambda text: None
             self.runtime.thinking_start_sink = lambda: None
             self.activity.clear_thinking()
+            self.activity.command_outputs.clear()
             self.activity.plan_preview = None
             output.end_turn()
             self.activity.tools.interrupt_running()
