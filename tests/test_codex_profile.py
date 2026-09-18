@@ -12,6 +12,7 @@ from pcode.agent import create_agent
 
 
 def test_native_codex_wire_payload_omits_unsupported_cache_marker(monkeypatch, tmp_path):
+    monkeypatch.delenv("PCODE_LLM_PROXY", raising=False)
     payloads = []
 
     def handle(request):

@@ -21,13 +21,13 @@ from pcode.preferences import apply_effort, apply_thinking, save_preferences
 @pytest.mark.parametrize(
     "name, expected",
     [
-        ("claude-sonnet-4-5", {"type": "enabled", "budget_tokens": 2048}),
-        ("claude-sonnet-4-6", {"type": "adaptive"}),
-        ("claude-opus-4-7", {"type": "adaptive"}),
+        ("claude-sonnet-4-5", {"type": "enabled", "budget_tokens": 2048, "display": "summarized"}),
+        ("claude-sonnet-4-6", {"type": "adaptive", "display": "summarized"}),
+        ("claude-opus-4-7", {"type": "adaptive", "display": "summarized"}),
     ],
 )
 @pytest.mark.parametrize("auth", ["api-key", "pi"])
-def test_thinking_stream_request_and_transient_sink(name, expected, auth, tmp_path):
+def test_thinking_stream_request_and_persistable_events(name, expected, auth, tmp_path):
     requests = []
 
     def handle(request):
@@ -145,20 +145,21 @@ def test_thinking_stream_request_and_transient_sink(name, expected, auth, tmp_pa
             try:
                 for shown in (False, True, False):
                     app.set_show_thinking(shown)
-                    app.activity.thinking = ""
-                    runtime.thinking_sink = app.activity.append_thinking
+                    from pcode.runtime import ThinkingDelta
+
                     events = [event async for event in runtime.stream("hello")]
                     assert requests[-1]["stream"] is True
                     if shown:
                         assert requests[-1]["thinking"] == expected
                         if "budget_tokens" in expected:
                             assert expected["budget_tokens"] < requests[-1]["max_tokens"]
-                        assert app.activity.thinking == "PRIVATE_THINKING"
-                        assert app.activity.thinking_rows()
+                        assert (
+                            "".join(e.text for e in events if isinstance(e, ThinkingDelta))
+                            == "PRIVATE_THINKING"
+                        )
                     else:
                         assert "thinking" not in requests[-1]
-                        assert app.activity.thinking == ""
-                    assert not any("PRIVATE_THINKING" in repr(event) for event in events)
+                        assert not any(isinstance(e, ThinkingDelta) for e in events)
             finally:
                 runtime.close()
 
@@ -172,7 +173,7 @@ def test_startup_and_toggle_preserve_effort_and_replace_settings():
         model=agent.model, runtime=SimpleNamespace(agent=agent), console=Console(file=StringIO())
     )
     assert agent.model_settings == {
-        "anthropic_thinking": {"type": "adaptive"},
+        "anthropic_thinking": {"type": "adaptive", "display": "summarized"},
         "anthropic_effort": "medium",
     }
     captured = agent.model_settings
@@ -181,7 +182,10 @@ def test_startup_and_toggle_preserve_effort_and_replace_settings():
     assert "anthropic_thinking" in captured
     app.set_show_thinking(True)  # Ctrl+T uses the same callback.
     apply_effort(agent, app.model, "high")
-    assert agent.model_settings["anthropic_thinking"] == {"type": "adaptive"}
+    assert agent.model_settings["anthropic_thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+    }
     assert "next turn" in app.transcript.console.file.getvalue()
 
 
@@ -194,7 +198,10 @@ def test_thinking_on_can_open_anthropic_without_credentials(monkeypatch, tmp_pat
     )
     asyncio.run(app._initialize_runtime())
     try:
-        assert app.runtime.agent.model_settings["anthropic_thinking"] == {"type": "adaptive"}
+        assert app.runtime.agent.model_settings["anthropic_thinking"] == {
+            "type": "adaptive",
+            "display": "summarized",
+        }
     finally:
         app.runtime.close()
 
@@ -211,6 +218,7 @@ def test_switch_uses_current_visibility_not_saved_default(monkeypatch, tmp_path)
             assert app.runtime.agent.model_settings["anthropic_thinking"] == {
                 "type": "enabled",
                 "budget_tokens": 2048,
+                "display": "summarized",
             }
         finally:
             app.runtime.close()
@@ -246,7 +254,10 @@ def test_resume_applies_current_thinking_preference(monkeypatch, tmp_path):
     async def run():
         await app.resume_session(identity)
         try:
-            assert app.runtime.agent.model_settings["anthropic_thinking"] == {"type": "adaptive"}
+            assert app.runtime.agent.model_settings["anthropic_thinking"] == {
+                "type": "adaptive",
+                "display": "summarized",
+            }
         finally:
             app.runtime.close()
 

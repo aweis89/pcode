@@ -36,8 +36,6 @@ SETTINGS = {
     "command_scrollback": Setting("off", ("on", "off")),
     "command_scrollback_lines": Setting("20", positive_integer=True),
     "show_thinking": Setting("off", ("on", "off")),
-    "thinking_lines": Setting("10", positive_integer=True),
-    "thinking_display": Setting("compact", ("compact", "expanded")),
     "editing_mode": Setting("emacs", ("emacs", "vi")),
     "theme": Setting("dark", ("dark", "light", "auto")),
     "autocompact": Setting("off", ("on", "off")),
@@ -159,9 +157,9 @@ def apply_thinking(agent, model: str, shown: bool) -> None:
         if profile is None:
             profile = anthropic_model_profile(model.removeprefix("anthropic:")) or {}
         settings["anthropic_thinking"] = (
-            {"type": "adaptive"}
+            {"type": "adaptive", "display": "summarized"}
             if profile.get("anthropic_supports_adaptive_thinking")
-            else {"type": "enabled", "budget_tokens": 2048}
+            else {"type": "enabled", "budget_tokens": 2048, "display": "summarized"}
         )
         # The legacy budget is below the adapter's default max_tokens (4096).
         # Do not change effort or output limits as a side effect of visibility.

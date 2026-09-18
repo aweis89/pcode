@@ -53,6 +53,20 @@ class TextDelta:
 
 
 @dataclass(frozen=True)
+class ThinkingDelta:
+    """Provider-exposed reasoning text, persisted even when hidden."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class Thinking:
+    """Completion marker for one readable thinking block (never a signature)."""
+
+    text: str
+
+
+@dataclass(frozen=True)
 class RunStatus:
     text: str
 
@@ -76,6 +90,8 @@ Event = (
     | ToolStarted
     | ToolSummary
     | TextDelta
+    | ThinkingDelta
+    | Thinking
     | RunStatus
     | PlanUpdated
     | PlanPreview

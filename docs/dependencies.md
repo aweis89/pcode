@@ -266,31 +266,32 @@ The default is false. Inspect the running proxy's effective settings with a
 read-only GET of `/settings/api/features` (the `passthrough` entry), or use its
 `/settings` UI. Do not silently change global proxy settings from a display toggle.
 `tests/test_meridian.py` covers both forwarded and absent thinking blocks through
-Anthropic SSE decoding and `AgentRuntime`'s transient sink, without putting raw
-reasoning into application transcript events. Saved model-message history remains
-separate and can contain provider reasoning, as described in the README.
+Anthropic SSE decoding and `AgentRuntime`'s saved `ThinkingDelta`/`Thinking` events.
+Only readable provider text enters these events; native model-message history
+remains separate and may also contain opaque signatures.
 
-### Codex thinking preview
+### Codex thinking streaming
 
 Verified Pydantic AI 2.43.0's `OpenAICodexModel` inherits the Responses model's
 `openai_reasoning_summary` setting. `_build_reasoning` serializes `"auto"` as
 `reasoning.summary`; without it, reasoning effort alone does not request visible
 summary text. Pcode requests summaries for Codex independently of `show_thinking`
-so the local preview can be enabled mid-turn. This requests provider-exposed
+so the scrollback view can be enabled mid-turn. This requests provider-exposed
 summaries, not raw internal reasoning, and does not change effort. Other routes
 are unchanged. See the setting's installed-source documentation in
 `pydantic_ai/models/openai.py` and
 [OpenAI reasoning summaries](https://platform.openai.com/docs/guides/reasoning#reasoning-summaries).
 `tests/test_codex_profile.py` checks the serialized request and preservation across
-effort changes; runtime sink and terminal visibility are covered separately.
+effort changes; event persistence and terminal visibility are covered separately.
 
 ### Anthropic thinking requests
 
 For direct `anthropic:` routes (API-key and pi authentication), `show_thinking=on`
 now also opts into thinking generation on the next turn. `preferences.apply_thinking`
 uses the installed model profile's `anthropic_supports_adaptive_thinking` flag:
-adaptive models receive `anthropic_thinking={"type": "adaptive"}`; older models
-receive `{"type": "enabled", "budget_tokens": 2048}`, below the adapter's default
+adaptive models receive `anthropic_thinking={"type": "adaptive", "display": "summarized"}`;
+older models receive `{"type": "enabled", "budget_tokens": 2048, "display": "summarized"}`,
+with the budget below the adapter's default
 4096 output-token limit. This requires a thinking-capable model. Adaptive models
 can choose not to think on a particular response. Enabling thinking can increase
 latency and token usage; this does not modify the separately selected effort.
@@ -305,32 +306,44 @@ and Ctrl+T apply the same policy. Meridian remains display-only and still requir
 proxy-side Thinking Passthrough; never change its global settings automatically.
 
 `tests/test_anthropic_thinking.py` checks serialized adaptive/budgeted requests,
-real Anthropic SSE decoding into the transient preview sink with both direct and
+real Anthropic SSE decoding into readable thinking events with both direct and
 pi adapters, off/on/off transitions, preserved effort, deferred login, switching,
-and resume. Thinking remains excluded from transcript events, but saved model
-message history can contain provider thinking as before. See
+and resume. Installed Anthropic SDK 1.6.0 accepts `display`, and Pydantic AI
+2.43.0's `_translate_thinking` passes that dictionary through unchanged. Explicit
+`summarized` is important for models whose API default omits readable thinking. See
 [Anthropic extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
 and [adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking).
 
-### Multiline thinking frame
+### Saved thinking and scrollback replay
 
-The opt-in expanded thinking view is a content-sized `Frame` above the current
-prompt and task panel. `thinking_lines` defaults to 10 content rows, excluding borders. Wrap the
-bounded buffer with Rich `Text.wrap` before taking the tail, using terminal-cell
-width rather than character count. Strip ANSI/control sequences while retaining
-newlines; do not interpret streamed content as prompt_toolkit markup.
+`live.py` maps readable `ThinkingPart`/`ThinkingPartDelta` content into
+`ThinkingDelta` and emits a `Thinking` completion at `PartEndEvent`. These events
+are journaled independently of visibility. Never put signatures or redacted
+thinking data in them. `SavedSession.recent_transcript` collapses complete deltas
+into one block and preserves incomplete blocks on cancellation/failure/reopen.
+Native model history remains separate from this readable presentation history.
 
-Verified prompt_toolkit 3.0.53 accepts callable `Frame.height` and `Window.height`.
-Use explicit content and frame heights (`rows` and `rows + 2`), with the same
-row calculation in the overall activity budget, to avoid CPR stretching. The
-thinking height budget leaves room for the task frame, queue, editor, and footer.
-`tests/test_thinking_tmux.py` covers configurable bounds, real CPR, resize,
-toggling, and cancellation; the existing single-block thinking regression remains.
-Aggressive tmux shrink/reflow can copy old panel rows into history before the
-application receives SIGWINCH, just as for the task panel. Resize tests inspect
-the live frame nearest the editor; no-resize tests assert no reasoning in history.
-Do not claim the terminal history is a secure store or that application cleanup
-can erase terminal-owned history from arbitrary resizes.
+`TerminalOutput.thinking_delta` commits complete plain-text lines through
+`Transcript.thinking`, flushing the unfinished line on block/turn termination.
+Thinking is control-sanitized and display-redacted like command text, and uses the
+named Rich `pcode.thinking` style (muted + dim; terminal-color mode uses dim default).
+Define compound styles in the theme: a string such as `pcode.muted dim` is not a
+valid composite of a theme alias and an attribute in Rich's style parser.
+Consecutive thinking writes coalesce in `TranscriptLog`, without the old 8-KB
+preview truncation. The existing semantic-entry limit still bounds retained replay.
+
+`show_thinking` only controls the projection of these stored writes (plus the
+Anthropic next-request opt-in above). Ctrl+T and `/show-thinking` request the same
+atomic rebuild as `/redraw`. Hidden writes must remain in the log; pending writes
+must not duplicate on regeneration or resize. No thinking is allocated to the
+live prompt or task header. Legacy `thinking_display`/`thinking_lines` preferences
+are ignored. Keep real-tmux tests for streamed text before completion, show/hide
+while editing, cancellation/completion retention, history deduplication, resize,
+and compact prompt/task height with real CPR. A PTY without CPR is insufficient.
+
+Persistence is intentional even when hidden. Do not promise secure deletion by
+toggling visibility or clearing terminal history, and do not backfill old sessions
+from potentially opaque native model history without a separate migration design.
 
 ### Explicit newline key encodings
 
@@ -351,32 +364,17 @@ implementations; real-tmux tests retain CPR, multiline height, Escape, and resiz
 checks for each supported newline encoding.
 
 
-### Compact provider-summary presentation
+### Provider summaries versus internal reasoning
 
 [OpenAI's reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)
-describes exposed reasoning summaries, not raw internal tokens.
-[Its Responses API example](https://developers.openai.com/cookbook/examples/responses_api/reasoning_items)
-illustrates a bold heading followed by prose (an archived example, not a current
-model-support guarantee). `summary="auto"` does not mean "heading only" or promise
-a particular length or update frequency. Installed Pydantic AI 2.43.0 maps decoded
-summary content to `ThinkingPart`/`ThinkingPartDelta` and serializes the Codex
-`openai_reasoning_summary` setting; do not invent missing provider text.
-
-[Anthropic's current thinking guide](https://platform.claude.com/docs/en/build-with-claude/thinking)
-also calls visible thinking text a summary and documents empty blocks when
-`display="omitted"`. Neither event names nor reasoning-token usage prove visible
-text exists. Website model/display defaults may be newer than installed adapters;
-this presentation change deliberately does not modify provider request settings.
-
-`thinking_display=compact` is the default: append a sanitized heading from the
-latest nonempty block to the existing Tasks/Tools frame title. Without a panel,
-use one unbordered row. `expanded` opts into the multiline view; `thinking_lines`
-only limits that view. These are local presentation settings, not provider summary
-verbosity. A separate transient start-of-block callback preserves block boundaries
-without journaling text or changing application events. Signature-only starts do
-not clear visible status. Clear both buffers and callbacks on every exit path.
-Keep real-tmux tests for compact title updates, the no-task fallback, toggling,
-resize, and the expanded frame's CPR height budget.
+describes exposed summaries, not raw internal tokens. `summary="auto"` does not
+mean heading-only or promise a particular update frequency. Installed Pydantic AI
+2.43.0 maps decoded summary content to `ThinkingPart`/`ThinkingPartDelta`.
+[Anthropic's thinking guide](https://platform.claude.com/docs/en/build-with-claude/thinking)
+also describes visible summaries and empty blocks with `display="omitted"`.
+Neither reasoning-token usage nor a thinking-status event proves readable text
+exists. We stream all exposed text rather than extracting a task-header heading;
+we cannot reconstruct provider-omitted content.
 
 
 ## Live shell output
@@ -396,7 +394,7 @@ lines, sanitize before clipping, and redact unfinished quoted credentials and
 private-key blocks before displaying any tail. `CommandOutput` is transient:
 bypass session/tree journals, remove the per-call preview on completion, and
 clear all previews on cancellation/failure/reset. The UI shares the terminal
-height budget with reasoning, tasks, queue, and editor. Keep real-tmux tests
+height budget with tasks, queue, and editor. Keep real-tmux tests
 for live output before completion, toggling, resize/CPR, and cancellation;
 PTY tests with CPR disabled cannot prove compact prompt height.
 
