@@ -30,10 +30,13 @@ class Setting:
 
 
 SEND_MODES = ("steering", "queue", "interrupt")
+ANTHROPIC_AUTH_SOURCES = ("api-key", "oauth", "pi")
 
 
 SETTINGS = {
     "send_mode": Setting("steering", SEND_MODES),
+    # Which Anthropic credential /login selected; PCODE_ANTHROPIC_AUTH still wins.
+    "anthropic_auth": Setting(None, ANTHROPIC_AUTH_SOURCES),
     "meridian_managed": Setting("off", ("on", "off")),
     "error_scrollback_lines": Setting("20", positive_integer=True),
     "regenerate_on_resize": Setting("on", ("on", "off")),
