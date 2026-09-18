@@ -1,6 +1,7 @@
 """Discover assistant assets as context, rather than asking the model to do it."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from pydantic_ai_harness.repo_context import AgentContextInventory, RepoContext
 
@@ -62,3 +63,15 @@ class AutomaticRepoContext(RepoContext):
                 else "No assistant configuration directories found in the working repository."
             )
         return "\n\n".join(part for part in (instructions, self._inventory_context) if part)
+
+
+def create_repo_context(workspace: Path) -> AutomaticRepoContext:
+    """Load ancestor instructions using Harness's bounded, deduplicated walk.
+
+    Stop at home for workspaces beneath it, or at the filesystem root elsewhere.
+    Resolve first so symlinked workspaces use the same ancestry as file tools.
+    """
+    workspace = workspace.resolve()
+    home = Path.home().resolve()
+    boundary = home if workspace.is_relative_to(home) else Path(workspace.anchor)
+    return AutomaticRepoContext(workspace_dir=workspace, home_dir=boundary)
