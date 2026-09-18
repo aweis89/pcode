@@ -207,7 +207,7 @@ def test_stream_has_no_model_request_limit():
     asyncio.run(run())
 
 
-def test_failed_stream_does_not_commit_history():
+def test_failed_stream_keeps_request_but_not_partial_response():
     async def broken(messages, info):
         yield "Partial"
         raise RuntimeError("sensitive provider body")
@@ -217,7 +217,8 @@ def test_failed_stream_does_not_commit_history():
     async def run():
         with pytest.raises(Exception):
             _ = [event async for event in runtime.stream("hello")]
-        assert runtime.history == []
+        assert len(runtime.history) == 1
+        assert runtime.history[0].parts[0].content == "hello"
         assert runtime.turns == 0
 
     asyncio.run(run())
@@ -285,7 +286,8 @@ def test_ui_cancellation_cleans_up_generation_and_accepts_next_input():
             await writer.flush()
             assert cleaned_up
             assert not app.activity.busy
-            assert app.runtime.history == []
+            assert len(app.runtime.history) == 1
+            assert app.runtime.history[0].parts[0].content == "start"
             pipe.send_text("next input\r")
             assert await session.prompt_async() == "next input"
         assert "Run cancelled" in output.getvalue()

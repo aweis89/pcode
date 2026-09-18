@@ -24,20 +24,26 @@ from pydantic_ai import (
     ThinkingPart,
     ThinkingPartDelta,
 )
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, RetryPromptPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelMessagesTypeAdapter,
+    ModelResponse,
+    RetryPromptPart,
+)
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
-from pydantic_ai_harness.step_persistence import StepPersistence
+from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersistence
 from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent
 
 from pcode.compaction import AutoCompaction, summarize
 from pcode.conversation_tree import ConversationTree
 from pcode.delegation import ChildActivity
-from pcode.diagnostics import error_details
+from pcode.diagnostics import error_details, transient, transport_types
 from pcode.inspection import ToolArchive, capture
 from pcode.mcp import MCPState
 from pcode.plan_preview import StreamingPlanPreview
-from pcode.preferences import load_preferences
+from pcode.preferences import SETTINGS, load_preferences
+from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
     CommandOutput,
     Event,
@@ -85,8 +91,14 @@ class AgentRuntime:
                 return SavedSession.create(model, workspace, root)
 
         self.session_factory = session_factory
-        self.auto_compact = load_preferences().get("autocompact") == "on"
+        preferences = load_preferences()
+        self.auto_compact = preferences.get("autocompact") == "on"
+        # Snapshotted like autocompact: a saved default applies to the next launch.
+        self.retry_attempts = int(
+            preferences.get("retry_attempts", SETTINGS["retry_attempts"].default)
+        )
         self.compaction_notice = lambda text: None
+        self.retry_notice = lambda text: None
         self.take_steering = lambda: []
         self._clear()
         self.replace_agent(agent)
@@ -137,6 +149,7 @@ class AgentRuntime:
         self.input_tokens = info.input_tokens if info else 0
         self.output_tokens = info.output_tokens if info else 0
         self.recovery_blocked = ""
+        self._request_checkpoint = RequestCheckpoint()
         self.plan_store = InMemoryPlanStore()
         self.mcp = MCPState()
 
@@ -224,9 +237,68 @@ class AgentRuntime:
         if self.session:
             self.session.close()
 
-    async def stream(self, prompt: str) -> AsyncIterator[Event]:
+    def resend_prompt(self) -> str:
+        """The original prompt is a display label, not another model message."""
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
+        active = self.tree.nodes.get(self.tree.active)
+        if active and active.resend_blocked:
+            raise SessionError(
+                "The interrupted turn may have changed files or run commands. "
+                "Inspect its tools and send an explicit next step instead of /resend."
+            )
+        for identity in reversed(self.tree.path(self.tree.active)):
+            node = self.tree.nodes[identity]
+            if node.kind == "turn" and node.prompt:
+                return node.prompt
+        raise SessionError("There is no earlier prompt to resend; send a message instead.")
+
+    async def stream(self, prompt: str | None) -> AsyncIterator[Event]:
+        """Retry only failed provider requests, with one budget per submitted turn."""
+        if self.recovery_blocked:
+            raise SessionError(self.recovery_blocked)
+        send = prompt
+        if send is None:
+            original = self.resend_prompt()
+            node = self.tree.nodes[self.tree.active]
+            if not self.history:
+                send = original
+            # A completed text response would short-circuit Agent.run(None).
+            # Regenerate just that response, retaining all settled tool results.
+            elif isinstance(self.history[-1], ModelResponse):
+                if self.history[-1].tool_calls:
+                    raise SessionError("The checkpoint has unsettled tools; cannot resend safely.")
+                if node.status != "completed" and not node.continuation:
+                    send = original
+                else:
+                    self.history = self.history[:-1]
+        for attempt in range(self.retry_attempts + 1):
+            try:
+                async with aclosing(self._turn(send)) as turn:
+                    async for event in turn:
+                        yield event
+            except Exception as error:
+                if (
+                    attempt == self.retry_attempts
+                    or self.recovery_blocked
+                    or self._request_checkpoint.messages is None
+                    or not transient(error)
+                ):
+                    raise
+                # _turn saved the exact failed request, including steering and
+                # compaction. Never infer progress from the length of history.
+                send = None
+                self.retry_notice(
+                    f"Provider connection dropped; retry {attempt + 1}/{self.retry_attempts}…"
+                )
+                await asyncio.sleep(1)
+            else:
+                return
+
+    async def _turn(self, send: str | None) -> AsyncIterator[Event]:
+        """Run one attempt. A `None` prompt continues from history without adding to it."""
+        prompt = send or ""
+        self._request_checkpoint = RequestCheckpoint()
         if self.session is None and self.session_factory is not None:
             self.session = self.session_factory()
             self.conversation_id = self.session.info.id
@@ -235,7 +307,12 @@ class AgentRuntime:
         run_id = str(uuid4())
         if saved:
             saved.append(
-                "turn_started", prompt=prompt, run_id=run_id, parent_id=self.tree.active, sync=True
+                "turn_started",
+                prompt=prompt,
+                run_id=run_id,
+                parent_id=self.tree.active,
+                continuation=send is None,
+                sync=True,
             )
             saved.info.status = "running"
             saved.save_info()
@@ -244,15 +321,19 @@ class AgentRuntime:
                 {
                     "kind": "turn_started",
                     "prompt": prompt,
+                    "continuation": send is None,
                     "run_id": run_id,
                     "parent_id": self.tree.active,
                 }
             )
         self.inspections.run_id = run_id
         self._compaction_usage = RunUsage()
+        tools_started = False
         try:
-            async with aclosing(self._stream(prompt, run_id)) as stream:
+            async with aclosing(self._stream(send, run_id)) as stream:
                 async for event in stream:
+                    if isinstance(event, ToolStarted):
+                        tools_started = True
                     if isinstance(event, (PlanPreview, CommandOutput)):
                         # Unexecuted arguments must never enter replay/tree history.
                         yield event
@@ -265,6 +346,7 @@ class AgentRuntime:
                         self.inspections.event(event)
                     yield event
         except BaseException as error:
+            resend_blocked = tools_started and self._request_checkpoint.messages is None
             # Successful runs account for nested summary usage through result.usage.
             # A failed next request must not hide the summary's already incurred cost.
             self.input_tokens += self._compaction_usage.input_tokens
@@ -285,6 +367,7 @@ class AgentRuntime:
                     "turn_cancelled" if cancelled else "turn_failed",
                     run_id=run_id,
                     error=error_details(error),
+                    resend_blocked=resend_blocked,
                     sync=True,
                 )
                 saved.info.status = "cancelled" if cancelled else "failed"
@@ -292,6 +375,18 @@ class AgentRuntime:
                 try:
                     # Keep completed tool results even if the *following* request
                     # failed. Never silently re-run a side effect on retry.
+                    checkpoint = self._request_checkpoint
+                    if checkpoint.messages is not None:
+                        # Override any partial response saved during unwind. This
+                        # also persists a bare first prompt, which Harness omits.
+                        await saved.store.save_snapshot(
+                            ContinuableSnapshot(
+                                run_id=run_id,
+                                step_index=checkpoint.step,
+                                messages=checkpoint.messages,
+                                conversation_id=self.conversation_id,
+                            )
+                        )
                     self.history = await saved.recover()
                 except SessionError as recovery_error:
                     self.recovery_blocked = str(recovery_error)
@@ -299,7 +394,14 @@ class AgentRuntime:
                 cancelled = isinstance(
                     error, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit)
                 )
-                self.tree.consume({"kind": "turn_cancelled" if cancelled else "turn_failed"})
+                if self._request_checkpoint.messages is not None:
+                    self.history = self._request_checkpoint.messages
+                self.tree.consume(
+                    {
+                        "kind": "turn_cancelled" if cancelled else "turn_failed",
+                        "resend_blocked": resend_blocked,
+                    }
+                )
                 self.tree.nodes[run_id].history = deepcopy(self.history)
             raise
         else:
@@ -318,7 +420,7 @@ class AgentRuntime:
         finally:
             self.context_history = None
 
-    async def _stream(self, prompt: str, run_id: str) -> AsyncIterator[Event]:
+    async def _stream(self, prompt: str | None, run_id: str) -> AsyncIterator[Event]:
         await self.refresh_context()
         plan_items = [item.model_dump(mode="json") for item in await self.plan_store.get_items()]
         preview = (
@@ -357,7 +459,7 @@ class AgentRuntime:
                 run_id=run_id,
                 capabilities=(
                     ([StepPersistence(store=self.session.store)] if self.session else [])
-                    + [Steering(self.take_steering)]
+                    + [Steering(self.take_steering), self._request_checkpoint]
                     + ([AutoCompaction(self, run_id)] if self.auto_compact else [])
                 ),
                 # Explicitly disable the cap; omitting this restores the library default.
@@ -564,23 +666,19 @@ def error_message(error: Exception) -> str:
         return "Provider dependency missing. Install its pydantic-ai-slim extra and try again."
     # SDKs wrap transport failures in ModelAPIError. Classify the bounded cause
     # chain, but never echo transport text: it may contain URLs or credentials.
-    detail = error_details(error)
-    transport_types = set()
-    while detail:
-        transport_types.add(detail["type"])
-        detail = detail.get("cause", detail.get("context", {}))
-    if "RemoteProtocolError" in transport_types:
+    names = transport_types(error)
+    if "RemoteProtocolError" in names:
         return (
             "Provider connection closed or returned an incomplete/invalid response. "
             "Check provider/proxy connectivity and retry when ready. "
             "See the saved session diagnostics."
         )
-    if transport_types & {"APITimeoutError", "ConnectTimeout", "ReadTimeout", "WriteTimeout"}:
+    if names & {"APITimeoutError", "ConnectTimeout", "ReadTimeout", "WriteTimeout"}:
         return (
             "Provider request timed out. Check provider/proxy connectivity and retry when ready. "
             "See the saved session diagnostics."
         )
-    if transport_types & {"APIConnectionError", "ConnectError", "ReadError", "WriteError"}:
+    if names & {"APIConnectionError", "ConnectError", "ReadError", "WriteError"}:
         return (
             "Could not communicate with the provider. "
             "Check network/proxy settings and provider availability, then retry when ready. "

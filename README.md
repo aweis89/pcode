@@ -530,6 +530,26 @@ remain in the diagnostic ledger. Interrupted tools may already have changed the
 workspace; resuming does not undo those effects. Checkpoints do not restore files,
 running processes, or capability-local state such as the in-memory planner.
 
+Dropped provider connections and transport timeouts get one automatic retry by
+default (two attempts total per submitted turn). The retry reuses the failed
+request's checkpoint, including completed tool results, without adding a
+"continue" prompt. Partial streamed output may remain visible but is excluded
+from the retried request. Authentication, HTTP status errors, tool errors, and
+user cancellation are not automatically retried. Provider SDKs may also retry
+internally.
+
+```sh
+pcode config set retry_attempts 3   # Three extra attempts per turn, next launch
+pcode config set retry_attempts 0   # Disable automatic retries
+```
+
+Use `/resend` while idle to try again manually without adding another user
+message. The original prompt appears above the task bar with the normal running
+spinner. Completed tool results stay in context; if the last answer completed,
+only that final response is regenerated. An empty conversation cannot be resent.
+If cancellation left tool effects unsettled, `/resend` refuses to replay them;
+inspect the tools and send an explicit next step instead.
+
 Nothing from sessions run before this feature was installed can be reconstructed
 from disk; those earlier conversations were memory-only.
 
@@ -573,6 +593,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed` or `/errors`: open the same inspector filtered to failures.
 - `/context`: current model, workspace, completed turns, and token usage.
+- `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
 - `/autocompact on|off`: opt into automatic LLM compaction (saved user preference; default off).
 - `/new`: start a new saved conversation without clearing the on-screen transcript or input history.
