@@ -35,7 +35,15 @@ class MeridianProvider(AnthropicProvider):
         return "meridian"
 
     def __init__(self) -> None:
-        base_url = meridian_base_url()
+        from pcode.meridian_process import managed_endpoint
+
+        endpoint = managed_endpoint()
+        base_url = endpoint[0] if endpoint else meridian_base_url()
+        api_key = (
+            endpoint[1]
+            if endpoint
+            else os.environ.get("PCODE_MERIDIAN_API_KEY", "").strip() or "meridian-local"
+        )
 
         # Never inherit upstream Anthropic credentials or global HTTP proxies.
         def make_client():
@@ -45,7 +53,7 @@ class MeridianProvider(AnthropicProvider):
         super().__init__(
             anthropic_client=AsyncAnthropic(
                 base_url=base_url,
-                api_key=os.environ.get("PCODE_MERIDIAN_API_KEY", "").strip() or "meridian-local",
+                api_key=api_key,
                 auth_token="",
                 http_client=client,
                 default_headers={"x-meridian-agent": "passthrough"},
