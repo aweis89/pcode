@@ -100,6 +100,9 @@ class PreviewApp:
         )
         self.running = True
         self.inspector_requested: str | None = None
+        self.diffs_requested = False
+        # Unsaved conversations have no journal to re-read, so keep their changes.
+        self.edits: list[EditCompleted] = []
         self.session_requested = False
         self.tree_requested = False
         self.login_requested: str | None = None
@@ -133,6 +136,7 @@ class PreviewApp:
                 self.show_edits,
                 ("show", "hide"),
             ),
+            Command("/diffs", "Browse this conversation's file diffs", self.diffs),
             Command("/demo", "Sample Markdown, code, diff, and tool output", self.demo),
             Command(
                 "/redraw",
@@ -661,6 +665,52 @@ class PreviewApp:
                     if modal_input is not session.app.input:
                         modal_input.close()
 
+    def diffs(self, argument: str) -> None:
+        if argument:
+            raise ValueError("Usage: /diffs")
+        self.diffs_requested = True
+
+    def recorded_edits(self) -> list[EditCompleted]:
+        """Prefer the saved journal on the active branch; fall back to this process."""
+        from pcode.edits import change_from_record
+
+        saved = getattr(self.runtime, "session", None)
+        if saved is None:
+            return list(self.edits)
+        return [
+            change_from_record(record)
+            for record in saved.active_records()
+            if record.get("kind") == "EditCompleted"
+        ]
+
+    async def browse_diffs(self, output: TerminalOutput, session) -> None:
+        from pcode.edit_ui import EditBrowser
+
+        self.diffs_requested = False
+        changes = await asyncio.to_thread(self.recorded_edits)
+        await output.flush()
+        # One terminal owner: drain permanent output, suspend the editor, and
+        # hold the writer lock until the alternate screen has been restored.
+        async with output.lock:
+            async with in_terminal():
+                # The suspended editor can still have an escape-flush timer.
+                # Give the modal its own parser, or that timer can steal an
+                # early Escape from the shared input object's parser buffer.
+                stdin = getattr(session.app.input, "stdin", None)
+                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
+                try:
+                    browser = EditBrowser(
+                        changes,
+                        code_theme=self.transcript.code_theme,
+                        input=modal_input,
+                        output=session.app.output,
+                        style=session.app.style,
+                    )
+                    await browser.run()
+                finally:
+                    if modal_input is not session.app.input:
+                        modal_input.close()
+
     def help(self, argument: str) -> None:
         self.transcript.help(self.registry)
 
@@ -672,6 +722,7 @@ class PreviewApp:
                 if event.path:
                     self.activity.edit_previews[event.call_id] = event
             elif isinstance(event, EditCompleted):
+                self.edits.append(event)
                 self.transcript.edit(event)
             elif isinstance(event, CommandOutput):
                 self.activity.command_outputs.pop(event.call_id, None)
@@ -841,6 +892,7 @@ class PreviewApp:
     def new(self, argument: str) -> None:
         self.runtime.reset()
         self.activity.reset()
+        self.edits.clear()
         self.transcript.print(Rule("New conversation", style="pcode.muted"))
         self.transcript.note(
             "Context reset; MCP servers are off. Input history and transcript are unchanged."
@@ -1002,15 +1054,9 @@ class PreviewApp:
             elif kind in ("Thinking", "thinking_partial"):
                 self.transcript.thinking(redact(record["text"]).rstrip("\n") + "\n\n")
             elif kind == "EditCompleted":
-                self.transcript.edit(
-                    EditCompleted(
-                        **{
-                            key: value
-                            for key, value in record.items()
-                            if key in EditCompleted.__dataclass_fields__
-                        }
-                    )
-                )
+                from pcode.edits import change_from_record
+
+                self.transcript.edit(change_from_record(record))
             elif kind in ("Message", "partial"):
                 self.transcript.events((Message(redact(record["markdown"])),))
                 if kind == "partial":
@@ -1647,6 +1693,8 @@ class PreviewApp:
                             await self.choose_session(output, session)
                         if self.inspector_requested is not None:
                             await self.inspect_tools(output, session)
+                        if self.diffs_requested:
+                            await self.browse_diffs(output, session)
                 except Exception as error:
                     from pcode.live import error_message
 

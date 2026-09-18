@@ -32,6 +32,7 @@ def make_app(width=80):
                 "/tools",
                 "/errors",
                 "/edits",
+                "/diffs",
                 "/demo",
                 "/redraw",
                 "/config",

@@ -39,6 +39,13 @@ def edit_text(text: str) -> str:
     return command_text(text)
 
 
+def change_from_record(record: dict) -> EditCompleted:
+    """Rebuild a saved change, ignoring journal fields the dataclass does not own."""
+    return EditCompleted(
+        **{key: value for key, value in record.items() if key in EditCompleted.__dataclass_fields__}
+    )
+
+
 def completed_change(path, before, after, *, existed=True, call_id="", omitted=""):
     """Build display evidence while raw snapshots are still local to execution."""
     operation = "edited" if existed else "created"
