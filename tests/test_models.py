@@ -38,10 +38,21 @@ def test_anthropic_configuration(monkeypatch, source):
 def test_codex_presence_not_contents(monkeypatch, tmp_path):
     directory = tmp_path / "custom-codex"
     directory.mkdir()
-    (directory / "auth.json").write_text("synthetic-not-even-json")
+    auth = directory / "auth.json"
+    auth.write_text("synthetic-not-even-json")
     monkeypatch.setenv("CODEX_HOME", str(directory))
-    monkeypatch.setattr(Path, "read_text", Mock(side_effect=AssertionError("must not read")))
+    # Reading pcode's own preferences is allowed; the provider's credential is not.
+    read_text = Path.read_text
+    forbidden = Mock(side_effect=AssertionError("must not read"))
+
+    def guarded(self, *args, **kwargs):
+        if self == auth:
+            forbidden()
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded)
     assert active_providers("anthropic:custom") == {"anthropic", "openai-codex"}
+    forbidden.assert_not_called()
 
 
 def test_proxy_does_not_limit_providers(monkeypatch):

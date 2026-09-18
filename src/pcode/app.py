@@ -363,6 +363,14 @@ class PreviewApp:
         except (OSError, ValueError):
             self.transcript.warning("Could not save defaults; this selection applies only here.")
 
+    def forget_defaults(self, *keys: str) -> None:
+        from pcode.preferences import update_preferences
+
+        try:
+            update_preferences({}, remove=keys)
+        except (OSError, ValueError):
+            self.transcript.warning("Could not update defaults; this change applies only here.")
+
     def select_model(self, argument: str) -> None:
         self.model_requested = True
 
@@ -433,6 +441,7 @@ class PreviewApp:
         self.save_sessions = save
         self.transcript.note(f"Model: {model}. Continuing the current conversation.")
         self.show_startup_context()
+        self.warn_without_credentials()
 
     async def choose_model(self, output: TerminalOutput, session) -> None:
         from pcode.model_ui import ModelPicker
@@ -469,9 +478,8 @@ class PreviewApp:
             await self.switch_model(model)
 
     def login(self, argument: str) -> None:
-        if self.model and not self.model.startswith("anthropic:"):
-            self.transcript.note("/login currently supports Anthropic only.")
-            return
+        # Signing in stores a credential; it does not require the conversation to
+        # already be on Anthropic. A non-Anthropic session keeps its own model.
         source = argument.strip() or "anthropic"
         if source not in {"anthropic", "pi"}:
             self.transcript.note("Usage: /login [anthropic | pi]")
@@ -489,6 +497,10 @@ class PreviewApp:
             return
         if os.environ.get("PCODE_ANTHROPIC_AUTH", "").strip() == "oauth":
             del os.environ["PCODE_ANTHROPIC_AUTH"]
+        # The stored sign-in is gone; a saved "oauth" choice would now resolve
+        # to a credential that no longer exists.
+        if load_preferences().get("anthropic_auth") == "oauth":
+            self.forget_defaults("anthropic_auth")
         if not removed:
             self.transcript.note("No stored Anthropic login to remove.")
             return
@@ -515,9 +527,12 @@ class PreviewApp:
         )
         try:
             await login(notify=self.transcript.note)
-            if self.model:
+            # Only an Anthropic conversation adopts the new credential; a Codex
+            # or Meridian session keeps its own model and provider.
+            if self.model and self.model.startswith("anthropic:"):
                 self.runtime.agent.model = await asyncio.to_thread(AnthropicOAuthModel, self.model)
             os.environ["PCODE_ANTHROPIC_AUTH"] = "oauth"
+            self.persist_defaults(anthropic_auth="oauth")
             self.transcript.note(
                 f"Signed in to Anthropic. Credentials are stored in {credentials_path()} "
                 "(owner-only) and refreshed automatically; /logout removes them."
@@ -546,12 +561,14 @@ class PreviewApp:
             else:
                 await asyncio.to_thread(read_pi_credential, pi_auth_path())
             os.environ["PCODE_ANTHROPIC_AUTH"] = "pi"
+            self.persist_defaults(anthropic_auth="pi")
             self.transcript.note(
                 "Using pi's Anthropic credential (read-only). "
                 "Refresh/login in pi when it expires; pcode never writes pi's auth file."
             )
             self.transcript.note(
-                "For future launches use PCODE_ANTHROPIC_AUTH=pi pcode -m anthropic:<model-id>."
+                "Future launches reuse pi while its auth file exists. "
+                "Set PCODE_ANTHROPIC_AUTH=api-key to opt back out."
             )
         except LoginError as error:
             self.transcript.error(str(error))
@@ -1169,6 +1186,24 @@ class PreviewApp:
             for line in summary():
                 self.transcript.note(line)
 
+    def warn_without_credentials(self) -> None:
+        """Say so at startup, not on the first prompt.
+
+        An `anthropic:` model with no selected credential is built with
+        `defer_model_check`, so its agent keeps the unresolved model string and
+        the terminal opens looking healthy. Report it while /login is still the
+        obvious next step.
+        """
+        if not (self.model or "").startswith("anthropic:"):
+            return
+        agent = getattr(self.runtime, "agent", None)
+        if agent is None or not isinstance(getattr(agent, "model", None), str):
+            return
+        self.transcript.warning(
+            "No Anthropic credential is selected, so prompts will fail. "
+            "Run /login (anthropic or pi), or restart with ANTHROPIC_API_KEY set."
+        )
+
     async def run_async(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
@@ -1206,6 +1241,7 @@ class PreviewApp:
             try:
                 await self._initialize_runtime()
                 self.show_startup_context()
+                self.warn_without_credentials()
                 saved = getattr(self.runtime, "session", None)
                 if self.model and saved:
                     self.transcript.note(f"Saving session: {saved.info.id}")
