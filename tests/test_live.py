@@ -1,4 +1,5 @@
 import asyncio
+import os
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -165,6 +166,9 @@ def test_coder_allows_all_commands_by_default(tmp_path):
     assert not shell.denied_operators
     assert shell.allow_interactive
     assert shell.denied_env_patterns == LLM_API_KEY_ENV_PATTERNS
+    # direnv's banner would otherwise corrupt piped command output.
+    assert shell.env["DIRENV_LOG_FORMAT"] == ""
+    assert shell.env["PATH"] == os.environ["PATH"]
 
     async def run():
         # Previously excluded executables, without inspecting real environment values.
