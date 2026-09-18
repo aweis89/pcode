@@ -573,6 +573,20 @@ inspect the tools and send an explicit next step instead.
 Nothing from sessions run before this feature was installed can be reconstructed
 from disk; those earlier conversations were memory-only.
 
+### Resource profiling
+
+Use `pcode --profile /tmp/pcode-resources` to sample pcode and its child processes'
+CPU, resident memory, and thread counts while reproducing a resource problem.
+Quit normally to write `summary.json`; `resources.jsonl` is flushed as it runs.
+The destination must be a new directory. Nothing is collected by default.
+
+For a short detailed capture, add `--profile-cpu` (function CPU time across Python
+threads) or `--profile-memory` (Python allocation locations and traced memory peaks).
+These add substantial overhead, so use separate runs and resource-only captures for timing.
+Captures have private permissions, but can contain local source paths; inspect
+before sharing. See [profiling and the optimization plan](docs/profiling.md) for
+commands, limitations, the offline benchmark, and initial measured hotspots.
+
 ## Offline preview and commands
 
 ```sh
