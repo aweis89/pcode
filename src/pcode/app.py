@@ -28,6 +28,7 @@ from pcode.preferences import (
     save_preferences,
 )
 from pcode.runtime import (
+    CacheBust,
     CommandOutput,
     EditCompleted,
     EditPreview,
@@ -1053,6 +1054,8 @@ class PreviewApp:
                 self.transcript.user(redact(record["prompt"]))
             elif kind in ("Thinking", "thinking_partial"):
                 self.transcript.thinking(redact(record["text"]).rstrip("\n") + "\n\n")
+            elif kind == "CacheBust":
+                self.transcript.events((CacheBust(record["text"]),))
             elif kind == "EditCompleted":
                 from pcode.edits import change_from_record
 
@@ -1246,6 +1249,10 @@ class PreviewApp:
                         output.finish_thinking()
                         output.delta(event.text)
                         self.activity.status = "Responding…"
+                    elif isinstance(event, CacheBust):
+                        output.finish_thinking()
+                        output.finish()
+                        self.transcript.events((event,))
                     elif isinstance(event, EditCompleted):
                         output.finish_thinking()
                         output.finish()
