@@ -76,6 +76,7 @@ class PreviewApp:
         if agent is not None and model:
             apply_effort(agent, model, load_preferences().get("effort"))
         self.activity = Activity(
+            show_tasks=load_preferences().get("show_tasks", "on") == "on",
             show_thinking=load_preferences().get("show_thinking") == "on",
         )
         if agent is not None and model:
@@ -114,6 +115,12 @@ class PreviewApp:
                 self.config,
                 free_arguments=True,
                 argument_provider=config_arguments,
+            ),
+            Command(
+                "/show-tasks",
+                "Show the Tasks/Tools widget: on / off (Ctrl+O)",
+                self.show_tasks,
+                ("on", "off"),
             ),
             Command(
                 "/show-thinking",
@@ -235,6 +242,20 @@ class PreviewApp:
         except OSError as error:
             raise ValueError(f"Could not access global defaults: {error}") from None
         self.transcript.note(result)
+
+    def set_show_tasks(self, shown: bool) -> None:
+        self.activity.show_tasks = shown
+        self.persist_defaults(show_tasks="on" if shown else "off")
+        if self.transcript.output is not None:
+            self.transcript.output.app.invalidate()
+
+    def show_tasks(self, argument: str) -> None:
+        if argument:
+            if argument not in ("on", "off"):
+                raise ValueError("Usage: /show-tasks on|off")
+            self.set_show_tasks(argument == "on")
+        state = "on" if self.activity.show_tasks else "off"
+        self.transcript.note(f"Show tasks: {state}. Usage: /show-tasks on|off (Ctrl+O)")
 
     def set_show_thinking(self, shown: bool) -> None:
         self.activity.show_thinking = shown
@@ -1392,6 +1413,7 @@ class PreviewApp:
             transcript=self.transcript,
             on_submit=submit,
             on_cancel=cancel,
+            on_tasks=self.set_show_tasks,
             on_thinking=self.set_show_thinking,
             on_commands=self.toggle_command_scrollback,
             on_effort=self.adjust_effort,
