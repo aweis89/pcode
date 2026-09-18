@@ -162,7 +162,8 @@ def test_active_output_precedes_completion_and_keeps_real_cpr_height(pane):
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "OUTPUT_LINE_03", running=True)
     assert "TURN_1_DONE" not in screen
-    assert "Command output" in screen
+    assert "$ printf MIRRORED_COMMAND" in screen
+    assert "Command output" not in screen
     assert input_rows(screen) == 1
     for width in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(width))
@@ -192,3 +193,45 @@ def test_cancel_clears_active_command_preview(pane):
     screen = capture(pane, "Run cancelled")
     assert "OUTPUT_LINE_03" not in screen
     assert input_rows(screen) == 1
+
+
+PRESSURE_SCRIPT = (
+    LIVE_SCRIPT.replace(
+        'save_preferences(command_scrollback="on")',
+        'save_preferences(command_scrollback="on", command_preview_lines="6")',
+    )
+    .replace("range(4)", "range(60)")
+    .replace("await asyncio.sleep(4)", "await asyncio.sleep(60)")
+    .replace(
+        'app.activity.plan = [{"id": "one", "content": "A task", "status": "in_progress"}]',
+        'app.activity.plan = [{"id": str(i), "content": f"TASK_{i}", '
+        '"status": "in_progress" if i == 2 else "pending"} for i in range(5)]\n'
+        "for i in range(2):\n"
+        '    app.activity.tools.record(ToolSummary("read_file", f"file_{i}", call_id=str(i)))',
+    )
+    .replace('"\\n[exit code: 0]"', '""')
+)
+
+
+@pytest.mark.parametrize("pane", [PRESSURE_SCRIPT], indirect=True)
+def test_live_tail_uses_remaining_height_without_disappearing_or_growing_editor(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "OUTPUT_LINE_59", running=True)
+    assert sum("OUTPUT_LINE_" in line for line in screen.splitlines()) == 6
+    assert sum("TASK_" in line for line in screen.splitlines()) == 5
+    for height in (24, 18, 14, 12, 32):
+        pane("resize-window", "-t", "preview:0", "-y", str(height))
+        time.sleep(0.8)
+        screen = capture(pane, "OUTPUT_LINE_59", running=True)
+        count = sum("OUTPUT_LINE_" in line for line in screen.splitlines())
+        if not 1 <= count <= 6:
+            pytest.fail(f"height={height} count={count}\n{screen}")
+        assert input_rows(screen) == 1
+        assert "Command output" not in screen
+        assert "Ctrl+G to hide" not in screen
+        if height == 32:
+            assert sum("OUTPUT_LINE_" in line for line in screen.splitlines()) == 6
+            assert sum("TASK_" in line for line in screen.splitlines()) == 5
+    pane("send-keys", "-t", "preview:0.0", "C-d")
+    capture(pane, "Run cancelled")
