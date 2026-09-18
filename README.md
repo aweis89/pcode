@@ -489,14 +489,14 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 | Key | Action |
 | --- | --- |
 | Enter | Send using the active send mode, or accept a selected completion |
-| Ctrl+G | Cycle steering → queue → interrupt (saves the default) |
+| Ctrl+S | Cycle steering → queue → interrupt (saves the default) |
 | Ctrl+J | Newline (map Shift+Enter to this in your terminal) |
 | Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
 | Ctrl+L | Choose a model (idle only; keeps the conversation) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
 | Ctrl+R | Search this process's input history |
-| Ctrl+S | Mirror commands and their output to scrollback (saves the default) |
+| Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard idle input; during generation, cancel without deleting the draft |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
 
@@ -626,7 +626,7 @@ The editor remains usable throughout generation, including multiline input,
 history, and slash completion. Enter sends using the active mode (steering by
 default) and clears the editor for another draft; the toolbar shows the mode and
 pending message count. Steering messages join the next model request; queue-mode
-messages run in order after the current turn finishes. Ctrl+G cycles send modes. Slash commands use a separate async
+messages run in order after the current turn finishes. Ctrl+S cycles send modes. Slash commands use a separate async
 handler, so help, inspection, theme, context, and effort controls remain available
 while the model works. `/new`, `/session`, `/login`, and `/model` require an idle conversation: cancel
 or wait, then retry. `/quit` (or `/exit`) cancels the active run and waits for its
@@ -1104,7 +1104,7 @@ Details:
 - It covers `run_command`, `start_command`, `check_command`, and `stop_command`,
   including calls made by delegated sub-agents. Other tools are unaffected.
 - Active `run_command` calls show a live tail above the prompt, refreshed as
-  complete stdout/stderr lines arrive. The preview follows the same Ctrl+S setting
+  complete stdout/stderr lines arrive. The preview follows the same Ctrl+G setting
   and line limit, shrinking when needed to fit the terminal. For parallel calls,
   the most recently updated command is shown; all calls remain in the tool panel.
   Programs that buffer their own output must flush it (for example, `python -u`).
@@ -1123,7 +1123,7 @@ Details:
 - Verbose commands can push earlier conversation out of terminal history, so
   raise your terminal or tmux scrollback limit before enabling this.
 
-Press **Ctrl+S** to turn mirroring on or off for the rest of the session; it also
+Press **Ctrl+G** to turn mirroring on or off for the rest of the session; it also
 saves the default, so the next launch starts in the state you left.
 `/show-commands on` and `/show-commands off` do the same, and `/show-commands`
 reports the current state. Toggling rebuilds the retained scrollback immediately:
@@ -1131,8 +1131,9 @@ turn it on to reveal earlier captured commands and their outputs; turn it off to
 remove all command blocks, including failures. No commands
 are rerun. Future completions use the same setting.
 
-Ctrl+S replaces prompt_toolkit's forward incremental search. Ctrl+R still opens
-history search, which is the search binding this terminal documents. prompt_toolkit
+Ctrl+G toggles command output outside history search; inside search it retains
+its native cancel behavior. Ctrl+S now cycles send modes instead of opening
+forward incremental search. Ctrl+R still opens history search. prompt_toolkit
 disables terminal XON/XOFF flow control while the prompt is active, so Ctrl+S
 reaches the application instead of pausing terminal output.
 
@@ -1141,7 +1142,7 @@ These settings also work through `/config` and apply on the next launch.
 ### Regenerating the terminal transcript
 
 `/redraw` rebuilds the retained transcript at the current terminal width and with
-current display settings. Ctrl+S, `/show-commands on|off`, `/theme`, and `/colors`
+current display settings. Ctrl+G, `/show-commands on|off`, `/theme`, and `/colors`
 use the same replay mechanism. The draft, active tool panel, and unfinished model
 text are preserved; replay neither calls tools nor changes model history.
 
@@ -1172,9 +1173,11 @@ missing command payloads or reconstruct the complete on-disk session archive.
 
 ### Sending while the agent is working
 
-Enter uses the saved `send_mode` (default: `steering`). **Ctrl+G** cycles
+Enter uses the saved `send_mode` (default: `steering`). **Ctrl+S** cycles
 `steering` → `queue` → `interrupt` and saves the selection; the status bar shows
-which mode is active. Existing queued messages keep their submission mode.
+which mode is active directly under the editor. Mode and working status take
+priority over model and path metadata in narrow panes. Existing queued messages
+keep their submission mode.
 
 - **steering**: deliver input at the next model request, after active tools finish.
   If the turn finishes before then, send it as a follow-up turn.
@@ -1183,7 +1186,7 @@ which mode is active. Existing queued messages keep their submission mode.
   new message after cancellation cleanup completes.
 
 Set the default with `pcode config set send_mode steering` (or `queue` / `interrupt`).
-`/config set send_mode queue` changes the default for the next launch; Ctrl+G
+`/config set send_mode queue` changes the default for the next launch; Ctrl+S
 changes it immediately. Idle input starts a normal turn in every mode. Slash
 commands retain their existing behavior, and Ctrl+C/Ctrl+D still cancel and clear
 pending messages.

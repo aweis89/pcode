@@ -400,7 +400,9 @@ class TerminalOutput:
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
         self.commit_print = self.print
-        self.commit_thinking = lambda text: self.print(Text(text, style="dim"), end="")
+        self.commit_thinking = lambda text: self.print(
+            Markdown(text, code_theme=self.code_theme(), style="dim")
+        )
         self._thinking_tail = ""
         self._thinking_streamed = False
         self._regenerate = None
@@ -444,24 +446,26 @@ class TerminalOutput:
             self.commit_print(Markdown(source, code_theme=self.code_theme()))
             self.commit_print()
 
+    def _commit_thinking(self, source: str) -> None:
+        if source.strip():
+            self._commit_prompt()
+            self.commit_thinking(source)
+
     def thinking_delta(self, text: str) -> None:
-        """Stream complete lines without Markdown buffering or an 8-KB tail limit."""
+        """Buffer incomplete Markdown containers, just like the public answer."""
         if not text:
             return
         self._thinking_streamed = True
-        self._thinking_tail += text
-        end = self._thinking_tail.rfind("\n") + 1
-        if end:
-            self._commit_prompt()
-            self.commit_thinking(self._thinking_tail[:end])
-            self._thinking_tail = self._thinking_tail[end:]
+        for part in text.splitlines(keepends=True):
+            self._thinking_tail += part
+            if part.endswith("\n"):
+                self._commit_blocks(thinking=True)
 
     def finish_thinking(self, fallback: str = "") -> None:
         if not self._thinking_streamed and fallback:
             self.thinking_delta(fallback)
         if self._thinking_streamed:
-            self._commit_prompt()
-            self.commit_thinking(self._thinking_tail + "\n\n" if self._thinking_tail else "\n")
+            self._commit_thinking(self._thinking_tail.rstrip("\n") + "\n\n")
         self._thinking_tail = ""
         self._thinking_streamed = False
 
@@ -486,9 +490,10 @@ class TerminalOutput:
                 self._commit_blocks()
         self.changed.set()
 
-    def _commit_blocks(self) -> None:
-        lines = self.tail.splitlines(keepends=True)
-        tokens = Markdown(self.tail).parsed
+    def _commit_blocks(self, *, thinking: bool = False) -> None:
+        source = self._thinking_tail if thinking else self.tail
+        lines = source.splitlines(keepends=True)
+        tokens = Markdown(source).parsed
         blocks = [token for token in tokens if token.level == 0 and token.map]
         if not blocks:
             return
@@ -511,8 +516,12 @@ class TerminalOutput:
             ):
                 end = last.map[1]
         if end:
-            self._commit("".join(lines[:end]))
-            self.tail = "".join(lines[end:])
+            if thinking:
+                self._commit_thinking("".join(lines[:end]))
+                self._thinking_tail = "".join(lines[end:])
+            else:
+                self._commit("".join(lines[:end]))
+                self.tail = "".join(lines[end:])
 
     def finish(self, fallback: str = "") -> None:
         # Message is a completion marker, not a second copy of streamed text.
@@ -615,16 +624,16 @@ def create_prompt(
         event.app.invalidate()
 
     if on_send_mode is not None:
+        # Ctrl+S replaces forward search; Ctrl+R still opens history search.
 
-        @keys.add("c-g", filter=~is_searching)
+        @keys.add("c-s", filter=~is_searching)
         def cycle_send_mode(event: KeyPressEvent) -> None:
             on_send_mode()
             event.app.invalidate()
 
     if on_commands is not None:
-        # Overrides prompt_toolkit's forward incremental search; Ctrl+R still
-        # opens history search, which is the binding this terminal advertises.
-        @keys.add("c-s", filter=~is_searching)
+        # Ctrl+G is otherwise only an abort action; keep it native in search.
+        @keys.add("c-g", filter=~is_searching)
         def toggle_command_scrollback(event: KeyPressEvent) -> None:
             on_commands()
             event.app.invalidate()
@@ -851,7 +860,7 @@ def create_prompt(
                 dont_extend_height=True,
                 wrap_lines=False,
             ),
-            title="Command output · running · Ctrl+S to hide",
+            title="Command output · running · Ctrl+G to hide",
             height=lambda: len(command_rows()) + 2,
         ),
         filter=Condition(lambda: bool(command_rows())),
@@ -1009,14 +1018,15 @@ class Transcript:
     def thinking(self, text: str) -> None:
         """Retain readable provider text, choosing visibility again on every redraw."""
         if self.activity is not None and self.activity.show_thinking:
-            # Codex can emit heading-only summaries; unwrap paired line markers.
+            # Render provider Markdown, including Codex's heading-only summaries:
             # https://github.com/openai/codex/issues/34873
-            text = re.sub(
-                r"(?m)^([^\S\n]*)\*\*(.+?)\*\*([^\S\n]*)$",
-                r"\1\2\3",
-                command_text(text),
+            self.print(
+                Markdown(
+                    command_text(text),
+                    code_theme=self.code_theme,
+                    style="pcode.thinking",
+                )
             )
-            self.print(Text(text, style="pcode.thinking"), end="")
 
     @recorded
     def tool_result(self, event: ToolSummary) -> None:
@@ -1229,7 +1239,7 @@ class Transcript:
         self.note("/ commands · Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
         self.note("Ctrl+T show/hide saved thinking in scrollback (redraws output)")
-        self.note("Ctrl+S rebuild scrollback with/without command output (saves default)")
+        self.note("Ctrl+G rebuild scrollback with/without command output (saves default)")
         self.note(
             "/redraw rebuilds retained output; regeneration clears pre-pcode terminal history."
         )
@@ -1237,7 +1247,7 @@ class Transcript:
         self.note("Ctrl+N increase effort · Ctrl+P decrease effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note(
-            "During a run: Enter sends · Ctrl+G cycles steering/queue/interrupt. "
+            "During a run: Enter sends · Ctrl+S cycles steering/queue/interrupt. "
             "Ctrl+C/Ctrl+D cancel, keep draft."
         )
         self.note("Cancellation clears queued messages. Use terminal/tmux scrollback for history.")

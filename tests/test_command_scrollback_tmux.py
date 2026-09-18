@@ -11,7 +11,7 @@ pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is no
 
 SCRIPT = r"""
 import asyncio, os, tempfile
-# Never touch the developer's saved defaults: Ctrl+S persists its choice.
+# Never touch the developer's saved defaults: Ctrl+G persists its choice.
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
 from pcode.app import PreviewApp
 from pcode.runtime import Message, ToolStarted, ToolSummary
@@ -46,7 +46,7 @@ app.run()
 
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
-def test_ctrl_s_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pane):
+def test_ctrl_g_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pane):
     assert input_rows(capture(pane, "❯")) == 1
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "TURN_1_DONE")
@@ -54,7 +54,7 @@ def test_ctrl_s_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pa
     assert "✓ Run" in screen  # The compact one-line summary, not a mirrored block.
     assert input_rows(screen) == 1
 
-    pane("send-keys", "-t", "preview:0.0", "C-s")
+    pane("send-keys", "-t", "preview:0.0", "C-g")
     screen = capture(pane, "Command output in scrollback: on")
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
@@ -69,7 +69,7 @@ def test_ctrl_s_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pa
     for columns in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(columns))
         assert input_rows(capture(pane, "❯", columns=columns)) == 1
-    pane("send-keys", "-t", "preview:0.0", "C-s")
+    pane("send-keys", "-t", "preview:0.0", "C-g")
     screen = capture(pane, "Command output in scrollback: off", columns=35)
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "kept draft")
@@ -89,7 +89,7 @@ def test_toggle_rebuilds_existing_history_without_rerunning_commands(pane):
         return pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
 
     for enabled in (True, False, True, False):
-        pane("send-keys", "-t", "preview:0.0", "C-s")
+        pane("send-keys", "-t", "preview:0.0", "C-g")
         # Wait for the coalesced terminal handoff, not an old toggle notice.
         deadline = time.monotonic() + 3
         while True:
@@ -166,16 +166,16 @@ def test_active_output_precedes_completion_and_keeps_real_cpr_height(pane):
         pane("resize-window", "-t", "preview:0", "-x", str(width))
         screen = capture(pane, "OUTPUT_LINE_03", columns=width, running=True)
         assert input_rows(screen) == 1
-    pane("send-keys", "-t", "preview:0.0", "C-s")
+    pane("send-keys", "-t", "preview:0.0", "C-g")
     screen = capture(pane, "Command output in scrollback: off", columns=35, running=True)
     assert "OUTPUT_LINE_03" not in screen
-    pane("send-keys", "-t", "preview:0.0", "C-s")
+    pane("send-keys", "-t", "preview:0.0", "C-g")
     screen = capture(pane, "OUTPUT_LINE_03", columns=35, running=True)
     assert input_rows(screen) == 1
     time.sleep(2)
     time.sleep(6)
     screen = capture(pane, "TURN_1_DONE", columns=35)
-    assert "running · Ctrl+S" not in screen
+    assert "running · Ctrl+G" not in screen
     assert input_rows(screen) == 1
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert history.count("OUTPUT_LINE_03") == 1
