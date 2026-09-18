@@ -172,6 +172,15 @@ TERMINAL_THEME = Theme(
 # than the "❯" prompt chevron, and the arrows suggest folding history inward.
 SYSTEM_BADGE = "◈"
 SYSTEM_SEPARATOR = "▸"
+# Slash commands pcode runs itself, labelled the same whether queued or running.
+SYSTEM_COMMAND_LABELS = {"/compact": "Compacting context"}
+
+
+def system_command(text: str) -> tuple[str, str] | None:
+    """Split a slash command into its badge label and detail, or None if it is a prompt."""
+    name, _, detail = plain(text, limit=None).strip().partition(" ")
+    label = SYSTEM_COMMAND_LABELS.get(name)
+    return (label, detail.strip()) if label else None
 
 
 @dataclass
@@ -276,11 +285,21 @@ class Activity:
         rows = []
         for index, text in enumerate(self.queued_prompts[:visible]):
             mode = self.queued_modes[index] if index < len(self.queued_modes) else "queue"
-            label = {
+            prefix = {
                 "steering": "Steering (next model request)",
                 "interrupt": "Interrupting",
             }.get(mode, "Queued")
-            rows.append(("class:plan", f"{label}: {text}"))
+            system = system_command(text)
+            if system is None:
+                rows.append(("class:plan", f"{prefix}: {text}"))
+                continue
+            # Pending system work reads as a labelled action, matching the row
+            # it becomes once it starts, rather than as an echoed command.
+            label, detail = system
+            body = f"{SYSTEM_BADGE} {label}"
+            if detail:
+                body += f" {SYSTEM_SEPARATOR} {detail}"
+            rows.append(("class:activity.system.detail", f"{prefix} {body}"))
         remaining = len(self.queued_prompts) - visible
         if remaining > 0:
             state = "pending" if "steering" in self.queued_modes else "queued"
