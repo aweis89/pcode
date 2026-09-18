@@ -79,3 +79,45 @@ def test_grouped_causes_cycles_and_depth_are_bounded():
     for _ in range(16):
         detail = detail["cause"]
     assert detail["truncated"] is True
+
+
+@pytest.mark.parametrize(
+    ("transport", "expected"),
+    [
+        ("RemoteProtocolError", "closed or returned an incomplete/invalid response"),
+        ("ReadTimeout", "timed out"),
+        ("ConnectError", "Could not communicate"),
+    ],
+)
+def test_wrapped_transport_failure_has_actionable_safe_message(transport, expected):
+    import httpx2
+    from openai import APIConnectionError
+
+    from pcode.live import error_message
+
+    request = httpx2.Request("POST", "https://user:secret@example.com/responses")
+    cause = getattr(httpx2, transport)("sensitive transport body", request=request)
+    sdk_error = APIConnectionError(request=request)
+    sdk_error.__cause__ = cause
+    error = ModelAPIError("test:local", "Connection error.")
+    error.__cause__ = sdk_error
+
+    message = error_message(error)
+    assert expected in message
+    assert "saved session diagnostics" in message
+    for secret in ("sensitive", "secret", "example.com"):
+        assert secret not in message
+    assert error_message(ExceptionGroup("wrapped", [error])) == message
+
+
+def test_transport_classification_respects_suppressed_context_and_cycles():
+    import httpx2
+
+    from pcode.live import error_message
+
+    error = ModelAPIError("test:local", "private body")
+    error.__context__ = httpx2.RemoteProtocolError("private transport body")
+    error.__suppress_context__ = True
+    assert "Run failed (ModelAPIError)" in error_message(error)
+    error.__cause__ = error
+    assert "Run failed (ModelAPIError)" in error_message(error)
