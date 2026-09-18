@@ -1,15 +1,18 @@
 """Visibility affects the entire combined Tasks/Tools widget, not its data."""
 
+import asyncio
 from io import StringIO
 from types import SimpleNamespace
 
 import pytest
-from prompt_toolkit.input import DummyInput
+from prompt_toolkit.application.current import set_app
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from pcode.app import PreviewApp
-from pcode.preferences import SETTINGS, load_preferences
+from pcode.preferences import SETTINGS, load_preferences, save_preferences
 from pcode.ui import Activity, create_prompt
 
 
@@ -22,10 +25,13 @@ def test_visibility_preference_and_command(tmp_path, monkeypatch):
     assert not app.activity.show_tasks
     assert load_preferences()["show_tasks"] == "off"
     assert not PreviewApp().activity.show_tasks
-    assert app.registry.dispatch("/show-tasks")
+    assert app.registry.dispatch("/show-tasks")  # Reporting alone changes nothing.
     assert not app.activity.show_tasks
     assert app.registry.dispatch("/show-tasks on")
     assert app.activity.show_tasks
+    assert PreviewApp().activity.show_tasks
+    save_preferences(show_tasks="off")
+    assert not PreviewApp().activity.show_tasks
     with pytest.raises(ValueError, match="Usage"):
         app.registry.dispatch("/show-tasks invalid")
     with pytest.raises(ValueError):
@@ -45,24 +51,42 @@ def test_hidden_widget_preserves_data_and_reset_preserves_visibility():
     assert not activity.show_tasks
 
 
-@pytest.mark.parametrize("editing_mode", ["EMACS", "VI"])
-def test_shortcut_toggles_and_calls_persistence(editing_mode):
-    from prompt_toolkit.enums import EditingMode
-
+@pytest.mark.parametrize("editing_mode", ["emacs", "vi"])
+def test_shortcut_hides_rows_without_losing_state(tmp_path, monkeypatch, editing_mode):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     app = PreviewApp(console=Console(file=StringIO()))
-    saved = []
-    session = create_prompt(
-        app.registry,
-        activity=app.activity,
-        on_tasks=saved.append,
-        input=DummyInput(),
-        output=DummyOutput(),
-        editing_mode=EditingMode[editing_mode],
-    )
-    binding = session.key_bindings.get_bindings_for_keys(("c-o",))[-1]
-    event = SimpleNamespace(app=session.app)
-    binding.handler(event)
-    assert not app.activity.show_tasks
-    binding.handler(event)
-    assert app.activity.show_tasks
-    assert saved == [False, True]
+    activity = app.activity
+    activity.plan = [{"id": "1", "content": "Retained task", "status": "in_progress"}]
+    activity.busy = True
+    rows = activity.plan_rows(10, "*")
+    assert rows
+    with create_pipe_input() as pipe:
+        session = create_prompt(
+            app.registry,
+            activity=activity,
+            on_tasks=app.set_show_tasks,
+            input=pipe,
+            output=DummyOutput(),
+            editing_mode=editing_mode,
+        )
+
+        # Editing the buffer schedules validation as a background task on the
+        # current application, so it needs this session and a running loop.
+        async def type_draft():
+            with set_app(session.app):
+                session.default_buffer.text = "retained draft"
+
+        asyncio.run(type_draft())
+        (binding,) = session.key_bindings.get_bindings_for_keys((Keys.ControlO,))
+        event = SimpleNamespace(app=session.app)
+        binding.handler(event)
+        assert activity.plan_rows(10, "*") == []
+        assert activity.plan[0]["content"] == "Retained task"
+        assert activity.busy
+        assert load_preferences()["show_tasks"] == "off"
+        binding.handler(event)
+        assert activity.plan_rows(10, "*") == rows
+        assert session.default_buffer.text == "retained draft"
+        assert load_preferences()["show_tasks"] == "on"
+        activity.reset()
+        assert activity.show_tasks

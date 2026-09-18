@@ -33,6 +33,8 @@ def make_app(width=80):
                 "/demo",
                 "/redraw",
                 "/config",
+                "/show-tasks",
+                "/autohide-tasks",
                 "/show-thinking",
                 "/show-commands",
                 "/theme",
