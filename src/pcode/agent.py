@@ -104,6 +104,31 @@ def create_coder(workspace: Path) -> CombinedCapability:
     )
 
 
+# Pydantic AI 2.45.0 adds no `cache_control` of its own: without these settings an
+# Anthropic conversation re-reads its whole prefix at full price every request
+# (confirmed against captured request bodies and saved-session usage records).
+# `anthropic_cache` is the server-side automatic breakpoint, which moves forward as
+# history grows; the two explicit breakpoints keep instructions and tool definitions
+# cached. Meridian is excluded on purpose: its passthrough proxy strips client
+# `cache_control` and drives caching from its own lineage hash.
+ANTHROPIC_CACHE_SETTINGS = {
+    "anthropic_cache": "5m",
+    "anthropic_cache_instructions": True,
+    "anthropic_cache_tool_definitions": True,
+}
+
+
+def model_settings(model: str) -> dict | None:
+    if model.startswith("openai-codex:"):
+        # Codex does not emit visible reasoning unless summaries are requested.
+        # Always receive them so Ctrl+T can reveal the preview mid-turn; the
+        # display preference remains local and never changes reasoning effort.
+        return {"openai_reasoning_summary": "detailed"}
+    if model.startswith("anthropic:"):
+        return dict(ANTHROPIC_CACHE_SETTINGS)
+    return None
+
+
 def create_agent(model: str, workspace: Path) -> Agent:
     proxy = os.environ.get("PCODE_LLM_PROXY", "").strip()
     # Subscription endpoints reject the explicit cache markers that Harness
@@ -149,12 +174,7 @@ def create_agent(model: str, workspace: Path) -> Agent:
     return Agent(
         resolved,
         defer_model_check=defer_model_check,
-        # Codex does not emit visible reasoning unless summaries are requested.
-        # Always receive them so Ctrl+T can reveal the preview mid-turn; the
-        # display preference remains local and never changes reasoning effort.
-        model_settings=(
-            {"openai_reasoning_summary": "detailed"} if model.startswith("openai-codex:") else None
-        ),
+        model_settings=model_settings(model),
         name="pcode",
         instructions=(
             "Responses are displayed in a terminal with Markdown rendering "
