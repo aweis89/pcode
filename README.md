@@ -1269,15 +1269,56 @@ reaches the application instead of pausing terminal output.
 
 These settings also work through `/config` and apply on the next launch.
 
+### Edit diffs and streaming previews
+
+Completed `edit_file` and `write_file` calls show compact unified diffs in
+scrollback by default. These compare the contents used by the operation, not
+Git's working-tree diff, so they don't fold in earlier user changes. New files
+are marked as created; unchanged files have no patch. Failed calls aren't
+presented as successful edits.
+
+While the model generates a file-tool call, a bounded preview shows the proposed
+replacement or write content, labeled **not applied**. It only exposes completed
+lines from incomplete arguments. This preview uses the live panel's shared
+height budget (`command_preview_lines`), independently of command-output
+visibility. It disappears on execution, cancellation, or failure and is never
+saved as an applied change. Providers that send arguments all at once may have
+no visible streaming phase.
+
+```text
+/edits hide   Hide edit blocks and previews, and redraw retained scrollback
+/edits show   Show them again, including previously hidden completed diffs
+/edits        Toggle visibility
+```
+
+The choice is saved for the next launch. `pcode config set edits show|hide`
+also sets the startup default. Like `/redraw`, toggling rebuilds terminal history;
+it does not rerun tools or change files.
+
+Completed diffs are saved in the session journal and restored with the recent
+transcript on resume, even if the files have since changed. Hidden diffs are
+still retained; hiding is not deletion. Old sessions without captured diffs
+continue to show their existing transcript without reconstructing file changes.
+
+Diff capture omits sensitive paths, redacts recognizable credentials and terminal
+controls, and bounds file inputs to 256 Ki characters / 4,000 lines. Saved previews
+are capped at 400 patch lines / 64 Ki characters; each displayed block shows at
+most 60 wrapped patch rows, with an omission marker. Binary, unreadable, and large
+before-snapshots get an explicit unavailable notice instead of a misleading patch.
+These previews aren't guaranteed to be applicable patches. Shell commands,
+formatters, external writers, and other tools are outside this capture mechanism.
+
 ### Regenerating the terminal transcript
 
 `/redraw` rebuilds the retained transcript at the current terminal width and with
-current display settings. Ctrl+G, `/show-commands on|off`, `/theme`, and `/colors`
+current display settings. Ctrl+G, `/show-commands on|off`, `/edits show|hide`,
+`/theme`, and `/colors`
 use the same replay mechanism. The draft, active tool panel, and unfinished model
 text are preserved; replay neither calls tools nor changes model history.
 
-The transcript also rebuilds automatically after a terminal **width** change
-settles. Height-only changes do not trigger replay. To disable automatic replay:
+The transcript also rebuilds automatically after a terminal size change settles.
+Height changes rebuild history too, so live preview fragments do not remain in
+scrollback after the pane shrinks. To disable automatic replay:
 
 ```sh
 pcode config set regenerate_on_resize off  # Default on; applies on next launch

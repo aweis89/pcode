@@ -75,7 +75,7 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
                 await wait_for(lambda: session is not None and session.app.is_running)
                 if outcome == "early-cancel":
                     pipe.send_text("/compact keep tests\r\x03")
-                    await wait_for(lambda: "Pending compaction cancelled" in output.getvalue())
+                    await wait_for(lambda: "Pending model command cancelled" in output.getvalue())
                     pipe.send_text("/quit\r")
                     return
                 pipe.send_text(

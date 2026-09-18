@@ -37,6 +37,7 @@ def test_defaults_and_path_do_not_create_files():
         "error_scrollback_lines": "20",
         "regenerate_on_resize": "on",
         "command_scrollback": "off",
+        "edits": "show",
         "command_scrollback_lines": "20",
         "command_preview_lines": "10",
         "theme": "dark",

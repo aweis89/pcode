@@ -1,0 +1,124 @@
+"""Transient, line-buffered projections of tool arguments; never execute them."""
+
+from copy import deepcopy
+from pathlib import Path
+from time import monotonic
+
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    ToolCallPart,
+    ToolCallPartDelta,
+)
+from pydantic_core import from_json
+
+from pcode.edits import MAX_SOURCE, edit_text, sensitive_path
+from pcode.runtime import EditPreview
+
+
+class StreamingEditPreview:
+    def __init__(self, root: Path | None = None):
+        self.root = (root or Path.cwd()).resolve()
+        self.parts = {}
+        self.shown = {}
+        self.updated = {}
+        self.blocked = set()
+
+    def update(self, event):
+        clear = []
+        if isinstance(event, PartStartEvent):
+            if not isinstance(event.part, ToolCallPart):
+                return clear
+            index = event.index
+            if index in self.shown:
+                clear.append(EditPreview(f"edit-preview:{index}"))
+                self.shown.pop(index, None)
+            self.blocked.discard(index)
+            self.updated.pop(index, None)
+            self.parts[index] = deepcopy(event.part)
+        elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, ToolCallPartDelta):
+            index = event.index
+            if index not in self.parts or index in self.blocked:
+                return clear
+            self.parts[index] = event.delta.apply(self.parts[index])
+        elif isinstance(event, PartEndEvent) and isinstance(event.part, ToolCallPart):
+            index = event.index
+            if index in self.blocked:
+                return clear
+            self.parts[index] = deepcopy(event.part)
+        elif isinstance(event, (FunctionToolCallEvent, FunctionToolResultEvent)):
+            call_id = event.part.tool_call_id
+            for index, part in list(self.parts.items()):
+                if part.tool_call_id == call_id:
+                    self.parts.pop(index)
+                    self.updated.pop(index, None)
+                    if self.shown.pop(index, None) is not None:
+                        clear.append(EditPreview(f"edit-preview:{index}"))
+            return clear
+        else:
+            return clear
+
+        part = self.parts[index]
+        if part.tool_name not in ("edit_file", "write_file"):
+            return clear
+        if isinstance(part.args, str) and len(part.args) > MAX_SOURCE * 2:
+            self.blocked.add(index)
+            self.parts.pop(index)
+            if self.shown.pop(index, None) is not None:
+                clear.append(EditPreview(f"edit-preview:{index}"))
+            return clear
+        now = monotonic()
+        if isinstance(event, PartDeltaEvent) and now - self.updated.get(index, 0) < 0.05:
+            return clear
+        self.updated[index] = now
+        try:
+            if isinstance(part.args, str):
+                complete = from_json(part.args, allow_partial=True)
+                partial = from_json(part.args, allow_partial="trailing-strings")
+            else:
+                complete = partial = part.args
+        except ValueError:
+            return clear
+        if not isinstance(complete, dict) or not isinstance(partial, dict):
+            return clear
+        path = complete.get("path")
+        # Never expose content until the complete path is known and checked.
+        permitted = isinstance(path, str) and not sensitive_path(path)
+        if permitted:
+            try:
+                resolved = (self.root / path).resolve()
+                permitted = (
+                    not Path(path).is_absolute()
+                    and resolved.is_relative_to(self.root)
+                    and not sensitive_path(str(resolved.relative_to(self.root)))
+                )
+            except (OSError, ValueError, RuntimeError):
+                permitted = False
+        if not permitted:
+            if self.shown.pop(index, None) is not None:
+                clear.append(EditPreview(f"edit-preview:{index}"))
+            return clear
+        lines = []
+        fields = (
+            [("content", "+")]
+            if part.tool_name == "write_file"
+            else [("old_text", "-"), ("new_text", "+")]
+        )
+        for field, prefix in fields:
+            text = partial.get(field)
+            if not isinstance(text, str) or len(text) > MAX_SOURCE:
+                continue
+            # Sanitize the complete buffer before clipping; unfinished strings
+            # only expose completed lines, not fragments of tokens/credentials.
+            text = edit_text(text)
+            if field not in complete:
+                text = text[: text.rfind("\n") + 1]
+            lines.extend(prefix + line for line in text.splitlines())
+        preview = EditPreview(f"edit-preview:{index}", edit_text(path), "\n".join(lines)[-8192:])
+        if preview != self.shown.get(index):
+            self.shown[index] = preview
+            clear.append(preview)
+        return clear

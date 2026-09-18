@@ -31,6 +31,7 @@ from pydantic_ai.messages import (
     RetryPromptPart,
 )
 from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersistence
 from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent
@@ -39,6 +40,8 @@ from pcode.compaction import AutoCompaction, summarize
 from pcode.conversation_tree import ConversationTree
 from pcode.delegation import ChildActivity
 from pcode.diagnostics import error_details, transient, transport_types
+from pcode.edit_preview import StreamingEditPreview
+from pcode.filesystem import FileChangeEvent
 from pcode.inspection import ToolArchive, capture
 from pcode.mcp import MCPState
 from pcode.plan_preview import StreamingPlanPreview
@@ -46,6 +49,7 @@ from pcode.preferences import SETTINGS, load_preferences
 from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
     CommandOutput,
+    EditPreview,
     Event,
     Message,
     PlanPreview,
@@ -334,7 +338,7 @@ class AgentRuntime:
                 async for event in stream:
                     if isinstance(event, ToolStarted):
                         tools_started = True
-                    if isinstance(event, (PlanPreview, CommandOutput)):
+                    if isinstance(event, (PlanPreview, CommandOutput, EditPreview)):
                         # Unexecuted arguments must never enter replay/tree history.
                         yield event
                         continue
@@ -428,6 +432,17 @@ class AgentRuntime:
             if any(isinstance(c, Planning) for c in self.agent.root_capability.capabilities)
             else None
         )
+        filesystem_root = next(
+            (
+                Path(c.root_dir)
+                for c in self.agent.root_capability.capabilities
+                if isinstance(c, FileSystem) and not c.read_only
+            ),
+            None,
+        )
+        edit_preview = (
+            StreamingEditPreview(filesystem_root) if filesystem_root is not None else None
+        )
         emitted_text = False
         tools: dict[str, tuple[str, dict, float]] = {}
         delegates: dict[str, ToolStarted] = {}
@@ -467,7 +482,12 @@ class AgentRuntime:
             ) as events,
         ):
             async for event in events:
-                if isinstance(event, DelegationStartEvent):
+                if edit_preview is not None:
+                    for edit_update in edit_preview.update(event):
+                        yield edit_update
+                if isinstance(event, FileChangeEvent):
+                    yield event.change
+                elif isinstance(event, DelegationStartEvent):
                     if start := delegates.get(event.tool_call_id):
                         start = replace(start, activity="Waiting for model")
                         delegates[event.tool_call_id] = start
