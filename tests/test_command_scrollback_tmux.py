@@ -129,3 +129,60 @@ def test_resize_replay_reflows_history_without_duplicates_or_stretched_editor(pa
         history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
         assert history.count("OUTPUT_LINE_00") == 1
         assert history.count("TURN_1_DONE") == 1
+
+
+LIVE_SCRIPT = (
+    SCRIPT.replace(
+        "from pcode.runtime import Message, ToolStarted, ToolSummary",
+        "from pcode.runtime import CommandOutput, Message, ToolStarted, ToolSummary",
+    )
+    .replace(
+        "from pcode.app import PreviewApp",
+        "from pcode.preferences import save_preferences\n"
+        'save_preferences(command_scrollback="on")\n'
+        "from pcode.app import PreviewApp",
+    )
+    .replace(
+        "await asyncio.sleep(0.05)",
+        'yield CommandOutput("one", "printf MIRRORED_COMMAND", OUTPUT)\n'
+        "        await asyncio.sleep(4)",
+    )
+)
+
+
+@pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
+def test_active_output_precedes_completion_and_keeps_real_cpr_height(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "OUTPUT_LINE_03", running=True)
+    assert "TURN_1_DONE" not in screen
+    assert "Command output" in screen
+    assert input_rows(screen) == 1
+    for width in (40, 100, 35):
+        pane("resize-window", "-t", "preview:0", "-x", str(width))
+        screen = capture(pane, "OUTPUT_LINE_03", columns=width, running=True)
+        assert input_rows(screen) == 1
+    pane("send-keys", "-t", "preview:0.0", "C-s")
+    screen = capture(pane, "Command output in scrollback: off", columns=35, running=True)
+    assert "OUTPUT_LINE_03" not in screen
+    pane("send-keys", "-t", "preview:0.0", "C-s")
+    screen = capture(pane, "OUTPUT_LINE_03", columns=35, running=True)
+    assert input_rows(screen) == 1
+    time.sleep(2)
+    time.sleep(6)
+    screen = capture(pane, "TURN_1_DONE", columns=35)
+    assert "running · Ctrl+S" not in screen
+    assert input_rows(screen) == 1
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert history.count("OUTPUT_LINE_03") == 1
+
+
+@pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
+def test_cancel_clears_active_command_preview(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    capture(pane, "OUTPUT_LINE_03", running=True)
+    pane("send-keys", "-t", "preview:0.0", "C-d")
+    screen = capture(pane, "Run cancelled")
+    assert "OUTPUT_LINE_03" not in screen
+    assert input_rows(screen) == 1

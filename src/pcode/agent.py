@@ -23,6 +23,7 @@ from pcode.meridian import MeridianSessionIdentity
 from pcode.output_limits import ModelOutputLimits
 from pcode.planning import IdentifiedPlanning
 from pcode.repo_context import AutomaticRepoContext
+from pcode.shell import StreamingShell
 from pcode.usage_limits import UnlimitedRequests
 
 
@@ -51,6 +52,8 @@ def create_coder(workspace: Path) -> CombinedCapability:
             }
         )
         if isinstance(capability, Planning)
+        else StreamingShell.from_shell(capability)
+        if isinstance(capability, Shell)
         else capability
         for capability in coder.capabilities
     ]

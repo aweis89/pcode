@@ -39,6 +39,15 @@ class ToolSummary:
 
 
 @dataclass(frozen=True)
+class CommandOutput:
+    """Transient sanitized snapshot, never saved in the transcript journal."""
+
+    call_id: str
+    command: str
+    output: str
+
+
+@dataclass(frozen=True)
 class TextDelta:
     text: str
 
@@ -62,7 +71,16 @@ class PlanPreview:
     items: list[dict] | None
 
 
-Event = Message | ToolStarted | ToolSummary | TextDelta | RunStatus | PlanUpdated | PlanPreview
+Event = (
+    Message
+    | ToolStarted
+    | ToolSummary
+    | TextDelta
+    | RunStatus
+    | PlanUpdated
+    | PlanPreview
+    | CommandOutput
+)
 
 
 class PreviewRuntime:
