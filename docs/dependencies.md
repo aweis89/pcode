@@ -399,3 +399,23 @@ clear all previews on cancellation/failure/reset. The UI shares the terminal
 height budget with reasoning, tasks, queue, and editor. Keep real-tmux tests
 for live output before completion, toggling, resize/CPR, and cancellation;
 PTY tests with CPR disabled cannot prove compact prompt height.
+
+### Managed Meridian isolation (verified installed 1.71.1)
+
+Official reference: <https://github.com/rynfar/meridian/blob/main/docs/configuration.md>.
+Resolve `meridian` through the version-manager shim before inspecting its package.
+The installed `@rynfar/meridian/dist/cli-ryt69ryf.js` implements
+`MERIDIAN_CONFIG_DIR` / `sdk-features.json` (adapter-keyed objects),
+`MERIDIAN_SESSION_DIR`, `/health`, and `/settings/api/features`. A healthy response
+contains `status: healthy` and `version`; an unauthenticated response contains
+`auth.loggedIn: false`. The effective `passthrough.thinkingPassthrough` must be true.
+The managed launcher pins this contract to 1.71.1 rather than assuming newer
+website documentation matches the installed package.
+
+Config-directory isolation alone is insufficient: disk profiles and default
+telemetry/plugin/update paths can still resolve under the real home. The managed
+launcher explicitly isolates plugins and design-token state and disables persisted
+telemetry/update checks. Existing disk profiles and Claude authentication remain
+shared intentionally; do not describe this mode as a credential sandbox. A local
+smoke check started a private instance, verified health and effective settings,
+and terminated it without making any model request.
