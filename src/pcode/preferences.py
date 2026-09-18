@@ -40,6 +40,7 @@ SETTINGS = {
     "command_scrollback": Setting("off", ("on", "off")),
     "command_scrollback_lines": Setting("20", positive_integer=True),
     "show_tasks": Setting("on", ("on", "off")),
+    "autohide_tasks": Setting("on", ("on", "off")),
     "show_thinking": Setting("off", ("on", "off")),
     "editing_mode": Setting("emacs", ("emacs", "vi")),
     "theme": Setting("dark", ("dark", "light", "auto")),

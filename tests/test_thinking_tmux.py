@@ -17,7 +17,7 @@ from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
 from pcode.preferences import save_preferences
 
-save_preferences(show_thinking="on")
+save_preferences(show_thinking="on", autohide_tasks="off")
 async def model(messages, info):
     app.activity.plan = [{"content": "ACTIVE_TASK", "status": "in_progress"}]
     for i in range(30):

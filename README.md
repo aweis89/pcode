@@ -504,6 +504,11 @@ Press **Ctrl+O** or use `/show-tasks on|off` to hide or show the Tasks/Tools
 widget without stopping work or clearing task/tool history. The current prompt
 and queue remain visible. Visibility is saved across launches (default: on);
 use `pcode config set show_tasks off` to set the default from the shell.
+
+The widget also hides itself as soon as the model finishes a turn, keeping the
+idle prompt compact, and returns on the next turn. Turn that off with
+`/autohide-tasks off` (or `pcode config set autohide_tasks off`); Ctrl+O brings
+the widget back immediately after an auto-hide.
 Ctrl+O replaces the editor’s insert-newline binding; Ctrl+J still inserts a newline.
 
 ### Optional vi editing

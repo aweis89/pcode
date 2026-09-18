@@ -85,6 +85,7 @@ class PreviewApp:
             apply_effort(agent, model, load_preferences().get("effort"))
         self.activity = Activity(
             show_tasks=load_preferences().get("show_tasks", "on") == "on",
+            autohide_tasks=load_preferences().get("autohide_tasks", "on") == "on",
             show_thinking=load_preferences().get("show_thinking") == "on",
         )
         if agent is not None and model:
@@ -128,6 +129,12 @@ class PreviewApp:
                 "/show-tasks",
                 "Show the Tasks/Tools widget: on / off (Ctrl+O)",
                 self.show_tasks,
+                ("on", "off"),
+            ),
+            Command(
+                "/autohide-tasks",
+                "Hide the Tasks/Tools widget when a turn ends: on / off (default on)",
+                self.autohide_tasks,
                 ("on", "off"),
             ),
             Command(
@@ -264,6 +271,21 @@ class PreviewApp:
             self.set_show_tasks(argument == "on")
         state = "on" if self.activity.show_tasks else "off"
         self.transcript.note(f"Show tasks: {state}. Usage: /show-tasks on|off (Ctrl+O)")
+
+    def autohide_tasks(self, argument: str) -> None:
+        if argument:
+            if argument not in ("on", "off"):
+                raise ValueError("Usage: /autohide-tasks on|off")
+            self.activity.autohide_tasks = argument == "on"
+            if not self.activity.autohide_tasks:
+                self.activity.tasks_autohidden = False
+            self.persist_defaults(autohide_tasks=argument)
+            if self.transcript.output is not None:
+                self.transcript.output.app.invalidate()
+        state = "on" if self.activity.autohide_tasks else "off"
+        self.transcript.note(
+            f"Auto-hide tasks after each turn: {state}. Usage: /autohide-tasks on|off"
+        )
 
     def set_show_thinking(self, shown: bool) -> None:
         self.activity.show_thinking = shown
@@ -1027,7 +1049,7 @@ class PreviewApp:
             output.end_turn()
             self.activity.tools.interrupt_running()
             self.activity.status = ""
-        self.activity.prompt_state = "cancelled" if cancelled else "failed" if failure else "done"
+        self.activity.finish_prompt("cancelled" if cancelled else "failed" if failure else "done")
         output.app.invalidate()
         if cancelled:
             self.transcript.cancelled()
@@ -1270,15 +1292,15 @@ class PreviewApp:
                 try:
                     result = task.result()
                     self.transcript.note(result.description())
-                    self.activity.prompt_state = "done"
+                    self.activity.finish_prompt("done")
                     success = True
                 except asyncio.CancelledError:
-                    self.activity.prompt_state = "cancelled"
+                    self.activity.finish_prompt("cancelled")
                     self.transcript.warning("Compaction cancelled; history unchanged.")
                 except Exception as error:
                     from pcode.live import error_message
 
-                    self.activity.prompt_state = "failed"
+                    self.activity.finish_prompt("failed")
                     self.transcript.error(error_message(error), title="Compaction failed")
                 finally:
                     if not success:
@@ -1448,7 +1470,7 @@ class PreviewApp:
                             if not session.app.is_running:
                                 return
                             success = False
-                            self.activity.prompt_state = "cancelled"
+                            self.activity.finish_prompt("cancelled")
                             self.transcript.cancelled()
                 except Exception as error:
                     from pcode.live import error_message
