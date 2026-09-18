@@ -90,6 +90,13 @@ class Thinking:
 
 
 @dataclass(frozen=True)
+class CacheBust:
+    """An observed cache collapse, not a diagnosis of what changed the prompt."""
+
+    text: str
+
+
+@dataclass(frozen=True)
 class RunStatus:
     text: str
 
@@ -116,6 +123,7 @@ Event = (
     | ThinkingDelta
     | Thinking
     | RunStatus
+    | CacheBust
     | PlanUpdated
     | PlanPreview
     | CommandOutput

@@ -36,7 +36,7 @@ from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import load_preferences
-from pcode.runtime import CommandOutput, Event, Message, Thinking, ToolSummary
+from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
 from pcode.thinking_markdown import ThinkingMarkdown
@@ -1340,7 +1340,11 @@ class Transcript:
     @recorded
     def events(self, events: tuple[Event, ...], *, show_tools: bool = False) -> None:
         for event in events:
-            if isinstance(event, Thinking):
+            if isinstance(event, CacheBust):
+                self.print(
+                    TranscriptNotice(command_text(event.text), "warning", "Prompt cache miss")
+                )
+            elif isinstance(event, Thinking):
                 self.thinking(event.text.rstrip("\n") + "\n\n")
             elif isinstance(event, Message):
                 self.print(Markdown(event.markdown, code_theme=self.code_theme))

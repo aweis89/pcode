@@ -406,6 +406,30 @@ reuse from its own lineage hash over the full semantic message prefix; only
 Sending cache settings there changes nothing, and a mutable tail that moves each
 request diverges the lineage regardless.
 
+### Cache-bust warnings
+
+`cache_warnings.py` subclasses the pinned Harness `WarnOnCacheBusts` and converts
+its `CacheBustWarning` into a capability event. Import from
+`pydantic_ai_harness.warn_on_cache_busts`, not the root used by the docs' first
+example (the pinned package does not re-export it). The inherited `for_run`
+uses `dataclasses.replace`, preserving the adapter while resetting detector state.
+
+The pinned `after_model_request` coroutine never suspends. Its narrow
+`warnings.catch_warnings(record=True)` scope ends before `ctx.emit`, which can
+suspend; do not expand capture across model/tool execution. Recheck this on
+upgrades, especially for Python versions where warning filters are process-global.
+Explicit ignore/error filters still apply, and unrelated warnings are re-emitted.
+Only the warning's first paragraph is shown, excluding its Python suppression
+example. Detection, per-model keys, TTL hint, and collapse latch stay upstream.
+
+The main Coder and `SubAgents.shared_capabilities` install the adapter. Child
+warnings are forwarded by `stream_child_activity` without forwarding child prose.
+`CacheBust` presentation events are journaled and replayed as literal warnings,
+not inserted into model history. Tests in `tests/test_cache_warnings.py` exercise
+real streamed cache usage, isolated runs, delegation, warning filters, terminal
+handoff ordering, and saved-session/redraw replay. Monitoring is per agent run,
+not conversation-wide; no cache history is restored from saved sessions.
+
 ### Meridian conversation identity
 
 Verified against installed Meridian 1.71.1, Pydantic AI 2.44.0, and Harness 0.31.0:

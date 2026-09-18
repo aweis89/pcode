@@ -22,6 +22,7 @@ from pydantic_ai.messages import (
     ThinkingPart,
 )
 
+from pcode.cache_warnings import CacheBustEvent
 from pcode.inspection import capture
 from pcode.runtime import ToolStarted, ToolSummary
 from pcode.shell import result_projection
@@ -54,6 +55,9 @@ async def stream_child_activity(_ctx, events):
     phase = ""
     async for event in events:
         if parent is None:
+            continue
+        if isinstance(event, CacheBustEvent):
+            await parent.emit(CacheBustEvent(text=f"Sub-agent: {event.text}"))
             continue
         child = None
         activity = phase

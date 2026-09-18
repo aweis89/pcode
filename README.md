@@ -68,6 +68,20 @@ for this model family, but the subscription endpoint rejects the marker added by
 Harness Planning after `write_plan` with HTTP 400. Authentication and streaming
 still use the native provider, not a custom transport.
 
+### Prompt cache warnings
+
+Pcode enables Harness's [cache-bust monitor](https://pydantic.dev/docs/ai/harness/warn-on-cache-busts/)
+for the main agent and sub-agents. A `Prompt cache miss` warning appears in the
+transcript when cache reads drop below half of an established prefix of at least
+1,024 tokens. It includes the model, token counts, and a possible cache-expiry
+hint. Warnings survive redraw and saved-session resume; they do not interrupt the run.
+
+The monitor compares requests within each agent run, not across chat turns or
+restarts. A sustained collapse warns once until cache reads recover. It stays
+quiet if the provider never reports an established cache. This is an observation,
+not proof of a prompt bug: compaction, prefix changes, or provider cache expiry
+can all cause a miss. No prompt contents are included in the warning.
+
 ### Global configuration
 
 Global defaults are shared across workspaces in `~/.config/pcode/preferences.json`

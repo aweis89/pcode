@@ -18,6 +18,7 @@ from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
 
+from pcode.cache_warnings import CacheBustReporting
 from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.filesystem import DisplayFileSystem
 from pcode.llm_proxy import ProxiedCodexProvider
@@ -54,6 +55,7 @@ def create_coder(workspace: Path) -> CombinedCapability:
     coder.capabilities.append(DelegationReporting())
     coder.capabilities.append(MeridianSessionIdentity())
     coder.capabilities.append(ModelOutputLimits())
+    coder.capabilities.append(CacheBustReporting())
     for capability in coder.capabilities:
         if isinstance(capability, Shell):
             # direnv writes its status banner to stderr on every cd into a
@@ -89,7 +91,11 @@ def create_coder(workspace: Path) -> CombinedCapability:
             agents=[SubAgent(explorer)],
             agent_folders=None,
             event_stream_handler=stream_child_activity,
-            shared_capabilities=[MeridianSessionIdentity(), ModelOutputLimits()],
+            shared_capabilities=[
+                MeridianSessionIdentity(),
+                ModelOutputLimits(),
+                CacheBustReporting(),
+            ],
         )
     )
     # Missing credentials must not prevent ordinary coding sessions. Let the
