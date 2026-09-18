@@ -102,6 +102,8 @@ class PreviewApp:
         self.tree_requested = False
         self.login_requested: str | None = None
         self.compact_requested: str | None = None
+        # /resend produces a model request, so it leaves the command path here.
+        self.resend_requested = False
         self.mcp_enable_requested: str | None = None
         self.mcp_enabling: str | None = None
         self.model_requested = False
@@ -188,6 +190,11 @@ class PreviewApp:
                 self.autocompact,
                 ("on", "off"),
             ),
+            Command(
+                "/resend",
+                "Ask the model again from the last saved checkpoint, without a new message",
+                self.resend,
+            ),
             Command("/context", "Model, workspace, and session usage", self.context),
             Command("/new", "Start a new saved conversation; keep transcript", self.new),
             Command("/tree", "Navigate and fork the conversation interactively", self.select_tree),
@@ -242,6 +249,17 @@ class PreviewApp:
         if not before_queue and (self.activity.busy or self.activity.queued_prompts):
             raise ValueError("/compact is unavailable while working. Cancel or wait, then retry.")
         self.compact_requested = argument
+
+    def resend(self, argument: str, *, before_queue: bool = False) -> None:
+        """Ask again from the settled checkpoint instead of typing "continue"."""
+        if argument:
+            raise ValueError("/resend takes no arguments.")
+        if not self.model or not hasattr(self.runtime, "resend_prompt"):
+            raise ValueError("/resend requires a live model session.")
+        if not before_queue and (self.activity.busy or self.activity.queued_prompts):
+            raise ValueError("/resend is unavailable while working. Cancel or wait, then retry.")
+        self.runtime.resend_prompt()
+        self.resend_requested = True
 
     def autocompact(self, argument: str) -> None:
         if not self.model or not hasattr(self.runtime, "auto_compact"):
@@ -1104,12 +1122,12 @@ class PreviewApp:
                     )
             except ValueError as error:
                 self.transcript.error(str(error))
-        else:
-            self.transcript.user(text)
-            self.present_events(self.preview.reply(text))
+            return False
+        self.transcript.user(text)
+        self.present_events(self.preview.reply(text))
         return False
 
-    async def run_live(self, output: TerminalOutput, text: str) -> bool:
+    async def run_live(self, output: TerminalOutput, text: str, *, resend: bool = False) -> bool:
         from pcode.live import error_message
 
         output.begin_turn(text)
@@ -1121,10 +1139,22 @@ class PreviewApp:
             self.transcript.note(text)
 
         self.runtime.compaction_notice = compaction_notice
+
+        def retry_notice(text):
+            # Separate abandoned partial text/thinking from the next attempt.
+            output.finish_thinking()
+            output.finish()
+            self.activity.plan_preview = None
+            self.activity.status = text
+            self.transcript.note(text)
+            output.app.invalidate()
+
+        if hasattr(self.runtime, "retry_notice"):
+            self.runtime.retry_notice = retry_notice
         failure = None
         cancelled = False
         try:
-            async with aclosing(self.runtime.stream(text)) as stream:
+            async with aclosing(self.runtime.stream(None if resend else text)) as stream:
                 async for event in stream:
                     if isinstance(event, ThinkingDelta):
                         output.finish()
@@ -1219,7 +1249,7 @@ class PreviewApp:
         compact_task = None
         compact_idle = asyncio.Event()
         compact_idle.set()
-        pending_compact = 0
+        pending_model_command = 0
         mcp_idle = asyncio.Event()
         mcp_idle.set()
         queue_generation = 0
@@ -1269,7 +1299,7 @@ class PreviewApp:
                 session.app.invalidate()
 
         def clear_queue():
-            nonlocal queue_generation, pending_mcp, pending_compact
+            nonlocal queue_generation, pending_mcp, pending_model_command
             queue_generation += 1
             startup_commands.clear()
             if commands.empty():
@@ -1277,9 +1307,9 @@ class PreviewApp:
             if pending_mcp:
                 self.transcript.warning("Pending MCP enable command cancelled.")
                 pending_mcp = 0
-            if pending_compact:
-                self.transcript.warning("Pending compaction cancelled.")
-                pending_compact = 0
+            if pending_model_command:
+                self.transcript.warning("Pending model command cancelled.")
+                pending_model_command = 0
             count = len(self.activity.queued_prompts)
             while not queue.empty():
                 queue.get_nowait()
@@ -1333,7 +1363,7 @@ class PreviewApp:
             return messages
 
         def submit(text):
-            nonlocal pending_mcp, pending_compact, interrupt_pending
+            nonlocal pending_mcp, pending_model_command, interrupt_pending
             text = text.strip()
             if not ready.is_set() and text in {"/quit", "/exit"}:
                 # Do not strand exit behind a command waiting for initialization.
@@ -1349,8 +1379,8 @@ class PreviewApp:
                     )
                 )
                 command_idle.clear()
-                if text.split()[0] == "/compact":
-                    pending_compact += 1
+                if text.split()[0] in {"/compact", "/resend"}:
+                    pending_model_command += 1
                     self.activity.busy = True
                 if text.split()[:2] == ["/mcp", "enable"]:
                     pending_mcp += 1
@@ -1400,7 +1430,7 @@ class PreviewApp:
                     self.activity.busy = (
                         bool(self.activity.queued_prompts)
                         or bool(pending_mcp)
-                        or bool(pending_compact)
+                        or bool(pending_model_command)
                     )
                     self.activity.status = ""
                     mcp_task = None
@@ -1447,7 +1477,7 @@ class PreviewApp:
                     self.activity.busy = (
                         bool(self.activity.queued_prompts)
                         or bool(pending_mcp)
-                        or bool(pending_compact)
+                        or bool(pending_model_command)
                     )
                     self.activity.status = ""
                     compact_idle.set()
@@ -1457,7 +1487,7 @@ class PreviewApp:
             compact_task.add_done_callback(finished)
 
         async def consume_commands():
-            nonlocal pending_mcp, pending_compact
+            nonlocal pending_mcp, pending_model_command
             while self.running:
                 generation, text, submitted_idle = await commands.get()
                 try:
@@ -1481,10 +1511,10 @@ class PreviewApp:
                         if self._startup_error is not None:
                             self.transcript.warning("Agent startup failed; restart pcode to retry.")
                             continue
-                    if text.split()[0] == "/compact":
+                    if text.split()[0] in {"/compact", "/resend"}:
                         if generation != queue_generation:
                             continue
-                        pending_compact -= 1
+                        pending_model_command -= 1
                         self.activity.busy = bool(self.activity.queued_prompts) or any(
                             task is not None and not task.done()
                             for task in (live_task, mcp_task, compact_task)
@@ -1500,7 +1530,7 @@ class PreviewApp:
                     command = self.registry.find(text.split(maxsplit=1)[0])
                     before_queue = (
                         command is not None
-                        and command.name == "/compact"
+                        and command.name in {"/compact", "/resend"}
                         and submitted_idle
                         and not any(
                             task is not None and not task.done()
@@ -1511,6 +1541,7 @@ class PreviewApp:
                         command
                         and command.name
                         in {
+                            "/resend",
                             "/new",
                             "/session",
                             "/tree",
@@ -1529,9 +1560,26 @@ class PreviewApp:
                     else:
                         if before_queue:
                             parts = text.split(maxsplit=1)
-                            self.compact(parts[1] if len(parts) > 1 else "", before_queue=True)
+                            handler = self.resend if command.name == "/resend" else self.compact
+                            handler(parts[1] if len(parts) > 1 else "", before_queue=True)
                         else:
                             self.handle(text)
+                        if self.resend_requested:
+                            self.resend_requested = False
+                            previous = self.runtime.resend_prompt()
+                            # This command was submitted idle, before any prompts
+                            # now queued behind it. Preserve that submission order.
+                            following = []
+                            while not queue.empty():
+                                following.append(queue.get_nowait())
+                            queue.put_nowait((queue_generation, previous, "resend"))
+                            for item in following:
+                                queue.put_nowait(item)
+                            self.activity.queued_prompts.insert(0, previous)
+                            self.activity.queued_modes.insert(0, "resend")
+                            self.activity.queued = len(self.activity.queued_prompts)
+                            self.activity.start_prompt(previous)
+                            self.activity.busy = True
                         if self.compact_requested is not None:
                             focus = self.compact_requested
                             self.compact_requested = None
@@ -1564,7 +1612,7 @@ class PreviewApp:
 
                     self.transcript.error(error_message(error))
                 finally:
-                    if pending_mcp or pending_compact:
+                    if pending_mcp or pending_model_command:
                         self.activity.busy = True
                     if commands.empty() and not startup_commands:
                         command_idle.set()
@@ -1601,10 +1649,15 @@ class PreviewApp:
                     await self.apply_pending_model()
                 success = True
                 try:
-                    if self.handle(text):
+                    resend = _mode == "resend"
+                    if resend or self.handle(text):
                         self.activity.start_prompt(text)
                         self.runtime.take_steering = take_steering
-                        live_task = asyncio.create_task(self.run_live(output, text))
+                        live_task = asyncio.create_task(
+                            self.run_live(output, text, resend=True)
+                            if resend
+                            else self.run_live(output, text)
+                        )
                         try:
                             success = await live_task
                         except asyncio.CancelledError:
@@ -1627,7 +1680,9 @@ class PreviewApp:
                     clear_queue()
                 interrupt_pending = False
                 self.activity.busy = (
-                    bool(self.activity.queued_prompts) or bool(pending_mcp) or bool(pending_compact)
+                    bool(self.activity.queued_prompts)
+                    or bool(pending_mcp)
+                    or bool(pending_model_command)
                 )
                 # Adopt it as soon as the turn ends so the footer and /context
                 # agree with what the next request will use.

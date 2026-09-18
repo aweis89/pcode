@@ -17,11 +17,18 @@ class Setting:
     default: str | None
     choices: tuple[str, ...] = ()
     positive_integer: bool = False
+    # A count whose zero means "off", so it cannot reuse positive_integer's floor.
+    whole_number: bool = False
 
     def validate(self, key: str, value: str) -> None:
-        if self.positive_integer:
-            if not value.isascii() or not value.isdecimal() or int(value) < 1:
-                raise ValueError(f"{key} must be a positive integer.")
+        if self.positive_integer or self.whole_number:
+            floor = 0 if self.whole_number else 1
+            if not value.isascii() or not value.isdecimal() or int(value) < floor:
+                raise ValueError(
+                    f"{key} must be a whole number (0 or more)."
+                    if self.whole_number
+                    else f"{key} must be a positive integer."
+                )
         elif self.choices:
             if value not in self.choices:
                 raise ValueError(f"{key} must be one of: {', '.join(self.choices)}")
@@ -40,6 +47,8 @@ SETTINGS = {
     "meridian_managed": Setting("off", ("on", "off")),
     "repo_context_walk_up": Setting("on", ("on", "off")),
     "repo_context_nested": Setting("off", ("off", "pointer", "contents")),
+    # Extra automatic attempts after a dropped connection; 0 disables retrying.
+    "retry_attempts": Setting("1", whole_number=True),
     "error_scrollback_lines": Setting("20", positive_integer=True),
     "regenerate_on_resize": Setting("on", ("on", "off")),
     "command_scrollback": Setting("off", ("on", "off")),

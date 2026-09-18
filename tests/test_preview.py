@@ -44,6 +44,7 @@ def make_app(width=80):
                 "/mcp",
                 "/compact",
                 "/autocompact",
+                "/resend",
                 "/context",
                 "/new",
                 "/tree",
