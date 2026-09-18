@@ -359,6 +359,28 @@ native `xhigh`; otherwise pcode maps its top level to `max`. Support for effort
 and its highest levels varies by model; do not infer support from the route alone.
 See [Anthropic effort](https://platform.claude.com/docs/en/build-with-claude/effort).
 
+### Anthropic prompt caching
+
+Verified against Pydantic AI 2.45.0 and saved-session usage records: the Anthropic
+adapter adds no `cache_control` of its own. Without explicit settings an Anthropic
+conversation re-reads its whole prefix at full price on every request. `agent.model_settings`
+therefore sets `anthropic_cache` (the server-side automatic breakpoint, which moves
+forward as history grows) plus `anthropic_cache_instructions` and
+`anthropic_cache_tool_definitions`. Capturing real request bodies is the only proof
+that breakpoints reach the wire; `tests/test_prompt_cache.py` asserts top-level
+`cache_control`, the last tool, and the last system block.
+
+Harness's ephemeral tail capabilities (`Planning`, `SystemReminders`) place their own
+`CachePoint` before the reminder, so the durable prefix stays byte-identical. That
+mechanism only helps when a cache breakpoint exists at all.
+
+Meridian is excluded deliberately. Installed 1.71.1's proxy strips client
+`cache_control` (`stripCacheControlDeep`, `stripCacheControlForHashing`) and decides
+reuse from its own lineage hash over the full semantic message prefix; only
+`thinking` / `redacted_thinking` blocks are exempt (`HASH_IGNORED_BLOCK_TYPES`).
+Sending cache settings there changes nothing, and a mutable tail that moves each
+request diverges the lineage regardless.
+
 ### Meridian conversation identity
 
 Verified against installed Meridian 1.71.1, Pydantic AI 2.44.0, and Harness 0.31.0:
