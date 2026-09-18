@@ -30,6 +30,7 @@ class Setting:
 
 
 SETTINGS = {
+    "meridian_managed": Setting("off", ("on", "off")),
     "error_scrollback_lines": Setting("20", positive_integer=True),
     "regenerate_on_resize": Setting("on", ("on", "off")),
     "command_scrollback": Setting("off", ("on", "off")),
