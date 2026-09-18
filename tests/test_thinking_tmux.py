@@ -21,7 +21,7 @@ save_preferences(show_thinking="on")
 async def model(messages, info):
     app.activity.plan = [{"content": "ACTIVE_TASK", "status": "in_progress"}]
     for i in range(30):
-        yield {0: DeltaThinkingPart(content=f"REASONING_{i:02d} live text\n")}
+        yield {0: DeltaThinkingPart(content=f"**REASONING_{i:02d}** live text\n\n")}
         await asyncio.sleep(0.03)
     # Keep the thinking block open: the text must stream before completion.
     await asyncio.sleep(60)
@@ -56,6 +56,10 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     assert_compact(screen)
     for i in range(30):
         assert history(pane).count(f"REASONING_{i:02d}") == 1
+    lines = history(pane).splitlines()
+    first = next(i for i, line in enumerate(lines) if "REASONING_00" in line)
+    assert all(f"REASONING_{i:02d}" in lines[first + i] for i in range(30))
+    assert "**REASONING" not in history(pane)
     pane("send-keys", "-t", "preview:0.0", "draft preserved")
     pane("send-keys", "-t", "preview:0.0", "C-t")
     time.sleep(0.3)
