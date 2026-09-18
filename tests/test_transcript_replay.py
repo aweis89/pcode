@@ -31,7 +31,7 @@ def test_hidden_commands_reappear_in_order_and_repeated_replay_does_not_record()
     transcript = view()
     transcript.user("TASK_MARKER")
     transcript.tool_result(ToolSummary("run_command", "run", command="echo hi", result="HI_RESULT"))
-    transcript.note("ANSWER_MARKER")
+    transcript.print("ANSWER_MARKER")
     original = len(transcript.log.entries)
     assert "HI_RESULT" not in project(transcript)
     transcript.command_scrollback = True
@@ -83,7 +83,7 @@ def test_retention_is_bounded_and_snapshot_does_not_follow_mutations():
     transcript.print("evicted")
     transcript.print(text)
     text.append(" MUTATED")
-    transcript.note("last")
+    transcript.print("last")
     rendered = project(transcript)
     assert "omitted" in rendered
     assert "snapshot" in rendered
@@ -130,7 +130,28 @@ def test_rebuild_includes_arrivals_during_handoff_and_keeps_unfinished_tail(monk
         assert not output.pending
         assert not output.changed.is_set()
         terminal.write_raw.assert_called_once_with("\x1b[H\x1b[2J\x1b[3J")
+        output.regenerate(transcript.replay)
+        monkeypatch.setattr("pcode.ui.in_terminal", asynccontextmanager(empty_handoff))
+        transcript.console.file.seek(0)
+        transcript.console.file.truncate()
+        await output.flush()
+        assert "ARRIVED_DURING_CPR" not in transcript.console.file.getvalue()
         output.finish()
         assert project(transcript).count("UNFINISHED_TAIL") == 1
 
+    async def empty_handoff():
+        yield
+
     asyncio.run(run())
+
+
+def test_informational_notices_are_shown_once_and_not_retained():
+    transcript = view()
+    transcript.log = TranscriptLog(limit=2)
+    transcript.print("RETAINED")
+    for _ in range(3):
+        transcript.note("Command output in scrollback: off. Usage: /show-commands on|off (Ctrl+S)")
+    assert "Command output in scrollback: off" in transcript.console.file.getvalue()
+    assert project(transcript).strip() == "RETAINED"
+    assert project(transcript).strip() == "RETAINED"
+    assert not transcript.log.dropped

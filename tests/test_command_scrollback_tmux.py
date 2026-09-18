@@ -119,6 +119,9 @@ def test_resize_replay_reflows_history_without_duplicates_or_stretched_editor(pa
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     capture(pane, "TURN_1_DONE")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/show-commands")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    capture(pane, "Command output in scrollback: on")
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(width))
@@ -129,6 +132,7 @@ def test_resize_replay_reflows_history_without_duplicates_or_stretched_editor(pa
         history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
         assert history.count("OUTPUT_LINE_00") == 1
         assert history.count("TURN_1_DONE") == 1
+        assert "Command output in scrollback:" not in history
 
 
 LIVE_SCRIPT = (
