@@ -6,7 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
-from contextlib import aclosing
+from contextlib import ExitStack, aclosing
 from pathlib import Path
 
 from prompt_toolkit.application import get_app, in_terminal
@@ -1871,6 +1871,22 @@ def main() -> None:
     parser.add_argument(
         "--no-save", action="store_true", help="Keep this live session in memory only"
     )
+    parser.add_argument(
+        "--profile",
+        type=Path,
+        metavar="DIR",
+        help="Sample process-tree CPU/RSS to a new private DIR",
+    )
+    parser.add_argument(
+        "--profile-cpu",
+        action="store_true",
+        help="Also trace function CPU time across threads (much slower; requires --profile)",
+    )
+    parser.add_argument(
+        "--profile-memory",
+        action="store_true",
+        help="Also trace Python allocations (slower; requires --profile)",
+    )
     subparsers = parser.add_subparsers(dest="command")
     config_parser = subparsers.add_parser(
         "config",
@@ -1879,6 +1895,24 @@ def main() -> None:
     )
     config_parser.add_argument("arguments", nargs="*", metavar="ARG")
     args = parser.parse_args()
+    if (args.profile_cpu or args.profile_memory) and args.profile is None:
+        parser.error("--profile-cpu and --profile-memory require --profile DIR")
+    with ExitStack() as stack:
+        if args.profile is not None:
+            from pcode.profiling import profile_session
+
+            try:
+                stack.enter_context(
+                    profile_session(args.profile, cpu=args.profile_cpu, memory=args.profile_memory)
+                )
+            except (OSError, ValueError) as error:
+                parser.error(
+                    f"Cannot start profile ({type(error).__name__}); use a new writable DIR"
+                )
+        _run_cli(args, parser)
+
+
+def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.command == "config":
         try:
             print(configure(args.arguments))
