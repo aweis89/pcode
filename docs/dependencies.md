@@ -60,6 +60,33 @@ upstream tests, examples, and documentation sources.
   the installed `pydantic_ai_harness` implementation for the capabilities used.
   Verify Coder's actual tool composition, planning, and step-persistence APIs.
 
+### File access and explorer shell
+
+`src/pcode/workspace_filesystem.py` adapts installed Harness 0.31.0's `FileSystem` and
+`FileSystemToolset`: relative paths keep the workspace base, but absolute paths,
+parent traversal, and external symlinks are allowed. Removing only the containment
+check is insufficient: list/search/find inline `relative_to` calls, events need a
+reconstructable location, and missing-parent writes assume a workspace-relative
+parent. The adapter retains upstream read/write/edit implementations and adapts
+the three walkers. `DisplayFileSystem` layers mutation evidence on top of it;
+compare those with installed source on upgrades. Keep
+`tests/test_filesystem.py`, the real-tool tests in `tests/test_live.py`, and the
+repository-context tests when changing this integration.
+
+Internal result labels and allow/deny matching remain workspace-relative;
+external labels and allow/deny matching use absolute paths. External walkers
+match `include_glob` and filter hidden entries relative to the selected search
+tree, not its ancestors. Protected write patterns apply at any depth. File events
+retain relative `path` plus absolute `root_dir`; RepoContext still ignores
+external traversal rather than loading arbitrary external instructions.
+
+Explorer keeps read-only file tools but also receives a distinct `StreamingShell`
+with the parent's settings, including command policy and environment filtering.
+The no-edit rule is now behavioral guidance, not confinement. Preserve
+`tests/test_explorer_shell.py` when changing composition; testing only filesystem
+tool names misses whether delegated shell commands actually execute. Shell cwd
+persistence remains disabled by default, independently of file-tool path bases.
+
 ### Repository instruction discovery
 
 [Harness RepoContext](https://pydantic.dev/docs/ai/harness/repo-context/) supports

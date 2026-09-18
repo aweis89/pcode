@@ -201,8 +201,6 @@ def test_overwrite_non_utf8_content_and_missing_parent(tmp_path):
         with pytest.raises(ModelRetry):
             await toolset._write_file(ctx, "missing/child", "no")
         with pytest.raises(ModelRetry):
-            await toolset._write_file(ctx, "../outside", "no")
-        with pytest.raises(ModelRetry):
             await toolset._write_file(ctx, ".env", "no")
         assert len(ctx.changes) == count
 
@@ -229,3 +227,49 @@ def test_unquoted_credentials_are_redacted_before_persistence():
     change = completed_change("example.ini", "", "token = synthetic-value\npasswd = other-value\n")
     assert "synthetic-value" not in change.patch and "other-value" not in change.patch
     assert "[redacted]" in change.patch
+
+
+def test_external_mutations_keep_absolute_evidence_paths(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    target = external / "sample.py"
+    (workspace / "alias.py").symlink_to(target)
+
+    async def exercise():
+        ctx = Context()
+        toolset = DisplayFileSystem(root_dir=workspace).get_toolset()
+        with pytest.raises(ModelRetry, match="Use create_directory first"):
+            await toolset._write_file(ctx, str(external / "missing" / "sample.py"), "no")
+        assert not ctx.changes
+        await toolset._write_file(ctx, "../external/sample.py", "old\n")
+        assert ctx.changes[-1].path == str(target)
+        assert ctx.changes[-1].operation == "created"
+        assert "+old" in ctx.changes[-1].patch
+        await toolset._edit_file(ctx, "alias.py", "old", "new")
+        assert ctx.changes[-1].path == str(target)
+        assert "-old" in ctx.changes[-1].patch and "+new" in ctx.changes[-1].patch
+        await toolset._write_file(ctx, str(target), "last\n")
+        assert ctx.changes[-1].path == str(target)
+        assert "-new" in ctx.changes[-1].patch and "+last" in ctx.changes[-1].patch
+        assert target.read_text() == "last\n"
+
+    asyncio.run(exercise())
+
+
+def test_external_alias_does_not_capture_sensitive_contents(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = tmp_path / ".envrc"
+    target.write_text("synthetic confidential contents\n")
+    (workspace / "alias.py").symlink_to(target)
+
+    async def exercise():
+        ctx = Context()
+        toolset = DisplayFileSystem(root_dir=workspace).get_toolset()
+        await toolset._write_file(ctx, "alias.py", "new synthetic contents\n")
+        assert ctx.changes[-1].path == "[sensitive path]"
+        assert not ctx.changes[-1].patch
+
+    asyncio.run(exercise())

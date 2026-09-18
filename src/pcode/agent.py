@@ -26,21 +26,13 @@ from pcode.planning import IdentifiedPlanning
 from pcode.repo_context import create_repo_context
 from pcode.shell import StreamingShell
 from pcode.usage_limits import UnlimitedRequests
+from pcode.workspace_filesystem import WorkspaceFileSystem
 
 
 def create_coder(workspace: Path) -> CombinedCapability:
     """Compose Harness's Coder with pcode's repository context and planning."""
     workspace = workspace.resolve()
-    explorer = Agent(
-        name="explorer",
-        description="Explore the codebase and answer questions without modifying anything",
-        capabilities=[
-            UnlimitedRequests(),
-            FileSystem(workspace, read_only=True),
-            create_repo_context(workspace),
-        ],
-    )
-    coder = Coder(workspace, subagents=[SubAgent(explorer)])
+    coder = Coder(workspace, subagents=[])
     # Supply discovery in each run's context, not as a model-driven tool call.
     coder.capabilities = [
         create_repo_context(workspace)
@@ -64,13 +56,6 @@ def create_coder(workspace: Path) -> CombinedCapability:
     coder.capabilities.append(MeridianSessionIdentity())
     coder.capabilities.append(ModelOutputLimits())
     for capability in coder.capabilities:
-        if isinstance(capability, SubAgents):
-            capability.event_stream_handler = stream_child_activity
-            capability.shared_capabilities = [
-                *capability.shared_capabilities,
-                MeridianSessionIdentity(),
-                ModelOutputLimits(),
-            ]
         if isinstance(capability, Shell):
             # An empty allowlist alone can still leave Harness's default denylist.
             capability.allowed_commands = []
@@ -81,6 +66,37 @@ def create_coder(workspace: Path) -> CombinedCapability:
             # managed directory, which pollutes command output the agent parses
             # (e.g. `... | jq`). An empty log format silences it.
             capability.env = {**(capability.env or os.environ), "DIRENV_LOG_FORMAT": ""}
+    parent_shell = next(c for c in coder.capabilities if isinstance(c, StreamingShell))
+    explorer = Agent(
+        name="explorer",
+        description=(
+            "Explore files anywhere on the host and use shell commands for inspection "
+            "and tests, without modifying the user's files or repository state"
+        ),
+        instructions=(
+            "You are an explorer. Do not edit the user's files or modify repository state. "
+            "You have read-only file tools and shell tools for inspection, Git queries, "
+            "and safe tests. Do not use shell commands, scripts, redirects, or background "
+            "processes to bypass the no-edit instruction. Avoid commands with destructive "
+            "or persistent side effects; tests may create disposable test artifacts. "
+            "Shell access is not sandboxed: this no-edit rule is an instruction, not an "
+            "enforced permission boundary. Stop any background commands you start."
+        ),
+        capabilities=[
+            UnlimitedRequests(),
+            WorkspaceFileSystem(workspace, read_only=True),
+            StreamingShell.from_shell(parent_shell),
+            create_repo_context(workspace),
+        ],
+    )
+    coder.capabilities.append(
+        SubAgents(
+            agents=[SubAgent(explorer)],
+            agent_folders=None,
+            event_stream_handler=stream_child_activity,
+            shared_capabilities=[MeridianSessionIdentity(), ModelOutputLimits()],
+        )
+    )
     # Missing credentials must not prevent ordinary coding sessions. Let the
     # capability read the key itself; never put it in instructions or tool args.
     if os.environ.get("EXA_API_KEY", "").strip():
