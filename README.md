@@ -493,10 +493,17 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 | Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
 | Ctrl+L | Choose a model (idle only; keeps the conversation) |
+| Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
 | Ctrl+R | Search this process's input history |
 | Ctrl+S | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard idle input; during generation, cancel without deleting the draft |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
+
+Press **Ctrl+O** or use `/show-tasks on|off` to hide or show the Tasks/Tools
+widget without stopping work or clearing task/tool history. The current prompt
+and queue remain visible. Visibility is saved across launches (default: on);
+use `pcode config set show_tasks off` to set the default from the shell.
+Ctrl+O replaces the editor’s insert-newline binding; Ctrl+J still inserts a newline.
 
 ### Optional vi editing
 
