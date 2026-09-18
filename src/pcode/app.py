@@ -35,6 +35,8 @@ from pcode.runtime import (
     PreviewRuntime,
     RunStatus,
     TextDelta,
+    Thinking,
+    ThinkingDelta,
     ToolStarted,
     ToolSummary,
 )
@@ -75,8 +77,6 @@ class PreviewApp:
             apply_effort(agent, model, load_preferences().get("effort"))
         self.activity = Activity(
             show_thinking=load_preferences().get("show_thinking") == "on",
-            thinking_lines=int(load_preferences().get("thinking_lines", "10")),
-            thinking_display=load_preferences().get("thinking_display", "compact"),
         )
         if agent is not None and model:
             apply_thinking(agent, model, self.activity.show_thinking)
@@ -117,7 +117,7 @@ class PreviewApp:
             ),
             Command(
                 "/show-thinking",
-                "Show transient thinking: on / off (Ctrl+T)",
+                "Show saved thinking in scrollback: on / off (Ctrl+T)",
                 self.show_thinking,
                 ("on", "off"),
             ),
@@ -242,6 +242,7 @@ class PreviewApp:
         if agent is not None and self.model:
             apply_thinking(agent, self.model, shown)
         self.persist_defaults(show_thinking="on" if shown else "off")
+        self.transcript.regenerate()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
 
@@ -260,9 +261,10 @@ class PreviewApp:
             )
         if self.activity.show_thinking and (self.model or "").startswith("meridian:"):
             self.transcript.note(
-                "Meridian must forward thinking blocks for this preview to show content. "
-                "Check passthrough → Thinking Passthrough in Meridian's /settings page; "
-                "this toggle only changes pcode's display."
+                "Meridian must forward readable thinking for scrollback. "
+                "Managed Meridian enables Thinking Passthrough in its private instance. "
+                "For an external proxy, check passthrough → Thinking Passthrough in "
+                "Meridian's /settings page; this toggle only changes pcode's display."
             )
 
     def toggle_command_scrollback(self) -> None:
@@ -780,6 +782,8 @@ class PreviewApp:
             kind = record["kind"]
             if kind == "turn_started":
                 self.transcript.user(redact(record["prompt"]))
+            elif kind in ("Thinking", "thinking_partial"):
+                self.transcript.thinking(redact(record["text"]).rstrip("\n") + "\n\n")
             elif kind in ("Message", "partial"):
                 self.transcript.events((Message(redact(record["markdown"])),))
                 if kind == "partial":
@@ -925,9 +929,6 @@ class PreviewApp:
     async def run_live(self, output: TerminalOutput, text: str) -> bool:
         from pcode.live import error_message
 
-        self.activity.clear_thinking()
-        self.runtime.thinking_sink = self.activity.append_thinking
-        self.runtime.thinking_start_sink = self.activity.start_thinking
         output.begin_turn(text)
         self.activity.prompt = text
         self.activity.prompt_state = "running"
@@ -943,7 +944,13 @@ class PreviewApp:
         try:
             async with aclosing(self.runtime.stream(text)) as stream:
                 async for event in stream:
-                    if isinstance(event, TextDelta):
+                    if isinstance(event, ThinkingDelta):
+                        output.finish()
+                        output.thinking_delta(event.text)
+                    elif isinstance(event, Thinking):
+                        output.finish_thinking(event.text)
+                    elif isinstance(event, TextDelta):
+                        output.finish_thinking()
                         output.delta(event.text)
                         self.activity.status = "Responding…"
                     elif isinstance(event, CommandOutput):
@@ -955,6 +962,7 @@ class PreviewApp:
                     elif isinstance(event, PlanPreview):
                         self.activity.plan_preview = event.items
                     elif isinstance(event, (ToolStarted, ToolSummary)):
+                        output.finish_thinking()
                         # Hidden commands, including failures, do not interrupt prose.
                         if isinstance(event, ToolSummary) and (
                             (event.failed and event.name not in COMMAND_TOOLS)
@@ -973,9 +981,6 @@ class PreviewApp:
         except Exception as error:
             failure = error
         finally:
-            self.runtime.thinking_sink = lambda text: None
-            self.runtime.thinking_start_sink = lambda: None
-            self.activity.clear_thinking()
             self.activity.command_outputs.clear()
             self.activity.plan_preview = None
             output.end_turn()

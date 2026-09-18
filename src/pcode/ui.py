@@ -35,7 +35,7 @@ from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import load_preferences
-from pcode.runtime import CommandOutput, Event, Message, ToolSummary
+from pcode.runtime import CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
 from pcode.tool_display import COMMAND_TOOLS, command_preview, command_text, label, plain
@@ -63,6 +63,7 @@ class Palette:
                 "pcode.accent": self.accent,
                 "pcode.brand": f"bold {self.accent}",
                 "pcode.muted": self.muted,
+                "pcode.thinking": f"dim {self.muted}",
                 "pcode.error": "bold red",
                 "pcode.warning": "bold yellow",
                 "markdown.code": f"{self.foreground} on {self.surface}",
@@ -139,6 +140,7 @@ TERMINAL_THEME = Theme(
         "pcode.accent": "cyan",
         "pcode.brand": "bold cyan",
         "pcode.muted": "default",
+        "pcode.thinking": "dim default",
         "pcode.error": "bold red",
         "pcode.warning": "bold yellow",
         "markdown.code": "bold cyan",
@@ -163,11 +165,6 @@ TERMINAL_THEME = Theme(
 @dataclass
 class Activity:
     show_thinking: bool = False
-    thinking_lines: int = 10
-    thinking_display: str = "compact"
-    thinking: str = ""
-    thinking_latest: str = ""
-    _thinking_pending: bool = False
     busy: bool = False
     status: str = ""
     queued: int = 0
@@ -179,70 +176,11 @@ class Activity:
     tools: ToolHistory = field(default_factory=ToolHistory)
     command_outputs: dict[str, CommandOutput] = field(default_factory=dict)
 
-    def append_thinking(self, text: str) -> None:
-        """UI-only rolling buffer; never route this through Transcript/events."""
-        if not text:
-            return
-        if self._thinking_pending:
-            self.thinking_latest = ""
-            if self.thinking:
-                self.thinking += "\n\n"
-            self._thinking_pending = False
-        self.thinking = (self.thinking + text)[-8192:]
-        self.thinking_latest = (self.thinking_latest + text)[-8192:]
-
-    def start_thinking(self) -> None:
-        # Empty/signature-only blocks must not erase the last visible summary.
-        self._thinking_pending = True
-
-    def clear_thinking(self) -> None:
-        self.thinking = ""
-        self.thinking_latest = ""
-        self._thinking_pending = False
-
-    @staticmethod
-    def clean_thinking(text: str) -> str:
-        clean = re.sub(
-            r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])",
-            "",
-            text,
-        )
-        return "\n".join(plain(line, limit=None) for line in clean.split("\n"))
-
-    def thinking_summary(self) -> str:
-        if not self.show_thinking:
-            return ""
-        lines = [
-            line.strip()
-            for line in self.clean_thinking(self.thinking_latest).splitlines()
-            if line.strip()
-        ]
-        if not lines:
-            return ""
-        # Providers often stream a Markdown heading followed by a paragraph.
-        # Prefer the latest heading; otherwise preview the latest nonempty line.
-        headings = [line for line in lines if line.startswith(("**", "#"))]
-        text = (headings or lines)[-1]
-        return re.sub(r"\*\*|__|`", "", text).strip("#* ")
-
     def panel_heading(self) -> str:
-        title = self.panel_title()
-        summary = self.thinking_summary() if self.thinking_display == "compact" else ""
-        return f"{title} · {summary}" if summary else title
-
-    def thinking_rows(self, width: int = 80, height: int | None = None) -> list[tuple[str, str]]:
-        """Wrap by terminal cells and follow the tail without retaining scrollback."""
-        limit = self.thinking_lines if height is None else min(self.thinking_lines, height)
-        if not self.show_thinking or not self.thinking or limit <= 0:
-            return []
-        text = self.clean_thinking(self.thinking)
-        width = max(1, width)
-        rows = Text(text).wrap(Console(width=width), width, overflow="fold", no_wrap=False)
-        return [("class:bottom-toolbar.text", row.plain) for row in rows[-limit:]]
+        return self.panel_title()
 
     def reset(self) -> None:
         """Clear the panel for a new conversation, keeping the draft and queue."""
-        self.clear_thinking()
         self.command_outputs.clear()
         self.plan = []
         self.plan_preview = None
@@ -458,6 +396,9 @@ class TerminalOutput:
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
         self.commit_print = self.print
+        self.commit_thinking = lambda text: self.print(Text(text, style="dim"), end="")
+        self._thinking_tail = ""
+        self._thinking_streamed = False
         self._regenerate = None
         self.resize_replay = None
 
@@ -467,8 +408,8 @@ class TerminalOutput:
         self._regenerate = replay
         self.changed.set()
 
-    def print(self, *objects) -> None:
-        self.pending.append((objects, "\n", False))
+    def print(self, *objects, end="\n") -> None:
+        self.pending.append((objects, end, False))
         self.changed.set()
 
     def begin_turn(self, prompt: str) -> None:
@@ -478,19 +419,44 @@ class TerminalOutput:
         self._turn_prompt = prompt
 
     def end_turn(self) -> None:
+        self.finish_thinking()
         self.finish()
         # Empty, failed, or cancelled turns must not leak a quote into a later turn.
         self._turn_prompt = None
 
+    def _commit_prompt(self) -> None:
+        if self._turn_prompt is not None:
+            self.commit_print()
+            self.commit_print(TaskPrompt(self._turn_prompt))
+            self.commit_print()
+            self._turn_prompt = None
+
     def _commit(self, source: str) -> None:
         if source.strip():
-            if self._turn_prompt is not None:
-                self.commit_print()
-                self.commit_print(TaskPrompt(self._turn_prompt))
-                self.commit_print()
-                self._turn_prompt = None
+            self._commit_prompt()
             self.commit_print(Markdown(source, code_theme=self.code_theme()))
             self.commit_print()
+
+    def thinking_delta(self, text: str) -> None:
+        """Stream complete lines without Markdown buffering or an 8-KB tail limit."""
+        if not text:
+            return
+        self._thinking_streamed = True
+        self._thinking_tail += text
+        end = self._thinking_tail.rfind("\n") + 1
+        if end:
+            self._commit_prompt()
+            self.commit_thinking(self._thinking_tail[:end])
+            self._thinking_tail = self._thinking_tail[end:]
+
+    def finish_thinking(self, fallback: str = "") -> None:
+        if not self._thinking_streamed and fallback:
+            self.thinking_delta(fallback)
+        if self._thinking_streamed:
+            self._commit_prompt()
+            self.commit_thinking(self._thinking_tail + "\n\n" if self._thinking_tail else "\n")
+        self._thinking_tail = ""
+        self._thinking_streamed = False
 
     def delta(self, text: str) -> None:
         if not text:
@@ -786,37 +752,11 @@ def create_prompt(
             ("class:bottom-toolbar.text", row.plain) for row in rows[-budget:]
         ]
 
-    def thinking_rows():
-        if activity.thinking_display != "expanded":
-            return []
-        size = session.app.output.get_size()
-        plans = plan_rows()
-        # Reserve the task frame, current prompt, queue, editor, toolbar and
-        # breathing room before spending the remaining height on reasoning.
-        available = (
-            size.rows
-            - (len(plans) + 2 if plans else 0)
-            - bool(activity.prompt)
-            - len(queue_rows())
-            - (len(command_rows()) + 2 if command_rows() else 0)
-            - 8
-        )
-        return activity.thinking_rows(size.columns - 2, max(0, available))
-
-    def summary_rows():
-        if activity.thinking_display != "compact" or plan_rows():
-            return []
-        summary = activity.thinking_summary()
-        return [("class:plan", "Summary · " + summary)] if summary else []
-
     def activity_height() -> int:
         rows = plan_rows()
-        thoughts = thinking_rows()
         return (
             bool(activity.prompt)
             + (len(rows) + 2 if rows else 0)
-            + (len(thoughts) + 2 if thoughts else 0)
-            + len(summary_rows())
             + (len(command_rows()) + 2 if command_rows() else 0)
         )
 
@@ -874,36 +814,6 @@ def create_prompt(
     plan = ConditionalContainer(plan_frame, filter=Condition(lambda: bool(plan_rows())))
     # Keep the turn and its activity adjacent even when the root layout justifies
     # the transcript and editor across the remaining terminal height.
-    thinking = ConditionalContainer(
-        Frame(
-            Window(
-                FormattedTextControl(
-                    lambda: panel_fragments(
-                        thinking_rows(), session.app.output.get_size().columns - 2
-                    ),
-                    show_cursor=False,
-                ),
-                height=lambda: len(thinking_rows()),
-                dont_extend_height=True,
-                wrap_lines=False,
-            ),
-            title="Reasoning summary · Ctrl+T to hide",
-            height=lambda: len(thinking_rows()) + 2,
-        ),
-        filter=Condition(lambda: bool(thinking_rows())),
-    )
-    summary = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: panel_fragments(summary_rows(), session.app.output.get_size().columns),
-                show_cursor=False,
-            ),
-            height=1,
-            dont_extend_height=True,
-            wrap_lines=False,
-        ),
-        filter=Condition(lambda: bool(summary_rows())),
-    )
     commands = ConditionalContainer(
         Frame(
             Window(
@@ -922,7 +832,7 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(command_rows())),
     )
-    activity_panel = HSplit([commands, thinking, summary, current_prompt, plan])
+    activity_panel = HSplit([commands, current_prompt, plan])
 
     def queue_rows():
         budget = min(4, max(1, session.app.output.get_size().rows // 4))
@@ -1048,11 +958,12 @@ class Transcript:
         self._output = output
         if output is not None:
             output.commit_print = self.print
+            output.commit_thinking = self.thinking
             if self.regenerate_on_resize and self.console.is_terminal:
                 output.resize_replay = self.replay
 
     @recorded
-    def print(self, *objects) -> None:
+    def print(self, *objects, end="\n") -> None:
         # Resolve theme-dependent renderables again on every replay.
         objects = tuple(
             Markdown(obj.markup, code_theme=self.code_theme)
@@ -1063,12 +974,18 @@ class Transcript:
             for obj in objects
         )
         if self._replay_sink is not None:
-            self._replay_sink.append((objects, "\n", False))
+            self._replay_sink.append((objects, end, False))
         elif self.output is not None:
-            self.output.print(*objects)
+            self.output.print(*objects, end=end)
         else:
             with self.console.use_theme(self.rich_theme):
-                self.console.print(*objects)
+                self.console.print(*objects, end=end)
+
+    @recorded
+    def thinking(self, text: str) -> None:
+        """Retain readable provider text, choosing visibility again on every redraw."""
+        if self.activity is not None and self.activity.show_thinking:
+            self.print(Text(command_text(text), style="pcode.thinking"), end="")
 
     @recorded
     def tool_result(self, event: ToolSummary) -> None:
@@ -1216,7 +1133,9 @@ class Transcript:
     @recorded
     def events(self, events: tuple[Event, ...], *, show_tools: bool = False) -> None:
         for event in events:
-            if isinstance(event, Message):
+            if isinstance(event, Thinking):
+                self.thinking(event.text.rstrip("\n") + "\n\n")
+            elif isinstance(event, Message):
                 self.print(Markdown(event.markdown, code_theme=self.code_theme))
                 self.print()
             elif isinstance(event, ToolSummary):
@@ -1268,7 +1187,7 @@ class Transcript:
         self.print()
         self.note("/ commands · Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
-        self.note("Ctrl+T show/hide transient thinking (saves default)")
+        self.note("Ctrl+T show/hide saved thinking in scrollback (redraws output)")
         self.note("Ctrl+S rebuild scrollback with/without command output (saves default)")
         self.note(
             "/redraw rebuilds retained output; regeneration clears pre-pcode terminal history."

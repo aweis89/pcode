@@ -14,6 +14,10 @@ class TranscriptLog:
         self.recording = True
 
     def append(self, method, args, kwargs):
+        if method == "thinking" and self.entries and self.entries[-1][0] == method:
+            previous = self.entries.pop()
+            self.entries.append((method, (previous[1][0] + args[0],), {}))
+            return
         self.dropped |= len(self.entries) == self.entries.maxlen
         self.entries.append((method, deepcopy(args), deepcopy(kwargs)))
 

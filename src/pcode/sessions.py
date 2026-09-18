@@ -295,14 +295,30 @@ class SavedSession:
         """UI replay, distinct from the complete model history stored by Harness."""
         records = deque(maxlen=limit)
         partial = ""
+        thinking = None
         for record in self.active_records():
             kind = record.get("kind")
-            if kind == "TextDelta":
+            if kind == "ThinkingDelta":
+                if thinking is None:
+                    thinking = {"kind": "thinking_partial", "text": ""}
+                    records.append(thinking)
+                thinking["text"] += record["text"]
+            elif kind == "Thinking":
+                if thinking is None:
+                    records.append(record)
+                else:
+                    # Update in place: unrelated tool/status records may have
+                    # arrived while the block was streaming. Never duplicate it.
+                    thinking.update(record)
+                thinking = None
+            elif kind == "TextDelta":
+                thinking = None
                 partial += record["text"]
             elif kind == "Message":
                 partial = ""
                 records.append(record)
             elif kind in ("turn_failed", "turn_cancelled", "turn_started"):
+                thinking = None
                 if partial:
                     records.append({"kind": "partial", "markdown": partial})
                     partial = ""
