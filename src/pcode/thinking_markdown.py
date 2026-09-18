@@ -1,4 +1,4 @@
-"""Compact Markdown for readable thinking, without paragraph spacer rows."""
+"""Muted Markdown for readable thinking with normal block spacing."""
 
 from dataclasses import dataclass
 
@@ -23,8 +23,19 @@ class ThinkingMarkdown:
                 if child.type == "softbreak":
                     child.type = "hardbreak"
         style = console.get_style(self.style)
+        # Keep one spacer row between blocks, including streamed commits. Rich
+        # also pads lists/code with blank rows; don't double those on replay.
+        pending_blank = False
+        rendered = False
         for line in Segment.split_lines(console.render(markdown, options)):
             if not any(segment.text.strip() for segment in line):
+                pending_blank = rendered
                 continue
+            if pending_blank:
+                yield Segment.line()
             yield from Segment.apply_style(line, post_style=style)
+            yield Segment.line()
+            rendered = True
+            pending_blank = False
+        if rendered:
             yield Segment.line()
