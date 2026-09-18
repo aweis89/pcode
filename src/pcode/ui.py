@@ -99,6 +99,11 @@ class Palette:
                 "tool.failed": self.muted,
                 "prompt": f"{self.accent} bold",
                 "activity.prompt": self.muted,
+                # System work is pcode's own, so it gets the accent colour and
+                # an italic detail rather than the muted prompt echo styling.
+                "activity.system": self.accent,
+                "activity.system.label": f"{self.accent} bold",
+                "activity.system.detail": f"italic {self.muted}",
                 "frame.border": self.muted,
                 "editor.mode": "noreverse nodim bg:#b8b8b8 fg:#ffffff",
                 # Keep foreground and background paired with the terminal theme:
@@ -163,6 +168,12 @@ TERMINAL_THEME = Theme(
 )
 
 
+# Marks rows pcode drives itself. The diamond reads as a system marker rather
+# than the "❯" prompt chevron, and the arrows suggest folding history inward.
+SYSTEM_BADGE = "◈"
+SYSTEM_SEPARATOR = "▸"
+
+
 @dataclass
 class Activity:
     show_tasks: bool = True
@@ -174,6 +185,10 @@ class Activity:
     queued_modes: list[str] = field(default_factory=list)
     prompt: str = ""
     prompt_state: str = ""
+    # "user" echoes what was typed; "system" marks work pcode runs on its own
+    # behalf (compaction, for example) so it never reads as part of the prompt.
+    prompt_kind: str = "user"
+    prompt_detail: str = ""
     plan: list[dict] = field(default_factory=list)
     plan_preview: list[dict] | None = None
     tools: ToolHistory = field(default_factory=ToolHistory)
@@ -190,7 +205,16 @@ class Activity:
         self.tools.clear()
         self.prompt = ""
         self.prompt_state = ""
+        self.prompt_kind = "user"
+        self.prompt_detail = ""
         self.status = ""
+
+    def start_prompt(self, text: str, *, kind: str = "user", detail: str = "") -> None:
+        """Show a running row, tagged so system work never looks like typed input."""
+        self.prompt = text
+        self.prompt_kind = kind
+        self.prompt_detail = detail
+        self.prompt_state = "running"
 
     @property
     def displayed_plan(self) -> list[dict]:
@@ -213,8 +237,10 @@ class Activity:
 
     def prompt_fragments(self, spinner: str, width: int):
         icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
-        style = "class:activity.prompt"
         suffix = {"failed": " · failed", "cancelled": " · cancelled"}.get(self.prompt_state, "")
+        if self.prompt_kind != "user":
+            return self._system_fragments(icons.get(self.prompt_state, "◈"), suffix, width)
+        style = "class:activity.prompt"
         # Measure terminal cells, not characters, so wide Unicode fits too.
         prefix = Text(icons.get(self.prompt_state, "❯") + " ")
         prefix.truncate(max(0, width), overflow="crop")
@@ -222,6 +248,25 @@ class Activity:
         remaining = max(0, width - prefix.cell_len)
         text.truncate(remaining, overflow="ellipsis" if remaining else "crop")
         return [(style, prefix.plain), (style, text.plain)]
+
+    def _system_fragments(self, icon: str, suffix: str, width: int):
+        """Render pcode's own work as a labelled badge, never as an echoed prompt."""
+        prefix = Text(f"{icon} {SYSTEM_BADGE} ")
+        prefix.truncate(max(0, width), overflow="crop")
+        remaining = max(0, width - prefix.cell_len)
+        label = Text(plain(self.prompt, limit=None) + suffix)
+        label.truncate(remaining, overflow="ellipsis" if remaining else "crop")
+        fragments = [
+            ("class:activity.system", prefix.plain),
+            ("class:activity.system.label", label.plain),
+        ]
+        remaining = max(0, remaining - label.cell_len)
+        detail = plain(self.prompt_detail, limit=None)
+        if detail and remaining > 2:
+            text = Text(f" {SYSTEM_SEPARATOR} {detail}")
+            text.truncate(remaining, overflow="ellipsis")
+            fragments.append(("class:activity.system.detail", text.plain))
+        return fragments
 
     def queue_rows(self, budget: int):
         """Show the next queued prompts, leaving room for the editor on short panes."""

@@ -34,9 +34,12 @@ def test_compaction_keeps_editor_height_and_cancels_with_draft(pane):
     assert input_rows(screen) == 1
 
     def prompt_row(screen):
-        return next(line for line in screen.splitlines() if "/compact keep test failures" in line)
+        # The badge row labels the work; it never echoes the typed command.
+        return next(line for line in screen.splitlines() if "◈ Compacting context" in line)
 
     first = prompt_row(screen)
+    assert "/compact" not in first
+    assert "▸ keep test failures" in first
     assert first[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     lines = screen.splitlines()
     assert lines[lines.index(first) + 1].startswith("┌─ Tasks")
@@ -55,4 +58,4 @@ def test_compaction_keeps_editor_height_and_cancels_with_draft(pane):
     screen = capture(pane, "Compaction cancelled")
     assert "keep this draft" in screen
     assert input_rows(screen) == 1
-    assert prompt_row(screen).startswith("■ /compact")
+    assert prompt_row(screen).startswith("■ ◈ Compacting context · cancelled")

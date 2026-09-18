@@ -694,6 +694,8 @@ class PreviewApp:
         self.model = saved.info.model
         self.session_dir = saved.directory.parent
         self.activity.prompt = ""
+        self.activity.prompt_kind = "user"
+        self.activity.prompt_detail = ""
         self.replay()
 
     def select_tree(self, argument: str) -> None:
@@ -963,8 +965,7 @@ class PreviewApp:
         from pcode.live import error_message
 
         output.begin_turn(text)
-        self.activity.prompt = text
-        self.activity.prompt_state = "running"
+        self.activity.start_prompt(text)
         self.activity.status = "Waiting for model…"
 
         def compaction_notice(text):
@@ -1153,8 +1154,7 @@ class PreviewApp:
                     )
                     self.activity.queued_prompts.pop(index)
                     self.activity.queued_modes.pop(index)
-                    self.activity.prompt = text
-                    self.activity.prompt_state = "running"
+                    self.activity.start_prompt(text)
                     self.transcript.user(text)
                 else:
                     pending.append((generation, text, mode))
@@ -1250,8 +1250,9 @@ class PreviewApp:
             compact_idle.clear()
             self.activity.busy = True
             self.activity.status = "Compacting context…"
-            self.activity.prompt = "/compact" + (f" {focus}" if focus else "")
-            self.activity.prompt_state = "running"
+            # Label the work instead of echoing "/compact <focus>", which reads
+            # like the command was typed as part of a prompt.
+            self.activity.start_prompt("Compacting context", kind="system", detail=focus)
             self.transcript.note("Compacting context with the current model. Ctrl+C cancels.")
 
             def finished(task):
@@ -1428,8 +1429,7 @@ class PreviewApp:
                 success = True
                 try:
                     if self.handle(text):
-                        self.activity.prompt = text
-                        self.activity.prompt_state = "running"
+                        self.activity.start_prompt(text)
                         self.runtime.take_steering = take_steering
                         live_task = asyncio.create_task(self.run_live(output, text))
                         try:

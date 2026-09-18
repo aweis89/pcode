@@ -164,6 +164,57 @@ def test_prompt_indicator_keeps_short_prompt_intact():
     ]
 
 
+def test_system_prompt_row_is_badged_and_not_an_echoed_command():
+    from pcode.ui import Activity
+
+    activity = Activity()
+    activity.start_prompt("Compacting context", kind="system", detail="keep {tests}")
+    fragments = activity.prompt_fragments("⠋", 80)
+    assert fragments == [
+        ("class:activity.system", "⠋ ◈ "),
+        ("class:activity.system.label", "Compacting context"),
+        ("class:activity.system.detail", " ▸ keep {tests}"),
+    ]
+    rendered = "".join(text for _, text in fragments)
+    assert "/compact" not in rendered and "❯" not in rendered
+
+
+def test_system_prompt_row_keeps_state_icons_and_drops_empty_detail():
+    from pcode.ui import Activity
+
+    activity = Activity()
+    activity.start_prompt("Compacting context", kind="system")
+    activity.prompt_state = "failed"
+    assert activity.prompt_fragments("⠋", 80) == [
+        ("class:activity.system", "! ◈ "),
+        ("class:activity.system.label", "Compacting context · failed"),
+    ]
+
+
+@pytest.mark.parametrize("width", [0, 1, 2, 3, 5, 12, 40, 100])
+def test_system_prompt_row_truncates_to_terminal_width(width):
+    from rich.cells import cell_len
+
+    from pcode.ui import Activity
+
+    activity = Activity()
+    activity.start_prompt("Compacting 界面 context\n" * 9, kind="system", detail="keep 界面\n" * 9)
+    rendered = "".join(text for _, text in activity.prompt_fragments("⠋", width))
+    assert "\n" not in rendered
+    assert cell_len(rendered) <= width
+
+
+def test_new_conversation_clears_the_system_prompt_kind():
+    from pcode.ui import Activity
+
+    activity = Activity()
+    activity.start_prompt("Compacting context", kind="system", detail="keep tests")
+    activity.reset()
+    activity.start_prompt("Fix bug")
+    assert activity.prompt_fragments("⠋", 20)[0] == ("class:activity.prompt", "⠋ ")
+    assert activity.prompt_detail == ""
+
+
 def test_queue_previews_are_ordered_bounded_and_single_line():
     from pcode.tool_panel import panel_fragments
     from pcode.ui import Activity
