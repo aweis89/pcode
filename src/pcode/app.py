@@ -105,10 +105,15 @@ class PreviewApp:
         self.mcp_enable_requested: str | None = None
         self.mcp_enabling: str | None = None
         self.model_requested = False
+        self.pending_model: str | None = None
         self.registry = CommandRegistry()
         for command in (
             Command("/login", "Reuse pi's Anthropic login", self.login, ("pi",)),
-            Command("/model", "Choose a model (Ctrl+L); keep the conversation", self.select_model),
+            Command(
+                "/model",
+                "Choose a model (Ctrl+L); keeps the conversation, applies next request",
+                self.select_model,
+            ),
             Command("/help", "Commands and keyboard shortcuts", self.help),
             Command("/tools", "Inspect tool calls and their results", self.tools, ("failed",)),
             Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
@@ -356,12 +361,40 @@ class PreviewApp:
         self.model_requested = True
 
     async def switch_model(self, model: str) -> None:
+        """Adopt a model now, or record it for the next request while working."""
+        if self.activity.busy or self.activity.queued_prompts:
+            # Replacing the agent mid-run would change the model of a request
+            # that is already in flight. Defer like /effort instead of refusing.
+            if model == self.model:
+                self.pending_model = None
+                self.persist_defaults(model=model)
+                self.transcript.note(f"Already using {model}.")
+                return
+            self.pending_model = model
+            self.transcript.note(
+                f"Model: {model} (next request). This turn finishes on {self.model or 'preview'}."
+            )
+            return
+        await self.activate_model(model)
+
+    async def apply_pending_model(self) -> None:
+        """Adopt a model chosen mid-run, now that no request is in flight."""
+        model, self.pending_model = self.pending_model, None
+        if model is None:
+            return
+        try:
+            await self.activate_model(model)
+        except Exception as error:
+            from pcode.live import error_message
+
+            self.transcript.error(error_message(error), title="Model unchanged")
+
+    async def activate_model(self, model: str) -> None:
         from pcode.agent import create_agent
         from pcode.live import AgentRuntime
         from pcode.sessions import SavedSession
 
-        if self.activity.busy or self.activity.queued_prompts:
-            raise ValueError("Cannot change models while working or messages are queued.")
+        self.pending_model = None
         if model == self.model:
             self.persist_defaults(model=model)
             self.transcript.note(f"Already using {model}.")
@@ -916,6 +949,9 @@ class PreviewApp:
             location += f" {self.branch}"
         effort = self.current_effort()
         model = self.model if self.model else "preview"
+        if self.pending_model:
+            # The running turn keeps its model; show what the next one will use.
+            model += f" → {self.pending_model}"
         # Put send mode and activity ahead of model/path metadata so they are
         # never pushed off the footer by long provider names or narrow panes.
         segments = [("text", f"send: {self.send_mode}")]
@@ -1377,7 +1413,6 @@ class PreviewApp:
                             "/session",
                             "/tree",
                             "/login",
-                            "/model",
                             "/compact",
                             "/autocompact",
                         }
@@ -1457,6 +1492,10 @@ class PreviewApp:
                 self.activity.queued_prompts.pop(0)
                 self.activity.queued_modes.pop(0)
                 self.activity.queued = len(self.activity.queued_prompts)
+                # A model chosen mid-run takes effect here, before the request
+                # that follows it is sent.
+                if self.pending_model is not None:
+                    await self.apply_pending_model()
                 success = True
                 try:
                     if self.handle(text):
@@ -1487,6 +1526,10 @@ class PreviewApp:
                 self.activity.busy = (
                     bool(self.activity.queued_prompts) or bool(pending_mcp) or bool(pending_compact)
                 )
+                # Adopt it as soon as the turn ends so the footer and /context
+                # agree with what the next request will use.
+                if self.pending_model is not None:
+                    await self.apply_pending_model()
                 await output.flush()
                 if not self.running:
                     session.app.exit()

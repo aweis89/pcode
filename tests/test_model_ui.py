@@ -243,10 +243,67 @@ def test_failed_switch_and_same_model_keep_runtime(monkeypatch, tmp_path):
             await app.switch_model(MODELS[1])
         assert app.runtime is runtime
         assert app.model == MODELS[0]
+
+    asyncio.run(run())
+
+
+def test_selection_while_working_is_deferred_to_the_next_request(monkeypatch, tmp_path):
+    runtime = AgentRuntime(Agent("test"))
+    buffer = StringIO()
+    app = PreviewApp(model=MODELS[0], runtime=runtime, console=Console(file=buffer))
+    created = Mock(return_value=Agent("test"))
+    monkeypatch.setattr("pcode.agent.create_agent", created)
+    monkeypatch.setattr(app, "persist_defaults", Mock())
+
+    async def run():
         app.activity.busy = True
-        with pytest.raises(ValueError, match="Cannot change models"):
-            await app.switch_model(MODELS[1])
-        assert app.runtime is runtime
+        await app.switch_model(MODELS[1])
+        created.assert_not_called()
+        assert app.pending_model == MODELS[1]
+        assert app.model == MODELS[0]
+        assert "next request" in buffer.getvalue()
+        app.activity.busy = False
+        await app.apply_pending_model()
+        created.assert_called_once()
+        assert app.pending_model is None
+        assert app.model == MODELS[1]
+        app.persist_defaults.assert_called_once_with(model=MODELS[1])
+
+    asyncio.run(run())
+
+
+def test_deferred_selection_that_fails_keeps_the_current_model(monkeypatch):
+    runtime = AgentRuntime(Agent("test"))
+    buffer = StringIO()
+    app = PreviewApp(model=MODELS[0], runtime=runtime, console=Console(file=buffer))
+    monkeypatch.setattr("pcode.agent.create_agent", Mock(side_effect=ValueError("bad provider")))
+
+    async def run():
+        app.activity.busy = True
+        await app.switch_model(MODELS[1])
+        app.activity.busy = False
+        await app.apply_pending_model()  # Reported, not raised: the turn already ended.
+        assert app.pending_model is None
+        assert app.model == MODELS[0]
+        assert runtime.agent is not None
+        assert "Model unchanged" in buffer.getvalue()
+
+    asyncio.run(run())
+
+
+def test_selecting_the_current_model_while_working_clears_nothing(monkeypatch):
+    buffer = StringIO()
+    runtime = AgentRuntime(Agent("test"))
+    app = PreviewApp(model=MODELS[0], runtime=runtime, console=Console(file=buffer))
+    monkeypatch.setattr("pcode.agent.create_agent", Mock(side_effect=AssertionError("no switch")))
+
+    async def run():
+        app.activity.busy = True
+        await app.switch_model(MODELS[0])
+        assert app.pending_model is None
+        assert "Already using" in buffer.getvalue()
+        await app.apply_pending_model()
+        assert app.model == MODELS[0]
 
     asyncio.run(run())
 
@@ -273,14 +330,79 @@ def test_picker_shortcut_uses_serialized_command_flow(command, busy):
                 try:
                     await wait_for(lambda: session is not None and session.app.is_running)
                     pipe.send_text(command)
-                    if busy:
-                        await wait_for(lambda: "unavailable while working" in output.getvalue())
-                        choose.assert_not_called()
-                    else:
-                        await wait_for(lambda: choose.called)
-                        choose.assert_awaited_once()
+                    # The picker opens while working too; the switch itself is
+                    # what waits for the request in flight.
+                    await wait_for(lambda: choose.called)
+                    choose.assert_awaited_once()
+                    assert "unavailable while working" not in output.getvalue()
                     pipe.send_text("/quit\r")
                     await asyncio.wait_for(task, 3)
+                finally:
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_model_chosen_mid_run_applies_before_the_next_request():
+    """The turn in flight keeps its model; the queued prompt uses the new one."""
+
+    async def run():
+        from pcode.runtime import Message
+
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        models = []
+
+        class Runtime:
+            session = None
+            recovery_blocked = ""
+
+            async def stream(self, text):
+                models.append(app.model)
+                started.set()
+                await finish.wait()
+                yield Message("done")
+
+        output = StringIO()
+        app = PreviewApp(model=MODELS[0], runtime=Runtime(), console=Console(file=output))
+
+        async def activate(model):
+            app.model = model
+            app.pending_model = None
+
+        async def choose(*_):
+            await app.switch_model(MODELS[1])
+
+        app.activate_model = activate
+        app.choose_model = choose
+        session = None
+        with create_pipe_input() as pipe:
+
+            def prompt(*args, **kwargs):
+                nonlocal session
+                session = create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+                return session
+
+            with patch("pcode.app.create_prompt", prompt):
+                task = asyncio.create_task(app.run_async())
+                try:
+                    await wait_for(lambda: session is not None and session.app.is_running)
+                    pipe.send_text("first\r")
+                    await asyncio.wait_for(started.wait(), 5)
+                    pipe.send_text("/model\r")
+                    await wait_for(lambda: app.pending_model == MODELS[1])
+                    assert app.model == MODELS[0]
+                    started.clear()
+                    pipe.send_text("second\r")
+                    await wait_for(lambda: app.activity.queued_prompts == ["second"])
+                    finish.set()
+                    await asyncio.wait_for(started.wait(), 5)
+                    assert models == [MODELS[0], MODELS[1]]
+                    assert app.pending_model is None
+                    pipe.send_text("/quit\r")
+                    await asyncio.wait_for(task, 5)
                 finally:
                     if not task.done():
                         task.cancel()
