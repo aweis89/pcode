@@ -1,11 +1,15 @@
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai import Agent
+from pydantic_ai.messages import UserPromptPart
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from pcode.agent import create_agent, create_coder
+from pcode.preferences import save_preferences
 from pcode.repo_context import AutomaticRepoContext, create_repo_context
 
 
@@ -263,3 +267,100 @@ def test_ancestor_instructions_refresh_between_runs_not_within_run(tmp_path):
         assert "Original ancestor guidance" not in second.get_instructions()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("walk_up", ["on", "off"])
+@pytest.mark.parametrize("nested", ["off", "pointer", "contents"])
+@pytest.mark.parametrize("explorer", [False, True], ids=["main", "explorer"])
+@pytest.mark.parametrize("tool", ["read_file", "list_directory"])
+def test_discovery_settings_work_together_in_real_agents(
+    tmp_path, monkeypatch, walk_up, nested, explorer, tool
+):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    workspace = tmp_path / "project"
+    child = workspace / "backend"
+    child.mkdir(parents=True)
+    (tmp_path / "AGENTS.md").write_text("ANCESTOR_GUIDANCE")
+    (workspace / "AGENTS.md").write_text("WORKSPACE_GUIDANCE")
+    (child / "AGENTS.md").write_text("NESTED_GUIDANCE")
+    (child / "api.py").write_text("pass")
+    save_preferences(repo_context_walk_up=walk_up, repo_context_nested=nested)
+
+    if explorer:
+        with patch("pcode.agent.Agent", wraps=Agent) as constructor:
+            create_coder(workspace)
+        agent = Agent("test", capabilities=constructor.call_args.kwargs["capabilities"])
+    else:
+        agent = create_agent("test", workspace)
+
+    calls = 0
+    initial_instructions = None
+
+    async def respond(messages, info):
+        nonlocal calls, initial_instructions
+        instructions = info.instructions
+        assert ("ANCESTOR_GUIDANCE" in instructions) == (walk_up == "on")
+        assert "WORKSPACE_GUIDANCE" in instructions
+        assert "NESTED_GUIDANCE" not in instructions
+        if initial_instructions is None:
+            initial_instructions = instructions
+        assert instructions == initial_instructions  # Traversal leaves the prefix stable.
+        notes = [
+            part.content
+            for message in messages
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+            and isinstance(part.content, str)
+            and "backend/AGENTS.md" in part.content
+        ]
+        if calls == 0 or nested == "off":
+            assert notes == []
+        else:
+            # Traversing the same directory twice only surfaces it once per run.
+            assert len(notes) == 1
+            assert ("NESTED_GUIDANCE" in notes[0]) == (nested == "contents")
+            if nested == "pointer":
+                assert "Read it if relevant" in notes[0]
+        calls += 1
+        if calls <= 2:
+            path = "backend/api.py" if tool == "read_file" else "backend"
+            yield {
+                0: DeltaToolCall(
+                    name=tool, json_args=json.dumps({"path": path}), tool_call_id=str(calls)
+                )
+            }
+        else:
+            yield "Done"
+
+    model = FunctionModel(stream_function=respond)
+    assert agent.run_sync("Explore", model=model).output == "Done"
+    assert calls == 3
+    # A fresh run can surface the nested file again; settings survive for_run().
+    calls = 0
+    assert agent.run_sync("Explore again", model=model).output == "Done"
+    assert calls == 3
+
+
+def test_discovery_settings_are_snapshotted_until_agent_recreation(tmp_path):
+    save_preferences(repo_context_walk_up="off", repo_context_nested="pointer")
+    context = create_repo_context(tmp_path)
+    save_preferences(repo_context_walk_up="on", repo_context_nested="contents")
+
+    async def run():
+        snapshot = await context.for_run(None)
+        assert snapshot.home_dir is None
+        assert snapshot.nested_traversal
+        assert snapshot.nested_inject == "pointer"
+
+    asyncio.run(run())
+    replacement = create_repo_context(tmp_path)
+    assert replacement.home_dir == tmp_path.resolve()
+    assert replacement.nested_inject == "contents"
+
+
+@pytest.mark.parametrize("value", ["invalid", True, [], None])
+def test_invalid_discovery_preferences_fall_back_to_defaults(tmp_path, value):
+    save_preferences(repo_context_walk_up=value, repo_context_nested=value)
+    context = create_repo_context(tmp_path)
+    assert context.home_dir == tmp_path.resolve()
+    assert not context.nested_traversal

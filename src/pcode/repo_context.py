@@ -9,6 +9,8 @@ from pydantic_ai_harness.repo_context import AgentContextInventory, RepoContext
 # inventory stays consistent with the upstream tool. Covered by integration tests.
 from pydantic_ai_harness.repo_context._inventory import scan_assets
 
+from pcode.preferences import SETTINGS, load_preferences
+
 
 @dataclass
 class AutomaticRepoContext(RepoContext):
@@ -66,12 +68,23 @@ class AutomaticRepoContext(RepoContext):
 
 
 def create_repo_context(workspace: Path) -> AutomaticRepoContext:
-    """Load ancestor instructions using Harness's bounded, deduplicated walk.
+    """Configure Harness's independent startup and on-traversal discovery.
 
-    Stop at home for workspaces beneath it, or at the filesystem root elsewhere.
-    Resolve first so symlinked workspaces use the same ancestry as file tools.
+    Snapshot saved defaults at agent creation, not during an active run. Disabling
+    the walk keeps workspace instructions; nested discovery is independently opt-in.
     """
+    preferences = load_preferences()
+    walk_up = preferences.get("repo_context_walk_up", SETTINGS["repo_context_walk_up"].default)
+    nested = preferences.get("repo_context_nested", SETTINGS["repo_context_nested"].default)
+    # Resolve first so symlinked workspaces use the same ancestry as file tools.
     workspace = workspace.resolve()
-    home = Path.home().resolve()
-    boundary = home if workspace.is_relative_to(home) else Path(workspace.anchor)
-    return AutomaticRepoContext(workspace_dir=workspace, home_dir=boundary)
+    boundary = None
+    if walk_up == "on":
+        home = Path.home().resolve()
+        boundary = home if workspace.is_relative_to(home) else Path(workspace.anchor)
+    return AutomaticRepoContext(
+        workspace_dir=workspace,
+        home_dir=boundary,
+        nested_traversal=nested != "off",
+        nested_inject="contents" if nested == "contents" else "pointer",
+    )

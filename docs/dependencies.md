@@ -70,9 +70,23 @@ ancestor of the resolved workspace, the loader falls back to workspace-only.
 for workspaces beneath it, or the filesystem root elsewhere, for both the main
 agent and explorer. Harness handles ancestor-first ordering, both instruction
 filenames, real-path/content deduplication, and per-run cache isolation. No custom
-instruction scanner is needed. Nested traversal remains disabled and the asset
-inventory remains workspace-local. Keep `tests/test_repo_context.py` covering the
-boundary, symlink, deduplication, refresh, and agent-wiring behavior on upgrades.
+instruction scanner is needed. `repo_context_walk_up=off` instead supplies no
+bound, retaining workspace-local instructions. `repo_context_nested` independently
+selects `off` (default), `pointer`, or `contents` through Harness's
+`nested_traversal`/`nested_inject` options. Both preferences are snapshotted at
+agent creation, not reloaded mid-run; the asset inventory remains workspace-local.
+
+Installed 0.31.0 detects traversal via filesystem `FileReadEvent` and
+`DirectoryListedEvent` capability events, not the deprecated tool-name sniffing
+options shown in some website examples. Notes are enqueued in the conversation
+tail, leaving the startup prefix stable. `_loader.find_dir_context_file` selects
+only the first filename for nested discovery (unlike the startup walk, which
+loads both). The traversal hook checks only the accessed directory within the
+workspace, not intervening parents; it can also surface workspace instructions
+already loaded at startup. Its per-run seen-directory set is separate from the
+startup loader's deduplication. Keep `tests/test_repo_context.py` covering the
+boundary, symlink, deduplication, refresh, and all discovery-setting combinations
+with real filesystem tools on both main and explorer agents when upgrading.
 
 ### Delegation activity
 

@@ -98,6 +98,8 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 | `theme` | `dark` | `dark`, `light`, `auto` |
 | `autocompact` | `off` | `on`, `off` |
 | `meridian_managed` | `off` | `on`, `off` (private local Meridian proxy) |
+| `repo_context_walk_up` | `on` | `on`, `off` (inherit ancestor instruction files) |
+| `repo_context_nested` | `off` | `off`, `pointer`, `contents` (discover instructions on file-tool traversal) |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
 
@@ -435,24 +437,49 @@ completed tool effects.
 
 ### Repository instructions (`AGENTS.md` / `CLAUDE.md`)
 
-Both the main agent and explorer automatically load `CLAUDE.md` and `AGENTS.md`
-from the workspace and its ancestor directories. For a workspace under your home
-folder, discovery stops at home (inclusive); elsewhere, it stops at the filesystem
-root. Paths are resolved before walking, so symlinked workspaces inherit from
-their real ancestors. A `.git` directory does not stop the walk.
+Both the main agent and explorer load workspace-local `CLAUDE.md` and `AGENTS.md`.
+Two independent settings control additional discovery:
 
-Instructions are loaded broadest-first, workspace-last. Within each directory,
-`CLAUDE.md` comes before `AGENTS.md`; both load when their contents differ. Harness
-deduplicates files by resolved path and content, keeping the first occurrence.
-The startup banner lists the files actually loaded without printing their bodies.
-Files are cached within each agent run and reread for the next run.
+```sh
+pcode config set repo_context_walk_up off   # Only workspace-local files at startup
+pcode config set repo_context_walk_up on    # Also inherit ancestors (default)
+pcode config set repo_context_nested pointer  # Notify the agent of nested files
+pcode config set repo_context_nested contents # Inject nested instruction contents
+pcode config set repo_context_nested off      # Disable nested discovery (default)
+```
 
-Discovery follows only the ancestor chain, not siblings or descendants. Nested
-instruction files are not automatically surfaced on file reads (Harness supports
-that separately, but pcode leaves it disabled). The `.claude`, `.agents`, `.codex`,
-and `.grok` asset inventory remains workspace-local and metadata-only; it does not
-load asset bodies or execute hooks. Ancestor instructions are sent to the selected
-model, so review inherited files when working in a shared directory tree.
+Use the same commands with `/config` inside pcode. These are saved global defaults,
+read when an agent is created (including on launch, resume, or model replacement),
+not live toggles for an existing agent. Restart pcode to reliably apply changes.
+`pcode config unset KEY` restores that setting's built-in default. Disabling both
+still loads workspace-local instructions; neither setting restricts explicit file
+reads or removes instructions from saved conversation history.
+
+**Upward walk:** When enabled, for a workspace under your home folder, discovery
+stops at home (inclusive); elsewhere, it stops at the filesystem root. Paths are
+resolved before walking, so symlinked workspaces inherit from their real ancestors.
+A `.git` directory does not stop the walk. Instructions are loaded broadest-first,
+workspace-last. Within each directory, `CLAUDE.md` comes before `AGENTS.md`; both
+load when their contents differ. Harness deduplicates files by resolved path and
+content, keeping the first occurrence. The startup banner lists the files actually
+loaded without printing their bodies. Files are cached within each agent run and
+reread for the next run.
+
+**Nested discovery:** This works with the upward walk either on or off. After a
+successful `read_file` or `list_directory` tool call within the workspace, Harness
+checks the accessed file's directory or the listed directory. `pointer` adds a
+note telling the agent to read its instruction file if relevant; `contents` adds
+the instruction body to the conversation. These notes do not change the startup
+instruction prefix. Each directory is surfaced at most once per run. Unlike
+startup loading, Harness 0.31 selects only the first matching filename in that
+directory (`CLAUDE.md` before `AGENTS.md`). It does not recursively scan the tree
+or check intervening directories when jumping directly to a deeper file. Shell
+commands, searches, writes, and edits do not trigger this discovery.
+
+The `.claude`, `.agents`, `.codex`, and `.grok` asset inventory remains
+workspace-local and metadata-only; it does not load asset bodies or execute hooks.
+Discovered instructions are sent to the selected model, so review inherited and
+nested files when working in a shared directory tree.
 
 ## Sessions and debugging
 
