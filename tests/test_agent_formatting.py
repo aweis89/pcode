@@ -17,6 +17,8 @@ def test_agent_receives_markdown_guidance_on_each_turn(tmp_path, monkeypatch):
         assert "inline backticks for identifiers and short commands" in instructions
         assert "Close all code fences." in instructions
         assert "Write ordinary prose outside code blocks." in instructions
+        assert "Prefer edit_file and write_file for file changes over shell tools." in instructions
+        assert "GPT-6" not in instructions  # The rationale stays in the code comment.
         assert "Repository-specific guidance marker" in instructions
         seen.append(instructions)
         yield "Done"
