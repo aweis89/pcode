@@ -29,7 +29,11 @@ class Setting:
             raise ValueError(f"{key} must be a non-empty model name without whitespace.")
 
 
+SEND_MODES = ("steering", "queue", "interrupt")
+
+
 SETTINGS = {
+    "send_mode": Setting("steering", SEND_MODES),
     "meridian_managed": Setting("off", ("on", "off")),
     "error_scrollback_lines": Setting("20", positive_integer=True),
     "regenerate_on_resize": Setting("on", ("on", "off")),

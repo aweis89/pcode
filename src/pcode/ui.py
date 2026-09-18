@@ -593,6 +593,7 @@ def create_prompt(
     on_tasks=None,
     on_thinking=None,
     on_commands=None,
+    on_send_mode=None,
     **kwargs,
 ) -> PromptSession:
     configure_newline_keys()
@@ -612,6 +613,13 @@ def create_prompt(
         if on_thinking is not None:
             on_thinking(activity.show_thinking)
         event.app.invalidate()
+
+    if on_send_mode is not None:
+
+        @keys.add("c-g", filter=~is_searching)
+        def cycle_send_mode(event: KeyPressEvent) -> None:
+            on_send_mode()
+            event.app.invalidate()
 
     if on_commands is not None:
         # Overrides prompt_toolkit's forward incremental search; Ctrl+R still
@@ -1001,7 +1009,14 @@ class Transcript:
     def thinking(self, text: str) -> None:
         """Retain readable provider text, choosing visibility again on every redraw."""
         if self.activity is not None and self.activity.show_thinking:
-            self.print(Text(command_text(text), style="pcode.thinking"), end="")
+            # Codex can emit heading-only summaries; unwrap paired line markers.
+            # https://github.com/openai/codex/issues/34873
+            text = re.sub(
+                r"(?m)^([^\S\n]*)\*\*(.+?)\*\*([^\S\n]*)$",
+                r"\1\2\3",
+                command_text(text),
+            )
+            self.print(Text(text, style="pcode.thinking"), end="")
 
     @recorded
     def tool_result(self, event: ToolSummary) -> None:
@@ -1221,6 +1236,9 @@ class Transcript:
         self.note("Ctrl+L choose model (keep conversation)")
         self.note("Ctrl+N increase effort · Ctrl+P decrease effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
-        self.note("During a run: type a draft · Enter queues · Ctrl+C/Ctrl+D cancel, keep draft.")
+        self.note(
+            "During a run: Enter sends · Ctrl+G cycles steering/queue/interrupt. "
+            "Ctrl+C/Ctrl+D cancel, keep draft."
+        )
         self.note("Cancellation clears queued messages. Use terminal/tmux scrollback for history.")
         self.print()

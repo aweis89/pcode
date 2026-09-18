@@ -488,7 +488,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 
 | Key | Action |
 | --- | --- |
-| Enter | Send (queue during generation), or accept a selected completion |
+| Enter | Send using the active send mode, or accept a selected completion |
+| Ctrl+G | Cycle steering → queue → interrupt (saves the default) |
 | Ctrl+J | Newline (map Shift+Enter to this in your terminal) |
 | Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
@@ -622,9 +623,10 @@ with rendered Markdown. Tool summaries live inside the task widget. `/demo`
 and restored session messages still use Rich Markdown.
 
 The editor remains usable throughout generation, including multiline input,
-history, and slash completion. Enter queues the next message and clears the
-editor for another draft; the toolbar shows the queue count. Queued messages run
-in order after the current turn finishes. Slash commands use a separate async
+history, and slash completion. Enter sends using the active mode (steering by
+default) and clears the editor for another draft; the toolbar shows the mode and
+pending message count. Steering messages join the next model request; queue-mode
+messages run in order after the current turn finishes. Ctrl+G cycles send modes. Slash commands use a separate async
 handler, so help, inspection, theme, context, and effort controls remain available
 while the model works. `/new`, `/session`, `/login`, and `/model` require an idle conversation: cancel
 or wait, then retry. `/quit` (or `/exit`) cancels the active run and waits for its
@@ -1167,3 +1169,21 @@ tool result, a notice, or a separator. If older entries have been evicted, repla
 shows an omission notice. Saved sessions and diagnostics are unaffected. Session
 resume still loads its existing bounded transcript preview; replay does not load
 missing command payloads or reconstruct the complete on-disk session archive.
+
+### Sending while the agent is working
+
+Enter uses the saved `send_mode` (default: `steering`). **Ctrl+G** cycles
+`steering` → `queue` → `interrupt` and saves the selection; the status bar shows
+which mode is active. Existing queued messages keep their submission mode.
+
+- **steering**: deliver input at the next model request, after active tools finish.
+  If the turn finishes before then, send it as a follow-up turn.
+- **queue**: wait for the current turn to finish, then start a follow-up turn.
+- **interrupt**: cancel the current turn, discard pending messages, and send the
+  new message after cancellation cleanup completes.
+
+Set the default with `pcode config set send_mode steering` (or `queue` / `interrupt`).
+`/config set send_mode queue` changes the default for the next launch; Ctrl+G
+changes it immediately. Idle input starts a normal turn in every mode. Slash
+commands retain their existing behavior, and Ctrl+C/Ctrl+D still cancel and clear
+pending messages.
