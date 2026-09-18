@@ -402,7 +402,7 @@ Do not include proxy URLs containing credentials in prompts or diagnostics.
 Set `EXA_API_KEY` in the environment before starting pcode to enable Exa-backed
 `web_search` and `get_page` tools for the coder. The key is read by the Exa client,
 not passed to the model. Without a nonblank key, search tools are omitted and
-ordinary coding sessions work as before. The read-only explorer stays local.
+ordinary coding sessions work as before. The explorer stays local and does not receive web tools.
 
 Search returns up to five results with excerpts and source URLs; page retrieval
 returns up to 10,000 characters. Deep search is disabled. Queries and requested
@@ -419,13 +419,19 @@ a sandboxing wrapper (a container, VM, or an OS sandbox such as `sandbox-exec`
 or `bwrap`) when you need enforcement, and otherwise use a trusted repository and
 a safe working environment.
 
-File tools are scoped to the selected workspace by Harness's `FileSystem`
-capability: paths resolve relative to the workspace root, traversal above it is
-rejected, and protected patterns such as `.git/`, `.env`, `*.pem`, `*.key`, and
-`**/secrets*` are read-only through these tools. The explorer subagent shares that
-root but exposes only read-only file tools. Shell commands run with the workspace
-as their working directory but are not confined to it: they can still read or
-modify anything the OS allows, including files protected by the file tools.
+File tools accept absolute paths anywhere the OS permits, including external
+worktrees and temporary directories. Relative paths (including `..`) always use
+the selected workspace as their base, even after a shell command changes its
+working directory. Search/find/list default to the workspace; results outside it
+use absolute paths. Protected patterns such as `.git/*`, `.env`, `.env.*`, `*.pem`,
+`*.key`, and `**/secrets*` remain read-only through file tools at any depth.
+
+The explorer subagent has read-only file tools plus the same unrestricted shell
+capability as the parent, for inspection, Git queries, and safe tests. Its no-edit
+rule is an instruction, not an enforced permission boundary. Shell commands can
+read or modify anything the OS allows, including files protected by file tools.
+Repository instruction discovery remains scoped to the selected workspace and
+its configured ancestors, not every external path the tools can access.
 
 This project pins Harness 0.31.x. Its Coder composition includes filesystem,
 shell, repository context, planning, an explorer subagent, and context management.

@@ -96,7 +96,7 @@ def test_stream_runs_real_coder_read_tool_and_retains_history(tmp_path):
 
 
 @pytest.mark.parametrize("outside_path", ["absolute", "relative", "symlink"])
-def test_coder_tools_are_scoped_to_the_workspace(tmp_path, outside_path):
+def test_coder_file_paths_are_unconfined_but_workspace_relative(tmp_path, outside_path):
     import json
 
     from pydantic_ai_harness.filesystem import FileSystem
@@ -119,8 +119,7 @@ def test_coder_tools_are_scoped_to_the_workspace(tmp_path, outside_path):
     context = next(c for c in coder.capabilities if isinstance(c, RepoContext))
     assert context.workspace_dir == workspace
     filesystem = next(c for c in coder.capabilities if isinstance(c, FileSystem))
-    # File tools enforce their workspace root without prompt-level path guidance.
-    # This does not confine shell commands.
+    # The workspace remains the base, not an access boundary.
     assert Path(filesystem.root_dir) == workspace
     assert filesystem.protected_patterns
     requests = 0
@@ -134,10 +133,8 @@ def test_coder_tools_are_scoped_to_the_workspace(tmp_path, outside_path):
             }
         elif requests == 2:
             parts = [p for message in messages for p in message.parts]
-            # The sibling read is refused by the capability, not by prompt text.
-            assert not any("outside marker" in str(getattr(p, "content", "")) for p in parts)
-            retries = [p for p in parts if isinstance(p, RetryPromptPart)]
-            assert any("outside the root directory" in str(p.content) for p in retries)
+            assert any("outside marker" in str(getattr(p, "content", "")) for p in parts)
+            assert not any(isinstance(p, RetryPromptPart) for p in parts)
             yield {0: DeltaToolCall(name="read_file", json_args=json.dumps({"path": "inside.txt"}))}
         else:
             results = [

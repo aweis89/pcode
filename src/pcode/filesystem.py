@@ -8,16 +8,13 @@ Snapshots are taken inside the operation, not from a later workspace reread.
 import errno
 import os
 import stat
-from dataclasses import dataclass, fields
-from pathlib import Path
+from dataclasses import dataclass
 
 from pydantic_ai import CapabilityEvent
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import AgentDepsT, RunContext
-from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.filesystem._events import FileWrittenEvent
 from pydantic_ai_harness.filesystem._toolset import (
-    FileSystemToolset,
     _content_hash,
     _read_canonical_text,
     _recoverable,
@@ -25,6 +22,7 @@ from pydantic_ai_harness.filesystem._toolset import (
 
 from pcode.edits import MAX_SOURCE, completed_change, sensitive_path
 from pcode.runtime import EditCompleted
+from pcode.workspace_filesystem import WorkspaceFileSystem, WorkspaceFileSystemToolset
 
 
 @dataclass(kw_only=True)
@@ -32,28 +30,12 @@ class FileChangeEvent(CapabilityEvent, namespace="pcode_files", name="change"):
     change: EditCompleted
 
 
-class DisplayFileSystem(FileSystem):
-    @classmethod
-    def from_filesystem(cls, filesystem):
-        return cls(**{f.name: getattr(filesystem, f.name) for f in fields(FileSystem) if f.init})
-
-    def get_toolset(self):
-        if self.read_only:
-            return super().get_toolset()
-        return DisplayFileSystemToolset(
-            root_dir=Path(self.root_dir),
-            allowed_patterns=self.allowed_patterns,
-            denied_patterns=self.denied_patterns,
-            protected_patterns=self.protected_patterns,
-            max_read_lines=self.max_read_lines,
-            max_list_results=self.max_list_results,
-            max_search_results=self.max_search_results,
-            max_find_results=self.max_find_results,
-            id=self.id or "file_system",
-        )
+class DisplayFileSystem(WorkspaceFileSystem):
+    def _toolset_type(self):
+        return DisplayFileSystemToolset
 
 
-class DisplayFileSystemToolset(FileSystemToolset):
+class DisplayFileSystemToolset(WorkspaceFileSystemToolset):
     async def _emit_change(self, ctx, path, before, after, **kwargs):
         change = completed_change(path, before, after, call_id=ctx.tool_call_id or "", **kwargs)
         await ctx.emit(FileChangeEvent(change=change))
@@ -68,13 +50,13 @@ class DisplayFileSystemToolset(FileSystemToolset):
         expected_hash: str | None = None,
     ) -> str:
         resolved = self._safe_resolve(path, write=True)
-        display_path = path if sensitive_path(path) else self._event_location(resolved)["path"]
+        display_path = path if sensitive_path(path) else self._relative_to_root(resolved)
 
         if resolved.exists() and not resolved.is_file():
             raise ModelRetry(f"Path {path!r} exists and is not a regular file.")
 
         if not resolved.parent.exists():
-            parent_rel = str(resolved.parent.relative_to(self._root))
+            parent_rel = self._relative_to_root(resolved.parent)
             raise FileNotFoundError(
                 f"Parent directory '{parent_rel}' does not exist. Use create_directory first."
             )
@@ -196,7 +178,7 @@ class DisplayFileSystemToolset(FileSystemToolset):
         expected_hash: str | None = None,
     ) -> str:
         resolved = self._safe_resolve(path, write=True)
-        display_path = path if sensitive_path(path) else self._event_location(resolved)["path"]
+        display_path = path if sensitive_path(path) else self._relative_to_root(resolved)
         if not resolved.is_file():
             raise FileNotFoundError(f"File not found: {path}")
 

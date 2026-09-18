@@ -364,3 +364,49 @@ def test_invalid_discovery_preferences_fall_back_to_defaults(tmp_path, value):
     context = create_repo_context(tmp_path)
     assert context.home_dir == tmp_path.resolve()
     assert not context.nested_traversal
+
+
+@pytest.mark.parametrize("explorer", [False, True])
+@pytest.mark.parametrize("tool", ["read_file", "list_directory"])
+def test_external_traversal_does_not_load_external_instructions(
+    tmp_path, monkeypatch, explorer, tool
+):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    workspace = tmp_path / "workspace"
+    internal = workspace / "child"
+    external = tmp_path / "external"
+    internal.mkdir(parents=True)
+    external.mkdir()
+    (internal / "AGENTS.md").write_text("INTERNAL_GUIDANCE")
+    (external / "AGENTS.md").write_text("EXTERNAL_GUIDANCE")
+    (internal / "sample.txt").write_text("inside")
+    (external / "sample.txt").write_text("outside")
+    save_preferences(repo_context_nested="contents")
+    if explorer:
+        with patch("pcode.agent.Agent", wraps=Agent) as constructor:
+            create_coder(workspace)
+        agent = Agent("test", **constructor.call_args.kwargs)
+    else:
+        agent = create_agent("test", workspace)
+    calls = 0
+
+    async def respond(messages, info):
+        nonlocal calls
+        notes = [
+            p.content
+            for msg in messages
+            for p in msg.parts
+            if isinstance(p, UserPromptPart) and isinstance(p.content, str)
+        ]
+        assert "EXTERNAL_GUIDANCE" not in info.instructions
+        assert not any("EXTERNAL_GUIDANCE" in note for note in notes)
+        assert any("INTERNAL_GUIDANCE" in note for note in notes) == (calls == 2)
+        if calls < 2:
+            selected = external if calls == 0 else internal
+            path = selected / "sample.txt" if tool == "read_file" else selected
+            calls += 1
+            yield {0: DeltaToolCall(name=tool, json_args=json.dumps({"path": str(path)}))}
+        else:
+            yield "Done"
+
+    assert agent.run_sync("Explore", model=FunctionModel(stream_function=respond)).output == "Done"
