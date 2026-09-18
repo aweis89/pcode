@@ -166,7 +166,9 @@ def create_agent(model: str, workspace: Path) -> Agent:
             "and syntax highlighting. "
             "Use fenced code blocks with a language tag for multiline code or shell examples, "
             "and inline backticks for identifiers and short commands. Close all code fences. "
-            "Write ordinary prose outside code blocks."
+            "Write ordinary prose outside code blocks. "
+            # GPT-6 tends to edit through shell commands, bypassing captured edit diffs.
+            "Prefer edit_file and write_file for file changes over shell tools."
         ),
         capabilities=[create_coder(workspace)],
     )
