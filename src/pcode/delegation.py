@@ -24,6 +24,7 @@ from pydantic_ai.messages import (
 
 from pcode.inspection import capture
 from pcode.runtime import ToolStarted, ToolSummary
+from pcode.shell import result_projection
 from pcode.tool_display import result_detail, target
 
 _parent: ContextVar[RunContext | None] = ContextVar("delegation_parent", default=None)
@@ -86,7 +87,9 @@ async def stream_child_activity(_ctx, events):
                 failed=failed,
                 call_id=f"{parent_id}:{event.tool_call_id}",
                 elapsed_seconds=max(0, monotonic() - started),
-                result=capture(event.part.content),
+                result=capture(
+                    result_projection(event.part.content) if name == "shell" else event.part.content
+                ),
                 run_id=parent.run_id or "",
                 outcome=outcome,
                 parent_call_id=parent_id,

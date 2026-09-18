@@ -422,8 +422,9 @@ a safe working environment.
 File tools accept absolute paths anywhere the OS permits, including external
 worktrees and temporary directories. Relative paths (including `..`) always use
 the selected workspace as their base, even after a shell command changes its
-working directory. Search/find/list default to the workspace; results outside it
-use absolute paths. Protected patterns such as `.git/*`, `.env`, `.env.*`, `*.pem`,
+working directory. `list_files` and `grep` default to the workspace and return
+workspace-relative paths, including `../` paths for external results. Protected
+patterns such as `.git/*`, `.env`, `.env.*`, `*.pem`,
 `*.key`, and `**/secrets*` remain read-only through file tools at any depth.
 
 The explorer subagent has read-only file tools plus the same unrestricted shell
@@ -433,13 +434,25 @@ read or modify anything the OS allows, including files protected by file tools.
 Repository instruction discovery remains scoped to the selected workspace and
 its configured ancestors, not every external path the tools can access.
 
-This project pins Harness 0.31.x. Its Coder composition includes filesystem,
-shell, repository context, planning, an explorer subagent, and context management.
-pcode clears Harness's default command allowlist, so `run_command` accepts any
-command: treat it as arbitrary code execution as the invoking user. Files and
-code returned by tools are sent to the selected model. Background processes
-started by tools can outlive a turn; cancelling a run is not an undo of
-completed tool effects.
+Harness is pinned to upstream commit
+[`12bce878da99bca61a5d8d798bff0a3bc93bd153`](https://github.com/pydantic/pydantic-ai-harness/commit/12bce878da99bca61a5d8d798bff0a3bc93bd153),
+which is newer than the 0.31.0 release. The pin is a direct dependency, so both
+`uv sync` and `make install` use it. Coder supplies `read_file`, `write_file`,
+`edit_file`, `list_files`, `grep`, and `shell`; pcode adds planning, the explorer,
+and optional web search. `list_files` and `grep` use the bundled ripgrep and
+respect ignore rules. Edits support either one replacement pair or a
+`replacements` array, validated before a single write.
+
+The default upstream `shell` accepts unrestricted commands: treat it as arbitrary
+code execution as the invoking user. Foreground calls wait up to 270 seconds
+(or a shorter requested timeout), then return the PID and output/status paths
+without killing a still-running command. Background mode returns those handles
+immediately. Read the returned files to inspect progress and use the returned
+process-group stop command to terminate it. Processes and raw output logs can
+outlive the turn and pcode itself; `--no-save` does not disable these logs.
+Cancelling a call while it is waiting terminates its process group, but cancelling
+a later turn does not stop a command whose handles were already returned.
+Files and code returned by tools are sent to the selected model.
 
 ### Repository instructions (`AGENTS.md` / `CLAUDE.md`)
 
@@ -472,15 +485,16 @@ loaded without printing their bodies. Files are cached within each agent run and
 reread for the next run.
 
 **Nested discovery:** This works with the upward walk either on or off. After a
-successful `read_file` or `list_directory` tool call within the workspace, Harness
-checks the accessed file's directory or the listed directory. `pointer` adds a
+successful `read_file`, `list_files`, or `grep` tool call within the workspace,
+pcode's Harness context adapter checks the accessed file's directory or the
+selected search directory. `pointer` adds a
 note telling the agent to read its instruction file if relevant; `contents` adds
 the instruction body to the conversation. These notes do not change the startup
 instruction prefix. Each directory is surfaced at most once per run. Unlike
-startup loading, Harness 0.31 selects only the first matching filename in that
+startup loading, Harness selects only the first matching filename in that
 directory (`CLAUDE.md` before `AGENTS.md`). It does not recursively scan the tree
 or check intervening directories when jumping directly to a deeper file. Shell
-commands, searches, writes, and edits do not trigger this discovery.
+commands, writes, and edits do not trigger this discovery.
 
 The `.claude`, `.agents`, `.codex`, and `.grok` asset inventory remains
 workspace-local and metadata-only; it does not load asset bodies or execute hooks.
@@ -1227,16 +1241,18 @@ padding. Process polling details without a command are shown without a `$` prefi
 ✓ Run · 0.4s
   $ pytest -q
   2 passed in 0.31s
-  [exit code: 0]
+  {"pid": 124, "exit_code": 0}
 ```
 
 Details:
 
-- It covers `run_command`, `start_command`, `check_command`, and `stop_command`,
-  including calls made by delegated sub-agents. Other tools are unaffected.
-- Active `run_command` calls show a live tail above the prompt, refreshed as
-  complete stdout/stderr lines arrive, without a separate header. Ctrl+G controls
-  both the preview and scrollback; there is no separate visibility toggle.
+- It covers the current `shell` tool, including delegated calls. Saved legacy
+  `run_command`, `start_command`, `check_command`, and `stop_command` entries also
+  remain displayable. Other tools are unaffected.
+- Active foreground `shell` calls show a preview above the prompt, refreshed as
+  complete lines arrive from the combined stdout/stderr log. Harness emits at most
+  the first 16,000 bytes; a capped preview is marked, and further output stays in
+  the command log. Ctrl+G controls both preview and scrollback.
   `command_preview_lines` caps the live output at 10 wrapped rows by default
   (positive integer, excluding the command and frame borders). The preview uses
   space left after the editor, queued prompts, and Tasks/Tools panel. Under tight
@@ -1246,13 +1262,16 @@ Details:
   Programs that buffer their own output must flush it (for example, `python -u`).
 - On completion the transient preview disappears and one bordered result is
   written to scrollback, without duplicate streamed lines. Preview updates are
-  not saved in session history. Background `start_command` processes still expose
-  output through `check_command` / `stop_command`, rather than live previews.
+  not saved in session history. Background `shell` calls return PID/log/status
+  handles rather than streaming output after the call ends.
 - Failed commands follow the same show/hide setting as successful commands.
   When shown, they print one block containing captured output (or the saved
   diagnostic if output is unavailable). There is no separate error visibility option.
 - Output is redacted and sanitized before display, then bounded to
   `command_scrollback_lines` wrapped output rows (default 20), taken from the end.
+  An upstream-truncated tail may start inside a credential with its opening marker
+  missing. In that case pcode omits the tail from scrollback and inspection, keeps
+  the process/log/status handles, and leaves the raw model result unchanged.
   A separate omission marker counts omitted rendered rows. The command, marker,
   and subtle top/bottom borders are outside this budget, so even a budget of one
   retains the final output row. The capture step retains its own 128 KiB payload bound.

@@ -21,7 +21,7 @@ def test_coder_without_exa_key_keeps_coding_tools(tmp_path, monkeypatch, key):
 
     async def model(messages, info):
         names = {tool.name for tool in info.function_tools}
-        assert {"read_file", "edit_file", "run_command"} <= names
+        assert {"read_file", "edit_file", "shell"} <= names
         assert not {"web_search", "get_page", "deep_search"} & names
         yield "Coding without search."
 
@@ -52,7 +52,7 @@ def test_coder_search_uses_default_client_and_returns_sources(tmp_path, monkeypa
         nonlocal requests
         requests += 1
         names = {tool.name for tool in info.function_tools}
-        assert {"web_search", "get_page", "read_file", "run_command"} <= names
+        assert {"web_search", "get_page", "read_file", "shell"} <= names
         assert "deep_search" not in names
         assert "test-exa-key" not in str(info)
         if requests == 1:

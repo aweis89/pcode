@@ -336,7 +336,9 @@ def test_default_budget_retains_last_twenty_output_rows():
     assert [line.strip() for line in lines[4:-1]] == [f"row {i}" for i in range(30, 50)]
 
 
-@pytest.mark.parametrize("name", ["run_command", "start_command", "check_command", "stop_command"])
+@pytest.mark.parametrize(
+    "name", ["shell", "run_command", "start_command", "check_command", "stop_command"]
+)
 @pytest.mark.parametrize("failed", [False, True])
 def test_command_visibility_controls_all_completions(name, failed):
     view, stream = transcript()

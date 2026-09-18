@@ -45,7 +45,7 @@ def test_stream_runs_real_coder_read_tool_and_retains_history(tmp_path):
     async def model(messages, info):
         requests.append(messages)
         names = {tool.name for tool in info.function_tools}
-        assert {"read_file", "edit_file", "run_command"} <= names
+        assert {"read_file", "edit_file", "shell"} <= names
         if len(requests) == 1:
             yield "Looking at the file."
             yield {0: DeltaToolCall(name="read_file", json_args='{"path":"sample.txt"}')}
@@ -162,6 +162,8 @@ def test_coder_allows_all_commands_by_default(tmp_path):
     assert not shell.denied_commands
     assert not shell.denied_operators
     assert shell.allow_interactive
+    assert type(shell) is Shell
+    assert list(shell.get_toolset().tools) == ["shell"]
     assert shell.denied_env_patterns == LLM_API_KEY_ENV_PATTERNS
     # direnv's banner would otherwise corrupt piped command output.
     assert shell.env["DIRENV_LOG_FORMAT"] == ""

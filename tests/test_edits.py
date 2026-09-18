@@ -33,7 +33,7 @@ def test_mutations_capture_actual_contents_and_failed_edits_emit_nothing(tmp_pat
         created = ctx.changes[-1]
         assert created.operation == "created" and created.added == 2
         assert "--- /dev/null" in created.patch
-        await toolset._edit_file(ctx, "example.py", "old", "new")
+        await toolset._edit_file_tool(ctx, "example.py", "old", "new")
         changed = ctx.changes[-1]
         assert " context" in changed.patch
         assert "-old" in changed.patch and "+new" in changed.patch
@@ -41,12 +41,12 @@ def test_mutations_capture_actual_contents_and_failed_edits_emit_nothing(tmp_pat
         assert (tmp_path / "example.py").read_bytes() == b"context\r\nnew\r\n"
         await toolset._write_file(ctx, "example.py", "overwrite\n")
         assert "-new" in ctx.changes[-1].patch
-        await toolset._edit_file(ctx, "example.py", "overwrite", "overwrite")
+        await toolset._edit_file_tool(ctx, "example.py", "overwrite", "overwrite")
         assert ctx.changes[-1].operation == "unchanged"
         count = len(ctx.changes)
         for args in [("missing", "new", None), ("overwrite", "new", "stale")]:
             with pytest.raises(ModelRetry):
-                await toolset._edit_file(ctx, "example.py", *args[:2], expected_hash=args[2])
+                await toolset._edit_file_tool(ctx, "example.py", *args[:2], expected_hash=args[2])
         with pytest.raises(ModelRetry):
             await toolset._write_file(ctx, "example.py", "bad", expected_hash="stale")
         assert len(ctx.changes) == count
@@ -247,7 +247,7 @@ def test_external_mutations_keep_absolute_evidence_paths(tmp_path):
         assert ctx.changes[-1].path == str(target)
         assert ctx.changes[-1].operation == "created"
         assert "+old" in ctx.changes[-1].patch
-        await toolset._edit_file(ctx, "alias.py", "old", "new")
+        await toolset._edit_file_tool(ctx, "alias.py", "old", "new")
         assert ctx.changes[-1].path == str(target)
         assert "-old" in ctx.changes[-1].patch and "+new" in ctx.changes[-1].patch
         await toolset._write_file(ctx, str(target), "last\n")

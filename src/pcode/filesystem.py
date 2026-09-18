@@ -1,8 +1,8 @@
-"""Mutation evidence adapted from Harness 0.31.0's filesystem operations.
+"""Mutation evidence layered on Harness's filesystem operations.
 
-Only the two mutation bodies are adapted: keep descriptor validation, conflict
-checks, newline semantics and result strings aligned with that installed release.
-Snapshots are taken inside the operation, not from a later workspace reread.
+The write capture retains its 0.31.0 descriptor-based snapshot. Edits follow the
+pinned upstream replacement batches, announcement, and guarded write. Snapshots
+are taken inside the operation, not from a later workspace reread.
 """
 
 import errno
@@ -13,11 +13,15 @@ from dataclasses import dataclass
 from pydantic_ai import CapabilityEvent
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import AgentDepsT, RunContext
+from pydantic_ai_harness.filesystem._changes import Change
 from pydantic_ai_harness.filesystem._events import FileWrittenEvent
 from pydantic_ai_harness.filesystem._toolset import (
+    _apply_replacements,
     _content_hash,
+    _is_binary,
     _read_canonical_text,
     _recoverable,
+    _write_content,
 )
 
 from pcode.edits import MAX_SOURCE, completed_change, sensitive_path
@@ -165,15 +169,14 @@ class DisplayFileSystemToolset(WorkspaceFileSystemToolset):
             await ctx.emit(
                 FileWrittenEvent(**self._event_location(resolved), content_hash=new_hash)
             )
-        return f"Wrote {len(content)} chars ({lines} lines) to {path}. [hash:{new_hash}]"
+        return f"Wrote {len(content)} chars ({lines} lines) to {path}.{self._hash_suffix(new_hash)}"
 
     @_recoverable
     async def _edit_file(
         self,
         ctx: RunContext[AgentDepsT] | None,
         path: str,
-        old_text: str,
-        new_text: str,
+        replacements,
         *,
         expected_hash: str | None = None,
     ) -> str:
@@ -181,6 +184,10 @@ class DisplayFileSystemToolset(WorkspaceFileSystemToolset):
         display_path = path if sensitive_path(path) else self._relative_to_root(resolved)
         if not resolved.is_file():
             raise FileNotFoundError(f"File not found: {path}")
+
+        with resolved.open("rb") as source:
+            if _is_binary(source.read(8192)):
+                raise ValueError(f"{path} is a binary file; edit_file only edits text files.")
 
         # Reading and writing with `newline=''` disables universal-newline
         # translation, so the text is the canonical bytes-on-disk view that
@@ -196,22 +203,16 @@ class DisplayFileSystemToolset(WorkspaceFileSystemToolset):
                 f"got hash:{current_hash}). Re-read the file and retry."
             )
 
-        count = text.count(old_text)
-        if count == 0:
-            raise ValueError(f"old_text not found in {path}.")
-        if count > 1:
-            raise ValueError(
-                f"old_text found {count} times in {path}. "
-                "Include more surrounding context to make the match unique."
-            )
-
-        new_content = text.replace(old_text, new_text, 1)
-        resolved.write_text(new_content, encoding="utf-8", newline="")
+        new_content = _apply_replacements(text, replacements, path)
+        change = Change.propose(
+            **self._event_location(resolved), operation="edit", old=text, new=new_content
+        )
+        if (refusal := await self._request(ctx, change, path=path, resolved=resolved)) is not None:
+            return refusal
+        _write_content(resolved, path, new_content, expected_hash=current_hash, create=False)
         if ctx is not None:
             await self._emit_change(ctx, display_path, text, new_content)
         new_hash = _content_hash(new_content)
         if ctx is not None:
-            await ctx.emit(
-                FileWrittenEvent(**self._event_location(resolved), content_hash=new_hash)
-            )
-        return f"Edited {path}. [hash:{new_hash}]"
+            await ctx.emit(change.edited(content_hash=new_hash))
+        return f"Edited {path}.{self._hash_suffix(new_hash)}"

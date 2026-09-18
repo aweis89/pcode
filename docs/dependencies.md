@@ -13,8 +13,8 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | --- | --- | --- | --- |
 | prompt_toolkit (`prompt-toolkit`) | 3.0.53 | [Docs](https://python-prompt-toolkit.readthedocs.io/en/stable/) | [python-prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) |
 | Rich (`rich`) | 14.3.4 | [Docs](https://rich.readthedocs.io/en/stable/) | [rich](https://github.com/Textualize/rich) |
-| Pydantic AI (`pydantic-ai-slim`) | 2.43.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
-| Pydantic AI Harness (`pydantic-ai-harness`) | 0.31.0 | [Docs](https://ai.pydantic.dev/harness/) | [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) |
+| Pydantic AI (`pydantic-ai-slim`) | 2.45.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
+| Pydantic AI Harness (`pydantic-ai-harness`) | 0.31.1.dev48+12bce878 (commit `12bce878da99bca61a5d8d798bff0a3bc93bd153`) | [Docs](https://ai.pydantic.dev/harness/) | [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) |
 
 From the repository root, this read-only command prints installed versions and
 package source locations without importing the agent runtime or loading credentials:
@@ -62,8 +62,8 @@ upstream tests, examples, and documentation sources.
 
 ### File access and explorer shell
 
-`src/pcode/workspace_filesystem.py` adapts installed Harness 0.31.0's `FileSystem` and
-`FileSystemToolset`: relative paths keep the workspace base, but absolute paths,
+`src/pcode/workspace_filesystem.py` retains pcode's path/protection policy around
+Harness's `FileSystem` and `FileSystemToolset`: relative paths keep the workspace base, but absolute paths,
 parent traversal, and external symlinks are allowed. Removing only the containment
 check is insufficient: list/search/find inline `relative_to` calls, events need a
 reconstructable location, and missing-parent writes assume a workspace-relative
@@ -73,19 +73,29 @@ compare those with installed source on upgrades. Keep
 `tests/test_filesystem.py`, the real-tool tests in `tests/test_live.py`, and the
 repository-context tests when changing this integration.
 
-Internal result labels and allow/deny matching remain workspace-relative;
-external labels and allow/deny matching use absolute paths. External walkers
-match `include_glob` and filter hidden entries relative to the selected search
-tree, not its ancestors. Protected write patterns apply at any depth. File events
-retain relative `path` plus absolute `root_dir`; RepoContext still ignores
-external traversal rather than loading arbitrary external instructions.
+Allow/deny matching remains workspace-relative inside the workspace and absolute
+outside it. Legacy walker results keep that convention; the selected Coder
+`list_files`/`grep` tools return paths relative to `cwd`, including external `..`
+paths. Protected write patterns still apply at any depth. File events retain
+relative `path` plus absolute `root_dir`.
 
-Explorer keeps read-only file tools but also receives a distinct `StreamingShell`
-with the parent's settings, including command policy and environment filtering.
-The no-edit rule is now behavioral guidance, not confinement. Preserve
-`tests/test_explorer_shell.py` when changing composition; testing only filesystem
-tool names misses whether delegated shell commands actually execute. Shell cwd
-persistence remains disabled by default, independently of file-tool path bases.
+Forward `cwd`, `tools`, `content_hashes`, and `max_read_chars` when constructing
+the display toolset. Omitting them silently restores legacy tools and hash-bearing
+schemas, and removes Coder's read pagination budget. The `coder` extra supplies
+ripgrep, but an installed `pcode` entry point does not activate its environment's
+`bin` on PATH. `create_coder` appends that bin directory when `rg` is absent,
+without changing existing executable precedence. Test outside `uv run` too.
+
+Explorer receives the parent's file selection as read-only and a distinct stock
+`Shell` with the same settings and environment filtering. The no-edit rule is
+behavioral guidance, not confinement. Preserve `tests/test_explorer_shell.py`
+and `tests/test_coder_integration.py`. Persistent shell refers to process lifetime,
+not sticky `cd`: each call still starts at the workspace.
+
+`AutomaticRepoContext` bridges `FilesSearchedEvent` into upstream's traversal
+handler because `list_files` and `grep` no longer emit `DirectoryListedEvent`.
+Keep the workspace containment and per-run deduplication checks; searches outside
+the workspace must not inject external instruction files.
 
 ### Repository instruction discovery
 
@@ -250,7 +260,7 @@ endpoint, or read the developer's credential file; `tests/conftest.py` redirects
 Specific traps already encountered here:
 
 - Harness's latest website can describe an unreleased Coder API, extras, or a
-  newer tool composition than installed 0.31.x. Follow the installed release,
+  newer tool composition than the pinned snapshot. Follow the installed source,
   not a website example copied without verification.
 - A PTY with `PROMPT_TOOLKIT_NO_CPR=1` does not exercise real prompt height:
   cursor-position reports can stretch the layout into the remaining pane. Keep
@@ -486,24 +496,41 @@ we cannot reconstruct provider-omitted content.
 
 ## Live shell output
 
-`src/pcode/shell.py` adapts the installed Harness **0.31.0** `ShellToolset`:
-`Shell.get_toolset()` is synchronous and takes no context; `for_run(ctx)` must
-return a fresh streaming subclass, and `call_tool(name, tool_args, ctx, tool)`
-provides the context for `ctx.emit(CapabilityEvent)`. The stock `run_command`
-uses nested AnyIO pipe readers but has no output callback. Our alternate drain
-retains command validation, environment filtering, cwd capture, process groups,
-timeout handling, result formatting, and the inherited result cap. Compare it
-against the installed `shell/_toolset.py` when upgrading Harness. Background
-process methods remain inherited, without live file polling.
+Harness is pinned by full Git SHA in `pyproject.toml`, not only a uv source
+override, so `make install` also receives the pin. Hatch requires
+`allow-direct-references = true` for editable and wheel builds with this dependency.
+The verified revision is `12bce878da99bca61a5d8d798bff0a3bc93bd153`.
 
-Snapshots are throttled to 10 Hz and emitted only on changes. Wait for complete
-lines, sanitize before clipping, and redact unfinished quoted credentials and
-private-key blocks before displaying any tail. `CommandOutput` is transient:
-bypass session/tree journals, remove the per-call preview on completion, and
-clear all previews on cancellation/failure/reset. The UI shares the terminal
-height budget with tasks, queue, and editor. Keep real-tmux tests
-for live output before completion, toggling, resize/CPR, and cancellation;
-PTY tests with CPR disabled cannot prove compact prompt height.
+Coder now selects `Shell(tools=['shell'], default_timeout=270)`. Pcode uses that
+class unchanged; `src/pcode/shell.py` only projects its `CommandStartedEvent`,
+`CommandOutputEvent`, and `CommandFinishedEvent` into transient UI output. Events
+carry `tool_call_id`; keep buffers local to a run and keyed by that identity.
+They do not add model calls. Planning and SubAgents are no longer in Coder and
+must be composed explicitly. `ClearToolResults` remains removed so pcode can
+summarize before discarding evidence.
+
+The persistent executor polls the combined stdout/stderr log every 50 ms, emitting
+at most the first 16,000 bytes in chunks up to 4,096 bytes. Its final result is the
+last 16,000 bytes plus PID/log/status handles. `CommandFinishedEvent` means the
+foreground wait ended, not necessarily that the process exited: `exit_code=None`
+means running. The final result can carry a later terminal status than the event;
+do not overwrite that exit with an earlier running snapshot. The event's PID is
+the supervisor/session leader; the status JSON's PID is its child command, so
+comparing those PIDs to validate a status discards genuine completions. Foreground timeout
+returns handles without killing the process. Cancellation while waiting kills the
+session; processes whose handles were already returned outlive the run.
+
+An already-truncated result can begin inside a secret whose opening marker was
+dropped. `result_projection` conservatively omits that raw tail from UI/inspection
+payloads, keeping supervisor handles/status; it does not reread the log. Apply it
+to delegated shell results too. The model result and raw upstream log are not
+redacted by this display adapter. `--no-save` does not disable upstream logs.
+
+Wait for complete lines, sanitize before clipping, and redact unfinished quoted
+credentials and private-key blocks before displaying a preview. `CommandOutput`
+bypasses session/tree journals. Remove per-call previews when tool results arrive,
+and clear them on cancellation/failure/reset. Preserve `tests/test_shell_streaming.py`
+and the real-tmux command-height tests; no-CPR PTYs cannot prove compact height.
 
 ### Managed Meridian isolation (verified installed 1.71.1)
 
@@ -526,15 +553,22 @@ smoke check started a private instance, verified health and effective settings,
 and terminated it without making any model request.
 
 
-### Completed file diffs (verified Harness 0.31.0)
+### Completed file diffs (verified pinned Harness revision)
 
-`FileWrittenEvent` includes the resulting hash, path and call identity, but no
-before/after contents. Reading the file when that event reaches the UI cannot
-recover the previous version. `pcode.filesystem.DisplayFileSystemToolset` adapts
-only `_write_file` and `_edit_file` from the installed filesystem toolset to
-capture evidence inside the mutation. On upgrades, compare those bodies with
-`pydantic_ai_harness/filesystem/_toolset.py`, including descriptor checks,
-`expected_hash`, recoverable errors, canonical newlines and result strings.
+`FileWrittenEvent` still has no before/after contents. The new `FileEditedEvent`
+contains a bounded diff, but it is already truncated and not secret-redacted;
+it cannot replace pcode's full-source redaction and precise counts. Reading the
+file when either event reaches the UI cannot recover the previous version.
+`DisplayFileSystemToolset` keeps in-operation evidence capture. On upgrades,
+compare `_write_file` and `_edit_file` with installed source, including descriptor
+checks, hashes, recoverable errors, canonical newlines, and result strings.
+
+`_edit_file` now takes a sequence of `Replacement` objects, not old/new positional
+strings. Apply all replacements before one guarded write, honor the upstream
+change-request cancellation/revalidation, and emit one completed diff. Forward
+`content_hashes=False` into the toolset and use `_hash_suffix` for model results;
+events still carry hashes. The write adapter retains pcode's existing descriptor
+snapshot semantics rather than upstream's pre-write request/snapshot flow.
 
 Writes capture old contents through the same descriptor before truncation.
 Unconditional writes try read/write access for capture, falling back to the
@@ -543,8 +577,9 @@ not make an otherwise valid write fail. The edit adapter uses the exact text
 already read for replacement. Neither adapter makes the underlying operation
 transactional against arbitrary external writers.
 
-Pydantic AI 2.43.0 exposes tool arguments through `ToolCallPartDelta.args_delta`.
-`StreamingEditPreview` accumulates them without executing anything, using
+Pydantic AI exposes tool arguments through `ToolCallPartDelta.args_delta`.
+`StreamingEditPreview` handles single pairs and replacement arrays without
+executing anything, using
 `pydantic_core.from_json(..., allow_partial="trailing-strings")` for incomplete
 string values. A separate parse with `allow_partial=True` requires a complete
 path before exposing content; resolve it against the filesystem root to exclude

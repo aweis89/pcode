@@ -10,7 +10,6 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness.shell import Shell
 
 from pcode.agent import create_coder
-from pcode.shell import StreamingShell
 
 
 def test_explorer_copies_parent_shell_policy(tmp_path):
@@ -19,7 +18,7 @@ def test_explorer_copies_parent_shell_policy(tmp_path):
     options = constructor.call_args.kwargs
     parent = next(c for c in coder.capabilities if isinstance(c, Shell))
     child = next(c for c in options["capabilities"] if isinstance(c, Shell))
-    assert isinstance(child, StreamingShell)
+    assert type(child) is Shell
     assert child is not parent
     for field in fields(Shell):
         if field.init:
@@ -57,22 +56,23 @@ def test_delegated_explorer_reads_external_worktree_and_runs_shell(tmp_path):
                 }
             elif parent_calls == 2:
                 assert "External review complete" in results
-                yield {0: DeltaToolCall(name="run_command", json_args='{"command":"pwd"}')}
+                yield {0: DeltaToolCall(name="shell", json_args='{"command":"pwd"}')}
             else:
                 # The child's shell cd did not change the parent's cwd.
                 assert str(workspace) in results[-1]
                 yield "Done"
             return
 
-        assert {"run_command", "start_command", "check_command", "stop_command"} <= names
+        assert "shell" in names
+        assert not {"run_command", "start_command", "check_command", "stop_command"} & names
         assert not {"write_file", "edit_file", "create_directory"} & names
         assert "Do not edit" in info.instructions
         assert str(workspace) in info.instructions
         child_calls += 1
         calls = [
             ("read_file", {"path": str(external / "sample.txt")}),
-            ("run_command", {"command": f"cd {shlex.quote(str(external))}; pwd"}),
-            ("run_command", {"command": "pwd"}),
+            ("shell", {"command": f"cd {shlex.quote(str(external))}; pwd"}),
+            ("shell", {"command": "pwd"}),
             ("read_file", {"path": "inside.txt"}),
         ]
         if child_calls > 1:

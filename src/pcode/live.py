@@ -33,6 +33,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
+from pydantic_ai_harness.shell import (
+    CommandFinishedEvent,
+    CommandOutputEvent,
+    CommandStartedEvent,
+)
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersistence
 from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent
 
@@ -62,14 +67,17 @@ from pcode.runtime import (
     ToolSummary,
 )
 from pcode.sessions import SavedSession, SessionError
-from pcode.shell import CommandOutputEvent
+from pcode.shell import ShellPreview, result_projection
 from pcode.steering import Steering
 from pcode.tool_display import (
+    COMMAND_TOOLS,
     command_error,
     command_text,
     delegation_detail,
     label,
     result_detail,
+    shell_result_status,
+    shell_status,
     target,
 )
 
@@ -434,7 +442,7 @@ class AgentRuntime:
         )
         filesystem_root = next(
             (
-                Path(c.root_dir)
+                Path(c.cwd or c.root_dir)
                 for c in self.agent.root_capability.capabilities
                 if isinstance(c, FileSystem) and not c.read_only
             ),
@@ -448,6 +456,8 @@ class AgentRuntime:
         delegates: dict[str, ToolStarted] = {}
         child_tools: dict[str, ToolStarted] = {}
         delegation_ends: dict[str, DelegationEndEvent] = {}
+        shell_preview = ShellPreview()
+        shell_ends: dict[str, CommandFinishedEvent] = {}
 
         def activity() -> RunStatus:
             if not tools:
@@ -520,8 +530,13 @@ class AgentRuntime:
                             else:
                                 child_tools.pop(event.child.call_id, None)
                             yield event.child
-                elif isinstance(event, CommandOutputEvent):
-                    yield CommandOutput(event.call_id, event.command, event.output)
+                elif isinstance(
+                    event, (CommandStartedEvent, CommandOutputEvent, CommandFinishedEvent)
+                ):
+                    if isinstance(event, CommandFinishedEvent):
+                        shell_ends[event.tool_call_id] = event
+                    if (output := shell_preview.update(event)) is not None:
+                        yield output
                 elif isinstance(event, PartStartEvent):
                     if isinstance(event.part, TextPart):
                         yield TextDelta(event.part.content)
@@ -557,7 +572,7 @@ class AgentRuntime:
                         started_at=datetime.now(timezone.utc).isoformat(),
                         process_id=capture(args.get("command_id", "")),
                         command=command_text(args["command"])
-                        if event.part.tool_name in {"run_command", "start_command"}
+                        if event.part.tool_name in {"shell", "run_command", "start_command"}
                         and isinstance(args.get("command"), str)
                         else "",
                     )
@@ -574,6 +589,18 @@ class AgentRuntime:
                         "retry" if isinstance(event.part, RetryPromptPart) else event.part.outcome
                     )
                     detail, failed = result_detail(name, args, event.part.content, outcome)
+                    shell_end = shell_ends.pop(event.tool_call_id, None)
+                    if name == "shell" and shell_end is not None and outcome == "success":
+                        exit_code = shell_end.exit_code
+                        # The supervisor can finish between the event snapshot and
+                        # the final result. Do not replace a later exit with "running".
+                        terminal = shell_result_status(event.part.content)
+                        if exit_code is None and terminal is not None:
+                            exit_code = terminal["exit_code"]
+                        status, failed = shell_status(exit_code)
+                        detail = target(name, args) + (f" → {status}" if status else "")
+                        if shell_end.truncated:
+                            detail += " · preview capped"
                     delegates.pop(event.tool_call_id, None)
                     end = delegation_ends.pop(event.tool_call_id, None)
                     if end is not None:
@@ -593,16 +620,23 @@ class AgentRuntime:
                     if items != plan_items:
                         plan_items = items
                         yield PlanUpdated(items)
+                    display_content = (
+                        result_projection(event.part.content, shell_end)
+                        if name == "shell"
+                        else event.part.content
+                    )
                     yield ToolSummary(
                         name,
                         detail,
                         failed=failed,
                         call_id=event.tool_call_id,
-                        result=capture(event.part.content),
+                        result=capture(display_content),
                         run_id=run_id,
                         outcome=outcome,
                         process_id=(
-                            match[1]
+                            str(shell_end.pid)
+                            if shell_end is not None
+                            else match[1]
                             if name == "start_command"
                             and isinstance(event.part.content, str)
                             and (
@@ -612,13 +646,11 @@ class AgentRuntime:
                         ),
                         elapsed_seconds=max(0, monotonic() - started),
                         command=command_text(args["command"])
-                        if name in {"run_command", "start_command"}
+                        if name in {"shell", "run_command", "start_command"}
                         and isinstance(args.get("command"), str)
                         else "",
-                        error=command_error(event.part.content)
-                        if failed
-                        and name
-                        in {"run_command", "start_command", "check_command", "stop_command"}
+                        error=command_error(display_content)
+                        if failed and name in COMMAND_TOOLS
                         else "",
                     )
                     yield activity()
