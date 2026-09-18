@@ -323,7 +323,7 @@ class SavedSession:
                     records.append({"kind": "partial", "markdown": partial})
                     partial = ""
                 records.append(record)
-            elif kind == "ToolSummary":
+            elif kind in ("ToolSummary", "EditCompleted"):
                 records.append(record)
         if partial:
             records.append({"kind": "partial", "markdown": partial})
