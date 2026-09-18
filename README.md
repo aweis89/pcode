@@ -433,6 +433,27 @@ code returned by tools are sent to the selected model. Background processes
 started by tools can outlive a turn; cancelling a run is not an undo of
 completed tool effects.
 
+### Repository instructions (`AGENTS.md` / `CLAUDE.md`)
+
+Both the main agent and explorer automatically load `CLAUDE.md` and `AGENTS.md`
+from the workspace and its ancestor directories. For a workspace under your home
+folder, discovery stops at home (inclusive); elsewhere, it stops at the filesystem
+root. Paths are resolved before walking, so symlinked workspaces inherit from
+their real ancestors. A `.git` directory does not stop the walk.
+
+Instructions are loaded broadest-first, workspace-last. Within each directory,
+`CLAUDE.md` comes before `AGENTS.md`; both load when their contents differ. Harness
+deduplicates files by resolved path and content, keeping the first occurrence.
+The startup banner lists the files actually loaded without printing their bodies.
+Files are cached within each agent run and reread for the next run.
+
+Discovery follows only the ancestor chain, not siblings or descendants. Nested
+instruction files are not automatically surfaced on file reads (Harness supports
+that separately, but pcode leaves it disabled). The `.claude`, `.agents`, `.codex`,
+and `.grok` asset inventory remains workspace-local and metadata-only; it does not
+load asset bodies or execute hooks. Ancestor instructions are sent to the selected
+model, so review inherited files when working in a shared directory tree.
+
 ## Sessions and debugging
 
 ```sh

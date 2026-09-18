@@ -60,6 +60,20 @@ upstream tests, examples, and documentation sources.
   the installed `pydantic_ai_harness` implementation for the capabilities used.
   Verify Coder's actual tool composition, planning, and step-persistence APIs.
 
+### Repository instruction discovery
+
+[Harness RepoContext](https://pydantic.dev/docs/ai/harness/repo-context/) supports
+ancestor loading in installed 0.31.0, but `home_dir=None` scans only the workspace.
+Verified in `repo_context/_loader.py`: the bound is inclusive; when it is not an
+ancestor of the resolved workspace, the loader falls back to workspace-only.
+`src/pcode/repo_context.py:create_repo_context` therefore supplies the resolved home
+for workspaces beneath it, or the filesystem root elsewhere, for both the main
+agent and explorer. Harness handles ancestor-first ordering, both instruction
+filenames, real-path/content deduplication, and per-run cache isolation. No custom
+instruction scanner is needed. Nested traversal remains disabled and the asset
+inventory remains workspace-local. Keep `tests/test_repo_context.py` covering the
+boundary, symlink, deduplication, refresh, and agent-wiring behavior on upgrades.
+
 ### Delegation activity
 
 `src/pcode/delegation.py` bridges Harness 0.31.0's `SubAgents.event_stream_handler`

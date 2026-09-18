@@ -22,7 +22,7 @@ from pcode.llm_proxy import ProxiedCodexProvider
 from pcode.meridian import MeridianSessionIdentity
 from pcode.output_limits import ModelOutputLimits
 from pcode.planning import IdentifiedPlanning
-from pcode.repo_context import AutomaticRepoContext
+from pcode.repo_context import create_repo_context
 from pcode.shell import StreamingShell
 from pcode.usage_limits import UnlimitedRequests
 
@@ -36,13 +36,13 @@ def create_coder(workspace: Path) -> CombinedCapability:
         capabilities=[
             UnlimitedRequests(),
             FileSystem(workspace, read_only=True),
-            AutomaticRepoContext(workspace_dir=workspace),
+            create_repo_context(workspace),
         ],
     )
     coder = Coder(workspace, subagents=[SubAgent(explorer)])
     # Supply discovery in each run's context, not as a model-driven tool call.
     coder.capabilities = [
-        AutomaticRepoContext(workspace_dir=workspace)
+        create_repo_context(workspace)
         if isinstance(capability, RepoContext)
         else IdentifiedPlanning(
             **{
