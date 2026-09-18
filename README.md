@@ -612,6 +612,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   applies from the next request when chosen mid-run).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed` or `/errors`: open the same inspector filtered to failures.
+- `/diffs`: browse this conversation's file diffs in a full-screen popup.
 - `/context`: current model, workspace, completed turns, and token usage.
 - `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
@@ -713,6 +714,22 @@ Routine tool summaries no longer enter conversation scrollback. `/tools` opens a
 read-only alternate-screen inspector, separate from this ten-call activity panel.
 It retains all live conversation calls, including successful planning operations.
 The non-interactive `--demo` sample still prints its fictional tool summaries.
+
+### Edit diff browser
+
+`/diffs` opens a full-screen popup showing this conversation's completed file
+edits, using the same diff colors as scrollback. The diff fills most of the
+screen; a small file selector sits at the bottom. Keys are listed in the header:
+
+- Up/Down in the file list selects a file, newest change first.
+- PageUp/PageDown scroll the diff without leaving the file list.
+- Tab/Shift+Tab move focus; arrows and Ctrl+Home/Ctrl+End scroll the focused diff.
+- Escape, Ctrl+C, or Ctrl+D closes the popup and restores the editor draft.
+
+Saved sessions read their changes back from the journal on the active branch, so
+resumed and branched conversations show the diffs that belong to them. Redaction
+and size limits are the same as the scrollback blocks; nothing is re-read from
+disk and no edit is re-applied.
 
 ### Tool-call inspector
 
