@@ -28,7 +28,7 @@ def test_thinking_retained_without_old_tail_limit_and_hidden_by_default():
     transcript.thinking(text)
     assert rendered(transcript) == ""
     transcript.activity.show_thinking = True
-    assert rendered(transcript) == text
+    assert rendered(transcript) == text + "\n"
     transcript.activity.show_thinking = False
     assert rendered(transcript) == ""
     assert len(transcript.log.entries) == 1
@@ -181,17 +181,17 @@ def test_thinking_style_is_dim_and_theme_aware(theme, color_style, source):
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
-        ("**Inspecting workspace**", "Inspecting workspace\n"),
-        ("**Heading**\n\nBody with **inline bold**.\n", "Heading\nBody with inline bold.\n"),
-        ("**First**\n**Second**\n", "First\nSecond\n"),
-        ("**Unclosed", "**Unclosed\n"),
-        ("Unopened**", "Unopened**\n"),
-        ("Plain **inline** text", "Plain inline text\n"),
-        ("*Single* and `code`", "Single and code\n"),
+        ("**Inspecting workspace**", "Inspecting workspace\n\n"),
+        ("**Heading**\n\nBody with **inline bold**.\n", "Heading\n\nBody with inline bold.\n\n"),
+        ("**First**\n**Second**\n", "First\nSecond\n\n"),
+        ("**Unclosed", "**Unclosed\n\n"),
+        ("Unopened**", "Unopened**\n\n"),
+        ("Plain **inline** text", "Plain inline text\n\n"),
+        ("*Single* and `code`", "Single and code\n\n"),
         ("", ""),
     ],
 )
-def test_thinking_renders_compact_markdown_only_for_display(source, expected):
+def test_thinking_renders_muted_markdown_only_for_display(source, expected):
     buffer = StringIO()
     transcript = Transcript(Console(file=buffer, width=60), activity=Activity(show_thinking=True))
     transcript.thinking(source)
@@ -219,7 +219,7 @@ def test_streamed_thinking_renders_split_markdown_and_buffers_code_and_lists():
         writer.commit_thinking = transcript.thinking
         for chunk in ["*", "*First", "*", "*\n\n*", "*Second*", "*\n\n"]:
             writer.thinking_delta(chunk)
-        assert rendered(transcript) == "First\nSecond\n"
+        assert rendered(transcript) == "First\n\nSecond\n\n"
         writer.thinking_delta("```python\nprint('hello')\n")
         assert "hello" not in buffer.getvalue()
         writer.thinking_delta("```\n")
@@ -231,6 +231,6 @@ def test_streamed_thinking_renders_split_markdown_and_buffers_code_and_lists():
         assert "two" in buffer.getvalue()
         assert "ignored streamed fallback" not in buffer.getvalue()
         assert buffer.getvalue() == render_raw(transcript)
-        assert all(line.strip() for line in buffer.getvalue().splitlines())
+        assert "First\n\nSecond\n\n" in rendered(transcript)
         writer.finish_thinking("**Fallback**")
-        assert rendered(transcript).endswith("Fallback\n")
+        assert rendered(transcript).endswith("Fallback\n\n")
