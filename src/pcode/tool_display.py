@@ -16,6 +16,9 @@ LABELS = {
     "list_directory": "List",
     "create_directory": "Create directory",
     "file_info": "File info",
+    "shell": "Run",
+    "list_files": "Find",
+    "grep": "Search",
     "run_command": "Run",
     "start_command": "Start",
     "check_command": "Check",
@@ -84,7 +87,7 @@ def target(name: str, args: dict) -> str:
             + " · "
             + (plain(argument(task), 160) if isinstance(task, str) else "assignment unavailable")
         )
-    if name in {"run_command", "start_command"}:
+    if name in {"shell", "run_command", "start_command"}:
         command = args.get("command")
         return command_preview(command) if isinstance(command, str) else "command unavailable"
     if name in {"get_page", "web_search"}:
@@ -97,6 +100,8 @@ def target(name: str, args: dict) -> str:
         "edit_file",
         "search_files",
         "find_files",
+        "list_files",
+        "grep",
         "list_directory",
         "create_directory",
         "file_info",
@@ -112,11 +117,14 @@ def target(name: str, args: dict) -> str:
             except ValueError:
                 pass
         where = "[sensitive path]" if sensitive else plain(value)
-        if name in {"search_files", "find_files"} and isinstance(args.get("pattern"), str):
+        if name in {"search_files", "find_files", "list_files", "grep"} and isinstance(
+            args.get("pattern"), str
+        ):
             pattern = json.dumps(argument(args["pattern"]), ensure_ascii=False)
             where = f"{pattern} in {where}"
-            if name == "search_files" and isinstance(args.get("include_glob"), str):
-                where += f" · glob {json.dumps(argument(args['include_glob']), ensure_ascii=False)}"
+            glob = args.get("glob" if name == "grep" else "include_glob")
+            if name in {"search_files", "grep"} and isinstance(glob, str):
+                where += f" · glob {json.dumps(argument(glob), ensure_ascii=False)}"
         return where
     return ""
 
@@ -226,7 +234,7 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
             result += " · truncated"
         elif text.endswith("(empty file)\n"):
             result = "0 lines · empty file"
-    elif name == "search_files":
+    elif name in {"search_files", "grep"}:
         matches = re.findall(r"^(.+?):\d+:", text, re.MULTILINE)
         result = (
             f"{len(matches)} matches in {len(set(matches))} files"
@@ -244,7 +252,7 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
         )
         if text == "(empty directory)":
             result = "0 files · 0 directories"
-    elif name == "find_files":
+    elif name in {"find_files", "list_files"}:
         if text.strip() == "No matches found.":
             result = "No matches"
         else:
@@ -262,6 +270,11 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
             if (isinstance(old, str) and isinstance(new, str))
             else "Edit finished"
         )
+    elif name == "shell":
+        # The supervisor appends its own status JSON after the output and handles.
+        # Live calls use CommandFinishedEvent as the authoritative status instead.
+        status = shell_result_status(text)
+        result, failed = shell_status(status["exit_code"]) if status is not None else ("", False)
     elif name in {"run_command", "start_command", "check_command", "stop_command"}:
         # Foreground nonzero exits and completed background processes carry this marker.
         match = re.search(r"\[exit code: (-?\d+)\]\s*$", text)
@@ -309,15 +322,40 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
             result = "Assistant configuration inspected"
     else:
         result = ""
-    if name in {"search_files", "find_files", "list_directory"} and re.search(
-        r"^\[\.\.\. truncated at \d+ (?:entries|matches)\]$", text, re.MULTILINE
+    if name in {"search_files", "find_files", "list_directory", "list_files", "grep"} and re.search(
+        r"^\[\.\.\. truncated at \d+ (?:entries|matches|files|lines)\]$", text, re.MULTILINE
     ):
         result += " · truncated"
     return (f"{where} → {result}" if where and result else where or result), failed
 
 
 # Shell-facing tools whose captured output can be mirrored into scrollback.
-COMMAND_TOOLS = frozenset({"run_command", "start_command", "check_command", "stop_command"})
+COMMAND_TOOLS = frozenset(
+    {"shell", "run_command", "start_command", "check_command", "stop_command"}
+)
+
+
+def shell_status(exit_code: int | None) -> tuple[str, bool]:
+    if exit_code is None:
+        return "Running in background", False
+    if exit_code == 0:
+        return "", False
+    return f"exit {exit_code}" + (" · Executable not found" if exit_code == 127 else ""), True
+
+
+def shell_result_status(text: str) -> dict | None:
+    try:
+        status = json.loads(text.splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+    if (
+        isinstance(status, dict)
+        and type(status.get("pid")) is int
+        and "exit_code" in status
+        and (status["exit_code"] is None or type(status["exit_code"]) is int)
+    ):
+        return status
+    return None
 
 
 # Successful planning calls update the pinned panel; failures remain in scrollback.

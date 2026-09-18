@@ -193,11 +193,7 @@ def test_real_tool_capture_survives_resume_and_later_model_failure(tmp_path):
         nonlocal requests
         requests += 1
         if requests == 1:
-            yield {
-                0: DeltaToolCall(
-                    name="run_command", json_args='{"command":"printf detail; exit 2"}'
-                )
-            }
+            yield {0: DeltaToolCall(name="shell", json_args='{"command":"printf detail; exit 2"}')}
         else:
             raise RuntimeError("synthetic later failure")
 
@@ -218,7 +214,7 @@ def test_real_tool_capture_survives_resume_and_later_model_failure(tmp_path):
             entry = archive.calls[0]
             assert entry.state == "failed"
             assert "printf detail" in entry.arguments.read()
-            assert "detail" in entry.result.read() and "exit code: 2" in entry.result.read()
+            assert "detail" in entry.result.read() and '"exit_code": 2' in entry.result.read()
             assert entry.run_id != "unavailable"
             identity, root = saved.info.id, saved.directory.parent
         finally:
@@ -242,7 +238,7 @@ def test_unsaved_capture_survives_failure_and_new_resets(tmp_path):
         nonlocal requests
         requests += 1
         if requests == 1:
-            yield {0: DeltaToolCall(name="run_command", json_args='{"command":"printf unsaved"}')}
+            yield {0: DeltaToolCall(name="shell", json_args='{"command":"printf unsaved"}')}
         else:
             raise RuntimeError("synthetic failure")
 

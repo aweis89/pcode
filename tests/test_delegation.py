@@ -41,7 +41,7 @@ def test_real_parallel_children_are_correlated_streamed_and_inspectable(tmp_path
                 yield {0: delegate(0), 1: delegate(1)}
         else:
             assert "read_file" in names
-            assert "run_command" in names
+            assert "shell" in names
             assert not {"edit_file", "write_file", "create_directory"} & names
             if returns(messages):
                 yield "PRIVATE CHILD ANSWER"

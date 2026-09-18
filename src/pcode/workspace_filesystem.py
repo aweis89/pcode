@@ -64,7 +64,8 @@ class WorkspaceFileSystem(FileSystem):
             f"File tools accept absolute paths anywhere on the host and relative paths "
             f"based on the workspace {str(Path(self.root_dir).resolve())!r}, including '..'. "
             "Shell cd does not change that file-tool base. File tools are not a sandbox. "
-            "Search/find/list default to the workspace; external results use absolute paths. "
+            "Search and listing tools default to the workspace. "
+            "Returned relative paths use that same workspace base. "
             "Existing protected-file write rules still apply to file tools, not shell commands."
         )
 
@@ -82,6 +83,10 @@ class WorkspaceFileSystem(FileSystem):
                 for pattern in self.protected_patterns
             ],
             max_read_lines=self.max_read_lines,
+            max_read_chars=self.max_read_chars,
+            cwd=None if self.cwd is None else Path(self.cwd),
+            content_hashes=self.content_hashes,
+            tools=self.tools,
             max_list_results=self.max_list_results,
             max_search_results=self.max_search_results,
             max_find_results=self.max_find_results,
@@ -95,7 +100,7 @@ class WorkspaceFileSystem(FileSystem):
 class WorkspaceFileSystemToolset(FileSystemToolset):
     def _resolve_path(self, path: str) -> Path:
         try:
-            candidate = (self._root / path).resolve()
+            candidate = (self._cwd / path).resolve()
         except RuntimeError as exc:
             raise ModelRetry(f"Path {path!r} resolves through a symlink loop.") from exc
         if not candidate.exists():

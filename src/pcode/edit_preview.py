@@ -107,16 +107,26 @@ class StreamingEditPreview:
             if part.tool_name == "write_file"
             else [("old_text", "-"), ("new_text", "+")]
         )
-        for field, prefix in fields:
-            text = partial.get(field)
-            if not isinstance(text, str) or len(text) > MAX_SOURCE:
-                continue
-            # Sanitize the complete buffer before clipping; unfinished strings
-            # only expose completed lines, not fragments of tokens/credentials.
-            text = edit_text(text)
-            if field not in complete:
-                text = text[: text.rfind("\n") + 1]
-            lines.extend(prefix + line for line in text.splitlines())
+        pairs = [(partial, complete)]
+        if part.tool_name == "edit_file" and isinstance(partial.get("replacements"), list):
+            finished = complete.get("replacements", [])
+            if not isinstance(finished, list):
+                finished = []
+            pairs = [
+                (item, finished[i] if i < len(finished) and isinstance(finished[i], dict) else {})
+                for i, item in enumerate(partial["replacements"])
+                if isinstance(item, dict)
+            ]
+        for proposed, finished in pairs:
+            for field, prefix in fields:
+                text = proposed.get(field)
+                if not isinstance(text, str) or len(text) > MAX_SOURCE:
+                    continue
+                # Sanitize before clipping; unfinished strings expose only whole lines.
+                text = edit_text(text)
+                if field not in finished:
+                    text = text[: text.rfind("\n") + 1]
+                lines.extend(prefix + line for line in text.splitlines())
         preview = EditPreview(f"edit-preview:{index}", edit_text(path), "\n".join(lines)[-8192:])
         if preview != self.shown.get(index):
             self.shown[index] = preview

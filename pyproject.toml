@@ -8,8 +8,8 @@ dependencies = [
     "genai-prices>=0.1.7,<0.2",
     "httpx2>=2.13,<3",
     "prompt-toolkit>=3.0.52,<4",
-    "pydantic-ai-harness[exa]>=0.31.0,<0.32",
-    "pydantic-ai-slim[anthropic,mcp,openai]>=2.43.0,<3",
+    "pydantic-ai-harness[exa,coder] @ git+https://github.com/pydantic/pydantic-ai-harness.git@12bce878da99bca61a5d8d798bff0a3bc93bd153",
+    "pydantic-ai-slim[anthropic,mcp,openai]>=2.44.0,<3",
     "rich>=14,<15",
     # FastMCP 4.x OAuth callback server selects Uvicorn's websockets-sansio protocol.
     "websockets>=15.0.1,<17",
@@ -21,6 +21,9 @@ pcode = "pcode.app:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [dependency-groups]
 dev = ["pytest>=8", "pexpect>=4.9; sys_platform != 'win32'", "ruff>=0.11"]
