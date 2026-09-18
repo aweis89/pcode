@@ -130,7 +130,7 @@ def create_agent(model: str, workspace: Path) -> Agent:
         # Always receive them so Ctrl+T can reveal the preview mid-turn; the
         # display preference remains local and never changes reasoning effort.
         model_settings=(
-            {"openai_reasoning_summary": "auto"} if model.startswith("openai-codex:") else None
+            {"openai_reasoning_summary": "detailed"} if model.startswith("openai-codex:") else None
         ),
         name="pcode",
         instructions=(

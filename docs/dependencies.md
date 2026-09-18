@@ -273,7 +273,7 @@ remains separate and may also contain opaque signatures.
 ### Codex thinking streaming
 
 Verified Pydantic AI 2.43.0's `OpenAICodexModel` inherits the Responses model's
-`openai_reasoning_summary` setting. `_build_reasoning` serializes `"auto"` as
+`openai_reasoning_summary` setting. `_build_reasoning` serializes `"detailed"` as
 `reasoning.summary`; without it, reasoning effort alone does not request visible
 summary text. Pcode requests summaries for Codex independently of `show_thinking`
 so the scrollback view can be enabled mid-turn. This requests provider-exposed

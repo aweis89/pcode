@@ -41,7 +41,7 @@ def test_native_codex_wire_payload_omits_unsupported_cache_marker(monkeypatch, t
         assert payloads[0]["model"] == "gpt-5.6-sol"
         assert payloads[0]["store"] is False
         assert payloads[0]["stream"] is True
-        assert payloads[0]["reasoning"]["summary"] == "auto"
+        assert payloads[0]["reasoning"]["summary"] == "detailed"
         assert "prompt_cache_breakpoint" not in json.dumps(payloads[0])
 
     asyncio.run(run())
@@ -54,14 +54,14 @@ def test_codex_summary_request_is_independent_of_display_and_effort(monkeypatch,
     for visibility in ("off", "on"):
         save_preferences(show_thinking=visibility)
         agent = create_agent("openai-codex:gpt-5.6-sol", tmp_path)
-        assert agent.model_settings == {"openai_reasoning_summary": "auto"}
+        assert agent.model_settings == {"openai_reasoning_summary": "detailed"}
         apply_effort(agent, "openai-codex:gpt-5.6-sol", "medium")
         assert agent.model_settings == {
-            "openai_reasoning_summary": "auto",
+            "openai_reasoning_summary": "detailed",
             "openai_reasoning_effort": "medium",
         }
         apply_effort(agent, "openai-codex:gpt-5.6-sol", "default")
-        assert agent.model_settings == {"openai_reasoning_summary": "auto"}
+        assert agent.model_settings == {"openai_reasoning_summary": "detailed"}
 
 
 def test_non_codex_model_does_not_receive_codex_summary_setting(tmp_path):
