@@ -38,6 +38,7 @@ from pcode.preferences import load_preferences
 from pcode.runtime import CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
+from pcode.thinking_markdown import ThinkingMarkdown
 from pcode.tool_display import COMMAND_TOOLS, command_preview, command_text, label, plain
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
 from pcode.transcript_log import TranscriptLog, recorded
@@ -401,7 +402,7 @@ class TerminalOutput:
         self.lock = asyncio.Lock()
         self.commit_print = self.print
         self.commit_thinking = lambda text: self.print(
-            Markdown(text, code_theme=self.code_theme(), style="dim")
+            ThinkingMarkdown(text, code_theme=self.code_theme(), style="dim"), end=""
         )
         self._thinking_tail = ""
         self._thinking_streamed = False
@@ -1018,15 +1019,7 @@ class Transcript:
     def thinking(self, text: str) -> None:
         """Retain readable provider text, choosing visibility again on every redraw."""
         if self.activity is not None and self.activity.show_thinking:
-            # Render provider Markdown, including Codex's heading-only summaries:
-            # https://github.com/openai/codex/issues/34873
-            self.print(
-                Markdown(
-                    command_text(text),
-                    code_theme=self.code_theme,
-                    style="pcode.thinking",
-                )
-            )
+            self.print(ThinkingMarkdown(command_text(text), code_theme=self.code_theme), end="")
 
     @recorded
     def tool_result(self, event: ToolSummary) -> None:
