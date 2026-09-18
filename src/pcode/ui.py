@@ -396,6 +396,7 @@ class TerminalOutput:
         self.code_theme = code_theme or (lambda: PALETTES["dark"].syntax)
         self.rich_theme = rich_theme or PALETTES["dark"].rich_theme
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
+        self.transient_pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
         self.commit_print = self.print
@@ -411,8 +412,11 @@ class TerminalOutput:
         self._regenerate = replay
         self.changed.set()
 
-    def print(self, *objects, end="\n") -> None:
-        self.pending.append((objects, end, False))
+    def print(self, *objects, end="\n", transient=False) -> None:
+        entry = (objects, end, False)
+        self.pending.append(entry)
+        if transient:
+            self.transient_pending.append(entry)
         self.changed.set()
 
     def begin_turn(self, prompt: str) -> None:
@@ -531,7 +535,7 @@ class TerminalOutput:
                         # Snapshot after entering: input/model events can arrive while
                         # in_terminal waits for CPR, but not during these sync writes.
                         if self._regenerate is not None:
-                            pending = self._regenerate()
+                            pending = self._regenerate() + self.transient_pending
                             self._regenerate = None
                             self.pending.clear()
                             # in_terminal has erased/reset the editor. Clear the
@@ -541,6 +545,7 @@ class TerminalOutput:
                             self.app.output.flush()
                         else:
                             pending, self.pending = self.pending, []
+                        self.transient_pending = []
                         width = max(1, self.app.output.get_size().columns)
                         # Rich's public buffer context coalesces the batch's
                         # prints (including separators) into one output flush.
@@ -1061,7 +1066,17 @@ class Transcript:
         self.print()
 
     def note(self, text: str) -> None:
-        self.print(Text(text, style="pcode.muted"))
+        """Show an informational notice once, without retaining it for redraws."""
+        notice = Text(text, style="pcode.muted")
+        if self._replay_sink is not None:
+            self._replay_sink.append(((notice,), "\n", False))
+        elif self.output is not None:
+            # Preserve new notices across an already queued redraw, but never
+            # replay notices that have previously reached the terminal.
+            self.output.print(notice, transient=True)
+        else:
+            with self.console.use_theme(self.rich_theme):
+                self.console.print(notice)
 
     @recorded
     def error(self, text: str, *, title: str = "Error") -> None:
