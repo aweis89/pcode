@@ -28,6 +28,8 @@ def test_defaults_and_path_do_not_create_files():
         # No Anthropic credential has been chosen until /login stores one.
         "anthropic_auth": None,
         "meridian_managed": "off",
+        "repo_context_walk_up": "on",
+        "repo_context_nested": "off",
         "show_thinking": "off",
         "show_tasks": "on",
         "autohide_tasks": "on",
@@ -48,6 +50,11 @@ def test_defaults_and_path_do_not_create_files():
 @pytest.mark.parametrize(
     "key,value",
     [
+        ("repo_context_walk_up", "on"),
+        ("repo_context_walk_up", "off"),
+        ("repo_context_nested", "off"),
+        ("repo_context_nested", "pointer"),
+        ("repo_context_nested", "contents"),
         ("meridian_managed", "on"),
         ("meridian_managed", "off"),
         ("theme", "light"),
@@ -73,6 +80,8 @@ def test_set_get_unset(key, value):
 @pytest.mark.parametrize(
     "args",
     [
+        ["set", "repo_context_walk_up", "true"],
+        ["set", "repo_context_nested", "on"],
         ["set", "meridian_managed", "true"],
         ["set", "unknown", "value"],
         ["get", "unknown"],
@@ -228,6 +237,9 @@ def test_shortcut_corrupt_config_keeps_active_selection():
         ("/config set theme l", "set theme light"),
         ("/config set autocompact o", "set autocompact on"),
         ("/config unset ef", "unset effort"),
+        ("/config set repo_context_walk_up o", "set repo_context_walk_up off"),
+        ("/config set repo_context_nested p", "set repo_context_nested pointer"),
+        ("/config set repo_context_nested c", "set repo_context_nested contents"),
     ],
 )
 def test_config_completion(prefix, expected):
