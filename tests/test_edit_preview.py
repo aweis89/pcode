@@ -179,3 +179,31 @@ def test_unquoted_credentials_are_redacted_in_partial_arguments(tmp_path):
     assert events and "[redacted]" in events[-1].text
     assert "synthetic-value" not in repr(events)
     assert "other-value" not in repr(events)
+
+
+def test_batched_replacement_preview_waits_for_complete_strings(tmp_path):
+    preview = StreamingEditPreview(tmp_path)
+    result = preview.update(
+        start(
+            '{"path":"example.py","replacements":['
+            '{"old_text":"one\\n","new_text":"first\\n"},'
+            '{"old_text":"two\\n","new_text":"second\\nunfinished'
+        )
+    )
+    assert result[-1].text == "-one\n+first\n-two\n+second"
+    assert "unfinished" not in result[-1].text
+    event = PartEndEvent(
+        index=0,
+        part=ToolCallPart(
+            "edit_file",
+            {
+                "path": "example.py",
+                "replacements": [
+                    {"old_text": "one\n", "new_text": "first\n"},
+                    {"old_text": "two\n", "new_text": "second\nunfinished"},
+                ],
+            },
+            tool_call_id="a",
+        ),
+    )
+    assert "+unfinished" in preview.update(event)[-1].text

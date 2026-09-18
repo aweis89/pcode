@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pydantic_ai.capabilities import on_event
+from pydantic_ai_harness.filesystem import DirectoryListedEvent, FilesSearchedEvent
 from pydantic_ai_harness.repo_context import AgentContextInventory, RepoContext
 
 # Harness 0.31 exposes no public scanner; reuse its metadata-only scan so the
@@ -22,6 +24,21 @@ class AutomaticRepoContext(RepoContext):
     _inventory: AgentContextInventory | None = field(
         default=None, init=False, repr=False, compare=False
     )
+
+    @on_event(FilesSearchedEvent)
+    async def _on_search(self, ctx, event):
+        # Coder's ripgrep tools emit search events, not DirectoryListedEvent.
+        # Reuse upstream's workspace containment and per-run deduplication.
+        path = Path(event.root_dir) / event.path
+        directory = path.parent if path.is_file() else path
+        await self._on_file_traversal(
+            ctx,
+            DirectoryListedEvent(
+                path=str(directory.relative_to(event.root_dir)),
+                root_dir=event.root_dir,
+                entry_count=0,
+            ),
+        )
 
     def startup_summary(self) -> list[str]:
         """Describe the startup snapshot without displaying instruction bodies."""

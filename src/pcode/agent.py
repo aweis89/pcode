@@ -1,18 +1,19 @@
 """Agent construction is independent of the terminal and runtime adapter."""
 
 import os
-from dataclasses import fields
+import shutil
+import sys
+from dataclasses import replace
 from pathlib import Path
 
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import CombinedCapability
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
-from pydantic_ai_harness import Coder
+from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.compaction import ClearToolResults
 from pydantic_ai_harness.exa import ExaSearch
 from pydantic_ai_harness.filesystem import FileSystem
-from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
@@ -24,7 +25,6 @@ from pcode.meridian import MeridianSessionIdentity
 from pcode.output_limits import ModelOutputLimits
 from pcode.planning import IdentifiedPlanning
 from pcode.repo_context import create_repo_context
-from pcode.shell import StreamingShell
 from pcode.usage_limits import UnlimitedRequests
 from pcode.workspace_filesystem import WorkspaceFileSystem
 
@@ -32,41 +32,36 @@ from pcode.workspace_filesystem import WorkspaceFileSystem
 def create_coder(workspace: Path) -> CombinedCapability:
     """Compose Harness's Coder with pcode's repository context and planning."""
     workspace = workspace.resolve()
-    coder = Coder(workspace, subagents=[])
-    # Supply discovery in each run's context, not as a model-driven tool call.
+    # uv tool entry points do not activate their environment's bin directory.
+    # Append it only when rg is missing, preserving the user's command precedence.
+    bundled_bin = Path(sys.executable).parent
+    if shutil.which("rg") is None and (bundled_bin / "rg").is_file():
+        os.environ["PATH"] = os.pathsep.join(
+            part for part in (os.environ.get("PATH", ""), str(bundled_bin)) if part
+        )
+    coder = Coder(workspace)
+    # Keep Coder's tool selection, including its persistent shell. File display
+    # and repository discovery remain local adapters; planning is now opt-in.
     coder.capabilities = [
         create_repo_context(workspace)
         if isinstance(capability, RepoContext)
-        else IdentifiedPlanning(
-            **{
-                field.name: getattr(capability, field.name)
-                for field in fields(Planning)
-                if field.init
-            }
-        )
-        if isinstance(capability, Planning)
         else DisplayFileSystem.from_filesystem(capability)
         if isinstance(capability, FileSystem)
-        else StreamingShell.from_shell(capability)
-        if isinstance(capability, Shell)
         else capability
         for capability in coder.capabilities
     ]
+    coder.capabilities.append(IdentifiedPlanning())
     coder.capabilities.append(DelegationReporting())
     coder.capabilities.append(MeridianSessionIdentity())
     coder.capabilities.append(ModelOutputLimits())
     for capability in coder.capabilities:
         if isinstance(capability, Shell):
-            # An empty allowlist alone can still leave Harness's default denylist.
-            capability.allowed_commands = []
-            capability.denied_commands = []
-            capability.denied_operators = []
-            capability.allow_interactive = True
             # direnv writes its status banner to stderr on every cd into a
             # managed directory, which pollutes command output the agent parses
             # (e.g. `... | jq`). An empty log format silences it.
             capability.env = {**(capability.env or os.environ), "DIRENV_LOG_FORMAT": ""}
-    parent_shell = next(c for c in coder.capabilities if isinstance(c, StreamingShell))
+    parent_shell = next(c for c in coder.capabilities if isinstance(c, Shell))
+    parent_files = next(c for c in coder.capabilities if isinstance(c, FileSystem))
     explorer = Agent(
         name="explorer",
         description=(
@@ -84,8 +79,8 @@ def create_coder(workspace: Path) -> CombinedCapability:
         ),
         capabilities=[
             UnlimitedRequests(),
-            WorkspaceFileSystem(workspace, read_only=True),
-            StreamingShell.from_shell(parent_shell),
+            replace(WorkspaceFileSystem.from_filesystem(parent_files), read_only=True),
+            replace(parent_shell),
             create_repo_context(workspace),
         ],
     )

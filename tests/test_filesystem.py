@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 from pydantic_ai import ModelRetry
-from pydantic_ai_harness.filesystem import DirectoryListedEvent, FileReadEvent, FileWrittenEvent
+from pydantic_ai_harness.filesystem import (
+    DirectoryListedEvent,
+    FileChangeRequestEvent,
+    FileReadEvent,
+    FileWrittenEvent,
+)
 
 from pcode.workspace_filesystem import WorkspaceFileSystem
 
@@ -166,6 +171,8 @@ def test_external_events_identify_actual_targets(paths):
             await fs._read_file_tool(ctx, str(external / "missing"))
 
     asyncio.run(run())
+    # Change requests are pre-mutation events, not successful traversal evidence.
+    events = [event for event in events if not isinstance(event, FileChangeRequestEvent)]
     assert [type(e) for e in events] == [
         FileReadEvent,
         FileWrittenEvent,

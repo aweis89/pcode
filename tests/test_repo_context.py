@@ -272,7 +272,7 @@ def test_ancestor_instructions_refresh_between_runs_not_within_run(tmp_path):
 @pytest.mark.parametrize("walk_up", ["on", "off"])
 @pytest.mark.parametrize("nested", ["off", "pointer", "contents"])
 @pytest.mark.parametrize("explorer", [False, True], ids=["main", "explorer"])
-@pytest.mark.parametrize("tool", ["read_file", "list_directory"])
+@pytest.mark.parametrize("tool", ["read_file", "list_files"])
 def test_discovery_settings_work_together_in_real_agents(
     tmp_path, monkeypatch, walk_up, nested, explorer, tool
 ):
@@ -367,7 +367,7 @@ def test_invalid_discovery_preferences_fall_back_to_defaults(tmp_path, value):
 
 
 @pytest.mark.parametrize("explorer", [False, True])
-@pytest.mark.parametrize("tool", ["read_file", "list_directory"])
+@pytest.mark.parametrize("tool", ["read_file", "list_files"])
 def test_external_traversal_does_not_load_external_instructions(
     tmp_path, monkeypatch, explorer, tool
 ):
