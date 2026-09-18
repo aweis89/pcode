@@ -96,6 +96,7 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 | --- | --- | --- |
 | `theme` | `dark` | `dark`, `light`, `auto` |
 | `autocompact` | `off` | `on`, `off` |
+| `meridian_managed` | `off` | `on`, `off` (private local Meridian proxy) |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
 
@@ -240,7 +241,8 @@ restarting pcode.
 **Opt-in managed instance (Meridian 1.71.1):**
 
 ```sh
-PCODE_MERIDIAN_MANAGED=1 pcode -m meridian:claude-sonnet-5
+pcode config set meridian_managed on
+pcode -m meridian:claude-sonnet-5
 ```
 
 When constructing a Meridian provider, pcode starts one private proxy per pcode
@@ -261,9 +263,17 @@ not applied to managed instances. The implementation is gated to the verified
 1.71.1 release; other versions can use external mode. Forced termination of pcode
 (e.g. `kill -9`) cannot run normal cleanup.
 
-An explicit `PCODE_MERIDIAN_BASE_URL` always selects external mode, even with
-`PCODE_MERIDIAN_MANAGED=1`. Without either setting, the existing external endpoint
-behavior is unchanged. Export the managed setting in your shell to keep opting in.
+The `meridian_managed` preference defaults to `off` and is saved alongside other
+pcode settings. You can also use `/config set meridian_managed on` interactively;
+it applies when a Meridian provider is next created (restart pcode to apply it to
+an existing Meridian conversation). Use `pcode config set meridian_managed off` or
+`pcode config unset meridian_managed` to return to external mode.
+
+An explicit `PCODE_MERIDIAN_BASE_URL` always selects external mode. Otherwise,
+`PCODE_MERIDIAN_MANAGED=1` or `0` overrides the saved preference for that process;
+an unset or empty variable uses the saved preference. Config commands display the
+saved default, not environment overrides. Changing the preference does not stop
+an already-owned proxy or reroute active requests.
 
 **Externally managed instance:** Use your running [Meridian](https://github.com/rynfar/meridian) proxy as a separate
 provider (no pcode-managed subscription login):

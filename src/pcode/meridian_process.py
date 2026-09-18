@@ -14,6 +14,8 @@ from pathlib import Path
 
 import httpx2
 
+from pcode.preferences import load_preferences
+
 SUPPORTED_VERSION = "1.71.1"
 _lock = threading.Lock()
 _instance = None
@@ -140,7 +142,13 @@ def managed_endpoint():
     """Return private connection details, or None for externally managed mode."""
     if os.environ.get("PCODE_MERIDIAN_BASE_URL", "").strip():
         return None
-    if os.environ.get("PCODE_MERIDIAN_MANAGED", "").strip() != "1":
+    override = os.environ.get("PCODE_MERIDIAN_MANAGED", "").strip()
+    if override and override not in {"0", "1"}:
+        raise ValueError("PCODE_MERIDIAN_MANAGED must be 0 or 1.")
+    enabled = (
+        override == "1" if override else load_preferences().get("meridian_managed", "off") == "on"
+    )
+    if not enabled:
         return None
     global _instance
     with _lock:

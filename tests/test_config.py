@@ -24,6 +24,7 @@ from pcode.preferences import (
 def test_defaults_and_path_do_not_create_files():
     assert configure(["path"]) == str(preferences_path())
     assert json.loads(configure([])) == {
+        "meridian_managed": "off",
         "show_thinking": "off",
         "thinking_lines": "10",
         "thinking_display": "compact",
@@ -44,6 +45,8 @@ def test_defaults_and_path_do_not_create_files():
 @pytest.mark.parametrize(
     "key,value",
     [
+        ("meridian_managed", "on"),
+        ("meridian_managed", "off"),
         ("theme", "light"),
         ("editing_mode", "vi"),
         ("editing_mode", "emacs"),
@@ -67,6 +70,7 @@ def test_set_get_unset(key, value):
 @pytest.mark.parametrize(
     "args",
     [
+        ["set", "meridian_managed", "true"],
         ["set", "unknown", "value"],
         ["get", "unknown"],
         ["unset", "unknown"],

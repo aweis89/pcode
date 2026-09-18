@@ -140,3 +140,49 @@ def test_readiness_deadline(monkeypatch):
     instance = mp.ManagedMeridian()
     with pytest.raises(ValueError, match="30 seconds"):
         instance.wait_ready()
+
+
+@pytest.mark.parametrize(
+    "saved,override,external,expected",
+    [
+        ("on", None, False, True),
+        ("off", None, False, False),
+        ("on", "", False, True),
+        ("on", "0", False, False),
+        ("off", "1", False, True),
+        ("on", None, True, False),
+        ("on", "1", True, False),
+    ],
+)
+def test_saved_preference_and_overrides(monkeypatch, saved, override, external, expected):
+    from pcode.config import configure
+
+    instance = SimpleNamespace(
+        base_url="http://localhost:1234", api_key="private", process=Mock(), close=Mock()
+    )
+    instance.process.poll.return_value = None
+    start = Mock(return_value=instance)
+    monkeypatch.setattr(mp.ManagedMeridian, "start", start)
+    monkeypatch.setattr(mp.atexit, "register", Mock())
+    configure(["set", "meridian_managed", saved])
+    start.assert_not_called()  # Editing config itself has no lifecycle side effects.
+    if override is not None:
+        monkeypatch.setenv("PCODE_MERIDIAN_MANAGED", override)
+    if external:
+        monkeypatch.setenv("PCODE_MERIDIAN_BASE_URL", "http://localhost:3456")
+    assert (mp.managed_endpoint() is not None) is expected
+    assert start.call_count == int(expected)
+    assert configure(["get", "meridian_managed"]) == saved
+
+
+def test_invalid_environment_override(monkeypatch):
+    monkeypatch.setenv("PCODE_MERIDIAN_MANAGED", "invalid")
+    with pytest.raises(ValueError, match="must be 0 or 1"):
+        mp.managed_endpoint()
+
+
+def test_managed_setting_completion():
+    from pcode.config import config_arguments
+
+    assert "set meridian_managed on" in config_arguments()
+    assert "set meridian_managed off" in config_arguments()
