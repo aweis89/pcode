@@ -63,16 +63,7 @@ def test_tool_persistence_is_decided_on_completion(command, exit_code):
         )
     )
     assert len(app.activity.tools.calls) == 1
-    if exit_code:
-        assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
-            "✗ Run failed",
-            "",
-            f" {command}",
-            " diagnostic",
-            "",
-        ]
-    else:
-        assert stream.getvalue() == ""
+    assert stream.getvalue() == ""
 
 
 def test_exceptional_tool_completion_flushes_prose_before_queued_diagnostic():

@@ -38,7 +38,7 @@ from pcode.runtime import (
     ToolSummary,
 )
 from pcode.theme import THEMES
-from pcode.tool_display import plain
+from pcode.tool_display import COMMAND_TOOLS, plain
 from pcode.ui import COLOR_STYLES, Activity, TerminalOutput, Transcript, create_prompt
 
 
@@ -948,10 +948,10 @@ class PreviewApp:
                     elif isinstance(event, PlanPreview):
                         self.activity.plan_preview = event.items
                     elif isinstance(event, (ToolStarted, ToolSummary)):
-                        # Only exceptional completions also become persistent
-                        # output, unless command mirroring is enabled.
+                        # Hidden commands, including failures, do not interrupt prose.
                         if isinstance(event, ToolSummary) and (
-                            event.failed or self.transcript.streams_command(event)
+                            (event.failed and event.name not in COMMAND_TOOLS)
+                            or self.transcript.streams_command(event)
                         ):
                             output.finish()
                         self.present_events((event,))

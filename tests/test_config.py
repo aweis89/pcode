@@ -27,7 +27,6 @@ def test_defaults_and_path_do_not_create_files():
         "show_thinking": "off",
         "thinking_lines": "10",
         "thinking_display": "compact",
-        "error_scrollback": "on",
         "error_scrollback_lines": "20",
         "regenerate_on_resize": "on",
         "command_scrollback": "off",
@@ -239,8 +238,9 @@ def test_error_scrollback_lines_rejects_invalid_values(value):
 
 def test_error_scrollback_settings_round_trip():
     configure(["set", "error_scrollback_lines", "35"])
-    configure(["set", "error_scrollback", "off"])
+    with pytest.raises(ValueError, match="Unknown"):
+        configure(["set", "error_scrollback", "off"])
     assert load_preferences()["error_scrollback_lines"] == "35"
-    assert load_preferences()["error_scrollback"] == "off"
+    assert "error_scrollback" not in load_preferences()
     configure(["unset", "error_scrollback_lines"])
     assert configure(["get", "error_scrollback_lines"]) == "20"

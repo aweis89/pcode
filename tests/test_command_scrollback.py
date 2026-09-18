@@ -332,3 +332,17 @@ def test_default_budget_retains_last_twenty_output_rows():
     assert view.command_scrollback_lines == 20
     assert "30 earlier output rows omitted" in lines[3]
     assert [line.strip() for line in lines[4:-1]] == [f"row {i}" for i in range(30, 50)]
+
+
+@pytest.mark.parametrize("name", ["run_command", "start_command", "check_command", "stop_command"])
+@pytest.mark.parametrize("failed", [False, True])
+def test_command_visibility_controls_all_completions(name, failed):
+    view, stream = transcript()
+    event = ToolSummary(name, "command detail", failed=failed, result="OUTPUT", error="DIAGNOSTIC")
+    view.tool_result(event)
+    view.events((event,))
+    assert stream.getvalue() == ""
+    view.command_scrollback = True
+    view.tool_result(event)
+    assert stream.getvalue().count("OUTPUT") == 1
+    assert "DIAGNOSTIC" not in stream.getvalue()

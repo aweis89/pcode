@@ -44,22 +44,21 @@ def test_hidden_commands_reappear_in_order_and_repeated_replay_does_not_record()
     assert len(transcript.log.entries) == original
 
 
-def test_failure_has_exactly_one_representation_and_uses_current_error_setting():
+def test_failure_has_exactly_one_representation_and_uses_command_visibility():
     transcript = view()
     transcript.tool_result(
         ToolSummary(
             "run_command", "run", failed=True, command="test", result="FULL_RESULT", error="EXCERPT"
         )
     )
-    assert project(transcript).count("EXCERPT") == 1
+    assert not project(transcript)
     transcript.command_scrollback = True
     assert project(transcript).count("FULL_RESULT") == 1
     assert "EXCERPT" not in project(transcript)
     transcript.command_scrollback = False
-    transcript.error_scrollback = False
     assert not project(transcript)
-    transcript.error_scrollback = True
-    assert project(transcript).count("EXCERPT") == 1
+    transcript.command_scrollback = True
+    assert project(transcript).count("FULL_RESULT") == 1
 
 
 def test_replay_rebuilds_markdown_theme_and_notice_line_limits():

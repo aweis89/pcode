@@ -977,7 +977,6 @@ class Transcript:
         color_style: str = "palette",
     ) -> None:
         preferences = load_preferences()
-        self.error_scrollback = preferences.get("error_scrollback", "on") == "on"
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
         self.command_scrollback = preferences.get("command_scrollback", "off") == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
@@ -1025,7 +1024,9 @@ class Transcript:
     @recorded
     def tool_result(self, event: ToolSummary) -> None:
         """Retain hidden results too; choose one representation on each replay."""
-        if not self.command_output(event) and event.failed:
+        if event.name in COMMAND_TOOLS:
+            self.command_output(event)
+        elif event.failed:
             self.events((event,))
 
     def replay(self) -> list:
@@ -1087,10 +1088,9 @@ class Transcript:
 
     @recorded
     def error(self, text: str, *, title: str = "Error") -> None:
-        if self.error_scrollback:
-            self.print(
-                TranscriptNotice(text, "error", title, self.error_scrollback_lines, self.code_theme)
-            )
+        self.print(
+            TranscriptNotice(text, "error", title, self.error_scrollback_lines, self.code_theme)
+        )
 
     def streams_command(self, event: Event) -> bool:
         """Report whether this settled tool will be mirrored into scrollback."""
@@ -1110,7 +1110,7 @@ class Transcript:
         )
         # Live results arrive redacted and length-bounded from the capture step;
         # sanitize again so replayed or synthesized events cannot emit controls.
-        output = command_text(event.result or "").rstrip("\n")
+        output = command_text(event.result or event.error or "").rstrip("\n")
         if not output.strip():
             output = "(no output)"
         self.print(
@@ -1171,6 +1171,9 @@ class Transcript:
                 self.print(Markdown(event.markdown, code_theme=self.code_theme))
                 self.print()
             elif isinstance(event, ToolSummary):
+                if event.name in COMMAND_TOOLS:
+                    self.command_output(event)
+                    continue
                 if event.failed:
                     detail = (
                         command_preview(event.command)
