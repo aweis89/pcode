@@ -373,6 +373,31 @@ Never use synthetic agent runs to install summaries or overwrite original snapsh
 Keep tests for immediate restart, branch isolation, failure/cancellation, safe tool
 pairs, mid-tool-loop compaction, and stale usage anchors after rewriting history.
 
+### Tool output limits
+
+`tool_output_limits.py` composes the pinned Harness `ToolOutputLimits`, `Band`,
+`Spill`, `Truncate`, `LocalFileStore`, and `indented_json` APIs. Coder already
+includes a private `ToolOutputLimits` subclass with a 64k truncation band: replace
+it by type rather than append another limiter, or data can be lost before spilling.
+`SubAgents.shared_capabilities` receives a separate instance with the same settings
+and store. Keep retrieval registered even with no bands, since resumed histories
+can contain older handles. Spills are separate from the session journal and survive
+`--no-save`; tests must isolate `XDG_STATE_HOME` as well as config/cache directories.
+
+The pinned `read_tool_result` pages by lines, then caps the body at 50k characters.
+A single longer line cannot be recovered with `offset` or `from_end`; the coding
+adapter supplies the stable store path in instructions for shell-based character
+slicing. `indented_json` makes structured returns pageable but does not split long
+string fields. Verify this behavior against the installed source on upgrades.
+
+`CodingToolOutputLimits` reduces only the persistent shell's body, leaving its
+PID/log/status footer intact even for head truncation and small budgets. It marks
+changed bodies so `shell.result_projection` omits previews whose clipping removed
+redaction context. Length-based detection alone stops working after reduction,
+especially for delegated calls that have no `CommandFinishedEvent` in the parent.
+Keep the real-shell parent/explorer tests, long-line recovery, serialized-history
+readback, and spill-failure fallback tests in `tests/test_tool_output_limits.py`.
+
 ### Reasoning effort
 
 `preferences.apply_effort` uses `openai_reasoning_effort` for OpenAI/Codex and
@@ -405,6 +430,43 @@ reuse from its own lineage hash over the full semantic message prefix; only
 `thinking` / `redacted_thinking` blocks are exempt (`HASH_IGNORED_BLOCK_TYPES`).
 Sending cache settings there changes nothing, and a mutable tail that moves each
 request diverges the lineage regardless.
+
+For Meridian, pcode's `IdentifiedPlanning` appends durable plan snapshots only when
+the rendered plan changes (including clearing it). `MeridianLimitWarnings` retains
+old warnings and appends updates at percentage deciles or severity changes. Both
+use `before_model_request`, whose messages Pydantic AI persists, not the ephemeral
+`wrap_model_request` boundary. Deduplication reads metadata in the current history,
+so saved resume, retry, and branch selection do not depend on process-local state.
+Direct Anthropic retains upstream reminder behavior. Wire-prefix regressions live
+in `tests/test_meridian_reminders.py`.
+
+Check the running proxy's `/health` version rather than trusting `meridian --version`:
+the launch service can use a different Node installation than the shell. The
+append-only requirement was reproduced against Meridian 1.72.0's lineage checker.
+
+### Cache-bust warnings
+
+`cache_warnings.py` subclasses the pinned Harness `WarnOnCacheBusts` and converts
+its `CacheBustWarning` into a capability event. Import from
+`pydantic_ai_harness.warn_on_cache_busts`, not the root used by the docs' first
+example (the pinned package does not re-export it). The inherited `for_run`
+uses `dataclasses.replace`, preserving the adapter while resetting detector state.
+
+The pinned `after_model_request` coroutine never suspends. Its narrow
+`warnings.catch_warnings(record=True)` scope ends before `ctx.emit`, which can
+suspend; do not expand capture across model/tool execution. Recheck this on
+upgrades, especially for Python versions where warning filters are process-global.
+Explicit ignore/error filters still apply, and unrelated warnings are re-emitted.
+Only the warning's first paragraph is shown, excluding its Python suppression
+example. Detection, per-model keys, TTL hint, and collapse latch stay upstream.
+
+The main Coder and `SubAgents.shared_capabilities` install the adapter. Child
+warnings are forwarded by `stream_child_activity` without forwarding child prose.
+`CacheBust` presentation events are journaled and replayed as literal warnings,
+not inserted into model history. Tests in `tests/test_cache_warnings.py` exercise
+real streamed cache usage, isolated runs, delegation, warning filters, terminal
+handoff ordering, and saved-session/redraw replay. Monitoring is per agent run,
+not conversation-wide; no cache history is restored from saved sessions.
 
 ### Meridian conversation identity
 

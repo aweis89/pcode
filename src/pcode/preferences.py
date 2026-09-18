@@ -63,6 +63,13 @@ SETTINGS = {
     "editing_mode": Setting("emacs", ("emacs", "vi")),
     "theme": Setting("dark", ("dark", "light", "auto")),
     "autocompact": Setting("off", ("on", "off")),
+    "tool_output_mode": Setting("spill", ("spill", "truncate", "off")),
+    "tool_output_threshold": Setting("10000", positive_integer=True),
+    "tool_output_preview_chars": Setting("1000", positive_integer=True),
+    "tool_output_max_chars": Setting("4000", positive_integer=True),
+    "tool_output_strategy": Setting("head_tail", ("head", "tail", "head_tail")),
+    # Zero keeps spilled results indefinitely, preserving saved-session handles.
+    "tool_output_retention_hours": Setting("0", whole_number=True),
     "effort": Setting("default", EFFORTS),
     "model": Setting(None),
 }

@@ -3,7 +3,7 @@
 import os
 import shutil
 import sys
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 from pydantic_ai import Agent
@@ -11,20 +11,24 @@ from pydantic_ai.capabilities import CombinedCapability
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai_harness.coder import Coder
-from pydantic_ai_harness.compaction import ClearToolResults
+from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
 from pydantic_ai_harness.exa import ExaSearch
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
+from pcode.cache_warnings import CacheBustReporting
 from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.filesystem import DisplayFileSystem
 from pcode.llm_proxy import ProxiedCodexProvider
 from pcode.meridian import MeridianSessionIdentity
+from pcode.meridian_reminders import MeridianLimitWarnings
 from pcode.output_limits import ModelOutputLimits
 from pcode.planning import IdentifiedPlanning
 from pcode.repo_context import create_repo_context
+from pcode.tool_output_limits import create_tool_output_limits
 from pcode.usage_limits import UnlimitedRequests
 from pcode.workspace_filesystem import WorkspaceFileSystem
 
@@ -40,6 +44,7 @@ def create_coder(workspace: Path) -> CombinedCapability:
             part for part in (os.environ.get("PATH", ""), str(bundled_bin)) if part
         )
     coder = Coder(workspace)
+    output_limits = create_tool_output_limits()
     # Keep Coder's tool selection, including its persistent shell. File display
     # and repository discovery remain local adapters; planning is now opt-in.
     coder.capabilities = [
@@ -47,6 +52,13 @@ def create_coder(workspace: Path) -> CombinedCapability:
         if isinstance(capability, RepoContext)
         else DisplayFileSystem.from_filesystem(capability)
         if isinstance(capability, FileSystem)
+        # Replace Coder's 64k truncation, so it cannot cut data before spilling.
+        else output_limits
+        if isinstance(capability, ToolOutputLimits)
+        else MeridianLimitWarnings(
+            **{f.name: getattr(capability, f.name) for f in fields(capability) if f.init}
+        )
+        if isinstance(capability, WarnNearLimits)
         else capability
         for capability in coder.capabilities
     ]
@@ -54,6 +66,7 @@ def create_coder(workspace: Path) -> CombinedCapability:
     coder.capabilities.append(DelegationReporting())
     coder.capabilities.append(MeridianSessionIdentity())
     coder.capabilities.append(ModelOutputLimits())
+    coder.capabilities.append(CacheBustReporting())
     for capability in coder.capabilities:
         if isinstance(capability, Shell):
             # direnv writes its status banner to stderr on every cd into a
@@ -89,7 +102,12 @@ def create_coder(workspace: Path) -> CombinedCapability:
             agents=[SubAgent(explorer)],
             agent_folders=None,
             event_stream_handler=stream_child_activity,
-            shared_capabilities=[MeridianSessionIdentity(), ModelOutputLimits()],
+            shared_capabilities=[
+                MeridianSessionIdentity(),
+                ModelOutputLimits(),
+                CacheBustReporting(),
+                replace(output_limits),
+            ],
         )
     )
     # Missing credentials must not prevent ordinary coding sessions. Let the

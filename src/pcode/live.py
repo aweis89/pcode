@@ -41,6 +41,7 @@ from pydantic_ai_harness.shell import (
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersistence
 from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent
 
+from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, summarize
 from pcode.conversation_tree import ConversationTree
 from pcode.delegation import ChildActivity
@@ -53,6 +54,7 @@ from pcode.plan_preview import StreamingPlanPreview
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
+    CacheBust,
     CommandOutput,
     EditPreview,
     Event,
@@ -495,7 +497,9 @@ class AgentRuntime:
                 if edit_preview is not None:
                     for edit_update in edit_preview.update(event):
                         yield edit_update
-                if isinstance(event, FileChangeEvent):
+                if isinstance(event, CacheBustEvent):
+                    yield CacheBust(event.text)
+                elif isinstance(event, FileChangeEvent):
                     yield event.change
                 elif isinstance(event, DelegationStartEvent):
                     if start := delegates.get(event.tool_call_id):
