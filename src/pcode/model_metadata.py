@@ -221,7 +221,7 @@ def catalog_key(model: str | Model, routes: dict[str, str] | None = None) -> str
             return None
         provider = endpoint.name
         # OAuth subscription access is not the ordinary Anthropic API catalog.
-        if getattr(model, "_pi_oauth", False):
+        if getattr(model, "_subscription_oauth", False):
             return None
     provider = {"openai-responses": "openai", "openai-chat": "openai"}.get(provider, provider)
     # In particular, openai-codex NEVER maps to openai.
@@ -403,8 +403,8 @@ class ContextCatalog:
                         limits = parse_codex(data, model.model_name, now)
                     else:
                         headers = {}
-                        if getattr(model, "_pi_oauth", False):
-                            from pcode.pi_auth import OAUTH_BETAS, OAUTH_USER_AGENT
+                        if getattr(model, "_subscription_oauth", False):
+                            from pcode.auth import OAUTH_BETAS, OAUTH_USER_AGENT
 
                             headers = {
                                 "anthropic-beta": ",".join(sorted(OAUTH_BETAS)),

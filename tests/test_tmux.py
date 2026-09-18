@@ -160,7 +160,9 @@ def test_input_only_grows_for_text(pane, split):
     pane("send-keys", "-t", "preview:0.0", "-l", "/")
     screen = capture(pane, "\n /help ")
     assert input_rows(screen) == 1
-    assert screen.index("\n /demo ") < screen.rindex("┌")  # Menu above the fixed frame.
+    # The menu shows at most six commands, so assert on one that is always in
+    # view rather than a lower entry that a new command can push off the list.
+    assert screen.index("\n /help ") < screen.rindex("┌")  # Menu above the fixed frame.
 
     pane("send-keys", "-t", "preview:0.0", "C-c")
     text = "x" * 120 + "END"

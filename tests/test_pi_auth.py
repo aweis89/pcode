@@ -177,16 +177,16 @@ def test_normal_auth_does_not_read_pi(monkeypatch, tmp_path):
     load.assert_not_called()
 
 
-@pytest.mark.parametrize("command", ["/login", "/login pi"])
-def test_login_pi_preserves_runtime_and_handles_failure(pi_file, command):
+def test_login_pi_preserves_runtime_and_handles_failure(pi_file):
     from pcode.app import PreviewApp
 
     runtime = SimpleNamespace(agent=SimpleNamespace(model="original"), history=["existing"])
     buffer = StringIO()
     app = PreviewApp(model="anthropic:test-model", runtime=runtime, console=Console(file=buffer))
-    app.handle(command)
-    assert app.login_requested is True
-    asyncio.run(app.login_pi())
+    app.handle("/login pi")
+    assert app.login_requested == "pi"
+    # Bare /login now signs in through the browser, so pi stays explicit.
+    asyncio.run(app.perform_login())
     assert not app.login_requested
     assert isinstance(runtime.agent.model, PiAnthropicModel)
     assert runtime.history == ["existing"]
@@ -194,8 +194,8 @@ def test_login_pi_preserves_runtime_and_handles_failure(pi_file, command):
     assert "synthetic" not in buffer.getvalue()
     original = runtime.agent.model
     pi_file.unlink()
-    app.handle(command)
-    asyncio.run(app.login_pi())
+    app.handle("/login pi")
+    asyncio.run(app.perform_login())
     assert runtime.agent.model is original
     assert "Cannot load pi's Anthropic credential" in buffer.getvalue()
 
