@@ -1,6 +1,8 @@
 """Layout regression in real tmux, including cursor-position reports (CPR)."""
 
+import json
 import os
+import pathlib
 import shlex
 import shutil
 import signal
@@ -41,6 +43,11 @@ def pane(request):
     base = ["tmux", "-L", server, "-f", "/dev/null"]
     env = {**os.environ}
     env.pop("PROMPT_TOOLKIT_NO_CPR", None)
+    # Most panes assert on the widget while the prompt is idle, so opt them out
+    # of the default auto-hide; a test that wants it turns it back on itself.
+    config = pathlib.Path(env["XDG_CONFIG_HOME"]) / "pcode"
+    config.mkdir(parents=True, exist_ok=True)
+    config.joinpath("preferences.json").write_text(json.dumps({"autohide_tasks": "off"}))
     reaper = tmux_reaper(server, os.getpid())
 
     def command(*args):

@@ -186,6 +186,10 @@ def system_command(text: str) -> tuple[str, str] | None:
 @dataclass
 class Activity:
     show_tasks: bool = True
+    # Hide the widget again as soon as a turn ends, without forgetting that the
+    # user wants it shown while the model works.
+    autohide_tasks: bool = True
+    tasks_autohidden: bool = False
     show_thinking: bool = False
     busy: bool = False
     status: str = ""
@@ -217,9 +221,28 @@ class Activity:
         self.prompt_kind = "user"
         self.prompt_detail = ""
         self.status = ""
+        self.tasks_autohidden = False
+
+    @property
+    def tasks_shown(self) -> bool:
+        """Visible only when enabled and not auto-hidden after the last turn."""
+        return self.show_tasks and not self.tasks_autohidden
+
+    def toggle_tasks(self) -> bool:
+        """Ctrl+O acts on what is on screen, so auto-hidden reads as hidden."""
+        self.show_tasks = not self.tasks_shown
+        self.tasks_autohidden = False
+        return self.show_tasks
+
+    def finish_prompt(self, state: str) -> None:
+        """End the turn, auto-hiding the widget when that option is enabled."""
+        self.prompt_state = state
+        if self.autohide_tasks:
+            self.tasks_autohidden = True
 
     def start_prompt(self, text: str, *, kind: str = "user", detail: str = "") -> None:
         """Show a running row, tagged so system work never looks like typed input."""
+        self.tasks_autohidden = False
         self.prompt = text
         self.prompt_kind = kind
         self.prompt_detail = detail
@@ -230,7 +253,7 @@ class Activity:
         return self.plan if self.plan_preview is None else self.plan_preview
 
     def plan_rows(self, budget: int, spinner: str):
-        if not self.show_tasks:
+        if not self.tasks_shown:
             return []
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
@@ -690,9 +713,9 @@ def create_prompt(
 
     @keys.add("c-o", filter=~is_searching)
     def toggle_tasks(event: KeyPressEvent) -> None:
-        activity.show_tasks = not activity.show_tasks
+        shown = activity.toggle_tasks()
         if on_tasks is not None:
-            on_tasks(activity.show_tasks)
+            on_tasks(shown)
         event.app.invalidate()
 
     @keys.add("c-t", filter=~is_searching)

@@ -28,6 +28,7 @@ def test_defaults_and_path_do_not_create_files():
         "meridian_managed": "off",
         "show_thinking": "off",
         "show_tasks": "on",
+        "autohide_tasks": "on",
         "error_scrollback_lines": "20",
         "regenerate_on_resize": "on",
         "command_scrollback": "off",
