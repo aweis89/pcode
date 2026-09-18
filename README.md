@@ -1187,6 +1187,7 @@ shell tool call and its captured output** into permanent terminal scrollback:
 ```sh
 pcode config set command_scrollback on        # Mirror commands and output (default off)
 pcode config set command_scrollback_lines 80  # Positive integer; default 20
+pcode config set command_preview_lines 10     # Live output height cap; default 10
 pcode config set command_scrollback off       # Hide all commands, including failures
 ```
 
@@ -1207,8 +1208,13 @@ Details:
 - It covers `run_command`, `start_command`, `check_command`, and `stop_command`,
   including calls made by delegated sub-agents. Other tools are unaffected.
 - Active `run_command` calls show a live tail above the prompt, refreshed as
-  complete stdout/stderr lines arrive. The preview follows the same Ctrl+G setting
-  and line limit, shrinking when needed to fit the terminal. For parallel calls,
+  complete stdout/stderr lines arrive, without a separate header. Ctrl+G controls
+  both the preview and scrollback; there is no separate visibility toggle.
+  `command_preview_lines` caps the live output at 10 wrapped rows by default
+  (positive integer, excluding the command and frame borders). The preview uses
+  space left after the editor, queued prompts, and Tasks/Tools panel. Under tight
+  height pressure, task rows yield only enough to retain a one-line output tail.
+  For parallel calls,
   the most recently updated command is shown; all calls remain in the tool panel.
   Programs that buffer their own output must flush it (for example, `python -u`).
 - On completion the transient preview disappears and one bordered result is

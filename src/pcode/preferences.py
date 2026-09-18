@@ -44,6 +44,9 @@ SETTINGS = {
     "regenerate_on_resize": Setting("on", ("on", "off")),
     "command_scrollback": Setting("off", ("on", "off")),
     "command_scrollback_lines": Setting("20", positive_integer=True),
+    # The pinned live preview competes with the editor for screen space, so it
+    # caps separately from the scrollback mirror. Visibility stays on Ctrl+G.
+    "command_preview_lines": Setting("10", positive_integer=True),
     "show_tasks": Setting("on", ("on", "off")),
     "autohide_tasks": Setting("on", ("on", "off")),
     "show_thinking": Setting("off", ("on", "off")),

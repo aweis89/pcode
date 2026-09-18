@@ -670,7 +670,7 @@ class TerminalOutput:
             self.changed.clear()
 
     async def run(self) -> None:
-        width = self.app.output.get_size().columns
+        size = self.app.output.get_size()
         resized_at = None
         while True:
             # Poll only when resize replay is enabled. Debounce resize storms;
@@ -682,9 +682,11 @@ class TerminalOutput:
                     await asyncio.wait_for(self.changed.wait(), timeout=0.1)
                 except TimeoutError:
                     pass
-                current = self.app.output.get_size().columns
-                if current != width:
-                    width, resized_at = current, monotonic()
+                # Height changes can scroll pieces of the live preview into
+                # history too; replay must clear those just like width reflow.
+                current = self.app.output.get_size()
+                if current != size:
+                    size, resized_at = current, monotonic()
                 elif resized_at is not None and monotonic() - resized_at >= 0.25:
                     self.regenerate(self.resize_replay)
                     resized_at = None
@@ -842,6 +844,9 @@ def create_prompt(
     )
 
     def frame_height() -> int:
+        live = preview_layout()
+        if live is not None:
+            return live[2]
         size = session.app.output.get_size()
         available = max(1, size.rows - 4 - activity_height() - len(queue_rows()))
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
@@ -854,38 +859,64 @@ def create_prompt(
     # Animate active tasks and update running tool elapsed times during pauses.
     session.app.refresh_interval = min(plan_spinner.interval, prompt_spinner.interval) / 1000
 
-    def plan_rows():
-        # Share one height budget instead of stacking separate Tools and Tasks
-        # panels. Leave space for the completion menu and editor.
-        budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
+    def base_plan_rows(budget: int | None = None):
+        if budget is None:
+            budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
         return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
-    def command_rows():
+    def preview_layout():
+        """Allocate actual chrome/editor height first, then give output the remainder.
+
+        Keep the normal task viewport unless it would leave no output at all.
+        Only in that case trim task rows to preserve a one-line output tail.
+        Calculate all three heights together so editor wrapping cannot create a
+        circular dependency between frame_height and command_rows.
+        """
         if transcript is None or not transcript.command_scrollback or not activity.command_outputs:
-            return []
+            return None
         size = session.app.output.get_size()
-        plans = plan_rows()
-        available = max(
-            0,
-            size.rows
-            - (len(plans) + 2 if plans else 0)
-            - bool(activity.prompt)
-            - len(queue_rows())
-            - 10,
-        )
-        if available < 2:
-            return []
-        budget = min(transcript.command_scrollback_lines, available - 1)
-        # Parallel calls remain attributed; the most recently updated call gets
-        # the preview, while the tool panel continues to list every active call.
-        event = next(reversed(activity.command_outputs.values()))
         width = max(1, size.columns - 2)
+        # One terminal row stays free for the non-full-screen renderer/CPR.
+        fixed = (
+            1
+            + int(session.bottom_toolbar is not None)
+            + bool(activity.prompt)
+            + len(queue_rows())
+            + menu.preferred_height(size.columns, size.rows).preferred
+            + search.preferred_height(size.columns, size.rows).preferred
+        )
+        room = max(0, size.rows - fixed)
+        plans = base_plan_rows()
+        # Editor: two borders and at least one text row. Preview: two borders,
+        # the command, and at least one output row. Keep one task when possible.
+        task_floor = 3 if plans else 0
+        editor_room = max(1, room - 2 - 4 - task_floor)
+        editor_rows = min(editor_room, editor.preferred_height(width, editor_room).preferred)
+        editor_height = editor_rows + 2
+        plan_budget = max(0, room - editor_height - 4 - 2)
+        if len(plans) > plan_budget:
+            plans = base_plan_rows(plan_budget)
+        plan_height = len(plans) + 2 if plans else 0
+        budget = min(transcript.command_preview_lines, room - editor_height - plan_height - 3)
+        if budget <= 0:
+            return plans, [], editor_height
+        # Parallel calls share the preview; show the most recently updated call.
+        event = next(reversed(activity.command_outputs.values()))
         rows = Text(command_text(event.output)).wrap(
             Console(width=width), width, overflow="fold", no_wrap=False
         )
-        return [("class:plan", "$ " + command_preview(event.command))] + [
+        commands = [("class:plan", "$ " + command_preview(event.command))] + [
             ("class:bottom-toolbar.text", row.plain) for row in rows[-budget:]
         ]
+        return plans, commands, editor_height
+
+    def plan_rows():
+        live = preview_layout()
+        return live[0] if live is not None else base_plan_rows()
+
+    def command_rows():
+        live = preview_layout()
+        return live[1] if live is not None else []
 
     def activity_height() -> int:
         rows = plan_rows()
@@ -962,7 +993,6 @@ def create_prompt(
                 dont_extend_height=True,
                 wrap_lines=False,
             ),
-            title="Command output · running · Ctrl+G to hide",
             height=lambda: len(command_rows()) + 2,
         ),
         filter=Condition(lambda: bool(command_rows())),
@@ -1075,6 +1105,7 @@ class Transcript:
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
         self.command_scrollback = preferences.get("command_scrollback", "off") == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
+        self.command_preview_lines = int(preferences.get("command_preview_lines", "10"))
         self.activity = activity
         self.console = console
         self.theme = theme

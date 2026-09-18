@@ -348,3 +348,20 @@ def test_command_visibility_controls_all_completions(name, failed):
     view.tool_result(event)
     assert stream.getvalue().count("OUTPUT") == 1
     assert "DIAGNOSTIC" not in stream.getvalue()
+
+
+@pytest.mark.parametrize("limit", ["1", "10", "80"])
+def test_preview_height_setting_is_independent_of_scrollback_limit(limit):
+    configure(["set", "command_preview_lines", limit])
+    view, _ = transcript()
+    assert view.command_preview_lines == int(limit)
+    assert view.command_scrollback_lines == 20
+    assert not view.command_scrollback
+    configure(["unset", "command_preview_lines"])
+    assert configure(["get", "command_preview_lines"]) == "10"
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "abc"])
+def test_preview_height_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        configure(["set", "command_preview_lines", value])
