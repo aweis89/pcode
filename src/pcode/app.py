@@ -100,7 +100,7 @@ class PreviewApp:
         self.inspector_requested: str | None = None
         self.session_requested = False
         self.tree_requested = False
-        self.login_requested = False
+        self.login_requested: str | None = None
         self.compact_requested: str | None = None
         self.mcp_enable_requested: str | None = None
         self.mcp_enabling: str | None = None
@@ -108,7 +108,13 @@ class PreviewApp:
         self.pending_model: str | None = None
         self.registry = CommandRegistry()
         for command in (
-            Command("/login", "Reuse pi's Anthropic login", self.login, ("pi",)),
+            Command(
+                "/login",
+                "Sign in to Anthropic in a browser (/login pi reuses pi's login)",
+                self.login,
+                ("anthropic", "pi"),
+            ),
+            Command("/logout", "Remove pcode's stored Anthropic login", self.logout),
             Command(
                 "/model",
                 "Choose a model (Ctrl+L); keeps the conversation, applies next request",
@@ -436,7 +442,7 @@ class PreviewApp:
         providers = await asyncio.to_thread(active_providers, self.model)
         if not providers:
             self.transcript.note(
-                "No active model providers. Use /login for pi Anthropic auth, "
+                "No active model providers. Use /login to sign in to Anthropic, "
                 "set ANTHROPIC_API_KEY, or run codex login."
             )
             return
@@ -466,10 +472,70 @@ class PreviewApp:
         if self.model and not self.model.startswith("anthropic:"):
             self.transcript.note("/login currently supports Anthropic only.")
             return
-        self.login_requested = True
+        source = argument.strip() or "anthropic"
+        if source not in {"anthropic", "pi"}:
+            self.transcript.note("Usage: /login [anthropic | pi]")
+            return
+        self.login_requested = source
+
+    def logout(self, argument: str) -> None:
+        from pcode.anthropic_oauth import credentials_path, delete_tokens
+        from pcode.auth import LoginError
+
+        try:
+            removed = delete_tokens(credentials_path())
+        except LoginError as error:
+            self.transcript.error(str(error))
+            return
+        if os.environ.get("PCODE_ANTHROPIC_AUTH", "").strip() == "oauth":
+            del os.environ["PCODE_ANTHROPIC_AUTH"]
+        if not removed:
+            self.transcript.note("No stored Anthropic login to remove.")
+            return
+        self.transcript.note(
+            "Removed pcode's stored Anthropic login. This conversation keeps its current "
+            "model until the token expires; use /login again or set ANTHROPIC_API_KEY."
+        )
+
+    async def perform_login(self) -> None:
+        source, self.login_requested = self.login_requested, None
+        if source == "pi":
+            await self.login_pi()
+        else:
+            await self.login_anthropic()
+
+    async def login_anthropic(self) -> None:
+        from pcode.anthropic_oauth import AnthropicOAuthModel, credentials_path, login
+        from pcode.auth import LoginError
+
+        self.login_requested = None
+        self.transcript.note(
+            "Opening claude.ai to sign in with your Anthropic account. "
+            "If no browser opens, visit this URL (Ctrl+C cancels):"
+        )
+        try:
+            await login(notify=self.transcript.note)
+            if self.model:
+                self.runtime.agent.model = await asyncio.to_thread(AnthropicOAuthModel, self.model)
+            os.environ["PCODE_ANTHROPIC_AUTH"] = "oauth"
+            self.transcript.note(
+                f"Signed in to Anthropic. Credentials are stored in {credentials_path()} "
+                "(owner-only) and refreshed automatically; /logout removes them."
+            )
+            self.transcript.note(
+                "Future launches use this login automatically. "
+                "Set PCODE_ANTHROPIC_AUTH=api-key to use ANTHROPIC_API_KEY instead."
+            )
+        except asyncio.CancelledError:
+            self.transcript.note("Anthropic sign-in cancelled.")
+            raise
+        except LoginError as error:
+            self.transcript.error(str(error))
+        except Exception:
+            self.transcript.error("Anthropic sign-in failed. No credential details were logged.")
 
     async def login_pi(self) -> None:
-        self.login_requested = False
+        self.login_requested = None
         from pcode.auth import LoginError
         from pcode.pi_auth import PiAnthropicModel, pi_auth_path, read_pi_credential
 
@@ -1413,6 +1479,7 @@ class PreviewApp:
                             "/session",
                             "/tree",
                             "/login",
+                            "/logout",
                             "/compact",
                             "/autocompact",
                         }
@@ -1449,7 +1516,7 @@ class PreviewApp:
                         if self.model_requested:
                             await self.choose_model(output, session)
                         if self.login_requested:
-                            await self.login_pi()
+                            await self.perform_login()
                         if self.tree_requested:
                             await self.choose_tree(output, session)
                         if self.session_requested:
