@@ -6,20 +6,23 @@ from test_tmux import PLAN_SCRIPT, capture, input_rows, pane, pytestmark  # noqa
 
 @pytest.mark.parametrize("pane", [PLAN_SCRIPT], indirect=True)
 @pytest.mark.parametrize("split", ["-h", "-v"])
-def test_toggle_removes_entire_widget_and_restores_it(pane, split):  # noqa: F811
+def test_toggle_removes_entire_widget_and_restores_the_latest_plan(pane, split):  # noqa: F811
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    capture(pane, "✓ Task 0")
+    # Hide mid-turn: the widget must stay gone once the turn finishes too.
+    capture(pane, "Task 8", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-o")
     pane("send-keys", "-t", "preview:0.0", "-l", "kept draft")
     pane("split-window", split, "-t", "preview:0.0", "cat")
-    screen = capture(pane, "kept draft")
+    capture(pane, "kept draft")
+    screen = capture(pane, "✓ h")  # Wait for the finished turn, still hidden.
     assert "Task 0" not in screen
     assert "Tasks" not in screen and "Tools" not in screen
     assert screen.count("┌") == screen.count("└") == 1
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-o")
     screen = capture(pane, "✓ Task 0")
+    assert "Tasks 12/12" in screen  # Plan updates kept arriving while hidden.
     assert "kept draft" in screen
     assert screen.count("┌") == screen.count("└") == 2
     assert input_rows(screen) == 1
