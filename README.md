@@ -48,7 +48,8 @@ uv run pcode -m openai-codex:gpt-5.6-luna
 ```
 
 Selecting a model with `/model` (Ctrl+L) saves it as the default for future
-startups. `/effort` and Ctrl+N/Ctrl+P also save the selected reasoning effort
+startups once the selection takes effect (immediately when idle, otherwise on the
+next request). `/effort` and Ctrl+N/Ctrl+P also save the selected reasoning effort
 and current model. Preferences live in `~/.config/pcode/preferences.json`
 (or `$XDG_CONFIG_HOME/pcode/preferences.json` when set), independently of saved
 conversations and `--no-save`. Run `pcode` with no model argument to reuse the
@@ -232,9 +233,13 @@ saved session records the selected model so resuming uses it too. Model-specific
 settings are rebuilt for the selected model. Use `/new` to start over instead.
 Selecting the current model is a no-op; `--no-save` still applies, and sessions
 are saved lazily on their first prompt. A failed switch leaves the old conversation
-intact. Model selection is disabled while a run or queued messages are active.
-This also works from offline preview to start a live conversation without
+intact. This also works from offline preview to start a live conversation without
 restarting pcode.
+
+The picker also opens while a run or queued messages are active. Like `/effort`,
+the selection applies from the next request: the turn in flight finishes on the
+model it started with, and the footer shows `current → next` until the switch
+happens. Ctrl+C on the running turn keeps the pending selection.
 
 ### Local Meridian provider
 
@@ -472,7 +477,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   backgrounds and text, with reverse-video selection highlights. They follow your
   terminal background automatically, independently of `/theme` and `/colors`.
 - `/help`: command list and keyboard shortcuts.
-- `/model`: searchable model picker for configured providers (keeps the conversation).
+- `/model`: searchable model picker for configured providers (keeps the conversation;
+  applies from the next request when chosen mid-run).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed` or `/errors`: open the same inspector filtered to failures.
 - `/context`: current model, workspace, completed turns, and token usage.
@@ -493,7 +499,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 | Ctrl+J | Newline (map Shift+Enter to this in your terminal) |
 | Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
-| Ctrl+L | Choose a model (idle only; keeps the conversation) |
+| Ctrl+L | Choose a model (keeps the conversation; applies from the next request) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
 | Ctrl+R | Search this process's input history |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
@@ -633,7 +639,8 @@ default) and clears the editor for another draft; the toolbar shows the mode and
 pending message count. Steering messages join the next model request; queue-mode
 messages run in order after the current turn finishes. Ctrl+S cycles send modes. Slash commands use a separate async
 handler, so help, inspection, theme, context, and effort controls remain available
-while the model works. `/new`, `/session`, `/login`, and `/model` require an idle conversation: cancel
+while the model works. `/model` also opens while working and applies from the next
+request. `/new`, `/session`, and `/login` require an idle conversation: cancel
 or wait, then retry. `/quit` (or `/exit`) cancels the active run and waits for its
 cleanup before exiting. Ctrl+C or Ctrl+D cancels the current turn, clears queued
 messages, and preserves the unsubmitted draft and cursor. A failed turn also
