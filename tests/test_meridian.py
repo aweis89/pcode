@@ -164,17 +164,17 @@ def test_switch_model_routes_stream_and_tools_to_meridian(monkeypatch, tmp_path,
                     assert await result.get_output() == "Hello"
             assert agent.model._provider.client._client.is_closed
         assert len(requests) == 2
-        from pcode.runtime import RunStatus
+        from pcode.runtime import RunStatus, ThinkingDelta
 
-        thinking = []
-        app.runtime.thinking_sink = thinking.append
         events = [event async for event in app.runtime.stream("hello")]
-        assert ("PRIVATE_REASONING" in "".join(thinking)) is forward_thinking
+        assert (
+            "PRIVATE_REASONING" in "".join(e.text for e in events if isinstance(e, ThinkingDelta))
+        ) is forward_thinking
         assert (
             any(isinstance(e, RunStatus) and e.text == "Thinking…" for e in events)
             is forward_thinking
         )
-        assert "PRIVATE_REASONING" not in repr(events)
+        assert ("PRIVATE_REASONING" in repr(events)) is forward_thinking
         assert requests[-1].headers["x-litellm-session-id"] == app.runtime.conversation_id
         app.runtime.close()
 

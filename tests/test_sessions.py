@@ -413,3 +413,83 @@ def test_reopened_session_continues_without_replaying_interrupted_write(tmp_path
         asyncio.run(run())
     finally:
         saved.close()
+
+
+@pytest.mark.parametrize("outcome", ["done", "error", "cancel"])
+def test_thinking_persists_and_replays_after_reopen_even_when_hidden(tmp_path, outcome):
+    from io import StringIO
+
+    from pydantic_ai.models.function import DeltaThinkingPart
+    from rich.console import Console
+
+    from pcode.app import PreviewApp
+
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    identity = saved.info.id
+    # More than the old 8-KB live preview limit, with a distinctive beginning/end.
+    thought = "FIRST_THOUGHT\n" + "thinking text\n" * 1000 + "LAST_THOUGHT"
+
+    async def model(messages, info):
+        yield {0: DeltaThinkingPart(content=thought[:100])}
+        yield {0: DeltaThinkingPart(content=thought[100:], signature="OPAQUE_SIGNATURE")}
+        if outcome == "error":
+            raise RuntimeError("deliberate model failure")
+        if outcome == "cancel":
+            raise asyncio.CancelledError
+        yield "Public answer"
+
+    async def run():
+        agent = Agent(FunctionModel(stream_function=model))
+        runtime = AgentRuntime(agent, saved)
+        try:
+            try:
+                _ = [event async for event in runtime.stream("Question")]
+            except (RuntimeError, asyncio.CancelledError):
+                assert outcome != "done"
+        finally:
+            runtime.close()
+        reopened = SavedSession.open(identity, root)
+        runtime = AgentRuntime(agent, reopened)
+        try:
+            records = reopened.recent_transcript()
+            thinking = [r for r in records if r["kind"] in ("Thinking", "thinking_partial")]
+            assert len(thinking) == 1
+            assert thinking[0]["text"] == thought
+            assert "OPAQUE_SIGNATURE" not in repr(list(reopened.records()))
+            app = PreviewApp(model="test:local", runtime=runtime, console=Console(file=StringIO()))
+            app.activity.show_thinking = False
+            app.replay()
+            assert "FIRST_THOUGHT" not in repr(app.transcript.replay())
+            app.set_show_thinking(True)
+            replay = repr(app.transcript.replay())
+            assert replay.count("FIRST_THOUGHT") == 1
+            assert replay.count("LAST_THOUGHT") == 1
+            app.set_show_thinking(False)
+            assert "FIRST_THOUGHT" not in repr(app.transcript.replay())
+        finally:
+            runtime.close()
+
+    asyncio.run(run())
+
+
+def test_thinking_completion_replaces_deltas_across_interleaved_tool_records():
+    from types import SimpleNamespace
+
+    records = [
+        {"kind": "ThinkingDelta", "text": "first"},
+        {"kind": "ToolSummary", "name": "read_file"},
+        {"kind": "ThinkingDelta", "text": " second"},
+        {"kind": "Thinking", "text": "first second"},
+        {"kind": "Message", "markdown": "Answer"},
+        {"kind": "ThinkingDelta", "text": "interrupted"},
+        {"kind": "turn_cancelled"},
+    ]
+    saved = SimpleNamespace(active_records=lambda: iter(records))
+    assert SavedSession.recent_transcript(saved) == [
+        {"kind": "Thinking", "text": "first second"},
+        {"kind": "ToolSummary", "name": "read_file"},
+        {"kind": "Message", "markdown": "Answer"},
+        {"kind": "thinking_partial", "text": "interrupted"},
+        {"kind": "turn_cancelled"},
+    ]

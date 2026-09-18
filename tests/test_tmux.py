@@ -837,7 +837,7 @@ from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
 
 async def model(messages, info):
-    yield {0: DeltaThinkingPart(content="TRANSIENT_REASONING_ONLY")}
+    yield {0: DeltaThinkingPart(content="SAVED_REASONING_TEXT\n")}
     await asyncio.sleep(1)
     yield "Public answer while thinking is visible\n\n"
     await asyncio.sleep(60)
@@ -851,31 +851,31 @@ app.run()
 
 
 @pytest.mark.parametrize("pane", [THINKING_SCRIPT], indirect=True)
-def test_thinking_toggle_is_content_sized_and_never_enters_scrollback(pane):
+def test_thinking_toggle_redraws_scrollback_without_growing_prompt(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "❯", running=True)
-    assert "TRANSIENT_REASONING_ONLY" not in screen
+    assert "SAVED_REASONING_TEXT" not in screen
     pane("send-keys", "-t", "preview:0.0", "C-t")
-    screen = capture(pane, "TRANSIENT_REASONING_ONLY", running=True)
+    screen = capture(pane, "SAVED_REASONING_TEXT", running=True)
     assert input_rows(screen) == 1
     capture(pane, "Public answer while thinking is visible", running=True)
     for width, height in ((80, 24), (120, 40)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
-        screen = capture(pane, "TRANSIENT_REASONING_ONLY", running=True, columns=width)
+        screen = capture(pane, "SAVED_REASONING_TEXT", running=True, columns=width)
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-t")
     time.sleep(0.2)
     screen = capture(pane, "❯", running=True)
-    assert "TRANSIENT_REASONING_ONLY" not in screen
+    assert "SAVED_REASONING_TEXT" not in screen
     pane("send-keys", "-t", "preview:0.0", "C-t")
-    capture(pane, "TRANSIENT_REASONING_ONLY", running=True)
+    capture(pane, "SAVED_REASONING_TEXT", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "Run cancelled")
-    assert "TRANSIENT_REASONING_ONLY" not in screen
+    assert "SAVED_REASONING_TEXT" in screen
     assert input_rows(screen) == 1
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
-    assert "TRANSIENT_REASONING_ONLY" not in history
+    assert "SAVED_REASONING_TEXT" in history
 
 
 @pytest.mark.parametrize(

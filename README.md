@@ -309,13 +309,15 @@ follow-up tool rounds. Repeated `independent-request:headerless-tool-result` mea
 the running client is missing this integration; restart pcode after upgrading
 (already-running Python processes do not reload it).
 
-**Thinking visibility:** `/show-thinking on` only controls pcode's local preview.
-Meridian must also forward thinking blocks. In the proxy's `/settings` page
-(default: <http://127.0.0.1:3456/settings>), inspect the **passthrough** adapter's
-**Thinking Passthrough** option. Meridian 1.71.1 defaults this to off. Enabling it
-changes that proxy adapter for other clients too, so pcode does not modify it
+**Thinking visibility:** `/show-thinking on` controls pcode's saved-thinking
+scrollback view. Meridian must also forward readable thinking blocks. The opt-in
+managed instance enables and verifies **Thinking Passthrough** in its private
+configuration. For an external proxy, inspect the **passthrough** adapter's
+**Thinking Passthrough** option in its `/settings` page (default:
+<http://127.0.0.1:3456/settings>). Meridian 1.71.1 defaults this to off. Changing an
+external proxy's adapter affects other clients too, so pcode does not modify it
 automatically. Forwarding is separate from enabling model thinking or setting
-effort; a model that emits no thinking blocks still has nothing to preview.
+effort; upstream-omitted thinking still cannot be displayed.
 
 When a spinner is silent, compare Meridian's request telemetry: queue wait,
 time to first byte, upstream duration, status/error, and lineage. An early first
@@ -690,12 +692,12 @@ live-only; explicit demo/inspection output is separate. Failure excerpts are
 bounded and sanitized by the existing tool adapter. An exceptional completion
 flushes pending assistant prose before its diagnostic, preserving event order.
 
-Core events have no Rich or prompt_toolkit dependencies. Raw reasoning tokens are
-not transcript content: the stream adapter currently reduces thinking events to a
-transient `RunStatus("Thinking…")`, owned by the live UI. Future small/expanded
-thinking views should remain there; any intentionally retained reasoning summary
-must be distinct from the raw stream. Plans, status, dialogs, and editor state also
-remain mutable, outside `Transcript`.
+Core events have no Rich or prompt_toolkit dependencies. Provider-exposed readable
+thinking streams as `ThinkingDelta` and completes with `Thinking`; both are saved
+independently of display visibility. `Transcript.thinking` renders it in muted,
+dim scrollback when enabled and retains it for redraw when hidden. Opaque signatures
+and provider-internal reasoning are not readable transcript content. Plans, status,
+dialogs, and editor state remain mutable, outside `Transcript`.
 
 Approvals, model pickers, and MCP management are not implemented yet. Model
 request-count limits are explicitly disabled; there is no monetary budget guard.
@@ -999,53 +1001,53 @@ Pcode removes Coder's default clearing of old tool results at 70% context usage 
 that evidence is not discarded before the summarizer sees it. With auto-compaction
 off, use `/compact` proactively or `/new` for unrelated work.
 
-### Transient reasoning summary
+### Saved thinking in scrollback
 
-Press **Ctrl+T** to show or hide the provider's visible reasoning summary.
-The default **compact** view places the latest heading next to the task/tool
-header, for example `Tasks 0/3 · Locating root evidence`. Markdown heading/bold
-markers are removed and long text is clipped to the available terminal width.
-When no task/tool panel exists yet, the summary uses a single unbordered line
-above the current prompt. It does not add a separate box or take a task row.
+Press **Ctrl+T** or use `/show-thinking on|off` to show or hide provider-exposed
+thinking text. When enabled, thinking streams into normal terminal scrollback in
+a muted, dim style, distinct from the answer. Complete lines are printed as they
+arrive; the unfinished last line is flushed at the block boundary or when a turn
+ends, fails, or is cancelled. Thinking no longer appears in the Tasks/Tools
+header or a separate live panel.
 
-These are provider-exposed summaries, not raw internal reasoning tokens. They
-may be empty, a short heading, or several paragraphs. The compact view prefers
-the latest heading in the current thinking block, falling back to its latest
-nonempty line. A new nonempty block replaces the compact label; signature-only
-blocks do not erase it. The **expanded** view retains the complete visible text
-within its bounded rolling buffer and follows the latest wrapped lines:
+The toggle saves the default and triggers the same retained-transcript rebuild
+as `/redraw`, so it reveals or hides earlier thinking too, including text received
+while hidden. It works during a turn and after completion, preserves the editor
+draft, and does not duplicate answer/tool output. The usual redraw limitations
+apply: regeneration clears pre-pcode terminal history and projects the bounded
+retained transcript, not an unlimited terminal archive. Redirected output cannot
+be retroactively erased or redrawn.
 
 ```sh
-pcode config set thinking_display compact   # Default: summary beside Tasks/Tools
-pcode config set thinking_display expanded  # Opt into a separate multiline box
-pcode config set thinking_lines 10          # Expanded view's maximum content rows
+pcode config set show_thinking on   # Default is off
 ```
 
-The expanded box sits above the current prompt/tasks, preserves paragraph breaks,
-grows with content, and shrinks in small panes to leave room for tasks and input.
-The line limit excludes borders. These settings also work through `/config` and
-apply on the next launch; they do not request more verbose provider summaries.
+**Privacy and persistence:** readable thinking is recorded in saved sessions even
+when hidden. Resuming a session restores thinking alongside its recent transcript;
+the complete text remains in the session journal. Interrupted blocks are retained
+too. Display redaction is not redaction of session files. Provider signatures and
+redacted/opaque thinking blocks are not printed or added to the readable-thinking
+journal events, but native model-message history may still contain them for
+continuation. `--no-save` disables session persistence, not in-process replay or
+terminal scrollback. Turning visibility off is not secure deletion of terminal,
+log, or session history. Older sessions without thinking journal events cannot
+retroactively populate this view from their native model history.
 
-`/show-thinking on` and `/show-thinking off` change current visibility and save the
-default; `/show-thinking` reports it. `pcode config set show_thinking on` sets the
-startup default (`off` by default). Ctrl+T changes visibility immediately.
+There is no longer an 8,192-character thinking tail or a thinking-row limit.
+Legacy `thinking_display` and `thinking_lines` preferences are ignored. Provider
+summaries may themselves be abbreviated: this view shows the readable text the
+provider actually exposes, **not hidden internal reasoning**. Delegated agents'
+thinking is still not forwarded into the parent's transcript.
 
-Visible summary text goes directly to bounded, mutable prompt_toolkit UI state,
-not through transcript events or permanent terminal output. It is cleared on
-completion, cancellation, failure, and conversation reset. Hiding the view keeps
-the current turn's buffers so it can be shown again. Each buffer is bounded to
-8,192 characters. This is a live preview, not a scrollable reasoning transcript.
-It does not change the selected reasoning effort or existing saved model-message
-history. As with other normal-screen panels, aggressive tmux resizing can move
-old widget rows into terminal history before pcode can erase them.
-
-For direct Anthropic models, enabling the view also requests thinking on the
-next turn (adaptive where supported, otherwise a 2,048-token budget). This can
-increase latency and token usage. Turning it off removes that request and
-restores provider defaults; an in-flight request is unchanged. Codex requests
-provider-exposed reasoning summaries independently of visibility. Meridian still
-requires thinking generation upstream and **Thinking Passthrough** in its proxy
-settings; pcode does not change the proxy's global settings.
+For direct Anthropic models, enabling the view also requests visible thinking on
+the next turn: adaptive thinking for supported models, otherwise an explicit
+2,048-token legacy budget, with `display: "summarized"`. This can increase latency
+and token usage. Turning it off removes that request override and restores provider
+defaults, rather than explicitly disabling reasoning. In-flight requests and the
+separately selected effort are unchanged. Codex requests `summary: "auto"`
+independently of visibility. Meridian still needs upstream thinking generation and
+thinking forwarding; pcode does not mutate an external proxy's global settings.
+See the Meridian setup section for the isolated managed-instance option.
 
 ### Error logs in scrollback
 

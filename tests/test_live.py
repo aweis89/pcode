@@ -20,7 +20,8 @@ from pcode.runtime import Message, RunStatus, TextDelta, ToolStarted, ToolSummar
 from pcode.ui import TerminalOutput, create_prompt
 
 
-def test_codex_uses_native_model_with_only_cache_override(tmp_path):
+def test_codex_uses_native_model_with_only_cache_override(tmp_path, monkeypatch):
+    monkeypatch.delenv("PCODE_LLM_PROXY", raising=False)
     with patch("pcode.agent.Agent") as constructor, patch("pcode.agent.OpenAICodexModel") as model:
         create_agent("openai-codex:gpt-5.6-luna", tmp_path)
     model.assert_called_once_with(
@@ -288,23 +289,27 @@ def test_ui_cancellation_cleans_up_generation_and_accepts_next_input():
     asyncio.run(run())
 
 
-def test_raw_thinking_only_reaches_dedicated_sink_not_events():
+def test_thinking_is_streamed_as_events_separate_from_answer():
     from pydantic_ai.models.function import DeltaThinkingPart
 
+    from pcode.runtime import Thinking, ThinkingDelta
+
     async def model(messages, info):
-        yield {0: DeltaThinkingPart(content="private raw reasoning")}
-        yield {0: DeltaThinkingPart(content=" more private reasoning")}
+        yield {0: DeltaThinkingPart(content="Visible reasoning")}
+        yield {0: DeltaThinkingPart(content=" continued", signature="OPAQUE_SIGNATURE")}
         yield "Public **answer**"
 
     async def run():
         runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
         try:
-            thinking = []
-            runtime.thinking_sink = thinking.append
             events = [event async for event in runtime.stream("hello")]
-            assert "".join(thinking) == "private raw reasoning more private reasoning"
+            assert (
+                "".join(e.text for e in events if isinstance(e, ThinkingDelta))
+                == "Visible reasoning continued"
+            )
+            assert Thinking("Visible reasoning continued") in events
             assert RunStatus("Thinking…") in events
-            assert not any("private" in repr(event) for event in events)
+            assert "OPAQUE_SIGNATURE" not in repr(events)
             assert Message("Public **answer**") in events
         finally:
             runtime.close()
@@ -313,13 +318,13 @@ def test_raw_thinking_only_reaches_dedicated_sink_not_events():
 
 
 @pytest.mark.parametrize("outcome", ["done", "error", "cancel"])
-def test_thinking_ui_sink_is_cleared_and_never_printed(outcome):
+@pytest.mark.parametrize("shown", [True, False])
+def test_thinking_scrollback_survives_turn_end_and_is_retained_when_hidden(outcome, shown):
     from pydantic_ai.models.function import DeltaThinkingPart
 
     async def run():
         async def model(messages, info):
-            yield {0: DeltaThinkingPart(content="PRIVATE_REASONING_SENTINEL")}
-            assert app.activity.thinking == "PRIVATE_REASONING_SENTINEL"
+            yield {0: DeltaThinkingPart(content="REASONING_SENTINEL")}
             if outcome == "error":
                 raise RuntimeError("model failed")
             if outcome == "cancel":
@@ -331,7 +336,7 @@ def test_thinking_ui_sink_is_cleared_and_never_printed(outcome):
         app = PreviewApp(
             model="test:local", runtime=runtime, console=Console(file=output, color_system=None)
         )
-        app.activity.show_thinking = True
+        app.activity.show_thinking = shown
         try:
             with create_pipe_input() as pipe:
                 session = create_prompt(
@@ -341,20 +346,23 @@ def test_thinking_ui_sink_is_cleared_and_never_printed(outcome):
                 app.transcript.output = writer
                 assert await app.run_live(writer, "hello") == (outcome == "done")
                 await writer.flush()
-            assert app.activity.thinking == ""
-            runtime.thinking_sink("late content")
-            assert app.activity.thinking == ""
-            assert "PRIVATE_REASONING_SENTINEL" not in output.getvalue()
+            assert ("REASONING_SENTINEL" in output.getvalue()) is shown
+            assert "REASONING_SENTINEL" in repr(app.transcript.log.entries)
+            assert not writer._thinking_tail
+            app.activity.show_thinking = True
+            assert "REASONING_SENTINEL" in repr(app.transcript.replay())
+            app.activity.show_thinking = False
+            assert "REASONING_SENTINEL" not in repr(app.transcript.replay())
         finally:
             runtime.close()
 
     asyncio.run(run())
 
 
-def test_thinking_block_boundaries_reach_only_transient_sink():
+def test_thinking_block_boundaries_reach_events():
     from pydantic_ai.models.function import DeltaThinkingPart
 
-    from pcode.ui import Activity
+    from pcode.runtime import Thinking
 
     async def model(messages, info):
         yield {0: DeltaThinkingPart(content="**First summary**")}
@@ -364,17 +372,12 @@ def test_thinking_block_boundaries_reach_only_transient_sink():
 
     async def run():
         runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
-        activity = Activity(show_thinking=True)
-        runtime.thinking_start_sink = activity.start_thinking
-        runtime.thinking_sink = activity.append_thinking
         try:
             events = [event async for event in runtime.stream("hello")]
-            assert activity.thinking == "**First summary**\n\n**Second summary**"
-            assert activity.thinking_summary() == "Second summary"
-            assert not any(
-                "First summary" in repr(event) or "Second summary" in repr(event)
-                for event in events
-            )
+            assert [e.text for e in events if isinstance(e, Thinking)] == [
+                "**First summary**",
+                "**Second summary**",
+            ]
         finally:
             runtime.close()
 

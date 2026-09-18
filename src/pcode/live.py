@@ -46,6 +46,8 @@ from pcode.runtime import (
     PlanUpdated,
     RunStatus,
     TextDelta,
+    Thinking,
+    ThinkingDelta,
     ToolStarted,
     ToolSummary,
 )
@@ -83,9 +85,6 @@ class AgentRuntime:
 
         self.session_factory = session_factory
         self.auto_compact = load_preferences().get("autocompact") == "on"
-        # Dedicated transient UI sink. Raw reasoning must not enter Event/Transcript.
-        self.thinking_sink: Callable[[str], None] = lambda text: None
-        self.thinking_start_sink: Callable[[], None] = lambda: None
         self.compaction_notice = lambda text: None
         self._clear()
         self.replace_agent(agent)
@@ -402,20 +401,22 @@ class AgentRuntime:
                     if isinstance(event.part, TextPart):
                         yield TextDelta(event.part.content)
                     elif isinstance(event.part, ThinkingPart):
-                        self.thinking_start_sink()
-                        self.thinking_sink(event.part.content)
+                        if event.part.content:
+                            yield ThinkingDelta(event.part.content)
                         yield RunStatus("Thinking…")
                 elif isinstance(event, PartDeltaEvent):
                     if isinstance(event.delta, TextPartDelta):
                         yield TextDelta(event.delta.content_delta)
                     elif isinstance(event.delta, ThinkingPartDelta):
                         if event.delta.content_delta:
-                            self.thinking_sink(event.delta.content_delta)
+                            yield ThinkingDelta(event.delta.content_delta)
                         yield RunStatus("Thinking…")
-                elif isinstance(event, PartEndEvent) and isinstance(event.part, TextPart):
-                    if event.part.content:
+                elif isinstance(event, PartEndEvent):
+                    if isinstance(event.part, TextPart) and event.part.content:
                         emitted_text = True
                         yield Message(event.part.content)
+                    elif isinstance(event.part, ThinkingPart) and event.part.content:
+                        yield Thinking(event.part.content)
                 elif isinstance(event, FunctionToolCallEvent):
                     try:
                         args = event.part.args_as_dict()
