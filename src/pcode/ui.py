@@ -171,6 +171,7 @@ class Activity:
     status: str = ""
     queued: int = 0
     queued_prompts: list[str] = field(default_factory=list)
+    queued_modes: list[str] = field(default_factory=list)
     prompt: str = ""
     prompt_state: str = ""
     plan: list[dict] = field(default_factory=list)
@@ -227,10 +228,18 @@ class Activity:
         if budget <= 0:
             return []
         visible = budget if len(self.queued_prompts) <= budget else budget - 1
-        rows = [("class:plan", f"Queued: {text}") for text in self.queued_prompts[:visible]]
+        rows = []
+        for index, text in enumerate(self.queued_prompts[:visible]):
+            mode = self.queued_modes[index] if index < len(self.queued_modes) else "queue"
+            label = {
+                "steering": "Steering (next model request)",
+                "interrupt": "Interrupting",
+            }.get(mode, "Queued")
+            rows.append(("class:plan", f"{label}: {text}"))
         remaining = len(self.queued_prompts) - visible
         if remaining > 0:
-            rows.append(("class:plan", f"… {remaining} more queued"))
+            state = "pending" if "steering" in self.queued_modes else "queued"
+            rows.append(("class:plan", f"… {remaining} more {state}"))
         return rows
 
 
