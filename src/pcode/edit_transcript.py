@@ -1,15 +1,20 @@
 """Literal, width-aware edit blocks, independent of assistant Markdown."""
 
 from dataclasses import dataclass
+from functools import cache
 
+from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+from pygments.token import Generic
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.rule import Rule
 from rich.segment import Segment
+from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 
 from pcode.edits import edit_text
 from pcode.runtime import EditCompleted
+from pcode.tool_display import command_text
 
 
 @dataclass(frozen=True)
@@ -43,3 +48,32 @@ class EditTranscript:
         if change.omitted:
             yield Text(f"Diff unavailable: {edit_text(change.omitted)}", style="pcode.muted")
         yield Rule(style="pcode.muted")
+
+
+@cache
+def _preview_style(code_theme: str, added: bool) -> str:
+    token = Generic.Inserted if added else Generic.Deleted
+    color = Syntax.get_theme(code_theme).get_style_for_token(token).color
+    # Convert only a library-generated marker, never file content. This keeps
+    # ANSI palette colors native while matching Rich's RGB syntax colors too.
+    marker = Style(color=color).render("x", color_system="truecolor")
+    foreground = to_formatted_text(ANSI(marker))[0][0]
+    return "class:bottom-toolbar.text " + foreground
+
+
+def edit_preview_rows(text: str, width: int, code_theme: str) -> list[tuple[str, str]]:
+    """Color logical +/- lines before wrapping so continuation rows keep their color."""
+    width = max(1, width)
+    console = Console(width=width)
+    rows = []
+    for line in command_text(text).split("\n"):
+        style = (
+            _preview_style(code_theme, line.startswith("+"))
+            if line.startswith(("+", "-"))
+            else "class:bottom-toolbar.text"
+        )
+        rows.extend(
+            (style, row.plain)
+            for row in Text(line).wrap(console, width, overflow="fold", no_wrap=False)
+        )
+    return rows
