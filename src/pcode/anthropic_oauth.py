@@ -89,13 +89,29 @@ def have_credentials(path: Path | None = None) -> bool:
 def anthropic_auth_source() -> str:
     """Resolve which Anthropic credential to use: api-key, oauth, or pi.
 
-    `PCODE_ANTHROPIC_AUTH` is authoritative when set. Otherwise pcode's own
-    stored sign-in wins over `ANTHROPIC_API_KEY`, so `/login` keeps applying
-    after a restart; `PCODE_ANTHROPIC_AUTH=api-key` opts back out.
+    `PCODE_ANTHROPIC_AUTH` is authoritative when set. Otherwise the source that
+    `/login` last selected applies, then pcode's own stored sign-in, so a login
+    keeps working after a restart; `PCODE_ANTHROPIC_AUTH=api-key` opts back out.
+
+    A saved choice is honored only while its credential file is still present:
+    a stale preference must not turn a missing credential into a startup error.
     """
     source = os.environ.get("PCODE_ANTHROPIC_AUTH", "").strip()
     if source:
         return source
+    from pcode.preferences import load_preferences
+
+    saved = load_preferences().get("anthropic_auth")
+    if saved == "pi":
+        from pcode.pi_auth import pi_auth_path
+
+        try:
+            if pi_auth_path().is_file():
+                return "pi"
+        except OSError:
+            pass
+    elif saved == "api-key":
+        return "api-key"
     return "oauth" if have_credentials() else "api-key"
 
 

@@ -422,7 +422,16 @@ def test_stored_login_enables_the_anthropic_picker_without_reading_it(store, mon
     monkeypatch.setenv("CODEX_HOME", str(store.parent / "absent-codex"))
     assert active_providers(None) == set()
     save(store)
-    monkeypatch.setattr(Path, "read_text", lambda *a, **k: pytest.fail("must not read"))
+    # Resolution may consult pcode's own non-secret preferences; guard only the
+    # token store, so this stays a statement about credentials, not file I/O.
+    read_text = Path.read_text
+
+    def guarded(self, *args, **kwargs):
+        if self == store:
+            pytest.fail("must not read the stored credential")
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded)
     assert active_providers(None) == {"anthropic"}
 
 

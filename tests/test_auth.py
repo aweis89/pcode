@@ -41,12 +41,13 @@ def test_unknown_auth_source_is_rejected(monkeypatch, tmp_path):
         create_agent("anthropic:test-model", tmp_path)
 
 
-def test_other_provider_login_does_not_request_pi():
+def test_login_works_from_a_non_anthropic_session():
+    """Signing in stores a credential; it does not require an Anthropic model."""
     buffer = StringIO()
-    app = PreviewApp(model="test", runtime=Mock(), console=Console(file=buffer))
-    app.handle("/login")
-    assert not app.login_requested
-    assert "Anthropic only" in buffer.getvalue()
+    app = PreviewApp(model="openai-codex:test", runtime=Mock(), console=Console(file=buffer))
+    app.handle("/login anthropic")
+    assert app.login_requested == "anthropic"
+    assert "Anthropic only" not in buffer.getvalue()
 
 
 def test_preview_login_requests_browser_sign_in():
