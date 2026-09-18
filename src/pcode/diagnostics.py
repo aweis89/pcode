@@ -57,6 +57,45 @@ def _error_details(error: BaseException, seen: set[int]) -> dict:
     return result
 
 
+TRANSIENT_TRANSPORT = frozenset(
+    {
+        "RemoteProtocolError",
+        "APIConnectionError",
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadError",
+        "ReadTimeout",
+        "WriteError",
+        "WriteTimeout",
+        "APITimeoutError",
+        "IncompleteRead",
+    }
+)
+
+
+def transport_types(error: BaseException) -> set[str]:
+    """Name every exception in the bounded cause chain, never its text."""
+    names, detail = set(), error_details(error)
+    while detail:
+        names.add(detail["type"])
+        detail = detail.get("cause", detail.get("context", {}))
+    return names
+
+
+def transient(error: BaseException) -> bool:
+    """Whether the provider dropped the connection rather than answering.
+
+    A status code means the provider did answer: rate limits and server errors
+    need their own handling, so they are deliberately not transient here.
+    """
+    detail = error_details(error)
+    while detail:
+        if "status" in detail:
+            return False
+        detail = detail.get("cause", detail.get("context", {}))
+    return bool(transport_types(error) & TRANSIENT_TRANSPORT)
+
+
 def versions() -> dict[str, str]:
     return {
         package: version(package)

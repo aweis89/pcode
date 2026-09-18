@@ -30,6 +30,7 @@ def test_defaults_and_path_do_not_create_files():
         "meridian_managed": "off",
         "repo_context_walk_up": "on",
         "repo_context_nested": "off",
+        "retry_attempts": "1",
         "show_thinking": "off",
         "show_tasks": "on",
         "autohide_tasks": "on",
@@ -264,3 +265,19 @@ def test_error_scrollback_settings_round_trip():
     assert "error_scrollback" not in load_preferences()
     configure(["unset", "error_scrollback_lines"])
     assert configure(["get", "error_scrollback_lines"]) == "20"
+
+
+@pytest.mark.parametrize("value", ["0", "1", "3"])
+def test_retry_attempts_round_trip(value):
+    assert configure(["get", "retry_attempts"]) == "1"
+    configure(["set", "retry_attempts", value])
+    assert load_preferences()["retry_attempts"] == value
+    configure(["unset", "retry_attempts"])
+    assert configure(["get", "retry_attempts"]) == "1"
+
+
+@pytest.mark.parametrize("value", ["-1", "1.5", "many", "", " 1", "１"])
+def test_retry_attempts_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="whole number"):
+        configure(["set", "retry_attempts", value])
+    assert configure(["get", "retry_attempts"]) == "1"

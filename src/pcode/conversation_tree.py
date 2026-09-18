@@ -10,6 +10,8 @@ class TurnNode:
     parent: str | None
     prompt: str
     status: str = "interrupted"
+    continuation: bool = False
+    resend_blocked: bool = False
     response: str = ""
     plan: list[dict] = field(default_factory=list)
     kind: str = "turn"
@@ -42,6 +44,7 @@ class ConversationTree:
                 identity,
                 parent,
                 record["prompt"],
+                continuation=record.get("continuation", False),
                 plan=deepcopy(self.nodes[parent].plan) if parent else [],
             )
             self.active = self.recording = identity
@@ -74,6 +77,7 @@ class ConversationTree:
                 node.plan = deepcopy(record["items"])
             elif kind in {"turn_completed", "turn_failed", "turn_cancelled"}:
                 node.status = kind.removeprefix("turn_")
+                node.resend_blocked = record.get("resend_blocked", False)
 
     def rows(self) -> list[tuple[tuple[str | None, bool], str]]:
         """Depth-first user/edit and assistant/continue rows, with stable IDs."""

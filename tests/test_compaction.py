@@ -165,7 +165,10 @@ def test_manual_checkpoint_preserves_plan_branches_restart_and_failed_next_turn(
             assert runtime.history == compacted
             assert (await runtime.plan_store.get_items())[0].id == "auth-task"
 
+        failed_inputs = []
+
         async def failing(messages, info):
+            failed_inputs.append(deepcopy(messages))
             raise RuntimeError("provider down")
             yield "unreachable"
 
@@ -173,7 +176,9 @@ def test_manual_checkpoint_preserves_plan_branches_restart_and_failed_next_turn(
         with pytest.raises(RuntimeError, match="provider down"):
             async for _ in runtime.stream("Continue"):
                 pass
-        assert runtime.history == compacted
+        # Keep the new request for /resend, but never the failed response.
+        assert runtime.history == failed_inputs[0]
+        assert runtime.history[-1].parts[0].content == "Continue"
         await runtime.navigate(parent)
         assert runtime.history == original
         runtime.close()
