@@ -38,6 +38,8 @@ SETTINGS = {
     # Which Anthropic credential /login selected; PCODE_ANTHROPIC_AUTH still wins.
     "anthropic_auth": Setting(None, ANTHROPIC_AUTH_SOURCES),
     "meridian_managed": Setting("off", ("on", "off")),
+    "repo_context_walk_up": Setting("on", ("on", "off")),
+    "repo_context_nested": Setting("off", ("off", "pointer", "contents")),
     "error_scrollback_lines": Setting("20", positive_integer=True),
     "regenerate_on_resize": Setting("on", ("on", "off")),
     "command_scrollback": Setting("off", ("on", "off")),
