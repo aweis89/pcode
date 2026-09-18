@@ -19,7 +19,12 @@ from pcode.models import active_providers, model_catalog
 
 @pytest.fixture(autouse=True)
 def environment(monkeypatch, tmp_path):
-    for name in ("PCODE_LLM_PROXY", "PCODE_MERIDIAN_BASE_URL", "PCODE_MERIDIAN_API_KEY"):
+    for name in (
+        "PCODE_LLM_PROXY",
+        "PCODE_MERIDIAN_BASE_URL",
+        "PCODE_MERIDIAN_API_KEY",
+        "PCODE_MERIDIAN_MANAGED",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-upstream-key")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "synthetic-upstream-token")

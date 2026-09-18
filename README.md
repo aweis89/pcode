@@ -237,7 +237,35 @@ restarting pcode.
 
 ### Local Meridian provider
 
-Use your running [Meridian](https://github.com/rynfar/meridian) proxy as a separate
+**Opt-in managed instance (Meridian 1.71.1):**
+
+```sh
+PCODE_MERIDIAN_MANAGED=1 pcode -m meridian:claude-sonnet-5
+```
+
+When constructing a Meridian provider, pcode starts one private proxy per pcode
+process, on an automatically allocated loopback port with a random API key. It
+writes a temporary, private adapter configuration with thinking passthrough on,
+uses a separate session directory and empty plugin directory, disables persistent
+telemetry and update checks, and checks `/health` plus effective adapter settings
+before connecting. Concurrent pcode processes have separate instances. Normal
+process exit terminates only the owned proxy and removes its temporary state;
+switching models keeps it available until exit. A crashed proxy is not automatically
+restarted and requests are not replayed. Startup has a 30-second readiness deadline.
+
+This is **configuration/session isolation, not an authentication sandbox**:
+Meridian still uses your existing Claude login and disk-configured Meridian
+profiles. pcode does not copy credentials, log you in, install or upgrade Meridian,
+or modify your shared proxy. Inherited `MERIDIAN_*` / `CLAUDE_PROXY_*` overrides are
+not applied to managed instances. The implementation is gated to the verified
+1.71.1 release; other versions can use external mode. Forced termination of pcode
+(e.g. `kill -9`) cannot run normal cleanup.
+
+An explicit `PCODE_MERIDIAN_BASE_URL` always selects external mode, even with
+`PCODE_MERIDIAN_MANAGED=1`. Without either setting, the existing external endpoint
+behavior is unchanged. Export the managed setting in your shell to keep opting in.
+
+**Externally managed instance:** Use your running [Meridian](https://github.com/rynfar/meridian) proxy as a separate
 provider (no pcode-managed subscription login):
 
 ```sh
