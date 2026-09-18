@@ -41,26 +41,26 @@ upstream tests, examples, and documentation sources.
 
 ### Local Harness checkout
 
-A full Harness clone already exists at `~/p/pydantic-ai-harness` (remote
-`upstream` is `pydantic/pydantic-ai-harness`; `origin` is a personal fork). Read
-it instead of fetching the website when you need the `docs/`, `tests/`,
-`examples/`, or `integration_tests/` trees that the installed wheel omits —
-`docs/coder.md`, `docs/repo-context.md`, `docs/compaction.md`,
-`docs/subagents.md`, and `docs/shell.md` cover the capabilities pcode composes.
-
-Confirm the checkout matches the pin before trusting it; it is a working tree on
-a local branch, not a pinned artifact:
+Harness upstream source is the one dependency worth reading in full, because the
+installed wheel omits the `docs/`, `tests/`, `examples/`, and `integration_tests/`
+trees. `make harness-src` checks it out under `tmp/pydantic-ai-harness`
+(gitignored) at the SHA pinned in `pyproject.toml`:
 
 ```sh
-git -C ~/p/pydantic-ai-harness rev-parse HEAD
-grep pydantic-ai-harness pyproject.toml
+make harness-src   # prints "tmp/pydantic-ai-harness @ <sha>"
 ```
 
-If those differ, read at the pinned commit (`git -C ~/p/pydantic-ai-harness show
-<sha>:docs/coder.md`) rather than the working tree, and fetch `upstream` first if
-the commit is missing. Installed `site-packages` still decides what actually
-runs: the clone is for docs, tests, and history, not a substitute for verifying
-the installed source. Do not build or install pcode from it — the dependency is
+The target reads the SHA from `pyproject.toml`, so it cannot drift from the pin.
+It clones when the directory is absent, fetches only when the pinned commit is
+missing, and leaves a **detached** HEAD at that commit — rerun it after changing
+the pin, and never commit work on top of it. Takes about six seconds cold.
+
+`docs/coder.md`, `docs/repo-context.md`, `docs/compaction.md`,
+`docs/subagents.md`, and `docs/shell.md` cover the capabilities pcode composes.
+Read these instead of the website, which tracks `main` and can describe an
+unreleased API. Installed `site-packages` still decides what actually runs: the
+checkout is for docs, tests, and history, not a substitute for verifying the
+installed source. Do not build or install pcode from it — the dependency is
 pinned by SHA.
 
 ## Where to look for this project
@@ -275,10 +275,10 @@ endpoint, or read the developer's credential file; `tests/conftest.py` redirects
    installed source. Prefer release-matched docs where available; `stable`,
    `latest`, and upstream `main` are not guarantees of compatibility.
 3. For upstream examples, tests, or internals, browse the matching release tag
-   or commit. Harness already has a local clone (see "Local Harness checkout");
-   for other dependencies, keep any checkout outside this project's normal
-   source tree and record its revision. Do not clone or install dependencies
-   merely to read an API already available locally.
+   or commit. For Harness, run `make harness-src` (see "Local Harness
+   checkout"); for other dependencies, keep any checkout outside this project's
+   normal source tree and record its revision. Do not clone or install
+   dependencies merely to read an API already available locally.
 4. Validate changes with this repository's relevant regression tests (see
    `README.md`, "Validate"). Documentation alone cannot establish terminal behavior.
 
