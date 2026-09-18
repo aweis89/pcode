@@ -60,6 +60,7 @@ class PreviewApp:
         session_dir: Path | None = None,
         resume: bool = False,
     ) -> None:
+        self.send_mode = load_preferences().get("send_mode", "steering")
         self.model = model
         self.resuming = resume
         self.save_sessions = save or saved_session is not None
@@ -287,6 +288,12 @@ class PreviewApp:
                 "For an external proxy, check passthrough → Thinking Passthrough in "
                 "Meridian's /settings page; this toggle only changes pcode's display."
             )
+
+    def cycle_send_mode(self) -> None:
+        from pcode.preferences import SEND_MODES
+
+        self.send_mode = SEND_MODES[(SEND_MODES.index(self.send_mode) + 1) % len(SEND_MODES)]
+        self.persist_defaults(send_mode=self.send_mode)
 
     def toggle_command_scrollback(self) -> None:
         self.set_command_scrollback(not self.transcript.command_scrollback)
@@ -895,6 +902,8 @@ class PreviewApp:
             if self.activity.queued:
                 details += f" · {self.activity.queued} queued"
         details += context
+        send_mode = f" · send: {self.send_mode}"
+        details += send_mode
         # Keep the model/effort visible before spending space on a long path.
         path_width = max(0, width - cell_len(details) - 4)
         path = Text(location if path_width else "")
@@ -915,7 +924,7 @@ class PreviewApp:
             segments.extend([("text", " · "), ("activity", "working")])
             if self.activity.queued:
                 segments.extend([("text", " · "), ("activity", f"{self.activity.queued} queued")])
-        segments.append(("text", context))
+        segments.append(("text", context + send_mode))
         # Slice the already cell-truncated text, preserving its ellipsis and the
         # same narrow-terminal priorities without splitting wide characters.
         fragments = []
@@ -1045,6 +1054,7 @@ class PreviewApp:
         mcp_idle.set()
         queue_generation = 0
         pending_mcp = 0
+        interrupt_pending = False
 
         async def refresh_metadata():
             refresh = getattr(self.runtime, "refresh_context", None)
@@ -1108,6 +1118,8 @@ class PreviewApp:
                 self.transcript.note(f"Cleared {count} queued message(s).")
 
         def cancel():
+            nonlocal interrupt_pending
+            interrupt_pending = False
             clear_queue()
             active = [
                 task for task in (live_task, mcp_task, compact_task) if task and not task.done()
@@ -1121,8 +1133,24 @@ class PreviewApp:
                 self.activity.busy = False
                 self.transcript.cancelled()
 
+        def take_steering():
+            pending = []
+            messages = []
+            while not queue.empty():
+                generation, text, mode = queue.get_nowait()
+                if generation == queue_generation and mode == "steering":
+                    messages.append(text)
+                    self.activity.queued_prompts.remove(text)
+                    self.transcript.user(text)
+                else:
+                    pending.append((generation, text, mode))
+            for item in pending:
+                queue.put_nowait(item)
+            self.activity.queued = len(self.activity.queued_prompts)
+            return messages
+
         def submit(text):
-            nonlocal pending_mcp, pending_compact
+            nonlocal pending_mcp, pending_compact, interrupt_pending
             text = text.strip()
             if not ready.is_set() and text in {"/quit", "/exit"}:
                 # Do not strand exit behind a command waiting for initialization.
@@ -1147,7 +1175,12 @@ class PreviewApp:
                     # before its command worker has had a chance to start OAuth.
                     self.activity.busy = True
             elif text:
-                queue.put_nowait((queue_generation, text))
+                if self.send_mode == "interrupt" and live_task and not live_task.done():
+                    clear_queue()
+                    interrupt_pending = True
+                    if not live_task.cancelling():
+                        live_task.cancel()
+                queue.put_nowait((queue_generation, text, self.send_mode))
                 self.activity.queued_prompts.append(text)
                 self.activity.queued = len(self.activity.queued_prompts)
                 # Set immediately so Enter + Ctrl+C in one input batch cancels
@@ -1353,13 +1386,13 @@ class PreviewApp:
                     session.app.exit()
 
         async def consume():
-            nonlocal live_task
+            nonlocal live_task, interrupt_pending
             await ready.wait()
             while self.running:
                 await command_idle.wait()
                 await mcp_idle.wait()
                 await compact_idle.wait()
-                generation, text = await queue.get()
+                generation, text, _mode = await queue.get()
                 if self._startup_error is not None:
                     clear_queue()
                     self.activity.busy = False
@@ -1379,6 +1412,7 @@ class PreviewApp:
                     if self.handle(text):
                         self.activity.prompt = text
                         self.activity.prompt_state = "running"
+                        self.runtime.take_steering = take_steering
                         live_task = asyncio.create_task(self.run_live(output, text))
                         try:
                             success = await live_task
@@ -1398,8 +1432,9 @@ class PreviewApp:
                     live_task = None
                 if not session.app.is_running:
                     return
-                if not success:
+                if not success and not interrupt_pending:
                     clear_queue()
+                interrupt_pending = False
                 self.activity.busy = (
                     bool(self.activity.queued_prompts) or bool(pending_mcp) or bool(pending_compact)
                 )
@@ -1417,6 +1452,7 @@ class PreviewApp:
             on_thinking=self.set_show_thinking,
             on_commands=self.toggle_command_scrollback,
             on_effort=self.adjust_effort,
+            on_send_mode=self.cycle_send_mode,
             on_model=lambda: submit("/model"),
             bottom_toolbar=self.toolbar,
             vi_mode=load_preferences().get("editing_mode", "emacs") == "vi",

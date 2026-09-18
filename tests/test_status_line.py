@@ -40,23 +40,25 @@ def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
     app.branch = "master"
     assert (
         fragment_list_to_text(app.toolbar())
-        == " ~/p/pcode master · openai:gpt-5 · effort: default · ctx: 0/400k"
+        == " ~/p/pcode master · openai:gpt-5 · effort: default · ctx: 0/400k · send: steering"
     )
     app.runtime.agent = SimpleNamespace(
         model=SimpleNamespace(settings={"openai_reasoning_effort": "low"}),
         model_settings={"openai_reasoning_effort": "high"},
     )
     assert fragment_list_to_text(app.toolbar()).endswith(
-        "openai:gpt-5 · effort: high · ctx: 0/400k"
+        "openai:gpt-5 · effort: high · ctx: 0/400k · send: steering"
     )
     app.runtime.agent.model_settings = None
-    assert fragment_list_to_text(app.toolbar()).endswith("effort: low · ctx: 0/400k")
+    assert fragment_list_to_text(app.toolbar()).endswith(
+        "effort: low · ctx: 0/400k · send: steering"
+    )
 
 
 def test_preview_home_and_help(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, stream = make_app(tmp_path, monkeypatch)
-    assert fragment_list_to_text(app.toolbar()) == " ~ · preview · effort: n/a"
+    assert fragment_list_to_text(app.toolbar()) == " ~ · preview · effort: n/a · send: steering"
     app.handle("/help")
     help_text = stream.getvalue()
     for hint in (
@@ -64,7 +66,7 @@ def test_preview_home_and_help(tmp_path, monkeypatch):
         "Enter send",
         "Alt+Enter newline",
         "Ctrl+D exit",
-        "Enter queues",
+        "Ctrl+G cycles",
         "cancel",
     ):
         assert hint in help_text
@@ -78,7 +80,7 @@ def test_footer_outside_home_and_busy(tmp_path, monkeypatch):
     app.activity.queued = 2
     text = fragment_list_to_text(app.toolbar())
     assert str(tmp_path) in text
-    assert text.endswith("preview · effort: n/a · working · 2 queued")
+    assert text.endswith("preview · effort: n/a · working · 2 queued · send: steering")
     assert "Ctrl" not in text
 
 

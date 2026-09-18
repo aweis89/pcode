@@ -53,6 +53,7 @@ from pcode.runtime import (
 )
 from pcode.sessions import SavedSession, SessionError
 from pcode.shell import CommandOutputEvent
+from pcode.steering import Steering
 from pcode.tool_display import (
     command_error,
     command_text,
@@ -86,6 +87,7 @@ class AgentRuntime:
         self.session_factory = session_factory
         self.auto_compact = load_preferences().get("autocompact") == "on"
         self.compaction_notice = lambda text: None
+        self.take_steering = lambda: []
         self._clear()
         self.replace_agent(agent)
 
@@ -355,6 +357,7 @@ class AgentRuntime:
                 run_id=run_id,
                 capabilities=(
                     ([StepPersistence(store=self.session.store)] if self.session else [])
+                    + [Steering(self.take_steering)]
                     + ([AutoCompaction(self, run_id)] if self.auto_compact else [])
                 ),
                 # Explicitly disable the cap; omitting this restores the library default.
