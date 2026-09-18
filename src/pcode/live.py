@@ -551,4 +551,28 @@ def error_message(error: Exception) -> str:
         return f"Provider request failed (HTTP {status}).{suffix}"
     if isinstance(error, ImportError):
         return "Provider dependency missing. Install its pydantic-ai-slim extra and try again."
+    # SDKs wrap transport failures in ModelAPIError. Classify the bounded cause
+    # chain, but never echo transport text: it may contain URLs or credentials.
+    detail = error_details(error)
+    transport_types = set()
+    while detail:
+        transport_types.add(detail["type"])
+        detail = detail.get("cause", detail.get("context", {}))
+    if "RemoteProtocolError" in transport_types:
+        return (
+            "Provider connection closed or returned an incomplete/invalid response. "
+            "Check provider/proxy connectivity and retry when ready. "
+            "See the saved session diagnostics."
+        )
+    if transport_types & {"APITimeoutError", "ConnectTimeout", "ReadTimeout", "WriteTimeout"}:
+        return (
+            "Provider request timed out. Check provider/proxy connectivity and retry when ready. "
+            "See the saved session diagnostics."
+        )
+    if transport_types & {"APIConnectionError", "ConnectError", "ReadError", "WriteError"}:
+        return (
+            "Could not communicate with the provider. "
+            "Check network/proxy settings and provider availability, then retry when ready. "
+            "See the saved session diagnostics."
+        )
     return f"Run failed ({name}). Check the model string, provider credentials, and connectivity."
