@@ -42,7 +42,14 @@ from pcode.runtime import (
 )
 from pcode.theme import THEMES
 from pcode.tool_display import COMMAND_TOOLS, plain
-from pcode.ui import COLOR_STYLES, Activity, TerminalOutput, Transcript, create_prompt
+from pcode.ui import (
+    COLOR_STYLES,
+    SYSTEM_COMMAND_LABELS,
+    Activity,
+    TerminalOutput,
+    Transcript,
+    create_prompt,
+)
 
 
 class PreviewApp:
@@ -1252,7 +1259,9 @@ class PreviewApp:
             self.activity.status = "Compacting context…"
             # Label the work instead of echoing "/compact <focus>", which reads
             # like the command was typed as part of a prompt.
-            self.activity.start_prompt("Compacting context", kind="system", detail=focus)
+            self.activity.start_prompt(
+                SYSTEM_COMMAND_LABELS["/compact"], kind="system", detail=focus
+            )
             self.transcript.note("Compacting context with the current model. Ctrl+C cancels.")
 
             def finished(task):

@@ -233,6 +233,30 @@ def test_queue_previews_are_ordered_bounded_and_single_line():
     assert Activity().queue_rows(3) == []
 
 
+def test_queued_system_commands_are_badged_like_the_running_row():
+    from pcode.ui import Activity
+
+    activity = Activity(
+        queued_prompts=["/compact keep tests", "/compact", "write /compact docs"],
+        queued_modes=["queue", "steering", "queue"],
+    )
+    assert activity.queue_rows(3) == [
+        ("class:activity.system.detail", "Queued ◈ Compacting context ▸ keep tests"),
+        ("class:activity.system.detail", "Steering (next model request) ◈ Compacting context"),
+        ("class:plan", "Queued: write /compact docs"),
+    ]
+
+
+def test_queued_and_running_system_rows_share_one_label():
+    from pcode.ui import SYSTEM_COMMAND_LABELS, Activity
+
+    activity = Activity(queued_prompts=["/compact keep tests"])
+    queued = activity.queue_rows(1)[0][1]
+    activity.start_prompt(SYSTEM_COMMAND_LABELS["/compact"], kind="system", detail="keep tests")
+    running = "".join(text for _, text in activity.prompt_fragments("⠋", 80))
+    assert queued.removeprefix("Queued ") == running.removeprefix("⠋ ")
+
+
 @pytest.mark.parametrize("inspector_command", ["/tools", "/errors"])
 def test_commands_run_while_model_waits(inspector_command):
     async def run():
