@@ -83,7 +83,9 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
                     + ("continue after summary\r" if outcome == "burst" else "")
                 )
                 await started.wait()
-                assert app.activity.prompt == "/compact keep {tests}"
+                assert app.activity.prompt == "Compacting context"
+                assert app.activity.prompt_kind == "system"
+                assert app.activity.prompt_detail == "keep {tests}"
                 assert app.activity.prompt_state == "running"
                 pipe.send_text("/new\r/tree\r/compact again\r")
                 await wait_for(lambda: "/tree is unavailable" in output.getvalue())
@@ -108,7 +110,8 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
                 else:
                     assert len(calls) == 1
                     assert not app.activity.queued_prompts
-                    assert app.activity.prompt == "/compact keep {tests}"
+                    assert app.activity.prompt == "Compacting context"
+                    assert app.activity.prompt_kind == "system"
                     expected = {"cancel": "cancelled", "failure": "failed"}.get(outcome, "done")
                     assert app.activity.prompt_state == expected
                 pipe.send_text("/quit\r")
