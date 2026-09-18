@@ -3,14 +3,36 @@
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
 import uuid
 
 import pytest
+from conftest import tmux_socket_dir
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+
+
+def tmux_reaper(server, owner_pid):
+    """Kill `server` once `owner_pid` exits, even if that exit skips teardown.
+
+    A `-L` server detaches from pytest, so the fixture's `finally` is the only
+    thing that stops it -- and that never runs under SIGKILL or a hard timeout.
+    `start_new_session` keeps this reaper out of pytest's process group so a
+    group-wide kill cannot take the reaper down with its owner.
+    """
+    script = (
+        f"while kill -0 {owner_pid} 2>/dev/null; do sleep 2; done; "
+        f"tmux -L {shlex.quote(server)} -f /dev/null kill-server 2>/dev/null"
+    )
+    return subprocess.Popen(
+        ["sh", "-c", script],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 @pytest.fixture
@@ -19,6 +41,7 @@ def pane(request):
     base = ["tmux", "-L", server, "-f", "/dev/null"]
     env = {**os.environ}
     env.pop("PROMPT_TOOLKIT_NO_CPR", None)
+    reaper = tmux_reaper(server, os.getpid())
 
     def command(*args):
         return subprocess.check_output([*base, *args], text=True, env=env)
@@ -44,6 +67,17 @@ def pane(request):
         yield command
     finally:
         subprocess.run([*base, "kill-server"], capture_output=True, env=env)
+        # kill-server returns before the server is gone, so a surviving server
+        # here is wedged rather than merely slow.
+        deadline = time.monotonic() + 5
+        while subprocess.run([*base, "list-sessions"], capture_output=True).returncode == 0:
+            if time.monotonic() > deadline:
+                subprocess.run([*base, "kill-server"], capture_output=True, env=env)
+                break
+            time.sleep(0.05)
+        (tmux_socket_dir() / server).unlink(missing_ok=True)
+        os.killpg(reaper.pid, signal.SIGTERM)  # The reaper leads its own group.
+        reaper.wait(timeout=5)
 
 
 def capture(pane, expected, *, running=False, columns=None):
