@@ -131,7 +131,7 @@ class PreviewApp:
             ),
             Command(
                 "/show-commands",
-                "Mirror commands and output to scrollback: on / off (Ctrl+S)",
+                "Mirror commands and output to scrollback: on / off (Ctrl+G)",
                 self.show_commands,
                 ("on", "off"),
             ),
@@ -314,7 +314,7 @@ class PreviewApp:
             self.set_command_scrollback(argument == "on")
         state = "on" if self.transcript.command_scrollback else "off"
         self.transcript.note(
-            f"Command output in scrollback: {state}. Usage: /show-commands on|off (Ctrl+S)"
+            f"Command output in scrollback: {state}. Usage: /show-commands on|off (Ctrl+G)"
         )
 
     def persist_defaults(self, **updates: str) -> None:
@@ -885,7 +885,22 @@ class PreviewApp:
             location += f" {self.branch}"
         effort = self.current_effort()
         model = self.model if self.model else "preview"
-        details = plain(f"{model} · effort: {effort}", limit=None)
+        # Put send mode and activity ahead of model/path metadata so they are
+        # never pushed off the footer by long provider names or narrow panes.
+        segments = [("text", f"send: {self.send_mode}")]
+        if self._startup_pending:
+            segments.extend([("text", " · "), ("activity", "starting")])
+        if self.activity.busy:
+            segments.extend([("text", " · "), ("activity", "working")])
+            if self.activity.queued:
+                segments.extend([("text", " · "), ("activity", f"{self.activity.queued} queued")])
+        segments.extend(
+            [
+                ("text", " · "),
+                ("model", plain(model, limit=None)),
+                ("text", plain(f" · effort: {effort}", limit=None)),
+            ]
+        )
         context = ""
         if self.model and not self._startup_pending and self._startup_error is None:
             from pcode.context_usage import context_label
@@ -895,36 +910,19 @@ class PreviewApp:
             if history is None:
                 history = getattr(self.runtime, "history", ())
             context = context_label(resolved or self.model, history)
-        if self._startup_pending:
-            details += " · starting"
-        if self.activity.busy:
-            details += " · working"
-            if self.activity.queued:
-                details += f" · {self.activity.queued} queued"
-        details += context
-        send_mode = f" · send: {self.send_mode}"
-        details += send_mode
-        # Keep the model/effort visible before spending space on a long path.
+        segments.append(("text", context))
+        details = "".join(value for _, value in segments)
+        # Only spend spare width on the path; preserve the send mode first.
         path_width = max(0, width - cell_len(details) - 4)
         path = Text(location if path_width else "")
         if path_width:
             path.truncate(path_width, overflow="ellipsis")
         text = Text(f" {path.plain} · {details}" if path.plain else f" {details}")
         text.truncate(width, overflow="ellipsis")
-        segments = [("text", " ")]
+        prefix = [("text", " ")]
         if path.plain:
-            segments.extend([("location", path.plain), ("text", " · ")])
-        model_text = plain(model, limit=None)
-        segments.extend(
-            [("model", model_text), ("text", plain(f" · effort: {effort}", limit=None))]
-        )
-        if self._startup_pending:
-            segments.extend([("text", " · "), ("activity", "starting")])
-        if self.activity.busy:
-            segments.extend([("text", " · "), ("activity", "working")])
-            if self.activity.queued:
-                segments.extend([("text", " · "), ("activity", f"{self.activity.queued} queued")])
-        segments.append(("text", context + send_mode))
+            prefix.extend([("location", path.plain), ("text", " · ")])
+        segments = prefix + segments
         # Slice the already cell-truncated text, preserving its ellipsis and the
         # same narrow-terminal priorities without splitting wide characters.
         fragments = []

@@ -156,7 +156,7 @@ def test_slash_command_toggles_state_and_saves_the_default():
     assert app.registry.dispatch("/show-commands on")
     assert app.transcript.command_scrollback is True
     assert load_preferences()["command_scrollback"] == "on"
-    assert "Command output in scrollback: on. Usage: /show-commands on|off (Ctrl+S)" in (
+    assert "Command output in scrollback: on. Usage: /show-commands on|off (Ctrl+G)" in (
         stream.getvalue()
     )
     assert app.registry.dispatch("/show-commands off")
@@ -166,7 +166,8 @@ def test_slash_command_toggles_state_and_saves_the_default():
         app.registry.dispatch("/show-commands yes")
 
 
-def test_ctrl_s_toggles_mirroring_without_starting_a_search_or_inserting_text():
+@pytest.mark.parametrize("vi_mode", [False, True])
+def test_ctrl_g_toggles_mirroring_without_starting_a_search_or_inserting_text(vi_mode):
     stream = StringIO()
     app = PreviewApp(console=Console(file=stream, width=80, color_system=None))
 
@@ -175,10 +176,11 @@ def test_ctrl_s_toggles_mirroring_without_starting_a_search_or_inserting_text():
             prompt = create_prompt(
                 CommandRegistry(),
                 on_commands=app.toggle_command_scrollback,
+                vi_mode=vi_mode,
                 input=pipe,
                 output=DummyOutput(),
             )
-            pipe.send_text("\x13\x13\x13draft\r")
+            pipe.send_text("\x07\x07\x07draft\r")
             return await asyncio.wait_for(prompt.prompt_async(), timeout=3)
 
     assert asyncio.run(run()) == "draft"

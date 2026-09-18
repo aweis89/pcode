@@ -34,7 +34,12 @@ def test_steering_is_in_model_input_and_history():
 
 
 @pytest.mark.parametrize("mode", ["steering", "queue", "interrupt"])
-def test_busy_send_modes(mode):
+@pytest.mark.parametrize("editing_mode", ["emacs", "vi"])
+def test_busy_send_modes(mode, editing_mode):
+    from pcode.preferences import save_preferences
+
+    save_preferences(editing_mode=editing_mode)
+
     async def run():
         started = asyncio.Event()
         release = asyncio.Event()
@@ -90,7 +95,7 @@ def test_busy_send_modes(mode):
                     assert cancelled == (["first"] if mode == "interrupt" else [])
                     assert not app.activity.queued_prompts
                     assert session.default_buffer.text == "draft"
-                    pipe.send_text("\x07")
+                    pipe.send_text("\x13")
                     expected = {"steering": "queue", "queue": "interrupt", "interrupt": "steering"}[
                         mode
                     ]

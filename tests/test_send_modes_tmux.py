@@ -21,11 +21,18 @@ def test_cycle_send_mode_keeps_draft_and_height(pane):
     assert input_rows(capture(pane, "send: steering")) == 1
     pane("send-keys", "-t", "preview:0.0", "draft")
     for mode in ("queue", "interrupt", "steering"):
-        pane("send-keys", "-t", "preview:0.0", "C-g")
+        pane("send-keys", "-t", "preview:0.0", "C-s")
         screen = capture(pane, f"send: {mode}")
         assert "draft" in screen
         assert input_rows(screen) == 1
     for columns in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(columns))
         screen = capture(pane, "draft", columns=columns)
+        assert "send: steering" in screen.splitlines()[-1]
         assert input_rows(screen) == 1
+        for mode in ("queue", "interrupt", "steering"):
+            pane("send-keys", "-t", "preview:0.0", "C-s")
+            screen = capture(pane, f"send: {mode}", columns=columns)
+            assert f"send: {mode}" in screen.splitlines()[-1]
+            assert "draft" in screen
+            assert input_rows(screen) == 1
