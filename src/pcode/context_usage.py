@@ -37,4 +37,10 @@ def context_label(model: str | Model, history: Sequence[ModelMessage]) -> str:
         if isinstance(message, ModelResponse) and message.usage.input_tokens:
             used = message.usage.input_tokens
             break
+    if not used:
+        # Streaming providers may not report usage until the response finishes.
+        # Missing usage is not an empty context (also common in resumed history).
+        estimate = context_estimate(history)
+        if estimate:
+            return f" · ctx: ~{compact_tokens(estimate)}/{compact_tokens(window)}"
     return f" · ctx: {compact_tokens(used)}/{compact_tokens(window)}"

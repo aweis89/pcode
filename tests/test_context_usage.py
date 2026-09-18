@@ -106,3 +106,46 @@ def test_completed_request_updates_live_context_without_changing_replay_history(
         assert context_label("test:model", runtime.context_history) == " · ctx: 12.5k/272k"
     assert runtime.history == []
     assert len(history) == 1
+
+
+@pytest.mark.parametrize("include_response", [False, True])
+def test_context_without_reported_usage_shows_estimate(include_response):
+    from pydantic_ai.messages import TextPart
+
+    from pcode.compaction import context_estimate
+
+    history = [ModelRequest(parts=[UserPromptPart("Explain this code in detail. " * 100)])]
+    if include_response:
+        # Some providers (and persisted histories) have content but no usage.
+        history.append(ModelResponse(parts=[TextPart("Here is the explanation.")]))
+    estimate = compact_tokens(context_estimate(history))
+    with patch("pcode.context_usage.context_window", return_value=100_000):
+        assert context_label("test:model", history) == f" · ctx: ~{estimate}/100k"
+        history.append(response(2_000))
+        assert context_label("test:model", history) == " · ctx: 2k/100k"
+
+
+def test_pending_first_request_exposes_estimate_before_response():
+    import asyncio
+    from types import SimpleNamespace
+
+    from pydantic_ai.models import ModelRequestParameters
+
+    from pcode.compaction import AutoCompaction, context_estimate
+
+    history = [ModelRequest(parts=[UserPromptPart("Inspect the project and explain it. " * 100)])]
+    runtime = SimpleNamespace(history=[], session=object(), context_history=None)
+    request = SimpleNamespace(
+        messages=history,
+        model="unknown-provider:example",
+        model_request_parameters=ModelRequestParameters(),
+    )
+    with (
+        patch("pcode.model_metadata.refresh_context"),
+        patch("pcode.compaction.effective_window", return_value=None),
+    ):
+        asyncio.run(AutoCompaction(runtime, "run").before_model_request(None, request))
+    with patch("pcode.context_usage.context_window", return_value=100_000):
+        estimate = compact_tokens(context_estimate(history))
+        assert context_label("test:model", runtime.context_history) == f" · ctx: ~{estimate}/100k"
+    assert runtime.history == []
