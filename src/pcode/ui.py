@@ -452,29 +452,6 @@ def install_reflow_renderer(app: Application) -> None:
     )
 
 
-# Replay once the width settles, not once per SIGWINCH of a drag.
-RESIZE_DEBOUNCE = 0.25
-
-
-def terminal_width(app: Application) -> int | None:
-    """Current column count, or None for apps without a real output (tests)."""
-    output = getattr(app, "output", None)
-    return output.get_size().columns if output is not None else None
-
-
-def install_resize_hook(app: Application, on_resize) -> None:
-    """Observe prompt_toolkit's SIGWINCH handling instead of polling the size."""
-    resize = getattr(app, "_on_resize", None)
-    if resize is None:
-        return
-
-    def _on_resize() -> None:
-        resize()
-        on_resize()
-
-    app._on_resize = _on_resize
-
-
 class TerminalOutput:
     """Commit completed Markdown blocks once; buffer unfinished text.
 
@@ -509,20 +486,6 @@ class TerminalOutput:
         self._thinking_streamed = False
         self._regenerate = None
         self.resize_replay = None
-        self._width: int | None = terminal_width(app)
-        self._resized_at: float | None = None
-        install_resize_hook(app, self.notify_resize)
-
-    def notify_resize(self) -> None:
-        """Start the replay debounce from prompt_toolkit's own SIGWINCH handling.
-
-        Height changes reflow nothing, so only a width change may replay. Keep
-        this synchronous and allocation-free: it runs inside the signal handler.
-        """
-        previous, self._width = self._width, terminal_width(self.app)
-        if self.resize_replay is not None and self._width not in (None, previous):
-            self._resized_at = monotonic()
-        self.changed.set()
 
     def regenerate(self, replay) -> None:
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
@@ -684,25 +647,24 @@ class TerminalOutput:
             self.changed.clear()
 
     async def run(self) -> None:
+        width = self.app.output.get_size().columns
+        resized_at = None
         while True:
-            # Wake on writes; SIGWINCH also wakes us and arms the debounce, so a
-            # resize storm replays once, after the width settles.
-            if self._resized_at is None:
+            # Poll only when resize replay is enabled. Debounce resize storms;
+            # the renderer continues handling the editor normally meanwhile.
+            if self.resize_replay is None:
                 await self.changed.wait()
             else:
-                remaining = RESIZE_DEBOUNCE - (monotonic() - self._resized_at)
-                if remaining > 0:
-                    try:
-                        await asyncio.wait_for(self.changed.wait(), timeout=remaining)
-                    except TimeoutError:
-                        pass
-                if (
-                    self._resized_at is not None
-                    and monotonic() - self._resized_at >= RESIZE_DEBOUNCE
-                ):
-                    self._resized_at = None
-                    if self.resize_replay is not None:
-                        self.regenerate(self.resize_replay)
+                try:
+                    await asyncio.wait_for(self.changed.wait(), timeout=0.1)
+                except TimeoutError:
+                    pass
+                current = self.app.output.get_size().columns
+                if current != width:
+                    width, resized_at = current, monotonic()
+                elif resized_at is not None and monotonic() - resized_at >= 0.25:
+                    self.regenerate(self.resize_replay)
+                    resized_at = None
             await asyncio.sleep(1 / 30)
             await self.flush()
 
