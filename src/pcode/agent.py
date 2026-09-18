@@ -74,6 +74,10 @@ def create_coder(workspace: Path) -> CombinedCapability:
             capability.denied_commands = []
             capability.denied_operators = []
             capability.allow_interactive = True
+            # direnv writes its status banner to stderr on every cd into a
+            # managed directory, which pollutes command output the agent parses
+            # (e.g. `... | jq`). An empty log format silences it.
+            capability.env = {**(capability.env or os.environ), "DIRENV_LOG_FORMAT": ""}
     # Missing credentials must not prevent ordinary coding sessions. Let the
     # capability read the key itself; never put it in instructions or tool args.
     if os.environ.get("EXA_API_KEY", "").strip():

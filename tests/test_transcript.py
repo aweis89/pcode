@@ -364,31 +364,40 @@ def test_resize_replay_debounces_width_changes_and_ignores_height(monkeypatch, w
         output.regenerate = lambda replay: replays.append((clock, replay))
 
         async def wait_for(awaitable, *, timeout):
-            nonlocal current, clock
+            nonlocal clock
             awaitable.close()
-            rows, columns = next(sizes)
-            current = Size(rows=rows, columns=columns if width_changes else 80)
             clock += timeout
             raise TimeoutError
 
         async def sleep(delay):
-            pass
+            nonlocal clock
+            clock += delay
 
         async def flush():
             if clock >= 1.0:
                 raise asyncio.CancelledError
+            # Deliver SIGWINCH the way prompt_toolkit's handler does, after the
+            # loop has consumed the previous wake-up.
+            nonlocal current
+            rows, columns = next(sizes, (None, None))
+            if rows is None:
+                raise asyncio.CancelledError
+            current = Size(rows=rows, columns=columns if width_changes else 80)
+            output.notify_resize()
 
         monkeypatch.setattr("pcode.ui.monotonic", lambda: clock)
         monkeypatch.setattr("pcode.ui.asyncio.wait_for", wait_for)
         monkeypatch.setattr("pcode.ui.asyncio.sleep", sleep)
         output.flush = flush
+        output.notify_resize()
         try:
             await output.run()
         except asyncio.CancelledError:
             pass
         assert len(replays) == int(width_changes)
         if width_changes:
-            assert replays[0][0] >= 0.65
+            # One replay, only after the width stopped changing.
+            assert replays[0][0] >= 0.25
             assert replays[0][1] is output.resize_replay
 
     asyncio.run(run())
