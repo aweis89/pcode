@@ -702,8 +702,12 @@ def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
 
 
 @pytest.mark.parametrize("pane", [PAUSED_STREAM_SCRIPT], indirect=True)
-def test_queued_messages_stay_directly_above_editor(pane):
+@pytest.mark.parametrize("mode", ["queue", "steering"])
+def test_queued_messages_stay_directly_above_editor(pane, mode):
     capture(pane, "❯")
+    if mode == "queue":
+        pane("send-keys", "-t", "preview:0.0", "C-s")
+    label = "Queued" if mode == "queue" else "Steering (next model request)"
     pane("send-keys", "-t", "preview:0.0", "-l", "active prompt")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     capture(pane, "COMMITTED MARKER", running=True)
@@ -716,16 +720,16 @@ def test_queued_messages_stay_directly_above_editor(pane):
         screen = capture(pane, "│❯ keep draft", running=True, columns=width)
         lines = screen.splitlines()
         editor_top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
-        assert lines[editor_top - 2].startswith("Queued: first queued message")
+        assert lines[editor_top - 2].startswith(f"{label}: first")
         assert lines[editor_top - 2].endswith("…")
-        assert lines[editor_top - 1] == "Queued: second queued message"
+        assert lines[editor_top - 1].startswith(f"{label}: second")
         assert "active prompt" in lines[editor_top - 3]
         assert not lines[editor_top - 3].startswith("│")
         assert "│❯ keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "! Run cancelled")
-    assert "Queued:" not in screen
+    assert f"{label}:" not in screen
     assert "│❯ keep draft" in screen
 
 

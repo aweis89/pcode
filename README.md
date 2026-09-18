@@ -1180,7 +1180,9 @@ priority over model and path metadata in narrow panes. Existing queued messages
 keep their submission mode.
 
 - **steering**: deliver input at the next model request, after active tools finish.
-  If the turn finishes before then, send it as a follow-up turn.
+  Pending input is labeled “Steering (next model request)”; once delivered, it
+  replaces the active prompt in the task bar. If the turn finishes before then,
+  send it as a follow-up turn.
 - **queue**: wait for the current turn to finish, then start a follow-up turn.
 - **interrupt**: cancel the current turn, discard pending messages, and send the
   new message after cancellation cleanup completes.

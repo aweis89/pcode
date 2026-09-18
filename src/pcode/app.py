@@ -893,7 +893,12 @@ class PreviewApp:
         if self.activity.busy:
             segments.extend([("text", " · "), ("activity", "working")])
             if self.activity.queued:
-                segments.extend([("text", " · "), ("activity", f"{self.activity.queued} queued")])
+                steering = self.activity.queued_modes.count("steering")
+                queued = self.activity.queued - steering
+                if steering:
+                    segments.extend([("text", " · "), ("activity", f"{steering} steering pending")])
+                if queued:
+                    segments.extend([("text", " · "), ("activity", f"{queued} queued")])
         segments.extend(
             [
                 ("text", " · "),
@@ -1111,6 +1116,7 @@ class PreviewApp:
             while not queue.empty():
                 queue.get_nowait()
             self.activity.queued_prompts.clear()
+            self.activity.queued_modes.clear()
             self.activity.queued = 0
             if count:
                 self.transcript.note(f"Cleared {count} queued message(s).")
@@ -1138,13 +1144,25 @@ class PreviewApp:
                 generation, text, mode = queue.get_nowait()
                 if generation == queue_generation and mode == "steering":
                     messages.append(text)
-                    self.activity.queued_prompts.remove(text)
+                    index = next(
+                        i
+                        for i, item in enumerate(
+                            zip(self.activity.queued_prompts, self.activity.queued_modes)
+                        )
+                        if item == (text, mode)
+                    )
+                    self.activity.queued_prompts.pop(index)
+                    self.activity.queued_modes.pop(index)
+                    self.activity.prompt = text
+                    self.activity.prompt_state = "running"
                     self.transcript.user(text)
                 else:
                     pending.append((generation, text, mode))
             for item in pending:
                 queue.put_nowait(item)
             self.activity.queued = len(self.activity.queued_prompts)
+            if messages:
+                session.app.invalidate()
             return messages
 
         def submit(text):
@@ -1180,6 +1198,7 @@ class PreviewApp:
                         live_task.cancel()
                 queue.put_nowait((queue_generation, text, self.send_mode))
                 self.activity.queued_prompts.append(text)
+                self.activity.queued_modes.append(self.send_mode)
                 self.activity.queued = len(self.activity.queued_prompts)
                 # Set immediately so Enter + Ctrl+C in one input batch cancels
                 # the pending request rather than clearing the user's draft.
@@ -1404,6 +1423,7 @@ class PreviewApp:
                 if generation != queue_generation:
                     continue  # Cancelled while waiting for a command/modal.
                 self.activity.queued_prompts.pop(0)
+                self.activity.queued_modes.pop(0)
                 self.activity.queued = len(self.activity.queued_prompts)
                 success = True
                 try:
