@@ -40,25 +40,23 @@ def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
     app.branch = "master"
     assert (
         fragment_list_to_text(app.toolbar())
-        == " ~/p/pcode master · openai:gpt-5 · effort: default · ctx: 0/400k · send: steering"
+        == " ~/p/pcode master · send: steering · openai:gpt-5 · effort: default · ctx: 0/400k"
     )
     app.runtime.agent = SimpleNamespace(
         model=SimpleNamespace(settings={"openai_reasoning_effort": "low"}),
         model_settings={"openai_reasoning_effort": "high"},
     )
     assert fragment_list_to_text(app.toolbar()).endswith(
-        "openai:gpt-5 · effort: high · ctx: 0/400k · send: steering"
+        "openai:gpt-5 · effort: high · ctx: 0/400k"
     )
     app.runtime.agent.model_settings = None
-    assert fragment_list_to_text(app.toolbar()).endswith(
-        "effort: low · ctx: 0/400k · send: steering"
-    )
+    assert fragment_list_to_text(app.toolbar()).endswith("effort: low · ctx: 0/400k")
 
 
 def test_preview_home_and_help(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, stream = make_app(tmp_path, monkeypatch)
-    assert fragment_list_to_text(app.toolbar()) == " ~ · preview · effort: n/a · send: steering"
+    assert fragment_list_to_text(app.toolbar()) == " ~ · send: steering · preview · effort: n/a"
     app.handle("/help")
     help_text = stream.getvalue()
     for hint in (
@@ -66,7 +64,7 @@ def test_preview_home_and_help(tmp_path, monkeypatch):
         "Enter send",
         "Alt+Enter newline",
         "Ctrl+D exit",
-        "Ctrl+G cycles",
+        "Ctrl+S cycles",
         "cancel",
     ):
         assert hint in help_text
@@ -80,7 +78,7 @@ def test_footer_outside_home_and_busy(tmp_path, monkeypatch):
     app.activity.queued = 2
     text = fragment_list_to_text(app.toolbar())
     assert str(tmp_path) in text
-    assert text.endswith("preview · effort: n/a · working · 2 queued · send: steering")
+    assert text.endswith("send: steering · working · 2 queued · preview · effort: n/a")
     assert "Ctrl" not in text
 
 
@@ -94,11 +92,11 @@ def test_long_unicode_path_stays_one_row(tmp_path, monkeypatch, width):
         assert "preview · effort: n/a" in text
 
 
-def test_narrow_busy_footer_keeps_model_effort_and_activity(tmp_path, monkeypatch):
+def test_narrow_busy_footer_keeps_send_mode_and_activity(tmp_path, monkeypatch):
     app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=40)
     app.activity.busy = True
     text = fragment_list_to_text(app.toolbar())
-    assert text.startswith(" test:local · effort: default · working")
+    assert text.startswith(" send: steering · working · test:local")
     assert text.endswith("…")
     assert cell_len(text) <= 40
 
@@ -204,3 +202,18 @@ def test_provider_and_context_stay_one_row(tmp_path, monkeypatch, width):
         assert "anthropic:claude-sonnet-4-6" in text
     if width >= 100:
         assert "ctx: 0/1m" in text
+
+
+@pytest.mark.parametrize("mode", ["steering", "queue", "interrupt"])
+@pytest.mark.parametrize("width", [20, 35, 40, 100])
+def test_send_mode_survives_long_model_and_path(tmp_path, monkeypatch, mode, width):
+    app, _ = make_app(
+        tmp_path / ("workspace" * 20),
+        monkeypatch,
+        model="provider:" + "long-model-name" * 20,
+        width=width,
+    )
+    app.send_mode = mode
+    text = fragment_list_to_text(app.toolbar())
+    assert text.startswith(f" send: {mode}")
+    assert cell_len(text) <= width
