@@ -13,6 +13,8 @@ SCRIPT = r"""
 import asyncio, os, tempfile
 # Never touch the developer's saved defaults: Ctrl+G persists its choice.
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
+from pcode.preferences import save_preferences
+save_preferences(autohide_tasks="off")  # This pane asserts on the idle widget.
 from pcode.app import PreviewApp
 from pcode.runtime import Message, ToolStarted, ToolSummary
 
