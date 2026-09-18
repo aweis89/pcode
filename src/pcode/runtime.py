@@ -39,6 +39,29 @@ class ToolSummary:
 
 
 @dataclass(frozen=True)
+class EditCompleted:
+    """Sanitized historical change; raw file snapshots are never journaled."""
+
+    call_id: str
+    path: str
+    operation: str
+    patch: str = ""
+    added: int = 0
+    removed: int = 0
+    truncated: bool = False
+    omitted: str = ""
+
+
+@dataclass(frozen=True)
+class EditPreview:
+    """Proposed content only, never a committed change or a journal entry."""
+
+    call_id: str
+    path: str = ""
+    text: str = ""
+
+
+@dataclass(frozen=True)
 class CommandOutput:
     """Transient sanitized snapshot, never saved in the transcript journal."""
 
@@ -96,6 +119,8 @@ Event = (
     | PlanUpdated
     | PlanPreview
     | CommandOutput
+    | EditCompleted
+    | EditPreview
 )
 
 

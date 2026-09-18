@@ -33,6 +33,7 @@ from rich.theme import Theme
 
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
+from pcode.edit_transcript import EditTranscript
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import load_preferences
 from pcode.runtime import CommandOutput, Event, Message, Thinking, ToolSummary
@@ -206,6 +207,7 @@ class Activity:
     plan_preview: list[dict] | None = None
     tools: ToolHistory = field(default_factory=ToolHistory)
     command_outputs: dict[str, CommandOutput] = field(default_factory=dict)
+    edit_previews: dict = field(default_factory=dict)
 
     def panel_heading(self) -> str:
         return self.panel_title()
@@ -213,6 +215,7 @@ class Activity:
     def reset(self) -> None:
         """Clear the panel for a new conversation, keeping the draft and queue."""
         self.command_outputs.clear()
+        self.edit_previews.clear()
         self.plan = []
         self.plan_preview = None
         self.tools.clear()
@@ -872,7 +875,11 @@ def create_prompt(
         Calculate all three heights together so editor wrapping cannot create a
         circular dependency between frame_height and command_rows.
         """
-        if transcript is None or not transcript.command_scrollback or not activity.command_outputs:
+        if transcript is None:
+            return None
+        edits = transcript.show_edits and activity.edit_previews
+        commands = transcript.command_scrollback and activity.command_outputs
+        if not edits and not commands:
             return None
         size = session.app.output.get_size()
         width = max(1, size.columns - 2)
@@ -901,11 +908,19 @@ def create_prompt(
         if budget <= 0:
             return plans, [], editor_height
         # Parallel calls share the preview; show the most recently updated call.
-        event = next(reversed(activity.command_outputs.values()))
-        rows = Text(command_text(event.output)).wrap(
+        event = next(
+            reversed((activity.edit_previews if edits else activity.command_outputs).values())
+        )
+        title = (
+            f"Preparing edit · {event.path} · not applied"
+            if edits
+            else "$ " + command_preview(event.command)
+        )
+        body = event.text if edits else event.output
+        rows = Text(command_text(body)).wrap(
             Console(width=width), width, overflow="fold", no_wrap=False
         )
-        commands = [("class:plan", "$ " + command_preview(event.command))] + [
+        commands = [("class:plan", title)] + [
             ("class:bottom-toolbar.text", row.plain) for row in rows[-budget:]
         ]
         return plans, commands, editor_height
@@ -1103,6 +1118,7 @@ class Transcript:
     ) -> None:
         preferences = load_preferences()
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
+        self.show_edits = preferences.get("edits", "show") == "show"
         self.command_scrollback = preferences.get("command_scrollback", "off") == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
         self.command_preview_lines = int(preferences.get("command_preview_lines", "10"))
@@ -1141,7 +1157,7 @@ class Transcript:
             Markdown(obj.markup, code_theme=self.code_theme)
             if isinstance(obj, Markdown)
             else replace(obj, code_theme=self.code_theme)
-            if isinstance(obj, (TranscriptNotice, CommandTranscript))
+            if isinstance(obj, (TranscriptNotice, CommandTranscript, EditTranscript))
             else obj
             for obj in objects
         )
@@ -1166,6 +1182,11 @@ class Transcript:
             self.command_output(event)
         elif event.failed:
             self.events((event,))
+
+    @recorded
+    def edit(self, event) -> None:
+        if self.show_edits:
+            self.print(EditTranscript(event, code_theme=self.code_theme))
 
     def replay(self) -> list:
         """Project the retained log with current settings, without recording again."""

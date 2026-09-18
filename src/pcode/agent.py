@@ -18,6 +18,7 @@ from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
 
 from pcode.delegation import DelegationReporting, stream_child_activity
+from pcode.filesystem import DisplayFileSystem
 from pcode.llm_proxy import ProxiedCodexProvider
 from pcode.meridian import MeridianSessionIdentity
 from pcode.output_limits import ModelOutputLimits
@@ -52,6 +53,8 @@ def create_coder(workspace: Path) -> CombinedCapability:
             }
         )
         if isinstance(capability, Planning)
+        else DisplayFileSystem.from_filesystem(capability)
+        if isinstance(capability, FileSystem)
         else StreamingShell.from_shell(capability)
         if isinstance(capability, Shell)
         else capability

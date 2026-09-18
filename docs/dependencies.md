@@ -497,3 +497,31 @@ telemetry/update checks. Existing disk profiles and Claude authentication remain
 shared intentionally; do not describe this mode as a credential sandbox. A local
 smoke check started a private instance, verified health and effective settings,
 and terminated it without making any model request.
+
+
+### Completed file diffs (verified Harness 0.31.0)
+
+`FileWrittenEvent` includes the resulting hash, path and call identity, but no
+before/after contents. Reading the file when that event reaches the UI cannot
+recover the previous version. `pcode.filesystem.DisplayFileSystemToolset` adapts
+only `_write_file` and `_edit_file` from the installed filesystem toolset to
+capture evidence inside the mutation. On upgrades, compare those bodies with
+`pydantic_ai_harness/filesystem/_toolset.py`, including descriptor checks,
+`expected_hash`, recoverable errors, canonical newlines and result strings.
+
+Writes capture old contents through the same descriptor before truncation.
+Unconditional writes try read/write access for capture, falling back to the
+original write-only access when reading isn't permitted; missing evidence must
+not make an otherwise valid write fail. The edit adapter uses the exact text
+already read for replacement. Neither adapter makes the underlying operation
+transactional against arbitrary external writers.
+
+Pydantic AI 2.43.0 exposes tool arguments through `ToolCallPartDelta.args_delta`.
+`StreamingEditPreview` accumulates them without executing anything, using
+`pydantic_core.from_json(..., allow_partial="trailing-strings")` for incomplete
+string values. A separate parse with `allow_partial=True` requires a complete
+path before exposing content; resolve it against the filesystem root to exclude
+sensitive symlink targets too. Preview events bypass the session journal;
+completed change events replay through the same recorded transcript method even
+when hidden. Keep `tests/test_edits_tmux.py`: no-CPR PTYs don't verify the shared
+preview/editor height budget or redraw behavior in a real terminal.

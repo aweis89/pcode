@@ -352,7 +352,7 @@ def test_empty_turn_drops_deferred_quote_without_leaking_to_next_turn():
 
 
 @pytest.mark.parametrize("width_changes", [True, False])
-def test_resize_replay_debounces_width_changes_and_ignores_height(monkeypatch, width_changes):
+def test_resize_replay_debounces_width_and_height_changes(monkeypatch, width_changes):
     async def run():
         output, _ = make_output()
         sizes = iter([(24, 80), (30, 80), (30, 60), (30, 40)] + [(30, 40)] * 8)
@@ -386,9 +386,8 @@ def test_resize_replay_debounces_width_changes_and_ignores_height(monkeypatch, w
             await output.run()
         except asyncio.CancelledError:
             pass
-        assert len(replays) == int(width_changes)
-        if width_changes:
-            assert replays[0][0] >= 0.65
-            assert replays[0][1] is output.resize_replay
+        assert len(replays) == 1
+        assert replays[0][0] >= (0.65 if width_changes else 0.45)
+        assert replays[0][1] is output.resize_replay
 
     asyncio.run(run())

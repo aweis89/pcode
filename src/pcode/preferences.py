@@ -51,6 +51,7 @@ SETTINGS = {
     "retry_attempts": Setting("1", whole_number=True),
     "error_scrollback_lines": Setting("20", positive_integer=True),
     "regenerate_on_resize": Setting("on", ("on", "off")),
+    "edits": Setting("show", ("show", "hide")),
     "command_scrollback": Setting("off", ("on", "off")),
     "command_scrollback_lines": Setting("20", positive_integer=True),
     # The pinned live preview competes with the editor for screen space, so it

@@ -29,6 +29,8 @@ from pcode.preferences import (
 )
 from pcode.runtime import (
     CommandOutput,
+    EditCompleted,
+    EditPreview,
     Message,
     PlanPreview,
     PlanUpdated,
@@ -125,6 +127,12 @@ class PreviewApp:
             Command("/help", "Commands and keyboard shortcuts", self.help),
             Command("/tools", "Inspect tool calls and their results", self.tools, ("failed",)),
             Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
+            Command(
+                "/edits",
+                "Show/hide edit diffs and previews; redraw scrollback",
+                self.show_edits,
+                ("show", "hide"),
+            ),
             Command("/demo", "Sample Markdown, code, diff, and tool output", self.demo),
             Command(
                 "/redraw",
@@ -315,6 +323,16 @@ class PreviewApp:
         self.transcript.note(
             f"Auto-hide tasks after each turn: {state}. Usage: /autohide-tasks on|off"
         )
+
+    def show_edits(self, argument: str) -> None:
+        if argument and argument not in ("show", "hide"):
+            raise ValueError("Usage: /edits [show|hide]")
+        shown = argument == "show" if argument else not self.transcript.show_edits
+        self.transcript.show_edits = shown
+        self.persist_defaults(edits="show" if shown else "hide")
+        self.transcript.regenerate()
+        if self.transcript.output is not None:
+            self.transcript.output.app.invalidate()
 
     def set_show_thinking(self, shown: bool) -> None:
         self.activity.show_thinking = shown
@@ -649,7 +667,13 @@ class PreviewApp:
     def present_events(self, events) -> None:
         """Route live tool activity separately from permanent transcript writes."""
         for event in events:
-            if isinstance(event, CommandOutput):
+            if isinstance(event, EditPreview):
+                self.activity.edit_previews.pop(event.call_id, None)
+                if event.path:
+                    self.activity.edit_previews[event.call_id] = event
+            elif isinstance(event, EditCompleted):
+                self.transcript.edit(event)
+            elif isinstance(event, CommandOutput):
                 self.activity.command_outputs.pop(event.call_id, None)
                 self.activity.command_outputs[event.call_id] = event
             elif isinstance(event, (ToolStarted, ToolSummary)):
@@ -977,6 +1001,16 @@ class PreviewApp:
                 self.transcript.user(redact(record["prompt"]))
             elif kind in ("Thinking", "thinking_partial"):
                 self.transcript.thinking(redact(record["text"]).rstrip("\n") + "\n\n")
+            elif kind == "EditCompleted":
+                self.transcript.edit(
+                    EditCompleted(
+                        **{
+                            key: value
+                            for key, value in record.items()
+                            if key in EditCompleted.__dataclass_fields__
+                        }
+                    )
+                )
             elif kind in ("Message", "partial"):
                 self.transcript.events((Message(redact(record["markdown"])),))
                 if kind == "partial":
@@ -1145,6 +1179,7 @@ class PreviewApp:
             output.finish_thinking()
             output.finish()
             self.activity.plan_preview = None
+            self.activity.edit_previews.clear()
             self.activity.status = text
             self.transcript.note(text)
             output.app.invalidate()
@@ -1165,7 +1200,11 @@ class PreviewApp:
                         output.finish_thinking()
                         output.delta(event.text)
                         self.activity.status = "Responding…"
-                    elif isinstance(event, CommandOutput):
+                    elif isinstance(event, EditCompleted):
+                        output.finish_thinking()
+                        output.finish()
+                        self.present_events((event,))
+                    elif isinstance(event, (CommandOutput, EditPreview)):
                         self.present_events((event,))
                     elif isinstance(event, RunStatus):
                         self.activity.status = event.text
@@ -1193,6 +1232,7 @@ class PreviewApp:
         except Exception as error:
             failure = error
         finally:
+            self.activity.edit_previews.clear()
             self.activity.command_outputs.clear()
             self.activity.plan_preview = None
             output.end_turn()
