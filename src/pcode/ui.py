@@ -438,6 +438,11 @@ def editor_mode_label(app: Application) -> str:
 
 
 def install_reflow_renderer(app: Application) -> None:
+    """Install the reflow-aware erase; only needed without resize regeneration.
+
+    Regeneration clears the screen and scrollback before replaying, so the
+    careful physical-row accounting is wasted work when it is enabled.
+    """
     app.renderer = ReflowAwareRenderer(
         app._merged_style,
         app.output,
@@ -445,6 +450,29 @@ def install_reflow_renderer(app: Application) -> None:
         mouse_support=False,
         cpr_not_supported_callback=app.cpr_not_supported_callback,
     )
+
+
+# Replay once the width settles, not once per SIGWINCH of a drag.
+RESIZE_DEBOUNCE = 0.25
+
+
+def terminal_width(app: Application) -> int | None:
+    """Current column count, or None for apps without a real output (tests)."""
+    output = getattr(app, "output", None)
+    return output.get_size().columns if output is not None else None
+
+
+def install_resize_hook(app: Application, on_resize) -> None:
+    """Observe prompt_toolkit's SIGWINCH handling instead of polling the size."""
+    resize = getattr(app, "_on_resize", None)
+    if resize is None:
+        return
+
+    def _on_resize() -> None:
+        resize()
+        on_resize()
+
+    app._on_resize = _on_resize
 
 
 class TerminalOutput:
@@ -481,6 +509,20 @@ class TerminalOutput:
         self._thinking_streamed = False
         self._regenerate = None
         self.resize_replay = None
+        self._width: int | None = terminal_width(app)
+        self._resized_at: float | None = None
+        install_resize_hook(app, self.notify_resize)
+
+    def notify_resize(self) -> None:
+        """Start the replay debounce from prompt_toolkit's own SIGWINCH handling.
+
+        Height changes reflow nothing, so only a width change may replay. Keep
+        this synchronous and allocation-free: it runs inside the signal handler.
+        """
+        previous, self._width = self._width, terminal_width(self.app)
+        if self.resize_replay is not None and self._width not in (None, previous):
+            self._resized_at = monotonic()
+        self.changed.set()
 
     def regenerate(self, replay) -> None:
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
@@ -642,24 +684,25 @@ class TerminalOutput:
             self.changed.clear()
 
     async def run(self) -> None:
-        width = self.app.output.get_size().columns
-        resized_at = None
         while True:
-            # Poll only when resize replay is enabled. Debounce resize storms;
-            # the renderer continues handling the editor normally meanwhile.
-            if self.resize_replay is None:
+            # Wake on writes; SIGWINCH also wakes us and arms the debounce, so a
+            # resize storm replays once, after the width settles.
+            if self._resized_at is None:
                 await self.changed.wait()
             else:
-                try:
-                    await asyncio.wait_for(self.changed.wait(), timeout=0.1)
-                except TimeoutError:
-                    pass
-                current = self.app.output.get_size().columns
-                if current != width:
-                    width, resized_at = current, monotonic()
-                elif resized_at is not None and monotonic() - resized_at >= 0.25:
-                    self.regenerate(self.resize_replay)
-                    resized_at = None
+                remaining = RESIZE_DEBOUNCE - (monotonic() - self._resized_at)
+                if remaining > 0:
+                    try:
+                        await asyncio.wait_for(self.changed.wait(), timeout=remaining)
+                    except TimeoutError:
+                        pass
+                if (
+                    self._resized_at is not None
+                    and monotonic() - self._resized_at >= RESIZE_DEBOUNCE
+                ):
+                    self._resized_at = None
+                    if self.resize_replay is not None:
+                        self.regenerate(self.resize_replay)
             await asyncio.sleep(1 / 30)
             await self.flush()
 
@@ -1023,7 +1066,8 @@ def create_prompt(
     if session.app.editing_mode == EditingMode.VI:
         # Allow terminal escape sequences to arrive, without a half-second pause.
         session.app.ttimeoutlen = 0.1
-    install_reflow_renderer(session.app)
+    if transcript is None or not transcript.replays_on_resize:
+        install_reflow_renderer(session.app)
 
     return session
 
@@ -1057,6 +1101,11 @@ class Transcript:
         self._replay_sink: list | None = None
 
     @property
+    def replays_on_resize(self) -> bool:
+        """Whether a width change rebuilds scrollback instead of reflowing in place."""
+        return self.regenerate_on_resize and self.console.is_terminal
+
+    @property
     def output(self) -> TerminalOutput | None:
         return self._output
 
@@ -1066,7 +1115,7 @@ class Transcript:
         if output is not None:
             output.commit_print = self.print
             output.commit_thinking = self.thinking
-            if self.regenerate_on_resize and self.console.is_terminal:
+            if self.replays_on_resize:
                 output.resize_replay = self.replay
 
     @recorded
