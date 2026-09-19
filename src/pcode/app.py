@@ -29,22 +29,15 @@ from pcode.preferences import (
 )
 from pcode.runtime import (
     CacheBust,
-    CommandOutput,
     EditCompleted,
-    EditPreview,
     Message,
-    PlanPreview,
-    PlanUpdated,
     PreviewRuntime,
-    RunStatus,
-    TextDelta,
-    Thinking,
-    ThinkingDelta,
     ToolStarted,
     ToolSummary,
 )
+from pcode.stream_display import present_events, present_stream_event
 from pcode.theme import THEMES
-from pcode.tool_display import COMMAND_TOOLS, plain
+from pcode.tool_display import plain
 from pcode.ui import (
     COLOR_STYLES,
     SYSTEM_COMMAND_LABELS,
@@ -716,29 +709,7 @@ class PreviewApp:
         self.transcript.help(self.registry)
 
     def present_events(self, events) -> None:
-        """Route live tool activity separately from permanent transcript writes."""
-        for event in events:
-            if isinstance(event, EditPreview):
-                self.activity.edit_previews.pop(event.call_id, None)
-                if event.path:
-                    self.activity.edit_previews[event.call_id] = event
-            elif isinstance(event, EditCompleted):
-                self.edits.append(event)
-                self.transcript.edit(event)
-            elif isinstance(event, CommandOutput):
-                self.activity.command_outputs.pop(event.call_id, None)
-                self.activity.command_outputs[event.call_id] = event
-            elif isinstance(event, (ToolStarted, ToolSummary)):
-                self.activity.tools.record(event)
-                if self.transcript.output is not None:
-                    self.transcript.output.app.invalidate()
-                # Decide only after completion. The adapter's failed flag includes
-                # non-zero shell exits, retries, and known tool validation failures.
-                if isinstance(event, ToolSummary):
-                    self.activity.command_outputs.pop(event.call_id, None)
-                    self.transcript.tool_result(event)
-            else:
-                self.transcript.events((event,))
+        present_events(events, activity=self.activity, transcript=self.transcript, edits=self.edits)
 
     def demo(self, argument: str) -> None:
         self.present_events(self.preview.demo())
@@ -1240,46 +1211,13 @@ class PreviewApp:
         try:
             async with aclosing(self.runtime.stream(None if resend else text)) as stream:
                 async for event in stream:
-                    if isinstance(event, ThinkingDelta):
-                        output.finish()
-                        output.thinking_delta(event.text)
-                    elif isinstance(event, Thinking):
-                        output.finish_thinking(event.text)
-                    elif isinstance(event, TextDelta):
-                        output.finish_thinking()
-                        output.delta(event.text)
-                        self.activity.status = "Responding…"
-                    elif isinstance(event, CacheBust):
-                        output.finish_thinking()
-                        output.finish()
-                        self.transcript.events((event,))
-                    elif isinstance(event, EditCompleted):
-                        output.finish_thinking()
-                        output.finish()
-                        self.present_events((event,))
-                    elif isinstance(event, (CommandOutput, EditPreview)):
-                        self.present_events((event,))
-                    elif isinstance(event, RunStatus):
-                        self.activity.status = event.text
-                    elif isinstance(event, PlanUpdated):
-                        self.activity.plan = event.items
-                    elif isinstance(event, PlanPreview):
-                        self.activity.plan_preview = event.items
-                    elif isinstance(event, (ToolStarted, ToolSummary)):
-                        output.finish_thinking()
-                        # Hidden commands, including failures, do not interrupt prose.
-                        if isinstance(event, ToolSummary) and (
-                            (event.failed and event.name not in COMMAND_TOOLS)
-                            or self.transcript.streams_command(event)
-                        ):
-                            output.finish()
-                        self.present_events((event,))
-                    elif isinstance(event, Message):
-                        output.finish(event.markdown)
-                    else:
-                        output.finish()
-                        self.transcript.events((event,))
-                    output.app.invalidate()
+                    present_stream_event(
+                        event,
+                        output=output,
+                        transcript=self.transcript,
+                        activity=self.activity,
+                        present=self.present_events,
+                    )
         except asyncio.CancelledError:
             cancelled = True
         except Exception as error:
