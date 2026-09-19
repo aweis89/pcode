@@ -63,6 +63,9 @@ SETTINGS = {
     "editing_mode": Setting("emacs", ("emacs", "vi")),
     "theme": Setting("dark", ("dark", "light", "auto")),
     "autocompact": Setting("off", ("on", "off")),
+    # Batch read-only tools through one sandboxed run_code snippet; edits, plans,
+    # shell, and delegation stay native so their transcript display survives.
+    "code_mode": Setting("off", ("on", "off")),
     "tool_output_mode": Setting("spill", ("spill", "truncate", "off")),
     "tool_output_threshold": Setting("10000", positive_integer=True),
     "tool_output_preview_chars": Setting("1000", positive_integer=True),

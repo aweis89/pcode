@@ -20,6 +20,7 @@ from pydantic_ai_harness.subagents import SubAgent, SubAgents
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.cache_warnings import CacheBustReporting
+from pcode.code_mode import create_code_mode
 from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.filesystem import DisplayFileSystem
 from pcode.llm_proxy import ProxiedCodexProvider
@@ -110,6 +111,10 @@ def create_coder(workspace: Path) -> CombinedCapability:
             ],
         )
     )
+    # Sandboxed batching is opt-in; CodeMode orders itself outermost, so it wraps
+    # whatever toolset the capabilities above compose.
+    if code_mode := create_code_mode():
+        coder.capabilities.append(code_mode)
     # Missing credentials must not prevent ordinary coding sessions. Let the
     # capability read the key itself; never put it in instructions or tool args.
     if os.environ.get("EXA_API_KEY", "").strip():
