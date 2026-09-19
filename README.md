@@ -550,8 +550,9 @@ commands, writes, and edits do not trigger this discovery.
 
 The `.claude`, `.agents`, `.codex`, and `.grok` asset inventory remains
 workspace-local and metadata-only; it does not load asset bodies or execute hooks.
-Discovered instructions are sent to the selected model, so review inherited and
-nested files when working in a shared directory tree.
+It goes to the model rather than the startup banner, which already lists the
+skill commands. Discovered instructions are sent to the selected model, so review
+inherited and nested files when working in a shared directory tree.
 
 ### Skills as slash commands
 
