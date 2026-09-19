@@ -43,6 +43,7 @@ def test_defaults_and_path_do_not_create_files():
         "theme": "dark",
         "editing_mode": "emacs",
         "autocompact": "off",
+        "code_mode": "off",
         "tool_output_mode": "spill",
         "tool_output_threshold": "10000",
         "tool_output_preview_chars": "1000",

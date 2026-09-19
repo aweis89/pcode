@@ -143,6 +143,7 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 | --- | --- | --- |
 | `theme` | `dark` | `dark`, `light`, `auto` |
 | `autocompact` | `off` | `on`, `off` |
+| `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
 | `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |
 | `tool_output_threshold` | `10000` | Positive integer, characters that trigger reduction |
 | `tool_output_preview_chars` | `1000` | Positive integer, spill preview characters |
@@ -423,6 +424,31 @@ returns up to 10,000 characters. Deep search is disabled. Queries and requested
 URLs are sent to Exa and may incur API charges; returned content is sent to the
 model and can be saved in session history. Restart pcode after changing the key,
 including when resuming a session.
+
+### Code mode (opt-in)
+
+[Code mode](https://pydantic.dev/docs/ai/harness/code-mode/) replaces individual
+tool calls with a single sandboxed Python snippet, so the model can fan out
+lookups with `asyncio.gather`, filter results, and return only what matters
+without a model turn per dependent batch.
+
+```sh
+pcode config set code_mode on   # Applies on next launch
+pcode config unset code_mode    # Back to plain tool calling
+```
+
+Only read-only lookups are sandboxed: `read_file`, `list_files`, `grep`,
+`read_tool_result`, `web_search`, and `get_page`. Edits, plan updates, the
+persistent shell, and delegation keep issuing their own tool calls, so diffs,
+command previews, and the plan panel still show what happened rather than an
+opaque snippet that did it. A `run_code` call is displayed by the calls the
+snippet makes and its size (`grep · read_file ×2 · 12 lines`); the snippet
+itself is visible in the tool-call inspector.
+
+Snippets run in the Monty sandbox with no host filesystem or environment of their
+own: pcode passes no `mount` or `os_access`, so the only way out is the sandboxed
+tools, which enforce the same workspace rules as ever. Harness caps each snippet
+at 30 seconds and 256 MiB of heap.
 
 ### Tool permissions
 
