@@ -303,7 +303,8 @@ class AgentRuntime:
                 # compaction. Never infer progress from the length of history.
                 send = None
                 self.retry_notice(
-                    f"Provider connection dropped; retry {attempt + 1}/{self.retry_attempts}…"
+                    f"{error_message(error)} Retrying provider request "
+                    f"{attempt + 1}/{self.retry_attempts}…"
                 )
                 await asyncio.sleep(1)
             else:
