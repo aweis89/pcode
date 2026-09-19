@@ -460,6 +460,33 @@ real streamed cache usage, isolated runs, delegation, warning filters, terminal
 handoff ordering, and saved-session/redraw replay. Monitoring is per agent run,
 not conversation-wide; no cache history is restored from saved sessions.
 
+### Cache-collapse fingerprints
+
+`cache_diagnostics.py` answers the question the upstream warning cannot: the
+provider reports only token counts, which conflate *the prefix was rewritten* with
+*the cache expired*. Both produce an identical collapse, and upstream deliberately
+does not attribute a cause. Every request is therefore fingerprinted into a bounded
+per-run window, and `divergence()` compares the collapsing request with the healthy
+one before it. `Prefix intact` (all earlier messages byte-identical, the rest
+appended) rules out mutation and points at TTL or breakpoint placement; otherwise
+the first moved message index is named. Instructions, tool definitions and cache
+settings are checked first because they sit ahead of every message, so a change
+there would otherwise be misattributed to the first message that follows it.
+
+Fingerprints are digests, sizes, part kinds and breakpoint positions — never prompt
+text. Prompts carry file contents and command output, so a debug dump of them would
+leak precisely what `diagnostics.redact` exists to prevent. The dump is written only
+when a collapse fires, so the healthy path costs one hash per request.
+
+Two failure modes are load-bearing and covered by tests: the step counter is
+independent of the bounded window (the window's length stops growing, which would
+repeat step numbers for exactly the long runs a collapse shows up in), and dump
+filenames de-duplicate (two runs in one process can collapse in the same second at
+the same step). A fingerprinting failure clears the window and degrades to the
+plain upstream warning rather than ending the run, since part shapes vary by
+provider and capability. `PCODE_CACHE_DIAGNOSTICS` disables (`off`) or redirects
+the dumps; tests must isolate `XDG_STATE_HOME`.
+
 ### Meridian conversation identity
 
 Verified against installed Meridian 1.71.1, Pydantic AI 2.44.0, and Harness 0.31.0:

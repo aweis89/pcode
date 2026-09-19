@@ -14,3 +14,5 @@
 - Resuming with `Agent.run(None)` and history ending in a final `ModelResponse` can return that saved answer without calling the provider; retry from the failed request boundary instead.
 
 - On Python 3.14, `cProfile` can observe worker threads too: using `time.thread_time` as its timer produces negative/nonsensical timings. Use Yappi's per-thread CPU accounting for function profiling, not a custom `cProfile` CPU clock.
+
+- A cache-collapse warning ending in the generic `(e.g. a gap longer than the cache TTL)` means the gap was *under* the TTL: Harness names the measured gap whenever it actually exceeds it, so that phrasing rules expiry out rather than suggesting it. Its `model request N` is also per-run, not per-session. Read the `Message N changed` / `Prefix intact` line that `cache_diagnostics.py` appends, and the dumped fingerprints, before theorizing about a cause.
