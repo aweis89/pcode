@@ -82,6 +82,38 @@ quiet if the provider never reports an established cache. This is an observation
 not proof of a prompt bug: compaction, prefix changes, or provider cache expiry
 can all cause a miss. No prompt contents are included in the warning.
 
+#### Diagnosing a miss
+
+The token counts alone cannot say *why* a prefix stopped matching, so pcode
+fingerprints every model request and keeps a rolling window of the last few. When
+a miss fires, the warning gains a one-line diagnosis and the window is written to
+`~/.local/state/pcode/cache-diagnostics/` (`XDG_STATE_HOME` is honored):
+
+```
+! Prompt cache miss
+  anthropic/claude-opus-5: Cache hit collapsed at model request 14: read 11105 ...
+  Message 6 of 31 changed (kind request -> request, 8100 -> 240 chars, cache points 0 -> 0). 25 message(s) after it were re-sent.
+  Request fingerprints: ~/.local/state/pcode/cache-diagnostics/20260919T035812-4821-step14.json
+```
+
+The diagnosis separates the two causes that the token counts conflate:
+
+- **`Prefix intact: ... nothing rewrote history`** — every earlier message was
+  byte-identical and the rest were appended. The prompt is stable, so suspect the
+  cache TTL (the line reports the gap since the previous request) or where the
+  breakpoints landed, which the dump lists as `cache_point_indexes`.
+- **`Message N of M changed`** — something rewrote history in place, and the named
+  index is the first one that moved. `Instructions changed`, `Tool definitions
+  changed`, `Cache settings changed`, and `History shrank` cover the cases that sit
+  ahead of, or instead of, a message edit.
+
+The dump holds digests, sizes, part kinds, token counts and breakpoint positions
+for each request in the window — never prompt text, which would otherwise leak the
+file contents and command output the agent had read. Compare consecutive entries
+to see exactly which message moved. Set `PCODE_CACHE_DIAGNOSTICS=off` to disable
+the dumps, or to a directory path to write them elsewhere; the warning itself is
+unaffected.
+
 ### Global configuration
 
 Global defaults are shared across workspaces in `~/.config/pcode/preferences.json`
