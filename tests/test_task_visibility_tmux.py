@@ -14,8 +14,8 @@ def test_toggle_removes_entire_widget_and_restores_the_latest_plan(pane, split):
     pane("send-keys", "-t", "preview:0.0", "C-o")
     pane("send-keys", "-t", "preview:0.0", "-l", "kept draft")
     pane("split-window", split, "-t", "preview:0.0", "cat")
-    capture(pane, "kept draft")
-    screen = capture(pane, "✓ h")  # Wait for the finished turn, still hidden.
+    # capture() waits for an idle toolbar, so this is the finished turn, still hidden.
+    screen = capture(pane, "kept draft")
     assert "Task 0" not in screen
     assert "Tasks" not in screen and "Tools" not in screen
     assert screen.count("┌") == screen.count("└") == 1

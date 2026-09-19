@@ -1068,7 +1068,7 @@ class PreviewApp:
         for record in saved.tool_events():
             kind = record["kind"]
             if kind.startswith("turn_"):
-                self.activity.tools.interrupt_running()
+                self.activity.tools.clear()
             elif kind == "ToolStarted":
                 self.activity.tools.record(
                     ToolStarted(
@@ -1093,7 +1093,7 @@ class PreviewApp:
                         parent_call_id=record.get("parent_call_id", ""),
                     )
                 )
-        self.activity.tools.interrupt_running()
+        self.activity.tools.clear()
 
     def quit(self, argument: str) -> None:
         self.running = False
@@ -1253,7 +1253,7 @@ class PreviewApp:
             self.activity.command_outputs.clear()
             self.activity.plan_preview = None
             output.end_turn()
-            self.activity.tools.interrupt_running()
+            self.activity.tools.clear()
             self.activity.status = ""
         self.activity.finish_prompt("cancelled" if cancelled else "failed" if failure else "done")
         output.app.invalidate()

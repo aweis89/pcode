@@ -121,47 +121,46 @@ def test_edit_and_queue_during_generation(outcome):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize(
-    "state,icon", [("running", "⠋"), ("failed", "!"), ("cancelled", "■"), ("done", "✓")]
-)
-def test_prompt_indicator(state, icon):
+@pytest.mark.parametrize("state", ["running", "failed", "cancelled", "done", ""])
+def test_status_row_shows_the_spinner_and_never_echoes_the_prompt(state):
     from pcode.ui import Activity
 
-    activity = Activity(prompt="first\nsecond\x1b", prompt_state=state)
-    fragments = activity.prompt_fragments("⠋", 80)
-    assert fragments[0][1] == icon + " "
-    assert fragments[1][1].startswith("first second ")
-    assert all(style == "class:activity.prompt" for style, _ in fragments)
-    if state == "failed":
-        assert fragments[1][1].endswith(" · failed")
+    activity = Activity(prompt="first\nsecond\x1b", prompt_state=state, status="Waiting for model…")
+    assert activity.status_shown is (state == "running")
+    fragments = activity.status_fragments("⠋", 80)
+    assert fragments[0] == ("class:activity.prompt", "⠋ ")
+    assert fragments[1][1] == "Waiting for model…"
+
+
+def test_status_row_reports_the_newest_running_tool_call():
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running", status="Responding…")
+    activity.tools.record(ToolStarted("read_file", "example.py", "one"))
+    activity.tools.record(ToolStarted("grep", "pattern", "two"))
+    style, text = activity.status_fragments("⠋", 80)[1]
+    assert style == "class:plan.active"
+    assert text.endswith("pattern")
+    # A result hands the row back to the call still running.
+    activity.tools.record(ToolSummary("grep", "pattern", call_id="two"))
+    assert activity.status_fragments("⠋", 80)[1][1].endswith("example.py")
 
 
 @pytest.mark.parametrize("width", [0, 1, 2, 3, 12, 40, 100])
-@pytest.mark.parametrize("state", ["running", "done", "failed", "cancelled"])
-def test_prompt_indicator_truncates_to_terminal_width(width, state):
+def test_status_row_truncates_to_terminal_width(width):
     from rich.cells import cell_len
 
+    from pcode.runtime import ToolStarted
     from pcode.ui import Activity
 
-    prompt = "Work on 界面\n" * 30
-    activity = Activity(prompt=prompt, prompt_state=state)
-    fragments = activity.prompt_fragments("⠋", width)
-    rendered = "".join(text for _, text in fragments)
+    activity = Activity(prompt_state="running")
+    activity.tools.record(ToolStarted("read_file", "界面/path\n" * 30, "one"))
+    rendered = "".join(text for _, text in activity.status_fragments("⠋", width))
     assert "\n" not in rendered
     assert cell_len(rendered) <= width
     if width > 2:
         assert rendered.endswith("…")
-    assert activity.prompt == prompt
-
-
-def test_prompt_indicator_keeps_short_prompt_intact():
-    from pcode.ui import Activity
-
-    activity = Activity(prompt="Fix bug", prompt_state="running")
-    assert activity.prompt_fragments("⠋", 9) == [
-        ("class:activity.prompt", "⠋ "),
-        ("class:activity.prompt", "Fix bug"),
-    ]
 
 
 def test_system_prompt_row_is_badged_and_not_an_echoed_command():
@@ -169,7 +168,7 @@ def test_system_prompt_row_is_badged_and_not_an_echoed_command():
 
     activity = Activity()
     activity.start_prompt("Compacting context", kind="system", detail="keep {tests}")
-    fragments = activity.prompt_fragments("⠋", 80)
+    fragments = activity.status_fragments("⠋", 80)
     assert fragments == [
         ("class:activity.system", "⠋ ◈ "),
         ("class:activity.system.label", "Compacting context"),
@@ -179,15 +178,14 @@ def test_system_prompt_row_is_badged_and_not_an_echoed_command():
     assert "/compact" not in rendered and "❯" not in rendered
 
 
-def test_system_prompt_row_keeps_state_icons_and_drops_empty_detail():
+def test_system_prompt_row_drops_empty_detail():
     from pcode.ui import Activity
 
     activity = Activity()
     activity.start_prompt("Compacting context", kind="system")
-    activity.prompt_state = "failed"
-    assert activity.prompt_fragments("⠋", 80) == [
-        ("class:activity.system", "! ◈ "),
-        ("class:activity.system.label", "Compacting context · failed"),
+    assert activity.status_fragments("⠋", 80) == [
+        ("class:activity.system", "⠋ ◈ "),
+        ("class:activity.system.label", "Compacting context"),
     ]
 
 
@@ -199,7 +197,7 @@ def test_system_prompt_row_truncates_to_terminal_width(width):
 
     activity = Activity()
     activity.start_prompt("Compacting 界面 context\n" * 9, kind="system", detail="keep 界面\n" * 9)
-    rendered = "".join(text for _, text in activity.prompt_fragments("⠋", width))
+    rendered = "".join(text for _, text in activity.status_fragments("⠋", width))
     assert "\n" not in rendered
     assert cell_len(rendered) <= width
 
@@ -211,7 +209,7 @@ def test_new_conversation_clears_the_system_prompt_kind():
     activity.start_prompt("Compacting context", kind="system", detail="keep tests")
     activity.reset()
     activity.start_prompt("Fix bug")
-    assert activity.prompt_fragments("⠋", 20)[0] == ("class:activity.prompt", "⠋ ")
+    assert activity.status_fragments("⠋", 20)[0] == ("class:activity.prompt", "⠋ ")
     assert activity.prompt_detail == ""
 
 
@@ -253,7 +251,7 @@ def test_queued_and_running_system_rows_share_one_label():
     activity = Activity(queued_prompts=["/compact keep tests"])
     queued = activity.queue_rows(1)[0][1]
     activity.start_prompt(SYSTEM_COMMAND_LABELS["/compact"], kind="system", detail="keep tests")
-    running = "".join(text for _, text in activity.prompt_fragments("⠋", 80))
+    running = "".join(text for _, text in activity.status_fragments("⠋", 80))
     assert queued.removeprefix("Queued ") == running.removeprefix("⠋ ")
 
 

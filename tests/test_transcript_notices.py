@@ -62,7 +62,8 @@ def test_tool_persistence_is_decided_on_completion(command, exit_code):
             ),
         )
     )
-    assert len(app.activity.tools.calls) == 1
+    # Command visibility is off, so the result leaves no record on either surface.
+    assert app.activity.tools.calls == []
     assert stream.getvalue() == ""
 
 

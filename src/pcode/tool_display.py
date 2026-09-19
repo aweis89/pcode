@@ -382,6 +382,9 @@ COMMAND_TOOLS = frozenset(
     {"shell", "run_command", "start_command", "check_command", "stop_command"}
 )
 
+# Tools whose success is already told by a diff, so a summary row would repeat it.
+EDIT_TOOLS = frozenset({"write_file", "edit_file"})
+
 
 def shell_status(exit_code: int | None) -> tuple[str, bool]:
     if exit_code is None:
