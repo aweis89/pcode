@@ -21,6 +21,7 @@ from rich.text import Text
 from pcode.commands import Command, CommandRegistry
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_arguments, configure
+from pcode.file_refs import inline_references
 from pcode.preferences import (
     apply_effort,
     apply_thinking,
@@ -1265,7 +1266,10 @@ class PreviewApp:
         failure = None
         cancelled = False
         try:
-            async with aclosing(self.runtime.stream(None if resend else text)) as stream:
+            # The panel and scrollback show what was typed; the request also
+            # carries the contents of the short files the prompt references.
+            send = None if resend else inline_references(text, self.workspace)
+            async with aclosing(self.runtime.stream(send)) as stream:
                 async for event in stream:
                     present_stream_event(
                         event,
@@ -1430,7 +1434,7 @@ class PreviewApp:
             while not queue.empty():
                 generation, text, mode = queue.get_nowait()
                 if generation == queue_generation and mode == "steering":
-                    messages.append(text)
+                    messages.append(inline_references(text, self.workspace))
                     index = next(
                         i
                         for i, item in enumerate(

@@ -9,8 +9,18 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 from pcode.commands import CommandRegistry
-from pcode.file_refs import FileReferenceCompleter, WorkspaceFiles, reference_fragment
-from pcode.ui import create_prompt
+from pcode.file_refs import (
+    INLINE_FILE_LIMIT,
+    INLINE_HEADER,
+    FileReferenceCompleter,
+    ReferenceLexer,
+    WorkspaceFiles,
+    inline_references,
+    reference_fragment,
+    referenced_paths,
+    typed_prompt,
+)
+from pcode.ui import PALETTES, create_prompt
 
 
 def build_tree(root):
@@ -118,6 +128,110 @@ def test_no_completions_without_a_trigger(tmp_path):
 
     assert completions(completer, "explain app.py") == []
     assert completions(completer, "explain @nosuchfile") == []
+
+
+def test_completion_meta_shows_size_and_whether_it_is_inlined(tmp_path):
+    build_tree(tmp_path)
+    (tmp_path / "huge.py").write_text("x" * (INLINE_FILE_LIMIT + 1))
+    files = WorkspaceFiles(tmp_path)
+
+    assert files.describe("src/pcode/app.py") == "3 B · inlined"
+    assert files.describe("huge.py").endswith("· path only")
+
+
+def test_short_referenced_files_ride_along_with_the_prompt(tmp_path):
+    build_tree(tmp_path)
+
+    sent = inline_references("compare ./src/pcode/app.py and ./README.md", tmp_path)
+
+    assert sent.startswith("compare ./src/pcode/app.py and ./README.md\n\n" + INLINE_HEADER)
+    assert "=== ./src/pcode/app.py (1 line, 3 B) ===\napp\n=== end ./src/pcode/app.py ===" in sent
+    assert "=== ./README.md (1 line, 6 B) ===\nreadme\n=== end ./README.md ===" in sent
+    # The typed prompt survives the round trip, for scrollback and for editing.
+    assert typed_prompt(sent) == "compare ./src/pcode/app.py and ./README.md"
+
+
+def test_long_and_unreadable_references_are_named_not_inlined(tmp_path):
+    build_tree(tmp_path)
+    (tmp_path / "huge.py").write_text("x" * (INLINE_FILE_LIMIT + 1))
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\x00\xff")
+
+    sent = inline_references("see ./huge.py ./logo.png ./missing.py ./src", tmp_path)
+    appended = sent.split(INLINE_HEADER, 1)[1]
+
+    assert "./huge.py (15.6 KB): not inlined" in appended
+    # Binary, missing, and directory references stand on their own in the prose.
+    assert "./logo.png" not in appended
+    assert "./missing.py" not in appended
+    assert "./src" not in appended
+
+
+def test_a_prompt_without_references_is_sent_unchanged(tmp_path):
+    build_tree(tmp_path)
+    text = "explain the layout, and mail me@example.com about @unfinished"
+
+    assert referenced_paths(text) == []
+    assert inline_references(text, tmp_path) == text
+
+
+def test_quoted_and_relative_references_are_recognized():
+    text = 'read "./design notes.md" and ./src/ui.py and ../sibling.py'
+
+    assert referenced_paths(text) == ["./design notes.md", "./src/ui.py", "../sibling.py"]
+
+
+def test_references_are_styled_in_the_editor():
+    lexer = ReferenceLexer()
+
+    fragments = lexer.lex_document(Document("see ./src/ui.py now"))(0)
+
+    assert fragments == [("", "see "), ("class:reference", "./src/ui.py"), ("", " now")]
+    for palette in PALETTES.values():
+        attrs = palette.prompt_style().get_attrs_for_style_str("class:reference")
+        assert attrs.underline
+
+
+def test_a_live_turn_sends_contents_but_echoes_the_typed_prompt(tmp_path):
+    from io import StringIO
+    from unittest.mock import MagicMock
+
+    from rich.console import Console
+
+    from pcode.app import PreviewApp
+    from pcode.runtime import Message
+    from pcode.ui import TerminalOutput
+
+    build_tree(tmp_path)
+    sent = []
+
+    class Runtime:
+        session = None
+
+        async def stream(self, prompt):
+            sent.append(prompt)
+            yield Message("done")
+
+    async def run():
+        buffer = StringIO()
+        app = PreviewApp(
+            model="test:local",
+            runtime=Runtime(),
+            workspace=tmp_path,
+            console=Console(file=buffer, color_system=None),
+        )
+        output = TerminalOutput(app.transcript.console, MagicMock())
+        output.app.output.get_size.return_value.columns = 80
+        app.transcript.output = output
+        assert await app.run_live(output, "explain ./src/pcode/app.py")
+        await output.flush()
+        return buffer.getvalue()
+
+    scrollback = asyncio.run(run())
+
+    assert sent[0].startswith("explain ./src/pcode/app.py\n\n" + INLINE_HEADER)
+    assert "=== ./src/pcode/app.py (1 line, 3 B) ===" in sent[0]
+    # Scrollback and the task panel echo the prompt, never the payload.
+    assert INLINE_HEADER not in scrollback
 
 
 def test_prompt_inserts_the_reference_from_the_menu(tmp_path):
