@@ -72,6 +72,7 @@ from pcode.runtime import (
 from pcode.sessions import SavedSession, SessionError
 from pcode.shell import ShellPreview, result_projection
 from pcode.steering import Steering
+from pcode.token_accounting import TokenAccounting, TokenTotals
 from pcode.tool_display import (
     COMMAND_TOOLS,
     command_error,
@@ -115,6 +116,9 @@ class AgentRuntime:
         self.compaction_notice = lambda text: None
         self.retry_notice = lambda text: None
         self.take_steering = lambda: []
+        # Prompt overhead describes the agent's configuration, not one
+        # conversation, so it outlives /new and conversation checkout.
+        self.request_parameters = None
         self._clear()
         self.replace_agent(agent)
 
@@ -144,10 +148,13 @@ class AgentRuntime:
             shared = [
                 shared_capability
                 for shared_capability in capability.shared_capabilities
-                if not isinstance(shared_capability, StepPersistence)
+                if not isinstance(shared_capability, (StepPersistence, TokenAccounting))
             ]
             if self.session is not None:
                 shared.append(StepPersistence(store=self.session.store))
+            # Count a delegated request where it happens. Child tokens also
+            # aggregate into the parent's run usage, which nothing reads.
+            shared.append(TokenAccounting(record=self.totals.add))
             capability.shared_capabilities = shared
 
     async def refresh_context(self) -> None:
@@ -184,12 +191,30 @@ class AgentRuntime:
         self.context_history: list[ModelMessage] | None = None
         self.conversation_id = info.id if info else str(uuid4())
         self.turns = info.turns if info else 0
-        self.input_tokens = info.input_tokens if info else 0
-        self.output_tokens = info.output_tokens if info else 0
+        self.totals = TokenTotals(
+            input=info.input_tokens if info else 0,
+            output=info.output_tokens if info else 0,
+            cache_read=info.cache_read_tokens if info else 0,
+            cache_write=info.cache_write_tokens if info else 0,
+        )
         self.recovery_blocked = ""
         self._request_checkpoint = RequestCheckpoint()
         self.plan_store = InMemoryPlanStore()
         self.mcp = MCPState()
+
+    @property
+    def input_tokens(self) -> int:
+        return self.totals.input
+
+    @property
+    def output_tokens(self) -> int:
+        return self.totals.output
+
+    def _save_totals(self, info) -> None:
+        info.input_tokens = self.totals.input
+        info.output_tokens = self.totals.output
+        info.cache_read_tokens = self.totals.cache_read
+        info.cache_write_tokens = self.totals.cache_write
 
     def reset(self) -> None:
         if self.session:
@@ -249,11 +274,9 @@ class AgentRuntime:
                 )
         finally:
             # A cancelled/failed summary can still have incurred provider usage.
-            self.input_tokens += usage.input_tokens
-            self.output_tokens += usage.output_tokens
+            self.totals.add(usage)
             if self.session:
-                self.session.info.input_tokens = self.input_tokens
-                self.session.info.output_tokens = self.output_tokens
+                self._save_totals(self.session.info)
                 self.session.save_info()
         if not result.changed:
             return result
@@ -388,13 +411,8 @@ class AgentRuntime:
                     yield event
         except BaseException as error:
             resend_blocked = tools_started and self._request_checkpoint.messages is None
-            # Successful runs account for nested summary usage through result.usage.
-            # A failed next request must not hide the summary's already incurred cost.
-            self.input_tokens += self._compaction_usage.input_tokens
-            self.output_tokens += self._compaction_usage.output_tokens
             if saved:
-                saved.info.input_tokens = self.input_tokens
-                saved.info.output_tokens = self.output_tokens
+                self._save_totals(saved.info)
             self.inspections.settle(
                 "interrupted"
                 if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit))
@@ -451,14 +469,17 @@ class AgentRuntime:
                 saved.append("turn_completed", run_id=run_id, sync=True)
                 saved.info.status = "complete"
                 saved.info.turns = self.turns
-                saved.info.input_tokens = self.input_tokens
-                saved.info.output_tokens = self.output_tokens
+                self._save_totals(saved.info)
                 saved.save_info()
             else:
                 self.tree.consume({"kind": "turn_completed"})
                 self.tree.nodes[run_id].history = deepcopy(self.history)
 
         finally:
+            # The auto-compaction summarizer is its own agent run: its usage
+            # reaches neither `after_model_request` nor this run's result. It is
+            # reset per attempt, so a retry loop cannot double-count it.
+            self.totals.add(self._compaction_usage)
             self.context_history = None
 
     async def _stream(self, prompt: str | None, run_id: str) -> AsyncIterator[Event]:
@@ -514,7 +535,11 @@ class AgentRuntime:
                 run_id=run_id,
                 capabilities=(
                     ([StepPersistence(store=self.session.store)] if self.session else [])
-                    + [Steering(self.take_steering), self._request_checkpoint]
+                    + [
+                        Steering(self.take_steering),
+                        self._request_checkpoint,
+                        TokenAccounting(record=self.totals.add),
+                    ]
                     + ([AutoCompaction(self, run_id)] if self.auto_compact else [])
                 ),
                 # Explicitly disable the cap; omitting this restores the library default.
@@ -699,8 +724,6 @@ class AgentRuntime:
                     # recovers settled tool-boundary snapshots after failures.
                     self.history = result.all_messages()
                     self.turns += 1
-                    self.input_tokens += result.usage.input_tokens
-                    self.output_tokens += result.usage.output_tokens
                 if preview is not None:
                     if (update := preview.update(event, plan_items)) is not None:
                         yield update
