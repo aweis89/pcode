@@ -2,11 +2,21 @@ import json
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    ToolCallPart,
+    ToolCallPartDelta,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from pcode.agent import create_coder
 from pcode.code_mode import SANDBOXED_TOOLS
+from pcode.edit_preview import StreamingEditPreview
+from pcode.runtime import EditPreview
 from pcode.tool_display import label, result_detail, target
 
 
@@ -111,6 +121,30 @@ def test_snippets_display_the_tool_calls_they_make():
     # A snippet that does not parse still gets an honest size, not a wrong summary.
     assert target("run_code", {"code": "read_file(path="}) == "1 line"
     assert target("run_code", {}) == "code unavailable"
+
+
+def test_streaming_snippets_preview_only_complete_lines():
+    preview = StreamingEditPreview()
+    start = PartStartEvent(index=0, part=ToolCallPart("run_code", '{"code":"', tool_call_id="a"))
+    assert preview.update(start) == []
+    preview.updated.clear()
+    streamed = preview.update(
+        PartDeltaEvent(
+            index=0,
+            delta=ToolCallPartDelta(args_delta="await grep(pattern=\\u0027TODO\\u0027)\\nlen("),
+        )
+    )
+    assert streamed[-1] == EditPreview(
+        "edit-preview:0", "run_code", "await grep(pattern='TODO')\n", kind="code"
+    )
+    # An unterminated line only appears once the model has finished writing it.
+    assert "len(" not in streamed[-1].text
+    part = ToolCallPart(
+        "run_code", {"code": "await grep(pattern='TODO')\nlen(hits)"}, tool_call_id="a"
+    )
+    assert preview.update(PartEndEvent(index=0, part=part))[-1].text.endswith("len(hits)")
+    # The snippet leaves the box the moment it is dispatched for execution.
+    assert preview.update(FunctionToolCallEvent(part)) == [EditPreview("edit-preview:0")]
 
 
 def test_failed_snippets_report_the_sandbox_error():

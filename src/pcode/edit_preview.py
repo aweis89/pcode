@@ -62,7 +62,7 @@ class StreamingEditPreview:
             return clear
 
         part = self.parts[index]
-        if part.tool_name not in ("edit_file", "write_file"):
+        if part.tool_name not in ("edit_file", "write_file", "run_code"):
             return clear
         if isinstance(part.args, str) and len(part.args) > MAX_SOURCE * 2:
             self.blocked.add(index)
@@ -84,6 +84,8 @@ class StreamingEditPreview:
             return clear
         if not isinstance(complete, dict) or not isinstance(partial, dict):
             return clear
+        if part.tool_name == "run_code":
+            return clear + self._code_preview(index, partial, complete)
         path = complete.get("path")
         # Never expose content until the complete path is known and checked.
         permitted = isinstance(path, str) and not sensitive_path(path)
@@ -128,7 +130,29 @@ class StreamingEditPreview:
                     text = text[: text.rfind("\n") + 1]
                 lines.extend(prefix + line for line in text.splitlines())
         preview = EditPreview(f"edit-preview:{index}", edit_text(path), "\n".join(lines)[-8192:])
-        if preview != self.shown.get(index):
-            self.shown[index] = preview
-            clear.append(preview)
-        return clear
+        return clear + self._show(index, preview)
+
+    def _code_preview(self, index: int, partial: dict, complete: dict) -> list:
+        """Project a sandboxed snippet as it streams, before it is ever executed."""
+        code = partial.get("code")
+        if not isinstance(code, str) or len(code) > MAX_SOURCE:
+            if self.shown.pop(index, None) is not None:
+                return [EditPreview(f"edit-preview:{index}")]
+            return []
+        # Sanitize before clipping; an unfinished string exposes only whole lines.
+        text = edit_text(code)
+        if "code" not in complete:
+            text = text[: text.rfind("\n") + 1]
+        if not text:
+            # No complete line yet: an empty box would only flash open and shut.
+            return []
+        return self._show(
+            index,
+            EditPreview(f"edit-preview:{index}", "run_code", text[-8192:], kind="code"),
+        )
+
+    def _show(self, index: int, preview: EditPreview) -> list:
+        if preview == self.shown.get(index):
+            return []
+        self.shown[index] = preview
+        return [preview]
