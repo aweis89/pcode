@@ -1,4 +1,4 @@
-"""Append-only reminders for Meridian's stateful conversation transport."""
+"""Durable reminder helper and Meridian-specific limit warnings."""
 
 import re
 from dataclasses import replace
@@ -6,6 +6,7 @@ from dataclasses import replace
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai_harness.compaction import WarnNearLimits
 
+# Keep the persisted metadata key so existing session histories still deduplicate.
 _MARKER = "pcode_meridian_reminder"
 
 

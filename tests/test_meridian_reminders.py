@@ -12,6 +12,7 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem
 
+from pcode.agent import ANTHROPIC_CACHE_SETTINGS
 from pcode.meridian_reminders import MeridianLimitWarnings
 from pcode.planning import IdentifiedPlanning
 
@@ -64,7 +65,13 @@ def test_wire_prefix_tools_plan_changes_and_saved_resume(plan, warning, provider
                 caps = [IdentifiedPlanning(store=store)]
                 if warning:
                     caps.insert(0, MeridianLimitWarnings(max_context_tokens=1))
-                return Agent(model, capabilities=caps)
+                return Agent(
+                    model,
+                    capabilities=caps,
+                    model_settings=ANTHROPIC_CACHE_SETTINGS
+                    if provider_name == "anthropic"
+                    else None,
+                )
 
             agent = make_agent()
             calls = 0
@@ -91,11 +98,15 @@ def test_wire_prefix_tools_plan_changes_and_saved_resume(plan, warning, provider
                 await resumed.run("Continue", message_history=history)
 
         assert len(bodies) == 5
-        if provider_name == "anthropic":
-            # Direct Anthropic keeps upstream ephemeral behavior. Neither the
-            # plan reminder nor the limit warning is retained in its old slot.
+        if provider_name == "anthropic" and warning:
+            # Limit-warning behavior is unchanged in this planning-only fix;
+            # direct Anthropic still uses upstream ephemeral limit warnings.
             assert bodies[1]["messages"][: len(bodies[0]["messages"])] != bodies[0]["messages"]
             return
+        if provider_name == "anthropic":
+            assert all(
+                body["cache_control"] == {"type": "ephemeral", "ttl": "5m"} for body in bodies
+            )
         for before, after in zip(bodies, bodies[1:]):
             assert after["messages"][: len(before["messages"])] == before["messages"]
         text = json.dumps(bodies[-1]["messages"])
