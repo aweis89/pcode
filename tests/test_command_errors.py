@@ -235,8 +235,8 @@ def test_mirrored_command_failures_keep_only_their_summary_line_by_default():
     )
     transcript.tool_result(event)
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
-        "  ✗ Run · exit 1",
-        "    pytest",
+        "✗ Run · exit 1",
+        "  pytest",
     ]
 
 

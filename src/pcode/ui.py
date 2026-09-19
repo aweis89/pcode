@@ -1208,6 +1208,7 @@ class Transcript:
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
         self.log = TranscriptLog()
         self._replay_sink: list | None = None
+        self._block: str | None = None
 
     @property
     def replays_on_resize(self) -> bool:
@@ -1228,7 +1229,8 @@ class Transcript:
                 output.resize_replay = self.replay
 
     @recorded
-    def print(self, *objects, end="\n") -> None:
+    def print(self, *objects, end="\n", tool_line: bool = False) -> None:
+        """Write scrollback, keeping tool lines one block apart from other output."""
         # Resolve theme-dependent renderables again on every replay.
         objects = tuple(
             Markdown(obj.markup, code_theme=self.code_theme)
@@ -1238,6 +1240,24 @@ class Transcript:
             else obj
             for obj in objects
         )
+        block = "tools" if tool_line else "blank" if self._ends_blank(objects) else "other"
+        # Consecutive tool lines stay flush; entering or leaving that run gets a
+        # blank row, unless the preceding write already ended with one.
+        if self._block not in (None, "blank", block) and "tools" in (self._block, block):
+            self._write((), "\n")
+        self._block = block
+        self._write(objects, end)
+
+    @staticmethod
+    def _ends_blank(objects: tuple) -> bool:
+        """Report whether this write already leaves a blank row behind it.
+
+        A bare ``print()`` is the usual separator; thinking is the one
+        renderable here that pads itself, so only it needs naming.
+        """
+        return not objects or isinstance(objects[-1], ThinkingMarkdown)
+
+    def _write(self, objects: tuple, end: str) -> None:
         if self._replay_sink is not None:
             self._replay_sink.append((objects, end, False))
         elif self.output is not None:
@@ -1267,6 +1287,7 @@ class Transcript:
         """Project the retained log with current settings, without recording again."""
         sink = []
         self._replay_sink = sink
+        self._block = None
         self.log.recording = False
         try:
             if self.log.dropped:
@@ -1413,23 +1434,23 @@ class Transcript:
         )
         elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
         header = Text(
-            f"  {'✗' if event.failed else '✓'} {label(event.name)}{result}{elapsed}",
-            style="pcode.error" if event.failed else "pcode.accent",
+            f"{'✗' if event.failed else '✓'} {label(event.name)}{result}{elapsed}",
+            style="pcode.error" if event.failed else "pcode.thinking",
             no_wrap=True,
             overflow="ellipsis",
         )
         header.truncate(self.console.width, overflow="ellipsis")
-        self.print(header)
+        self.print(header, tool_line=True)
         if not event.command:
             return
         preview = Text(
-            "    " + command_preview(event.command),
-            style="pcode.muted",
+            "  " + command_preview(event.command),
+            style="pcode.thinking",
             no_wrap=True,
             overflow="ellipsis",
         )
         preview.truncate(self.console.width, overflow="ellipsis")
-        self.print(preview)
+        self.print(preview, tool_line=True)
 
     @recorded
     def events(self, events: tuple[Event, ...], *, show_tools: bool = False) -> None:
@@ -1472,17 +1493,18 @@ class Transcript:
                 self.print(
                     Text.assemble(
                         (
-                            f"  {'✗' if event.failed else '✓'} {label(event.name)}  ",
-                            "pcode.error" if event.failed else "pcode.accent",
+                            f"{'✗' if event.failed else '✓'} {label(event.name)}  ",
+                            "pcode.error" if event.failed else "pcode.thinking",
                         ),
-                        (plain(event.detail, limit=None), "pcode.muted"),
+                        (plain(event.detail, limit=None), "pcode.thinking"),
                         (
                             f"  {event.elapsed_seconds:.1f}s"
                             if event.elapsed_seconds is not None
                             else "",
-                            "pcode.muted",
+                            "pcode.thinking",
                         ),
-                    )
+                    ),
+                    tool_line=True,
                 )
 
     def help(self, registry: CommandRegistry) -> None:
