@@ -806,6 +806,37 @@ def test_single_running_tool_needs_no_box_above_the_editor(pane):
     assert input_rows(screen) == 1
 
 
+SPACING_SCRIPT = """
+import asyncio
+from pcode.app import PreviewApp
+from pcode.runtime import ToolStarted, ToolSummary
+
+class Runtime:
+    session = None
+
+    async def stream(self, prompt):
+        for i in range(1, 31):
+            yield ToolStarted("read_file", f"file_{i:02d}.py", str(i))
+            yield ToolSummary("read_file", f"file_{i:02d}.py", call_id=str(i))
+        yield ToolStarted("read_file", "SLOW_FILE", "31")
+        await asyncio.sleep(30)
+
+PreviewApp(model="test:local", runtime=Runtime()).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [SPACING_SCRIPT], indirect=True)
+def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "SLOW_FILE", running=True)
+    lines = screen.splitlines()
+    status = next(i for i, line in enumerate(lines) if "SLOW_FILE" in line)
+    assert lines[status].startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+    assert lines[status - 1].strip() == ""
+    assert "✓ Read  file_30.py" in lines[status - 2]
+
+
 IMMEDIATE_PROMPT_SCRIPT = """
 import asyncio
 from pcode.app import PreviewApp

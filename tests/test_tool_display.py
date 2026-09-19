@@ -169,6 +169,17 @@ def test_tool_lines_group_together_and_are_blank_separated_from_prose():
     ]
 
 
+def test_scrollback_reports_whether_the_live_panel_needs_its_own_blank_row():
+    from pcode.runtime import Message
+
+    transcript = Transcript(Console(file=StringIO(), width=80, color_system=None))
+    assert transcript.ends_blank
+    transcript.events((ToolSummary("read_file", "a.py · 2 lines"),))
+    assert not transcript.ends_blank
+    transcript.events((Message("Done."),))
+    assert transcript.ends_blank
+
+
 def test_tool_summary_lines_use_the_thinking_shade():
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=80, color_system="truecolor"))
