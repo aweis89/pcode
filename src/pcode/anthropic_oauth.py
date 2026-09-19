@@ -281,6 +281,21 @@ class StoredLogin:
         return AccessToken(token=tokens.access, expires_at=int(tokens.expires_at))
 
 
+class OAuthRefreshOnlyClient(AsyncAnthropic):
+    """Retain the SDK's one-shot token refresh, not its general retry policy.
+
+    These SDK hooks are covered by real-client mock-transport tests: setting
+    max_retries=0 also disables credential refresh after a rejected token.
+    """
+
+    def _should_retry(self, response):
+        return response.status_code == 401 and super()._should_retry(response)
+
+    def _should_retry_exception(self, error):
+        # Connection failures belong to the runtime's visible retry loop.
+        return False, None
+
+
 class AnthropicOAuthModel(SubscriptionOAuthWire, AnthropicModel):
     """Anthropic transport authenticated by pcode's own stored subscription login."""
 
@@ -299,10 +314,12 @@ class AnthropicOAuthModel(SubscriptionOAuthWire, AnthropicModel):
         read_tokens(login.path)
         # Do not inherit API keys, bearer tokens, or base URLs from the
         # environment: `credentials=` already suppresses credential env lookups.
-        client = AsyncAnthropic(
+        client = OAuthRefreshOnlyClient(
             credentials=login,
             base_url="https://api.anthropic.com",
             http_client=http_client,
+            # Only a rejected access token may retry inside the SDK.
+            max_retries=1,
         )
         super().__init__(
             model.removeprefix("anthropic:"),
