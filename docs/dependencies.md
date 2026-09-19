@@ -411,6 +411,10 @@ See [Anthropic effort](https://platform.claude.com/docs/en/build-with-claude/eff
 
 ### Anthropic prompt caching
 
+See [prompt caching and plan reminders](prompt-caching.md) for the upstream design
+history, why the durable-user-prompt anchor was insufficient for long tool loops,
+and the tradeoffs of pcode's append-on-change fix.
+
 Verified against Pydantic AI 2.45.0 and saved-session usage records: the Anthropic
 adapter adds no `cache_control` of its own. Without explicit settings an Anthropic
 conversation re-reads its whole prefix at full price on every request. `agent.model_settings`
