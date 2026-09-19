@@ -182,3 +182,16 @@ def test_informational_notices_are_shown_once_and_not_retained():
     assert project(transcript).strip() == "RETAINED"
     assert project(transcript).strip() == "RETAINED"
     assert not transcript.log.dropped
+
+
+def test_startup_banner_survives_a_redraw():
+    transcript = view()
+    transcript.welcome("test-model", "/tmp/workspace")
+    transcript.retained_note("Loaded repository instructions: AGENTS.md")
+    transcript.note("Command output in scrollback: off")
+    rebuilt = project(transcript)
+    assert "pcode" in rebuilt
+    assert "/tmp/workspace" in rebuilt
+    assert "Type / for commands" in rebuilt
+    assert "Loaded repository instructions: AGENTS.md" in rebuilt
+    assert "Command output in scrollback" not in rebuilt
