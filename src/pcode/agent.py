@@ -171,12 +171,7 @@ def create_agent(model: str, workspace: Path) -> Agent:
         from pcode.auth import anthropic_model
 
         auth_source = anthropic_auth_source()
-        if auth_source == "pi":
-            from pcode.pi_auth import PiAnthropicModel
-
-            # Explicit source selection: do not silently bill another credential.
-            resolved = PiAnthropicModel(model)
-        elif auth_source == "oauth":
+        if auth_source == "oauth":
             from pcode.anthropic_oauth import AnthropicOAuthModel
 
             resolved = AnthropicOAuthModel(model)
@@ -188,7 +183,7 @@ def create_agent(model: str, workspace: Path) -> Agent:
                 # Allow the terminal to open so /login is reachable without credentials.
                 defer_model_check = True
         else:
-            raise ValueError("PCODE_ANTHROPIC_AUTH must be api-key, oauth, or pi.")
+            raise ValueError("PCODE_ANTHROPIC_AUTH must be api-key or oauth.")
     return Agent(
         resolved,
         defer_model_check=defer_model_check,

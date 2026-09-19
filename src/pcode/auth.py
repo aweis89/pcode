@@ -1,8 +1,8 @@
 """Shared authentication helpers for Anthropic access.
 
 API-key access uses ordinary Pydantic AI construction. Subscription access
-(pcode's own browser sign-in, or an opt-in read of pi's credential) speaks to
-the Claude Code endpoint, which requires the wire markers defined here.
+(pcode's own browser sign-in) speaks to the Claude Code endpoint, which
+requires the wire markers defined here.
 """
 
 # Compatibility markers used by Claude subscription OAuth traffic, not API keys.

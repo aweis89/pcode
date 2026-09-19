@@ -99,7 +99,7 @@ def test_authorization_url_matches_the_pkce_authorization_request():
     assert fields["redirect_uri"] == "http://localhost:54545/callback"
     assert fields["code_challenge"] == challenge
     assert fields["code_challenge_method"] == "S256"
-    # This flow echoes the verifier back as state, as pi and Claude Code do.
+    # This flow echoes the verifier back as state, as Claude Code does.
     assert fields["state"] == verifier
     assert "user:inference" in fields["scope"]
 
@@ -408,8 +408,8 @@ def test_auth_source_prefers_the_stored_login_but_environment_wins(store, monkey
     assert anthropic_auth_source() == "oauth"
     monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "api-key")
     assert anthropic_auth_source() == "api-key"
-    monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "pi")
-    assert anthropic_auth_source() == "pi"
+    monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "oauth")
+    assert anthropic_auth_source() == "oauth"
 
 
 def test_stored_login_enables_the_anthropic_picker_without_reading_it(store, monkeypatch):

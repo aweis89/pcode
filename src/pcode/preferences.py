@@ -37,7 +37,7 @@ class Setting:
 
 
 SEND_MODES = ("steering", "queue", "interrupt")
-ANTHROPIC_AUTH_SOURCES = ("api-key", "oauth", "pi")
+ANTHROPIC_AUTH_SOURCES = ("api-key", "oauth")
 
 
 SETTINGS = {
