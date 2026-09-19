@@ -1194,6 +1194,7 @@ class Transcript:
     ) -> None:
         preferences = load_preferences() if preferences is None else preferences
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
+        self.tool_error_scrollback = preferences.get("tool_error_scrollback", "off") == "on"
         self.show_edits = preferences.get("edits", "show") == "show"
         self.command_scrollback = preferences.get("command_scrollback", "off") == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
@@ -1336,19 +1337,24 @@ class Transcript:
         )
 
     def streams_command(self, event: Event) -> bool:
-        """Report whether this settled tool will be mirrored into scrollback."""
-        return (
-            self.command_scrollback
-            and isinstance(event, ToolSummary)
-            and event.name in COMMAND_TOOLS
-        )
+        """Report whether this settled tool will be mirrored into scrollback.
+
+        Captured output is the bulky part, so mirroring a failed command also
+        needs the failure option; without it the completion still shows, as the
+        summary line a successful call would leave.
+        """
+        if not isinstance(event, ToolSummary) or event.name not in COMMAND_TOOLS:
+            return False
+        return self.command_scrollback and (self.tool_error_scrollback or not event.failed)
 
     def writes_tool_result(self, event: Event) -> bool:
         """Report whether this settled tool reaches scrollback at all.
 
         Every call the live panel drops is written here instead, except where
         something else already tells the story: the task panel owns successful
-        planning calls, and a shown diff owns successful edits.
+        planning calls, and a shown diff owns successful edits. Neither tells
+        the story of a failure, so a failed call is always written; only how
+        much of it, its summary line or its diagnostic, is configurable.
         """
         if not isinstance(event, ToolSummary):
             return False
@@ -1407,20 +1413,22 @@ class Transcript:
         )
         elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
         header = Text(
-            f"  {'!' if event.failed else '✓'} {label(event.name)}{result}{elapsed}",
-            style="pcode.accent",
+            f"  {'✗' if event.failed else '✓'} {label(event.name)}{result}{elapsed}",
+            style="pcode.error" if event.failed else "pcode.accent",
             no_wrap=True,
             overflow="ellipsis",
         )
+        header.truncate(self.console.width, overflow="ellipsis")
+        self.print(header)
+        if not event.command:
+            return
         preview = Text(
             "    " + command_preview(event.command),
             style="pcode.muted",
             no_wrap=True,
             overflow="ellipsis",
         )
-        header.truncate(self.console.width, overflow="ellipsis")
         preview.truncate(self.console.width, overflow="ellipsis")
-        self.print(header)
         self.print(preview)
 
     @recorded
@@ -1437,9 +1445,12 @@ class Transcript:
                 self.print()
             elif isinstance(event, ToolSummary):
                 if event.name in COMMAND_TOOLS:
-                    self.command_output(event)
+                    # Mirroring owns command completions. A failure whose
+                    # captured output is withheld still reports the call.
+                    if self.command_scrollback and not self.command_output(event):
+                        self.command_summary(event)
                     continue
-                if event.failed:
+                if event.failed and self.tool_error_scrollback:
                     detail = (
                         command_preview(event.command)
                         if event.command
@@ -1461,8 +1472,8 @@ class Transcript:
                 self.print(
                     Text.assemble(
                         (
-                            f"  {'!' if event.failed else '✓'} {label(event.name)}  ",
-                            "pcode.accent",
+                            f"  {'✗' if event.failed else '✓'} {label(event.name)}  ",
+                            "pcode.error" if event.failed else "pcode.accent",
                         ),
                         (plain(event.detail, limit=None), "pcode.muted"),
                         (

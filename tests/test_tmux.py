@@ -604,7 +604,10 @@ def test_paused_stream_stays_hidden_on_resize_without_more_tokens(pane):
 TOOLS_SCRIPT = """
 import asyncio
 from pcode.app import PreviewApp
+from pcode.preferences import save_preferences
 from pcode.runtime import TextDelta, ToolStarted, ToolSummary
+
+save_preferences(tool_error_scrollback="on")
 
 class Runtime:
     session = None

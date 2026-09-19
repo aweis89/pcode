@@ -71,8 +71,11 @@ def test_exceptional_tool_completion_flushes_prose_before_queued_diagnostic():
     import asyncio
     from unittest.mock import MagicMock
 
+    from pcode.preferences import save_preferences
     from pcode.runtime import Message, TextDelta
     from pcode.ui import TerminalOutput
+
+    save_preferences(tool_error_scrollback="on")
 
     class Runtime:
         session = None

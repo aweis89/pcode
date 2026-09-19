@@ -1404,15 +1404,29 @@ pcode config set error_scrollback_lines 40  # Positive integer; default 20
 ```
 
 This line limit also works through `/config` and applies on the next launch.
-Application errors and non-command tool failures remain visible, as do warnings
-and cancellation notices. Command failures follow command visibility below. Saved diagnostics are not disabled or trimmed
-by these display settings. Command diagnostics retain a separate safety bound of
-200 lines / 32,000 characters, after redaction.
+
+By default, a failed tool call does not write its diagnostic to scrollback. It
+keeps the same compact summary line a successful call leaves, marked `✗` in the
+error colour instead of `✓`, so the failed call stays visible without its log.
+Enable `tool_error_scrollback` for the full diagnostic:
+
+```sh
+pcode config set tool_error_scrollback on  # Failed-tool diagnostics (default off)
+```
+
+Command failures still follow command visibility below: with mirroring off they
+stay out of scrollback entirely, and with mirroring on they show their summary
+line, adding the captured output only once this option is on. Application
+errors remain visible either way, as do warnings and cancellation notices.
+Saved diagnostics are not disabled or trimmed by these display settings.
+Command diagnostics retain a separate safety bound of 200 lines / 32,000
+characters, after redaction.
 
 ### Command output in scrollback
 
 By default, commands stay in the mutable tool panel, including failures. Enable `command_scrollback` to mirror **every settled
-shell tool call and its captured output** into permanent terminal scrollback:
+shell tool call and its captured output** into permanent terminal scrollback
+(a failed call mirrors its output only with `tool_error_scrollback` on):
 
 ```sh
 pcode config set command_scrollback on        # Mirror commands and output (default off)
