@@ -10,6 +10,8 @@
 
 - `make test` skips the real-tmux regressions (they are 75% of the suite's runtime). Run `make test-all` before pushing anything touching layout, streaming, the editor, or the prompt. Do not parallelize the tmux tests: under `-n auto` they fail in bulk because their pane-paint deadlines expire, and even `-n 4`/`-n 8` flake.
 
+- `make test` is xdist-parallel, so it needs a stable tree for its duration: saving a source or test file mid-run yields bulk failures or a `Different tests were collected between gw0 and gwN` collection error, neither of which means the change is broken. Re-run on a quiet tree (or `uv run pytest -n0`) before believing a mass failure.
+
 - A PTY with `PROMPT_TOOLKIT_NO_CPR=1` does not exercise real prompt height: cursor-position reports can make the layout stretch into the remaining pane. Keep the real-tmux height regression tests, not just PTY startup/exit checks.
 - Harness's latest website can describe an unreleased Coder API and extras; verify the installed release's signatures/tool composition instead of assuming the website matches PyPI.
 
