@@ -32,16 +32,19 @@ def test_animation_elapsed_resize_and_cancel_after_idle(pane):
     capture(pane, "❯")
     time.sleep(0.3)
     pane("send-keys", "-t", "preview:0.0", "ANIMATING_PROMPT", "Enter")
+
+    def status_icon(screen):
+        return next(line[0] for line in screen.splitlines() if "WAITING_TOOL" in line)
+
     first = capture(pane, "WAITING_TOOL", running=True)
     first_time = float(re.search(r"· ([0-9.]+)s", first)[1])
-    first_icon = next(line[0] for line in first.splitlines() if "ANIMATING_PROMPT" in line)
+    first_icon = status_icon(first)
     deadline = time.monotonic() + 3
     while True:
         time.sleep(0.13)
         screen = capture(pane, "WAITING_TOOL", running=True)
         elapsed = float(re.search(r"· ([0-9.]+)s", screen)[1])
-        icon = next(line[0] for line in screen.splitlines() if "ANIMATING_PROMPT" in line)
-        if elapsed > first_time and icon != first_icon:
+        if elapsed > first_time and status_icon(screen) != first_icon:
             break
         assert time.monotonic() < deadline, screen
     pane("resize-window", "-t", "preview:0", "-x", "40")

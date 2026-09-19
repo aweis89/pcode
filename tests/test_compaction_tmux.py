@@ -58,4 +58,5 @@ def test_compaction_keeps_editor_height_and_cancels_with_draft(pane):
     screen = capture(pane, "Compaction cancelled")
     assert "keep this draft" in screen
     assert input_rows(screen) == 1
-    assert prompt_row(screen).startswith("■ ◈ Compacting context · cancelled")
+    # The row is live-only: once the work ends, the notice carries the outcome.
+    assert "◈ Compacting context" not in screen

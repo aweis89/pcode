@@ -60,7 +60,7 @@ def test_idle_refresh_stops_and_activity_restarts_it():
                 app._redraw()
                 await asyncio.sleep(0.15)
                 app.invalidate.assert_called_once()
-                activity.tools.interrupt_running()
+                activity.tools.clear()
                 app._redraw()
                 app.invalidate.reset_mock()
                 await asyncio.sleep(0.15)
