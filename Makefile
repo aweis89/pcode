@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test lint fmt cache-report harness-src brew-install brew-update brew-uninstall
+.PHONY: help install update uninstall run test test-tmux test-all lint fmt cache-report harness-src brew-install brew-update brew-uninstall
 
 HARNESS_DIR := tmp/pydantic-ai-harness
 HARNESS_URL := https://github.com/pydantic/pydantic-ai-harness.git
@@ -20,8 +20,13 @@ uninstall: ## Remove the `pcode` command
 run: ## Run from source without installing (make run ARGS="--demo")
 	uv run pcode $(ARGS)
 
-test: ## Run the test suite
-	uv run pytest
+test: ## Run the fast suite in parallel (real-tmux regressions skipped)
+	uv run pytest -n auto
+
+test-tmux: ## Run only the real-tmux regressions (serial: they time out under load)
+	uv run pytest --tmux -m tmux
+
+test-all: test test-tmux ## Run everything: fast suite in parallel, then tmux serially
 
 lint: ## Check formatting and lint rules
 	uv run ruff check .

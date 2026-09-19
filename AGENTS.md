@@ -8,6 +8,8 @@
 
 - Run `make harness-src` to get Harness upstream source, docs, tests, and examples at the pinned SHA under `tmp/pydantic-ai-harness` (gitignored), then read that instead of searching the web. It is idempotent and safe to run whenever you are unsure the checkout is current — see "Local Harness checkout" in the dependency guide.
 
+- `make test` skips the real-tmux regressions (they are 75% of the suite's runtime). Run `make test-all` before pushing anything touching layout, streaming, the editor, or the prompt. Do not parallelize the tmux tests: under `-n auto` they fail in bulk because their pane-paint deadlines expire, and even `-n 4`/`-n 8` flake.
+
 - A PTY with `PROMPT_TOOLKIT_NO_CPR=1` does not exercise real prompt height: cursor-position reports can make the layout stretch into the remaining pane. Keep the real-tmux height regression tests, not just PTY startup/exit checks.
 - Harness's latest website can describe an unreleased Coder API and extras; verify the installed release's signatures/tool composition instead of assuming the website matches PyPI.
 
