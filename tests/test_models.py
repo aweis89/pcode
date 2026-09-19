@@ -27,7 +27,7 @@ def test_current_provider_stays_visible():
     assert active_providers("test:local") == set()
 
 
-@pytest.mark.parametrize("source", ["api-key", "pi"])
+@pytest.mark.parametrize("source", ["api-key", "oauth"])
 def test_anthropic_configuration(monkeypatch, source):
     monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", source)
     if source == "api-key":
@@ -57,7 +57,7 @@ def test_codex_presence_not_contents(monkeypatch, tmp_path):
 
 def test_proxy_does_not_limit_providers(monkeypatch):
     monkeypatch.setenv("PCODE_LLM_PROXY", "http://localhost:8080")
-    monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "pi")
+    monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "oauth")
     monkeypatch.setenv("PCODE_MERIDIAN_BASE_URL", "http://localhost:8888")
     assert active_providers("openai-codex:custom") == {"openai-codex", "anthropic", "meridian"}
 

@@ -216,47 +216,9 @@ pcode -m anthropic:<model-id>   # then: /login
 
 For OpenAI Codex, continue to use `codex login`.
 
-### Reuse an existing pi Anthropic login
-
-Signing in above needs no other agent installed. If you would rather reuse a
-credential you already have in pi, select it explicitly:
-
-```sh
-make install
-env -u PCODE_LLM_PROXY PCODE_ANTHROPIC_AUTH=pi pcode -m anthropic:<model-id>
-```
-
-Alternatively, enter `/login pi` in an idle Anthropic session to switch its current
-model to pi authentication without discarding history. In offline preview this
-checks the credential; launch with the environment setting above to use a live
-model. There is no API-key entry UI; pcode's own credential storage holds only
-its own `/login` tokens, never pi's. For ordinary API-key access, set
-`ANTHROPIC_API_KEY` in your environment.
-Login is unavailable while a run or queued prompts are active.
-
-- Reads the `anthropic` entry in `~/.pi/agent/auth.json` at runtime. Honors
-  `PI_CODING_AGENT_DIR` for a custom pi directory. No pi credential file is read
-  unless you select pi authentication.
-- Supports a stored OAuth access token or literal API key. Does not execute pi's
-  shell-command/API-key expressions or resolve provider-specific environment maps.
-- Pi selection overrides `ANTHROPIC_API_KEY`. Missing, invalid,
-  or expired pi credentials produce an error, never a fallback to another account.
-- Uses OAuth Bearer authentication with pi-compatible beta headers and system
-  preamble; API keys retain ordinary API-key authentication. OAuth compatibility
-  follows [pi's transport](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/api/anthropic-messages.ts),
-  including its Claude Code wire identity markers. This is not an official
-  third-party OAuth integration, and server compatibility/entitlements can change.
-- Never copies credentials into pcode storage, changes pi's file, or uses its
-  refresh token. Re-reads the access credential for every request/retry. If it
-  expires, refresh it by using/logging in to pi, then retry in pcode. If pi changes
-  credential type, run `/login pi` again or restart pcode.
-- Sends model requests to `https://api.anthropic.com`; this adapter does not honor
-  `ANTHROPIC_BASE_URL`. Billing and model access remain those of the pi credential.
-
-Pi auth selection is process-local, not stored in sessions. Supply
-`PCODE_ANTHROPIC_AUTH=pi` again when resuming in a new process (or export it in your
-shell). Use `PCODE_ANTHROPIC_AUTH=api-key` or unset it for the normal environment API-key
-flow. Existing environment settings are not overwritten in your shell.
+There is no API-key entry UI; pcode's own credential storage holds only its own
+`/login` tokens. For ordinary API-key access, set `ANTHROPIC_API_KEY` in your
+environment. Login is unavailable while a run or queued prompts are active.
 
 ### Choose a model in the terminal
 
@@ -270,9 +232,9 @@ type its full `provider:model-id` (for example `anthropic:claude-opus-5`).
 The picker currently supports configured **Anthropic** and **OpenAI Codex** providers:
 
 - The current provider is included even when using a custom model ID.
-- Anthropic is enabled by a stored `/login` credential, `ANTHROPIC_API_KEY`, or
-  `PCODE_ANTHROPIC_AUTH=pi`. Detection checks for the stored file's presence only:
-  opening the picker never reads pcode's or pi's credentials.
+- Anthropic is enabled by a stored `/login` credential or `ANTHROPIC_API_KEY`.
+  Detection checks for the stored file's presence only: opening the picker never
+  reads pcode's credentials.
 - Codex is enabled when its CLI credential file exists (`CODEX_HOME` is honored).
   Opening the picker checks file presence only, not its contents or validity.
 - `PCODE_LLM_PROXY` applies only to Codex and does not restrict model selection.
@@ -657,8 +619,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   backgrounds and text, with reverse-video selection highlights. They follow your
   terminal background automatically, independently of `/theme` and `/colors`.
 - `/help`: command list and keyboard shortcuts.
-- `/login`: sign in to Anthropic in a browser (`/login pi` reuses pi's credential);
-  `/logout` removes pcode's stored login. Both require an idle conversation.
+- `/login`: sign in to Anthropic in a browser; `/logout` removes pcode's stored login. Both require an idle conversation.
 - `/model`: searchable model picker for configured providers (keeps the conversation;
   applies from the next request when chosen mid-run).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
@@ -1042,7 +1003,7 @@ environment rather than the JSON file.
 ### OAuth sign-in
 
 Remote servers can use the browser-based OAuth support built into Pydantic AI and
-FastMCP. No separate auth tool, Pi token import, or custom OAuth flow is needed:
+FastMCP. No separate auth tool or custom OAuth flow is needed:
 
 ```json
 {
@@ -1077,8 +1038,6 @@ no headless/device-code login command.
   creates a fresh OAuth client and may require browser sign-in again. Closing a
   turn's connection does not discard the enabled client's tokens. No OAuth tokens
   are written to pcode's configuration, session files, or a persistent token store.
-- Pi's `"auth": "oauth"` server definitions are compatible, but Pi's saved OAuth
-  credentials and approvals are not imported. This is a separate authorization.
 - Do not combine OAuth with an `Authorization` header. Non-auth headers may be used
   alongside OAuth. For a static bearer token, continue using `headers` with an
   environment variable reference instead of `auth`.

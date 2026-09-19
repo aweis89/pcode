@@ -692,11 +692,7 @@ def error_message(error: Exception) -> str:
     if name == "UserError" and "ANTHROPIC_API_KEY" in str(error):
         # pcode defers the model check so /login stays reachable without a
         # credential; the failure then surfaces here, on the first prompt.
-        return (
-            "No Anthropic credential is selected. Run `/login` (anthropic or pi), "
-            "or start pcode with PCODE_ANTHROPIC_AUTH=pi, "
-            "or set ANTHROPIC_API_KEY."
-        )
+        return "No Anthropic credential is selected. Run `/login`, or set ANTHROPIC_API_KEY."
     if name == "CredentialsRefreshError":
         # Recognize only fixed public error codes, never echo token-endpoint bodies.
         for code in (

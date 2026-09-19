@@ -111,9 +111,9 @@ class PreviewApp:
         for command in (
             Command(
                 "/login",
-                "Sign in to Anthropic in a browser (/login pi reuses pi's login)",
+                "Sign in to Anthropic in a browser",
                 self.login,
-                ("anthropic", "pi"),
+                ("anthropic",),
             ),
             Command("/logout", "Remove pcode's stored Anthropic login", self.logout),
             Command(
@@ -515,8 +515,8 @@ class PreviewApp:
         # Signing in stores a credential; it does not require the conversation to
         # already be on Anthropic. A non-Anthropic session keeps its own model.
         source = argument.strip() or "anthropic"
-        if source not in {"anthropic", "pi"}:
-            self.transcript.note("Usage: /login [anthropic | pi]")
+        if source != "anthropic":
+            self.transcript.note("Usage: /login [anthropic]")
             return
         self.login_requested = source
 
@@ -544,11 +544,8 @@ class PreviewApp:
         )
 
     async def perform_login(self) -> None:
-        source, self.login_requested = self.login_requested, None
-        if source == "pi":
-            await self.login_pi()
-        else:
-            await self.login_anthropic()
+        self.login_requested = None
+        await self.login_anthropic()
 
     async def login_anthropic(self) -> None:
         from pcode.anthropic_oauth import AnthropicOAuthModel, credentials_path, login
@@ -582,32 +579,6 @@ class PreviewApp:
             self.transcript.error(str(error))
         except Exception:
             self.transcript.error("Anthropic sign-in failed. No credential details were logged.")
-
-    async def login_pi(self) -> None:
-        self.login_requested = None
-        from pcode.auth import LoginError
-        from pcode.pi_auth import PiAnthropicModel, pi_auth_path, read_pi_credential
-
-        try:
-            if self.model:
-                model = await asyncio.to_thread(PiAnthropicModel, self.model)
-                self.runtime.agent.model = model
-            else:
-                await asyncio.to_thread(read_pi_credential, pi_auth_path())
-            os.environ["PCODE_ANTHROPIC_AUTH"] = "pi"
-            self.persist_defaults(anthropic_auth="pi")
-            self.transcript.note(
-                "Using pi's Anthropic credential (read-only). "
-                "Refresh/login in pi when it expires; pcode never writes pi's auth file."
-            )
-            self.transcript.note(
-                "Future launches reuse pi while its auth file exists. "
-                "Set PCODE_ANTHROPIC_AUTH=api-key to opt back out."
-            )
-        except LoginError as error:
-            self.transcript.error(str(error))
-        except Exception:
-            self.transcript.error("Could not use pi login. No credential details were logged.")
 
     def tools(self, argument: str) -> None:
         self.inspector_requested = argument
@@ -1262,7 +1233,7 @@ class PreviewApp:
             return
         self.transcript.warning(
             "No Anthropic credential is selected, so prompts will fail. "
-            "Run /login (anthropic or pi), or restart with ANTHROPIC_API_KEY set."
+            "Run /login, or restart with ANTHROPIC_API_KEY set."
         )
 
     async def run_async(self) -> None:

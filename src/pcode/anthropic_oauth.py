@@ -87,7 +87,7 @@ def have_credentials(path: Path | None = None) -> bool:
 
 
 def anthropic_auth_source() -> str:
-    """Resolve which Anthropic credential to use: api-key, oauth, or pi.
+    """Resolve which Anthropic credential to use: api-key or oauth.
 
     `PCODE_ANTHROPIC_AUTH` is authoritative when set. Otherwise the source that
     `/login` last selected applies, then pcode's own stored sign-in, so a login
@@ -102,15 +102,7 @@ def anthropic_auth_source() -> str:
     from pcode.preferences import load_preferences
 
     saved = load_preferences().get("anthropic_auth")
-    if saved == "pi":
-        from pcode.pi_auth import pi_auth_path
-
-        try:
-            if pi_auth_path().is_file():
-                return "pi"
-        except OSError:
-            pass
-    elif saved == "api-key":
+    if saved == "api-key":
         return "api-key"
     return "oauth" if have_credentials() else "api-key"
 
@@ -345,7 +337,7 @@ def authorization_url(challenge: str, state: str, port: int) -> str:
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             # This flow echoes the verifier back as `state`; the callback and the
-            # token exchange both compare against it, as pi and Claude Code do.
+            # token exchange both compare against it, as Claude Code does.
             "state": state,
         }
     )

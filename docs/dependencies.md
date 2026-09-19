@@ -188,8 +188,7 @@ FastMCP resolves it to `fastmcp.client.auth.OAuth`. Consult
 `mcp/client/auth/oauth2.py`. In 4.0.4, default storage is **in-memory**, not disk;
 the helper manages browser authorization, PKCE, callback validation, and refresh.
 Do not assume older FastMCP documentation about persistent token caches applies.
-Pcode intentionally uses that default rather than reading Pi credentials or adding
-a credential store. The slim install omits `websockets`, but FastMCP 4.0.4's
+Pcode intentionally uses that default rather than adding a credential store. The slim install omits `websockets`, but FastMCP 4.0.4's
 callback server explicitly selects Uvicorn's `websockets-sansio` implementation.
 Pcode adds `websockets>=15.0.1,<17` (verified with 16.1.1) so browser callbacks
 actually start; mocked OAuth exchange tests alone would miss this dependency.
@@ -221,29 +220,22 @@ disabled servers must not enter the agent's toolset collection at all.
 `src/pcode/anthropic_oauth.py` owns pcode's own `/login`: PKCE (S256)
 authorization code, loopback callback, token exchange/refresh, an owner-only
 credential file, and the `AnthropicOAuthModel` transport. `src/pcode/auth.py`
-holds the Claude Code wire markers shared with the pi adapter
-(`SubscriptionOAuthWire`, `_subscription_oauth`); `src/pcode/pi_auth.py` remains
-the read-only reuse path and re-exports those markers.
+holds the Claude Code wire markers (`SubscriptionOAuthWire`,
+`_subscription_oauth`).
 
-The flow parameters are not published API. They were verified against two
-independent implementations rather than copied from a blog post:
+The flow parameters are not published API. They were verified against
+independent implementations rather than copied from a blog post, including
+[modelbridge's `oauth/claude.rs`](https://docs.rs/modelbridge/latest/src/modelbridge/oauth/claude.rs.html).
 
-- Installed pi 0.85.1 (`brew --prefix`/`Cellar/pi-coding-agent/<version>/libexec/
-  lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/
-  pi-ai/dist/auth/oauth/anthropic.js`, plus `pkce.js`), and
-  [pi's source](https://github.com/earendil-works/pi/blob/main/packages/ai/src/auth/oauth/anthropic.ts).
-- A second implementation with a different callback port,
-  [modelbridge's `oauth/claude.rs`](https://docs.rs/modelbridge/latest/src/modelbridge/oauth/claude.rs.html).
-
-Both use the public Claude Code `client_id`, `https://claude.ai/oauth/authorize`
+They use the public Claude Code `client_id`, `https://claude.ai/oauth/authorize`
 with `code=true` and `code_challenge_method=S256`, and echo the PKCE verifier
 back as `state` (the callback and the token exchange both compare against it).
 Their differing loopback ports (53692 vs 54545) are the evidence that the
 redirect port is not fixed; pcode defaults to 54545 with
 `PCODE_OAUTH_CALLBACK_PORT` as the override. Use the current token endpoint,
 `https://platform.claude.com/v1/oauth/token`: `console.anthropic.com` is the
-older host still present in third-party code. Re-verify against installed pi on
-upgrades; entitlements and server behavior can change without notice.
+older host still present in third-party code. Re-verify on upgrades;
+entitlements and server behavior can change without notice.
 
 Installed Anthropic SDK 1.6.0 provides a **public** async credentials hook, so no
 private client override is needed: `AsyncAnthropic(credentials=provider)` where
@@ -318,9 +310,9 @@ consumers and is capped by known input/maximum limits.
   `XDG_CACHE_HOME` for 24 hours; retain stale data on failure.
 - Anthropic: [Models API](https://platform.claude.com/docs/en/api/models),
   `GET /v1/models/{model}`, fields `max_input_tokens` and `max_tokens` (nullable).
-  Use the actual SDK client to preserve base URL, auth and pi credential rotation.
-  Pi OAuth needs its existing beta headers and must not borrow direct-API fallback
-  limits. This does not imply official support for third-party subscription use.
+  Use the actual SDK client to preserve base URL, auth and credential rotation.
+  Subscription OAuth needs its existing beta headers and must not borrow
+  direct-API fallback limits. This does not imply official support for third-party subscription use.
 - Codex: [first-party models endpoint implementation](https://github.com/openai/codex/blob/f1affbac/codex-rs/codex-api/src/endpoint/models.rs),
   `GET /models?client_version=…` relative to the provider's Codex base URL.
   The live backend filters model availability by version: 0.99.0 omitted
@@ -336,7 +328,7 @@ consumers and is capped by known input/maximum limits.
   refresh, and one-shot 401 replay; use that same SDK client, including its proxy.
   Verified `AsyncOpenAI.get` / `AsyncAnthropic.get` accept `cast_to=dict[str, Any]`
   and per-request `timeout`, `max_retries`, headers and query parameters. Bare
-  `cast_to=dict` fails in installed Anthropic 1.6.0. Do not clone pi's custom SDK
+  `cast_to=dict` fails in installed Anthropic 1.6.0. Do not clone a custom SDK
   client with `with_options`, which requires constructor arguments it cannot infer.
 
 Native metadata is kept in memory per exact model instance, not in a shared
@@ -401,7 +393,7 @@ readback, and spill-failure fallback tests in `tests/test_tool_output_limits.py`
 ### Reasoning effort
 
 `preferences.apply_effort` uses `openai_reasoning_effort` for OpenAI/Codex and
-`anthropic_effort` for Anthropic/Meridian (including the pi-auth adapter).
+`anthropic_effort` for Anthropic/Meridian.
 Verified Pydantic AI 2.43.0's `AnthropicModelSettings.anthropic_effort` and
 `AnthropicModel._build_output_config` send `output_config.effort` without changing
 thinking settings. The model profile's `anthropic_supports_xhigh_effort` selects
@@ -512,7 +504,7 @@ effort changes; event persistence and terminal visibility are covered separately
 
 ### Anthropic thinking requests
 
-For direct `anthropic:` routes (API-key and pi authentication), `show_thinking=on`
+For direct `anthropic:` routes (API-key and OAuth authentication), `show_thinking=on`
 now also opts into thinking generation on the next turn. `preferences.apply_thinking`
 uses the installed model profile's `anthropic_supports_adaptive_thinking` flag:
 adaptive models receive `anthropic_thinking={"type": "adaptive", "display": "summarized"}`;
@@ -532,8 +524,8 @@ and Ctrl+T apply the same policy. Meridian remains display-only and still requir
 proxy-side Thinking Passthrough; never change its global settings automatically.
 
 `tests/test_anthropic_thinking.py` checks serialized adaptive/budgeted requests,
-real Anthropic SSE decoding into readable thinking events with both direct and
-pi adapters, off/on/off transitions, preserved effort, deferred login, switching,
+real Anthropic SSE decoding into readable thinking events with both API-key and
+OAuth transports, off/on/off transitions, preserved effort, deferred login, switching,
 and resume. Installed Anthropic SDK 1.6.0 accepts `display`, and Pydantic AI
 2.43.0's `_translate_thinking` passes that dictionary through unchanged. Explicit
 `summarized` is important for models whose API default omits readable thinking. See

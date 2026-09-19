@@ -1,7 +1,6 @@
 """Exercise the real SDK with synthetic responses, never live credentials."""
 
 import asyncio
-import json
 import time
 
 import httpx2
@@ -12,21 +11,17 @@ from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pcode.anthropic_oauth import AnthropicOAuthModel, OAuthTokens, write_tokens
 from pcode.auth import anthropic_model
 from pcode.live import AgentRuntime, error_message
-from pcode.pi_auth import PiAnthropicModel
 
 
 def build_model(source, client, tmp_path):
     if source == "api-key":
         return anthropic_model("anthropic:test-model", "synthetic-key", http_client=client)
     path = tmp_path / "credential.json"
-    if source == "oauth":
-        write_tokens(path, OAuthTokens("synthetic-access", "synthetic-refresh", time.time() + 3600))
-        return AnthropicOAuthModel("anthropic:test-model", path=path, http_client=client)
-    path.write_text(json.dumps({"anthropic": {"type": "api_key", "key": "synthetic-key"}}))
-    return PiAnthropicModel("anthropic:test-model", path=path, http_client=client)
+    write_tokens(path, OAuthTokens("synthetic-access", "synthetic-refresh", time.time() + 3600))
+    return AnthropicOAuthModel("anthropic:test-model", path=path, http_client=client)
 
 
-@pytest.mark.parametrize("source", ["api-key", "oauth", "pi"])
+@pytest.mark.parametrize("source", ["api-key", "oauth"])
 @pytest.mark.parametrize("status", [400, 429, 500, 529])
 def test_http_errors_surface_without_sdk_backoff(source, status, tmp_path):
     requests = []
@@ -60,7 +55,7 @@ def test_http_errors_surface_without_sdk_backoff(source, status, tmp_path):
     assert notices == []
 
 
-@pytest.mark.parametrize("source", ["api-key", "oauth", "pi"])
+@pytest.mark.parametrize("source", ["api-key", "oauth"])
 @pytest.mark.parametrize("retries", [0, 1])
 def test_transport_retries_are_owned_and_announced_by_runtime(source, retries, tmp_path):
     requests = []
