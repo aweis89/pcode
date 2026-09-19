@@ -508,3 +508,18 @@ def test_logout_removes_the_stored_login(store, monkeypatch):
     assert "PCODE_ANTHROPIC_AUTH" not in __import__("os").environ
     assert "Removed pcode's stored Anthropic login" in buffer.getvalue()
     assert delete_tokens(store) is False
+
+
+def test_callback_page_is_self_contained_and_escapes_its_text():
+    from pcode.oauth_pages import callback_page
+
+    ok = callback_page("Signed in", "You can close this tab.", ok=True)
+    bad = callback_page("Sign-in failed", "<script>alert(1)</script>", ok=False)
+
+    # One request, one document: nothing may be fetched after the server stops.
+    for page in (ok, bad):
+        assert page.startswith("<!doctype html>")
+        assert "<link" not in page and "src=" not in page and "http://" not in page
+    assert "#10b981" in ok and "#ef4444" in bad
+    assert "<script>" not in bad
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in bad
