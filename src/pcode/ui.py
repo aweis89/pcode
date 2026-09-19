@@ -11,6 +11,7 @@ from time import monotonic
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app, in_terminal
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.completion import merge_completers
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Always, Condition, has_focus, is_searching, vi_mode
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
@@ -34,6 +35,7 @@ from rich.theme import Theme
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
+from pcode.file_refs import FileReferenceCompleter, reference_fragment
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
@@ -703,6 +705,7 @@ def create_prompt(
     *,
     activity: Activity | None = None,
     transcript: "Transcript | None" = None,
+    workspace=None,
     on_submit=None,
     on_cancel=None,
     on_effort=None,
@@ -822,11 +825,15 @@ def create_prompt(
         prompt_continuation=lambda width, line, soft: [("class:prompt", "  " if soft else "· ")],
         multiline=True,
         erase_when_done=True,
-        completer=SlashCompleter(registry),
+        completer=merge_completers([SlashCompleter(registry), FileReferenceCompleter(workspace)]),
         complete_while_typing=Condition(
             lambda: (
-                get_app().current_buffer.text.startswith("/")
-                and "\n" not in get_app().current_buffer.text
+                (
+                    get_app().current_buffer.text.startswith("/")
+                    and "\n" not in get_app().current_buffer.text
+                )
+                or reference_fragment(get_app().current_buffer.document.text_before_cursor)
+                is not None
             )
         ),
         reserve_space_for_menu=0,

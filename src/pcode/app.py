@@ -1799,6 +1799,7 @@ class PreviewApp:
             self.registry,
             activity=self.activity,
             transcript=self.transcript,
+            workspace=self.workspace,
             on_submit=submit,
             on_cancel=cancel,
             on_tasks=self.set_show_tasks,
