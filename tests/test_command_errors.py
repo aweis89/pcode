@@ -1,4 +1,5 @@
 import asyncio
+import re
 from dataclasses import asdict
 from io import StringIO
 
@@ -142,19 +143,26 @@ def test_command_errors_reach_live_events_and_saved_transcript(tmp_path, mode):
 
 
 @pytest.mark.parametrize("command", ["", "pytest -q"])
-def test_failed_command_summary_uses_semantic_error_color(command):
+def test_failed_command_block_keeps_the_ordinary_title_color(command):
+    """A non-zero exit is routine: it is marked, not coloured like a crash."""
     from pcode.preferences import save_preferences
 
     save_preferences(command_scrollback="on", tool_error_scrollback="on")
-    stream = StringIO()
-    transcript = Transcript(Console(file=stream, force_terminal=True, color_system="truecolor"))
-    transcript.events(
-        (ToolSummary("run_command", "pytest -q → exit 1", failed=True, command=command),)
-    )
-    output = stream.getvalue()
+
+    def render(failed: bool) -> str:
+        stream = StringIO()
+        transcript = Transcript(Console(file=stream, force_terminal=True, color_system="truecolor"))
+        transcript.events(
+            (ToolSummary("run_command", "pytest -q → exit 1", failed=failed, command=command),)
+        )
+        return stream.getvalue()
+
+    output = render(True)
     assert "✗ Run failed" in output
     assert "pytest -q" in Text.from_ansi(output).plain
-    assert "\x1b[1;31m" in output
+    assert "\x1b[1;31m" not in output
+    codes = re.compile(r"\x1b\[[0-9;]*m")
+    assert codes.findall(output) == codes.findall(render(False))
 
 
 @pytest.mark.parametrize("limit", [1, 3, 20, 40])

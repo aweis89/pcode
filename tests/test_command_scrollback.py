@@ -301,17 +301,22 @@ def test_command_replay_uses_current_theme_and_output_budget():
     assert block.command == "echo hi"
 
 
-def test_command_highlighting_and_failure_color_do_not_style_output_as_code():
+def test_command_highlighting_and_failure_title_do_not_style_output_as_code():
     from rich.text import Text
 
     from pcode.command_transcript import CommandTranscript
 
     view, _ = transcript()
     block = CommandTranscript("echo '$HOME'", "[bold]literal[/bold]", "Run", failed=True)
+    succeeded = CommandTranscript("echo '$HOME'", "out", "Run")
     with view.console.use_theme(view.rich_theme):
         parts = list(block.__rich_console__(view.console, view.console.options))
         assert isinstance(parts[1], Text)
-        assert parts[1].style == "pcode.error"
+        # A failed command reads the same as a successful one; only ✗ differs.
+        assert parts[1].style == "pcode.accent"
+        assert parts[1].plain.startswith("✗ Run failed")
+        headings = list(succeeded.__rich_console__(view.console, view.console.options))
+        assert headings[1].style == parts[1].style
         segments = list(view.console.render(block))
     command_segments = [segment for segment in segments if "$HOME" in segment.text]
     assert command_segments and command_segments[0].style.color is not None
