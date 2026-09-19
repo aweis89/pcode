@@ -66,6 +66,7 @@ class Report:
     requests: list[Request]
     reminders: list[str]
     prefix_rewrites: int
+    delegated: list[Request] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
 
     @property
@@ -79,14 +80,14 @@ class Report:
         return totals["read"] / totals["total_input"] if totals["total_input"] else 0.0
 
 
-def _responses(database: Path) -> Iterator[dict]:
+def _responses(database: Path, *, delegated: bool | None = None) -> Iterator[dict]:
     """Yield each model response once, in order.
 
     Snapshots hold cumulative history, so the same response appears in many of
     them; `provider_response_id` deduplicates without reading any content.
     """
     seen: dict[object, dict] = {}
-    for messages in _snapshots(database):
+    for messages in _snapshots(database, delegated=delegated):
         for message in messages:
             if message.get("kind") == "response" and message.get("model_name"):
                 key = message.get("provider_response_id") or (
@@ -97,10 +98,19 @@ def _responses(database: Path) -> Iterator[dict]:
     yield from sorted(seen.values(), key=lambda m: m.get("timestamp") or "")
 
 
-def _snapshots(database: Path) -> Iterator[list[dict]]:
+def _snapshots(database: Path, *, delegated: bool | None = None) -> Iterator[list[dict]]:
+    """Yield snapshot histories, optionally only parent or only delegated runs.
+
+    Sub-agent runs share the session's store and are marked by `parent_run_id`.
+    Their history is a different conversation, so mixing the two would report a
+    prefix rewrite on every hand-off.
+    """
+    query = "SELECT messages FROM snapshots"
+    if delegated is not None:
+        query += f" WHERE parent_run_id IS {'NOT NULL' if delegated else 'NULL'}"
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
-        for (raw,) in connection.execute("SELECT messages FROM snapshots ORDER BY seq"):
+        for (raw,) in connection.execute(f"{query} ORDER BY seq"):
             yield json.loads(raw)
     except sqlite3.DatabaseError as error:
         raise SessionError(f"Unreadable step store: {error}") from None
@@ -128,7 +138,7 @@ def _message_digest(message: dict) -> str:
     )
 
 
-def _count_prefix_rewrites(database: Path) -> int:
+def _count_prefix_rewrites(database: Path, *, delegated: bool | None = None) -> int:
     """Count snapshots that changed settled history instead of appending to it.
 
     Append-only history is what keeps a provider's cached prefix reusable, and
@@ -142,7 +152,7 @@ def _count_prefix_rewrites(database: Path) -> int:
     """
     rewrites = 0
     previous: list[str] = []
-    for messages in _snapshots(database):
+    for messages in _snapshots(database, delegated=delegated):
         current = [_message_digest(message) for message in messages]
         settled = previous[:-2]
         if settled and len(current) >= len(settled) and current[: len(settled)] != settled:
@@ -166,9 +176,9 @@ def _plan_reminders(database: Path) -> list[str]:
     return reminders
 
 
-def _requests(database: Path) -> list[Request]:
+def _requests(database: Path, *, delegated: bool | None = None) -> list[Request]:
     requests = []
-    for index, message in enumerate(_responses(database)):
+    for index, message in enumerate(_responses(database, delegated=delegated)):
         usage = message.get("usage") or {}
         details = usage.get("details") or {}
         requests.append(
@@ -232,7 +242,11 @@ def analyze(directory: Path) -> Report:
     database = directory / "steps.sqlite3"
     if not database.exists():
         raise SessionError("No step store in this session.")
-    requests = _requests(database)
+    # Delegated runs share the store but are a separate conversation: scoring
+    # them together would report a prefix rewrite at every hand-off, and a
+    # sub-agent's caching is worth judging on its own.
+    delegated = _requests(database, delegated=True)
+    requests = _requests(database, delegated=False)
     reminders = _plan_reminders(database)
     report = Report(
         session=info.get("id", directory.name),
@@ -240,7 +254,8 @@ def analyze(directory: Path) -> Report:
         updated=info.get("updated", "")[:19],
         requests=requests,
         reminders=reminders,
-        prefix_rewrites=_count_prefix_rewrites(database),
+        prefix_rewrites=_count_prefix_rewrites(database, delegated=False),
+        delegated=delegated,
     )
     if not requests:
         report.findings.append(Finding("info", "No model requests recorded."))
@@ -275,6 +290,13 @@ def analyze(directory: Path) -> Report:
                 "history: deduplication is not matching previously sent text.",
             )
         )
+    if delegated:
+        # A sub-agent inherits the parent's model but not its settings, so this
+        # is the check that a delegated run is asking for caching at all.
+        report.findings.extend(
+            Finding(finding.level, f"delegated: {finding.message}")
+            for finding in _reuse_findings(delegated)
+        )
     return report
 
 
@@ -286,6 +308,14 @@ def render(report: Report, *, verbose: bool = False) -> str:
         f"read={totals['read']:,}  write={totals['write']:,}  out={totals['output']:,}  "
         f"read share={report.read_share:.1%}",
     ]
+    if report.delegated:
+        child = Report("", "", "", report.delegated, [], 0)
+        child_totals = child.totals
+        lines.append(
+            f"  delegated: requests={len(report.delegated)}  "
+            f"input={child_totals['total_input']:,}  read={child_totals['read']:,}  "
+            f"write={child_totals['write']:,}  read share={child.read_share:.1%}"
+        )
     if report.reminders:
         lines.append(
             f"  plan reminders={len(report.reminders)} distinct={len(set(report.reminders))}"

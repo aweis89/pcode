@@ -12,7 +12,7 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem
 
-from pcode.agent import ANTHROPIC_CACHE_SETTINGS
+from pcode.cache_settings import ANTHROPIC_CACHE_SETTINGS
 from pcode.meridian_reminders import MeridianLimitWarnings
 from pcode.planning import IdentifiedPlanning
 
