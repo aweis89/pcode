@@ -45,6 +45,56 @@ def test_discovery_reads_only_frontmatter(tmp_path):
     assert "Secret body" not in skill_prompt(skill, "")
 
 
+def test_user_skill_dir_is_searched_by_default(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    path = home / ".agents" / "skills" / "review" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\ndescription: Handles review.\n---\n")
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    (skill,) = discover_skills(workspace)
+    # Outside the workspace, the model needs the absolute path to read it.
+    assert skill.path == str(path)
+    assert skill.description == "Handles review."
+
+
+def test_configured_dirs_replace_the_defaults(tmp_path):
+    write_skill(tmp_path, ".agents", "ignored")
+    extra = tmp_path / "team" / "skills" / "deploy"
+    extra.mkdir(parents=True)
+    (extra / "SKILL.md").write_text("Ship it.")
+    save_preferences(skill_dirs="team/skills")
+
+    skills = {skill.name: skill for skill in discover_skills(tmp_path)}
+    # The asset roots are always scanned; only the configured list is replaced.
+    assert sorted(skills) == ["deploy", "ignored"]
+    assert skills["deploy"].path == "team/skills/deploy/SKILL.md"
+
+
+def test_workspace_skills_shadow_user_skills(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    user = tmp_path / "home" / ".agents" / "skills" / "review"
+    user.mkdir(parents=True)
+    (user / "SKILL.md").write_text("User copy.")
+    workspace = tmp_path / "repo"
+    write_skill(workspace, ".claude", "review")
+
+    (skill,) = discover_skills(workspace)
+    assert skill.path == ".claude/skills/review/SKILL.md"
+
+
+def test_empty_skill_dirs_keeps_only_the_asset_roots(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    user = tmp_path / "home" / ".agents" / "skills" / "review"
+    user.mkdir(parents=True)
+    (user / "SKILL.md").write_text("User copy.")
+    save_preferences(skill_dirs="")
+
+    assert discover_skills(tmp_path / "repo") == []
+
+
 def test_discovery_without_frontmatter_and_across_roots(tmp_path):
     write_skill(tmp_path, ".claude", "shared", frontmatter=False)
     write_skill(tmp_path, ".agents", "shared")
