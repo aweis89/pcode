@@ -718,14 +718,9 @@ plus untracked, honoring `.gitignore`), or a directory walk that skips hidden
 and build directories outside a Git checkout, and is refreshed at most every ten
 seconds.
 
-Short referenced files ride along with the request that names them, so the model
-does not spend a turn reading what you just pointed at. Up to 16 KB per file and
-48 KB per message is appended to the message as delimited blocks with a line
-count and size; anything larger, binary, or missing is named with its size and
-left for the file tools. Scrollback, the task panel, `/tree` editing, and
-`/resend` all show the prompt as you typed it, never the appended payload. The
-menu labels each candidate `inlined` or `path only` so the cost is visible
-before you pick.
+The path is all that is sent: pcode never reads a referenced file for you, so
+the model decides whether reading it is worth a call. The menu shows each
+candidate's size so that cost is visible before you pick.
 
 - `/demo`: fictional Markdown, code, diff, table, and tool summaries; never calls
   the model, even in live mode, and does not enter its conversation history.

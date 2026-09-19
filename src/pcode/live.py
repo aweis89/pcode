@@ -47,7 +47,6 @@ from pcode.conversation_tree import ConversationTree
 from pcode.delegation import ChildActivity
 from pcode.diagnostics import error_details, transient, transport_types
 from pcode.edit_preview import StreamingEditPreview
-from pcode.file_refs import typed_prompt
 from pcode.filesystem import FileChangeEvent
 from pcode.inspection import ToolArchive, capture
 from pcode.mcp import MCPState
@@ -236,9 +235,7 @@ class AgentRuntime:
         self.tree.path(identity)
         node = self.tree.nodes[identity] if identity else None
         target = node.parent if edit and node else identity
-        # Editing a turn reopens what was typed; the inlined file contents are
-        # regenerated when the edited prompt is sent.
-        draft = typed_prompt(node.prompt) if edit and node else ""
+        draft = node.prompt if edit and node else ""
         history = (
             await self.session.history_at(target)
             if self.session
@@ -313,7 +310,7 @@ class AgentRuntime:
         for identity in reversed(self.tree.path(self.tree.active)):
             node = self.tree.nodes[identity]
             if node.kind == "turn" and node.prompt:
-                return typed_prompt(node.prompt)
+                return node.prompt
         raise SessionError("There is no earlier prompt to resend; send a message instead.")
 
     async def stream(self, prompt: str | None) -> AsyncIterator[Event]:
