@@ -32,6 +32,7 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from pcode.auth import LoginError, SubscriptionOAuthWire
+from pcode.oauth_pages import callback_page
 
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
@@ -47,12 +48,6 @@ DEFAULT_CALLBACK_PORT = 54545
 EARLY_REFRESH_SECONDS = 300
 TOKEN_TIMEOUT_SECONDS = 30.0
 LOGIN_TIMEOUT_SECONDS = 300.0
-
-_PAGE = (
-    "<!doctype html><html><head><meta charset=utf-8>"
-    "<title>pcode</title></head><body style='font-family:sans-serif;padding:3rem'>"
-    "<h1>{title}</h1><p>{message}</p></body></html>"
-)
 
 
 def callback_port() -> int:
@@ -378,7 +373,7 @@ async def _receive_code(port: int, state: str, timeout: float) -> str:
             ):
                 if len(line) > 8192:
                     break
-            body = _PAGE.format(title=title, message=message).encode("utf-8")
+            body = callback_page(title, message, ok=bool(code)).encode("utf-8")
             status = "200 OK" if code else "400 Bad Request"
             writer.write(
                 f"HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n"
