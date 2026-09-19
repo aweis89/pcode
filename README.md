@@ -111,6 +111,12 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 | --- | --- | --- |
 | `theme` | `dark` | `dark`, `light`, `auto` |
 | `autocompact` | `off` | `on`, `off` |
+| `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |
+| `tool_output_threshold` | `10000` | Positive integer, characters that trigger reduction |
+| `tool_output_preview_chars` | `1000` | Positive integer, spill preview characters |
+| `tool_output_max_chars` | `4000` | Positive integer, truncation budget (also spill-failure fallback) |
+| `tool_output_strategy` | `head_tail` | `head`, `tail`, `head_tail` (truncation only) |
+| `tool_output_retention_hours` | `0` | Whole number, spill retention; `0` keeps indefinitely |
 | `meridian_managed` | `off` | `on`, `off` (private local Meridian proxy) |
 | `repo_context_walk_up` | `on` | `on`, `off` (inherit ancestor instruction files) |
 | `repo_context_nested` | `off` | `off`, `pointer`, `contents` (discover instructions on file-tool traversal) |
@@ -1134,6 +1140,64 @@ its separate, smaller output budget. Automatic compaction accounts for the resol
 ceiling, but reserves at most half the working window so small context overrides
 remain usable. Provider limits still apply; truncation is not automatically retried.
 
+### Tool output limits
+
+Pcode uses [Harness ToolOutputLimits](https://pydantic.dev/docs/ai/harness/tool-output-limits/)
+to reduce large results **once, before they enter model history**. By default, a
+result of 10,000 characters or more is stored on disk; the model receives a handle
+and a 1,000-character head/tail preview, plus a small retrieval header. Smaller
+results pass through unchanged. This replaces Coder's 64,000-character truncation
+and applies to the main agent and explorer, including web/MCP tools and delegation
+results. It makes no extra LLM calls and does not require automatic compaction.
+
+```sh
+pcode config set tool_output_mode spill          # Default: store, preview, read back
+pcode config set tool_output_threshold 8000      # Trigger at 8,000 characters
+pcode config set tool_output_preview_chars 800   # Content preview, excluding headers
+pcode config set tool_output_max_chars 3000      # Fallback if storing fails
+pcode config set tool_output_strategy head_tail  # Truncation keeps both ends
+pcode config set tool_output_retention_hours 168 # Optional: prune spills older than a week
+
+pcode config set tool_output_mode truncate       # Lossy, no new spill files
+pcode config set tool_output_mode off            # No new result reduction
+pcode config unset tool_output_mode              # Restore default spill mode
+```
+
+These settings also work through `/config`, with tab completion and validation.
+They are snapshotted when the agent is constructed; restart pcode to apply them to
+an existing conversation. They do not rewrite oversized results already in history.
+All budgets are characters, not tokens. Keep the preview and truncation budgets
+below the trigger threshold to save context. Spill previews always show both ends;
+`tool_output_strategy` applies only to truncation and the spill-failure fallback.
+
+The model uses `read_tool_result(handle, offset, limit, from_end, pattern)` to
+retrieve selected lines or literal substring matches. Readback is exempt from
+reduction and bounded by Harness to 1,000 lines / 50,000 content characters per call.
+Structured returns are stored as indented JSON for paging. For a single line longer
+than the readback cap, the agent is also told how to read a character range from the
+spill file with shell. Retrieval stays available in `off` and `truncate` modes so
+older handles still work after resuming a saved session.
+
+Spills live in `$XDG_STATE_HOME/pcode/tool-results` (default
+`~/.local/state/pcode/tool-results`), under an owner-only directory shared by pcode
+workspaces and runs. They contain **raw tool output**, not the terminal's redacted
+projection, and are written even with `--no-save`. This is local storage, not an
+isolation boundary or encrypted credential store. To avoid new spill files, use
+`truncate` or `off`; that does not delete existing spills, sessions, or shell logs.
+By default spills are kept indefinitely. A nonzero retention schedules best-effort
+background pruning on new writes, based on modification time, not last access.
+Pruning or deleting files can break old handles; the read tool then asks the model
+to rerun the original tool. Reset retention to `0` to disable future pruning.
+
+Spilling preserves the result received by the limiter, not data a tool already
+omitted. File-read pagination and the shell's native 16 KB output-tail cap still
+apply, even in `off` mode. The full command output remains in the shell log. Shell
+PID/log/status handles are kept outside the reduction budget, including with tiny
+budgets or head truncation. Reduced shell bodies are omitted from the inspection
+projection when their clipped text no longer has reliable redaction context; the
+live preview remains separate. Store failures fall back to lossy truncation.
+LLM summarization, multiple size bands, and per-tool configuration are not exposed.
+
 ### Context compaction
 
 `/compact` makes a tool-free LLM call using the current model/provider credentials.
@@ -1152,8 +1216,9 @@ with a token budget (up to 20k, scaled down for smaller windows); a single overs
 settled tool batch is summarized too rather than splitting its call/result pair.
 Repeated compaction updates the previous summary. Summarizer tool-result input is
 capped at 16k characters per result rather than Harness's default 500 characters.
-Summaries are lossy: original tool results remain available through the session/tool
-history, and the model should re-read source files when exact details matter.
+Summaries are lossy: pre-compaction tool results remain available through the
+session/tool history (including spill handles for reduced results), and the model
+should retrieve spilled output or re-read source files when exact details matter.
 
 Manual compaction requires an idle live session. Ctrl+C cancels it; queued prompts
 wait until it finishes and are cleared on cancellation/failure. Short histories are
