@@ -5,4 +5,6 @@ __pycache__/
 .ruff_cache/
 dist/
 *.egg-info/
-tmp/
+# no trailing slash: in a worktree, tmp is a symlink to the main checkout's
+tmp
+.worktrees/

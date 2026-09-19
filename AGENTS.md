@@ -1,5 +1,28 @@
 # Development notes
 
+## Work in a worktree, not the mainline checkout
+
+Several agents edit this repo at the same time, so editing the mainline working
+tree directly means fighting over files edit by edit — expect another session to
+commit, `git checkout`, or `git stash` your uncommitted work out from under you.
+Branch into a worktree before making changes and merge back when the change is
+done:
+
+```bash
+make worktree NAME=fix-thing          # .worktrees/fix-thing, branch fix-thing
+cd .worktrees/fix-thing               # edit, make test, commit here
+make worktree-merge NAME=fix-thing    # merge mainline in, then fast-forward mainline
+make worktree-remove NAME=fix-thing   # drop the worktree (branch is kept)
+```
+
+- `make worktree-merge` merges the mainline branch **into** the worktree first, so any conflict surfaces in `.worktrees/<name>`, where you are the only writer. Fix it there, commit, and re-run; the mainline tree is never left in a conflicted state.
+- The mainline step is `git merge --ff-only`, which git refuses only when someone's uncommitted mainline edits touch the files you merged. That is the one case needing coordination: commit or stash those edits, then re-run the merge.
+- Creating a worktree costs a few seconds: it gets its own `.venv` (uv clones the packages from its local cache) and a `tmp` symlink to the shared Harness checkout, so there is nothing to reinstall and `make test` works immediately.
+- Do not share `.venv` between worktrees. The editable install records an absolute path to `src/`, so a shared env silently imports the *other* checkout's source and you test code you did not write.
+- `make install` from a worktree repoints the global `pcode` command at that worktree. Run it from the mainline checkout after merging, unless you deliberately want the installed command to track your branch.
+
+## Notes
+
 - Always commit code changes after making them, and push them.
 
 - Run `make install` after changes so the installed `pcode` tool env picks them up.
