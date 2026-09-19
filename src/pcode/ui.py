@@ -1370,12 +1370,22 @@ class Transcript:
             )
         )
         if model:
-            self.note(f"Coder · workspace: {workspace}")
-            self.note("Live model · file edits and shell tools enabled · not a sandbox")
+            self.retained_note(f"Coder · workspace: {workspace}")
+            self.retained_note("Live model · file edits and shell tools enabled · not a sandbox")
         else:
-            self.note("Local only · no model connected · no files or shell tools")
-        self.note("Type / for commands, /demo for a sample response, /help for keys.")
+            self.retained_note("Local only · no model connected · no files or shell tools")
+        self.retained_note("Type / for commands, /demo for a sample response, /help for keys.")
         self.print()
+
+    @recorded
+    def retained_note(self, text: str) -> None:
+        """Show a notice that belongs to scrollback, so a redraw keeps it.
+
+        Most notices answer a keystroke and are dismissed by the next redraw.
+        The opening banner and what it reports about this session are history,
+        not an answer, so a resize must not wipe them.
+        """
+        self.print(Text(text, style="pcode.muted"))
 
     def note(self, text: str) -> None:
         """Show an informational notice once, without retaining it for redraws."""
