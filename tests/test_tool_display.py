@@ -138,8 +138,43 @@ def test_compact_rows_and_old_and_new_event_shapes():
     new = ToolSummary("run_command", "pytest → exit 1", True, "call-2", 0.25)
     transcript.events((old, ToolSummary(**asdict(new))))
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
-        "  ✓ Read  a.py · 2 lines",
+        "✓ Read  a.py · 2 lines",
     ]
+
+
+def test_tool_lines_group_together_and_are_blank_separated_from_prose():
+    from pcode.runtime import Message, Thinking
+    from pcode.ui import Activity
+
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None), activity=Activity())
+    transcript.activity.show_thinking = True
+    transcript.events(
+        (
+            Thinking("Reading first."),
+            ToolSummary("read_file", "a.py · 2 lines"),
+            ToolSummary("read_file", "b.py · 3 lines"),
+            Message("Done."),
+        )
+    )
+    assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
+        "Reading first.",
+        "",
+        "✓ Read  a.py · 2 lines",
+        "✓ Read  b.py · 3 lines",
+        "",
+        "Done.",
+        "",
+    ]
+
+
+def test_tool_summary_lines_use_the_thinking_shade():
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system="truecolor"))
+    transcript.events((ToolSummary("read_file", "a.py · 2 lines"),))
+    thinking = transcript.rich_theme.styles["pcode.thinking"]
+    assert thinking.color is not None and thinking.dim
+    assert thinking.render("x").split("x")[0] in stream.getvalue()
 
 
 def test_parallel_calls_remain_active_until_last_result_and_keep_identity():
