@@ -157,6 +157,7 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 | `meridian_managed` | `off` | `on`, `off` (private local Meridian proxy) |
 | `repo_context_walk_up` | `on` | `on`, `off` (inherit ancestor instruction files) |
 | `repo_context_nested` | `off` | `off`, `pointer`, `contents` (discover instructions on file-tool traversal) |
+| `skill_commands` | `prefix` | `prefix`, `bare`, `both`, `off` (how discovered skills appear as slash commands) |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
 
@@ -551,6 +552,29 @@ workspace-local and metadata-only; it does not load asset bodies or execute hook
 Discovered instructions are sent to the selected model, so review inherited and
 nested files when working in a shared directory tree.
 
+### Skills as slash commands
+
+Every `SKILL.md` found under those asset roots becomes a command, so a skill can
+be invoked deliberately instead of hoping the model notices it. A skill in
+`.claude/skills/cache-report/SKILL.md` is named after its directory:
+
+```
+/skill:cache-report check the last session
+```
+
+The command sends a normal message asking the model to read that file and follow
+it, with anything you type after the command appended. It is queued like a typed
+message, so send mode, steering, and Ctrl+C behave as usual. The skill body is
+not preloaded into the prompt; the model reads the file with its own tools.
+
+Naming follows `skill_commands`: `prefix` gives `/skill:NAME` (default), `bare`
+gives `/NAME`, `both` registers the bare name as an alias of the prefixed one,
+and `off` registers nothing. A bare name that collides with a built-in command is
+dropped, and the built-in wins. Discovery happens at launch, so add a skill (or
+change this setting) and restart to pick it up. The startup banner lists the
+commands that were registered. Only the frontmatter `description` is read at
+launch, to label the completion menu.
+
 ## Sessions and debugging
 
 ```sh
@@ -703,6 +727,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   The same details are printed inline by `/context`.
 - `/tree`: [browse and fork the conversation](docs/conversation-tree.md); select a user prompt to
   edit it, or an assistant response to continue from there. Existing branches are kept.
+- `/skill:NAME [text]`: run a discovered skill; see
+  [Skills as slash commands](#skills-as-slash-commands) for naming and configuration.
 - `/quit` (alias `/exit`): exit.
 
 ### Keys and layout

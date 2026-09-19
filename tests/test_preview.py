@@ -14,9 +14,11 @@ from pcode.commands import Command, CommandRegistry, SlashCompleter
 from pcode.ui import create_prompt
 
 
-def make_app(width=80):
+def make_app(width=80, workspace=None):
     stream = StringIO()
-    return PreviewApp(console=Console(file=stream, width=width, color_system=None)), stream
+    return PreviewApp(
+        console=Console(file=stream, width=width, color_system=None), workspace=workspace
+    ), stream
 
 
 @pytest.mark.parametrize(
@@ -70,8 +72,9 @@ def make_app(width=80):
         ("/tool", ["/tools"]),
     ],
 )
-def test_completion(text, expected):
-    app, _ = make_app()
+def test_completion(text, expected, tmp_path):
+    # An empty workspace keeps pcode's own .claude skills out of the expected list.
+    app, _ = make_app(workspace=tmp_path)
     completions = list(
         SlashCompleter(app.registry).get_completions(Document(text), CompleteEvent())
     )
