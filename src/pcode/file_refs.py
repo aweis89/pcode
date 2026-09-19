@@ -139,9 +139,12 @@ class FileReferenceCompleter(Completer):
             return
         for path in self.files.matches(fragment):
             # The `@` is a trigger, not part of the reference: it is replaced so
-            # the model receives a path its file tools accept verbatim.
+            # the model receives a path its file tools accept verbatim. The
+            # leading './' is what marks it as a path; only a name containing
+            # whitespace needs quotes to keep its end unambiguous in prose.
+            reference = f"./{path}"
             yield Completion(
-                f"./{path} ",
+                f'"{reference}" ' if any(char.isspace() for char in reference) else f"{reference} ",
                 start_position=-(len(fragment) + 1),
                 display=path,
                 display_meta="file",

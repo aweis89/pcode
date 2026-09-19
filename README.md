@@ -694,7 +694,8 @@ Type `@` anywhere in a prompt to reference a workspace file. The menu matches
 any part of the path, so `@ui.py` finds `src/pcode/ui.py`; files whose name
 matches come first. Accepting a match replaces `@…` with the workspace-relative
 path, `./src/pcode/ui.py`, which is the form the model's file tools take, so it
-can read or search the file without guessing where it lives. The candidate list
+can read or search the file without guessing where it lives (a name containing
+spaces is quoted). The candidate list
 comes from `git ls-files` (tracked plus untracked, honoring `.gitignore`), or a
 directory walk that skips hidden and build directories outside a Git checkout,
 and is refreshed at most every ten seconds.

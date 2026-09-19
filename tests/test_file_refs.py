@@ -102,6 +102,16 @@ def test_completion_replaces_the_trigger_with_a_relative_path(tmp_path):
     )
 
 
+def test_a_path_with_spaces_is_quoted(tmp_path):
+    build_tree(tmp_path)
+    (tmp_path / "design notes.md").write_text("x")
+    completer = FileReferenceCompleter(tmp_path)
+
+    [completion] = completions(completer, "read @design")
+
+    assert completion.text == '"./design notes.md" '
+
+
 def test_no_completions_without_a_trigger(tmp_path):
     build_tree(tmp_path)
     completer = FileReferenceCompleter(tmp_path)
