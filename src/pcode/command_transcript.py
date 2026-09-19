@@ -25,10 +25,9 @@ class CommandTranscript:
         elapsed = f" · {self.elapsed_seconds:.1f}s" if self.elapsed_seconds is not None else ""
         status = "✗" if self.failed else "✓"
         title = f"{self.title} failed" if self.failed else self.title
-        yield Text(
-            f"{status} {title}{elapsed}",
-            style="pcode.error" if self.failed else "pcode.accent",
-        )
+        # A non-zero exit is routine here, so the marker and the word carry it;
+        # an alarm colour would make every expected failure look like a crash.
+        yield Text(f"{status} {title}{elapsed}", style="pcode.accent")
         indent = "  " if options.max_width > 2 else ""
         body_options = options.update(width=max(1, options.max_width - len(indent)))
         if self.shell_command:
