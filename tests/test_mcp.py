@@ -13,12 +13,13 @@ from prompt_toolkit.document import Document
 from pydantic_ai import Agent
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.profiles import ModelProfile
 from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.commands import SlashCompleter
 from pcode.live import AgentRuntime
-from pcode.mcp import MCPState, build_toolset, config_path, configured_servers
+from pcode.mcp import MCPState, build_toolset, config_path, configured_servers, mcp_transport
 
 
 def write_config(servers):
@@ -108,7 +109,7 @@ def test_http_headers_and_stdio_environment(monkeypatch):
         },
     )
     assert remote.prefix == "mcp_remote"
-    assert remote.wrapped.client.transport.headers["Authorization"] == "Bearer test-secret"
+    assert mcp_transport(remote).headers["Authorization"] == "Bearer test-secret"
     local = build_toolset(
         "local",
         {
@@ -119,7 +120,7 @@ def test_http_headers_and_stdio_environment(monkeypatch):
             },
         },
     )
-    transport = local.wrapped.client.transport
+    transport = mcp_transport(local)
     assert transport.env["TOKEN"] == "test-secret"
     assert transport.env["DEFAULT"] == "fallback"
     assert transport.keep_alive is False
@@ -226,9 +227,13 @@ for line in sys.stdin:
                   "capabilities": {"tools": {}},
                   "serverInfo": {"name": "test", "version": "1"}}
     elif method == "tools/list":
-        result = {"tools": [{"name": "echo", "description": "Echo a value",
-                  "inputSchema": {"type": "object", "properties": {
-                      "value": {"type": "string"}}, "required": ["value"]}}]}
+        schema = {"type": "object", "properties": {"value": {"type": "string"}},
+                  "required": ["value"]}
+        tools = [{"name": "echo", "description": "Echo a value", "inputSchema": schema}]
+        tools += [{"name": "spare%d" % i, "description": "Spare tool %d" % i,
+                   "inputSchema": schema}
+                  for i in range(int(os.environ.get("PCODE_TEST_MCP_SPARE_TOOLS", "0")))]
+        result = {"tools": tools}
     elif method == "tools/call":
         if os.environ.get("PCODE_TEST_MCP_PHASE") == "tool":
             with open(sys.argv[1] + ".called", "w") as marker:
@@ -241,11 +246,29 @@ for line in sys.stdin:
 """)
     write_config(
         {
-            "local": {"command": sys.executable, "args": [str(script), str(log)]},
+            # Deferred loading has its own tests below; the lifecycle tests want the
+            # server's tools visible without a discovery round trip.
+            "local": {
+                "command": sys.executable,
+                "args": [str(script), str(log)],
+                "direct": True,
+            },
             "unused": {"command": "/does/not/exist"},
         }
     )
     return log
+
+
+def local_search_model(stream_function):
+    """Exercise the local `search_tools` fallback.
+
+    FunctionModel claims every native tool by default, including the server-side tool
+    search it cannot actually run; an empty set keeps discovery on our side.
+    """
+    return FunctionModel(
+        stream_function=stream_function,
+        profile=ModelProfile(supported_native_tools=frozenset()),
+    )
 
 
 def assert_processes_closed(log):
@@ -292,6 +315,65 @@ def test_real_stdio_tools_only_on_enabled_turns(stdio_server):
         await turn()
         assert requests[-1] == set()
         assert len(stdio_server.read_text().splitlines()) == 2
+
+    asyncio.run(run())
+
+
+def test_tools_are_deferred_until_searched(stdio_server):
+    """Default servers cost one search call instead of every schema, and stay callable."""
+    servers = configured_servers()
+    del servers["local"]["direct"]
+    servers["local"]["env"] = {"PCODE_TEST_MCP_SPARE_TOOLS": "8"}
+    write_config(servers)
+    requests = []
+
+    async def model(messages, info):
+        names = {tool.name for tool in info.function_tools}
+        requests.append(names)
+        if "mcp_local_echo" not in names:
+            yield {
+                0: DeltaToolCall(
+                    name="search_tools", json_args='{"queries":["echo"]}', tool_call_id="search-1"
+                )
+            }
+        elif len(requests) == 2:
+            # `search_tools` stays offered after discovery, so call the tool only once.
+            yield {
+                0: DeltaToolCall(
+                    name="mcp_local_echo", json_args='{"value":"mcp-result"}', tool_call_id="echo-1"
+                )
+            }
+        else:
+            yield "done"
+
+    runtime = AgentRuntime(Agent(local_search_model(model)))
+
+    async def run():
+        await runtime.mcp.enable("local")
+        async for _ in runtime.stream("hello"):
+            pass
+        # None of the nine tools is offered until the model searches for one.
+        assert requests[0] == {"search_tools"}
+        assert "mcp_local_echo" in requests[1]
+        assert "mcp-result" in str(runtime.history)
+        assert_processes_closed(stdio_server)
+
+    asyncio.run(run())
+
+
+def test_direct_server_tools_skip_search(stdio_server):
+    """`direct: true` trades prompt tokens for immediate availability."""
+
+    async def model(messages, info):
+        assert {tool.name for tool in info.function_tools} == {"mcp_local_echo"}
+        yield "done"
+
+    runtime = AgentRuntime(Agent(local_search_model(model)))
+
+    async def run():
+        await runtime.mcp.enable("local")
+        async for _ in runtime.stream("hello"):
+            pass
 
     asyncio.run(run())
 

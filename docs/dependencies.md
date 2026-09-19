@@ -171,6 +171,14 @@ row budget; keep `tests/test_delegation_tmux.py` exercising real CPR and resize.
 
 `src/pcode/mcp.py` uses Pydantic AI 2.43.0's `MCPToolset` and FastMCP's
 `StdioTransport`; `src/pcode/live.py` supplies only enabled toolsets per run.
+Unless a server sets `"direct": true`, `build_toolset` marks its tools
+`defer_loading=True` (via `defer_loading()`, inside the prefix) so Pydantic AI's
+auto-injected `ToolSearch` reveals them through `search_tools`. `FunctionModel`
+claims **every** native tool by default, including server-side tool search it
+cannot run, so a test that expects the local `search_tools` fallback must pass
+`profile=ModelProfile(supported_native_tools=frozenset())`; otherwise the tools
+are withheld with no discovery surface at all. Use `mcp.mcp_transport()` rather
+than walking `.wrapped` by hand, since the wrapper chain now varies per server.
 `MCPState.enable()` is async: for OAuth it enters/exits the prefixed MCP toolset
 before publishing it as enabled. `MCPToolset.__aenter__` initializes the remote
 client and completes OAuth without an agent/model run. Reuse the same toolset

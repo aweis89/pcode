@@ -29,6 +29,7 @@ LABELS = {
     "check_command": "Check",
     "stop_command": "Stop",
     "write_plan": "Plan",
+    "search_tools": "Find tools",
     "inventory_agent_context": "Context",
 }
 _SENSITIVE = re.compile(
@@ -129,6 +130,11 @@ def target(name: str, args: dict) -> str:
     if name == "read_tool_result":
         handle = args.get("handle")
         return argument(handle) if isinstance(handle, str) else "handle unavailable"
+    if name == "search_tools":
+        queries = args.get("queries")
+        if not isinstance(queries, list):
+            return "queries unavailable"
+        return ", ".join(argument(item) for item in queries if isinstance(item, str))
     if name in {"get_page", "web_search"}:
         key = "url" if name == "get_page" else "query"
         value = args.get(key)
