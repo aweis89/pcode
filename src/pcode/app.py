@@ -98,6 +98,7 @@ class PreviewApp:
         # Unsaved conversations have no journal to re-read, so keep their changes.
         self.edits: list[EditCompleted] = []
         self.session_requested = False
+        self.session_info_requested = False
         self.tree_requested = False
         self.login_requested: str | None = None
         self.compact_requested: str | None = None
@@ -204,7 +205,8 @@ class PreviewApp:
             Command("/context", "Model, workspace, and session usage", self.context),
             Command("/new", "Start a new saved conversation; keep transcript", self.new),
             Command("/tree", "Navigate and fork the conversation interactively", self.select_tree),
-            Command("/session", "Choose a saved session to resume", self.select_session),
+            Command("/resume", "Choose a saved session to resume", self.select_session),
+            Command("/session", "Show the current session's details", self.show_session),
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
         ):
             self.registry.register(command)
@@ -739,33 +741,54 @@ class PreviewApp:
         index = levels.index(current) if current in levels else 1
         self.effort(levels[max(0, min(len(levels) - 1, index + direction))])
 
-    def context(self, argument: str) -> None:
-        if self.model:
-            self.transcript.note(f"Model: {self.model} · workspace: {self.workspace}")
-            self.transcript.note(
-                f"Turns: {self.runtime.turns} · tokens in/out: "
-                f"{self.runtime.input_tokens}/{self.runtime.output_tokens}"
-            )
-            self.transcript.note("Coder tools enabled; no sandbox.")
-            self.transcript.note(
-                "Automatic compaction: "
-                + ("on" if getattr(self.runtime, "auto_compact", False) else "off")
-                + " · /compact [focus] · /autocompact on|off"
-            )
-            if self.runtime.session:
-                self.transcript.note(f"Session: {self.runtime.session.info.id}")
-                self.transcript.note(f"Saved in: {self.runtime.session.directory}")
-            elif self.runtime.session_factory is not None:
-                self.transcript.note("Session will be saved after your first prompt.")
-            else:
-                self.transcript.note("Saving disabled; session is in memory only.")
+    def session_overview(self) -> list[tuple[str, str]]:
+        """Label/value rows describing the live conversation.
+
+        One source for the `/context` notes and the `/session` popup, so the
+        two can never drift into describing the same session differently.
+        """
+        if not self.model:
+            return [
+                ("Model", "none · tools: none · network: none"),
+                ("Preview turns", str(self.runtime.turns)),
+                ("Mode", "Canned replies only. Start with -m PROVIDER:MODEL for a real agent."),
+            ]
+        rows = [
+            ("Model", self.model),
+            ("Effort", self.current_effort()),
+            ("Workspace", str(self.workspace)),
+            ("Turns", str(self.runtime.turns)),
+            ("Tokens in/out", f"{self.runtime.input_tokens}/{self.runtime.output_tokens}"),
+            ("Tools", "Coder tools enabled; no sandbox."),
+            (
+                "Automatic compaction",
+                ("on" if getattr(self.runtime, "auto_compact", False) else "off")
+                + " · /compact [focus] · /autocompact on|off",
+            ),
+        ]
+        saved = self.runtime.session
+        if saved:
+            rows += [
+                ("Session", saved.info.id),
+                ("Saved in", str(saved.directory)),
+                ("Started", saved.info.created[:16]),
+                ("Updated", saved.info.updated[:16]),
+            ]
+        elif self.runtime.session_factory is not None:
+            rows.append(("Session", "Will be saved after your first prompt."))
         else:
-            self.transcript.note(
-                f"Preview turns: {self.runtime.turns} · model: none · tools: none · network: none"
-            )
-            self.transcript.note(
-                "Canned replies only. Start with -m PROVIDER:MODEL for a real agent."
-            )
+            rows.append(("Session", "Saving disabled; in memory only."))
+        tree = getattr(self.runtime, "tree", None)
+        if tree and tree.nodes:
+            rows.append(("Branches", f"{len(tree.nodes)} turns in /tree"))
+        mcp = getattr(self.runtime, "mcp", None)
+        if enabled := sorted(getattr(mcp, "enabled", ()) or ()):
+            rows.append(("MCP", ", ".join(enabled)))
+        return rows
+
+    def context(self, argument: str) -> None:
+        for label, value in self.session_overview():
+            self.transcript.note(f"{label}: {value}")
 
     def mcp_arguments(self) -> tuple[str, ...]:
         from pcode.mcp import configured_servers
@@ -845,6 +868,11 @@ class PreviewApp:
 
     def select_session(self, argument: str) -> None:
         self.session_requested = True
+
+    def show_session(self, argument: str) -> None:
+        if argument:
+            raise ValueError("Usage: /session")
+        self.session_info_requested = True
 
     async def resume_session(self, identity: str) -> None:
         from pcode.agent import create_agent
@@ -983,6 +1011,33 @@ class PreviewApp:
                         modal_input.close()
         if identity is not None:
             await self.resume_session(identity)
+
+    async def show_session_info(self, output: TerminalOutput, session) -> None:
+        from pcode.session_ui import session_info_dialog
+
+        self.session_info_requested = False
+        rows = self.session_overview()
+        await output.flush()
+        # One terminal owner: drain permanent output, suspend the editor, and
+        # hold the writer lock until the alternate screen has been restored.
+        async with output.lock:
+            async with in_terminal():
+                # The suspended editor can still have an escape-flush timer.
+                # Give the modal its own parser, or that timer can steal an
+                # early Escape from the shared input object's parser buffer.
+                stdin = getattr(session.app.input, "stdin", None)
+                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
+                try:
+                    dialog = session_info_dialog(
+                        rows,
+                        input=modal_input,
+                        output=session.app.output,
+                        style=session.app.style,
+                    )
+                    await dialog.run_async()
+                finally:
+                    if modal_input is not session.app.input:
+                        modal_input.close()
 
     def replay(self) -> None:
         from pcode.diagnostics import redact
@@ -1545,7 +1600,7 @@ class PreviewApp:
                         in {
                             "/resend",
                             "/new",
-                            "/session",
+                            "/resume",
                             "/tree",
                             "/login",
                             "/logout",
@@ -1607,6 +1662,8 @@ class PreviewApp:
                             await self.choose_tree(output, session)
                         if self.session_requested:
                             await self.choose_session(output, session)
+                        if self.session_info_requested:
+                            await self.show_session_info(output, session)
                         if self.inspector_requested is not None:
                             await self.inspect_tools(output, session)
                         if self.diffs_requested:

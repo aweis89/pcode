@@ -60,7 +60,7 @@ Ctrl+C or wait for completion before navigating.
 ## Persistence
 
 With normal session saving, branches and the selected position survive restart,
-even if you navigate without sending another message. `/session` chooses a saved
+even if you navigate without sending another message. `/resume` chooses a saved
 session; `/tree` navigates within it. Existing saved sessions appear as a linear
 tree automatically. Structured histories (including tool calls/results) continue
 to use Harness's native safe checkpoints. Tree links and selection events live in
@@ -68,5 +68,5 @@ the private, append-only session journal.
 
 With `--no-save`, the tree exists only in memory and disappears on exit. Browsing
 an empty conversation does not create session files. `/new` starts a separate tree
-and keeps the previous saved session available through `/session`. The offline
+and keeps the previous saved session available through `/resume`. The offline
 preview has no model conversation to navigate.

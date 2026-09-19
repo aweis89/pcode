@@ -25,10 +25,22 @@ with TemporaryDirectory() as directory:
 
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
-def test_session_popup_cancel_restores_prompt_height(pane):
+def test_resume_popup_cancel_restores_prompt_height(pane):
+    before = capture(pane, "effort:")
+    pane("send-keys", "-t", "preview:0.0", "/resume", "Enter")
+    modal(pane, "First popup question")
+    pane("send-keys", "-t", "preview:0.0", "Escape")
+    after = capture(pane, "effort:")
+    assert input_rows(before) == input_rows(after)
+    pane("send-keys", "-t", "preview:0.0", "still editable")
+    capture(pane, "still editable")
+
+
+@pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
+def test_session_info_popup_cancel_restores_prompt_height(pane):
     before = capture(pane, "effort:")
     pane("send-keys", "-t", "preview:0.0", "/session", "Enter")
-    modal(pane, "First popup question")
+    modal(pane, "Preview turns")
     pane("send-keys", "-t", "preview:0.0", "Escape")
     after = capture(pane, "effort:")
     assert input_rows(before) == input_rows(after)
