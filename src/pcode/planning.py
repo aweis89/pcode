@@ -9,7 +9,7 @@ class IdentifiedPlanning(Planning):
     """Keep upstream validation/storage, but disambiguate IDs from row numbers."""
 
     async def before_model_request(self, ctx, request_context):
-        if request_context.model.system == "meridian" and self.inject:
+        if self.inject:
             items = await self._read_plan(ctx)
             text = render_plan(items) if items else "No active plan."
             # Don't inject an empty plan until there is an earlier reminder to clear.
@@ -27,11 +27,10 @@ class IdentifiedPlanning(Planning):
         return request_context
 
     async def wrap_model_request(self, ctx, *, request_context, handler):
-        if request_context.model.system == "meridian":
-            return await handler(request_context)
-        return await super().wrap_model_request(
-            ctx, request_context=request_context, handler=handler
-        )
+        # Upstream appends an ephemeral reminder here. Removing it on the next
+        # request invalidates the newly cached tail. Persist changes in the
+        # before hook instead, without moving explicit cache markers in history.
+        return await handler(request_context)
 
     def get_instructions(self):
         guidance = super().get_instructions()

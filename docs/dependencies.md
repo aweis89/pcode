@@ -420,9 +420,12 @@ forward as history grows) plus `anthropic_cache_instructions` and
 that breakpoints reach the wire; `tests/test_prompt_cache.py` asserts top-level
 `cache_control`, the last tool, and the last system block.
 
-Harness's ephemeral tail capabilities (`Planning`, `SystemReminders`) place their own
-`CachePoint` before the reminder, so the durable prefix stays byte-identical. That
-mechanism only helps when a cache breakpoint exists at all.
+Harness's upstream `Planning` appends an ephemeral reminder and anchors its
+`CachePoint` on the last durable user prompt, not the latest tool result. The next
+request removes the previous reminder, invalidating the automatic cache entry
+covering it. Saved usage showed reads stuck at the old user-prompt boundary while
+the growing tool-loop tail was repeatedly written. Checking only that cache
+controls reach the first request does not catch this; test a multi-request loop.
 
 Meridian is excluded deliberately. Installed 1.71.1's proxy strips client
 `cache_control` (`stripCacheControlDeep`, `stripCacheControlForHashing`) and decides
@@ -431,14 +434,17 @@ reuse from its own lineage hash over the full semantic message prefix; only
 Sending cache settings there changes nothing, and a mutable tail that moves each
 request diverges the lineage regardless.
 
-For Meridian, pcode's `IdentifiedPlanning` appends durable plan snapshots only when
-the rendered plan changes (including clearing it). `MeridianLimitWarnings` retains
-old warnings and appends updates at percentage deciles or severity changes. Both
-use `before_model_request`, whose messages Pydantic AI persists, not the ephemeral
-`wrap_model_request` boundary. Deduplication reads metadata in the current history,
-so saved resume, retry, and branch selection do not depend on process-local state.
-Direct Anthropic retains upstream reminder behavior. Wire-prefix regressions live
-in `tests/test_meridian_reminders.py`.
+For every provider, pcode's `IdentifiedPlanning` appends durable plan snapshots only
+when the rendered plan changes (including clearing it), without moving explicit
+cache markers. `MeridianLimitWarnings` retains old warnings and appends updates at
+percentage deciles or severity changes only on Meridian; other providers' limit
+warnings are unchanged. Both use `before_model_request`, whose messages Pydantic AI
+persists, not the ephemeral `wrap_model_request` boundary. Deduplication reads
+metadata in the current history, so saved resume, retry, and branch selection do
+not depend on process-local state. The historical `pcode_meridian_reminder` metadata
+key is retained for saved-session compatibility. Anthropic and native Codex
+wire-prefix regressions live in `tests/test_meridian_reminders.py` and
+`tests/test_planning_cache.py`.
 
 Check the running proxy's `/health` version rather than trusting `meridian --version`:
 the launch service can use a different Node installation than the shell. The
