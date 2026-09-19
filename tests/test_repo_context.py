@@ -85,7 +85,7 @@ def test_explorer_uses_automatic_context(tmp_path, monkeypatch):
     assert "inventory_agent_context" not in context.get_instructions()
 
 
-def test_startup_summary_reports_only_selected_instructions_and_metadata(tmp_path):
+def test_startup_summary_reports_only_selected_instructions(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("selected instruction body")
     (tmp_path / "AGENTS.md").write_text("selected instruction body")
     root = tmp_path / ".claude"
@@ -104,13 +104,9 @@ def test_startup_summary_reports_only_selected_instructions_and_metadata(tmp_pat
 
     with patch.object(Path, "read_text", read):
         text = "\n".join(capability.startup_summary())
-    assert "Loaded repository instructions: CLAUDE.md" in text
-    assert "AGENTS.md" not in text
-    assert "selected instruction body" not in text
-    assert "Agent: .claude/agents/helper.md" in text
-    assert "Settings/hooks: .claude/settings.json" in text
-    assert "contents not loaded, hooks not run" in text
-    assert "Repository context is refreshed" not in text
+    assert text == "Loaded repository instructions: CLAUDE.md"
+    # The asset inventory reaches the model, not the startup notes.
+    assert ".claude" in capability.get_instructions()
 
 
 def test_startup_summary_empty_repository(tmp_path):
@@ -124,13 +120,9 @@ def test_startup_summary_instructions_only(tmp_path):
     assert summary == ["Loaded repository instructions: AGENTS.md"]
 
 
-def test_startup_summary_configuration_only(tmp_path):
+def test_startup_summary_omits_discovered_configuration(tmp_path):
     (tmp_path / ".claude").mkdir()
-    summary = AutomaticRepoContext(workspace_dir=tmp_path).startup_summary()
-    assert summary == [
-        "Discovered configuration (paths only; contents not loaded, hooks not run):",
-        "  .claude/",
-    ]
+    assert AutomaticRepoContext(workspace_dir=tmp_path).startup_summary() == []
 
 
 def test_app_displays_actual_agent_context_and_preview_stays_local(tmp_path, monkeypatch):

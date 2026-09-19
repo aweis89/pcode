@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic_ai.capabilities import on_event
 from pydantic_ai_harness.filesystem import DirectoryListedEvent, FilesSearchedEvent
-from pydantic_ai_harness.repo_context import AgentContextInventory, RepoContext
+from pydantic_ai_harness.repo_context import RepoContext
 
 # Harness 0.31 exposes no public scanner; reuse its metadata-only scan so the
 # inventory stays consistent with the upstream tool. Covered by integration tests.
@@ -20,10 +20,6 @@ class AutomaticRepoContext(RepoContext):
 
     expose_inventory_tool: bool = field(default=False, init=False)
     _inventory_context: str | None = field(default=None, init=False, repr=False, compare=False)
-
-    _inventory: AgentContextInventory | None = field(
-        default=None, init=False, repr=False, compare=False
-    )
 
     @on_event(FilesSearchedEvent)
     async def _on_search(self, ctx, event):
@@ -41,27 +37,18 @@ class AutomaticRepoContext(RepoContext):
         )
 
     def startup_summary(self) -> list[str]:
-        """Describe the startup snapshot without displaying instruction bodies."""
+        """Name the loaded instruction files without displaying their bodies.
+
+        The discovered asset inventory still reaches the model through
+        `get_instructions`; repeating it at startup duplicates the skill and
+        sub-agent lists the terminal already prints.
+        """
         self.get_instructions()
         files = self._files() if self.autoload_instructions else []
-        lines = []
-        if files:
-            lines.append(
-                "Loaded repository instructions: "
-                + ", ".join(self._label(file.path) for file in files)
-            )
-        assert self._inventory is not None
-        if self._inventory.roots:
-            lines.append(
-                "Discovered configuration (paths only; contents not loaded, hooks not run):"
-            )
-            for root in self._inventory.roots:
-                lines.append(f"  {root.root}/")
-                lines.extend(f"    Skill: {path}" for path in root.skills)
-                lines.extend(f"    Agent: {path}" for path in root.agents)
-                if root.settings:
-                    lines.append(f"    Settings/hooks: {root.settings}")
-        return lines
+        if not files:
+            return []
+        labels = ", ".join(self._label(file.path) for file in files)
+        return [f"Loaded repository instructions: {labels}"]
 
     def get_instructions(self) -> str:
         instructions = super().get_instructions()
@@ -69,7 +56,6 @@ class AutomaticRepoContext(RepoContext):
             inventory = scan_assets(self.workspace_dir, self.asset_roots)
             # Absent directories are not useful prompt content.
             inventory.roots = [root for root in inventory.roots if root.exists]
-            self._inventory = inventory
             self._inventory_context = (
                 "<assistant-configuration>\n"
                 "Automatically discovered assistant configuration paths, relative to "
