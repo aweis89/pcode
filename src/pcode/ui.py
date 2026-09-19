@@ -50,7 +50,7 @@ from pcode.tool_display import (
     plain,
 )
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
-from pcode.transcript_log import TranscriptLog, recorded
+from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
 
 
@@ -1234,7 +1234,7 @@ class Transcript:
         # Resolve theme-dependent renderables again on every replay.
         objects = tuple(
             Markdown(obj.markup, code_theme=self.code_theme)
-            if isinstance(obj, Markdown)
+            if isinstance(obj, (Markdown, RetainedMarkdown))
             else replace(obj, code_theme=self.code_theme)
             if isinstance(obj, (TranscriptNotice, CommandTranscript, EditTranscript))
             else obj
@@ -1292,8 +1292,8 @@ class Transcript:
         try:
             if self.log.dropped:
                 self.note("Earlier transcript entries omitted from this regenerated view.")
-            for method, args, kwargs in self.log.entries:
-                getattr(self, method)(*args, **kwargs)
+            for entry in self.log.entries:
+                getattr(self, entry.method)(*entry.args, **entry.kwargs)
         finally:
             self.log.recording = True
             self._replay_sink = None
