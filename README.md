@@ -70,6 +70,9 @@ still use the native provider, not a custom transport.
 
 ### Prompt cache warnings
 
+For the planning-specific cache issue and why reminders are now append-only, see
+[prompt caching and plan reminders](docs/prompt-caching.md).
+
 Pcode enables Harness's [cache-bust monitor](https://pydantic.dev/docs/ai/harness/warn-on-cache-busts/)
 for the main agent and sub-agents. A `Prompt cache miss` warning appears in the
 transcript when cache reads drop below half of an established prefix of at least
