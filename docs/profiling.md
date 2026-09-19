@@ -123,6 +123,115 @@ workload, and tracing modes the same. This is a component benchmark, **not** a
 measurement of real terminal repainting, CPR, provider latency, tool execution,
 session persistence, or a long-lived conversation's memory.
 
+## Replay previous real sessions without rerunning tools
+
+After `make install`, use the standalone benchmark command:
+
+```sh
+# Current renderer, three passes per session (newest sessions first).
+pcode-benchmark --recent 5 --repeat 3
+
+# Compare incremental parsing with experimental end-only rendering.
+pcode-benchmark --recent 5 --repeat 3 --render-mode both
+
+# Choose a specific session or a copied journal. Selectors can be repeated.
+pcode-benchmark --replay latest
+pcode-benchmark --replay SESSION_ID --session-dir /path/to/sessions
+pcode-benchmark --journal /path/to/transcript.jsonl
+
+# Drill into an expensive attempt and collect a function profile.
+pcode-benchmark --replay SESSION_ID --start-turn 4 --max-turns 1 \
+  --profile /tmp/pcode-replay --profile-cpu
+
+# Compare display choices explicitly, without changing saved preferences.
+pcode-benchmark --recent 5 --no-show-thinking
+pcode-benchmark --recent 5 --command-scrollback
+```
+
+From the repository, `uv run pcode-benchmark …` or
+`uv run python -m pcode.profile_benchmark …` runs the same command. Existing
+synthetic `--kind` / `--lines` cases still work.
+
+### What is replayed
+
+The benchmark reads the original `transcript.jsonl` records and passes decoded
+display events through **the same presentation dispatch used by live pcode**.
+It exercises Markdown, visible/hidden thinking, tool-result projection, error and
+edit rendering, and retained transcript recording. Rich renders to a counting /
+discarding sink; conversation contents never appear in the benchmark output.
+
+No provider or agent is constructed, no tool is called, no session is opened for
+writing or recovery, and no SQLite store is opened. There are no model requests or
+charges. Local file reads can still update filesystem access timestamps. Session
+metadata and journals are read-only; replay creates no locks or new session files.
+
+- A session's readable byte prefix is frozen when it is opened, so new appends to
+  an active session do not change later passes. SHA-256 checks detect in-place
+  changes between passes; use a closed session or copy for reproducible comparisons.
+- All saved attempts/branches are replayed in append order, **not just the final
+  selected branch**. Tree selections and compaction checkpoints are counted as
+  skipped metadata, not deserialized or rendered. `--start-turn` / `--max-turns`
+  refer to journal attempt ordinals, including retries, not necessarily user turns.
+  Records outside the requested range are scanned but not rendered.
+- Text/thinking completion markers retain live fallback/deduplication behavior.
+  Failed, cancelled, restarted, and unfinished attempts flush partial output.
+  Retry callbacks, their notices, and exact user prompt grouping are not recorded,
+  so attempt boundaries are an approximation of those lifecycle details.
+- Defaults are width 80, dark palette, thinking shown, edits shown, command
+  scrollback off, 20-line error/command limits. Local preferences and terminal
+  background detection are bypassed. The original session did not record all its
+  display settings; set the benchmark flags to match the desired comparison.
+- Transient streamed edit/command previews, keystrokes, resize, CPR, spinners,
+  live prompt/task-widget redraws, model decoding, persistence writes, and child
+  process work are **not reconstructed**. These require a live profile. Saved
+  events are processed immediately with a flush after each event, without the
+  original waits or the live writer's 30 Hz batching.
+
+This measures **current-code CPU cost on historical input**, not the CPU consumed
+when the original session ran. Fast replay often occupies one core; that alone is
+not evidence of an interactive CPU problem.
+
+### Interpreting replay results
+
+One JSON row is printed per session/mode/pass. It contains no prompt, answer,
+tool payload, model/workspace name, session ID, or source path. `session` is a
+one-based index in the selected list. Important fields:
+
+- `render_cpu_seconds`: process CPU spent in presentation dispatch and terminal
+  output flushes. `render_wall_seconds` is the corresponding elapsed time.
+- `cpu_seconds` / `wall_seconds`: replay totals including journal reads, decoding,
+  validation, hashing, and benchmark bookkeeping. Subtract render CPU from total
+  CPU to estimate that overhead; it is **not** production persistence cost.
+- `event_counts`, `turns`, and `top_turns`: coverage and the ten most expensive
+  attempts, identified only by ordinal. Per-attempt `characters` counts text in
+  both delta and completion records, so it is not a unique-output or token count.
+- `journal_sha256` and `snapshot_bytes`: workload identity/size. Compare only rows
+  with the same fingerprint, settings, interpreter, and instrumentation modes.
+- `skipped_records`: metadata, out-of-range records, malformed records, unknown
+  event kinds/versions, invalid event payloads, or oversized records. Records over
+  8 MiB are skipped with bounded reader memory. Non-metadata skips mean incomplete
+  coverage, not success at reproducing every saved event.
+
+`--repeat` creates fresh presentation state for each pass within one process;
+library/OS caches remain warm. Retained transcript/output cycles are collected
+between passes, outside measurement, so one pass does not inherit another's
+transcript or cleanup cost. `both` alternates mode order across repeats to
+reduce ordering bias. Use medians, not one pass. For cold-start comparisons, run
+separate processes too. Errors emit only their exception class and the session
+index, continue with other sessions, and exit nonzero.
+
+With `--profile`, the new private directory contains a separate capture for every
+pass, e.g. `session-1-streamed-1/cpu.txt`. Detailed CPU profiling can be much slower;
+first locate an expensive session/attempt without it. Profiles retain code paths
+as described above. Workload hashes and timing reports are not a guarantee of
+anonymization; keep real captures local and inspect before sharing.
+
+**`end-only` is a benchmark experiment, not a production optimization.** It disables
+incremental block parsing but still renders at existing message/thinking/tool/turn
+finish boundaries. It delays visible output and can change Markdown spacing or
+cross-block interpretation. Differences in `rendered_characters` are expected;
+its speedup is an opportunity estimate, not evidence of equivalent UI behavior.
+
 ## Initial findings
 
 Measured locally on macOS arm64, Python 3.14.0, at width 80, with three fresh
@@ -142,20 +251,58 @@ profile records 125,750 paragraph parses for 500 items, consistent with parsing
 1 + 2 + … + 500 items, then the final render. This is a demonstrated component
 hotspot, not proof that it accounts for all resource usage in a real session.
 
+### Real-session replay findings
+
+A local replay of **95 saved sessions**, 249 recorded attempts, and 99,168 display
+and attempt-boundary events covered about 35.4 MB of journals. Width was 80,
+thinking shown, command scrollback off. Each mode ran three times with fresh
+presentation state, alternating mode order, and garbage collection outside timing.
+No malformed, unknown, invalid, or oversized records were skipped; only tree /
+compaction metadata was excluded. No session contents or identifiers are published.
+
+Sums of per-session median CPU times:
+
+| Component | Normal streamed rendering | Experimental end-only |
+| --- | ---: | ---: |
+| Presentation and Rich rendering | 3.42 s | 2.20 s |
+| Whole replay, including journal decoding/validation | 3.84 s | 2.61 s |
+
+That is about **36% less rendering CPU**, but only about **1.2 CPU seconds saved
+across the whole archive**. Repeated parsing is a real optimization opportunity,
+not sufficient evidence that Markdown explains sustained resource usage. Headless
+replay excludes the live prompt layout and transient previews, which may dominate
+while the app is running. Real-session profiles also show Rich wrapping/highlighting
+and text sanitization; optimizing only the Markdown parser cannot remove those.
+These are local workload observations, not cross-machine performance guarantees.
+
+A separate **uninstrumented** idle A/B check used fresh offline processes in real
+tmux (100×32), waited three seconds after prompt readiness, then measured process
+CPU for 15 seconds. Three trials per variant, in alternating order, gave a median
+**4.04% of one core with periodic refresh versus 0.31% with refresh disabled**.
+The normal variant ranged from 3.18–5.25%; the disabled variant from 0.30–0.31%.
+Disabling refresh was an isolated runtime experiment, not a committed behavior
+change; it does not validate active animation. This is about a **92% reduction in
+idle CPU** in that setup. Resource/function profiling adds its own CPU cost, so
+these figures were measured externally without either profiler enabled.
+
 ### Optimization order
 
-1. **Stop reparsing growing Markdown containers on every newline.** First prototype
-   coalesced boundary checks and explicit fenced-block state, then handle lists and
-   quotes without invalid early commits. Target near-linear scaling in the 250 /
-   500 / 1,000-line benchmark, preserving exact static-versus-streamed output,
-   cancellation flushes, and chunk-boundary independence. Run `test_transcript.py`
-   and real-tmux thinking/streaming regressions before shipping any change.
-2. **Measure actual idle and active terminal rendering.** Capture 60 seconds idle,
-   60 seconds streaming, and a large command/edit preview at fixed pane dimensions.
-   Compare process CPU and function-call counts. Candidates: repeated
-   `preview_layout()` work per redraw, constant spinner/resize wakeups, and Git
-   branch polling. Cache unchanged layout work or gate refreshes only if measured;
-   preserve real-tmux CPR, resize, and editing regressions.
+1. **Stop idle periodic redraws.** The prompt currently enables a spinner refresh
+   timer even when nothing is running. An offline real-tmux function profile showed
+   about 235 redraw calls over an 18-second idle capture, dominated by prompt_toolkit
+   layout/width allocation, not Markdown. Replace unconditional refresh with an
+   activity-aware tick: preserve active spinners and tool elapsed times, but let
+   idle input/state/resize events drive rendering. Do not permanently disable
+   refresh in production. Validate idle CPU and active animation separately in real
+   tmux, including CPR, resize, completion, cancellation, and model initialization.
+2. **Avoid redundant layout and parsing work while active.** Cache unchanged preview
+   layout/wrapping per render or content/width/theme revision, rather than calculating
+   it separately in multiple height/content callbacks. Coalesce Markdown boundary
+   checks and track fenced-block state so long containers are not reparsed on every
+   newline. The end-only comparison is a ceiling experiment, not the implementation:
+   keep streamed visibility, exact chunk-boundary behavior, and cancellation flushes.
+   Target near-linear scaling on the synthetic list benchmark and lower CPU on real
+   journals; keep `test_transcript.py` and real-tmux streaming/preview regressions.
 3. **Separate persistence cost from rendering.** Use the same synthetic model
    stream with saving on/off, varying delta count and history size. Measure journal
    append count, CPU, event-loop delay, bytes written, and resume time. Candidates:
@@ -171,10 +318,11 @@ hotspot, not proof that it accounts for all resource usage in a real session.
    PID locally and investigate that command or managed proxy separately. Changing
    pcode's renderer will not fix an expensive external process.
 
-Items 2–5 remain hypotheses or measurement tasks. No rendering, persistence, or
-history optimization is included in the profiling change itself. A representative
-capture of the high-resource live session is still needed to prioritize beyond
-the confirmed Markdown scaling problem.
+Idle redraw work and repeated parsing are measured; preview caching, persistence,
+and history changes still need targeted before/after tests. No production rendering,
+persistence, or history optimization is included in the replay tooling change.
+Use a live profile of the high-resource workload to distinguish active preview
+rendering, backend work, and external processes before applying the remaining fixes.
 
 ## Profiler references
 
