@@ -886,10 +886,10 @@ def create_prompt(
         return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
     @lru_cache(maxsize=1)
-    def preview_body(edits: bool, body: str, width: int, theme: str):
+    def preview_body(diff: bool, body: str, width: int, theme: str):
         # Only the most recent body is retained. Titles and height/tail allocation
         # stay outside this cache; width, kind and syntax theme affect rendering.
-        if edits:
+        if diff:
             return edit_preview_rows(body, width, theme)
         return [
             ("class:bottom-toolbar.text", row.plain)
@@ -943,13 +943,18 @@ def create_prompt(
         event = next(
             reversed((activity.edit_previews if edits else activity.command_outputs).values())
         )
+        # A sandboxed snippet is pending arguments like an edit, but it is code
+        # rather than a diff: no +/- coloring, and nothing has run yet.
+        code = bool(edits) and event.kind == "code"
         title = (
-            f"Preparing edit · {event.path} · not applied"
+            "Preparing code · not yet run"
+            if code
+            else f"Preparing edit · {event.path} · not applied"
             if edits
             else "$ " + command_preview(event.command)
         )
         body = event.text if edits else event.output
-        rows = preview_body(bool(edits), body, width, transcript.code_theme)
+        rows = preview_body(bool(edits) and not code, body, width, transcript.code_theme)
         commands = [("class:plan", title), *rows[-budget:]]
         return plans, commands, editor_height
 

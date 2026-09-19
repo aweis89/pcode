@@ -36,6 +36,32 @@ app.run()
 """
 
 
+CODE_SCRIPT = r"""
+import asyncio, os, tempfile
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
+from pcode.app import PreviewApp
+from pcode.runtime import EditPreview, Message
+
+class Runtime:
+    session = None
+    turns = 0
+
+    async def stream(self, prompt):
+        self.turns += 1
+        snippet = "LIVE_CODE_LINE = await grep(pattern='x')"
+        yield EditPreview("one", "run_code", snippet, kind="code")
+        await asyncio.sleep(1)
+        yield EditPreview("one")
+        yield Message(f"TURN_{self.turns}_DONE")
+
+    def reset(self):
+        pass
+
+app = PreviewApp(model="test:local", runtime=Runtime())
+app.run()
+"""
+
+
 def history(pane):
     return pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
 
@@ -70,6 +96,18 @@ def test_completed_edits_toggle_and_resize_without_duplicates(pane):
         screen = capture(pane, "kept draft", columns=width)
         assert input_rows(screen) == 1
         assert history(pane).count("+SAVED_EDIT_LINE") == 1
+
+
+@pytest.mark.parametrize("pane", [CODE_SCRIPT], indirect=True)
+def test_sandboxed_snippets_preview_as_code_without_growing_the_editor(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "go", "Enter")
+    screen = capture(pane, "LIVE_CODE_LINE", running=True)
+    assert "Preparing code" in screen and "not applied" not in screen
+    assert input_rows(screen) == 1
+    capture(pane, "TURN_1_DONE")
+    # The snippet is a pending argument, so it never reaches the transcript.
+    assert "LIVE_CODE_LINE" not in history(pane)
 
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
