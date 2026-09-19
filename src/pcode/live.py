@@ -39,7 +39,7 @@ from pydantic_ai_harness.shell import (
     CommandStartedEvent,
 )
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersistence
-from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent
+from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent, SubAgents
 
 from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, summarize
@@ -125,6 +125,29 @@ class AgentRuntime:
         for capability in self.agent.root_capability.capabilities:
             if isinstance(capability, Planning):
                 capability.store_resolver = lambda ctx: self.plan_store
+
+    def _persist_child_runs(self) -> None:
+        """Record delegated runs in the current session's store.
+
+        Sub-agents receive `shared_capabilities`, not the per-run capabilities the
+        parent passes to `run_stream_events`, so child requests are otherwise
+        absent from the store: their tokens reach session totals but nothing says
+        how they were spent. The store changes with `/new`, so this is resolved
+        per turn rather than at construction. `agent_name` is left unset: one
+        shared capability serves every sub-agent, and `parent_run_id` already
+        marks a run as delegated.
+        """
+        for capability in self.agent.root_capability.capabilities:
+            if not isinstance(capability, SubAgents):
+                continue
+            shared = [
+                shared_capability
+                for shared_capability in capability.shared_capabilities
+                if not isinstance(shared_capability, StepPersistence)
+            ]
+            if self.session is not None:
+                shared.append(StepPersistence(store=self.session.store))
+            capability.shared_capabilities = shared
 
     async def refresh_context(self) -> None:
         """Refresh optional metadata outside rendering and before model requests."""
@@ -437,6 +460,7 @@ class AgentRuntime:
 
     async def _stream(self, prompt: str | None, run_id: str) -> AsyncIterator[Event]:
         await self.refresh_context()
+        self._persist_child_runs()
         plan_items = [item.model_dump(mode="json") for item in await self.plan_store.get_items()]
         preview = (
             StreamingPlanPreview()
@@ -509,6 +533,11 @@ class AgentRuntime:
                         yield start
                 elif isinstance(event, DelegationEndEvent):
                     delegation_ends[event.tool_call_id] = event
+                    # Deliberately not added to session totals: a child's *tokens*
+                    # already reach `result.usage` even under its own budget, so
+                    # adding `event.usage` here counts them twice. Only its
+                    # request count stays isolated, which is the point of the
+                    # budget. Tokens from an interrupted turn are a separate gap.
                     # Timeouts/budget stops can leave a child's tool without a
                     # result. Settle it before the parent resumes its tool loop.
                     for call_id, child in list(child_tools.items()):

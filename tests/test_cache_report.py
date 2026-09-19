@@ -120,6 +120,36 @@ def test_healthy_session_passes_and_regression_fails(tmp_path):
     assert regressed.read_share < healthy.read_share
 
 
+def test_delegated_runs_are_scored_separately(tmp_path):
+    """A sub-agent's history is a different conversation sharing the same store."""
+    directory = write_session(tmp_path, "fffffff6", healthy=True)
+    store = SqliteStepStore(database=directory / "steps.sqlite3")
+    history: list = [ModelRequest(parts=[UserPromptPart(content="task")])]
+
+    async def build() -> None:
+        for index in range(4):
+            # A child that reuses nothing: every request re-reads its prefix.
+            history.append(response(100 + index, read=0, write=2000, total=4000))
+            history.append(ModelRequest(parts=[UserPromptPart(content="more")]))
+            await store.save_snapshot(
+                ContinuableSnapshot(
+                    run_id="child",
+                    step_index=index,
+                    messages=list(history),
+                    parent_run_id="run",
+                )
+            )
+
+    asyncio.run(build())
+    report = cache_report.analyze(directory)
+    # The parent's own score is unaffected by the child's traffic.
+    assert [f.level for f in report.findings if not f.message.startswith("delegated")] == ["ok"]
+    assert len(report.delegated) == 4
+    delegated = [f for f in report.findings if f.message.startswith("delegated")]
+    assert delegated and delegated[0].level == "fail"
+    assert "delegated: requests=4" in cache_report.render(report)
+
+
 def test_duplicate_plan_reminders_are_reported(tmp_path):
     tag = cache_report.PLAN_TAG
     directory = write_session(
