@@ -88,7 +88,7 @@ def test_command_diagnostic_survives_event_round_trip_and_uses_output_fallback()
     transcript.events((ToolSummary(**asdict(event)),))
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
         "─" * 100,
-        "✗ Run failed · 0.5s",
+        "✗ Run · 0.5s",
         "  pytest -q → exit 1",
         "  [stderr] missing module",
         "    traceback context",
@@ -158,7 +158,7 @@ def test_failed_command_block_keeps_the_ordinary_title_color(command):
         return stream.getvalue()
 
     output = render(True)
-    assert "✗ Run failed" in output
+    assert "✗ Run" in output and "failed" not in Text.from_ansi(output).plain
     assert "pytest -q" in Text.from_ansi(output).plain
     assert "\x1b[1;31m" not in output
     codes = re.compile(r"\x1b\[[0-9;]*m")
