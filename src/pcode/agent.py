@@ -10,6 +10,7 @@ from pydantic_ai import Agent
 from pydantic_ai.capabilities import CombinedCapability
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
+from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
 from pydantic_ai_harness.exa import ExaSearch
@@ -19,6 +20,7 @@ from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
+from pcode.cache_settings import ProviderCacheSettings, model_settings
 from pcode.cache_warnings import CacheBustReporting
 from pcode.code_mode import create_code_mode
 from pcode.delegation import DelegationReporting, stream_child_activity
@@ -30,8 +32,12 @@ from pcode.output_limits import ModelOutputLimits
 from pcode.planning import IdentifiedPlanning
 from pcode.repo_context import create_repo_context
 from pcode.tool_output_limits import create_tool_output_limits
-from pcode.usage_limits import UnlimitedRequests
 from pcode.workspace_filesystem import WorkspaceFileSystem
+
+# Generous enough for a real investigation, small enough that a child stuck in a
+# loop is stopped within a turn rather than after a session's worth of requests.
+EXPLORER_REQUEST_LIMIT = 120
+EXPLORER_TIMEOUT_SECONDS = 900
 
 
 def create_coder(workspace: Path) -> CombinedCapability:
@@ -92,7 +98,6 @@ def create_coder(workspace: Path) -> CombinedCapability:
             "enforced permission boundary. Stop any background commands you start."
         ),
         capabilities=[
-            UnlimitedRequests(),
             replace(WorkspaceFileSystem.from_filesystem(parent_files), read_only=True),
             replace(parent_shell),
             create_repo_context(workspace),
@@ -100,13 +105,25 @@ def create_coder(workspace: Path) -> CombinedCapability:
     )
     coder.capabilities.append(
         SubAgents(
-            agents=[SubAgent(explorer)],
+            agents=[
+                SubAgent(
+                    explorer,
+                    # An unattended child is the runaway worth bounding: its budget
+                    # is its own, so exhausting it steers the parent with an
+                    # observation instead of aborting the turn. Child usage is
+                    # then isolated too, and rejoins session totals through
+                    # `DelegationEndEvent.usage`.
+                    usage_limits=UsageLimits(request_limit=EXPLORER_REQUEST_LIMIT),
+                    timeout_seconds=EXPLORER_TIMEOUT_SECONDS,
+                )
+            ],
             agent_folders=None,
             event_stream_handler=stream_child_activity,
             shared_capabilities=[
                 MeridianSessionIdentity(),
                 ModelOutputLimits(),
                 CacheBustReporting(),
+                ProviderCacheSettings(),
                 replace(output_limits),
             ],
         )
@@ -125,31 +142,6 @@ def create_coder(workspace: Path) -> CombinedCapability:
     return CombinedCapability(
         [c for c in coder.capabilities if not isinstance(c, ClearToolResults)]
     )
-
-
-# Pydantic AI 2.45.0 adds no `cache_control` of its own: without these settings an
-# Anthropic conversation re-reads its whole prefix at full price every request
-# (confirmed against captured request bodies and saved-session usage records).
-# `anthropic_cache` is the server-side automatic breakpoint, which moves forward as
-# history grows; the two explicit breakpoints keep instructions and tool definitions
-# cached. Meridian is excluded on purpose: its passthrough proxy strips client
-# `cache_control` and drives caching from its own lineage hash.
-ANTHROPIC_CACHE_SETTINGS = {
-    "anthropic_cache": "5m",
-    "anthropic_cache_instructions": True,
-    "anthropic_cache_tool_definitions": True,
-}
-
-
-def model_settings(model: str) -> dict | None:
-    if model.startswith("openai-codex:"):
-        # Codex does not emit visible reasoning unless summaries are requested.
-        # Always receive them so Ctrl+T can reveal the preview mid-turn; the
-        # display preference remains local and never changes reasoning effort.
-        return {"openai_reasoning_summary": "detailed"}
-    if model.startswith("anthropic:"):
-        return dict(ANTHROPIC_CACHE_SETTINGS)
-    return None
 
 
 def create_agent(model: str, workspace: Path) -> Agent:

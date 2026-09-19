@@ -163,6 +163,16 @@ never child text/thinking deltas. Inspect installed `subagents/_toolset.py` and
 Use the structured delegation outcome: timeout/budget limits can return ordinary
 successful tool strings. A max-calls refusal emits no lifecycle events; cancellation
 and uncontained errors may omit the end event, so keep turn-end interruption cleanup.
+
+Do not add `DelegationEndEvent.usage` to session totals. `SubAgent.usage_limits`
+isolates a child's *request count* (that is what bounds a runaway child and turns
+exhaustion into a steering message rather than a raised limit), but its tokens
+still arrive in the parent's `result.usage`, so adding them again doubles every
+delegated token. Verified against the installed `_toolset.py` and a delegated run.
+Sub-agents also receive only `shared_capabilities`, never the per-run capabilities
+the parent passes to `run_stream_events`: cache settings and step persistence must
+be installed there, and `SavedSession.recover()` must skip runs with a
+`parent_run_id`. See [prompt caching and plan reminders](prompt-caching.md).
 Child tool IDs are scoped by parent call ID, and persisted tool events retain
 `parent_call_id` for replay. The panel pins active delegates within its existing
 row budget; keep `tests/test_delegation_tmux.py` exercising real CPR and resize.

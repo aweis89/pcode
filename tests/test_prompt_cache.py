@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from pcode.agent import ANTHROPIC_CACHE_SETTINGS, create_agent, model_settings
+from pcode.agent import create_agent
+from pcode.cache_settings import ANTHROPIC_CACHE_SETTINGS, model_settings
 from pcode.preferences import apply_effort, apply_thinking
 
 

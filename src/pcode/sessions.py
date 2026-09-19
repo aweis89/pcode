@@ -260,8 +260,13 @@ class SavedSession:
         """
         if self.tree.nodes:
             return await self.history_at(self.tree.active)
-        # Compatibility with sessions whose journal predates run IDs.
-        runs = await self.store.list_runs(conversation_id=self.info.id)
+        # Compatibility with sessions whose journal predates run IDs. Delegated
+        # runs are stored too, and a sub-agent's history is not this conversation.
+        runs = [
+            run
+            for run in await self.store.list_runs(conversation_id=self.info.id)
+            if run.parent_run_id is None
+        ]
         for run in reversed(runs):
             snapshot = await self.store.latest_snapshot(run_id=run.run_id)
             if snapshot is not None:

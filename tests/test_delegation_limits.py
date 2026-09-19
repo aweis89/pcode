@@ -9,7 +9,7 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 from pcode.agent import create_coder
 
 
-def test_delegation_exceeds_default_limit_and_preserves_shared_usage(tmp_path):
+def test_child_runs_past_the_parents_near_exhausted_request_budget(tmp_path):
     (tmp_path / "sample.txt").write_text("evidence")
     child_requests = 0
 
@@ -38,5 +38,11 @@ def test_delegation_exceeds_default_limit_and_preserves_shared_usage(tmp_path):
         agent.run("Explore", usage=usage, usage_limits=UsageLimits(request_limit=None))
     )
     assert result.output == "Done"
+    # The parent starts 50 requests in, which is the library's default cap. The
+    # child is unaffected: it runs to its own stopping point.
     assert child_requests == 51
-    assert result.usage.requests == 103
+    # Its own budget keeps those requests off the parent's ledger, so a long
+    # delegation cannot exhaust the turn. Tokens still aggregate (see
+    # tests/test_delegation_cache.py).
+    assert result.usage.requests == 52
+    assert usage.input_tokens == result.usage.input_tokens

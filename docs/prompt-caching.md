@@ -128,6 +128,34 @@ tail since the last user prompt. A passing wire test does not prove provider-sid
 reuse. See the [README's cache diagnostics](../README.md#prompt-cache-warnings)
 for fingerprint dumps and warning interpretation.
 
+## Delegated runs
+
+A sub-agent inherits the parent's *model object* but is run with
+`model_settings=None` (`subagents/_toolset.py`), and cache settings live on the
+agent, not the model. A delegated Anthropic run therefore asked for no caching
+at all. `ProviderCacheSettings` in [`cache_settings.py`](../src/pcode/cache_settings.py)
+applies them per request instead, for the parent's sub-agents and across a
+mid-session model switch, deferring to any setting already on the request.
+Only Anthropic needs this: Codex caches server-side and Meridian strips client
+markers, so both pass through untouched.
+
+Three things about delegation are easy to get backwards, and each has a test:
+
+- **Sub-agents do not receive the parent's per-run capabilities**, only
+  `shared_capabilities`, so child requests were absent from the step store.
+  `AgentRuntime._persist_child_runs` adds `StepPersistence` there per turn, since
+  the store changes with `/new`. Child runs are marked by `parent_run_id`; the
+  cache report scores them separately, because a sub-agent's history is a
+  different conversation and mixing the two reports a rewrite at every hand-off.
+- **`SavedSession.recover()` must skip delegated runs.** They share the store,
+  and a sub-agent's history is not the conversation to resume.
+- **A per-delegation `usage_limits` isolates request counts, not tokens.** Child
+  tokens still reach the parent's `result.usage`, so adding
+  `DelegationEndEvent.usage` to session totals double-counts every delegated
+  token. The budget exists so an unattended child is stopped with a steering
+  message instead of aborting the turn -- without it, a child hitting a shared
+  limit raises through the parent.
+
 ## Reading the provider's verdict from past sessions
 
 Every saved session records `cache_read_tokens` and `cache_write_tokens` per
