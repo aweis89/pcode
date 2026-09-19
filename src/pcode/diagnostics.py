@@ -2,6 +2,7 @@
 
 import os
 import re
+import traceback
 from importlib.metadata import version
 
 _TOKEN = re.compile(
@@ -23,6 +24,24 @@ def redact(text: str) -> str:
     text = _TOKEN.sub("[redacted]", text)
     text = _ASSIGNMENT.sub(r"\1[redacted]", text)
     return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+
+
+# Enough for a deep cause chain through the agent graph, small enough that a
+# failing loop cannot fill a session directory.
+REPORT_CHARS = 32_000
+
+
+def error_report(error: BaseException) -> str:
+    """The frames `error_details` deliberately omits, redacted and bounded.
+
+    Frames and exception messages only: locals are never captured, so a request
+    object or credential held in a stack frame cannot reach the file. Keep the
+    end when truncating -- the innermost frames are where the failure is.
+    """
+    text = redact("".join(traceback.format_exception(error)))
+    if len(text) <= REPORT_CHARS:
+        return text
+    return "[earlier frames omitted]\n" + text[-REPORT_CHARS:]
 
 
 def error_details(error: BaseException) -> dict:

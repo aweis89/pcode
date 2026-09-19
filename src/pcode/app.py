@@ -1326,7 +1326,12 @@ class PreviewApp:
         elif failure:
             self.transcript.error(error_message(failure), title="Agent failed")
         if (cancelled or failure) and self.runtime.session:
-            self.transcript.note(f"Session and diagnostics: {self.runtime.session.directory}")
+            directory = self.runtime.session.directory
+            # Name the traceback file rather than the directory it sits in: the
+            # frames are the point of looking, and a cancelled turn writes none.
+            errors = directory / "errors.log"
+            target = errors if failure and errors.exists() else directory
+            self.transcript.note(f"Session and diagnostics: {target}")
             if self.runtime.recovery_blocked:
                 self.transcript.warning(self.runtime.recovery_blocked)
         return not (cancelled or failure)

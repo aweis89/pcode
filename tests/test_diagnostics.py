@@ -6,7 +6,7 @@ from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.models.function import FunctionModel
 
-from pcode.diagnostics import error_details
+from pcode.diagnostics import REPORT_CHARS, error_details, error_report
 from pcode.live import AgentRuntime
 from pcode.sessions import SavedSession
 
@@ -51,6 +51,63 @@ def test_connection_cause_is_saved_and_redacted(tmp_path, monkeypatch):
             assert secret not in json.dumps(detail)
     finally:
         runtime.close()
+
+
+def failing_runtime(tmp_path, error: BaseException):
+    """A runtime whose model always fails inside a named frame."""
+
+    async def model(messages, info):
+        raise error
+        yield "unreachable"
+
+    saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
+    return AgentRuntime(Agent(FunctionModel(stream_function=model)), saved), saved
+
+
+def drive(runtime, expected: type[BaseException]) -> None:
+    async def run():
+        with pytest.raises(expected):
+            _ = [event async for event in runtime.stream("hello")]
+
+    asyncio.run(run())
+
+
+def test_failed_turn_saves_a_redacted_traceback(tmp_path, monkeypatch):
+    """A type and a message name the symptom; only the frames name the line."""
+    monkeypatch.setenv("EXAMPLE_TOKEN", "sensitive-environment-value")
+    runtime, saved = failing_runtime(
+        tmp_path, AttributeError("'NoneType' object has no attribute 'usage'")
+    )
+    try:
+        drive(runtime, AttributeError)
+        report = (saved.directory / "errors.log").read_text()
+    finally:
+        runtime.close()
+
+    assert "AttributeError: 'NoneType' object has no attribute 'usage'" in report
+    # The frames are the point: without them the transcript already suffices.
+    assert 'File "' in report and "in model" in report
+    assert "sensitive-environment-value" not in report
+    assert (saved.directory / "errors.log").stat().st_mode & 0o777 == 0o600
+
+
+def test_cancelled_turn_saves_no_traceback(tmp_path):
+    """Stopping on purpose is not a defect; only failures are worth frames."""
+    runtime, saved = failing_runtime(tmp_path, asyncio.CancelledError())
+    try:
+        drive(runtime, asyncio.CancelledError)
+    finally:
+        runtime.close()
+    assert not (saved.directory / "errors.log").exists()
+
+
+def test_reports_are_bounded_and_keep_the_innermost_frames():
+    error = RuntimeError("x" * (REPORT_CHARS * 2))
+    error.__cause__ = OSError("the original failure")
+    report = error_report(error)
+    assert len(report) <= REPORT_CHARS + len("[earlier frames omitted]\n")
+    assert report.startswith("[earlier frames omitted]")
+    assert report.rstrip().endswith("x" * 20)
 
 
 def test_implicit_context_and_explicit_cause_precedence():
