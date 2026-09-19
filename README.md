@@ -560,7 +560,7 @@ Resume accepts an unambiguous ID prefix (at least 8 characters) and restores the
 saved model, workspace, and structured message history. It prints recent transcript
 blocks and waits for your next message; it does not automatically re-run tools.
 A different explicit `-m` or `-C` is rejected on resume. Only one process may open
-a session for writing. `/session` opens a popup of saved conversations in the current
+a session for writing. `/resume` opens a popup of saved conversations in the current
 workspace, labeled by their first prompt (newest first). Use ↑/↓ and Enter to
 resume in place, or Esc to cancel. Resuming restores the saved model, history,
 and plan.
@@ -694,7 +694,9 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
 - `/autocompact on|off`: opt into automatic LLM compaction (saved user preference; default off).
 - `/new`: start a new saved conversation without clearing the on-screen transcript or input history.
-- `/session`: choose a saved conversation by its first prompt and resume it in place.
+- `/resume`: choose a saved conversation by its first prompt and resume it in place.
+- `/session`: show the current session's model, workspace, usage, and storage path in a popup.
+  The same details are printed inline by `/context`.
 - `/tree`: [browse and fork the conversation](docs/conversation-tree.md); select a user prompt to
   edit it, or an assistant response to continue from there. Existing branches are kept.
 - `/quit` (alias `/exit`): exit.
@@ -865,7 +867,7 @@ pending message count. Steering messages join the next model request; queue-mode
 messages run in order after the current turn finishes. Ctrl+S cycles send modes. Slash commands use a separate async
 handler, so help, inspection, theme, context, and effort controls remain available
 while the model works. `/model` also opens while working and applies from the next
-request. `/new`, `/session`, `/login`, and `/logout` require an idle conversation: cancel
+request. `/new`, `/resume`, `/login`, and `/logout` require an idle conversation: cancel
 or wait, then retry. `/quit` (or `/exit`) cancels the active run and waits for its
 cleanup before exiting. Ctrl+C or Ctrl+D cancels the current turn, clears queued
 messages, and preserves the unsubmitted draft and cursor. A failed turn also

@@ -11,7 +11,7 @@ from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
-from pcode.session_ui import session_dialog
+from pcode.session_ui import session_dialog, session_info_dialog
 from pcode.sessions import SavedSession, SessionError, first_prompt
 
 
@@ -31,6 +31,51 @@ def test_popup_keyboard(keys, expected):
             assert await asyncio.wait_for(task, 2) == expected
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("keys", ["\x1b", "\r", "q"])
+def test_info_popup_closes_on_every_exit_key(keys):
+    async def run():
+        with create_pipe_input() as pipe:
+            dialog = session_info_dialog(
+                [("Model", "test:local"), ("Turns", "2")],
+                input=pipe,
+                output=DummyOutput(),
+            )
+            task = asyncio.create_task(dialog.run_async())
+            await asyncio.sleep(0.05)
+            pipe.send_text(keys)
+            assert await asyncio.wait_for(task, 2) is None
+
+    asyncio.run(run())
+
+
+def test_session_overview_reports_storage_and_feeds_context(tmp_path):
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    stream = StringIO()
+    app = PreviewApp(workspace=tmp_path, session_dir=root, console=Console(file=stream, width=200))
+    app.model = "test:local"
+    app.runtime = AgentRuntime(Agent("test"), saved)
+    try:
+        rows = dict(app.session_overview())
+        assert rows["Model"] == "test:local"
+        assert rows["Session"] == saved.info.id
+        assert rows["Saved in"] == str(saved.directory)
+        # /context prints exactly what the popup shows, so the two cannot drift.
+        app.handle("/context")
+        assert f"Saved in: {saved.directory}" in stream.getvalue()
+    finally:
+        app.runtime.close()
+
+
+def test_session_command_requests_the_info_popup(tmp_path):
+    app = PreviewApp(workspace=tmp_path, console=Console(file=StringIO()))
+    app.handle("/session")
+    assert app.session_info_requested
+    assert not app.session_requested
+    with pytest.raises(ValueError, match="Usage: /session"):
+        app.registry.find("/session").handler("extra")
 
 
 def test_first_prompt_is_not_latest_and_handles_empty_session(tmp_path):
@@ -59,7 +104,7 @@ def test_resume_restores_before_replacing_runtime(tmp_path):
         history = previous.history
         previous.close()
         app = PreviewApp(workspace=tmp_path, session_dir=root, console=Console(file=StringIO()))
-        app.handle("/session")
+        app.handle("/resume")
         assert app.session_requested
         with patch("pcode.agent.create_agent", return_value=agent):
             await app.resume_session(identity)
