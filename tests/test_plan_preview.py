@@ -133,7 +133,8 @@ def test_unconfirmed_preview_rolls_back_on_cancel_error_or_rejected_tool(ending)
             Agent(FunctionModel(stream_function=model), capabilities=[Planning()])
         )
         await runtime.plan_store.set_items([confirmed])
-        app = PreviewApp(model="test:local", runtime=runtime, console=Console(file=StringIO()))
+        printed = StringIO()
+        app = PreviewApp(model="test:local", runtime=runtime, console=Console(file=printed))
         app.activity.plan = [confirmed.model_dump(mode="json")]
         original = runtime.stream
 
@@ -165,7 +166,7 @@ def test_unconfirmed_preview_rolls_back_on_cancel_error_or_rejected_tool(ending)
         assert app.activity.displayed_plan == [confirmed.model_dump(mode="json")]
         assert await runtime.plan_store.get_items() == [confirmed]
         if ending == "rejected":
-            assert any(call.event.failed for call in app.activity.tools.calls)
+            assert "✗ Plan failed" in printed.getvalue()
 
     asyncio.run(run())
 

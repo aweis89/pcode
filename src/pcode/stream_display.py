@@ -15,7 +15,6 @@ from pcode.runtime import (
     ToolStarted,
     ToolSummary,
 )
-from pcode.tool_display import COMMAND_TOOLS
 
 
 def present_events(events, *, activity, transcript, edits) -> None:
@@ -72,10 +71,9 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         activity.plan_preview = event.items
     elif isinstance(event, (ToolStarted, ToolSummary)):
         output.finish_thinking()
-        # Hidden commands, including failures, do not interrupt prose.
-        if isinstance(event, ToolSummary) and (
-            (event.failed and event.name not in COMMAND_TOOLS) or transcript.streams_command(event)
-        ):
+        # Settled calls land in scrollback, so prose must be committed first.
+        # Suppressed calls, such as successful planning, do not interrupt it.
+        if transcript.writes_tool_result(event):
             output.finish()
         present((event,))
     elif isinstance(event, Message):

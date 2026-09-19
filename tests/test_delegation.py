@@ -160,12 +160,11 @@ def test_active_delegations_are_pinned_and_children_share_the_row_budget():
     history = ToolHistory()
     history.record(ToolStarted("delegate_task", "explorer · investigate", "parent"))
     for i in range(20):
+        history.record(ToolStarted("read_file", f"file-{i}", str(i)))
         history.record(ToolSummary("read_file", f"file-{i}", call_id=str(i)))
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
-    history.record(
-        ToolSummary("read_file", "other.py", call_id="parent:done", parent_call_id="parent")
-    )
-    assert len(history.calls) == 10
+    history.record(ToolStarted("read_file", "newest.py", "status-row"))
+    assert [c.event.call_id for c in history.calls] == ["parent", "parent:child", "status-row"]
     for budget in range(1, 10):
         rows = task_panel_rows([], history, budget, "⟳")
         assert len(rows) <= min(3, budget)
@@ -181,9 +180,8 @@ def test_active_delegations_are_pinned_and_children_share_the_row_budget():
             [{"content": "done", "status": "completed"}], history, 4, "⟳"
         )
     )
-    history.interrupt_running()
-    assert not history._running
-    assert not any(c.running for c in history.calls)
+    history.clear()
+    assert history.calls == []
 
 
 def test_parallel_parents_take_priority_over_child_chatter():
@@ -191,6 +189,7 @@ def test_parallel_parents_take_priority_over_child_chatter():
     for i in range(4):
         history.record(ToolStarted("delegate_task", f"explorer-{i}", str(i)))
         history.record(ToolStarted("read_file", "file", f"{i}:child", parent_call_id=str(i)))
+    history.record(ToolStarted("read_file", "newest.py", "status-row"))
     rows = history.rows(3)
     assert len(rows) == 3
     assert all("Delegate" in text and "Read" not in text for _, text in rows)
@@ -303,8 +302,7 @@ def test_cancel_or_propagated_crash_cleans_up_real_child_and_panel(crash):
                 task.cancel()
             assert not await task
             assert stopped.is_set()
-            assert not app.activity.tools._running
-            assert all(c.interrupted for c in app.activity.tools.calls)
+            assert app.activity.tools.calls == []
         finally:
             if not task.done():
                 task.cancel()
@@ -336,11 +334,8 @@ def test_replay_keeps_child_identity_and_interrupted_delegation(tmp_path):
             console=Console(file=StringIO()),
         )
         app.replay()
-        parent, child = app.activity.tools.calls
-        assert parent.event.activity == "Thinking"
-        assert child.event.parent_call_id == "parent"
-        assert parent.interrupted and child.interrupted
-        assert not app.activity.tools._running
+        # A cancelled turn leaves nothing running, so the panel starts empty.
+        assert app.activity.tools.calls == []
     finally:
         saved.close()
 
@@ -381,16 +376,14 @@ def test_rejected_delegation_has_no_false_success():
 
 
 @pytest.mark.parametrize("interrupt", [False, True])
-def test_evicted_delegate_remains_visible_when_it_settles(interrupt):
+def test_settled_or_interrupted_delegate_leaves_the_panel(interrupt):
     history = ToolHistory()
     history.record(ToolStarted("delegate_task", "explorer · investigate", "parent"))
-    for i in range(20):
-        history.record(ToolSummary("read_file", f"file-{i}", call_id=str(i)))
+    history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     if interrupt:
-        history.interrupt_running()
-        assert "interrupted" in history.rows(1)[0][1]
+        history.clear()
     else:
+        history.record(ToolSummary("read_file", "child.py", call_id="parent:child"))
         history.record(ToolSummary("delegate_task", "explorer → Completed", call_id="parent"))
-        assert "Completed" in history.rows(1)[0][1]
-    assert len(history.calls) == 10
-    assert not history._running
+    assert history.calls == []
+    assert history.rows(3) == []

@@ -1,4 +1,4 @@
-"""Bounded tool activity, separate from the conversation transcript."""
+"""Live tool activity: running calls only, since settled ones reach scrollback."""
 
 from dataclasses import dataclass, field
 from time import monotonic
@@ -8,134 +8,96 @@ from rich.text import Text
 from pcode.runtime import ToolStarted, ToolSummary
 from pcode.tool_display import PLAN_TOOLS, command_preview, label, plain
 
+# Delegates outlive their own chatter, so they keep the panel's first rows.
+DELEGATE = "delegate_task"
+
 
 @dataclass
 class ToolCall:
-    event: ToolStarted | ToolSummary
+    event: ToolStarted
     started: float = field(default_factory=monotonic)
-    interrupted: bool = False
-
-    @property
-    def running(self) -> bool:
-        return isinstance(self.event, ToolStarted) and not self.interrupted
 
     def line(self) -> str:
+        """The call without a status icon; each surface supplies its own."""
         event = self.event
-        icon = "⟳" if self.running else "–" if self.interrupted else "!" if event.failed else "✓"
-        elapsed = (
-            monotonic() - self.started if self.running else getattr(event, "elapsed_seconds", None)
-        )
-        timing = f" · {elapsed:.1f}s" if elapsed is not None else ""
         detail = (
             command_preview(event.command) if event.command else plain(event.detail, limit=None)
         )
-        state = " · interrupted" if self.interrupted else ""
-        if self.running and event.activity:
-            state += f" · {plain(event.activity)}"
-        # Keep failures visible even when the command itself consumes the row.
-        name = label(event.name) + (" failed" if getattr(event, "failed", False) else "")
-        return f"{icon} {name}{state}{timing} · {detail}"
+        state = f" · {plain(event.activity)}" if event.activity else ""
+        return f"{label(event.name)}{state} · {monotonic() - self.started:.1f}s · {detail}"
 
 
 @dataclass
 class ToolHistory:
+    """Calls still in flight, oldest first. A result removes its call."""
+
     calls: list[ToolCall] = field(default_factory=list)
-    # Only unfinished calls live here. Their identities outlast eviction from
-    # the ten-row history, so a late result cannot count as a new invocation.
-    _running: dict[str, ToolCall] = field(default_factory=dict, repr=False)
 
     def record(self, event: ToolStarted | ToolSummary) -> None:
-        # Successful planning operations already have their own panel. Failed
-        # operations still need an inspectable error, rather than disappearing.
-        if event.name in PLAN_TOOLS and not getattr(event, "failed", False):
+        # Planning operations have their own panel, and every settled call is
+        # written to scrollback, so neither belongs in the live view.
+        if event.name in PLAN_TOOLS:
             return
-        call = self._running.get(event.call_id) if event.call_id else None
-        if isinstance(event, ToolSummary) and call is None:
-            call = next(
-                (
-                    c
-                    for c in reversed(self.calls)
-                    if event.call_id and c.event.call_id == event.call_id
-                ),
-                None,
-            )
-        if call is not None:
-            if event.name == "delegate_task" and all(c is not call for c in self.calls):
-                self.calls.append(call)
-                del self.calls[:-10]
-            call.event = event
-            call.interrupted = False
+        existing = next(
+            (c for c in self.calls if event.call_id and c.event.call_id == event.call_id), None
+        )
+        if isinstance(event, ToolSummary):
+            if existing is not None:
+                self.calls.remove(existing)
+        elif existing is not None:
+            # A restated start carries fresh progress, not a new invocation.
+            existing.event = event
         else:
-            call = ToolCall(event)
-            self.calls.append(call)
-            del self.calls[:-10]
-        if event.call_id:
-            if isinstance(event, ToolStarted):
-                self._running[event.call_id] = call
-            else:
-                self._running.pop(event.call_id, None)
-
-    def interrupt_running(self) -> None:
-        for call in self._running.values():
-            if call.event.name == "delegate_task" and all(c is not call for c in self.calls):
-                self.calls.append(call)
-                del self.calls[:-10]
-        for call in [*self.calls, *self._running.values()]:
-            if call.running:
-                call.interrupted = True
-        self._running.clear()
+            self.calls.append(ToolCall(event))
 
     def clear(self) -> None:
         self.calls.clear()
-        self._running.clear()
+
+    @property
+    def active(self) -> ToolCall | None:
+        """The newest call: what the status row above the tasks reports."""
+        return self.calls[-1] if self.calls else None
+
+    @property
+    def background(self) -> list[ToolCall]:
+        """Everything the status row does not already show."""
+        return self.calls[:-1]
 
     def rows(self, count: int, *, nested: bool = False):
-        # Running delegates remain addressable even after their history row is
-        # evicted. Reserve their rows before displaying any recent tool chatter.
-        pinned = [c for c in self._running.values() if c.event.name == "delegate_task"]
-        visible = [(c, False) for c in pinned[:count]]
-        remaining = max(0, count - len(visible))
-        if pinned:
-            for parent in pinned[:count]:
-                children = [c for c in self.calls if c.event.parent_call_id == parent.event.call_id]
-                # At most two child rows per parent and never exceed panel height.
-                children = children[-min(2, remaining) :] if remaining else []
-                index = next(i for i, (c, _) in enumerate(visible) if c is parent) + 1
-                visible[index:index] = [(c, True) for c in children]
-                remaining -= len(children)
-        recent = [
-            c for c in self.calls if not c.event.parent_call_id and all(c is not p for p in pinned)
-        ]
+        """Delegates first: a running sub-agent must stay addressable and visible.
+
+        Its own chatter is bounded so several delegates cannot crowd each other out.
+        """
+        calls = self.background
+        delegates = [c for c in calls if c.event.name == DELEGATE]
+        visible = delegates[:count]
+        remaining = count - len(visible)
+        for parent in delegates[:count]:
+            children = [c for c in calls if c.event.parent_call_id == parent.event.call_id]
+            children = children[-min(2, remaining) :] if remaining else []
+            index = next(i for i, c in enumerate(visible) if c is parent) + 1
+            visible[index:index] = children
+            remaining -= len(children)
         if remaining:
-            visible.extend((c, False) for c in recent[-remaining:])
+            other = [c for c in calls if not c.event.parent_call_id and c.event.name != DELEGATE]
+            visible.extend(other[:remaining])
         lines = []
-        for call, child in visible:
-            style = "class:tool.failed" if getattr(call.event, "failed", False) else "class:plan"
-            if call.running:
-                style = "class:plan.active"
-            indent = ("    " if nested else "") + ("    " if child else "")
-            lines.append((style, indent + call.line()))
+        for call in visible:
+            indent = ("    " if nested else "") + ("    " if call.event.parent_call_id else "")
+            lines.append(("class:plan.active", f"{indent}⟳ {call.line()}"))
         return lines
 
 
 def task_panel_rows(items: list[dict], tools: ToolHistory, budget: int, active_icon: str):
-    """A bounded task viewport with recent tools directly below the active task.
+    """A bounded task viewport, with any concurrent tool work below the active task.
 
-    Tools are a rolling view of recent activity, not persisted task ownership.
-    Without an active task they appear at root indentation after the task rows,
-    unless the plan is finished. Finished plans retain tasks but hide tool activity.
-    Keep at least one task visible, even on short panes, and never add headers
-    or empty placeholder rows.
+    The newest call lives on the status row instead, so this only shows work
+    running alongside it: delegates and other parallel calls. Keep at least one
+    task visible, even on short panes, and never add headers or empty rows.
     """
     if budget <= 0:
         return []
-    finished = bool(items) and all(item["status"] in {"completed", "cancelled"} for item in items)
-    active_delegate = any(c.event.name == "delegate_task" for c in tools._running.values())
-    tool_count = (
-        0
-        if finished and not active_delegate
-        else min(3, len(tools.calls), max(0, budget - bool(items)))
-    )
+    tool_count = min(3, len(tools.background), max(0, budget - bool(items)))
     task_count = min(5, len(items), budget - tool_count)
     active = next((i for i, item in enumerate(items) if item["status"] == "in_progress"), None)
     anchor = active if active is not None else 0

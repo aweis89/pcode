@@ -203,14 +203,17 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     streaming = capture(pane, "COMMITTED LINE", running=True)
     assert input_rows(streaming) == 1
     assert "COMMITTED LINE" in streaming
-    assert any(
-        line.endswith(" hello") and line.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+    # The spinner row reports live work; the prompt itself is already in scrollback.
+    assert any(line.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")) for line in streaming.splitlines())
+    assert not any(
+        line.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")) and line.endswith(" hello")
         for line in streaming.splitlines()
     )
+    assert "▌ hello" in streaming
     assert "FIRST STREAM CHUNK" not in streaming
     completed = capture(pane, "LIVE ANSWER COMPLETE")
     assert input_rows(completed) == 1
-    assert "✓ hello" in completed
+    assert "✓ hello" not in completed
     assert "FIRST STREAM CHUNK" in completed
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert history.count("FIRST STREAM CHUNK") == 1
@@ -534,7 +537,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     assert "Tasks ·" not in screen and "Tools" not in screen
     lines = screen.splitlines()
     first_task = next(i for i, line in enumerate(lines) if "Task 6" in line)
-    assert lines[first_task - 2].endswith(" h")
+    assert lines[first_task - 2].startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
     assert not lines[first_task - 2].startswith("│")
     assert lines[first_task - 1].startswith("┌")
     assert lines[first_task - 1].startswith("┌─ Tasks 0/12 ─")
@@ -561,7 +564,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     screen = capture(pane, "Context reset")
     assert "Tasks" not in screen
     assert "Task 0" not in screen
-    # /new zeroes the whole widget: tasks, tools, and the previous prompt row.
+    # /new zeroes the whole widget: tasks, tools, and the live status row.
     assert "✓ h" not in screen
     assert screen.count("┌") == screen.count("└") == 1
 
@@ -632,22 +635,19 @@ def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
     assert "Tools" not in initial and "┌─ Tasks 0/1 ─" in initial
     assert initial.count("┌") == initial.count("└") == 2
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    screen = capture(pane, "⟳ Run", running=True)
+    screen = capture(pane, "Run · ", running=True)
     lines = screen.splitlines()
     task = next(i for i, line in enumerate(lines) if "A task" in line)
-    assert lines[task - 2].endswith(" h")
-    assert not lines[task - 2].startswith("│")
-    assert lines[task - 1].startswith("┌")
+    # The running command owns the status row; the widget holds tasks alone.
+    status = lines[task - 2]
+    assert status.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")) and "Run" in status
+    assert not status.startswith("│")
     assert lines[task - 1].startswith("┌─ Tasks 0/1 ─")
     assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
-    assert lines[task + 1].startswith("│    ✓ Read · file_11.py")
-    assert lines[task + 2].startswith("│    ! Read failed · file_12.py")
-    assert lines[task + 3].startswith("│    ⟳ Run")
-    assert lines[task + 4].startswith("└")
-    assert lines[task + 5].startswith("┌")  # Editor, not another Tools widget.
+    assert lines[task + 1].startswith("└")
+    assert lines[task + 2].startswith("┌")  # Editor, not another Tools widget.
     assert "Tools" not in screen and "Tasks ·" not in screen
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
-    assert "file_01.py" not in history
     assert history.count("file_11.py") == 1
     assert history.count("INSPECTABLE ERROR") == 1
     assert "✗ Read failed" in history
@@ -655,24 +655,22 @@ def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width, height in ((40, 20), (100, 32), (40, 14)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
-        count = 3
         deadline = time.monotonic() + 3
         while True:
             screen = capture(pane, "A task", running=True, columns=width)
             lines = screen.splitlines()
             # Inspect the live widget nearest the editor, not old resize ghosts.
             task = max(i for i, line in enumerate(lines) if "A task" in line)
-            if lines[task + count + 1].startswith("└"):
+            if lines[task + 1].startswith("└"):
                 break
             assert time.monotonic() < deadline, screen
             time.sleep(0.05)
         assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
-        assert all(line.startswith("│    ") for line in lines[task + 1 : task + count + 1])
         assert "keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "! Run cancelled")
-    assert "Run · interrupted" in screen
+    assert "Run · " not in screen
     assert "│❯ keep draft" in screen
 
 
@@ -689,11 +687,11 @@ def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
     pane("resize-window", "-t", "preview:0", "-x", "240", "-y", "40")
     capture(pane, "A task", columns=240)
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    capture(pane, "⟳ Run", running=True, columns=240)
+    capture(pane, "Run · ", running=True, columns=240)
 
     for width, height in ((120, 24), (240, 40), (80, 24), (240, 40)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
-        screen = capture(pane, "⟳ Run", running=True, columns=width)
+        screen = capture(pane, "Run · ", running=True, columns=width)
         assert input_rows(screen) == 1
         editor = next(line for line in screen.splitlines() if line.startswith("│❯"))
         assert editor[2:-1].strip() == ""  # No multiline draft needed to trigger this.
@@ -715,14 +713,17 @@ def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
     ],
     indirect=True,
 )
-def test_failed_prompt_indicator_stays_visible(pane):
+def test_failure_is_reported_in_scrollback_and_clears_the_status_row(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "hello")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     capture(pane, "COMMITTED LINE", running=True)
-    failed = capture(pane, "! hello · failed")
+    failed = capture(pane, "✗ Agent failed")
     assert input_rows(failed) == 1
     assert "Run failed" in failed
+    # The turn is over, so no spinner row survives above the editor.
+    assert not any(line.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")) for line in failed.splitlines())
+    assert "▌ hello" in failed
 
 
 @pytest.mark.parametrize("pane", [PAUSED_STREAM_SCRIPT], indirect=True)
@@ -737,9 +738,11 @@ def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
         lines = screen.splitlines()
         editor_top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
         header = lines[editor_top - 1]
-        assert not header.startswith("│") and header.endswith("…")
-        assert "LONG PROMPT" in header
-        assert len(header) == columns
+        # One status row, never the echoed prompt, and never wider than the pane.
+        assert not header.startswith("│")
+        assert header.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+        assert "LONG PROMPT" not in header
+        assert len(header) <= columns
         assert screen.count("┌") == screen.count("└") == 1
         assert input_rows(screen) == 1
 
@@ -766,8 +769,8 @@ def test_queued_messages_stay_directly_above_editor(pane, mode):
         assert lines[editor_top - 2].startswith(f"{label}: first")
         assert lines[editor_top - 2].endswith("…")
         assert lines[editor_top - 1].startswith(f"{label}: second")
-        assert "active prompt" in lines[editor_top - 3]
-        assert not lines[editor_top - 3].startswith("│")
+        assert lines[editor_top - 3].startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+        assert "active prompt" not in lines[editor_top - 3]
         assert "│❯ keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
@@ -785,21 +788,22 @@ def test_queued_messages_stay_directly_above_editor(pane, mode):
     ],
     indirect=True,
 )
-def test_tools_only_box_has_left_aligned_header_below_unboxed_prompt(pane):
+def test_single_running_tool_needs_no_box_above_the_editor(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    screen = capture(pane, "⟳ Run", running=True)
+    screen = capture(pane, "Run · ", running=True)
     lines = screen.splitlines()
     top = next(i for i, line in enumerate(lines) if line.startswith("┌"))
-    assert lines[top].startswith("┌─ Tools ─")
-    assert lines[top - 1].endswith(" h")
-    assert not lines[top - 1].startswith("│")
-    assert lines[top + 1].startswith("│✓ Read")
-    assert "Tasks" not in screen
+    # Only the editor is boxed: the lone running call lives on the status row.
+    assert screen.count("┌") == screen.count("└") == 1
+    assert lines[top - 1].startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+    assert "Run · " in lines[top - 1]
+    assert "Tasks" not in screen and "Tools" not in screen
+    assert "✓ Read" in pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert input_rows(screen) == 1
 
 
-DEFERRED_PROMPT_SCRIPT = """
+IMMEDIATE_PROMPT_SCRIPT = """
 import asyncio
 from pcode.app import PreviewApp
 from pcode.runtime import TextDelta, ToolStarted, Message
@@ -818,23 +822,20 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 """
 
 
-@pytest.mark.parametrize("pane", [DEFERRED_PROMPT_SCRIPT], indirect=True)
-def test_scrollback_quote_waits_for_model_block_with_blank_line_after_quote(pane):
+@pytest.mark.parametrize("pane", [IMMEDIATE_PROMPT_SCRIPT], indirect=True)
+def test_scrollback_quote_is_committed_on_send_with_a_blank_line_after_it(pane):
     capture(pane, "❯")
-    pane("send-keys", "-t", "preview:0.0", "-l", "deferred prompt")
+    pane("send-keys", "-t", "preview:0.0", "-l", "sent prompt")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     waiting = capture(pane, "WAITING FOR FIRST MESSAGE", running=True)
-    assert waiting.count("deferred prompt") == 1
-    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
-    assert "▌ deferred prompt" not in history
-    assert "FIRST MODEL" not in history
+    assert "▌ sent prompt" in waiting
+    assert "FIRST MODEL" not in waiting
     assert input_rows(waiting) == 1
     response = capture(pane, "FIRST MODEL MESSAGE", running=True)
-    assert "▌ deferred prompt\n\nFIRST MODEL MESSAGE" in response
+    assert "▌ sent prompt\n\nFIRST MODEL MESSAGE" in response
     assert input_rows(response) == 1
-    capture(pane, "✓ deferred prompt")
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
-    assert history.count("▌ deferred prompt") == 1
+    assert history.count("▌ sent prompt") == 1
     assert history.count("FIRST MODEL MESSAGE") == 1
 
 

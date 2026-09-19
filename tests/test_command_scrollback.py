@@ -97,8 +97,8 @@ def test_mirrored_failure_replaces_the_error_excerpt_block():
     assert "✗ Run failed" in output
     assert output.count("✗ Run failed") == 1
     assert "kept context" in output
-    # The pinned tool panel keeps its own record regardless of scrollback.
-    assert app.activity.tools.calls[0].event.error == event.error
+    # Scrollback is the only record: a settled call leaves the live panel.
+    assert app.activity.tools.calls == []
 
 
 def test_disabled_option_keeps_successful_commands_out_of_scrollback():

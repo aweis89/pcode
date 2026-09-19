@@ -53,7 +53,8 @@ def test_ctrl_g_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pa
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "TURN_1_DONE")
     assert "OUTPUT_LINE_00" not in screen
-    assert "✓ Run" in screen  # The compact one-line summary, not a mirrored block.
+    # One option governs every command trace: with it off, nothing is mirrored.
+    assert "✓ Run" not in screen
     assert input_rows(screen) == 1
 
     pane("send-keys", "-t", "preview:0.0", "C-g")

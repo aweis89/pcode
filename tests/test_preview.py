@@ -135,8 +135,9 @@ def test_rendering_fits_terminal(width, theme, color_style):
     app.handle("Hello 世界 👋 " + "unbroken" * 30)
     output = stream.getvalue()
     assert "世界" in output
-    assert "preview only" not in output
-    assert all("preview only" in call.event.detail for call in app.activity.tools.calls)
+    # Settled calls are summarized in scrollback, not retained by the live panel.
+    assert output.count("preview only") == 2
+    assert app.activity.tools.calls == []
     assert all(cell_len(line) <= width for line in output.splitlines())
     assert "\x1b" not in output
 

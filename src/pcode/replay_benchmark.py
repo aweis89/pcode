@@ -149,7 +149,7 @@ async def replay_journal(
             return
         before, cpu_before = time.perf_counter(), time.process_time()
         output.end_turn()
-        activity.tools.interrupt_running()
+        activity.tools.clear()
         activity.status = ""
         await output.flush()
         render_wall += time.perf_counter() - before

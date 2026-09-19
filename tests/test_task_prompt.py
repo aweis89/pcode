@@ -69,8 +69,8 @@ def test_live_prompt_uses_muted_notice_style_without_changing_editor(theme):
     with console.use_theme(palette.rich_theme()):
         notice_style = console.get_style("pcode.muted")
     prompt_style = palette.prompt_style()
-    activity = Activity(prompt="A quiet prompt", prompt_state="running")
-    for style, _ in activity.prompt_fragments("⠋", 80):
+    activity = Activity(prompt="A quiet prompt", prompt_state="running", status="Waiting…")
+    for style, _ in activity.status_fragments("⠋", 80):
         attrs = prompt_style.get_attrs_for_style_str(style)
         assert attrs.color == notice_style.color.name.lstrip("#")
         assert not attrs.bold

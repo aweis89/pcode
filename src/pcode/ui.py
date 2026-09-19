@@ -40,7 +40,15 @@ from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, To
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
 from pcode.thinking_markdown import ThinkingMarkdown
-from pcode.tool_display import COMMAND_TOOLS, command_preview, command_text, label, plain
+from pcode.tool_display import (
+    COMMAND_TOOLS,
+    EDIT_TOOLS,
+    PLAN_TOOLS,
+    command_preview,
+    command_text,
+    label,
+    plain,
+)
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
 from pcode.transcript_log import TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
@@ -97,7 +105,6 @@ class Palette:
                 "plan": self.muted,
                 "plan.heading": f"{self.task_heading} bold",
                 "plan.active": f"{self.accent} bold",
-                "tool.failed": self.muted,
                 "prompt": f"{self.accent} bold",
                 "activity.prompt": self.muted,
                 # System work is pcode's own, so it gets the accent colour and
@@ -260,7 +267,7 @@ class Activity:
             return []
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
-        icon = spinner if self.prompt_state == "running" else "○"
+        icon = spinner if self.status_shown else "○"
         return task_panel_rows(self.displayed_plan, self.tools, budget, icon)
 
     def panel_title(self) -> str:
@@ -270,26 +277,31 @@ class Activity:
         completed = sum(item.get("status") == "completed" for item in items)
         return f"Tasks {completed}/{len(items)}"
 
-    def prompt_fragments(self, spinner: str, width: int):
-        icons = {"running": spinner, "failed": "!", "cancelled": "■", "done": "✓"}
-        suffix = {"failed": " · failed", "cancelled": " · cancelled"}.get(self.prompt_state, "")
+    @property
+    def status_shown(self) -> bool:
+        """The live row exists only while a turn runs; the prompt is in scrollback."""
+        return self.prompt_state == "running"
+
+    def status_fragments(self, spinner: str, width: int):
+        """The row above the tasks: the spinner plus whatever is running right now."""
         if self.prompt_kind != "user":
-            return self._system_fragments(icons.get(self.prompt_state, "◈"), suffix, width)
-        style = "class:activity.prompt"
+            return self._system_fragments(spinner, width)
+        call = self.tools.active
+        style = "class:plan.active" if call else "class:activity.prompt"
         # Measure terminal cells, not characters, so wide Unicode fits too.
-        prefix = Text(icons.get(self.prompt_state, "❯") + " ")
+        prefix = Text(spinner + " ")
         prefix.truncate(max(0, width), overflow="crop")
-        text = Text(plain(self.prompt, limit=None) + suffix)
+        text = Text(call.line() if call else plain(self.status, limit=None) or "Working…")
         remaining = max(0, width - prefix.cell_len)
         text.truncate(remaining, overflow="ellipsis" if remaining else "crop")
-        return [(style, prefix.plain), (style, text.plain)]
+        return [("class:activity.prompt", prefix.plain), (style, text.plain)]
 
-    def _system_fragments(self, icon: str, suffix: str, width: int):
+    def _system_fragments(self, icon: str, width: int):
         """Render pcode's own work as a labelled badge, never as an echoed prompt."""
         prefix = Text(f"{icon} {SYSTEM_BADGE} ")
         prefix.truncate(max(0, width), overflow="crop")
         remaining = max(0, width - prefix.cell_len)
-        label = Text(plain(self.prompt, limit=None) + suffix)
+        label = Text(plain(self.prompt, limit=None))
         label.truncate(remaining, overflow="ellipsis" if remaining else "crop")
         fragments = [
             ("class:activity.system", prefix.plain),
@@ -497,7 +509,6 @@ class TerminalOutput:
         self.app = app
         self.tail = ""
         self.streamed = False
-        self._turn_prompt: str | None = None
         self.code_theme = code_theme or (lambda: PALETTES["dark"].syntax)
         self.rich_theme = rich_theme or PALETTES["dark"].rich_theme
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
@@ -527,33 +538,23 @@ class TerminalOutput:
         self.changed.set()
 
     def begin_turn(self, prompt: str) -> None:
-        # A waiting turn already has a live prompt above the activity panel.
-        # Keep its scrollback quote attached to the first visible model block,
-        # not the first token (which may remain buffered for a while).
-        self._turn_prompt = prompt
+        # The live row shows the running tool, not the prompt, so the quote goes
+        # to scrollback as soon as the turn starts rather than waiting for output.
+        self.commit_print()
+        self.commit_print(TaskPrompt(prompt))
+        self.commit_print()
 
     def end_turn(self) -> None:
         self.finish_thinking()
         self.finish()
-        # Empty, failed, or cancelled turns must not leak a quote into a later turn.
-        self._turn_prompt = None
-
-    def _commit_prompt(self) -> None:
-        if self._turn_prompt is not None:
-            self.commit_print()
-            self.commit_print(TaskPrompt(self._turn_prompt))
-            self.commit_print()
-            self._turn_prompt = None
 
     def _commit(self, source: str) -> None:
         if source.strip():
-            self._commit_prompt()
             self.commit_print(Markdown(source, code_theme=self.code_theme()))
             self.commit_print()
 
     def _commit_thinking(self, source: str) -> None:
         if source.strip():
-            self._commit_prompt()
             self.commit_thinking(source)
 
     def thinking_delta(self, text: str) -> None:
@@ -919,7 +920,7 @@ def create_prompt(
         fixed = (
             1
             + int(session.bottom_toolbar is not None)
-            + bool(activity.prompt)
+            + activity.status_shown
             + len(queue_rows())
             + menu.preferred_height(size.columns, size.rows).preferred
             + search.preferred_height(size.columns, size.rows).preferred
@@ -970,7 +971,7 @@ def create_prompt(
         rows = plan_rows()
         commands = command_rows()
         return (
-            bool(activity.prompt)
+            activity.status_shown
             + (len(rows) + 2 if rows else 0)
             + (len(commands) + 2 if commands else 0)
         )
@@ -978,10 +979,10 @@ def create_prompt(
     def plan_text():
         return panel_fragments(plan_rows(), session.app.output.get_size().columns - 2)
 
-    current_prompt = ConditionalContainer(
+    current_status = ConditionalContainer(
         Window(
             FormattedTextControl(
-                lambda: activity.prompt_fragments(
+                lambda: activity.status_fragments(
                     prompt_spinner.render(monotonic()).plain,
                     session.app.output.get_size().columns,
                 ),
@@ -991,7 +992,7 @@ def create_prompt(
             wrap_lines=False,
             dont_extend_height=True,
         ),
-        filter=Condition(lambda: bool(activity.prompt)),
+        filter=Condition(lambda: activity.status_shown),
     )
     plan_frame = Frame(
         Window(
@@ -1046,7 +1047,7 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(command_rows())),
     )
-    activity_panel = HSplit([commands, current_prompt, plan])
+    activity_panel = HSplit([commands, current_status, plan])
 
     @per_render
     def queue_rows():
@@ -1132,8 +1133,8 @@ def create_prompt(
     def needs_animation():
         return (
             activity.busy
-            or activity.prompt_state == "running"
-            or (activity.tasks_shown and any(call.running for call in activity.tools.calls))
+            or activity.status_shown
+            or (activity.tasks_shown and bool(activity.tools.calls))
         )
 
     async def animate(app):
@@ -1253,9 +1254,7 @@ class Transcript:
     @recorded
     def tool_result(self, event: ToolSummary) -> None:
         """Retain hidden results too; choose one representation on each replay."""
-        if event.name in COMMAND_TOOLS:
-            self.command_output(event)
-        elif event.failed:
+        if self.writes_tool_result(event):
             self.events((event,))
 
     @recorded
@@ -1343,6 +1342,22 @@ class Transcript:
             and isinstance(event, ToolSummary)
             and event.name in COMMAND_TOOLS
         )
+
+    def writes_tool_result(self, event: Event) -> bool:
+        """Report whether this settled tool reaches scrollback at all.
+
+        Every call the live panel drops is written here instead, except where
+        something else already tells the story: the task panel owns successful
+        planning calls, and a shown diff owns successful edits.
+        """
+        if not isinstance(event, ToolSummary):
+            return False
+        # One option governs every command completion, success or failure.
+        if event.name in COMMAND_TOOLS:
+            return self.command_scrollback
+        if event.failed:
+            return True
+        return event.name not in PLAN_TOOLS and not (event.name in EDIT_TOOLS and self.show_edits)
 
     @recorded
     def command_output(self, event: ToolSummary) -> bool:
