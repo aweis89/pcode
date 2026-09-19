@@ -9,7 +9,7 @@ from rich.console import Console
 
 from pcode.live import AgentRuntime
 from pcode.runtime import RunStatus, ToolSummary
-from pcode.tool_display import result_detail, target
+from pcode.tool_display import label, result_detail, target
 from pcode.ui import Transcript
 
 
@@ -378,6 +378,14 @@ def test_web_tools_show_inputs_in_targets_and_results(name, args, expected):
     )
     assert expected in stream.getvalue()
     assert "Succeeded" not in stream.getvalue()
+
+
+def test_tool_search_shows_its_queries():
+    assert label("search_tools") == "Find tools"
+    assert target("search_tools", {"queries": ["issues", "pull requests"]}) == (
+        "issues, pull requests"
+    )
+    assert target("search_tools", {}) == "queries unavailable"
 
 
 @pytest.mark.parametrize("outcome", ["retry", "failed"])
