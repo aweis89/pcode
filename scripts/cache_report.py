@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""Report prompt-cache behavior from saved pcode sessions.
+
+Every session already records the provider's own verdict for each request, so
+past traffic is the cheapest regression signal available for caching work: no
+credentials, no spend, and real tool loops rather than a synthetic script.
+
+Output is content-free by construction. Prompts carry file contents and command
+output, so this prints counts, digests, and token totals only -- never message
+text. See docs/prompt-caching.md for what the numbers mean.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sqlite3
+import sys
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, field
+from hashlib import sha256
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from pcode.sessions import SessionError, list_sessions, resolve_session, session_root  # noqa: E402
+
+PLAN_TAG = "<plan-reminder>"
+
+# A prefix below the provider's minimum cacheable size is never stored, so a
+# short session reports no reads without anything being wrong.
+MIN_CACHEABLE_INPUT = 1024
+# Reads land on block boundaries, so the previous request's total is an upper
+# bound this can only approach. Below this share of it, the prefix moved.
+REUSE_RATIO = 0.75
+# A prefix that never advances while the conversation grows is the signature of
+# a rewritten tail: reads pin to one value for request after request.
+MAX_PINNED_READS = 8
+
+
+@dataclass
+class Request:
+    """One model request, as the provider reported it."""
+
+    index: int
+    timestamp: str
+    model: str
+    read: int
+    write: int
+    uncached: int
+    total_input: int
+    output: int
+
+
+@dataclass
+class Finding:
+    level: str
+    message: str
+
+
+@dataclass
+class Report:
+    session: str
+    model: str
+    updated: str
+    requests: list[Request]
+    reminders: list[str]
+    prefix_rewrites: int
+    findings: list[Finding] = field(default_factory=list)
+
+    @property
+    def totals(self) -> dict[str, int]:
+        keys = ("read", "write", "uncached", "total_input", "output")
+        return {key: sum(getattr(r, key) for r in self.requests) for key in keys}
+
+    @property
+    def read_share(self) -> float:
+        totals = self.totals
+        return totals["read"] / totals["total_input"] if totals["total_input"] else 0.0
+
+
+def _responses(database: Path) -> Iterator[dict]:
+    """Yield each model response once, in order.
+
+    Snapshots hold cumulative history, so the same response appears in many of
+    them; `provider_response_id` deduplicates without reading any content.
+    """
+    seen: dict[object, dict] = {}
+    for messages in _snapshots(database):
+        for message in messages:
+            if message.get("kind") == "response" and message.get("model_name"):
+                key = message.get("provider_response_id") or (
+                    message.get("run_id"),
+                    message.get("timestamp"),
+                )
+                seen.setdefault(key, message)
+    yield from sorted(seen.values(), key=lambda m: m.get("timestamp") or "")
+
+
+def _snapshots(database: Path) -> Iterator[list[dict]]:
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        for (raw,) in connection.execute("SELECT messages FROM snapshots ORDER BY seq"):
+            yield json.loads(raw)
+    except sqlite3.DatabaseError as error:
+        raise SessionError(f"Unreadable step store: {error}") from None
+    finally:
+        connection.close()
+
+
+def _digest(value: object) -> str:
+    """Fingerprint by shape and content hash, never by content."""
+    return sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def _message_digest(message: dict) -> str:
+    """Fingerprint only what is re-sent to the provider.
+
+    A settled message still gains bookkeeping fields after it is sent --
+    `run_id`, `timestamp`, `instructions`, `conversation_id` -- so hashing the
+    whole record reports a rewrite on every healthy session.
+    """
+    return _digest(
+        [
+            message.get("kind"),
+            [(part.get("part_kind"), part.get("content")) for part in message.get("parts", [])],
+        ]
+    )
+
+
+def _count_prefix_rewrites(database: Path) -> int:
+    """Count snapshots that changed settled history instead of appending to it.
+
+    Append-only history is what keeps a provider's cached prefix reusable, and
+    it is the property pcode's plan reminders are built to preserve.
+
+    The last two messages are excluded rather than one: the trailing message is
+    still being assembled when a snapshot is written, and Pydantic AI merges a
+    reminder request into the following one, which rewrites the message behind
+    it without changing anything already sent. Compaction and branch switches
+    legitimately replace history, so callers report this as a warning.
+    """
+    rewrites = 0
+    previous: list[str] = []
+    for messages in _snapshots(database):
+        current = [_message_digest(message) for message in messages]
+        settled = previous[:-2]
+        if settled and len(current) >= len(settled) and current[: len(settled)] != settled:
+            rewrites += 1
+        previous = current
+    return rewrites
+
+
+def _plan_reminders(database: Path) -> list[str]:
+    """Digest each plan reminder in the final history, so duplicates show up."""
+    reminders: list[str] = []
+    for messages in _snapshots(database):
+        reminders = [
+            _digest(content)
+            for message in messages
+            for part in message.get("parts", [])
+            if part.get("part_kind") == "user-prompt"
+            and isinstance(content := part.get("content"), str)
+            and content.startswith(PLAN_TAG)
+        ]
+    return reminders
+
+
+def _requests(database: Path) -> list[Request]:
+    requests = []
+    for index, message in enumerate(_responses(database)):
+        usage = message.get("usage") or {}
+        details = usage.get("details") or {}
+        requests.append(
+            Request(
+                index=index,
+                timestamp=(message.get("timestamp") or "")[11:19],
+                model=message.get("model_name") or "",
+                read=usage.get("cache_read_tokens", 0),
+                write=usage.get("cache_write_tokens", 0),
+                uncached=details.get("input_tokens", 0),
+                total_input=usage.get("input_tokens", 0),
+                output=usage.get("output_tokens", 0),
+            )
+        )
+    return requests
+
+
+def _pinned_streak(requests: Sequence[Request]) -> tuple[int, int]:
+    """Return the longest run of identical non-zero reads, and that read value."""
+    best_length, best_value, length = 0, 0, 0
+    for previous, current in zip(requests, requests[1:]):
+        length = length + 1 if current.read and current.read == previous.read else 0
+        if length > best_length:
+            best_length, best_value = length, current.read
+    return best_length + 1 if best_length else 0, best_value
+
+
+def _reuse_findings(requests: Sequence[Request]) -> list[Finding]:
+    eligible = [
+        (previous, current)
+        for previous, current in zip(requests, requests[1:])
+        if previous.total_input >= MIN_CACHEABLE_INPUT and current.model == previous.model
+    ]
+    if not eligible:
+        return [
+            Finding(
+                "info",
+                f"No request followed a same-model prefix of at least {MIN_CACHEABLE_INPUT} "
+                "tokens, so the provider had nothing it was obliged to cache.",
+            )
+        ]
+    reused = sum(
+        1 for previous, current in eligible if current.read >= previous.total_input * REUSE_RATIO
+    )
+    share = reused / len(eligible)
+    level = "ok" if share >= 0.9 else "warn" if share >= 0.5 else "fail"
+    return [
+        Finding(
+            level,
+            f"{reused}/{len(eligible)} eligible requests reused at least "
+            f"{REUSE_RATIO:.0%} of the previous request's input.",
+        )
+    ]
+
+
+def analyze(directory: Path) -> Report:
+    try:
+        info = json.loads((directory / "session.json").read_text())
+    except (OSError, ValueError):
+        raise SessionError("Unreadable session metadata.") from None
+    database = directory / "steps.sqlite3"
+    if not database.exists():
+        raise SessionError("No step store in this session.")
+    requests = _requests(database)
+    reminders = _plan_reminders(database)
+    report = Report(
+        session=info.get("id", directory.name),
+        model=info.get("model", "?"),
+        updated=info.get("updated", "")[:19],
+        requests=requests,
+        reminders=reminders,
+        prefix_rewrites=_count_prefix_rewrites(database),
+    )
+    if not requests:
+        report.findings.append(Finding("info", "No model requests recorded."))
+        return report
+
+    report.findings.extend(_reuse_findings(requests))
+
+    streak, value = _pinned_streak(requests)
+    if streak > MAX_PINNED_READS:
+        report.findings.append(
+            Finding(
+                "fail",
+                f"Reads pinned at {value:,} tokens for {streak} consecutive requests while the "
+                "conversation grew: the tail was rewritten instead of reused.",
+            )
+        )
+    if report.prefix_rewrites:
+        report.findings.append(
+            Finding(
+                "warn",
+                f"{report.prefix_rewrites} snapshot(s) replaced settled history instead of "
+                "appending to it. Compaction, retries and branch switches do this legitimately; "
+                "anything else invalidates the cached prefix from that point.",
+            )
+        )
+    duplicates = len(reminders) - len(set(reminders))
+    if duplicates:
+        report.findings.append(
+            Finding(
+                "warn",
+                f"{duplicates} duplicate plan reminder(s) of {len(reminders)} in the final "
+                "history: deduplication is not matching previously sent text.",
+            )
+        )
+    return report
+
+
+def render(report: Report, *, verbose: bool = False) -> str:
+    totals = report.totals
+    lines = [
+        f"session {report.session[:8]}  {report.model}  updated {report.updated}",
+        f"  requests={len(report.requests)}  input={totals['total_input']:,}  "
+        f"read={totals['read']:,}  write={totals['write']:,}  out={totals['output']:,}  "
+        f"read share={report.read_share:.1%}",
+    ]
+    if report.reminders:
+        lines.append(
+            f"  plan reminders={len(report.reminders)} distinct={len(set(report.reminders))}"
+        )
+    if verbose and report.requests:
+        lines.append("   idx  time           read        write     uncached     total in")
+        for request in report.requests:
+            lines.append(
+                f"  {request.index:>4}  {request.timestamp:<8} {request.read:>11,} "
+                f"{request.write:>12,} {request.uncached:>12,} {request.total_input:>12,}"
+            )
+    lines.extend(f"  [{finding.level}] {finding.message}" for finding in report.findings)
+    return "\n".join(lines)
+
+
+def _directories(selector: str, limit: int, root: Path | None) -> list[Path]:
+    root = root or session_root()
+    if selector != "all":
+        return [resolve_session(selector, root)]
+    return [root / info.id for info in list_sessions(root)[:limit]]
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "session",
+        nargs="?",
+        default="latest",
+        help="session id prefix, 'latest' (default), or 'all'",
+    )
+    parser.add_argument("-n", "--limit", type=int, default=5, help="sessions to read for 'all'")
+    parser.add_argument("-v", "--verbose", action="store_true", help="print per-request tokens")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="exit non-zero when a session shows a caching regression",
+    )
+    parser.add_argument("--root", type=Path, default=None, help="session directory root")
+    arguments = parser.parse_args(argv)
+
+    try:
+        directories = _directories(arguments.session, arguments.limit, arguments.root)
+    except SessionError as error:
+        print(error, file=sys.stderr)
+        return 2
+    if not directories:
+        print("No saved sessions found.", file=sys.stderr)
+        return 2
+
+    regressed = False
+    for directory in directories:
+        try:
+            report = analyze(directory)
+        except SessionError as error:
+            print(f"session {directory.name[:8]}: {error}", file=sys.stderr)
+            continue
+        print(render(report, verbose=arguments.verbose))
+        regressed = regressed or any(finding.level == "fail" for finding in report.findings)
+    return 1 if regressed and arguments.check else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

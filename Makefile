@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test lint fmt harness-src brew-install brew-update brew-uninstall
+.PHONY: help install update uninstall run test lint fmt cache-report harness-src brew-install brew-update brew-uninstall
 
 HARNESS_DIR := tmp/pydantic-ai-harness
 HARNESS_URL := https://github.com/pydantic/pydantic-ai-harness.git
@@ -30,6 +30,9 @@ lint: ## Check formatting and lint rules
 fmt: ## Apply formatting and autofixes
 	uv run ruff check --fix .
 	uv run ruff format .
+
+cache-report: ## Report prompt-cache behavior from saved sessions (SESSION=latest|all|<id>)
+	uv run python scripts/cache_report.py $(or $(SESSION),latest) $(ARGS)
 
 harness-src: ## Check out upstream Harness source at the pinned SHA under tmp/
 	@sha=$$(sed -n 's/.*pydantic-ai-harness\.git@\([0-9a-f]\{40\}\).*/\1/p' pyproject.toml); \
