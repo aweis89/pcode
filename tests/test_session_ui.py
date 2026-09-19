@@ -62,9 +62,33 @@ def test_session_overview_reports_storage_and_feeds_context(tmp_path):
         assert rows["Model"] == "test:local"
         assert rows["Session"] == saved.info.id
         assert rows["Saved in"] == str(saved.directory)
+        # Nothing has been sent yet, so there is no resolved prompt to attribute.
+        assert rows["Prompt overhead"] == "Measured on the first model request."
         # /context prints exactly what the popup shows, so the two cannot drift.
         app.handle("/context")
         assert f"Saved in: {saved.directory}" in stream.getvalue()
+    finally:
+        app.runtime.close()
+
+
+def test_session_overview_attributes_prompt_overhead_after_a_request(tmp_path):
+    """The rows come from the last request's parameters, captured on the runtime."""
+    from test_context_breakdown import isolated_workspace, request_parameters
+
+    workspace = isolated_workspace()
+    (workspace / "AGENTS.md").write_text("Repository rules.\n")
+    stream = StringIO()
+    app = PreviewApp(workspace=workspace, console=Console(file=stream, width=200))
+    app.model = "test:local"
+    app.runtime = AgentRuntime(Agent("test"), None)
+    try:
+        app.runtime.request_parameters = request_parameters(workspace)["parameters"]
+        rows = dict(app.session_overview())
+        assert "tokens" in rows["Prompt overhead"]
+        assert rows["  Instructions"].startswith("~")
+        assert "tools" in rows["  Tool schemas"]
+        app.handle("/context")
+        assert "AGENTS.md" in stream.getvalue()
     finally:
         app.runtime.close()
 
