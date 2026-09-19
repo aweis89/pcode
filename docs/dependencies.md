@@ -443,10 +443,13 @@ when the rendered plan changes (including clearing it), without moving explicit
 cache markers. `MeridianLimitWarnings` retains old warnings and appends updates at
 percentage deciles or severity changes only on Meridian; other providers' limit
 warnings are unchanged. Both use `before_model_request`, whose messages Pydantic AI
-persists, not the ephemeral `wrap_model_request` boundary. Deduplication reads
-metadata in the current history, so saved resume, retry, and branch selection do
-not depend on process-local state. The historical `pcode_meridian_reminder` metadata
-key is retained for saved-session compatibility. Anthropic and native Codex
+persists, not the ephemeral `wrap_model_request` boundary. Deduplication compares
+the text of the last reminder in the current history, so saved resume, retry, and
+branch selection do not depend on process-local state. Do not store the dedup key
+in `ModelRequest.metadata`: Pydantic AI's history normalization merges consecutive
+requests and keeps only its reserved `__pydantic_ai__` namespace, so an
+application marker silently vanishes on resume and every turn re-appends its
+reminder. Anthropic and native Codex
 wire-prefix regressions live in `tests/test_meridian_reminders.py` and
 `tests/test_planning_cache.py`.
 

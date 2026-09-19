@@ -84,10 +84,17 @@ Request 3: [history] [plan revision 1] [new response + tool results] [plan revis
 
 Earlier content stays in place. Unchanged plans add no reminder; changed plans
 append an update that supersedes earlier snapshots. Clearing a previously shown
-plan appends an explicit empty-plan update. Deduplication reads the current
-branch's saved metadata, not a process-local flag, so it works across resume and
-branch changes. The legacy `pcode_meridian_reminder` metadata key is retained for
-compatibility with existing sessions.
+plan appends an explicit empty-plan update.
+
+Deduplication compares the text of the last reminder actually sent, found by
+scanning for a `UserPromptPart` that starts with the tag. Storing a marker in
+`ModelRequest.metadata` looks equivalent but is not: Pydantic AI merges
+consecutive requests when history is resumed and keeps only its reserved
+`__pydantic_ai__` namespace (`_agent_graph.py`), so an application marker
+survives within a run and disappears on the next one. Session records showed the
+result -- one duplicate reminder per turn, since every turn looked like the first.
+Only a part that *starts* with the tag counts, so a tool result quoting the tag
+is not mistaken for a sent reminder.
 
 The tradeoff is retaining old plan revisions. Appending only changes limits the
 extra context, but the latest plan can become distant during a long tool loop.
