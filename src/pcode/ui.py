@@ -35,12 +35,7 @@ from rich.theme import Theme
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
-from pcode.file_refs import (
-    FileReferenceCompleter,
-    ReferenceLexer,
-    reference_fragment,
-    typed_prompt,
-)
+from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
@@ -1471,10 +1466,8 @@ class Transcript:
         )
 
     def user(self, text: str) -> None:
-        # Replayed prompts carry the file contents pcode appended when they were
-        # sent; scrollback shows what was typed, not the payload.
         self.print()
-        self.print(TaskPrompt(typed_prompt(text)))
+        self.print(TaskPrompt(text))
         self.print()
 
     def command_summary(self, event: ToolSummary) -> None:
