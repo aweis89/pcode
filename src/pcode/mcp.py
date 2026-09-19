@@ -16,6 +16,13 @@ _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}\Z")
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
+def mcp_transport(toolset: Any) -> Any:
+    """The client transport of the MCPToolset inside our prefix/defer wrappers."""
+    while (wrapped := getattr(toolset, "wrapped", None)) is not None:
+        toolset = wrapped
+    return getattr(getattr(toolset, "client", None), "transport", None)
+
+
 def config_path() -> Path:
     override = os.environ.get("PCODE_MCP_CONFIG", "").strip()
     return Path(override).expanduser() if override else preferences_path().with_name("mcp.json")
@@ -72,6 +79,9 @@ class ServerConfig(BaseModel):
     url: str | None = None
     headers: dict[str, str] | None = None
     auth: Literal["oauth"] | None = None
+    # Off by default: a server's schemas otherwise sit in every request of the
+    # conversation, while tool search costs one call for the tools actually used.
+    direct: bool = False
 
     @model_validator(mode="after")
     def transport(self):
@@ -80,14 +90,14 @@ class ServerConfig(BaseModel):
         if self.command:
             if not self.command.strip() or self.headers is not None or self.auth is not None:
                 raise ValueError("Invalid stdio options.")
-        else:
-            if any(item is not None for item in (self.command, self.args, self.env, self.cwd)):
-                raise ValueError("Invalid HTTP options.")
-            parsed = urlsplit(self.url)
-            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-                raise ValueError("Expected an HTTP(S) URL.")
-            if self.auth and any(key.lower() == "authorization" for key in self.headers or {}):
-                raise ValueError("OAuth cannot be combined with an Authorization header.")
+            return self
+        if any(item is not None for item in (self.command, self.args, self.env, self.cwd)):
+            raise ValueError("Invalid HTTP options.")
+        parsed = urlsplit(self.url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Expected an HTTP(S) URL.")
+        if self.auth and any(key.lower() == "authorization" for key in self.headers or {}):
+            raise ValueError("OAuth cannot be combined with an Authorization header.")
         return self
 
 
@@ -99,7 +109,7 @@ def build_toolset(name: str, raw: Any):
         # Pydantic errors include input values: never print credentials from config.
         raise ValueError(
             f"Invalid MCP server '{name}'. Use command/args/env/cwd for stdio or url/headers "
-            'for HTTP (optional auth: "oauth"); other fields are not supported.'
+            'for HTTP (optional auth: "oauth", direct: true); other fields are not supported.'
         ) from None
     from fastmcp.client.transports import StdioTransport
     from pydantic_ai.mcp import MCPToolset
@@ -129,6 +139,10 @@ def build_toolset(name: str, raw: Any):
 
                 auth = LoopbackOAuth() if config.auth == "oauth" else None
                 toolset = MCPToolset(config.url, id=name, headers=config.headers, auth=auth)
+        # Hidden until Pydantic AI's auto-injected ToolSearch reveals them, so a
+        # server's schemas cost one `search_tools` call instead of every request.
+        if not config.direct:
+            toolset = toolset.defer_loading()
         return toolset.prefixed(f"mcp_{name}")
     except (ValueError, TypeError):
         raise ValueError(
@@ -153,7 +167,7 @@ class MCPState:
         # initializes the server and completes native auth without a model call.
         # Publish it only after successful login AND connection cleanup, retaining
         # the same OAuth object (and in-memory tokens) for subsequent turns.
-        if getattr(toolset.wrapped.client.transport, "auth", None) is not None:
+        if getattr(mcp_transport(toolset), "auth", None) is not None:
             async with toolset:
                 pass
         self.enabled[name] = toolset

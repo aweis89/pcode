@@ -13,7 +13,7 @@ from fastmcp.client.auth import OAuth
 from key_value.aio.stores.memory import MemoryStore
 from mcp.shared.auth import AuthorizationCodeResult
 
-from pcode.mcp import MCPState, build_toolset, config_path
+from pcode.mcp import MCPState, build_toolset, config_path, mcp_transport
 
 URL = "https://resource.example/mcp"
 ISSUER = "https://auth.example"
@@ -27,7 +27,7 @@ def test_native_oauth_is_constructed_without_network_or_browser(monkeypatch):
     monkeypatch.setattr(httpx2.AsyncClient, "send", unexpected)
     with warnings.catch_warnings(record=True) as caught:
         toolset = build_toolset("remote", {"url": URL, "auth": "oauth"})
-    auth = toolset.wrapped.client.transport.auth
+    auth = mcp_transport(toolset).auth
     assert isinstance(auth, OAuth)
     assert isinstance(auth.token_storage_adapter._key_value_store, MemoryStore)
     assert not caught  # Storage lifetime is explained by pcode instead of a raw prompt warning.
@@ -55,7 +55,7 @@ def test_oauth_allows_non_auth_headers():
     toolset = build_toolset(
         "remote", {"url": URL, "auth": "oauth", "headers": {"X-Tenant": "test"}}
     )
-    assert toolset.wrapped.client.transport.headers == {"X-Tenant": "test"}
+    assert mcp_transport(toolset).headers == {"X-Tenant": "test"}
 
 
 def test_activation_does_not_persist_tokens_or_read_disabled_credentials(monkeypatch):
@@ -78,11 +78,11 @@ def test_activation_does_not_persist_tokens_or_read_disabled_credentials(monkeyp
         state = MCPState()
         assert state.toolsets() == []
         await state.enable("remote")
-        first = state.enabled["remote"].wrapped.client.transport.auth
+        first = mcp_transport(state.enabled["remote"]).auth
         assert providers[0].browser_visits == 1
         await state.enable("remote")
         assert len(providers) == 1
-        assert state.enabled["remote"].wrapped.client.transport.auth is first
+        assert mcp_transport(state.enabled["remote"]).auth is first
         # Ordinary subsequent MCP connections use the already authenticated client.
         async with state.enabled["remote"]:
             pass
@@ -90,7 +90,7 @@ def test_activation_does_not_persist_tokens_or_read_disabled_credentials(monkeyp
         state.disable("remote")
         assert state.toolsets() == []
         await state.enable("remote")
-        assert state.enabled["remote"].wrapped.client.transport.auth is not first
+        assert mcp_transport(state.enabled["remote"]).auth is not first
         assert providers[1].browser_visits == 1
         assert path.read_bytes() == before
         assert list(path.parent.iterdir()) == [path]
@@ -203,7 +203,7 @@ class FakeOAuthProvider:
 def test_native_oauth_exchange_reuse_and_refresh():
     async def run():
         toolset = build_toolset("remote", {"url": URL, "auth": "oauth"})
-        auth = toolset.wrapped.client.transport.auth
+        auth = mcp_transport(toolset).auth
         provider = FakeOAuthProvider()
         transport = provider.install(auth)
         async with httpx2.AsyncClient(auth=auth, transport=transport) as client:
@@ -228,7 +228,7 @@ def test_native_oauth_exchange_reuse_and_refresh():
 @pytest.mark.parametrize("mode", ["denied", "bad-state", "wait"])
 def test_native_oauth_failure_or_cancellation_never_exchanges_a_code(mode):
     async def run():
-        auth = build_toolset("remote", {"url": URL, "auth": "oauth"}).wrapped.client.transport.auth
+        auth = mcp_transport(build_toolset("remote", {"url": URL, "auth": "oauth"})).auth
         provider = FakeOAuthProvider()
         provider.callback_mode = mode
         async with httpx2.AsyncClient(auth=auth, transport=provider.install(auth)) as client:
@@ -253,7 +253,7 @@ def test_native_loopback_callback_closes_listener(cancel):
     """Exercise FastMCP's actual callback server, not a mock browser or real account."""
 
     async def run():
-        auth = build_toolset("remote", {"url": URL, "auth": "oauth"}).wrapped.client.transport.auth
+        auth = mcp_transport(build_toolset("remote", {"url": URL, "auth": "oauth"})).auth
         callback_url = f"http://localhost:{auth.redirect_port}/callback"
         task = asyncio.create_task(auth.callback_handler())
         try:
@@ -298,7 +298,7 @@ def test_callback_port_collision_is_replaced_before_registration():
     import socket
 
     async def run():
-        auth = build_toolset("remote", {"url": URL, "auth": "oauth"}).wrapped.client.transport.auth
+        auth = mcp_transport(build_toolset("remote", {"url": URL, "auth": "oauth"})).auth
         provider = FakeOAuthProvider()
         browser_task = None
         original_signals = [signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)]
@@ -367,7 +367,7 @@ def test_registered_port_collision_is_recoverable_without_browser():
     import socket
 
     async def run():
-        auth = build_toolset("remote", {"url": URL, "auth": "oauth"}).wrapped.client.transport.auth
+        auth = mcp_transport(build_toolset("remote", {"url": URL, "auth": "oauth"})).auth
         provider = FakeOAuthProvider()
         async with httpx2.AsyncClient(auth=auth, transport=provider.install(auth)) as client:
             assert (await client.get(URL)).status_code == 200
@@ -392,7 +392,7 @@ async def _exercise_callback_startup_failure():
     from pcode.diagnostics import error_details
 
     toolset = build_toolset("remote", {"url": URL, "auth": "oauth"})
-    transport = toolset.wrapped.client.transport
+    transport = mcp_transport(toolset)
     auth = transport.auth
     provider = FakeOAuthProvider()
     auth.context.redirect_handler = provider.redirect
@@ -445,7 +445,7 @@ def test_callback_timeout_releases_reserved_port():
     from pcode.diagnostics import error_details
 
     async def run():
-        auth = build_toolset("remote", {"url": URL, "auth": "oauth"}).wrapped.client.transport.auth
+        auth = mcp_transport(build_toolset("remote", {"url": URL, "auth": "oauth"})).auth
         auth._callback_timeout = 0.05
         with pytest.raises(Exception) as error:
             await auth.callback_handler()
@@ -487,7 +487,7 @@ class FakeMCPOAuthProvider(FakeOAuthProvider):
         return await super().http(request)
 
     def install_toolset(self, toolset):
-        transport = toolset.wrapped.client.transport
+        transport = mcp_transport(toolset)
         self.install(transport.auth)
         transport.httpx_client_factory = lambda **kwargs: httpx2.AsyncClient(
             transport=httpx2.MockTransport(self.http), **kwargs
@@ -520,7 +520,7 @@ def test_enable_oauth_failure_or_cancel_leaves_server_off(monkeypatch, mode):
             with pytest.raises(Exception):
                 await state.enable("remote")
         assert state.toolsets() == []
-        assert toolset.wrapped.client.transport.auth._callback_socket is None
+        assert mcp_transport(toolset).auth._callback_socket is None
         # Retry after failure/cancellation should succeed, without poisoning the client.
         provider.callback_mode = "success"
         await state.enable("remote")
