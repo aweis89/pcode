@@ -133,6 +133,10 @@ def test_plan_survives_turns_resume_and_reset(tmp_path):
 
 
 def test_app_routes_plan_to_panel_not_transcript_and_preserves_errors():
+    from pcode.preferences import save_preferences
+
+    # Planning failures reach scrollback only when failure diagnostics are on.
+    save_preferences(tool_error_scrollback="on")
     items = [{"id": "one", "content": "A task", "status": "in_progress"}]
 
     class Runtime:
