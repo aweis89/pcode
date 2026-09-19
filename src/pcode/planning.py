@@ -2,7 +2,7 @@
 
 from pydantic_ai_harness.planning import Planning, render_plan
 
-from pcode.meridian_reminders import append_reminder
+from pcode.meridian_reminders import PLAN_TAG, append_reminder, last_reminder
 
 
 class IdentifiedPlanning(Planning):
@@ -13,15 +13,11 @@ class IdentifiedPlanning(Planning):
             items = await self._read_plan(ctx)
             text = render_plan(items) if items else "No active plan."
             # Don't inject an empty plan until there is an earlier reminder to clear.
-            if items or any(
-                (m.metadata or {}).get("pcode_meridian_reminder", {}).get("kind") == "plan"
-                for m in request_context.messages
-            ):
+            if items or last_reminder(request_context.messages, PLAN_TAG):
                 append_reminder(
                     request_context,
-                    "plan",
-                    text,
-                    "<plan-reminder>\nCurrent plan (supersedes earlier plan reminders):\n"
+                    PLAN_TAG,
+                    f"{PLAN_TAG}\nCurrent plan (supersedes earlier plan reminders):\n"
                     f"{text}\n</plan-reminder>",
                 )
         return request_context

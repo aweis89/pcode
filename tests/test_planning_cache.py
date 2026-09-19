@@ -7,8 +7,15 @@ from types import SimpleNamespace
 import httpx2
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, UserPromptPart
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai_codex import OpenAICodexCredentials, OpenAICodexProvider
@@ -128,6 +135,42 @@ def test_codex_wire_prefix_survives_plan_changes_and_resume():
         assert text.count("<plan-reminder>") == 3
         assert "No active plan." in text
         assert "prompt_cache_breakpoint" not in json.dumps(bodies)
+
+    asyncio.run(run())
+
+
+def test_unchanged_plan_adds_no_reminder_across_runs():
+    """Pydantic AI merges resumed requests and drops application metadata, so
+    deduplication must read the sent text, not a marker stored on the message."""
+
+    async def run():
+        store = InMemoryPlanStore()
+        await store.set_items([PlanItem(id="first", content="First task")])
+
+        async def model(messages, info):
+            return ModelResponse(parts=[TextPart("ok")])
+
+        agent = Agent(FunctionModel(model), capabilities=[IdentifiedPlanning(store=store)])
+
+        def reminders(messages):
+            return sum(
+                content.startswith("<plan-reminder>")
+                for message in messages
+                for part in message.parts
+                if isinstance(content := getattr(part, "content", None), str)
+            )
+
+        async with agent:
+            history = (await agent.run("one")).all_messages()
+        assert reminders(history) == 1
+        assert not any(message.metadata for message in history)
+        async with agent:
+            history = (await agent.run("two", message_history=history)).all_messages()
+        assert reminders(history) == 1
+        await store.set_items([PlanItem(id="second", content="Changed task")])
+        async with agent:
+            history = (await agent.run("three", message_history=history)).all_messages()
+        assert reminders(history) == 2
 
     asyncio.run(run())
 

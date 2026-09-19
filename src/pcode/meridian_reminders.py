@@ -1,32 +1,59 @@
 """Durable reminder helper and Meridian-specific limit warnings."""
 
 import re
+from collections.abc import Callable
 from dataclasses import replace
 
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai_harness.compaction import WarnNearLimits
 
-# Keep the persisted metadata key so existing session histories still deduplicate.
-_MARKER = "pcode_meridian_reminder"
+PLAN_TAG = "<plan-reminder>"
+LIMITS_TAG = "[WarnNearLimits]"
 
 
-def append_reminder(request_context, kind: str, key: str, text: str) -> None:
-    """Deduplicate against persisted branch history, not process-local state."""
+def last_reminder(messages, tag: str) -> str | None:
+    """Return the most recent reminder text for `tag`, or None when none was sent.
+
+    Detection is by content, not message metadata: Pydantic AI merges consecutive
+    `ModelRequest`s when history is resumed and keeps only its own reserved
+    metadata namespace, so a marker stored there survives a run but not a resume.
+    Only a `UserPromptPart` that *starts* with the tag counts, so a tool result or
+    quoted prompt that merely mentions it is not mistaken for a sent reminder.
+    """
+    for message in reversed(messages):
+        if not isinstance(message, ModelRequest):
+            continue
+        for part in reversed(message.parts):
+            content = getattr(part, "content", None)
+            if isinstance(part, UserPromptPart) and isinstance(content, str):
+                if content.startswith(tag):
+                    return content
+    return None
+
+
+def append_reminder(
+    request_context, tag: str, text: str, normalize: Callable[[str], str] | None = None
+) -> None:
+    """Append `text` as durable history unless the last reminder already says it.
+
+    Appending, rather than moving a mutable tail, keeps previously sent messages
+    byte-identical so the provider's cached prefix stays reusable as the
+    conversation grows. `normalize` collapses differences that should not count
+    as a change (for example, warning percentages within the same decile).
+    """
     messages = request_context.messages
     if not messages or not isinstance(messages[-1], ModelRequest):
         return
-    for message in reversed(messages):
-        marker = (message.metadata or {}).get(_MARKER)
-        if marker and marker.get("kind") == kind:
-            if marker.get("key") == key:
-                return
-            break
-    messages.append(
-        ModelRequest(
-            parts=[UserPromptPart(content=text)],
-            metadata={_MARKER: {"kind": kind, "key": key}},
-        )
-    )
+    previous = last_reminder(messages, tag)
+    key = normalize or (lambda value: value)
+    if previous is not None and key(previous) == key(text):
+        return
+    messages.append(ModelRequest(parts=[UserPromptPart(content=text)]))
+
+
+def _decile_key(text: str) -> str:
+    """Treat percentages within the same decile as the same warning."""
+    return re.sub(r"\d+", "#", text) + str([int(p) // 10 for p in re.findall(r"(\d+)%", text)])
 
 
 class MeridianLimitWarnings(WarnNearLimits):
@@ -45,10 +72,9 @@ class MeridianLimitWarnings(WarnNearLimits):
             ctx, replace(request_context, messages=list(original))
         )
         if len(candidate.messages) > clean_count:
-            text = candidate.messages[-1].parts[0].content
             # Warn at percentage deciles rather than on every token increase.
             # Keep severity and warning kinds so new limits/escalations still fire.
-            key = re.sub(r"\d+", "#", text)
-            key += str([int(p) // 10 for p in re.findall(r"(\d+)%", text)])
-            append_reminder(request_context, "limits", key, text)
+            append_reminder(
+                request_context, LIMITS_TAG, candidate.messages[-1].parts[0].content, _decile_key
+            )
         return request_context
