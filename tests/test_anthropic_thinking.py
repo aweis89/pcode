@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from io import StringIO
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from rich.console import Console
 
+from pcode.anthropic_oauth import AnthropicOAuthModel, OAuthTokens, write_tokens
 from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
 from pcode.preferences import apply_effort, apply_thinking, save_preferences
@@ -26,7 +28,7 @@ from pcode.preferences import apply_effort, apply_thinking, save_preferences
         ("claude-opus-4-7", {"type": "adaptive", "display": "summarized"}),
     ],
 )
-@pytest.mark.parametrize("auth", ["api-key", "pi"])
+@pytest.mark.parametrize("auth", ["api-key", "oauth"])
 def test_thinking_stream_request_and_persistable_events(name, expected, auth, tmp_path):
     requests = []
 
@@ -129,12 +131,13 @@ def test_thinking_stream_request_and_persistable_events(name, expected, auth, tm
                     http_client=client,
                 )
             )
-            if auth == "pi":
-                from pcode.pi_auth import PiAnthropicModel
-
-                path = tmp_path / "pi.json"
-                path.write_text(json.dumps({"anthropic": {"type": "api_key", "key": "test-key"}}))
-                model = PiAnthropicModel(f"anthropic:{name}", path=path, http_client=client)
+            if auth == "oauth":
+                path = tmp_path / "credential.json"
+                write_tokens(
+                    path,
+                    OAuthTokens("synthetic-access", "synthetic-refresh", time.time() + 3600),
+                )
+                model = AnthropicOAuthModel(f"anthropic:{name}", path=path, http_client=client)
             else:
                 model = AnthropicModel(name, provider=provider)
             agent = Agent(model)

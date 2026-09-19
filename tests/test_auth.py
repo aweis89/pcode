@@ -37,7 +37,7 @@ def test_environment_key_used(monkeypatch, tmp_path):
 
 def test_unknown_auth_source_is_rejected(monkeypatch, tmp_path):
     monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "something-else")
-    with pytest.raises(ValueError, match="api-key, oauth, or pi"):
+    with pytest.raises(ValueError, match="api-key or oauth"):
         create_agent("anthropic:test-model", tmp_path)
 
 

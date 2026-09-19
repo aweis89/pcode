@@ -21,7 +21,7 @@ def active_providers(current: str | None) -> set[str]:
 
     # Resolution checks for a stored login file, never its contents.
     source = anthropic_auth_source()
-    if source in {"pi", "oauth"} or (
+    if source == "oauth" or (
         source == "api-key" and os.environ.get("ANTHROPIC_API_KEY", "").strip()
     ):
         active.add("anthropic")

@@ -154,7 +154,7 @@ def test_native_anthropic_preserves_auth_base_url_and_input_limit(tmp_path):
     asyncio.run(run())
 
 
-def test_public_api_limits_do_not_leak_to_proxies_or_pi_oauth():
+def test_public_api_limits_do_not_leak_to_proxies_or_subscription_oauth():
     async def run():
         async with httpx2.AsyncClient() as client:
             direct = OpenAIResponsesModel(
@@ -352,24 +352,14 @@ def test_codex_metadata_reuses_provider_refresh_and_replays_401():
     asyncio.run(run())
 
 
-def test_pi_oauth_metadata_preserves_headers_and_rotated_credential(tmp_path):
-    from pcode.pi_auth import OAUTH_BETAS, PiAnthropicModel
+def test_oauth_metadata_preserves_headers_and_rotated_credential(tmp_path):
+    from pcode.anthropic_oauth import AnthropicOAuthModel, OAuthTokens, write_tokens
+    from pcode.auth import OAUTH_BETAS
 
-    path = tmp_path / "pi.json"
+    path = tmp_path / "credential.json"
 
     def credentials(token):
-        path.write_text(
-            json.dumps(
-                {
-                    "anthropic": {
-                        "type": "oauth",
-                        "access": token,
-                        "refresh": "synthetic-refresh",
-                        "expires": (time.time() + 3600) * 1000,
-                    }
-                }
-            )
-        )
+        write_tokens(path, OAuthTokens(token, "synthetic-refresh", time.time() + 3600))
 
     async def run():
         requests = []
@@ -384,7 +374,7 @@ def test_pi_oauth_metadata_preserves_headers_and_rotated_credential(tmp_path):
 
         credentials("initial-synthetic")
         async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
-            model = PiAnthropicModel("anthropic:example", path=path, http_client=client)
+            model = AnthropicOAuthModel("anthropic:example", path=path, http_client=client)
             credentials("rotated-synthetic")
             service = ContextCatalog()
             await service.refresh_native(model)
