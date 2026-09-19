@@ -598,7 +598,13 @@ named Rich `pcode.thinking` style (muted + dim; terminal-color mode uses dim def
 Define compound styles in the theme: a string such as `pcode.muted dim` is not a
 valid composite of a theme alias and an attribute in Rich's style parser.
 Consecutive thinking writes coalesce in `TranscriptLog`, without the old 8-KB
-preview truncation. The existing semantic-entry limit still bounds retained replay.
+preview truncation. Retention is bounded by the text a replay would emit, not by
+entry count: one committed Markdown block costs two entries, so an entry-only cap
+silently dropped visible history from long sessions on every resize. The loose
+entry cap remains only so a flood of tiny writes cannot grow the deque forever.
+Markdown is retained as its source (`RetainedMarkdown`), because `Transcript.print`
+rebuilds the renderable with the current theme anyway and a parsed token tree
+costs tens of times its source.
 
 `show_thinking` only controls the projection of these stored writes (plus the
 Anthropic next-request opt-in above). Ctrl+T and `/show-thinking` request the same

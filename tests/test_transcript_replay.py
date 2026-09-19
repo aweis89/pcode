@@ -95,6 +95,29 @@ def test_retention_is_bounded_and_snapshot_does_not_follow_mutations():
     assert len(transcript.log.entries) == 2
 
 
+def test_long_session_replays_in_full_and_is_bounded_by_retained_text():
+    """One committed block costs several entries, so the budget counts text."""
+    transcript = view()
+    for i in range(4000):
+        transcript.print(Markdown(f"LINE_{i:04d} body text"))
+        transcript.print()
+    rendered = project(transcript)
+    assert "LINE_0000" in rendered and "LINE_3999" in rendered
+    assert not transcript.log.dropped
+
+    transcript = view()
+    transcript.log = TranscriptLog(max_chars=100)
+    transcript.print("x" * 60)
+    transcript.print("y" * 60)
+    assert [entry.args for entry in transcript.log.entries] == [("y" * 60,)]
+    assert transcript.log.chars == 60
+    assert transcript.log.dropped
+    # A single oversized entry is still worth keeping; it is the newest history.
+    transcript.print("z" * 500)
+    assert transcript.log.entries[-1].args == ("z" * 500,)
+    assert len(transcript.log.entries) == 1
+
+
 def test_regenerate_is_noop_for_redirected_output():
     transcript = view()
     output = Mock()

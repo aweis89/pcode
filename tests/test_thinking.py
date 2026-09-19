@@ -197,7 +197,7 @@ def test_thinking_renders_muted_markdown_only_for_display(source, expected):
     transcript.thinking(source)
     assert rendered(transcript) == expected
     assert buffer.getvalue() == render_raw(transcript)
-    assert transcript.log.entries[0][1] == (source,)
+    assert transcript.log.entries[0].args == (source,)
 
 
 def render_raw(transcript):
