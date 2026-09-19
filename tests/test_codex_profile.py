@@ -51,6 +51,22 @@ def test_codex_summary_request_is_independent_of_display_and_effort(monkeypatch,
     from pcode.preferences import apply_effort, save_preferences
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    # create_agent builds the native Codex model, which loads the CLI's auth.json;
+    # point it at a stub so the suite never reads a developer's real sign-in.
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": "test-access",
+                    "refresh_token": "test-refresh",
+                    "account_id": "test-account",
+                }
+            }
+        )
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     for visibility in ("off", "on"):
         save_preferences(show_thinking=visibility)
         agent = create_agent("openai-codex:gpt-5.6-sol", tmp_path)

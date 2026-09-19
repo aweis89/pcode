@@ -5,6 +5,7 @@ module reads only each file's frontmatter, so completion can show a description
 while the body still reaches the model through a normal tool read.
 """
 
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,19 +53,44 @@ def _frontmatter(path: Path) -> dict[str, str]:
     return fields
 
 
+def skill_dirs(workspace: Path) -> list[Path]:
+    """Resolve the configured skill directories against `workspace`."""
+    configured = load_preferences().get("skill_dirs", SETTINGS["skill_dirs"].default) or ""
+    directories = []
+    for entry in configured.split(os.pathsep):
+        entry = entry.strip()
+        if not entry:
+            continue
+        path = Path(entry).expanduser()
+        directories.append(path if path.is_absolute() else workspace / path)
+    return directories
+
+
+def _reference(path: Path, workspace: Path) -> str:
+    """Name the file for the model: workspace-relative inside, absolute outside."""
+    if path.is_relative_to(workspace):
+        return path.relative_to(workspace).as_posix()
+    return path.as_posix()
+
+
 def discover_skills(workspace: Path) -> list[Skill]:
-    """Locate workspace skills, keeping the first of any duplicated name."""
+    """Locate skills, keeping the first of any duplicated name.
+
+    Workspace asset roots come first, so a project skill shadows a user-level one
+    of the same name.
+    """
     workspace = workspace.resolve()
+    roots = [workspace / root / "skills" for root in ASSET_ROOTS]
     skills: dict[str, Skill] = {}
-    for root in ASSET_ROOTS:
-        for path in sorted((workspace / root).glob("skills/**/SKILL.md")):
+    for directory in roots + skill_dirs(workspace):
+        for path in sorted(directory.glob("**/SKILL.md")):
             if not path.is_file():
                 continue
             name = path.parent.name.strip().replace(" ", "-")
             if not name or name in skills:
                 continue
-            relative = path.relative_to(workspace).as_posix()
-            skills[name] = Skill(name, relative, _frontmatter(path).get("description", ""))
+            reference = _reference(path, workspace)
+            skills[name] = Skill(name, reference, _frontmatter(path).get("description", ""))
     return list(skills.values())
 
 
