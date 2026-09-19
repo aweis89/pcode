@@ -23,11 +23,11 @@ class CommandTranscript:
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         yield Rule(style="pcode.muted")
         elapsed = f" · {self.elapsed_seconds:.1f}s" if self.elapsed_seconds is not None else ""
+        # A non-zero exit is routine here, so the marker alone reports it: a
+        # word or an alarm colour would make every expected failure look like a
+        # crash. The mirrored output carries the detail.
         status = "✗" if self.failed else "✓"
-        title = f"{self.title} failed" if self.failed else self.title
-        # A non-zero exit is routine here, so the marker and the word carry it;
-        # an alarm colour would make every expected failure look like a crash.
-        yield Text(f"{status} {title}{elapsed}", style="pcode.accent")
+        yield Text(f"{status} {self.title}{elapsed}", style="pcode.accent")
         indent = "  " if options.max_width > 2 else ""
         body_options = options.update(width=max(1, options.max_width - len(indent)))
         if self.shell_command:
