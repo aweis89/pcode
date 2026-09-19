@@ -1433,9 +1433,11 @@ class Transcript:
             else ""
         )
         elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
+        # The marker alone reports failure: a summary line keeps one style so a
+        # failed call does not shout louder than the diagnostic that follows it.
         header = Text(
             f"{'✗' if event.failed else '✓'} {label(event.name)}{result}{elapsed}",
-            style="pcode.error" if event.failed else "pcode.thinking",
+            style="pcode.thinking",
             no_wrap=True,
             overflow="ellipsis",
         )
@@ -1492,10 +1494,7 @@ class Transcript:
                     continue
                 self.print(
                     Text.assemble(
-                        (
-                            f"{'✗' if event.failed else '✓'} {label(event.name)}  ",
-                            "pcode.error" if event.failed else "pcode.thinking",
-                        ),
+                        (f"{'✗' if event.failed else '✓'} {label(event.name)}  ", "pcode.thinking"),
                         (plain(event.detail, limit=None), "pcode.thinking"),
                         (
                             f"  {event.elapsed_seconds:.1f}s"
