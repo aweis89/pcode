@@ -692,13 +692,23 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 
 Type `@` anywhere in a prompt to reference a workspace file. The menu matches
 any part of the path, so `@ui.py` finds `src/pcode/ui.py`; files whose name
-matches come first. Accepting a match replaces `@…` with the workspace-relative
-path, `./src/pcode/ui.py`, which is the form the model's file tools take, so it
-can read or search the file without guessing where it lives (a name containing
-spaces is quoted). The candidate list
-comes from `git ls-files` (tracked plus untracked, honoring `.gitignore`), or a
-directory walk that skips hidden and build directories outside a Git checkout,
-and is refreshed at most every ten seconds.
+matches come first, and each row shows the file's size. Accepting a match
+replaces `@…` with the workspace-relative path, `./src/pcode/ui.py`, which is
+the form the model's file tools take, so it can read or search the file without
+guessing where it lives (a name containing spaces is quoted). References are
+underlined in the editor. The candidate list comes from `git ls-files` (tracked
+plus untracked, honoring `.gitignore`), or a directory walk that skips hidden
+and build directories outside a Git checkout, and is refreshed at most every ten
+seconds.
+
+Short referenced files ride along with the request that names them, so the model
+does not spend a turn reading what you just pointed at. Up to 16 KB per file and
+48 KB per message is appended to the message as delimited blocks with a line
+count and size; anything larger, binary, or missing is named with its size and
+left for the file tools. Scrollback, the task panel, `/tree` editing, and
+`/resend` all show the prompt as you typed it, never the appended payload. The
+menu labels each candidate `inlined` or `path only` so the cost is visible
+before you pick.
 
 - `/demo`: fictional Markdown, code, diff, table, and tool summaries; never calls
   the model, even in live mode, and does not enter its conversation history.
