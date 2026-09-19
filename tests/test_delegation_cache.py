@@ -22,6 +22,8 @@ from pcode.cache_settings import ANTHROPIC_CACHE_SETTINGS, ProviderCacheSettings
 
 CHILD_INPUT_TOKENS = 100
 CHILD_OUTPUT_TOKENS = 5
+# Only the child reports cached reads, so the session total attributes them.
+CHILD_CACHE_READ = 90
 
 
 def mock_anthropic(bodies: list, client: httpx2.AsyncClient) -> AnthropicModel:
@@ -53,7 +55,11 @@ def responder(bodies: list):
                         "role": "assistant",
                         "model": "claude-opus-5",
                         "content": [],
-                        "usage": {"input_tokens": CHILD_INPUT_TOKENS, "output_tokens": 0},
+                        "usage": {
+                            "input_tokens": CHILD_INPUT_TOKENS - CHILD_CACHE_READ,
+                            "output_tokens": 0,
+                            "cache_read_input_tokens": CHILD_CACHE_READ,
+                        },
                     }
                 },
             ),
@@ -237,8 +243,9 @@ def test_child_tokens_are_counted_once(tmp_path):
 
     runtime = asyncio.run(run())
     assert bodies, "the sub-agent never reached the mocked provider"
-    # The parent's stub model reports no input tokens, so this is the child's
-    # contribution, counted exactly once rather than twice.
-    assert runtime.input_tokens == CHILD_INPUT_TOKENS * len(bodies)
-    child_output = CHILD_OUTPUT_TOKENS * len(bodies)
-    assert child_output <= runtime.output_tokens < child_output * 2
+    # Cached reads come only from the child, so they isolate its contribution
+    # from the parent stub's synthetic usage: doubled would be 180.
+    assert runtime.totals.cache_read == CHILD_CACHE_READ * len(bodies)
+    # Its uncached input and output are included too, alongside the parent's.
+    assert runtime.input_tokens >= CHILD_INPUT_TOKENS * len(bodies)
+    assert runtime.output_tokens >= CHILD_OUTPUT_TOKENS * len(bodies)

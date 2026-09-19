@@ -156,6 +156,44 @@ Three things about delegation are easy to get backwards, and each has a test:
   message instead of aborting the turn -- without it, a child hitting a shared
   limit raises through the parent.
 
+## Counting what was actually spent
+
+Usage used to be read from `AgentRunResultEvent`, which never arrives for a turn
+that fails, is cancelled, or is retried, so every request the provider had
+already billed went unrecorded. No streamed event carries usage, but the
+`after_model_request` capability hook fires once per model response, so
+[`token_accounting.py`](../src/pcode/token_accounting.py) records each request as
+it completes. That hook is a filter, not a listener: it must return the response,
+or the run continues with nothing where the model's reply should be.
+
+The same capability is installed on `SubAgents.shared_capabilities`, so a
+delegated request is counted where it happens. Nothing may add
+`AgentRunResult.usage` or `DelegationEndEvent.usage` on top of it. Two sources
+still need explicit handling because they are separate agent runs that never
+reach the hook: manual `/compact` and the auto-compaction summarizer.
+
+Totals track cache reads and writes separately, since a write costs more than an
+uncached token and a read a fraction of one; `/context` shows the split.
+`SessionInfo` gained defaulted fields, so a session written before this still
+loads.
+
+## When compaction itself is too large
+
+Nothing upstream bounds the summary request: Harness caps each tool return but
+renders text parts and tool-call arguments whole, and never measures the prompt
+against a context window. An oversized history can therefore produce an
+oversized summary request, and compaction fails at the one moment it has to
+succeed.
+
+`summarize()` now runs a `FallbackCompaction` chain: the first attempt keeps
+evidence readable (16,000 chars per tool return), and each retry sends less,
+pairing a tighter tool-return cap with `ClampOversizedMessages` so one runaway
+generation cannot carry the request on its own. The retries use
+`TieredCompaction` with `target_tokens=1`, which is never satisfied and is how
+both the clamp and summarize tiers are made to run. Provider errors trigger the
+fallback; cancellation is not caught, and a genuine outage still surfaces after
+every step has been tried.
+
 ## Reading the provider's verdict from past sessions
 
 Every saved session records `cache_read_tokens` and `cache_write_tokens` per

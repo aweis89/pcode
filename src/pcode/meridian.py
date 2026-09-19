@@ -57,6 +57,11 @@ class MeridianProvider(AnthropicProvider):
                 auth_token="",
                 http_client=client,
                 default_headers={"x-meridian-agent": "passthrough"},
+                # The SDK default of 2 would retry 408/409/429/5xx and connection
+                # errors silently, outside the runtime's visible retry budget and
+                # against the transient-error policy in `diagnostics.py`. The
+                # runtime owns transport retries here, as it does for API keys.
+                max_retries=0,
             )
         )
         # Empty token prevents environment lookup during construction; None then

@@ -5,7 +5,7 @@ from copy import deepcopy
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -93,6 +93,59 @@ def test_summarizer_is_tool_free_focused_incremental_and_pair_safe(monkeypatch):
         assert context_label("test:local", second.messages) == " · ctx: 99/100k"
 
     asyncio.run(run())
+
+
+def test_oversized_summary_request_retries_with_tighter_caps(monkeypatch):
+    """Nothing upstream bounds the summary request, so it can be too large itself.
+
+    Compaction would then fail at the one moment it has to succeed: when history
+    no longer fits. The retry must shrink what it sends, not just try again.
+    """
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "100000")
+    prompts = []
+
+    async def stream(messages, info):
+        prompt = messages[-1].parts[0].content
+        prompts.append(prompt)
+        if len(prompt) > 20_000:
+            raise ModelHTTPError(400, "test", body={"error": {"message": "prompt is too long"}})
+        yield SUMMARY
+
+    async def run():
+        result = await summarize(history(), model=FunctionModel(stream_function=stream))
+        assert result.changed
+        summary = [
+            part.content
+            for message in result.messages
+            for part in message.parts
+            if isinstance(getattr(part, "content", None), str) and SUMMARY in part.content
+        ]
+        assert summary, "the retry must still produce a real summary"
+
+    asyncio.run(run())
+    # The first attempt is rejected for size; a later one sends strictly less.
+    assert len(prompts) > 1
+    assert len(prompts[-1]) < len(prompts[0])
+    assert len(prompts[-1]) <= 20_000
+
+
+def test_summary_failure_that_is_not_about_size_still_surfaces(monkeypatch):
+    """The fallback chain must not turn a real provider outage into silence."""
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "100000")
+    attempts = 0
+
+    async def stream(messages, info):
+        nonlocal attempts
+        attempts += 1
+        raise ModelHTTPError(503, "test", body={"error": {"message": "upstream down"}})
+        yield ""  # pragma: no cover - generator protocol only
+
+    async def run():
+        with pytest.raises(ModelHTTPError):
+            await summarize(history(), model=FunctionModel(stream_function=stream))
+
+    asyncio.run(run())
+    assert attempts == 3, "every tightening step is tried before giving up"
 
 
 def test_small_history_is_noop_without_model_request():

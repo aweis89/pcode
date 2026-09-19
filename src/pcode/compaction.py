@@ -12,7 +12,13 @@ from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import infer_model
 from pydantic_ai.usage import RunUsage
-from pydantic_ai_harness.compaction import SummarizingCompaction, compact_now
+from pydantic_ai_harness.compaction import (
+    ClampOversizedMessages,
+    FallbackCompaction,
+    SummarizingCompaction,
+    TieredCompaction,
+    compact_now,
+)
 from pydantic_ai_harness.compaction._shared import (
     estimate_context_tokens,
     estimate_token_count,
@@ -23,6 +29,12 @@ from pydantic_ai_harness.step_persistence import ContinuableSnapshot, is_provide
 
 from pcode.context_usage import compact_tokens
 from pcode.output_limits import ModelOutputLimits
+
+# Caps for the summary request. The first attempt keeps evidence readable; the
+# retries exist so an oversized history still compacts instead of failing at the
+# moment it must succeed. Each retry is (tool-return chars, any-part chars).
+TOOL_RETURN_CHARS = 16_000
+TIGHTENED_ATTEMPTS = ((2_000, 8_000), (500, 2_000))
 
 MARKER = "pcode.compaction.v1"
 SCHEMAS = "pcode.request-schemas.v1"
@@ -137,18 +149,43 @@ async def summarize(messages, *, model, focus=None, usage=None, window=None, par
     overhead = max(0, before - estimate_token_count(messages))
     cutoff = find_token_cutoff(messages, keep)
     oversized_tail = estimate_token_count(messages[cutoff:]) > keep
-    strategy = SummarizingCompaction(
-        max_tokens=1,  # compact_now bypasses triggers; a trigger is required by Harness.
-        # A single recent tool batch can exceed the entire tail budget. In that
-        # case summarize the settled batch too; never split its call/return pair.
-        keep_tokens=None if oversized_tail else keep,
-        keep_messages=0 if oversized_tail else 20,
-        summary_prompt=SUMMARY_PROMPT,
-        # The 500-character upstream default can hide the actual failure. Bound
-        # individual results, while still leaving summarizer input/output headroom.
-        tool_return_max_chars=16_000,
-        model_settings={"max_tokens": min(6000, window // 8) if window else 6000},
-        event_stream_handler=drain_summary_events,
+
+    def summarizer(tool_return_max_chars: int) -> SummarizingCompaction:
+        return SummarizingCompaction(
+            max_tokens=1,  # compact_now bypasses triggers; a trigger is required by Harness.
+            # A single recent tool batch can exceed the entire tail budget. In that
+            # case summarize the settled batch too; never split its call/return pair.
+            keep_tokens=None if oversized_tail else keep,
+            keep_messages=0 if oversized_tail else 20,
+            summary_prompt=SUMMARY_PROMPT,
+            # The 500-character upstream default can hide the actual failure. Bound
+            # individual results, while still leaving summarizer input/output headroom.
+            tool_return_max_chars=tool_return_max_chars,
+            model_settings={"max_tokens": min(6000, window // 8) if window else 6000},
+            event_stream_handler=drain_summary_events,
+        )
+
+    def tightened(tool_chars: int, part_chars: int) -> TieredCompaction:
+        # Capping tool returns is not enough: `_format_messages` renders text
+        # parts and tool-call arguments whole, so one runaway generation can
+        # carry the request over the limit on its own. Clamp any oversized part
+        # first. `target_tokens=1` is never satisfied, which is how both tiers
+        # are made to run rather than stopping at the cheap one.
+        return TieredCompaction(
+            [ClampOversizedMessages(max_part_chars=part_chars), summarizer(tool_chars)],
+            target_tokens=1,
+        )
+
+    # Nothing upstream bounds the summary request itself, so a history that is
+    # already too large can produce a summary request that is also too large, and
+    # compaction fails exactly when it is needed. Retry with less content rather
+    # than giving up; `FallbackCompaction` catches provider errors (which is how
+    # an over-long request comes back) but never cancellation.
+    strategy = FallbackCompaction(
+        [
+            summarizer(TOOL_RETURN_CHARS),
+            *(tightened(tool_chars, part_chars) for tool_chars, part_chars in TIGHTENED_ATTEMPTS),
+        ]
     )
     candidate = await compact_now(
         strategy, deepcopy(messages), model=model, focus=focus, usage=usage
@@ -211,6 +248,9 @@ class AutoCompaction(AbstractCapability):
         if not self.runtime.session and is_provider_valid(request_context.messages):
             self.runtime.history = deepcopy(request_context.messages)
         self.runtime.context_history = list(request_context.messages)
+        # Instructions and tool schemas as resolved for a real request: the only
+        # place /context can read them without re-deriving the system prompt.
+        self.runtime.request_parameters = request_context.model_request_parameters
         from pcode.model_metadata import refresh_context
 
         await refresh_context(request_context.model)

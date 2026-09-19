@@ -35,6 +35,9 @@ class SessionInfo(BaseModel):
     turns: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    # Defaulted, so a session written before cache accounting still loads.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     packages: dict[str, str]
 
 
