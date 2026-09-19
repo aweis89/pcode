@@ -75,7 +75,7 @@ def test_failed_commands_report_failure_in_the_mirrored_block():
         error="ModuleNotFoundError: example",
     )
     assert view.command_output(event) is True
-    assert "✗ Run failed" in stream.getvalue()
+    assert "✗ Run" in stream.getvalue()
     assert "ModuleNotFoundError: example" in stream.getvalue()
 
 
@@ -94,8 +94,8 @@ def test_mirrored_failure_replaces_the_error_excerpt_block():
     )
     app.present_events((event,))
     output = stream.getvalue()
-    assert "✗ Run failed" in output
-    assert output.count("✗ Run failed") == 1
+    assert "✗ Run" in output
+    assert output.count("✗ Run") == 1
     assert "kept context" in output
     # Scrollback is the only record: a settled call leaves the live panel.
     assert app.activity.tools.calls == []
@@ -314,7 +314,7 @@ def test_command_highlighting_and_failure_title_do_not_style_output_as_code():
         assert isinstance(parts[1], Text)
         # A failed command reads the same as a successful one; only ✗ differs.
         assert parts[1].style == "pcode.accent"
-        assert parts[1].plain.startswith("✗ Run failed")
+        assert parts[1].plain.startswith("✗ Run") and "failed" not in parts[1].plain
         headings = list(succeeded.__rich_console__(view.console, view.console.options))
         assert headings[1].style == parts[1].style
         segments = list(view.console.render(block))
