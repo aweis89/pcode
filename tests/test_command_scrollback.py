@@ -64,7 +64,7 @@ def test_mirroring_ignores_tools_without_commands():
 
 
 def test_failed_commands_report_failure_in_the_mirrored_block():
-    save_preferences(command_scrollback="on")
+    save_preferences(command_scrollback="on", tool_error_scrollback="on")
     view, stream = transcript()
     event = ToolSummary(
         "run_command",
@@ -80,7 +80,7 @@ def test_failed_commands_report_failure_in_the_mirrored_block():
 
 
 def test_mirrored_failure_replaces_the_error_excerpt_block():
-    save_preferences(command_scrollback="on")
+    save_preferences(command_scrollback="on", tool_error_scrollback="on")
     stream = StringIO()
     app = PreviewApp(console=Console(file=stream, width=80, color_system=None))
     event = ToolSummary(
@@ -347,6 +347,8 @@ def test_command_visibility_controls_all_completions(name, failed):
     view.events((event,))
     assert stream.getvalue() == ""
     view.command_scrollback = True
+    # Mirrored output of a failure is the one part that waits for its own option.
+    view.tool_error_scrollback = failed
     view.tool_result(event)
     assert stream.getvalue().count("OUTPUT") == 1
     assert "DIAGNOSTIC" not in stream.getvalue()

@@ -50,6 +50,9 @@ SETTINGS = {
     # Extra automatic attempts after a dropped connection; 0 disables retrying.
     "retry_attempts": Setting("1", whole_number=True),
     "error_scrollback_lines": Setting("20", positive_integer=True),
+    # Failed tool calls otherwise dominate scrollback with their full diagnostic;
+    # off keeps a one-line trace and leaves the detail to the saved transcript.
+    "tool_error_scrollback": Setting("off", ("on", "off")),
     "regenerate_on_resize": Setting("on", ("on", "off")),
     "edits": Setting("show", ("show", "hide")),
     "command_scrollback": Setting("off", ("on", "off")),

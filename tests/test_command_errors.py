@@ -83,6 +83,7 @@ def test_command_diagnostic_survives_event_round_trip_and_uses_output_fallback()
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=100, color_system=None))
     transcript.command_scrollback = True
+    transcript.tool_error_scrollback = True
     transcript.events((ToolSummary(**asdict(event)),))
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
         "─" * 100,
@@ -144,7 +145,7 @@ def test_command_errors_reach_live_events_and_saved_transcript(tmp_path, mode):
 def test_failed_command_summary_uses_semantic_error_color(command):
     from pcode.preferences import save_preferences
 
-    save_preferences(command_scrollback="on")
+    save_preferences(command_scrollback="on", tool_error_scrollback="on")
     stream = StringIO()
     transcript = Transcript(Console(file=stream, force_terminal=True, color_system="truecolor"))
     transcript.events(
@@ -177,6 +178,66 @@ def test_default_error_scrollback_limit():
     Transcript(Console(file=stream)).error("\n".join(str(i) for i in range(60)))
     assert len(stream.getvalue().splitlines()) == 23
     assert stream.getvalue().splitlines()[-2].strip() == "59"
+
+
+@pytest.mark.parametrize("name", ["read_file", "write_plan", "edit_file"])
+def test_tool_failures_keep_a_marked_summary_line_without_their_diagnostic(name):
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None))
+    event = ToolSummary(name, "missing.py", failed=True, error="Not found")
+    assert transcript.writes_tool_result(event)
+    transcript.tool_result(event)
+    output = stream.getvalue()
+    assert "✗ " in output and "✓" not in output
+    assert "missing.py" in output
+    assert "Not found" not in output
+
+
+@pytest.mark.parametrize("name", ["read_file", "write_plan", "edit_file"])
+def test_tool_error_scrollback_restores_full_diagnostics(name):
+    from pcode.preferences import save_preferences
+
+    save_preferences(tool_error_scrollback="on")
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None))
+    event = ToolSummary(name, "missing.py", failed=True, error="Not found")
+    assert transcript.writes_tool_result(event)
+    transcript.tool_result(event)
+    assert "failed" in stream.getvalue()
+    assert "Not found" in stream.getvalue()
+
+
+def test_failed_commands_need_mirroring_before_the_failure_option_applies():
+    from pcode.preferences import save_preferences
+
+    save_preferences(tool_error_scrollback="on")
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None))
+    event = ToolSummary("run_command", "pytest → exit 1", failed=True, command="pytest")
+    assert not transcript.writes_tool_result(event)
+    transcript.tool_result(event)
+    assert stream.getvalue() == ""
+
+
+def test_mirrored_command_failures_keep_only_their_summary_line_by_default():
+    from pcode.preferences import save_preferences
+
+    save_preferences(command_scrollback="on")
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None))
+    event = ToolSummary(
+        "run_command",
+        "pytest → exit 1",
+        failed=True,
+        command="pytest",
+        result="[stderr]\nModuleNotFoundError\n[exit code: 1]",
+        error="ModuleNotFoundError",
+    )
+    transcript.tool_result(event)
+    assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
+        "  ✗ Run · exit 1",
+        "    pytest",
+    ]
 
 
 def test_legacy_error_visibility_is_ignored_and_hidden_commands_keep_events():

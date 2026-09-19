@@ -166,7 +166,7 @@ def test_unconfirmed_preview_rolls_back_on_cancel_error_or_rejected_tool(ending)
         assert app.activity.displayed_plan == [confirmed.model_dump(mode="json")]
         assert await runtime.plan_store.get_items() == [confirmed]
         if ending == "rejected":
-            assert "✗ Plan failed" in printed.getvalue()
+            assert "✗ Plan" in printed.getvalue()
 
     asyncio.run(run())
 
