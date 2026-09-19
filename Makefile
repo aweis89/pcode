@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test test-tmux test-all lint fmt cache-report harness-src brew-install brew-update brew-uninstall
+.PHONY: help install update uninstall run test test-tmux test-all lint fmt cache-report harness-src worktree worktree-merge worktree-remove worktrees brew-install brew-update brew-uninstall
 
 HARNESS_DIR := tmp/pydantic-ai-harness
 HARNESS_URL := https://github.com/pydantic/pydantic-ai-harness.git
@@ -46,6 +46,18 @@ harness-src: ## Check out upstream Harness source at the pinned SHA under tmp/
 	git -C $(HARNESS_DIR) cat-file -e "$$sha^{commit}" 2>/dev/null || git -C $(HARNESS_DIR) fetch --quiet origin; \
 	git -C $(HARNESS_DIR) checkout --quiet --detach "$$sha"; \
 	echo "$(HARNESS_DIR) @ $$sha"
+
+worktree: ## Create an isolated worktree under .worktrees/ (make worktree NAME=fix-foo [BASE=ref])
+	@scripts/worktree.sh new $(NAME) $(BASE)
+
+worktree-merge: ## Merge a worktree's branch back into the mainline (make worktree-merge NAME=fix-foo)
+	@scripts/worktree.sh merge $(NAME)
+
+worktree-remove: ## Delete a worktree, keeping its branch (make worktree-remove NAME=fix-foo)
+	@scripts/worktree.sh remove $(NAME)
+
+worktrees: ## List worktrees
+	@scripts/worktree.sh list
 
 brew-install: ## Alternative: install the frozen HEAD build via Homebrew
 	brew tap aweis89/pcode https://github.com/aweis89/pcode.git
