@@ -29,10 +29,16 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [dependency-groups]
-dev = ["pytest>=8", "pexpect>=4.9; sys_platform != 'win32'", "ruff>=0.11"]
+dev = [
+    "pytest>=8",
+    "pexpect>=4.9; sys_platform != 'win32'",
+    "ruff>=0.11",
+    "pytest-xdist>=3.6",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["tmux: real-tmux layout regression (slow; opt in with --tmux)"]
 
 [tool.ruff]
 line-length = 100

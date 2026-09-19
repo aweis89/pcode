@@ -1173,10 +1173,20 @@ exchange is appended to history, so the prompt cache prefix stays intact.
 ## Validate
 
 ```sh
-uv run pytest
+make test        # fast suite in parallel; real-tmux regressions skipped
+make test-all    # everything, including the real-tmux regressions
 uv run ruff check .
 uv run ruff format --check .
 ```
+
+The real-tmux tests are 64 of ~1580 tests but three quarters of the suite's
+runtime, so they are opt-in: `make test` skips them (each skip states why) and
+finishes in seconds, while `make test-all` runs them. Ad-hoc `pytest` invocations
+follow the same rule: `--tmux` or `PCODE_TEST_TMUX=1` enables them, and naming a
+tmux path (`uv run pytest tests/test_tmux.py -k resize`) counts as asking for
+them. They run serially on purpose: they assert on real pane paints within
+deadlines, and a loaded machine makes them fail spuriously. Run `make test-all`
+before pushing anything that touches layout, streaming, or the editor.
 
 Tests require no API keys or paid model calls. They cover completion, keybindings,
 Unicode/narrow output, streaming, history/reset, cancellation, and actual Coder
