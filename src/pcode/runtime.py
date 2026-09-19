@@ -59,6 +59,9 @@ class EditPreview:
     call_id: str
     path: str = ""
     text: str = ""
+    # "edit" carries +/- lines for a file; "code" carries a sandboxed snippet
+    # that has not run yet. Both are pending tool arguments, never results.
+    kind: str = "edit"
 
 
 @dataclass(frozen=True)

@@ -445,6 +445,12 @@ opaque snippet that did it. A `run_code` call is displayed by the calls the
 snippet makes and its size (`grep · read_file ×2 · 12 lines`); the snippet
 itself is visible in the tool-call inspector.
 
+The snippet also streams into the pinned preview box as the model writes it,
+titled `Preparing code · not yet run`, in the same place edit diffs and command
+output appear. Only complete lines are shown, the box clears the moment the
+snippet is dispatched, and the text never enters the transcript — it is a
+pending argument, not a result. `/edits hide` hides it along with edit previews.
+
 Snippets run in the Monty sandbox with no host filesystem or environment of their
 own: pcode passes no `mount` or `os_access`, so the only way out is the sandboxed
 tools, which enforce the same workspace rules as ever. Harness caps each snippet
@@ -1051,6 +1057,8 @@ Repository MCP files are **not** loaded automatically. The JSON uses an
 - **Remote HTTP/SSE:** `url` and optional `headers` (string map). Transport is
   inferred from the URL by the MCP client. Add `"auth": "oauth"` for browser sign-in.
 
+Either transport also accepts `"direct": true`; see tool search below.
+
 Server names start with a letter and contain letters, digits, `_`, or `-` (up to
 32 characters). Unsupported server fields are rejected on enable rather than
 silently ignored. String values support `${VARIABLE}` and `${VARIABLE:-default}`.
@@ -1102,6 +1110,37 @@ no headless/device-code login command.
 - Disabling a server drops pcode's reference to its OAuth client; it does not revoke
   the server-side grant. Revoke access through the service if needed.
 
+### Tool search (`direct`)
+
+MCP tools are **deferred** by default: the model sees a `search_tools` function
+instead of every enabled server's schemas, and calls it to reveal the tools it
+needs. A server with fifty tools then costs one search call rather than fifty
+schemas in every request of the conversation.
+
+Set `"direct": true` on a server to send its tool definitions up front instead:
+
+```json
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "direct": true
+    }
+  }
+}
+```
+
+That is worth it for small servers whose one or two tools you expect every turn,
+since it saves the discovery round trip. Deferral is per server, so direct and
+searched servers can be enabled together.
+
+Discovery is handled by Pydantic AI's auto-injected `ToolSearch` capability:
+natively by the provider where supported (recent Anthropic and OpenAI models),
+otherwise by a local `search_tools` tool that pcode shows as **Find tools**.
+Either way the revealed tools keep their `mcp_NAME_TOOL` names, and the search
+exchange is appended to history, so the prompt cache prefix stays intact.
+
 ### Activation and token usage
 
 - `/mcp enable NAME` makes that server's tools available on subsequent turns in
@@ -1118,8 +1157,9 @@ no headless/device-code login command.
   start with **all servers off**. Activation is never saved in session files or
   user defaults. `/mcp list` shows the current state.
 - Off servers contribute **no MCP tool schemas or server instructions**. Enabled
-  tools are namespaced as `mcp_NAME_TOOL`; their schemas and results consume
-  context normally. Disabling does not erase earlier tool results from history.
+  tools are namespaced as `mcp_NAME_TOOL`; their results consume context normally,
+  and their schemas do too once they are direct or discovered. Disabling does not
+  erase earlier tool results from history.
 - Enabling authorizes the agent to use the server's tools with that server's
   permissions, including write actions. There is no additional per-call approval
   or sandbox. Server instructions are not automatically added to the prompt.
