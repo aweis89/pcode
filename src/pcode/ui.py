@@ -936,7 +936,7 @@ def create_prompt(
         fixed = (
             1
             + int(session.bottom_toolbar is not None)
-            + activity.status_shown
+            + status_height()
             + len(queue_rows())
             + menu.preferred_height(size.columns, size.rows).preferred
             + search.preferred_height(size.columns, size.rows).preferred
@@ -983,11 +983,24 @@ def create_prompt(
         live = preview_layout()
         return live[1] if live is not None else []
 
+    def status_gap() -> bool:
+        """Whether the live panel needs its own blank row above it.
+
+        Scrollback separates blocks with a blank row, but the panel is not
+        scrollback: without this the spinner sits flush against the last tool
+        line. Depend only on state preview_layout already reads, so asking for
+        the gap cannot re-enter the layout calculation.
+        """
+        return activity.status_shown and transcript is not None and not transcript.ends_blank
+
+    def status_height() -> int:
+        return activity.status_shown + status_gap()
+
     def activity_height() -> int:
         rows = plan_rows()
         commands = command_rows()
         return (
-            activity.status_shown
+            status_height()
             + (len(rows) + 2 if rows else 0)
             + (len(commands) + 2 if commands else 0)
         )
@@ -1063,7 +1076,8 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(command_rows())),
     )
-    activity_panel = HSplit([commands, current_status, plan])
+    status_spacer = ConditionalContainer(Window(height=1), filter=Condition(status_gap))
+    activity_panel = HSplit([status_spacer, commands, current_status, plan])
 
     @per_render
     def queue_rows():
@@ -1263,6 +1277,15 @@ class Transcript:
             self._write((), "\n")
         self._block = block
         self._write(objects, end)
+
+    @property
+    def ends_blank(self) -> bool:
+        """Whether scrollback already ends with a blank row.
+
+        The live activity panel uses this to keep itself one block apart from
+        the last thing written, the same way consecutive writes do.
+        """
+        return self._block in (None, "blank")
 
     @staticmethod
     def _ends_blank(objects: tuple) -> bool:
