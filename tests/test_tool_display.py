@@ -1,4 +1,5 @@
 import asyncio
+import re
 from dataclasses import asdict
 from io import StringIO
 
@@ -317,6 +318,29 @@ def test_multiline_command_preview_is_compact_and_sanitized():
     assert "2 more lines" in stream.getvalue()
     assert "\\n" not in stream.getvalue()
     assert command_text("echo \x1b[2Jhello\u202e\n\tend") == "echo hello \n    end"
+
+
+@pytest.mark.parametrize("show", ["summary", "events"])
+def test_failed_tool_summary_line_is_marked_only_by_its_symbol(show):
+    """The ✗ carries the failure; the line keeps the styling a success would get."""
+
+    def render(failed: bool) -> str:
+        stream = StringIO()
+        transcript = Transcript(
+            Console(file=stream, width=80, force_terminal=True, color_system="truecolor")
+        )
+        if show == "summary":
+            transcript.command_summary(
+                ToolSummary("run_command", "pytest -q → exit 1", failed, command="pytest -q")
+            )
+        else:
+            transcript.events((ToolSummary("read_file", "missing.py", failed),))
+        return stream.getvalue()
+
+    failure, success = render(True), render(False)
+    assert "✗" in failure and "✓" in success
+    codes = re.compile(r"\x1b\[[0-9;]*m")
+    assert codes.findall(failure) == codes.findall(success)
 
 
 def test_command_text_redacts_before_preserving_lines():
