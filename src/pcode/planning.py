@@ -1,10 +1,37 @@
 """Make Harness's stable plan IDs visible when a plan is created."""
 
-from pydantic_ai_harness.planning import Planning
+from pydantic_ai_harness.planning import Planning, render_plan
+
+from pcode.meridian_reminders import append_reminder
 
 
 class IdentifiedPlanning(Planning):
     """Keep upstream validation/storage, but disambiguate IDs from row numbers."""
+
+    async def before_model_request(self, ctx, request_context):
+        if request_context.model.system == "meridian" and self.inject:
+            items = await self._read_plan(ctx)
+            text = render_plan(items) if items else "No active plan."
+            # Don't inject an empty plan until there is an earlier reminder to clear.
+            if items or any(
+                (m.metadata or {}).get("pcode_meridian_reminder", {}).get("kind") == "plan"
+                for m in request_context.messages
+            ):
+                append_reminder(
+                    request_context,
+                    "plan",
+                    text,
+                    "<plan-reminder>\nCurrent plan (supersedes earlier plan reminders):\n"
+                    f"{text}\n</plan-reminder>",
+                )
+        return request_context
+
+    async def wrap_model_request(self, ctx, *, request_context, handler):
+        if request_context.model.system == "meridian":
+            return await handler(request_context)
+        return await super().wrap_model_request(
+            ctx, request_context=request_context, handler=handler
+        )
 
     def get_instructions(self):
         guidance = super().get_instructions()

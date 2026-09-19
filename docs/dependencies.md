@@ -406,6 +406,19 @@ reuse from its own lineage hash over the full semantic message prefix; only
 Sending cache settings there changes nothing, and a mutable tail that moves each
 request diverges the lineage regardless.
 
+For Meridian, pcode's `IdentifiedPlanning` appends durable plan snapshots only when
+the rendered plan changes (including clearing it). `MeridianLimitWarnings` retains
+old warnings and appends updates at percentage deciles or severity changes. Both
+use `before_model_request`, whose messages Pydantic AI persists, not the ephemeral
+`wrap_model_request` boundary. Deduplication reads metadata in the current history,
+so saved resume, retry, and branch selection do not depend on process-local state.
+Direct Anthropic retains upstream reminder behavior. Wire-prefix regressions live
+in `tests/test_meridian_reminders.py`.
+
+Check the running proxy's `/health` version rather than trusting `meridian --version`:
+the launch service can use a different Node installation than the shell. The
+append-only requirement was reproduced against Meridian 1.72.0's lineage checker.
+
 ### Cache-bust warnings
 
 `cache_warnings.py` subclasses the pinned Harness `WarnOnCacheBusts` and converts
