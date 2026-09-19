@@ -1305,9 +1305,9 @@ class PreviewApp:
         summary = getattr(self.runtime, "startup_context", None)
         if summary is not None:
             for line in summary():
-                self.transcript.note(line)
+                self.transcript.retained_note(line)
         if self.skill_command_names:
-            self.transcript.note("Skill commands: " + ", ".join(self.skill_command_names))
+            self.transcript.retained_note("Skill commands: " + ", ".join(self.skill_command_names))
 
     def warn_without_credentials(self) -> None:
         """Say so at startup, not on the first prompt.
@@ -1367,7 +1367,7 @@ class PreviewApp:
                 self.warn_without_credentials()
                 saved = getattr(self.runtime, "session", None)
                 if self.model and saved:
-                    self.transcript.note(f"Saving session: {saved.info.id}")
+                    self.transcript.retained_note(f"Saving session: {saved.info.id}")
                 if self.resuming:
                     self.replay()
             except Exception as error:
