@@ -285,44 +285,99 @@ change; it does not validate active animation. This is about a **92% reduction i
 idle CPU** in that setup. Resource/function profiling adds its own CPU cost, so
 these figures were measured externally without either profiler enabled.
 
-### Optimization order
+### Implemented prompt optimizations
 
-1. **Stop idle periodic redraws.** The prompt currently enables a spinner refresh
-   timer even when nothing is running. An offline real-tmux function profile showed
-   about 235 redraw calls over an 18-second idle capture, dominated by prompt_toolkit
-   layout/width allocation, not Markdown. Replace unconditional refresh with an
-   activity-aware tick: preserve active spinners and tool elapsed times, but let
-   idle input/state/resize events drive rendering. Do not permanently disable
-   refresh in production. Validate idle CPU and active animation separately in real
-   tmux, including CPR, resize, completion, cancellation, and model initialization.
-2. **Avoid redundant layout and parsing work while active.** Cache unchanged preview
-   layout/wrapping per render or content/width/theme revision, rather than calculating
-   it separately in multiple height/content callbacks. Coalesce Markdown boundary
-   checks and track fenced-block state so long containers are not reparsed on every
-   newline. The end-only comparison is a ceiling experiment, not the implementation:
-   keep streamed visibility, exact chunk-boundary behavior, and cancellation flushes.
+The first two prompt optimizations are now production behavior, not runtime
+monkeypatches. Markdown rendering is unchanged.
+
+1. **Activity-aware refresh.** Idle prompts have no animation timer. Input, resize,
+   and application state changes still invalidate normally. A redraw while busy,
+   showing a running prompt, or showing running tools schedules the next animation
+   tick. Settling/cancelling work stops it; application shutdown owns task cleanup.
+   This also covers backend initialization before a prompt exists. Merely changing
+   prompt_toolkit's `refresh_interval` at runtime would not work: its refresh loop
+   captures the original interval when it starts.
+2. **Bounded preview caching.** Frame/preview allocation, task rows, and queue rows
+   are reused within one redraw and terminal size, then discarded. Editor, menu,
+   task, queue, and CPR changes therefore cannot inherit an old layout. One preview
+   body is cached across redraws by content, width, command/edit kind, and syntax
+   theme. Titles and tail-height allocation remain outside that cache. Hiding or
+   clearing previews releases the retained body on the next redraw.
+
+#### Before/after measurements
+
+Local macOS arm64 / Python 3.14.0 measurements compared the code before these
+changes (`ea48f26`) with the new production implementation, without profiling.
+These are workload-specific CPU results, not overall resource or memory claims.
+
+**Idle, real tmux:** fresh offline processes, 100×32, three seconds of warmup after
+readiness, then 15 seconds measured externally with process CPU counters. Three
+trials per version, interleaved old/new/new/old/old/new:
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Median CPU, percentage of one core | 3.02% | 0.31% |
+| Trial range | 2.37–3.35% | 0.25–0.36% |
+
+That is **about 90% less idle CPU** with activity-aware refresh, rather than the
+older experiment that disabled animation unconditionally. Background metadata
+polling still runs, so idle CPU is not zero. Real-tmux tests separately verify
+spinner changes and advancing tool elapsed times during a quiet provider pause,
+then resize, cancellation, and draft input.
+
+**Active layout microbenchmark:** 32 rows, five tasks, a running prompt, and a
+synthetic command preview containing 160 lines of roughly 100 characters each.
+Sixty actual Application redraws after a warmup redraw; median of three passes,
+measuring process CPU. The changing variant appends one output line before every
+redraw. Imports and prompt construction are outside the timing.
+
+| Preview workload | Width | Before CPU | After CPU | Reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Unchanged body | 40 | 5.328 s | 0.129 s | 97.6% |
+| Unchanged body | 100 | 5.249 s | 0.217 s | 95.9% |
+| Body changes every redraw | 40 | 5.953 s | 0.370 s | 93.8% |
+| Body changes every redraw | 100 | 5.718 s | 0.463 s | 91.9% |
+
+Previously, height/visibility/content callbacks repeatedly sanitized and wrapped
+that entire output within the same redraw. Tests now assert one body computation
+for an unchanged preview and one task-row calculation per redraw in the measured
+layout, plus invalidation on content, width, theme, and visibility changes.
+
+This is a headless prompt-layout microbenchmark, **not end-to-end active-turn CPU**
+and not the historical journal replay. It excludes real terminal I/O, provider
+work, persistence, and subprocesses. Real CPR/height behavior is covered separately
+by the tmux command/edit-preview regressions. No real provider requests or
+historical tool execution were needed. Local scripts and raw measurements are in
+`tmp/replay-benchmarks/` (`idle_production.py`, `idle-production.jsonl`,
+`layout_cpu.py`, and `layout[-changing]-{before,after}.jsonl`); they are gitignored.
+
+### Remaining optimization TODO
+
+1. **Markdown rendering, explicitly deferred.** Coalesce boundary checks and
+   investigate fenced-block state so long containers are not reparsed on every
+   newline. The end-only comparison remains an experiment, not the implementation:
+   preserve streamed visibility, chunk-boundary behavior, and cancellation flushes.
    Target near-linear scaling on the synthetic list benchmark and lower CPU on real
-   journals; keep `test_transcript.py` and real-tmux streaming/preview regressions.
-3. **Separate persistence cost from rendering.** Use the same synthetic model
+   journals; keep transcript and real-tmux streaming regressions.
+2. **Separate persistence cost from rendering.** Use the same synthetic model
    stream with saving on/off, varying delta count and history size. Measure journal
    append count, CPU, event-loop delay, bytes written, and resume time. Candidates:
    batching ordered delta records, deduplicating unchanged status events, avoiding
    repeated journal scans. Keep durable tool boundaries and crash/branch recovery.
-4. **Measure retained memory over settled turns.** Compare RSS and Python current
+3. **Measure retained memory over settled turns.** Compare RSS and Python current
    bytes over increasing turn counts, with and without saving and compaction.
    Investigate full-history copies in unsaved conversation-tree nodes and retry
    checkpoints, large coalesced thinking strings, and entry-count-only transcript
    retention. A byte budget or shared immutable history needs explicit eviction /
    branching semantics, not a blind cache or truncation fix.
-5. **Profile the responsible process.** If child CPU/RSS dominates, identify its
+4. **Profile the responsible process.** If child CPU/RSS dominates, identify its
    PID locally and investigate that command or managed proxy separately. Changing
    pcode's renderer will not fix an expensive external process.
 
-Idle redraw work and repeated parsing are measured; preview caching, persistence,
-and history changes still need targeted before/after tests. No production rendering,
-persistence, or history optimization is included in the replay tooling change.
-Use a live profile of the high-resource workload to distinguish active preview
-rendering, backend work, and external processes before applying the remaining fixes.
+Idle redraw and command-preview layout savings are measured above. Markdown,
+persistence, and history optimizations remain unimplemented. Use a live profile
+of the high-resource workload to distinguish remaining preview/rendering work,
+backend work, and external processes before applying the remaining fixes.
 
 ## Profiler references
 

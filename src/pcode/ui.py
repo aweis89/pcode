@@ -5,7 +5,7 @@ import os
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from functools import cache
+from functools import cache, lru_cache, wraps
 from time import monotonic
 
 from prompt_toolkit import PromptSession
@@ -846,6 +846,24 @@ def create_prompt(
         filter=is_searching,
     )
 
+    # Layout callbacks are queried repeatedly during a single synchronous redraw.
+    # Never retain their results across redraws: editor/menu/CPR and mutable
+    # activity state can all change without going through one revision counter.
+    render_cache = None
+
+    def per_render(function):
+        @wraps(function)
+        def cached(*args):
+            if render_cache is None:
+                return function(*args)
+            key = (function, session.app.output.get_size(), args)
+            if key not in render_cache:
+                render_cache[key] = function(*args)
+            return render_cache[key]
+
+        return cached
+
+    @per_render
     def frame_height() -> int:
         live = preview_layout()
         if live is not None:
@@ -859,14 +877,28 @@ def create_prompt(
     # Give the prompt line its own glyph so it reads as the overall turn, not as
     # another in-progress task row.
     prompt_spinner = Spinner("dots")
-    # Animate active tasks and update running tool elapsed times during pauses.
-    session.app.refresh_interval = min(plan_spinner.interval, prompt_spinner.interval) / 1000
+    refresh_interval = min(plan_spinner.interval, prompt_spinner.interval) / 1000
 
+    @per_render
     def base_plan_rows(budget: int | None = None):
         if budget is None:
             budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
         return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
+    @lru_cache(maxsize=1)
+    def preview_body(edits: bool, body: str, width: int, theme: str):
+        # Only the most recent body is retained. Titles and height/tail allocation
+        # stay outside this cache; width, kind and syntax theme affect rendering.
+        if edits:
+            return edit_preview_rows(body, width, theme)
+        return [
+            ("class:bottom-toolbar.text", row.plain)
+            for row in Text(command_text(body)).wrap(
+                Console(width=width), width, overflow="fold", no_wrap=False
+            )
+        ]
+
+    @per_render
     def preview_layout():
         """Allocate actual chrome/editor height first, then give output the remainder.
 
@@ -917,15 +949,7 @@ def create_prompt(
             else "$ " + command_preview(event.command)
         )
         body = event.text if edits else event.output
-        if edits:
-            rows = edit_preview_rows(body, width, transcript.code_theme)
-        else:
-            rows = [
-                ("class:bottom-toolbar.text", row.plain)
-                for row in Text(command_text(body)).wrap(
-                    Console(width=width), width, overflow="fold", no_wrap=False
-                )
-            ]
+        rows = preview_body(bool(edits), body, width, transcript.code_theme)
         commands = [("class:plan", title), *rows[-budget:]]
         return plans, commands, editor_height
 
@@ -939,10 +963,11 @@ def create_prompt(
 
     def activity_height() -> int:
         rows = plan_rows()
+        commands = command_rows()
         return (
             bool(activity.prompt)
             + (len(rows) + 2 if rows else 0)
-            + (len(command_rows()) + 2 if command_rows() else 0)
+            + (len(commands) + 2 if commands else 0)
         )
 
     def plan_text():
@@ -1018,6 +1043,7 @@ def create_prompt(
     )
     activity_panel = HSplit([commands, current_prompt, plan])
 
+    @per_render
     def queue_rows():
         budget = min(4, max(1, session.app.output.get_size().rows // 4))
         return activity.queue_rows(budget)
@@ -1089,7 +1115,6 @@ def create_prompt(
             full_screen=False,
             erase_when_done=True,
             min_redraw_interval=1 / 30,
-            refresh_interval=editor_app.refresh_interval,
             key_bindings=editor_app.key_bindings,
             editing_mode=editor_app.editing_mode,
             style=editor_app.style,
@@ -1097,6 +1122,45 @@ def create_prompt(
             output=editor_app.output,
             mouse_support=False,
         )
+    animation_task = None
+
+    def needs_animation():
+        return (
+            activity.busy
+            or activity.prompt_state == "running"
+            or (activity.tasks_shown and any(call.running for call in activity.tools.calls))
+        )
+
+    async def animate(app):
+        nonlocal animation_task
+        await asyncio.sleep(refresh_interval)
+        animation_task = None
+        if needs_animation():
+            app.invalidate()
+
+    def before_render(app):
+        nonlocal render_cache
+        render_cache = {}
+        if transcript is None or not (
+            (transcript.show_edits and activity.edit_previews)
+            or (transcript.command_scrollback and activity.command_outputs)
+        ):
+            preview_body.cache_clear()
+
+    def after_render(app):
+        nonlocal render_cache, animation_task
+        render_cache = None
+        # A redraw caused by input or application events starts animation again.
+        # Idle prompts have no timer; toolkit owns cancellation at app shutdown.
+        if needs_animation() and app.is_running:
+            if animation_task is None or animation_task.done():
+                animation_task = app.create_background_task(animate(app))
+        elif animation_task is not None:
+            animation_task.cancel()
+            animation_task = None
+
+    session.app.before_render += before_render
+    session.app.after_render += after_render
     if session.app.editing_mode == EditingMode.VI:
         # Allow terminal escape sequences to arrive, without a half-second pause.
         session.app.ttimeoutlen = 0.1
