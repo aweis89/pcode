@@ -57,7 +57,8 @@ def create_coder(workspace: Path) -> CombinedCapability:
     coder.capabilities = [
         create_repo_context(workspace)
         if isinstance(capability, RepoContext)
-        else DisplayFileSystem.from_filesystem(capability)
+        # Named so /context can attribute its prompt; ids never reach the model.
+        else replace(DisplayFileSystem.from_filesystem(capability), id="file_tools")
         if isinstance(capability, FileSystem)
         # Replace Coder's 64k truncation, so it cannot cut data before spilling.
         else output_limits
@@ -135,7 +136,7 @@ def create_coder(workspace: Path) -> CombinedCapability:
     # Missing credentials must not prevent ordinary coding sessions. Let the
     # capability read the key itself; never put it in instructions or tool args.
     if os.environ.get("EXA_API_KEY", "").strip():
-        coder.capabilities.append(ExaSearch())
+        coder.capabilities.append(ExaSearch(id="web_research"))
     # Recompose so instruction sources track replaced/added capabilities too.
     # Summarize evidence before discarding it. Coder defaults to clearing old
     # tool results at 70%, which otherwise runs before pcode compaction.

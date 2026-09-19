@@ -19,4 +19,6 @@
 
 - On Python 3.14, `cProfile` can observe worker threads too: using `time.thread_time` as its timer produces negative/nonsensical timings. Use Yappi's per-thread CPU accounting for function profiling, not a custom `cProfile` CPU clock.
 
+- Instruction parts are attributed to a capability only when that capability has an `id`, and Harness leaves several of the ones with prompts anonymous. Name them at construction (`create_coder`, `create_repo_context`): a concrete `Capability` binds its instructions to its id in `__init__`, so a later `capability.id = ...` is silently ignored, and blanket-renaming everything breaks `replace()`-copied children that compare fields with their parent.
+
 - A cache-collapse warning ending in the generic `(e.g. a gap longer than the cache TTL)` means the gap was *under* the TTL: Harness names the measured gap whenever it actually exceeds it, so that phrasing rules expiry out rather than suggesting it. Its `model request N` is also per-run, not per-session. Read the `Message N changed` / `Prefix intact` line that `cache_diagnostics.py` appends, and the dumped fingerprints, before theorizing about a cause.
