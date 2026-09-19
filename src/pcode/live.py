@@ -429,6 +429,11 @@ class AgentRuntime:
                     resend_blocked=resend_blocked,
                     sync=True,
                 )
+                if not cancelled:
+                    # A bug reaches the user as a type and a message; the frames
+                    # that name the responsible line live only in this process.
+                    # Stopping on purpose is not a defect worth a traceback.
+                    saved.record_error(error, run_id=run_id)
                 saved.info.status = "cancelled" if cancelled else "failed"
                 saved.save_info()
                 try:

@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from pydantic_ai_harness.step_persistence import SqliteStepStore, StepEvent, ToolEffectRecord
 
 from pcode.conversation_tree import ConversationTree
-from pcode.diagnostics import redact, versions
+from pcode.diagnostics import error_report, redact, versions
 
 
 class SessionError(ValueError):
@@ -217,6 +217,25 @@ class SavedSession:
                 os.fsync(file.fileno())
 
         self.tree.consume(record)
+
+    def record_error(self, error: BaseException, *, run_id: str) -> None:
+        """Append the traceback the transcript's bounded `error` summary cannot carry.
+
+        A type and a message name the symptom; only frames name the line. This
+        is a separate append-only file rather than a transcript record so a
+        crash loop cannot push conversation history out of a replay window, and
+        so nothing that renders the transcript has to filter it out.
+
+        Diagnostics must never replace the failure being diagnosed: a directory
+        that has gone away or read-only is silently accepted.
+        """
+        path = self.directory / "errors.log"
+        try:
+            private_file(path)
+            with path.open("a", encoding="utf-8") as file:
+                file.write(f"--- {now()} run {run_id} ---\n{error_report(error)}\n")
+        except OSError:
+            pass
 
     def event(self, event) -> None:
         self.append(type(event).__name__, **asdict(event))
