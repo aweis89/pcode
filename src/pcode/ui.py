@@ -35,7 +35,12 @@ from rich.theme import Theme
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
-from pcode.file_refs import FileReferenceCompleter, reference_fragment
+from pcode.file_refs import (
+    FileReferenceCompleter,
+    ReferenceLexer,
+    reference_fragment,
+    typed_prompt,
+)
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
@@ -134,6 +139,9 @@ class Palette:
                 "completion-menu scrollbar.button": f"bg:{self.selected}",
                 "completion-menu.meta.completion": f"bg:{self.surface} {self.muted}",
                 "completion-menu.meta.completion.current": f"bg:{self.selected} {self.foreground}",
+                # A file reference is neither prose nor a command: underlining
+                # it marks the token without competing with the prompt chevron.
+                "reference": f"{self.task_heading} underline",
                 "auto-suggestion": self.muted,
             }
         )
@@ -826,6 +834,7 @@ def create_prompt(
         multiline=True,
         erase_when_done=True,
         completer=merge_completers([SlashCompleter(registry), FileReferenceCompleter(workspace)]),
+        lexer=ReferenceLexer(),
         complete_while_typing=Condition(
             lambda: (
                 (
@@ -1429,8 +1438,10 @@ class Transcript:
         )
 
     def user(self, text: str) -> None:
+        # Replayed prompts carry the file contents pcode appended when they were
+        # sent; scrollback shows what was typed, not the payload.
         self.print()
-        self.print(TaskPrompt(text))
+        self.print(TaskPrompt(typed_prompt(text)))
         self.print()
 
     def command_summary(self, event: ToolSummary) -> None:
