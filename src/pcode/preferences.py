@@ -19,9 +19,14 @@ class Setting:
     positive_integer: bool = False
     # A count whose zero means "off", so it cannot reuse positive_integer's floor.
     whole_number: bool = False
+    # An os.pathsep-separated list of directories; empty means "none".
+    path_list: bool = False
 
     def validate(self, key: str, value: str) -> None:
-        if self.positive_integer or self.whole_number:
+        if self.path_list:
+            if value and any(not entry.strip() for entry in value.split(os.pathsep)):
+                raise ValueError(f"{key} must be directories separated by '{os.pathsep}'.")
+        elif self.positive_integer or self.whole_number:
             floor = 0 if self.whole_number else 1
             if not value.isascii() or not value.isdecimal() or int(value) < floor:
                 raise ValueError(
@@ -39,6 +44,11 @@ class Setting:
 SEND_MODES = ("steering", "queue", "interrupt")
 ANTHROPIC_AUTH_SOURCES = ("api-key", "oauth")
 
+# A user-level directory shared across workspaces, plus the workspace's own
+# `.agents/skills`, which the asset-root scan already covers but which belongs in
+# the listed default so replacing the list is an informed choice.
+DEFAULT_SKILL_DIRS = os.pathsep.join(("~/.agents/skills", ".agents/skills"))
+
 
 SETTINGS = {
     "send_mode": Setting("steering", SEND_MODES),
@@ -49,6 +59,9 @@ SETTINGS = {
     "repo_context_nested": Setting("off", ("off", "pointer", "contents")),
     # How discovered SKILL.md assets appear as slash commands.
     "skill_commands": Setting("prefix", ("prefix", "bare", "both", "off")),
+    # Extra skill directories, searched after the workspace asset roots. Relative
+    # entries resolve against the workspace; `~` expands to the user's home.
+    "skill_dirs": Setting(DEFAULT_SKILL_DIRS, path_list=True),
     # Extra automatic attempts after a dropped connection; 0 disables retrying.
     "retry_attempts": Setting("1", whole_number=True),
     "error_scrollback_lines": Setting("20", positive_integer=True),

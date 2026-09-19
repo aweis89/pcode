@@ -158,6 +158,7 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 | `repo_context_walk_up` | `on` | `on`, `off` (inherit ancestor instruction files) |
 | `repo_context_nested` | `off` | `off`, `pointer`, `contents` (discover instructions on file-tool traversal) |
 | `skill_commands` | `prefix` | `prefix`, `bare`, `both`, `off` (how discovered skills appear as slash commands) |
+| `skill_dirs` | `~/.agents/skills:.agents/skills` | `:`-separated directories searched for skills; relative entries resolve against the workspace |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
 
@@ -566,6 +567,21 @@ The command sends a normal message asking the model to read that file and follow
 it, with anything you type after the command appended. It is queued like a typed
 message, so send mode, steering, and Ctrl+C behave as usual. The skill body is
 not preloaded into the prompt; the model reads the file with its own tools.
+
+`skill_dirs` adds directories searched after the asset roots, so skills can live
+outside the workspace:
+
+```sh
+pcode config set skill_dirs '~/.agents/skills:.agents/skills'   # default
+pcode config set skill_dirs '~/.agents/skills:/opt/team/skills' # share a checkout
+pcode config set skill_dirs ''                                  # asset roots only
+```
+
+Entries are separated by `:`, `~` expands to your home directory, and a relative
+entry resolves against the workspace. Each directory is searched recursively for
+`SKILL.md`. Asset roots are scanned first and a duplicated name keeps the first
+match, so a workspace skill shadows a user-level one. Skills found outside the
+workspace are referenced by absolute path.
 
 Naming follows `skill_commands`: `prefix` gives `/skill:NAME` (default), `bare`
 gives `/NAME`, `both` registers the bare name as an alias of the prefixed one,
