@@ -575,8 +575,12 @@ default (two attempts total per submitted turn). The retry reuses the failed
 request's checkpoint, including completed tool results, without adding a
 "continue" prompt. Partial streamed output may remain visible but is excluded
 from the retried request. Authentication, HTTP status errors, tool errors, and
-user cancellation are not automatically retried. Provider SDKs may also retry
-internally.
+user cancellation are not automatically retried by pcode. Anthropic SDK request
+retries are disabled for all three authentication modes: rate-limit, billing,
+and server errors surface immediately rather than waiting through hidden
+backoff. Transport retries show the failure and attempt count. OAuth credential
+refresh still handles an expired access token. Other provider SDKs may retry
+internally. Use `/resend` to retry a failed request when ready.
 
 ```sh
 pcode config set retry_attempts 3   # Three extra attempts per turn, next launch

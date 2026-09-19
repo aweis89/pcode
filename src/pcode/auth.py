@@ -47,8 +47,13 @@ class SubscriptionOAuthWire:
         return betas, headers
 
 
-def anthropic_model(model: str, key: str):
+def anthropic_model(model: str, key: str, *, http_client=None):
+    from anthropic import AsyncAnthropic
     from pydantic_ai.models.anthropic import AnthropicModel
     from pydantic_ai.providers.anthropic import AnthropicProvider
 
-    return AnthropicModel(model.removeprefix("anthropic:"), provider=AnthropicProvider(api_key=key))
+    # Runtime owns visible transport retries; HTTP errors must surface immediately.
+    client = AsyncAnthropic(api_key=key, http_client=http_client, max_retries=0)
+    return AnthropicModel(
+        model.removeprefix("anthropic:"), provider=AnthropicProvider(anthropic_client=client)
+    )

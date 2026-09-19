@@ -114,7 +114,8 @@ class PiAnthropicModel(SubscriptionOAuthWire, AnthropicModel):
         path = path if path is not None else pi_auth_path()
         credential = read_pi_credential(path)
         self._subscription_oauth = credential.kind == "oauth"
-        client = PiAnthropicClient(path, credential.kind, http_client=http_client)
+        # Let the runtime surface errors and own visible transport retries.
+        client = PiAnthropicClient(path, credential.kind, http_client=http_client, max_retries=0)
         super().__init__(
             model.removeprefix("anthropic:"),
             provider=AnthropicProvider(anthropic_client=client),
