@@ -9,6 +9,7 @@ from pcode.diagnostics import redact
 LABELS = {
     "delegate_task": "Delegate",
     "read_file": "Read",
+    "read_tool_result": "Read result",
     "write_file": "Write",
     "edit_file": "Edit",
     "search_files": "Search",
@@ -90,6 +91,9 @@ def target(name: str, args: dict) -> str:
     if name in {"shell", "run_command", "start_command"}:
         command = args.get("command")
         return command_preview(command) if isinstance(command, str) else "command unavailable"
+    if name == "read_tool_result":
+        handle = args.get("handle")
+        return argument(handle) if isinstance(handle, str) else "handle unavailable"
     if name in {"get_page", "web_search"}:
         key = "url" if name == "get_page" else "query"
         value = args.get(key)
@@ -219,6 +223,9 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
     if failed:
         prefix = "Retry requested" if outcome == "retry" else "Failed"
         result = f"{prefix} · {failure_reason(content)}"
+    elif text.startswith("[Tool output too large (") and name != "shell":
+        # Do not count the preview's lines/matches as if it were the full result.
+        result = "Output stored · preview in context"
     elif name == "delegate_task":
         # A normal return without a lifecycle end can be a rejected delegation
         # (e.g. max_calls exhausted), not proof the child completed.

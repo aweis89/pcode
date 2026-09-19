@@ -17,6 +17,7 @@ from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.cache_warnings import CacheBustReporting
 from pcode.delegation import DelegationReporting, stream_child_activity
@@ -27,6 +28,7 @@ from pcode.meridian_reminders import MeridianLimitWarnings
 from pcode.output_limits import ModelOutputLimits
 from pcode.planning import IdentifiedPlanning
 from pcode.repo_context import create_repo_context
+from pcode.tool_output_limits import create_tool_output_limits
 from pcode.usage_limits import UnlimitedRequests
 from pcode.workspace_filesystem import WorkspaceFileSystem
 
@@ -42,6 +44,7 @@ def create_coder(workspace: Path) -> CombinedCapability:
             part for part in (os.environ.get("PATH", ""), str(bundled_bin)) if part
         )
     coder = Coder(workspace)
+    output_limits = create_tool_output_limits()
     # Keep Coder's tool selection, including its persistent shell. File display
     # and repository discovery remain local adapters; planning is now opt-in.
     coder.capabilities = [
@@ -49,6 +52,9 @@ def create_coder(workspace: Path) -> CombinedCapability:
         if isinstance(capability, RepoContext)
         else DisplayFileSystem.from_filesystem(capability)
         if isinstance(capability, FileSystem)
+        # Replace Coder's 64k truncation, so it cannot cut data before spilling.
+        else output_limits
+        if isinstance(capability, ToolOutputLimits)
         else MeridianLimitWarnings(
             **{f.name: getattr(capability, f.name) for f in fields(capability) if f.init}
         )
@@ -100,6 +106,7 @@ def create_coder(workspace: Path) -> CombinedCapability:
                 MeridianSessionIdentity(),
                 ModelOutputLimits(),
                 CacheBustReporting(),
+                replace(output_limits),
             ],
         )
     )

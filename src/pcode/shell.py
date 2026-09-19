@@ -15,6 +15,8 @@ from pydantic_ai_harness.shell import (
 from pcode.runtime import CommandOutput
 from pcode.tool_display import command_text
 
+REDUCED_SHELL_OUTPUT = "[Shell output reduced; full output remains in the command log.]"
+
 # A quoted secret may span chunks and lines. Redact through EOF until its
 # closing quote arrives, not just after a complete quoted value is available.
 _OPEN_SECRET = re.compile(
@@ -39,13 +41,16 @@ def result_projection(content, finished=None):
     Harness returns the last 16 KB, which can start inside a quoted credential
     or private-key block. Do not read the raw log to reconstruct it. Keep only
     the supervisor's trailing handles/status in the UI and inspection journal.
-    Model tool results and upstream's log files are unaffected.
+    Model tool results and upstream's log files are unaffected. The tool-output
+    limiter marks reduced bodies explicitly, since their length no longer proves
+    whether upstream truncation removed the opening credential marker.
     """
     if not isinstance(content, str):
         return content
     output, separator, handles = content.rpartition("\nPID: ")
     if separator and (
-        (finished is not None and finished.truncated)
+        content.startswith(REDUCED_SHELL_OUTPUT)
+        or (finished is not None and finished.truncated)
         or len((output + "\n").encode("utf-8")) >= 16000
     ):
         return (

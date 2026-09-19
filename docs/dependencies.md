@@ -373,6 +373,31 @@ Never use synthetic agent runs to install summaries or overwrite original snapsh
 Keep tests for immediate restart, branch isolation, failure/cancellation, safe tool
 pairs, mid-tool-loop compaction, and stale usage anchors after rewriting history.
 
+### Tool output limits
+
+`tool_output_limits.py` composes the pinned Harness `ToolOutputLimits`, `Band`,
+`Spill`, `Truncate`, `LocalFileStore`, and `indented_json` APIs. Coder already
+includes a private `ToolOutputLimits` subclass with a 64k truncation band: replace
+it by type rather than append another limiter, or data can be lost before spilling.
+`SubAgents.shared_capabilities` receives a separate instance with the same settings
+and store. Keep retrieval registered even with no bands, since resumed histories
+can contain older handles. Spills are separate from the session journal and survive
+`--no-save`; tests must isolate `XDG_STATE_HOME` as well as config/cache directories.
+
+The pinned `read_tool_result` pages by lines, then caps the body at 50k characters.
+A single longer line cannot be recovered with `offset` or `from_end`; the coding
+adapter supplies the stable store path in instructions for shell-based character
+slicing. `indented_json` makes structured returns pageable but does not split long
+string fields. Verify this behavior against the installed source on upgrades.
+
+`CodingToolOutputLimits` reduces only the persistent shell's body, leaving its
+PID/log/status footer intact even for head truncation and small budgets. It marks
+changed bodies so `shell.result_projection` omits previews whose clipping removed
+redaction context. Length-based detection alone stops working after reduction,
+especially for delegated calls that have no `CommandFinishedEvent` in the parent.
+Keep the real-shell parent/explorer tests, long-line recovery, serialized-history
+readback, and spill-failure fallback tests in `tests/test_tool_output_limits.py`.
+
 ### Reasoning effort
 
 `preferences.apply_effort` uses `openai_reasoning_effort` for OpenAI/Codex and
