@@ -1,0 +1,148 @@
+"""Workspace file references: type `@` in the prompt to insert a relative path.
+
+Completing `@ui.py` inserts `./src/pcode/ui.py`, the same workspace-relative
+form the file tools accept, so the model can read or search it without guessing
+where the file lives.
+"""
+
+import os
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+from time import monotonic
+
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+from prompt_toolkit.document import Document
+
+# Directories that never hold source worth referencing, used only when the
+# workspace is not a Git checkout (Git supplies its own ignore rules).
+IGNORED_DIRECTORIES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+        "venv",
+    }
+)
+MAX_FILES = 20000
+MAX_COMPLETIONS = 50
+CACHE_SECONDS = 10.0
+
+
+def _git_files(root: Path) -> list[str] | None:
+    """Tracked and untracked files below root, or None outside a Git checkout."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    # A file staged for deletion is still cached; listing it would complete to a
+    # path that no longer exists, so drop duplicates and keep insertion order.
+    return list(dict.fromkeys(result.stdout.splitlines()))
+
+
+def _walked_files(root: Path) -> list[str]:
+    paths: list[str] = []
+    for directory, subdirectories, names in os.walk(root):
+        subdirectories[:] = sorted(
+            name
+            for name in subdirectories
+            if name not in IGNORED_DIRECTORIES and not name.startswith(".")
+        )
+        base = Path(directory)
+        for name in sorted(names):
+            if name.startswith("."):
+                continue
+            paths.append(str((base / name).relative_to(root)))
+            if len(paths) >= MAX_FILES:
+                return paths
+    return paths
+
+
+@dataclass
+class WorkspaceFiles:
+    """Workspace-relative file paths, refreshed at most every CACHE_SECONDS.
+
+    Completion runs on every keystroke, so the listing is cached rather than
+    re-read; new files show up within the refresh window.
+    """
+
+    root: Path
+    cache_seconds: float = CACHE_SECONDS
+    _paths: list[str] = field(default_factory=list)
+    _loaded_at: float | None = None
+
+    def paths(self) -> list[str]:
+        now = monotonic()
+        if self._loaded_at is None or now - self._loaded_at >= self.cache_seconds:
+            self._paths = (_git_files(self.root) or _walked_files(self.root))[:MAX_FILES]
+            self._loaded_at = now
+        return self._paths
+
+    def matches(self, fragment: str, limit: int = MAX_COMPLETIONS) -> list[str]:
+        """Paths containing fragment, closest match first.
+
+        A basename hit outranks a directory hit, and an earlier hit outranks a
+        later one, so `@ui.py` offers `src/pcode/ui.py` before `tests/test_ui.py`.
+        """
+        needle = fragment.lstrip("@").removeprefix("./").lower()
+        if not needle:
+            # Shallowest first: the interesting top-level files, not build output.
+            return sorted(self.paths(), key=lambda path: (path.count("/"), path))[:limit]
+        ranked = []
+        for path in self.paths():
+            position = path.lower().find(needle)
+            if position < 0:
+                continue
+            name_position = os.path.basename(path).lower().find(needle)
+            ranked.append(((0, name_position) if name_position >= 0 else (1, position), path))
+        ranked.sort(key=lambda item: (item[0], len(item[1]), item[1]))
+        return [path for _, path in ranked[:limit]]
+
+
+def reference_fragment(text: str) -> str | None:
+    """The path fragment of a trailing `@` reference, or None when absent.
+
+    `@` only starts a reference at a word boundary, so emails and decorators in
+    pasted text never open the menu.
+    """
+    token = text.rsplit(maxsplit=1)[-1] if text.split() else ""
+    if not text or text[-1].isspace() or not token.startswith("@"):
+        return None
+    return token[1:]
+
+
+class FileReferenceCompleter(Completer):
+    """Replace a trailing `@fragment` with a `./` workspace-relative path."""
+
+    def __init__(self, workspace: Path | None = None) -> None:
+        self.files = WorkspaceFiles((workspace or Path.cwd()).resolve())
+
+    def get_completions(self, document: Document, complete_event: CompleteEvent):
+        fragment = reference_fragment(document.text_before_cursor)
+        if fragment is None:
+            return
+        for path in self.files.matches(fragment):
+            # The `@` is a trigger, not part of the reference: it is replaced so
+            # the model receives a path its file tools accept verbatim.
+            yield Completion(
+                f"./{path} ",
+                start_position=-(len(fragment) + 1),
+                display=path,
+                display_meta="file",
+            )

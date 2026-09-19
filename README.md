@@ -690,6 +690,15 @@ uv run pcode --theme auto    # detect terminal background at startup
 Type `/` to open the command menu, then narrow it by typing. Use Tab or the
 arrow keys to choose. Enter accepts a selected completion; another Enter runs it.
 
+Type `@` anywhere in a prompt to reference a workspace file. The menu matches
+any part of the path, so `@ui.py` finds `src/pcode/ui.py`; files whose name
+matches come first. Accepting a match replaces `@…` with the workspace-relative
+path, `./src/pcode/ui.py`, which is the form the model's file tools take, so it
+can read or search the file without guessing where it lives. The candidate list
+comes from `git ls-files` (tracked plus untracked, honoring `.gitignore`), or a
+directory walk that skips hidden and build directories outside a Git checkout,
+and is refreshed at most every ten seconds.
+
 - `/demo`: fictional Markdown, code, diff, table, and tool summaries; never calls
   the model, even in live mode, and does not enter its conversation history.
 - `/theme light`, `/theme dark`, or `/theme auto`: change the input and future output palette.
@@ -891,7 +900,7 @@ with rendered Markdown. Tool summaries live inside the task widget. `/demo`
 and restored session messages still use Rich Markdown.
 
 The editor remains usable throughout generation, including multiline input,
-history, and slash completion. Enter sends using the active mode (steering by
+history, slash completion, and `@` file references. Enter sends using the active mode (steering by
 default) and clears the editor for another draft; the toolbar shows the mode and
 pending message count. Steering messages join the next model request; queue-mode
 messages run in order after the current turn finishes. Ctrl+S cycles send modes. Slash commands use a separate async
@@ -940,6 +949,7 @@ cleaned up rather than abandoned.
 - `src/pcode/ui.py`: prompt_toolkit editor and bottom-aligned layout, plus a batched
   terminal writer for committed Markdown blocks.
 - `src/pcode/commands.py`: registry shared by dispatch, help, and completion.
+- `src/pcode/file_refs.py`: cached workspace file listing behind `@` completion.
 - `src/pcode/inspection.py`: bounded inspection projection and lazy journal index.
 - `src/pcode/inspector_ui.py`: alternate-screen tool selection, filters, and scrollable details.
 - `src/pcode/app.py`: CLI and asynchronous composition.
