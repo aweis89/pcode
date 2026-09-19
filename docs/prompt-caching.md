@@ -127,3 +127,31 @@ while writes mostly track new content, rather than repeatedly tracking the whole
 tail since the last user prompt. A passing wire test does not prove provider-side
 reuse. See the [README's cache diagnostics](../README.md#prompt-cache-warnings)
 for fingerprint dumps and warning interpretation.
+
+## Reading the provider's verdict from past sessions
+
+Every saved session records `cache_read_tokens` and `cache_write_tokens` per
+request, so real traffic supplies the confirmation a wire test cannot, without
+credentials or spend. [`scripts/cache_report.py`](../scripts/cache_report.py)
+reads those records:
+
+```sh
+make cache-report                                  # latest session
+uv run python scripts/cache_report.py all -n 10    # recent sessions
+uv run python scripts/cache_report.py <id> -v      # per-request tokens
+uv run python scripts/cache_report.py all --check  # exit 1 on a regression
+```
+
+It reports the share of requests that reused most of the previous request's
+input, the pinned-reads signature described above, snapshots that replaced
+settled history, and duplicate plan reminders. Output is content-free by
+construction: counts, digests, and token totals only.
+
+Two thresholds encode traps rather than preferences. Requests following a prefix
+below the provider's minimum cacheable size are excluded, since nothing was
+obliged to be cached. Reuse is measured against the previous request's total
+input rather than against zero, because the old bug still produced large reads
+from a stale prefix -- `read > 0` would have passed throughout.
+
+`tests/test_cache_report.py` builds sessions through the real step store, so a
+schema change breaks the test rather than silently producing an empty report.
