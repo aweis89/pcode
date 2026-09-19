@@ -11,6 +11,7 @@ from pydantic_ai_harness.repo_context import RepoContext
 # inventory stays consistent with the upstream tool. Covered by integration tests.
 from pydantic_ai_harness.repo_context._inventory import scan_assets
 
+from pcode.context_breakdown import REPO_CONTEXT
 from pcode.preferences import SETTINGS, load_preferences
 
 
@@ -86,6 +87,9 @@ def create_repo_context(workspace: Path) -> AutomaticRepoContext:
         home = Path.home().resolve()
         boundary = home if workspace.is_relative_to(home) else Path(workspace.anchor)
     return AutomaticRepoContext(
+        # Named so /context can attribute repository instructions and the asset
+        # inventory to it; the id is metadata and never reaches the model.
+        id=REPO_CONTEXT,
         workspace_dir=workspace,
         home_dir=boundary,
         nested_traversal=nested != "off",

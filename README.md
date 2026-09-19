@@ -754,14 +754,16 @@ before you pick.
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed` or `/errors`: open the same inspector filtered to failures.
 - `/diffs`: browse this conversation's file diffs in a full-screen popup.
-- `/context`: current model, workspace, completed turns, and token usage.
+- `/context`: current model, workspace, completed turns, token usage, and a breakdown of the
+  prompt overhead the model is re-sent every request — see
+  [Where the fixed prompt goes](#where-the-fixed-prompt-goes).
 - `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
 - `/autocompact on|off`: opt into automatic LLM compaction (saved user preference; default off).
 - `/new`: start a new saved conversation without clearing the on-screen transcript or input history.
 - `/resume`: choose a saved conversation by its first prompt and resume it in place.
-- `/session`: show the current session's model, workspace, usage, and storage path in a popup.
-  The same details are printed inline by `/context`.
+- `/session`: show the current session's model, workspace, usage, prompt overhead, and storage
+  path in a popup. The same details are printed inline by `/context`.
 - `/tree`: [browse and fork the conversation](docs/conversation-tree.md); select a user prompt to
   edit it, or an assistant response to continue from there. Existing branches are kept.
 - `/skill:NAME [text]`: run a discovered skill; see
@@ -1059,6 +1061,41 @@ Used context shows `0` when the conversation is empty or usage has not been
 reported yet.
 Long paths shrink first; narrow terminals may truncate trailing context details.
 `/context` continues to show cumulative session input/output usage.
+
+## Where the fixed prompt goes
+
+`ctx:` is one number, which does not say why it is that large. `/context` and
+`/session` also break down the **prompt overhead**: the instructions and tool
+schemas the provider is re-sent on every request, whatever the conversation did.
+
+```
+Prompt overhead           ~7.4k tokens · 3% of 200k · estimated
+  Instructions            ~4.3k
+    ~/AGENTS.md           ~2.8k · instructions
+    AGENTS.md             ~675 · instructions
+    Harness base prompts  ~228
+    Planning tool         ~162
+    Assistant config      ~105 · paths only · 1 skill
+    File tools            ~102
+    Sub-agents            ~90
+    Web research          ~74
+    Tool output limits    ~60
+    Terminal instructions ~15
+  Tool schemas            ~3.2k · 16 tools
+    Largest               write_plan 625 · grep 314 · edit_file 310 · shell 259
+```
+
+Each repository instruction file gets its own row, so it is obvious when a global
+`AGENTS.md` costs more than everything else combined. `Assistant config` is the
+discovery block: **skills cost a path, not a body**, because pcode passes their
+location and the model reads `SKILL.md` with a tool only when the skill runs. See
+[Skills as slash commands](#skills-as-slash-commands).
+
+The rows are read from the last request's resolved instructions and tool
+definitions, not re-derived, so they describe what was actually sent. Before the
+first request there is nothing to attribute and the row says so. Token counts are
+the same 4-characters-per-token estimate compaction uses, so they are comparable
+with its threshold rather than exact provider counts.
 
 ## Reasoning effort
 

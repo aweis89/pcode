@@ -784,13 +784,21 @@ class PreviewApp:
                 ("Preview turns", str(self.runtime.turns)),
                 ("Mode", "Canned replies only. Start with -m PROVIDER:MODEL for a real agent."),
             ]
+        totals = self.runtime.totals
         rows = [
             ("Model", self.model),
             ("Effort", self.current_effort()),
             ("Workspace", str(self.workspace)),
             ("Turns", str(self.runtime.turns)),
             ("Tokens in/out", f"{self.runtime.input_tokens}/{self.runtime.output_tokens}"),
+            # A cache read costs a fraction of an uncached token and a write costs
+            # more than one, so the split is the part worth watching.
+            (
+                "Input cached read/write",
+                f"{totals.cache_read}/{totals.cache_write} (uncached {totals.uncached_input})",
+            ),
             ("Tools", "Coder tools enabled; no sandbox."),
+            *self.overhead_overview(),
             (
                 "Automatic compaction",
                 ("on" if getattr(self.runtime, "auto_compact", False) else "off")
@@ -816,6 +824,28 @@ class PreviewApp:
         if enabled := sorted(getattr(mcp, "enabled", ()) or ()):
             rows.append(("MCP", ", ".join(enabled)))
         return rows
+
+    def overhead_overview(self) -> list[tuple[str, str]]:
+        """Attribute the fixed part of the prompt: instructions, assets, tool schemas.
+
+        Read from the last request rather than re-derived, so the rows describe
+        what the provider was actually sent. Nothing is available before the
+        first request, where the alternative would be a parallel guess at a
+        system prompt only the agent flow can resolve.
+        """
+        from pcode.context_breakdown import overhead_rows
+        from pcode.context_usage import context_window
+        from pcode.model_metadata import ContextWindowError
+
+        parameters = getattr(self.runtime, "request_parameters", None)
+        if parameters is None:
+            return [("Prompt overhead", "Measured on the first model request.")]
+        try:
+            resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
+            window = context_window(resolved or self.model)
+        except ContextWindowError:
+            window = None
+        return overhead_rows(parameters, window=window)
 
     def context(self, argument: str) -> None:
         for label, value in self.session_overview():
