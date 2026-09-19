@@ -184,6 +184,25 @@ def test_active_delegations_are_pinned_and_children_share_the_row_budget():
     assert history.calls == []
 
 
+def test_a_settled_child_row_lingers_long_enough_to_read(monkeypatch):
+    history = ToolHistory()
+    history.record(ToolStarted("delegate_task", "explorer · investigate", "parent"))
+    history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
+    history.record(ToolStarted("grep", "newest", "status-row"))
+    history.record(ToolSummary("read_file", "child.py", call_id="parent:child"))
+    rows = history.rows(3)
+    assert "child.py" in rows[1][1]
+    # Settled, so it reads as finished rather than still spinning.
+    assert rows[1][1].lstrip().startswith("✓") and rows[1][0] == "class:plan"
+    assert history.rows(3)[1][1] == rows[1][1]  # Its duration stops ticking.
+    # And it never takes over the status row, which only reports running work.
+    assert history.active is not None and history.active.event.call_id == "status-row"
+    monkeypatch.setattr("pcode.tool_panel.CHILD_DWELL", 0.0)
+    assert all("child.py" not in text for _, text in history.rows(3))
+    history.prune()
+    assert [c.event.call_id for c in history.calls] == ["parent", "status-row"]
+
+
 def test_parallel_parents_take_priority_over_child_chatter():
     history = ToolHistory()
     for i in range(4):
