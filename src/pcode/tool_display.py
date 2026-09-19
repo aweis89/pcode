@@ -1,12 +1,16 @@
 """Tool presentation with visible inputs and sanitized command failure excerpts."""
 
+import ast
 import json
 import re
+from collections import Counter
 from pathlib import Path
 
+from pcode.code_mode import SANDBOXED_TOOLS
 from pcode.diagnostics import redact
 
 LABELS = {
+    "run_code": "Code",
     "delegate_task": "Delegate",
     "read_file": "Read",
     "read_tool_result": "Read result",
@@ -79,7 +83,38 @@ def command_preview(value: str) -> str:
     return plain(first, limit=100)
 
 
+def sandboxed_calls(code: str) -> list[str]:
+    """Report the tool calls a snippet makes by parsing it, not by guessing.
+
+    Names inside strings or comments cannot masquerade as calls, and a snippet
+    that does not parse simply reports nothing rather than a wrong summary.
+    """
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return []
+    counts = Counter(
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in SANDBOXED_TOOLS
+    )
+    return [f"{tool} ×{count}" if count > 1 else tool for tool, count in counts.items()]
+
+
+def code_preview(code: str) -> str:
+    """Summarize a sandboxed snippet by the calls it makes and its size."""
+    lines = sum(bool(line.strip()) for line in code.splitlines())
+    size = f"{lines} lines" if lines != 1 else "1 line"
+    calls = sandboxed_calls(code)
+    return plain(f"{' · '.join(calls)} · {size}" if calls else size, limit=100)
+
+
 def target(name: str, args: dict) -> str:
+    if name == "run_code":
+        code = args.get("code")
+        return code_preview(code) if isinstance(code, str) else "code unavailable"
     if name == "delegate_task":
         agent = args.get("agent_name")
         task = args.get("task")
