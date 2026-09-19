@@ -1119,8 +1119,10 @@ class Transcript:
         *,
         activity: Activity | None = None,
         color_style: str = "palette",
+        preferences: dict[str, str] | None = None,
+        detected_theme: str | None = None,
     ) -> None:
-        preferences = load_preferences()
+        preferences = load_preferences() if preferences is None else preferences
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
         self.show_edits = preferences.get("edits", "show") == "show"
         self.command_scrollback = preferences.get("command_scrollback", "off") == "on"
@@ -1129,7 +1131,7 @@ class Transcript:
         self.activity = activity
         self.console = console
         self.theme = theme
-        self.detected_theme = detect_theme()
+        self.detected_theme = detect_theme() if detected_theme is None else detected_theme
         self.color_style = color_style
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"

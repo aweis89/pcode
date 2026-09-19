@@ -607,6 +607,19 @@ Captures have private permissions, but can contain local source paths; inspect
 before sharing. See [profiling and the optimization plan](docs/profiling.md) for
 commands, limitations, the offline benchmark, and initial measured hotspots.
 
+Replay saved sessions through the current renderer, without calling models,
+rerunning tools, modifying sessions, or printing conversation contents:
+
+```sh
+pcode-benchmark --recent 5 --repeat 3 --render-mode both
+pcode-benchmark --replay latest --profile /tmp/pcode-replay --profile-cpu
+```
+
+Each JSON result reports CPU time, event counts, and expensive attempt ordinals.
+`both` compares normal streaming with an experimental end-only renderer; it does
+not change normal pcode behavior. This measures historical input on current code,
+not the original session's CPU, live prompt redraws, or external processes.
+
 ## Offline preview and commands
 
 ```sh
