@@ -30,6 +30,7 @@ def test_defaults_and_path_do_not_create_files():
         "meridian_managed": "off",
         "repo_context_walk_up": "on",
         "repo_context_nested": "off",
+        "skill_commands": "prefix",
         "retry_attempts": "1",
         "show_thinking": "off",
         "show_tasks": "on",

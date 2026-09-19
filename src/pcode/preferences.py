@@ -47,6 +47,8 @@ SETTINGS = {
     "meridian_managed": Setting("off", ("on", "off")),
     "repo_context_walk_up": Setting("on", ("on", "off")),
     "repo_context_nested": Setting("off", ("off", "pointer", "contents")),
+    # How discovered SKILL.md assets appear as slash commands.
+    "skill_commands": Setting("prefix", ("prefix", "bare", "both", "off")),
     # Extra automatic attempts after a dropped connection; 0 disables retrying.
     "retry_attempts": Setting("1", whole_number=True),
     "error_scrollback_lines": Setting("20", positive_integer=True),

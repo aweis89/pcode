@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 from contextlib import ExitStack, aclosing
+from dataclasses import replace
 from pathlib import Path
 
 from prompt_toolkit.application import get_app, in_terminal
@@ -104,6 +105,8 @@ class PreviewApp:
         self.compact_requested: str | None = None
         # /resend produces a model request, so it leaves the command path here.
         self.resend_requested = False
+        # A skill command is a prompt in disguise; it leaves the command path too.
+        self.skill_requested: str | None = None
         self.mcp_enable_requested: str | None = None
         self.mcp_enabling: str | None = None
         self.model_requested = False
@@ -210,6 +213,33 @@ class PreviewApp:
             Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
         ):
             self.registry.register(command)
+        self.register_skills()
+
+    def register_skills(self) -> None:
+        """Expose discovered SKILL.md assets as commands, skipping any collision."""
+        from pcode.skills import discover_skills, skill_commands
+
+        self.skill_command_names: list[str] = []
+        for command in skill_commands(discover_skills(self.workspace), self.run_skill):
+            names = (command.name, *command.aliases)
+            # Bare names can collide with a built-in command; built-ins win, and
+            # the prefixed form still reaches the skill.
+            taken = [name for name in names if self.registry.find(name)]
+            if command.name in taken:
+                continue
+            if taken:
+                command = replace(
+                    command, aliases=tuple(name for name in command.aliases if name not in taken)
+                )
+            self.registry.register(command)
+            self.skill_command_names.append(command.name)
+
+    def run_skill(self, skill, argument: str) -> None:
+        from pcode.skills import skill_prompt
+
+        if not self.model:
+            raise ValueError(f"/skill:{skill.name} requires a live model session.")
+        self.skill_requested = skill_prompt(skill, argument)
 
     def _create_runtime(self):
         """Import and construct the backend off the terminal's event loop."""
@@ -1272,6 +1302,8 @@ class PreviewApp:
         if summary is not None:
             for line in summary():
                 self.transcript.note(line)
+        if self.skill_command_names:
+            self.transcript.note("Skill commands: " + ", ".join(self.skill_command_names))
 
     def warn_without_credentials(self) -> None:
         """Say so at startup, not on the first prompt.
@@ -1636,6 +1668,16 @@ class PreviewApp:
                             self.activity.queued_modes.insert(0, "resend")
                             self.activity.queued = len(self.activity.queued_prompts)
                             self.activity.start_prompt(previous)
+                            self.activity.busy = True
+                        if self.skill_requested is not None:
+                            prompt = self.skill_requested
+                            self.skill_requested = None
+                            # Queue it like a typed message so send mode, steering,
+                            # and cancellation keep their usual meaning.
+                            queue.put_nowait((queue_generation, prompt, self.send_mode))
+                            self.activity.queued_prompts.append(prompt)
+                            self.activity.queued_modes.append(self.send_mode)
+                            self.activity.queued = len(self.activity.queued_prompts)
                             self.activity.busy = True
                         if self.compact_requested is not None:
                             focus = self.compact_requested
