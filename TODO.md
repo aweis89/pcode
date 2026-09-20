@@ -34,3 +34,8 @@ Add new ideas under the relevant heading or create a new section.
 
 - [ ] Integrate [Pydantic AI docs access](https://pydantic.dev/docs/ai/harness/pydantic-ai-docs/) into pcode to help it improve itself:
   - [ ] Automatically enable this documentation access when working in the pcode repository.
+- [ ] Review [Pydantic AI Harness memory solutions](https://pydantic.dev/docs/ai/harness/memory/) and evaluate which approach would fit pcode.
+
+## Providers
+
+- [ ] Expand support for additional model providers.
