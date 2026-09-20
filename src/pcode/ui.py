@@ -936,6 +936,24 @@ def create_prompt(
     def newline(event: KeyPressEvent) -> None:
         event.current_buffer.insert_text("\n")
 
+    def down_would_idle() -> bool:
+        # prompt_toolkit's Down moves within the text, walks the completion
+        # menu, or steps forward through history; only when none of those
+        # apply does it do nothing. Claim just that case for a newline, so ↓
+        # never loses its existing meanings. Vi normal mode keeps `j`.
+        app = get_app()
+        buffer = app.current_buffer
+        document = buffer.document
+        if buffer.complete_state or document.cursor_position_row < document.line_count - 1:
+            return False
+        if buffer.working_index < len(buffer._working_lines) - 1:
+            return False
+        return not vi_mode() or app.vi_state.input_mode == InputMode.INSERT
+
+    @keys.add("down", filter=~is_searching & Condition(down_would_idle))
+    def newline_on_down(event: KeyPressEvent) -> None:
+        event.current_buffer.insert_text("\n")
+
     @keys.add("c-d", filter=Condition(lambda: activity.busy))
     def cancel(event: KeyPressEvent) -> None:
         event.app.exit(exception=KeyboardInterrupt)
@@ -1836,7 +1854,7 @@ class Transcript:
                 table.add_row(name, command.description)
         self.print(table)
         self.print()
-        self.note("Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
+        self.note("Enter send · ↓ on last line or Ctrl+J newline · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
         self.note("Ctrl+O tasks widget · Ctrl+T thinking · Ctrl+G command output (each redraws)")
         self.note("Ctrl+L choose model · Ctrl+N raise effort · Ctrl+P lower effort (next turn)")
