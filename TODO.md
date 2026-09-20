@@ -9,6 +9,7 @@ Add new ideas under the relevant heading or create a new section.
   - [ ] Show which extensions are currently loaded.
   - [ ] Allow extensions loaded by default to be turned on or off.
   - [ ] Give built-in extensions a default include/exclude option.
+- [ ] Review [Pydantic AI third-party capabilities](https://pydantic.dev/docs/ai/capabilities/third-party/) and evaluate which, if any, should be integrated into pcode.
 
 ## Tree
 
