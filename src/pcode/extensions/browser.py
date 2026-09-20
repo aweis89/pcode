@@ -5,11 +5,11 @@ Playwright tools plus `browser_open` and `browser_login`, and a `browser`
 sub-agent that runs multi-step flows without the page text landing in the
 parent's context. `/browser launch` opens the window right away; otherwise it
 opens on the first browser tool call. `/browser off` closes it and removes the
-tools. Nothing is persisted, so a logged-in session ends with the process at
-the latest.
+tools.
 
 The browser is the user's own Chrome, started with a debugging port and a
-profile of its own (see `pcode.browser` for why not Playwright's Chromium).
+profile of its own that keeps logins between pcode sessions; `/browser attach`
+joins the Chrome the user already has open instead (see `pcode.browser`).
 The window is visible on purpose: `browser_login(url)` opens a page there and
 waits for the user to sign in, and the user sees what the model does with that
 session afterwards. There is no sandbox around it beyond the address bar: a
@@ -157,6 +157,22 @@ def setup(pcode) -> None:
                 turn_on()
             STATE.open()
             _spawn(_launch())
+        elif argument == "attach":
+            if STATE.session is not None:
+                raise ValueError("A browser is already open; /browser off first.")
+            STATE.attach = True
+            try:
+                STATE.open()
+            except ValueError:
+                STATE.attach = False
+                raise
+            if not STATE.enabled:
+                turn_on()
+            pcode.ui.notify(
+                f"Joining your Chrome at {STATE.cdp_url}: the model can act as every account "
+                "you are signed in to there. A new tab opens on first use.",
+                "warning",
+            )
         elif argument == "off":
             if not STATE.enabled:
                 raise ValueError("The browser is already off.")
@@ -170,7 +186,7 @@ def setup(pcode) -> None:
             STATE.login_event().set()
             pcode.ui.notify("Login reported; the model continues.")
         else:
-            pcode.ui.notify(f"Browser {STATE.describe()}. /browser on|launch|off|done.")
+            pcode.ui.notify(f"Browser {STATE.describe()}. /browser on|launch|attach|off|done.")
 
     async def _launch() -> None:
         try:
@@ -181,9 +197,10 @@ def setup(pcode) -> None:
 
     pcode.register_command(
         "/browser",
-        "A real Chrome the model can drive; `launch` opens it, `done` after you log in",
+        "A real Chrome the model can drive; `launch` opens one, `attach` joins yours, "
+        "`done` after you log in",
         browser,
-        arguments=("on", "launch", "off", "done", "status"),
+        arguments=("on", "launch", "attach", "off", "done", "status"),
     )
     pcode.on_close(STATE.close)
     if not STATE.enabled:
