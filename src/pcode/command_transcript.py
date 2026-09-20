@@ -8,6 +8,8 @@ from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.text import Text
 
+from pcode.syntax import transparent_theme
+
 
 @dataclass(frozen=True)
 class CommandTranscript:
@@ -34,9 +36,8 @@ class CommandTranscript:
             command = Syntax(
                 self.command,
                 "bash",
-                theme=self.code_theme,
+                theme=transparent_theme(self.code_theme),
                 word_wrap=True,
-                background_color="default",
             ).highlight(self.command)
             # Pygments adds a final newline; the render loop supplies its own.
             command.rstrip()
