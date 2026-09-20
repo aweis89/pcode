@@ -26,6 +26,7 @@ from pcode.popup_ui import (
 from pcode.sessions import SessionInfo, ToolCall, Turn, first_prompt, session_turns
 from pcode.task_prompt import TaskPrompt
 from pcode.tool_display import plain, tool_summary_lines
+from pcode.worktree import main_checkout
 
 
 def literal(text: str) -> str:
@@ -65,7 +66,8 @@ class SessionBrowser:
     ) -> None:
         self.records = records
         self.root = root
-        self.workspace = workspace.resolve()
+        self._workspace_scopes: dict[Path, Path] = {}
+        self.workspace = self.workspace_scope(workspace)
         self.active_id = active_id
         self.code_theme = code_theme
         self.everywhere = False
@@ -165,10 +167,25 @@ class SessionBrowser:
             self._turns[info.id] = session_turns(info, self.root)
         return self._turns[info.id] or []
 
+    def workspace_scope(self, workspace: Path) -> Path:
+        """Group linked checkouts, resolving each workspace only once per browser."""
+        workspace = workspace.resolve()
+        if workspace not in self._workspace_scopes:
+            try:
+                main = main_checkout(workspace)
+            except OSError:
+                main = None  # Git may not be installed; non-Git browsing still works.
+            self._workspace_scopes[workspace] = main or workspace
+        return self._workspace_scopes[workspace]
+
     def in_scope(self) -> list[SessionInfo]:
         if self.everywhere:
             return self.records
-        return [info for info in self.records if Path(info.workspace).resolve() == self.workspace]
+        return [
+            info
+            for info in self.records
+            if self.workspace_scope(Path(info.workspace)) == self.workspace
+        ]
 
     def matches(self, turn: Turn, words: list[str]) -> bool:
         haystack = turn.prompt.casefold()
