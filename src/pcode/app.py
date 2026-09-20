@@ -267,7 +267,8 @@ class PreviewApp:
             ),
             Command(
                 "/worktree",
-                "This session's git worktree: status / merge / resolve / finish / remove / list",
+                "This session's git worktree: status / merge / resolve / finish / remove"
+                " / list / clean",
                 self.worktree,
                 tuple(WORKTREE_ACTIONS),
                 group="Session",
@@ -324,7 +325,7 @@ class PreviewApp:
             ),
             Command(
                 "/syntax",
-                "Set the code highlighting style for the active palette",
+                "Set the code, menu and prompt style for the active palette",
                 self.syntax,
                 SYNTAX_THEMES,
                 group="Display",
@@ -967,7 +968,7 @@ class PreviewApp:
         self.transcript.regenerate()
 
     def syntax(self, argument: str) -> None:
-        """Choose the Pygments style for fenced code on the palette in use.
+        """Choose the Pygments style for code, the completion menu and the prompt.
 
         Each palette keeps its own style, so switching to the other palette and
         back restores the style picked for it rather than the last one set.
@@ -1114,6 +1115,11 @@ class PreviewApp:
         action = argument or "status"
         if action == "list":
             self.transcript.note(worktree.listing(self.workspace) or "Not a git repository.")
+            return
+        if action == "clean":
+            # Works from the mainline too, where the leftovers are most visible.
+            for line in worktree.clean(self.workspace):
+                self.transcript.note(line)
             return
         linked = worktree.describe(self.workspace)
         if linked is None:
@@ -2176,7 +2182,7 @@ class PreviewApp:
             rich_theme=lambda: self.transcript.rich_theme,
         )
         self.transcript.output = output
-        session.app.style = DynamicStyle(lambda: self.transcript.palette.prompt_style())
+        session.app.style = DynamicStyle(lambda: self.transcript.prompt_style())
 
         async def watch_branch():
             while True:
@@ -2441,6 +2447,7 @@ WORKTREE_ACTIONS = {
     "finish": "Merge, remove the worktree and its branch, and quit",
     "remove": "Delete the merged worktree; the branch stays",
     "list": "Every worktree of this repository",
+    "clean": "Delete every other worktree with nothing uncommitted or unmerged",
 }
 
 
