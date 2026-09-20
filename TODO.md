@@ -28,3 +28,8 @@ Add new ideas under the relevant heading or create a new section.
 - [ ] Review the existing documentation for accuracy, clarity, and gaps.
 - [ ] Consider creating a dedicated documentation site.
 - [ ] Consider marketing for the project.
+
+## Self-improvement
+
+- [ ] Integrate [Pydantic AI docs access](https://pydantic.dev/docs/ai/harness/pydantic-ai-docs/) into pcode to help it improve itself:
+  - [ ] Automatically enable this documentation access when working in the pcode repository.
