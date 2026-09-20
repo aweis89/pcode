@@ -3,6 +3,7 @@
 import os
 import shutil
 import sys
+from collections.abc import Sequence
 from dataclasses import fields, replace
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from pcode.cache_settings import ProviderCacheSettings, model_settings
 from pcode.cache_warnings import CacheBustReporting
 from pcode.code_mode import create_code_mode
 from pcode.delegation import DelegationReporting, stream_child_activity
+from pcode.ext import EXTENSION_GUIDE
 from pcode.filesystem import DisplayFileSystem
 from pcode.llm_proxy import ProxiedCodexProvider
 from pcode.meridian import MeridianSessionIdentity
@@ -151,7 +153,8 @@ def create_coder(workspace: Path) -> CombinedCapability:
     )
 
 
-def create_agent(model: str, workspace: Path) -> Agent:
+def create_agent(model: str, workspace: Path, extensions: Sequence = ()) -> Agent:
+    """Build the terminal's agent; `extensions` are user capabilities from `pcode.ext`."""
     proxy = os.environ.get("PCODE_LLM_PROXY", "").strip()
     # Subscription endpoints reject the explicit cache markers that Harness
     # Planning adds after write_plan. Keep the native provider/auth/model name;
@@ -200,7 +203,12 @@ def create_agent(model: str, workspace: Path) -> Agent:
             "and inline backticks for identifiers and short commands. Close all code fences. "
             "Write ordinary prose outside code blocks. "
             # GPT-6 tends to edit through shell commands, bypassing captured edit diffs.
-            "Prefer edit_file and write_file for file changes over shell tools."
+            "Prefer edit_file and write_file for file changes over shell tools. "
+            # The model is the intended extension author, so it needs to know the
+            # mechanism exists without the reference text sitting in every prompt.
+            "pcode itself is extensible with small Python files (new slash commands, "
+            "tools, guardrails on tool calls, extra instructions). When asked to change "
+            f"how pcode behaves, first read {EXTENSION_GUIDE} and follow it."
         ),
-        capabilities=[create_coder(workspace)],
+        capabilities=[create_coder(workspace), *extensions],
     )

@@ -32,6 +32,8 @@ def test_defaults_and_path_do_not_create_files():
         "repo_context_nested": "off",
         "skill_commands": "prefix",
         "skill_dirs": "~/.agents/skills:.agents/skills",
+        "project_extensions": "off",
+        "extension_dirs": "",
         "retry_attempts": "1",
         "show_thinking": "off",
         "show_tasks": "on",
