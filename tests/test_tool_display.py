@@ -331,6 +331,21 @@ def test_multiline_command_preview_is_compact_and_sanitized():
     assert command_text("echo \x1b[2Jhello\u202e\n\tend") == "echo hello \n    end"
 
 
+def test_command_preview_drops_a_cd_into_the_current_directory(tmp_path, monkeypatch):
+    from pcode.tool_display import command_preview
+
+    monkeypatch.chdir(tmp_path)
+    here = str(tmp_path)
+    assert command_preview(f"cd {here} && make test") == "make test"
+    assert command_preview(f'cd "{here}" ; make test') == "make test"
+    assert command_preview(f"cd {here}\nmake test\necho done") == "make test … [1 more lines]"
+    assert command_preview("cd . && make test") == "make test"
+    # A cd elsewhere is real information about where the command ran.
+    (tmp_path / "sub").mkdir()
+    assert command_preview("cd sub && make test") == "cd sub && make test"
+    assert command_preview('cd "$REPO" && make test') == 'cd "$REPO" && make test'
+
+
 @pytest.mark.parametrize("show", ["summary", "events"])
 def test_failed_tool_summary_line_is_marked_only_by_its_symbol(show):
     """The ✗ carries the failure; the line keeps the styling a success would get."""

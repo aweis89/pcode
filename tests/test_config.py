@@ -101,6 +101,29 @@ def test_set_get_unset(key, value):
         assert load_preferences()["theme"] == "dark"
 
 
+def test_reset_clears_known_settings_and_keeps_unknown_keys():
+    path = preferences_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"future": {"nested": True}, "theme": "light", "effort": "high"}))
+    message = configure(["reset"])
+    assert "effort, theme" in message
+    assert read_preferences() == {"future": {"nested": True}}
+    assert json.loads(configure(["list"]))["theme"] == "dark"
+    assert configure(["reset"]) == "No global defaults to reset."
+
+
+def test_reset_names_the_settings_whose_loss_needs_action():
+    save_preferences(anthropic_auth="oauth", trusted_projects="/repo")
+    message = configure(["reset"])
+    assert "/login" in message and "trusted again" in message
+    assert read_preferences() == {}
+
+
+def test_reset_without_a_file_writes_nothing():
+    assert configure(["reset"]) == "No global defaults to reset."
+    assert not preferences_path().exists()
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -120,6 +143,7 @@ def test_set_get_unset(key, value):
         ["set", "theme"],
         ["list", "extra"],
         ["path", "extra"],
+        ["reset", "extra"],
         ["unset"],
         ["bad"],
     ],
@@ -135,7 +159,13 @@ def test_broken_file_is_reported_and_never_overwritten(content):
     path = preferences_path()
     path.parent.mkdir(parents=True)
     path.write_text(content)
-    for args in (["list"], ["get", "theme"], ["set", "theme", "light"], ["unset", "theme"]):
+    for args in (
+        ["list"],
+        ["get", "theme"],
+        ["set", "theme", "light"],
+        ["unset", "theme"],
+        ["reset"],
+    ):
         with pytest.raises(ValueError):
             configure(args)
         assert path.read_text() == content
