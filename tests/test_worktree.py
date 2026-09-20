@@ -307,6 +307,50 @@ def test_module_cli_runs_project_setup_unconditionally(repo, monkeypatch, capsys
     assert worktree.main(["list"]) == 0
 
 
+def test_conflicts_point_at_resolve_and_the_prompt_names_the_files(repo):
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from pcode.commands import SlashCompleter
+
+    created = worktree.create(repo, "feature")
+    assert worktree.conflicted_files(created.path) == []
+    commit(created.path, "README", "theirs\n")
+    commit(repo, "README", "ours\n")
+    with pytest.raises(worktree.WorktreeError, match="conflicts .* README; /worktree resolve"):
+        worktree.merge(created)
+    assert worktree.conflicted_files(created.path) == ["README"]
+    with pytest.raises(worktree.WorktreeError, match="already in progress"):
+        worktree.merge(created)
+    with pytest.raises(worktree.WorktreeError, match="already in progress"):
+        worktree.finish(created)
+
+    app = PreviewApp(workspace=created.path, model="test:local")
+    app.worktree("resolve")
+    prompt = app.skill_requested
+    assert "`main` into `feature`" in prompt and "- README" in prompt
+    assert "git merge --abort" in prompt
+    offline = PreviewApp(workspace=created.path)
+    with pytest.raises(ValueError, match="live model"):
+        offline.worktree("resolve")
+
+    git(created.path, "checkout", "--theirs", "README")
+    git(created.path, "add", "README")
+    git(created.path, "commit", "-q", "--no-edit")
+    assert worktree.conflicted_files(created.path) == []
+    with pytest.raises(ValueError, match="No merge conflicts"):
+        app.worktree("resolve")
+    assert "merged feature into main" in worktree.finish(created)
+
+    completions = list(
+        SlashCompleter(app.registry).get_completions(Document("/worktree re"), CompleteEvent())
+    )
+    assert {c.text: c.display_meta_text for c in completions} == {
+        "resolve": "Ask the model to resolve the conflicts a merge stopped on",
+        "remove": "Delete the merged worktree; the branch stays",
+    }
+
+
 def test_run_setup_passes_environment(repo, monkeypatch):
     monkeypatch.setenv("KEEP_ME", "yes")
     user_script = preferences_path().parent / "worktree-setup"

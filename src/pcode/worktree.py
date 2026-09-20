@@ -191,20 +191,51 @@ def unmerged_commits(worktree: Worktree) -> int:
     return int(result.stdout.strip() or 0) if result.returncode == 0 else 0
 
 
+def conflicted_files(path: Path) -> list[str]:
+    """Paths still holding conflict markers from an in-progress merge, or empty."""
+    if _git(path, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode:
+        return []
+    out = _git(path, "diff", "--name-only", "--diff-filter=U").stdout
+    return [line for line in out.splitlines() if line]
+
+
+def resolve_prompt(worktree: Worktree, files: list[str]) -> str:
+    """What to ask the model once a merge has stopped on conflicts."""
+    mainline = mainline_branch(worktree.main)
+    listed = "\n".join(f"- {name}" for name in files)
+    return (
+        f"Merging `{mainline}` into `{worktree.branch}` in {worktree.path} stopped on "
+        f"conflicts in:\n{listed}\n\n"
+        "Resolve each file so the intent of both sides survives: read the conflict "
+        "markers, check `git log -p` on both branches for a hunk when its purpose is "
+        "unclear, and remove every marker. Run the relevant tests. Then `git add` the "
+        "resolved files and `git commit` (no message needed; the merge message is "
+        "prepared) to complete the merge. Do not run `git merge --abort`, and do not "
+        "discard either side's change without saying so."
+    )
+
+
 def merge(worktree: Worktree) -> str:
     """Merge the mainline branch into the worktree, then fast-forward the mainline.
 
     Conflicts are resolved inside the worktree so the mainline checkout is
     never left mid-merge; it only ever moves by fast-forward.
     """
+    if conflicted := conflicted_files(worktree.path):
+        raise WorktreeError(
+            f"a merge is already in progress with conflicts in {', '.join(conflicted)}; "
+            "/worktree resolve has the model finish it"
+        )
     if is_dirty(worktree.path):
         raise WorktreeError(f"{worktree.path} has uncommitted changes; commit them first")
     mainline = mainline_branch(worktree.main)
     result = _git(worktree.path, "merge", "--no-edit", mainline, check=False)
     if result.returncode:
+        conflicted = conflicted_files(worktree.path)
         raise WorktreeError(
-            f"conflicts merging {mainline} into {worktree.branch}: "
-            f"resolve them in {worktree.path}, commit, then run /worktree merge again"
+            f"conflicts merging {mainline} into {worktree.branch} in "
+            f"{', '.join(conflicted) or worktree.path}; /worktree resolve has the model fix "
+            "them, then run this again"
         )
     result = _git(worktree.main, "merge", "--ff-only", worktree.branch, check=False)
     if result.returncode:
@@ -254,8 +285,8 @@ def finish(worktree: Worktree) -> str:
     Any refusal (dirty tree, conflicts, blocked fast-forward, untracked files)
     raises before anything is deleted, leaving the worktree resumable.
     """
-    if is_dirty(worktree.path):
-        raise WorktreeError(f"{worktree.path} has uncommitted changes; commit them first")
+    if conflicted_files(worktree.path) or is_dirty(worktree.path):
+        merge(worktree)  # raises with the precise reason
     merged = merge(worktree) if unmerged_commits(worktree) else None
     removed = remove(worktree)
     delete_branch(worktree)
