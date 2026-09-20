@@ -1,9 +1,12 @@
 import asyncio
 from io import StringIO
 
+from prompt_toolkit.application.current import set_app
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.vt100 import Vt100_Output
 from pydantic_ai import Agent
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from rich.console import Console
@@ -165,6 +168,29 @@ def test_inspector_keyboard_focus_scroll_filter_and_close():
             assert not ui.visible
             pipe.send_text("\x1b")
             await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+
+
+def test_narrow_call_list_keeps_its_rows_beside_a_long_payload():
+    """A long tool payload must not squeeze the stacked Calls pane to one row."""
+
+    async def run():
+        archive = ToolArchive()
+        for identity in range(10):
+            call(archive, str(identity))
+        with create_pipe_input() as pipe:
+            ui = ToolInspector(
+                archive,
+                input=pipe,
+                output=Vt100_Output(
+                    StringIO(), lambda: Size(rows=24, columns=80), enable_cpr=False
+                ),
+            )
+            with set_app(ui.app):
+                ui.app.renderer.render(ui.app, ui.app.layout)
+                assert ui.list.window.render_info.window_height == 6
+                assert ui.detail.window.render_info.window_height > 6
 
     asyncio.run(run())
 

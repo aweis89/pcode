@@ -10,7 +10,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Frame, Label, TextArea
 
 from pcode.inspection import ToolArchive
-from pcode.popup_ui import popup_container, popup_style
+from pcode.popup_ui import list_pane_height, popup_container, popup_style
 
 
 class ToolInspector:
@@ -72,7 +72,7 @@ class ToolInspector:
         )
         narrow = HSplit(
             [
-                Frame(self.list, title="Calls", height=Dimension(min=3, max=8)),
+                Frame(self.list, title="Calls", height=lambda: list_pane_height(len(self.visible))),
                 Frame(self.detail, title="Details"),
             ]
         )

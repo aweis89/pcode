@@ -6,12 +6,11 @@ from prompt_toolkit.filters import Always, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import HSplit, Layout
-from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Frame, Label, TextArea
 
 from pcode.edit_transcript import DiffLexer
 from pcode.edits import edit_text
-from pcode.popup_ui import popup_container, popup_style
+from pcode.popup_ui import list_pane_height, popup_container, popup_style
 from pcode.runtime import EditCompleted
 
 EMPTY = "No file edits in this conversation."
@@ -88,7 +87,7 @@ class EditBrowser:
                 header,
                 Label(KEYS),
                 Frame(self.diff, title="Diff"),
-                Frame(self.files, title="Files", height=Dimension(min=3, max=8)),
+                Frame(self.files, title="Files", height=list_pane_height(len(self.changes))),
             ]
         )
         self.app = Application(
