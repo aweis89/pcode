@@ -67,6 +67,11 @@ SETTINGS = {
     # Extra skill directories, searched after the workspace asset roots. Relative
     # entries resolve against the workspace; `~` expands to the user's home.
     "skill_dirs": Setting(DEFAULT_SKILL_DIRS, path_list=True),
+    # Extensions run arbitrary Python at launch, so a workspace's `.pcode/extensions`
+    # is opt-in; the user-level directory beside preferences.json always loads.
+    "project_extensions": Setting("off", ("on", "off")),
+    # Extra extension directories, searched after the user-level one.
+    "extension_dirs": Setting("", path_list=True),
     # Extra automatic attempts after a dropped connection; 0 disables retrying.
     "retry_attempts": Setting("1", whole_number=True),
     "error_scrollback_lines": Setting("20", positive_integer=True),
