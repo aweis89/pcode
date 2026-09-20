@@ -2271,6 +2271,9 @@ def main() -> None:
         description="Streaming terminal with a Coder agent",
         epilog=f"Global defaults, without starting a session: pcode {CONFIG_USAGE}",
     )
+    # The workspace's `.pcode/preferences.json` overlays user defaults, so it has
+    # to be known before the first load_preferences() (the --theme default).
+    _select_project_root(sys.argv[1:])
     parser.add_argument("--theme", choices=THEMES, default=load_preferences().get("theme", "dark"))
     parser.add_argument(
         "--color-style",
@@ -2376,6 +2379,21 @@ def main() -> None:
                     f"Cannot start profile ({type(error).__name__}); use a new writable DIR"
                 )
         _run_cli(args, parser)
+
+
+def _select_project_root(argv: list[str]) -> None:
+    """Point preferences at `-C DIR` (else the cwd) ahead of full argument parsing."""
+    from pcode.preferences import set_project_root
+
+    root = Path.cwd()
+    for index, arg in enumerate(argv):
+        if arg in ("-C", "--workspace") and index + 1 < len(argv):
+            root = Path(argv[index + 1])
+        elif arg.startswith("--workspace="):
+            root = Path(arg.partition("=")[2])
+        elif arg.startswith("-C") and len(arg) > 2 and not arg.startswith("--"):
+            root = Path(arg[2:])
+    set_project_root(root if root.is_dir() else Path.cwd())
 
 
 def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
@@ -2494,6 +2512,15 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         workspace = args.workspace or Path.cwd()
         if not workspace.is_dir():
             raise ValueError("Workspace must be an existing directory.")
+        from pcode.preferences import rejected_project_keys, set_project_root
+
+        set_project_root(workspace)
+        if rejected := rejected_project_keys():
+            print(
+                f"pcode: ignoring user-only settings in .pcode/preferences.json: "
+                f"{', '.join(rejected)} (set them with `pcode config set`)",
+                file=sys.stderr,
+            )
         session_id = None
         if not args.resume and not args.no_worktree and not args.demo:
             workspace, session_id = _enter_worktree(workspace, args.worktree)
