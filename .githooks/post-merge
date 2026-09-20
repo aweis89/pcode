@@ -1,25 +1,43 @@
 #!/bin/sh
-# Push the mainline branch after a merge lands on it.
+# After a merge lands on the mainline branch: push it, and rebuild the global
+# `pcode` tool env if the merge changed dependencies.
 #
-# `make worktree-merge` fast-forwards the mainline checkout, which fires this
-# hook there; the same merge also fires it inside the worktree, so linked
-# worktrees are skipped (their branch is merged, not published). `git pull`
-# fires it too, but leaves nothing ahead of the upstream, so it is a no-op.
+# `make worktree-merge` / `/worktree finish` fast-forward the mainline
+# checkout, which fires this hook there; the same merge also fires it inside
+# the worktree, so linked worktrees are skipped (their branch is merged, not
+# published). `git pull` fires it too, but leaves nothing ahead of the
+# upstream, so the push is a no-op.
 #
-# Enable with `git config core.hooksPath .githooks`; skip a merge with
-# PCODE_NO_AUTOPUSH=1.
-
-[ "${PCODE_NO_AUTOPUSH:-0}" = "0" ] || exit 0
+# The global `pcode` is an editable install pointing at this checkout's src/,
+# so source changes are live on the next start without any reinstall. Only
+# pyproject.toml / uv.lock changes need `make install`, which is why the
+# reinstall is gated on the merged range touching them.
+#
+# Enable with `git config core.hooksPath .githooks`; skip the push with
+# PCODE_NO_AUTOPUSH=1 and the reinstall with PCODE_NO_AUTOINSTALL=1.
 
 # In a linked worktree the per-worktree git dir differs from the common one.
 [ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] || exit 0
 
 git symbolic-ref --quiet HEAD >/dev/null || exit 0
-upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || exit 0
-[ "$(git rev-list --count "$upstream"..HEAD)" -gt 0 ] || exit 0
 
-# Never block on a credential prompt, and never fail the merge over a push.
-if ! GIT_TERMINAL_PROMPT=0 git push --quiet; then
-	echo "post-merge: push to $upstream failed; push by hand" >&2
+if [ "${PCODE_NO_AUTOPUSH:-0}" = "0" ]; then
+	upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || upstream=
+	if [ -n "$upstream" ] && [ "$(git rev-list --count "$upstream"..HEAD)" -gt 0 ]; then
+		# Never block on a credential prompt, and never fail the merge over a push.
+		if ! GIT_TERMINAL_PROMPT=0 git push --quiet; then
+			echo "post-merge: push to $upstream failed; push by hand" >&2
+		fi
+	fi
+fi
+
+if [ "${PCODE_NO_AUTOINSTALL:-0}" = "0" ] \
+	&& git rev-parse --verify --quiet ORIG_HEAD >/dev/null \
+	&& [ -n "$(git diff --name-only ORIG_HEAD HEAD -- pyproject.toml uv.lock)" ] \
+	&& uv tool list 2>/dev/null | grep -q '^pcode '; then
+	echo "post-merge: dependencies changed; rebuilding the pcode tool env" >&2
+	if ! make -s install >/dev/null; then
+		echo "post-merge: make install failed; run it by hand" >&2
+	fi
 fi
 exit 0

@@ -14,6 +14,11 @@ DELEGATE = "delegate_task"
 # their row the instant the result lands makes it flash unreadably and reflows
 # the prompt, so a settled child row lingers long enough to be read.
 CHILD_DWELL = 0.8
+# The status row has the same problem, worse: a command that finishes in
+# milliseconds appears and vanishes before it can be read, and the row snaps
+# back to "Working…". The finished call keeps the row until it has been up this
+# long, unless real work starts first.
+STATUS_DWELL = 2.5
 
 
 @dataclass
@@ -44,6 +49,8 @@ class ToolHistory:
     """Calls still in flight, oldest first. A result removes its call."""
 
     calls: list[ToolCall] = field(default_factory=list)
+    # The last call to leave, kept only so the status row can hold it.
+    recent: ToolCall | None = None
 
     def record(self, event: ToolStarted | ToolSummary) -> None:
         # Planning operations have their own panel, and every settled call is
@@ -62,6 +69,8 @@ class ToolHistory:
             if existing.event.parent_call_id and existing.settled is None:
                 existing.settled = monotonic()
             else:
+                existing.settled = monotonic()
+                self.recent = existing
                 self._drop(existing)
         elif existing is not None:
             # A restated start carries fresh progress, not a new invocation.
@@ -81,6 +90,7 @@ class ToolHistory:
 
     def clear(self) -> None:
         self.calls.clear()
+        self.recent = None
 
     @property
     def visible(self) -> list[ToolCall]:
@@ -89,8 +99,20 @@ class ToolHistory:
 
     @property
     def active(self) -> ToolCall | None:
-        """The newest running call: what the status row above the tasks reports."""
-        return next((c for c in reversed(self.visible) if c.settled is None), None)
+        """What the status row above the tasks reports.
+
+        The newest running call, or else the one that just finished, for as
+        long as its dwell lasts. Anything that starts meanwhile wins the row:
+        holding a stale line over live work would be the worse lie.
+        """
+        running = next((c for c in reversed(self.visible) if c.settled is None), None)
+        if running is not None:
+            return running
+        held = self.recent
+        if held is not None and monotonic() - held.started < STATUS_DWELL:
+            return held
+        self.recent = None
+        return None
 
     @property
     def background(self) -> list[ToolCall]:
