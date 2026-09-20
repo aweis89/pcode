@@ -112,6 +112,16 @@ def capture(pane, expected, *, running=False, columns=None):
     pytest.fail(f"Prompt did not settle with {expected!r}:\n{screen}")
 
 
+def scrollback(pane):
+    """History above the visible screen.
+
+    The live panel is not scrollback, so a plain ``-S -`` capture (which
+    includes the visible screen) cannot answer "did this reach history?" for
+    anything the panel draws, such as an expiring notice.
+    """
+    return pane("capture-pane", "-p", "-S", "-", "-E", "-1", "-t", "preview:0.0")
+
+
 def input_rows(screen):
     lines = screen.splitlines()
     assert "send:" in lines[-1], screen

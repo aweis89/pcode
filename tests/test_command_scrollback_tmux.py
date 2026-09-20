@@ -4,7 +4,7 @@ import shutil
 import time
 
 import pytest
-from test_tmux import capture, input_rows
+from test_tmux import capture, input_rows, scrollback
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -135,7 +135,9 @@ def test_resize_replay_reflows_history_without_duplicates_or_stretched_editor(pa
         history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
         assert history.count("OUTPUT_LINE_00") == 1
         assert history.count("TURN_1_DONE") == 1
-        assert "Show commands:" not in history
+        # The toggle answers a keystroke in the live panel; it never reaches
+        # history, not even as a replayed copy.
+        assert "Show commands:" not in scrollback(pane)
 
 
 LIVE_SCRIPT = (
