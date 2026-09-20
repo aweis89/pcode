@@ -72,6 +72,10 @@ SETTINGS = {
     "project_extensions": Setting("off", ("on", "off")),
     # Extra extension directories, searched after the user-level one.
     "extension_dirs": Setting("", path_list=True),
+    # Start each new session in its own `.worktrees/<session>` git worktree so
+    # concurrent sessions never edit the same checkout. `--worktree [NAME]` and
+    # `--no-worktree` override per run.
+    "worktree": Setting("off", ("on", "off")),
     # Extra automatic attempts after a dropped connection; 0 disables retrying.
     "retry_attempts": Setting("1", whole_number=True),
     # Corrections offered to the model after a tool call fails argument validation
