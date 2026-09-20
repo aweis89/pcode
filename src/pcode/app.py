@@ -1899,14 +1899,14 @@ class PreviewApp:
     def print_resume_hint(self) -> None:
         saved = getattr(self.runtime, "session", None)
         if saved is None:
-            self.transcript.console.print("Session not saved; no resume command available.")
+            self.transcript.console.print("Session not saved; no continue command available.")
         else:
             from pcode.sessions import session_root
 
-            command = ["pcode", "--resume", saved.info.id]
+            command = ["pcode", "--continue", saved.info.id]
             if saved.directory.parent.resolve() != session_root().resolve():
                 command.extend(["--session-dir", str(saved.directory.parent.resolve())])
-            self.transcript.console.print(f"Resume with: {shlex.join(command)}", markup=False)
+            self.transcript.console.print(f"Continue with: {shlex.join(command)}", markup=False)
 
     def run(self) -> None:
         asyncio.run(self.run_async())
@@ -2012,7 +2012,15 @@ def main() -> None:
     )
     parser.add_argument("--demo", action="store_true", help="Print an offline sample and exit")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions and exit")
-    parser.add_argument("--resume", nargs="?", const="latest", help="Resume ID/prefix, or latest")
+    parser.add_argument(
+        "-c",
+        "--continue",
+        dest="resume",
+        nargs="?",
+        const="latest",
+        metavar="SESSION",
+        help="Continue a session ID/prefix; omit SESSION for this directory's latest",
+    )
     parser.add_argument(
         "--session-dir", type=Path, help="Override the private session storage directory"
     )
@@ -2037,6 +2045,14 @@ def main() -> None:
     )
     args = parser.parse_args()
     args.command = None
+    if args.resume is not None:
+        from pcode.sessions import is_session_selector
+
+        if not is_session_selector(args.resume):
+            # SESSION is optional, so argparse would otherwise swallow the first
+            # word of `pcode -c fix the bug`. Anything unlike an ID is prompt text.
+            args.prompt.insert(0, args.resume)
+            args.resume = "latest"
     if args.prompt and args.prompt[0] == "config":
         args.command = "config"
         args.arguments = args.prompt[1:]
@@ -2066,7 +2082,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             parser.exit(2, f"{error}\n")
         return
     if args.resume and (args.no_save or args.demo):
-        parser.error("--resume cannot be combined with --no-save or --demo")
+        parser.error("--continue cannot be combined with --no-save or --demo")
     if args.print:
         if args.demo or args.sessions:
             parser.error("--print cannot be combined with --demo or --sessions")
@@ -2101,7 +2117,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         if args.resume:
             from pcode.sessions import SavedSession, SessionError
 
-            saved = SavedSession.open(args.resume, args.session_dir)
+            saved = SavedSession.open(args.resume, args.session_dir, args.workspace or Path.cwd())
             if args.model and args.model != saved.info.model:
                 raise SessionError(
                     "Cannot change models when resuming; start a new session instead."
