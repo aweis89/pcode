@@ -114,7 +114,13 @@ def standup(argument: str) -> None:
 
 
 pcode.register_command("/standup", "Summarize commits since yesterday", standup)
-pcode.register_command("/mode", "Set a mode", set_mode, arguments=("fast", "careful"))
+pcode.register_command(
+    "/mode",
+    "Set a mode",
+    set_mode,
+    arguments=("fast", "careful"),
+    argument_descriptions={"fast": "Skip verification", "careful": "Verify every step"},
+)
 ```
 
 Handlers run on the terminal's event loop, so keep them quick. Raise
