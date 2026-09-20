@@ -6,9 +6,9 @@ Several agents edit this repo concurrently. Work in a worktree, never the
 mainline checkout, where another session's `git checkout`/`stash`/`reset` can
 eat your uncommitted edits. pcode sessions started with `--worktree` (or
 `worktree on`) already are one: the workspace *is* `.worktrees/pcode-<name>`, so
-just edit, `make test`, and commit; `/worktree finish` merges it back and
-removes the worktree (`/worktree merge` keeps it). From another agent, or by
-hand:
+just edit, `make test`, and commit. Merging back happens when the session
+exits (or the user runs `/worktree finish`); the model does not merge. From
+another agent, or by hand:
 
 ```bash
 make worktree NAME=fix-thing          # .worktrees/fix-thing, branch fix-thing, own .venv
