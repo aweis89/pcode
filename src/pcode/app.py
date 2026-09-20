@@ -267,7 +267,8 @@ class PreviewApp:
             ),
             Command(
                 "/worktree",
-                "This session's git worktree: status / merge / resolve / finish / remove / list",
+                "This session's git worktree: status / merge / resolve / finish / remove"
+                " / list / clean",
                 self.worktree,
                 tuple(WORKTREE_ACTIONS),
                 group="Session",
@@ -1111,6 +1112,11 @@ class PreviewApp:
         action = argument or "status"
         if action == "list":
             self.transcript.note(worktree.listing(self.workspace) or "Not a git repository.")
+            return
+        if action == "clean":
+            # Works from the mainline too, where the leftovers are most visible.
+            for line in worktree.clean(self.workspace):
+                self.transcript.note(line)
             return
         linked = worktree.describe(self.workspace)
         if linked is None:
@@ -2438,6 +2444,7 @@ WORKTREE_ACTIONS = {
     "finish": "Merge, remove the worktree and its branch, and quit",
     "remove": "Delete the merged worktree; the branch stays",
     "list": "Every worktree of this repository",
+    "clean": "Delete every other worktree with nothing uncommitted or unmerged",
 }
 
 
