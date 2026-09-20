@@ -468,7 +468,7 @@ The snippet also streams into the pinned preview box as the model writes it,
 titled `Preparing code · not yet run`, in the same place edit diffs and command
 output appear. Only complete lines are shown, the box clears the moment the
 snippet is dispatched, and the text never enters the transcript — it is a
-pending argument, not a result. `/edits hide` hides it along with edit previews.
+pending argument, not a result. `/show-edits off` hides it along with edit previews.
 
 Snippets run in the Monty sandbox with no host filesystem or environment of their
 own: pcode passes no `mount` or `os_access`, so the only way out is the sandboxed
@@ -757,23 +757,22 @@ candidate's size so that cost is visible before you pick.
 - Session, conversation-tree, model, and tool popups share terminal-default
   backgrounds and text, with reverse-video selection highlights. They follow your
   terminal background automatically, independently of `/theme` and `/colors`.
-- `/help`: command list and keyboard shortcuts.
+- `/help` (or `/commands`): grouped command list and keyboard shortcuts.
 - `/login`: sign in to Anthropic in a browser; `/logout` removes pcode's stored login. Both require an idle conversation.
 - `/model`: searchable model picker for configured providers (keeps the conversation;
   applies from the next request when chosen mid-run).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
-- `/tools failed` or `/errors`: open the same inspector filtered to failures.
+- `/tools failed`: open the same inspector filtered to failures.
 - `/diffs`: browse this conversation's file diffs in a full-screen popup.
-- `/context`: current model, workspace, completed turns, token usage, and a breakdown of the
-  prompt overhead the model is re-sent every request — see
-  [Where the fixed prompt goes](#where-the-fixed-prompt-goes).
+- `/status`: current model, workspace, session storage path, completed turns, token usage,
+  and a breakdown of the prompt overhead the model is re-sent every request — see
+  [Where the fixed prompt goes](#where-the-fixed-prompt-goes). Opens a popup in the
+  interactive editor; prints inline when there is no editor.
 - `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
 - `/autocompact on|off`: opt into automatic LLM compaction (saved user preference; default off).
 - `/new`: start a new saved conversation without clearing the on-screen transcript or input history.
 - `/resume`: choose a saved conversation by its first prompt and resume it in place.
-- `/session`: show the current session's model, workspace, usage, prompt overhead, and storage
-  path in a popup. The same details are printed inline by `/context`.
 - `/tree`: [browse and fork the conversation](docs/conversation-tree.md); select a user prompt to
   edit it, or an assistant response to continue from there. Existing branches are kept.
 - `/skill:NAME [text]`: run a discovered skill; see
@@ -796,7 +795,7 @@ candidate's size so that cost is visible before you pick.
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
 
-Press **Ctrl+O** or use `/show-tasks on|off` to hide or show the Tasks/Tools
+Press **Ctrl+O** or use `/show-tasks [on|off]` to hide or show the Tasks/Tools
 widget without stopping work or clearing task/tool history. The current prompt
 and queue remain visible. Visibility is saved across launches (default: on);
 use `pcode config set show_tasks off` to set the default from the shell.
@@ -890,7 +889,7 @@ disk and no edit is re-applied.
 
 ### Tool-call inspector
 
-Use `/tools`, `/tools failed`, or `/errors`, including during an active turn.
+Use `/tools` or `/tools failed`, including during an active turn.
 The inspector shows a snapshot of the calls available when opened; reopen it to
 see newer results. The model keeps running while the inspector is open, and
 terminal output is buffered until it closes. Inspection never reruns a tool.
@@ -1071,12 +1070,12 @@ show `?`, and Codex needs a successful native lookup or an explicit override.
 Used context shows `0` when the conversation is empty or usage has not been
 reported yet.
 Long paths shrink first; narrow terminals may truncate trailing context details.
-`/context` continues to show cumulative session input/output usage.
+`/status` continues to show cumulative session input/output usage.
 
 ## Where the fixed prompt goes
 
-`ctx:` is one number, which does not say why it is that large. `/context` and
-`/session` also break down the **prompt overhead**: the instructions and tool
+`ctx:` is one number, which does not say why it is that large. `/status` also
+breaks down the **prompt overhead**: the instructions and tool
 schemas the provider is re-sent on every request, whatever the conversation did.
 
 ```
@@ -1468,7 +1467,7 @@ off, use `/compact` proactively or `/new` for unrelated work.
 
 ### Saved thinking in scrollback
 
-Press **Ctrl+T** or use `/show-thinking on|off` to show or hide provider-exposed
+Press **Ctrl+T** or use `/show-thinking [on|off]` to show or hide provider-exposed
 thinking text. When enabled, thinking streams into normal terminal scrollback in
 a muted, dim style, distinct from the answer. Complete lines are printed as they
 arrive; the unfinished last line is flushed at the block boundary or when a turn
@@ -1547,15 +1546,15 @@ characters, after redaction.
 
 ### Command output in scrollback
 
-By default, commands stay in the mutable tool panel, including failures. Enable `command_scrollback` to mirror **every settled
+By default, commands stay in the mutable tool panel, including failures. Enable `show_commands` to mirror **every settled
 shell tool call and its captured output** into permanent terminal scrollback
 (a failed call mirrors its output only with `tool_error_scrollback` on):
 
 ```sh
-pcode config set command_scrollback on        # Mirror commands and output (default off)
+pcode config set show_commands on             # Mirror commands and output (default off)
 pcode config set command_scrollback_lines 80  # Positive integer; default 20
 pcode config set command_preview_lines 10     # Live output height cap; default 10
-pcode config set command_scrollback off       # Hide all commands, including failures
+pcode config set show_commands off            # Hide all commands, including failures
 ```
 
 Each mirrored block shows a success/failure indicator, the tool label, elapsed
@@ -1606,8 +1605,8 @@ Details:
 
 Press **Ctrl+G** to turn mirroring on or off for the rest of the session; it also
 saves the default, so the next launch starts in the state you left.
-`/show-commands on` and `/show-commands off` do the same, and `/show-commands`
-reports the current state. Toggling rebuilds the retained scrollback immediately:
+`/show-commands on` and `/show-commands off` do the same, and bare `/show-commands`
+toggles. Toggling rebuilds the retained scrollback immediately:
 turn it on to reveal earlier captured commands and their outputs; turn it off to
 remove all command blocks, including failures. No commands
 are rerun. Future completions use the same setting.
@@ -1637,12 +1636,12 @@ saved as an applied change. Providers that send arguments all at once may have
 no visible streaming phase.
 
 ```text
-/edits hide   Hide edit blocks and previews, and redraw retained scrollback
-/edits show   Show them again, including previously hidden completed diffs
-/edits        Toggle visibility
+/show-edits off   Hide edit blocks and previews, and redraw retained scrollback
+/show-edits on    Show them again, including previously hidden completed diffs
+/show-edits       Toggle visibility
 ```
 
-The choice is saved for the next launch. `pcode config set edits show|hide`
+The choice is saved for the next launch. `pcode config set show_edits on|off`
 also sets the startup default. Like `/redraw`, toggling rebuilds terminal history;
 it does not rerun tools or change files.
 
@@ -1662,7 +1661,7 @@ formatters, external writers, and other tools are outside this capture mechanism
 ### Regenerating the terminal transcript
 
 `/redraw` rebuilds the retained transcript at the current terminal width and with
-current display settings. Ctrl+G, `/show-commands on|off`, `/edits show|hide`,
+current display settings. Ctrl+G, `/show-commands`, `/show-edits`,
 `/theme`, and `/colors`
 use the same replay mechanism. The draft, active tool panel, and unfinished model
 text are preserved; replay neither calls tools nor changes model history.

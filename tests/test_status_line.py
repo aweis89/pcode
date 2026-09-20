@@ -60,7 +60,8 @@ def test_preview_home_and_help(tmp_path, monkeypatch):
     app.handle("/help")
     help_text = stream.getvalue()
     for hint in (
-        "/ commands",
+        "/help /commands",
+        "Display",
         "Enter send",
         "Alt+Enter newline",
         "Ctrl+D exit",

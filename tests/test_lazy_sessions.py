@@ -33,7 +33,7 @@ def test_first_prompt_creates_session_once(tmp_path, save):
         )
         asyncio.run(app._initialize_runtime())
     try:
-        for text in ("", "   ", "/help", "/context", "/session", "/new", "/new"):
+        for text in ("", "   ", "/help", "/status", "/new", "/new"):
             assert not app.handle(text)
         assert app.runtime.session is None
         assert not root.exists()

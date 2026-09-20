@@ -124,103 +124,158 @@ class PreviewApp:
         self.registry = CommandRegistry()
         for command in (
             Command(
-                "/login",
-                "Sign in to Anthropic in a browser",
-                self.login,
-                ("anthropic",),
-            ),
-            Command("/logout", "Remove pcode's stored Anthropic login", self.logout),
-            Command(
-                "/model",
-                "Choose a model (Ctrl+L); keeps the conversation, applies next request",
-                self.select_model,
-            ),
-            Command("/help", "Commands and keyboard shortcuts", self.help),
-            Command("/tools", "Inspect tool calls and their results", self.tools, ("failed",)),
-            Command("/errors", "Inspect failed tool calls", lambda _: self.tools("failed")),
-            Command(
-                "/edits",
-                "Show/hide edit diffs and previews; redraw scrollback",
-                self.show_edits,
-                ("show", "hide"),
-            ),
-            Command("/diffs", "Browse this conversation's file diffs", self.diffs),
-            Command("/demo", "Sample Markdown, code, diff, and tool output", self.demo),
-            Command(
-                "/redraw",
-                "Rebuild retained scrollback (clears terminal history)",
-                lambda _: self.transcript.regenerate(),
+                "/help",
+                "List commands and keyboard shortcuts",
+                self.help,
+                aliases=("/commands",),
+                group="App",
             ),
             Command(
                 "/config",
-                "Inspect or edit global defaults (next launch)",
+                "Inspect or edit saved defaults: get KEY / set KEY VALUE / unset KEY",
                 self.config,
                 free_arguments=True,
                 argument_provider=config_arguments,
+                group="App",
             ),
             Command(
-                "/show-tasks",
-                "Show the Tasks/Tools widget: on / off (Ctrl+O)",
-                self.show_tasks,
-                ("on", "off"),
+                "/demo",
+                "Print sample Markdown, code, diff, and tool output",
+                self.demo,
+                group="App",
+            ),
+            Command("/quit", "Exit pcode", self.quit, aliases=("/exit",), group="App"),
+            Command(
+                "/status",
+                "Show model, workspace, session, and context usage",
+                self.status,
+                group="Inspect",
             ),
             Command(
-                "/autohide-tasks",
-                "Hide the Tasks/Tools widget when a turn ends: on / off (default on)",
-                self.autohide_tasks,
-                ("on", "off"),
+                "/tools",
+                "Browse tool calls and results; 'failed' shows only failures",
+                self.tools,
+                ("failed",),
+                group="Inspect",
+            ),
+            Command("/diffs", "Browse this conversation's file diffs", self.diffs, group="Inspect"),
+            Command(
+                "/tree",
+                "Browse the conversation tree and fork from any point",
+                self.select_tree,
+                group="Inspect",
             ),
             Command(
-                "/show-thinking",
-                "Show saved thinking in scrollback: on / off (Ctrl+T)",
-                self.show_thinking,
-                ("on", "off"),
+                "/model",
+                "Choose a model; keeps the conversation (Ctrl+L)",
+                self.select_model,
+                group="Model",
             ),
-            Command(
-                "/show-commands",
-                "Mirror commands and output to scrollback: on / off (Ctrl+G)",
-                self.show_commands,
-                ("on", "off"),
-            ),
-            Command("/theme", "Switch palette: dark / light / auto", self.theme, THEMES),
-            Command("/colors", "Rich colors: palette / terminal", self.colors, COLOR_STYLES),
             Command(
                 "/effort",
-                "Reasoning effort: low / medium / high / xhigh / default",
+                "Set reasoning effort: low / medium / high / xhigh / default (Ctrl+N / Ctrl+P)",
                 self.effort,
                 ("low", "medium", "high", "xhigh", "default"),
+                group="Model",
             ),
             Command(
                 "/mcp",
-                "MCP servers: list / enable NAME / disable NAME (default off)",
+                "Manage MCP servers: list / enable NAME / disable NAME",
                 self.mcp,
                 ("list", "enable", "disable"),
                 free_arguments=True,
                 argument_provider=self.mcp_arguments,
+                group="Model",
+            ),
+            Command(
+                "/login",
+                "Sign in to Anthropic in a browser",
+                self.login,
+                ("anthropic",),
+                group="Model",
+            ),
+            Command("/logout", "Remove the stored Anthropic login", self.logout, group="Model"),
+            Command(
+                "/new", "Start a new conversation; keeps scrollback", self.new, group="Session"
+            ),
+            Command(
+                "/resume", "Choose a saved session to resume", self.select_session, group="Session"
             ),
             Command(
                 "/compact",
-                "Summarize older context [optional focus]",
+                "Summarize older context now; optional FOCUS steers the summary",
                 self.compact,
                 free_arguments=True,
+                group="Session",
             ),
             Command(
                 "/autocompact",
-                "Automatic LLM compaction: on / off (default off)",
+                "Compact automatically near the context limit: on / off",
                 self.autocompact,
                 ("on", "off"),
+                group="Session",
             ),
             Command(
                 "/resend",
-                "Ask the model again from the last saved checkpoint, without a new message",
+                "Ask the model again from the last checkpoint, without a new message",
                 self.resend,
+                group="Session",
             ),
-            Command("/context", "Model, workspace, and session usage", self.context),
-            Command("/new", "Start a new saved conversation; keep transcript", self.new),
-            Command("/tree", "Navigate and fork the conversation interactively", self.select_tree),
-            Command("/resume", "Choose a saved session to resume", self.select_session),
-            Command("/session", "Show the current session's details", self.show_session),
-            Command("/quit", "Leave the terminal", self.quit, aliases=("/exit",)),
+            Command(
+                "/show-tasks",
+                "Tasks/Tools widget: on / off; bare toggles (Ctrl+O)",
+                self.show_tasks,
+                ("on", "off"),
+                group="Display",
+            ),
+            Command(
+                "/autohide-tasks",
+                "Hide the Tasks/Tools widget when a turn ends: on / off; bare toggles",
+                self.autohide_tasks,
+                ("on", "off"),
+                group="Display",
+            ),
+            Command(
+                "/show-thinking",
+                "Thinking in scrollback: on / off; bare toggles (Ctrl+T)",
+                self.show_thinking,
+                ("on", "off"),
+                group="Display",
+            ),
+            Command(
+                "/show-edits",
+                "Edit diffs and previews in scrollback: on / off; bare toggles",
+                self.show_edits,
+                ("on", "off"),
+                group="Display",
+            ),
+            Command(
+                "/show-commands",
+                "Shell command output in scrollback: on / off; bare toggles (Ctrl+G)",
+                self.show_commands,
+                ("on", "off"),
+                group="Display",
+            ),
+            Command(
+                "/theme",
+                "Set the palette: dark / light / auto; bare toggles dark/light",
+                self.theme,
+                THEMES,
+                group="Display",
+            ),
+            Command(
+                "/colors",
+                "Set Rich colors: palette / terminal",
+                self.colors,
+                COLOR_STYLES,
+                group="Display",
+            ),
+            Command(
+                "/redraw",
+                "Rebuild scrollback at the current width and display settings",
+                lambda _: self.transcript.regenerate(),
+                group="Display",
+            ),
         ):
             self.registry.register(command)
         self.register_skills()
@@ -341,38 +396,41 @@ class PreviewApp:
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
 
+    @staticmethod
+    def toggle_argument(command: str, argument: str, current: bool) -> bool:
+        """Resolve `on`/`off`, or flip `current` when the argument is empty."""
+        if not argument:
+            return not current
+        if argument not in ("on", "off"):
+            raise ValueError(f"Usage: {command} [on|off]")
+        return argument == "on"
+
     def show_tasks(self, argument: str) -> None:
-        if argument:
-            if argument not in ("on", "off"):
-                raise ValueError("Usage: /show-tasks on|off")
-            self.set_show_tasks(argument == "on")
+        self.set_show_tasks(self.toggle_argument("/show-tasks", argument, self.activity.show_tasks))
         state = "on" if self.activity.show_tasks else "off"
-        self.transcript.note(f"Show tasks: {state}. Usage: /show-tasks on|off (Ctrl+O)")
+        self.transcript.note(f"Show tasks: {state}. Usage: /show-tasks [on|off] (Ctrl+O)")
 
     def autohide_tasks(self, argument: str) -> None:
-        if argument:
-            if argument not in ("on", "off"):
-                raise ValueError("Usage: /autohide-tasks on|off")
-            self.activity.autohide_tasks = argument == "on"
-            if not self.activity.autohide_tasks:
-                self.activity.tasks_autohidden = False
-            self.persist_defaults(autohide_tasks=argument)
-            if self.transcript.output is not None:
-                self.transcript.output.app.invalidate()
-        state = "on" if self.activity.autohide_tasks else "off"
+        enabled = self.toggle_argument("/autohide-tasks", argument, self.activity.autohide_tasks)
+        self.activity.autohide_tasks = enabled
+        if not enabled:
+            self.activity.tasks_autohidden = False
+        self.persist_defaults(autohide_tasks="on" if enabled else "off")
+        if self.transcript.output is not None:
+            self.transcript.output.app.invalidate()
+        state = "on" if enabled else "off"
         self.transcript.note(
-            f"Auto-hide tasks after each turn: {state}. Usage: /autohide-tasks on|off"
+            f"Auto-hide tasks after each turn: {state}. Usage: /autohide-tasks [on|off]"
         )
 
     def show_edits(self, argument: str) -> None:
-        if argument and argument not in ("show", "hide"):
-            raise ValueError("Usage: /edits [show|hide]")
-        shown = argument == "show" if argument else not self.transcript.show_edits
+        shown = self.toggle_argument("/show-edits", argument, self.transcript.show_edits)
         self.transcript.show_edits = shown
-        self.persist_defaults(edits="show" if shown else "hide")
+        self.persist_defaults(show_edits="on" if shown else "off")
         self.transcript.regenerate()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
+        self.transcript.note(f"Show edits: {'on' if shown else 'off'}. Usage: /show-edits [on|off]")
 
     def set_show_thinking(self, shown: bool) -> None:
         self.activity.show_thinking = shown
@@ -385,12 +443,11 @@ class PreviewApp:
             self.transcript.output.app.invalidate()
 
     def show_thinking(self, argument: str) -> None:
-        if argument:
-            if argument not in ("on", "off"):
-                raise ValueError("Usage: /show-thinking on|off")
-            self.set_show_thinking(argument == "on")
+        self.set_show_thinking(
+            self.toggle_argument("/show-thinking", argument, self.activity.show_thinking)
+        )
         state = "on" if self.activity.show_thinking else "off"
-        self.transcript.note(f"Show thinking: {state}. Usage: /show-thinking on|off (Ctrl+T)")
+        self.transcript.note(f"Show thinking: {state}. Usage: /show-thinking [on|off] (Ctrl+T)")
         if (self.model or "").startswith("anthropic:"):
             self.transcript.note(
                 "Anthropic thinking request: "
@@ -411,27 +468,20 @@ class PreviewApp:
         self.send_mode = SEND_MODES[(SEND_MODES.index(self.send_mode) + 1) % len(SEND_MODES)]
         self.persist_defaults(send_mode=self.send_mode)
 
-    def toggle_command_scrollback(self) -> None:
-        self.set_command_scrollback(not self.transcript.command_scrollback)
-        self.show_commands("")
-
-    def set_command_scrollback(self, shown: bool) -> None:
+    def set_show_commands(self, shown: bool) -> None:
         # Reproject retained results as well as future completions.
         self.transcript.command_scrollback = shown
-        self.persist_defaults(command_scrollback="on" if shown else "off")
+        self.persist_defaults(show_commands="on" if shown else "off")
         self.transcript.regenerate()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
 
     def show_commands(self, argument: str) -> None:
-        if argument:
-            if argument not in ("on", "off"):
-                raise ValueError("Usage: /show-commands on|off")
-            self.set_command_scrollback(argument == "on")
-        state = "on" if self.transcript.command_scrollback else "off"
-        self.transcript.note(
-            f"Command output in scrollback: {state}. Usage: /show-commands on|off (Ctrl+G)"
+        self.set_show_commands(
+            self.toggle_argument("/show-commands", argument, self.transcript.command_scrollback)
         )
+        state = "on" if self.transcript.command_scrollback else "off"
+        self.transcript.note(f"Show commands: {state}. Usage: /show-commands [on|off] (Ctrl+G)")
 
     def persist_defaults(self, **updates: str) -> None:
         try:
@@ -784,7 +834,7 @@ class PreviewApp:
     def session_overview(self) -> list[tuple[str, str]]:
         """Label/value rows describing the live conversation.
 
-        One source for the `/context` notes and the `/session` popup, so the
+        One source for the `/status` notes and popup, so the
         two can never drift into describing the same session differently.
         """
         if not self.model:
@@ -856,7 +906,13 @@ class PreviewApp:
             window = None
         return overhead_rows(parameters, window=window)
 
-    def context(self, argument: str) -> None:
+    def status(self, argument: str) -> None:
+        """Popup in the interactive editor; plain notes wherever there is no editor."""
+        if argument:
+            raise ValueError("Usage: /status")
+        if self.transcript.output is not None:
+            self.session_info_requested = True
+            return
         for label, value in self.session_overview():
             self.transcript.note(f"{label}: {value}")
 
@@ -938,11 +994,6 @@ class PreviewApp:
 
     def select_session(self, argument: str) -> None:
         self.session_requested = True
-
-    def show_session(self, argument: str) -> None:
-        if argument:
-            raise ValueError("Usage: /session")
-        self.session_info_requested = True
 
     async def resume_session(self, identity: str) -> None:
         from pcode.agent import create_agent
@@ -1640,10 +1691,15 @@ class PreviewApp:
                         "/quit",
                         "/exit",
                         "/help",
+                        "/commands",
                         "/theme",
                         "/colors",
+                        "/show-tasks",
+                        "/autohide-tasks",
                         "/show-thinking",
+                        "/show-edits",
                         "/show-commands",
+                        "/redraw",
                         "/config",
                     }:
                         if not ready.is_set():
@@ -1843,7 +1899,7 @@ class PreviewApp:
                     or bool(pending_mcp)
                     or bool(pending_model_command)
                 )
-                # Adopt it as soon as the turn ends so the footer and /context
+                # Adopt it as soon as the turn ends so the footer and /status
                 # agree with what the next request will use.
                 if self.pending_model is not None:
                     await self.apply_pending_model()
@@ -1860,7 +1916,7 @@ class PreviewApp:
             on_cancel=cancel,
             on_tasks=self.set_show_tasks,
             on_thinking=self.set_show_thinking,
-            on_commands=self.toggle_command_scrollback,
+            on_commands=lambda: self.show_commands(""),
             on_effort=self.adjust_effort,
             on_send_mode=self.cycle_send_mode,
             on_model=lambda: submit("/model"),

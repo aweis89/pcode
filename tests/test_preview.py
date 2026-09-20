@@ -27,39 +27,37 @@ def make_app(width=80, workspace=None):
         (
             "/",
             [
-                "/login",
-                "/logout",
-                "/model",
                 "/help",
-                "/tools",
-                "/errors",
-                "/edits",
-                "/diffs",
-                "/demo",
-                "/redraw",
                 "/config",
-                "/show-tasks",
-                "/autohide-tasks",
-                "/show-thinking",
-                "/show-commands",
-                "/theme",
-                "/colors",
+                "/demo",
+                "/quit",
+                "/status",
+                "/tools",
+                "/diffs",
+                "/tree",
+                "/model",
                 "/effort",
                 "/mcp",
+                "/login",
+                "/logout",
+                "/new",
+                "/resume",
                 "/compact",
                 "/autocompact",
                 "/resend",
-                "/context",
-                "/new",
-                "/tree",
-                "/resume",
-                "/session",
-                "/quit",
+                "/show-tasks",
+                "/autohide-tasks",
+                "/show-thinking",
+                "/show-edits",
+                "/show-commands",
+                "/theme",
+                "/colors",
+                "/redraw",
             ],
         ),
-        ("/ses", ["/session"]),
-        ("/sessions", []),
-        ("/res", ["/resend", "/resume"]),
+        ("/sta", ["/status"]),
+        ("/session", []),
+        ("/res", ["/resume", "/resend"]),
         ("/de", ["/demo"]),
         ("/theme ", ["dark", "light", "auto"]),
         ("/theme l", ["light"]),
@@ -205,10 +203,11 @@ def test_tool_command_is_not_available():
     assert stream.getvalue().count("Unknown command") == 2
 
 
-def test_sessions_command_removed():
+def test_removed_command_names_are_unknown():
     app, stream = make_app()
-    assert app.registry.find("/session") is not None
-    assert app.registry.find("/sessions") is None
+    assert app.registry.find("/status") is not None
+    for name in ("/session", "/context", "/errors", "/edits"):
+        assert app.registry.find(name) is None
     app.handle("/help")
     assert "/sessions" not in stream.getvalue()
     assert not app.handle("/sessions")
