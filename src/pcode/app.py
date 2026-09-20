@@ -506,7 +506,7 @@ class PreviewApp:
             self.runtime.auto_compact = argument == "on"
             self.persist_defaults(autocompact=argument)
         state = "on" if self.runtime.auto_compact else "off"
-        self.transcript.note(f"Automatic compaction: {state}. Usage: /autocompact on|off")
+        self.transcript.flash(f"Automatic compaction: {state}. Usage: /autocompact on|off")
 
     def config(self, argument: str) -> None:
         try:
@@ -533,7 +533,7 @@ class PreviewApp:
     def show_tasks(self, argument: str) -> None:
         self.set_show_tasks(self.toggle_argument("/show-tasks", argument, self.activity.show_tasks))
         state = "on" if self.activity.show_tasks else "off"
-        self.transcript.note(f"Show tasks: {state}. Usage: /show-tasks [on|off] (Ctrl+O)")
+        self.transcript.flash(f"Show tasks: {state}. Usage: /show-tasks [on|off] (Ctrl+O)")
 
     def autohide_tasks(self, argument: str) -> None:
         enabled = self.toggle_argument("/autohide-tasks", argument, self.activity.autohide_tasks)
@@ -544,7 +544,7 @@ class PreviewApp:
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
         state = "on" if enabled else "off"
-        self.transcript.note(
+        self.transcript.flash(
             f"Auto-hide tasks after each turn: {state}. Usage: /autohide-tasks [on|off]"
         )
 
@@ -555,7 +555,9 @@ class PreviewApp:
         self.transcript.regenerate()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
-        self.transcript.note(f"Show edits: {'on' if shown else 'off'}. Usage: /show-edits [on|off]")
+        self.transcript.flash(
+            f"Show edits: {'on' if shown else 'off'}. Usage: /show-edits [on|off]"
+        )
 
     def set_show_thinking(self, shown: bool) -> None:
         self.activity.show_thinking = shown
@@ -572,20 +574,21 @@ class PreviewApp:
             self.toggle_argument("/show-thinking", argument, self.activity.show_thinking)
         )
         state = "on" if self.activity.show_thinking else "off"
-        self.transcript.note(f"Show thinking: {state}. Usage: /show-thinking [on|off] (Ctrl+T)")
+        lines = [f"Show thinking: {state}. Usage: /show-thinking [on|off] (Ctrl+T)"]
         if (self.model or "").startswith("anthropic:"):
-            self.transcript.note(
+            lines.append(
                 "Anthropic thinking request: "
                 + ("enabled" if self.activity.show_thinking else "provider default")
                 + " (next turn). Enabling thinking can increase latency and token usage."
             )
         if self.activity.show_thinking and (self.model or "").startswith("meridian:"):
-            self.transcript.note(
+            lines.append(
                 "Meridian must forward readable thinking for scrollback. "
                 "Managed Meridian enables Thinking Passthrough in its private instance. "
                 "For an external proxy, check passthrough → Thinking Passthrough in "
                 "Meridian's /settings page; this toggle only changes pcode's display."
             )
+        self.transcript.flash("\n".join(lines))
 
     def cycle_send_mode(self) -> None:
         from pcode.preferences import SEND_MODES
@@ -606,7 +609,7 @@ class PreviewApp:
             self.toggle_argument("/show-commands", argument, self.transcript.command_scrollback)
         )
         state = "on" if self.transcript.command_scrollback else "off"
-        self.transcript.note(f"Show commands: {state}. Usage: /show-commands [on|off] (Ctrl+G)")
+        self.transcript.flash(f"Show commands: {state}. Usage: /show-commands [on|off] (Ctrl+G)")
 
     def persist_defaults(self, **updates: str) -> None:
         try:
@@ -911,13 +914,13 @@ class PreviewApp:
         selected = self.transcript.theme
         if selected == "auto":
             selected += f" ({self.transcript.resolved_theme})"
-        self.transcript.note(f"Theme: {selected}.")
+        self.transcript.flash(f"Theme: {selected}.")
         self.transcript.regenerate()
 
     def colors(self, argument: str) -> None:
         if argument:
             self.transcript.color_style = argument
-        self.transcript.note(f"Colors: {self.transcript.color_style}.")
+        self.transcript.flash(f"Colors: {self.transcript.color_style}.")
         self.transcript.regenerate()
 
     def syntax(self, argument: str) -> None:
@@ -933,11 +936,11 @@ class PreviewApp:
             self.persist_defaults(**{f"syntax_{palette}": argument})
         selected = self.transcript.syntax_themes[palette]
         if self.transcript.color_style == "terminal":
-            self.transcript.note(
+            self.transcript.flash(
                 f"Syntax ({palette}): {selected}, unused while /colors is terminal."
             )
         else:
-            self.transcript.note(f"Syntax ({palette}): {selected}.")
+            self.transcript.flash(f"Syntax ({palette}): {selected}.")
         self.transcript.regenerate()
 
     def current_effort(self) -> str:
@@ -952,23 +955,23 @@ class PreviewApp:
     def effort(self, argument: str) -> None:
         value = argument.strip().lower()
         if not value:
-            self.transcript.note(
+            self.transcript.flash(
                 f"Effort: {self.current_effort()}. Usage: /effort low|medium|high|xhigh|default"
             )
             return
         if value not in ("low", "medium", "high", "xhigh", "default"):
-            self.transcript.note("Usage: /effort low|medium|high|xhigh|default")
+            self.transcript.flash("Usage: /effort low|medium|high|xhigh|default")
             return
         agent = getattr(self.runtime, "agent", None)
         if agent is None or effort_setting(self.model) is None:
-            self.transcript.note(
+            self.transcript.flash(
                 "Effort control requires an OpenAI/Codex, Anthropic, or Meridian model."
             )
             return
         # Replace rather than mutate: an active run keeps its captured settings.
         apply_effort(agent, self.model, value)
         self.persist_defaults(model=self.model, effort=value)
-        self.transcript.note(f"Effort: {self.current_effort()} (next turn).")
+        self.transcript.flash(f"Effort: {self.current_effort()} (next turn).")
 
     def adjust_effort(self, direction: int) -> None:
         levels = ("low", "medium", "high", "xhigh")

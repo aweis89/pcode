@@ -858,6 +858,19 @@ idle prompt compact, and returns on the next turn. Turn that off with
 the widget back immediately after an auto-hide.
 Ctrl+O replaces the editor’s insert-newline binding; Ctrl+J still inserts a newline.
 
+**Setting acknowledgements are transient.** Toggles and display settings
+(`/show-thinking`, `/show-tasks`, `/show-edits`, `/show-commands`,
+`/autohide-tasks`, `/autocompact`, `/theme`, `/colors`, `/syntax`, `/effort`)
+answer on a line directly above the spinner, just over the editor, and clear
+themselves after five seconds. They never enter terminal scrollback, so
+flipping a display option repeatedly does not litter the transcript, and a
+transcript rebuild (`/redraw`, resize replay) neither preserves nor duplicates
+them. Long acknowledgements wrap to the pane and are capped at six rows.
+Everything else a command reports — `/status`, `/mcp`, `/help`, login flows,
+session and model changes, warnings, and errors — still goes to scrollback.
+Without a live panel (redirected output, `--print`) an acknowledgement falls
+back to a printed notice.
+
 ### Optional vi editing
 
 The prompt uses Emacs-style editing by default. Enable vi bindings for subsequent

@@ -114,6 +114,9 @@ class Palette:
                 "activity.system": self.accent,
                 "activity.system.label": f"{self.accent} bold",
                 "activity.system.detail": f"italic {self.muted}",
+                # Short-lived answers to a keystroke live above the spinner
+                # rather than in scrollback; italics mark them as chrome.
+                "activity.notice": f"italic {self.muted}",
                 "frame.border": self.muted,
                 "editor.mode": "noreverse nodim bg:#b8b8b8 fg:#ffffff",
                 # Keep foreground and background paired with the terminal theme:
@@ -210,6 +213,11 @@ def system_command(text: str) -> tuple[str, str] | None:
     return (label, detail.strip()) if label else None
 
 
+# A notice answers a keystroke, so it only has to outlast reading it once.
+NOTICE_SECONDS = 5.0
+NOTICE_ROWS = 6
+
+
 @dataclass
 class Activity:
     show_tasks: bool = True
@@ -234,6 +242,35 @@ class Activity:
     tools: ToolHistory = field(default_factory=ToolHistory)
     command_outputs: dict[str, CommandOutput] = field(default_factory=dict)
     edit_previews: dict = field(default_factory=dict)
+    notice: str = ""
+    notice_expires: float = 0.0
+
+    def flash(self, text: str, seconds: float = NOTICE_SECONDS) -> None:
+        """Replace the transient notice shown above the spinner.
+
+        One slot, not a queue: the newest answer is the one being waited for,
+        and stacking acknowledgements would push the editor down the screen.
+        """
+        self.notice = text
+        self.notice_expires = monotonic() + seconds
+
+    @property
+    def notice_shown(self) -> bool:
+        return bool(self.notice) and monotonic() < self.notice_expires
+
+    def notice_rows(self, width: int) -> list[tuple[str, str]]:
+        """Wrap the notice to the pane, bounded so chrome cannot take the screen."""
+        if not self.notice_shown or width < 1:
+            return []
+        console = Console(width=width)
+        rows = [
+            ("class:activity.notice", row.plain)
+            for line in self.notice.splitlines()
+            for row in Text(plain(line, limit=None)).wrap(
+                console, width, overflow="fold", no_wrap=False
+            )
+        ]
+        return rows[:NOTICE_ROWS]
 
     def panel_heading(self) -> str:
         return self.panel_title()
@@ -1064,6 +1101,11 @@ def create_prompt(
         live = preview_layout()
         return live[1] if live is not None else []
 
+    @per_render
+    def notice_rows():
+        """Freeze the expiring notice for this render so height matches content."""
+        return activity.notice_rows(session.app.output.get_size().columns)
+
     def status_gap() -> bool:
         """Whether the live panel needs its own blank row above it.
 
@@ -1072,10 +1114,11 @@ def create_prompt(
         line. Depend only on state preview_layout already reads, so asking for
         the gap cannot re-enter the layout calculation.
         """
-        return activity.status_shown and transcript is not None and not transcript.ends_blank
+        shown = activity.status_shown or bool(notice_rows())
+        return shown and transcript is not None and not transcript.ends_blank
 
     def status_height() -> int:
-        return activity.status_shown + status_gap()
+        return activity.status_shown + len(notice_rows()) + status_gap()
 
     def activity_height() -> int:
         rows = plan_rows()
@@ -1158,7 +1201,21 @@ def create_prompt(
         filter=Condition(lambda: bool(command_rows())),
     )
     status_spacer = ConditionalContainer(Window(height=1), filter=Condition(status_gap))
-    activity_panel = HSplit([status_spacer, commands, current_status, plan])
+    # Directly above the spinner: a notice answers the keystroke that caused it
+    # without ever reaching scrollback, and vanishes on its own.
+    notice = ConditionalContainer(
+        Window(
+            FormattedTextControl(
+                lambda: panel_fragments(notice_rows(), session.app.output.get_size().columns),
+                show_cursor=False,
+            ),
+            height=lambda: len(notice_rows()),
+            wrap_lines=False,
+            dont_extend_height=True,
+        ),
+        filter=Condition(lambda: bool(notice_rows())),
+    )
+    activity_panel = HSplit([status_spacer, commands, notice, current_status, plan])
 
     @per_render
     def queue_rows():
@@ -1245,6 +1302,9 @@ def create_prompt(
         return (
             activity.busy
             or activity.status_shown
+            # Keep redrawing while a notice is live: nothing else will ask for
+            # the frame that finally removes it.
+            or activity.notice_shown
             or (activity.tasks_shown and bool(activity.tools.calls))
         )
 
@@ -1252,8 +1312,10 @@ def create_prompt(
         nonlocal animation_task
         await asyncio.sleep(refresh_interval)
         animation_task = None
-        if needs_animation():
-            app.invalidate()
+        # Repaint unconditionally: this timer only exists because the previous
+        # render was animated, and the frame that removes an expired notice or
+        # a finished spinner is the one nothing else asks for.
+        app.invalidate()
 
     def before_render(app):
         nonlocal render_cache
@@ -1479,6 +1541,20 @@ class Transcript:
         not an answer, so a resize must not wipe them.
         """
         self.print(Text(text, style="pcode.muted"))
+
+    def flash(self, text: str) -> None:
+        """Answer a keystroke in the live panel instead of in scrollback.
+
+        Acknowledgements ("Show thinking: off") are worth a glance and nothing
+        more; writing them to scrollback leaves them between the model's output
+        forever. Without a live panel there is nowhere to put one, so fall back
+        to a plain notice.
+        """
+        if self.activity is None or self.output is None:
+            self.note(text)
+            return
+        self.activity.flash(text)
+        self.output.app.invalidate()
 
     def note(self, text: str) -> None:
         """Show an informational notice once, without retaining it for redraws."""
