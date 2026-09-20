@@ -83,7 +83,7 @@ def test_preview_home_and_help(tmp_path, monkeypatch):
         "/help /commands",
         "Display",
         "Enter send",
-        "Alt+Enter newline",
+        "Ctrl+J newline",
         "Ctrl+D exit",
         "Ctrl+S cycles",
         "cancel",
