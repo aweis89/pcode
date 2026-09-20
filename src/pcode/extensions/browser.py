@@ -1,18 +1,17 @@
 """A real Chrome the model can drive, with the user logging in by hand.
 
 Off by default and per conversation: `/browser on` adds Harness's eighteen
-Playwright tools plus `browser_open` and `browser_login`, and a `browser`
-sub-agent that runs multi-step flows without the page text landing in the
-parent's context. `/browser launch` opens the window right away; otherwise it
-opens on the first browser tool call. `/browser off` closes it and removes the
-tools.
+Playwright tools plus `browser_open`, and a `browser` sub-agent that runs
+multi-step flows without the page text landing in the parent's context.
+`/browser launch` opens the window right away; otherwise it opens on the first
+browser tool call. `/browser off` closes it and removes the tools.
 
 The browser is the user's own Chrome, started with a debugging port and a
 profile of its own that keeps logins between pcode sessions; `/browser attach`
 joins the Chrome the user already has open instead (see `pcode.browser`).
-The window is visible on purpose: `browser_login(url)` opens a page there and
-waits for the user to sign in, and the user sees what the model does with that
-session afterwards. There is no sandbox around it beyond the address bar: a
+The window is visible on purpose: a sign-in page is left to the user, who logs
+in there and says so in the next message, and the user sees what the model
+does with that session afterwards. There is no sandbox around it beyond the address bar: a
 page the model reads can tell it to do things with the user's login, which is
 the trade-off of turning this on.
 
@@ -23,28 +22,33 @@ an empty `setup` removes the feature.
 
 import asyncio
 
-from pcode.browser import LOGIN_TIMEOUT_SECONDS, STATE
+from pcode.browser import STATE
 
 DELEGATE_INSTRUCTIONS = (
     "A `browser` sub-agent shares the same browser window and login. Delegate to it "
     "when a browsing task takes several steps and you only need the outcome (find a "
     "value, verify a flow works, reproduce a bug), so page text stays out of this "
     "conversation. Drive the browser yourself for a single check or a screenshot, "
-    "and always for `browser_login`, which needs the user's attention."
+    "and whenever a page needs the user to sign in."
 )
 
 LOGIN_INSTRUCTIONS = {
     "attach": (
         "This is the user's own Chrome: every site they are signed in to is already "
-        "signed in here. Never call `browser_login` before `navigate` has shown you an "
-        "actual sign-in page."
+        "signed in here, so just `navigate`."
     ),
     "own": (
         "The browser profile persists between conversations, so a site the user logged "
-        "in to before is still logged in. `navigate` to the page first; call "
-        "`browser_login` only when what comes back is a sign-in page."
+        "in to before is still logged in; just `navigate`."
     ),
 }
+
+SIGN_IN_INSTRUCTIONS = (
+    "When a page turns out to be a sign-in page, never type credentials. Call "
+    "`browser_open` so the window is in front, then end your turn asking the user to "
+    "log in there and tell you when they are done; continue from the same page when "
+    "they do."
+)
 
 SUBAGENT_INSTRUCTIONS = (
     "You drive a real browser through the tools available to you and report back "
@@ -74,50 +78,22 @@ def _capability(pcode, toolset):
     from pydantic_ai.capabilities import Capability
     from pydantic_ai_harness.playwright import PlaywrightBrowser
 
-    browser_tools = set(toolset.tools) | {"browser_open", "browser_login"}
+    browser_tools = set(toolset.tools) | {"browser_open"}
 
     async def browser_open() -> str:
-        """Open the browser window now, without navigating anywhere.
+        """Bring the browser window to the front, opening it first if needed.
 
-        The window also opens on the first navigate; call this to show it to
-        the user ahead of time, for example before asking them to log in.
+        The current page stays as it is. Use it to show the user a page that
+        needs them, such as a sign-in page, before asking them to act there.
         """
         await _start(pcode)
-        await toolset.navigate("about:blank")
-        page = STATE.session.page
-        if page is not None:
-            await page.bring_to_front()
-        return "The browser window is open and in front."
-
-    async def browser_login(url: str, done_url_prefix: str | None = None) -> str:
-        """Open `url` in the visible browser window and wait for the user to log in by hand.
-
-        Only for a page that `navigate` showed to be a sign-in page: logins
-        persist in this browser, so most sites are already signed in. Returns
-        once the user says they are done (`/browser done`), once the page URL
-        starts with `done_url_prefix` when given, or after five minutes.
-        """
-        await _start(pcode)
-        result = await toolset.navigate(url)
+        if STATE.session.page is None:
+            await toolset.navigate("about:blank")
         page = STATE.session.page
         if page is None:
-            return str(result)
-        if done_url_prefix and page.url.startswith(done_url_prefix):
-            return f"Already logged in: the page is {page.url!r}. No user action needed."
+            return "The browser could not be opened."
         await page.bring_to_front()
-        pcode.ui.notify(
-            f"Log in to {url} in the browser window, then run /browser done. "
-            f"Waiting up to {LOGIN_TIMEOUT_SECONDS // 60} minutes.",
-            "warning",
-        )
-        outcome = await STATE.wait_for_login(done_url_prefix)
-        title = await page.title()
-        if outcome == "timeout":
-            return (
-                f"Timed out waiting for the login; the page is {page.url!r} ({title!r}). "
-                "Ask the user whether they finished, then continue or call browser_login again."
-            )
-        return f"User finished logging in. Now at {page.url!r} ({title!r})."
+        return f"The browser window is in front, showing {page.url}."
 
     class Browser(Capability):
         async def before_tool_execute(self, ctx, *, call, tool_def, args):
@@ -133,8 +109,14 @@ def _capability(pcode, toolset):
     return Browser(
         id="browser",
         toolsets=[toolset],
-        tools=[browser_open, browser_login],
-        instructions=guidance + "\n" + LOGIN_INSTRUCTIONS["attach" if STATE.attach else "own"],
+        tools=[browser_open],
+        instructions="\n".join(
+            (
+                guidance,
+                LOGIN_INSTRUCTIONS["attach" if STATE.attach else "own"],
+                SIGN_IN_INSTRUCTIONS,
+            )
+        ),
     )
 
 
@@ -195,13 +177,8 @@ def setup(pcode) -> None:
             STATE.enabled = False
             _spawn(STATE.close())
             pcode.ui.notify("Browser closed; its tools leave on the next request.")
-        elif argument == "done":
-            if not STATE.launched:
-                raise ValueError("No browser is open.")
-            STATE.login_event().set()
-            pcode.ui.notify("Login reported; the model continues.")
         else:
-            pcode.ui.notify(f"Browser {STATE.describe()}. /browser on|launch|attach|off|done.")
+            pcode.ui.notify(f"Browser {STATE.describe()}. /browser on|launch|attach|off.")
 
     async def _launch() -> None:
         try:
@@ -212,10 +189,9 @@ def setup(pcode) -> None:
 
     pcode.register_command(
         "/browser",
-        "A real Chrome the model can drive; `launch` opens one, `attach` joins yours, "
-        "`done` after you log in",
+        "A real Chrome the model can drive; `launch` opens one, `attach` joins yours",
         browser,
-        arguments=("on", "launch", "attach", "off", "done", "status"),
+        arguments=("on", "launch", "attach", "off", "status"),
     )
     pcode.on_close(STATE.close)
     if not STATE.enabled:

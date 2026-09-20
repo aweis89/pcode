@@ -46,7 +46,7 @@ def test_off_by_default_contributes_only_the_command(tmp_path):
 def test_on_adds_the_tools_and_a_subagent_sharing_one_session(tmp_path, fresh_state):
     fresh_state.enabled = True
     loaded, extension = browser_extension(tmp_path)
-    assert extension.summary() == "20 tools, @browser, /browser"
+    assert extension.summary() == "19 tools, @browser, /browser"
     assert [c.id for c in extension.capabilities] == ["browser", "ext.browser"]
     capability = extension.capabilities[0]
     (delegate,) = loaded.subagents
@@ -54,7 +54,7 @@ def test_on_adds_the_tools_and_a_subagent_sharing_one_session(tmp_path, fresh_st
     # Parent and child drive the same toolset, so the child sees the parent's login.
     child = next(c for c in delegate.agent.root_capability.capabilities if c.id == "browser")
     assert child.get_toolset().toolsets[1] is fresh_state.toolset
-    assert {"browser_open", "browser_login"} <= set(capability.get_toolset().toolsets[0].tools)
+    assert "browser_open" in capability.get_toolset().toolsets[0].tools
     assert fresh_state.cdp_url.startswith("http://127.0.0.1:")
 
 
@@ -71,8 +71,6 @@ def test_command_toggles_state_and_requests_a_reload(tmp_path, fresh_state):
         command.handler("off")
     command.handler("on")
     assert fresh_state.enabled and reloads == [True]
-    with pytest.raises(ValueError, match="No browser is open"):
-        command.handler("done")
     command.handler("off")
     assert not fresh_state.enabled and reloads == [True, True]
     assert fresh_state.session is None
@@ -127,40 +125,24 @@ def test_delegate_task_lists_the_browser_agent(tmp_path, monkeypatch, fresh_stat
     agent.run_sync("hi", model=FunctionModel(stream_function=respond))
     assert "- browser:" in seen[0].instructions
     names = {tool.name for tool in seen[0].function_tools}
-    assert {"delegate_task", "browser_login", "navigate", "snapshot"} <= names
+    assert {"delegate_task", "browser_open", "navigate", "snapshot"} <= names
 
 
-def test_login_waits_for_the_user_or_the_url(fresh_state):
-    async def scenario():
-        fresh_state.session = SimpleNamespace(page=SimpleNamespace(url="https://x/login"))
-        # A stale `/browser done` from an earlier login does not count: the wait
-        # clears the event first, so it is set once the wait is running.
-        fresh_state.login_event().set()
-        asyncio.get_running_loop().call_later(0.1, fresh_state.login_event().set)
-        assert await fresh_state.wait_for_login(None) == "user"
-        fresh_state.session.page.url = "https://x/account"
-        assert await fresh_state.wait_for_login("https://x/account") == "url"
-
-    asyncio.run(scenario())
-
-
-def test_login_tool_reports_the_landing_page(tmp_path, fresh_state, monkeypatch):
+def test_browser_open_fronts_the_current_page(tmp_path, fresh_state, monkeypatch):
+    """A sign-in page the user must act on is shown, not replaced with about:blank."""
     fresh_state.enabled = True
     _, extension = browser_extension(tmp_path)
-    login = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_login"]
+    open_tool = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_open"]
     page = SimpleNamespace(url="https://x/login", fronted=False)
-
-    async def title():
-        return "Account"
 
     async def bring_to_front():
         page.fronted = True
-        # The user signs in while the tool waits; the page then moves on.
-        asyncio.get_running_loop().call_later(0.1, setattr, page, "url", "https://x/account")
 
-    page.title, page.bring_to_front = title, bring_to_front
+    page.bring_to_front = bring_to_front
+    navigated = []
 
     async def navigate(url):
+        navigated.append(url)
         fresh_state.session.page = page
         return "navigated"
 
@@ -170,29 +152,14 @@ def test_login_tool_reports_the_landing_page(tmp_path, fresh_state, monkeypatch)
     monkeypatch.setattr(fresh_state.toolset, "navigate", navigate)
     monkeypatch.setattr(fresh_state, "arm", nothing)
     monkeypatch.setattr(fresh_state, "ensure_chrome", nothing)
-    result = asyncio.run(login.function("https://x/login", "https://x/account"))
-    assert result == "User finished logging in. Now at 'https://x/account' ('Account')."
-    assert page.fronted
-
-
-def test_login_tool_skips_the_wait_when_already_past_the_login(tmp_path, fresh_state, monkeypatch):
-    fresh_state.enabled = True
-    _, extension = browser_extension(tmp_path)
-    login = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_login"]
-    page = SimpleNamespace(url="https://x/inbox")
-
-    async def navigate(url):
-        fresh_state.session.page = page
-        return "navigated"
-
-    async def nothing():
-        return ""
-
-    monkeypatch.setattr(fresh_state.toolset, "navigate", navigate)
-    monkeypatch.setattr(fresh_state, "arm", nothing)
-    monkeypatch.setattr(fresh_state, "ensure_chrome", nothing)
-    result = asyncio.run(login.function("https://x/login", "https://x/inbox"))
-    assert result.startswith("Already logged in")
+    assert (
+        asyncio.run(open_tool.function())
+        == "The browser window is in front, showing https://x/login."
+    )
+    assert navigated == ["about:blank"] and page.fronted
+    # With a page already open nothing is navigated.
+    assert asyncio.run(open_tool.function()).endswith("https://x/login.")
+    assert navigated == ["about:blank"]
 
 
 def test_guidance_says_logins_persist_per_mode(tmp_path, fresh_state, monkeypatch):

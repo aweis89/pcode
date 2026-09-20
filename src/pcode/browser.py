@@ -45,7 +45,6 @@ BLOCK_PRIVATE_ADDRESSES = False
 # Every action returns page text; below the Harness default because a browsing
 # turn is many actions and each lands in the conversation.
 MAX_CONTENT_TOKENS = 2500
-LOGIN_TIMEOUT_SECONDS = 300
 CHROME_START_SECONDS = 20
 CHROME_CANDIDATES = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -182,7 +181,6 @@ class BrowserState:
         self.process: subprocess.Popen | None = None
         self._armed = False
         self._launch_lock: asyncio.Lock | None = None
-        self._login_done: asyncio.Event | None = None
 
     @property
     def attached(self) -> bool:
@@ -295,7 +293,6 @@ class BrowserState:
         session, self.session, self.toolset = self.session, None, None
         armed, self._armed = self._armed, False
         process, self.process = self.process, None
-        self._login_done = None
         self.cdp_url = None
         self.attach = False
         try:
@@ -312,28 +309,6 @@ class BrowserState:
     @property
     def launched(self) -> bool:
         return self.session is not None and self.session.page is not None
-
-    def login_event(self) -> asyncio.Event:
-        if self._login_done is None:
-            self._login_done = asyncio.Event()
-        return self._login_done
-
-    async def wait_for_login(self, done_url_prefix: str | None) -> str:
-        """Block until the user reports done, the page reaches the prefix, or the deadline.
-
-        Returns which of the three happened.
-        """
-        event = self.login_event()
-        event.clear()
-        page = self.session.page if self.session is not None else None
-        deadline = asyncio.get_running_loop().time() + LOGIN_TIMEOUT_SECONDS
-        while asyncio.get_running_loop().time() < deadline:
-            if event.is_set():
-                return "user"
-            if done_url_prefix and page is not None and page.url.startswith(done_url_prefix):
-                return "url"
-            await asyncio.sleep(0.5)
-        return "timeout"
 
     def describe(self) -> str:
         """One line for `/browser status`."""
