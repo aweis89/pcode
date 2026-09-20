@@ -581,26 +581,35 @@ instructions, or leave its `setup` empty to remove the tools.
 [Playwright tools](https://pydantic.dev/docs/ai/harness/playwright/): navigate,
 click, type, snapshot, screenshot, and the rest, plus `browser_open()` and
 `browser_login(url)`, which opens a page in that window and waits for you to
-sign in by hand. Run `/browser done` when you have; the login then lasts for the
-conversation. `/browser launch` opens the window right away (and turns the tools
-on); otherwise it opens on the first browser tool call. A `browser` sub-agent
-shares the same window, so a multi-step task can run without every page landing
-in the main context. `/browser off` quits that Chrome and removes the tools;
-nothing is saved, and a fresh pcode starts with it off.
+sign in by hand. Run `/browser done` when you have. `/browser launch` opens the
+window right away (and turns the tools on); otherwise it opens on the first
+browser tool call. A `browser` sub-agent shares the same window, so a multi-step
+task can run without every page landing in the main context. `/browser off`
+quits that Chrome and removes the tools; a fresh pcode starts with them off.
 
 Chrome is started by pcode with a debugging port and its own profile under
 `~/.local/state/pcode/chrome`, apart from your everyday one, and driven over CDP.
 That is what lets Google and similar sign-in pages accept it: Playwright's own
-Chromium launches flagged as automated and they refuse it. Set
-`PCODE_BROWSER_CHROME` to pick the binary, or `PCODE_BROWSER_CDP_URL` to attach
-to a Chrome you started yourself (pcode then never quits it). With no Chrome
-installed it falls back to Playwright's Chromium, downloaded on first use.
+Chromium launches flagged as automated and they refuse it. The profile persists,
+so a site you log in to once stays logged in for later pcode sessions; delete
+the directory to forget everything. Set `PCODE_BROWSER_CHROME` to pick the
+binary. With no Chrome installed it falls back to Playwright's Chromium,
+downloaded on first use.
+
+`/browser attach` joins the Chrome you already have open instead, tabs and
+logins included, so nothing needs signing in to. Turn on remote debugging at
+`chrome://inspect/#remote-debugging` (or start Chrome with
+`--remote-debugging-port`); pcode finds the port from Chrome's
+`DevToolsActivePort` file, or from `PCODE_BROWSER_CDP_URL` /
+`PCODE_BROWSER_PORT_FILE`. pcode opens its own tab there and closes it on
+`/browser off`, never quitting your Chrome. This is the higher-risk mode: the
+model can act as every account that browser is signed in to.
 
 The window is visible and localhost is reachable, since a dev server is the
-usual target. The trade-off of turning it on: any page the model reads can tell
-it to act with your login, and nothing enforces otherwise beyond you watching
-the window. This is the bundled `browser` extension; a user file of the same
-name replaces it.
+usual target. The trade-off of turning it on at all: any page the model reads
+can tell it to act with your login, and nothing enforces otherwise beyond you
+watching the window. This is the bundled `browser` extension; a user file of the
+same name replaces it.
 
 ### Code mode (opt-in)
 

@@ -191,14 +191,107 @@ def test_without_chrome_the_session_falls_back_to_chromium(fresh_state, monkeypa
     assert asyncio.run(fresh_state.ensure_chrome()) == ""
 
 
-def test_a_foreign_endpoint_is_attached_not_launched(fresh_state, monkeypatch):
+def test_attach_joins_a_running_chrome_and_never_launches(fresh_state, monkeypatch):
     monkeypatch.setenv("PCODE_BROWSER_CDP_URL", "http://127.0.0.1:9222")
     fresh_state.enabled = True
+    fresh_state.attach = True
     fresh_state.open()
     assert fresh_state.attached and fresh_state.cdp_url == "http://127.0.0.1:9222"
     assert asyncio.run(fresh_state.ensure_chrome()) == ""
     assert fresh_state.process is None
-    assert "attached to" in fresh_state.describe()
+    assert "attached to your Chrome" in fresh_state.describe()
+    asyncio.run(fresh_state.close())
+    assert not fresh_state.attach
+
+
+def test_attach_reads_chromes_port_file(fresh_state, monkeypatch, tmp_path):
+    from pcode.browser import running_chrome_url
+
+    port_file = tmp_path / "DevToolsActivePort"
+    monkeypatch.setenv("PCODE_BROWSER_PORT_FILE", str(port_file))
+    assert running_chrome_url() is None
+    port_file.write_text("9333\n/devtools/browser/abc\n")
+    assert running_chrome_url() == "ws://127.0.0.1:9333/devtools/browser/abc"
+
+
+def test_attach_command_fails_cleanly_without_a_chrome(tmp_path, fresh_state, monkeypatch):
+    monkeypatch.setenv("PCODE_BROWSER_PORT_FILE", str(tmp_path / "missing"))
+    reloads = []
+    _, extension = browser_extension(tmp_path, ExtensionUI(None, lambda: reloads.append(1)))
+    with pytest.raises(ValueError, match="No running Chrome"):
+        extension.commands[0].handler("attach")
+    assert not fresh_state.attach and not fresh_state.enabled and reloads == []
+
+
+def test_attach_command_turns_on_with_a_warning(tmp_path, fresh_state, monkeypatch):
+    monkeypatch.setenv("PCODE_BROWSER_CDP_URL", "ws://127.0.0.1:9333/devtools/browser/x")
+    reloads, notices = [], []
+    ui = ExtensionUI(lambda text, level: notices.append(level), lambda: reloads.append(1))
+    _, extension = browser_extension(tmp_path, ui)
+    extension.commands[0].handler("attach")
+    assert fresh_state.attach and fresh_state.enabled and reloads == [1]
+    assert notices[-1] == "warning"
+    with pytest.raises(ValueError, match="already open"):
+        extension.commands[0].handler("attach")
+
+
+def test_session_shares_the_browsers_default_context(fresh_state):
+    """The page joins `contexts[0]` so cookies persist with the profile, and is wired."""
+    fresh_state.open()
+    session = fresh_state.session
+    calls = []
+
+    class Page:
+        url = "about:blank"
+
+        def on(self, *args):
+            calls.append(("on", args[0]))
+
+        async def close(self):
+            calls.append("page.close")
+
+    class Context:
+        pages = []
+
+        async def new_page(self):
+            return Page()
+
+        async def route(self, pattern, handler):
+            calls.append(("route", pattern))
+
+        async def route_web_socket(self, pattern, handler):
+            calls.append(("ws", pattern))
+
+    class Browser:
+        contexts = [Context()]
+
+        async def new_context(self, **kwargs):  # pragma: no cover
+            raise AssertionError("must reuse the default context")
+
+        async def close(self):
+            calls.append("browser.close")
+
+    async def scenario():
+        session._driver_cm = SimpleNamespace(__aexit__=_aexit)
+        session._driver = object()
+        session._driver_entered = True
+        session._connect = _connect
+        await session._launch()
+        assert session._context is Browser.contexts[0]
+        assert session.page is not None and session.pages == [session.page]
+        await session.__aexit__(None, None, None)
+
+    async def _connect(driver):
+        return Browser()
+
+    async def _aexit(*args):
+        calls.append("driver.exit")
+
+    asyncio.run(scenario())
+    # Open egress plus reachable localhost means no route guard; the page events
+    # Harness listens to are still wired, and the tab is closed before disconnecting.
+    assert ("on", "dialog") in calls
+    assert calls[-3:] == ["page.close", "browser.close", "driver.exit"]
 
 
 def test_chrome_that_never_answers_is_reported(fresh_state, monkeypatch, tmp_path):

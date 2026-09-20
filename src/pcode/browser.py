@@ -17,9 +17,16 @@ Two decisions differ from Harness's own `PlaywrightBrowser` capability:
   (`navigator.webdriver` is true) and no Google API keys, and Google refuses to
   sign in to that browser ("controlled through software automation"). Chrome
   started by us with only a debugging port and its own profile carries neither
-  mark. `PCODE_BROWSER_CDP_URL` attaches to a Chrome started some other way
-  instead, and when no Chrome is installed the session falls back to
-  Playwright's Chromium, which works everywhere except such sign-in pages.
+  mark. When no Chrome is installed the session falls back to Playwright's
+  Chromium, which works everywhere except such sign-in pages.
+- The page opens in the browser's own default context rather than a fresh one
+  (`SharedContextSession`). Harness isolates every run in a new context so a
+  run never inherits a login; here inheriting is the point. On the Chrome we
+  launch, the default context is the pcode profile on disk, so a login made
+  once holds across pcode sessions. `/browser attach` (or
+  `PCODE_BROWSER_CDP_URL`) joins the user's everyday Chrome instead, where the
+  default context holds every account they are signed in to; that is the
+  higher-risk choice and is never the default.
 """
 
 from __future__ import annotations
@@ -70,10 +77,97 @@ def profile_dir() -> Path:
     return state / "pcode" / "chrome"
 
 
+def _chrome_profile_dirs() -> list[Path]:
+    """Where the everyday Chrome keeps `DevToolsActivePort` once remote debugging is on."""
+    home = Path.home()
+    return [
+        home / "Library" / "Application Support" / "Google" / "Chrome",
+        home / "Library" / "Application Support" / "Chromium",
+        home / ".config" / "google-chrome",
+        home / ".config" / "chromium",
+    ]
+
+
+def running_chrome_url() -> str | None:
+    """The CDP endpoint of the user's own Chrome, if it has remote debugging on.
+
+    `PCODE_BROWSER_CDP_URL` wins. Otherwise Chrome writes `DevToolsActivePort`
+    (port, then the browser websocket path) into its profile when started with
+    `--remote-debugging-port` or when `chrome://inspect/#remote-debugging` is
+    toggled on; `PCODE_BROWSER_PORT_FILE` names that file elsewhere.
+    """
+    configured = os.environ.get("PCODE_BROWSER_CDP_URL", "").strip()
+    if configured:
+        return configured
+    named = os.environ.get("PCODE_BROWSER_PORT_FILE", "").strip()
+    files = [Path(named)] if named else [d / "DevToolsActivePort" for d in _chrome_profile_dirs()]
+    for file in files:
+        try:
+            port, path = file.read_text().split()[:2]
+        except (OSError, ValueError):
+            continue
+        return f"ws://127.0.0.1:{int(port)}{path}"
+    return None
+
+
 def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
+
+
+def _session_class():
+    from pydantic_ai_harness.playwright import PlaywrightBrowserSession
+
+    class SharedContextSession(PlaywrightBrowserSession):
+        """A session whose page lives in the browser's default context.
+
+        Overrides the private `_launch` of the pinned Harness revision: the
+        only difference is `browser.contexts[0]` in place of `new_context()`
+        when the browser has one, so the page shares that context's cookies.
+        The guards Harness installs (route, websocket, page wiring) are kept.
+        A browser reached over CDP is left running by Harness's own teardown,
+        which only disconnects; the page opened here is closed first so no
+        stray tab is left in the user's window.
+        """
+
+        async def _launch(self) -> None:
+            assert self._driver_cm is not None
+            if self._driver is None:
+                self._driver = await self._driver_cm.__aenter__()
+                self._driver_entered = True
+            if self._browser is not None:
+                stale = self._browser
+                await self._bounded(stale.close())
+                self._browser = None
+            browser = await self._connect(self._driver)
+            if browser is None:
+                return
+            self._browser = browser
+            if browser.contexts:
+                context = browser.contexts[0]
+            else:  # pragma: no cover - a launched Chromium has none until asked
+                context = await self._bounded(
+                    browser.new_context(service_workers="block", accept_downloads=False)
+                )
+            self._context = context
+            page = await self._bounded(context.new_page())
+            if self.policy.enforced():
+                await self._bounded(context.route("**/*", self._route_guard))
+                await self._bounded(context.route_web_socket("**/*", self._websocket_guard))
+            self._wire_page(page)
+            self.pages.append(page)
+            self.page = page
+
+        async def __aexit__(self, exc_type, *rest) -> None:
+            for page in list(self.pages):
+                try:
+                    await page.close()
+                except Exception:  # noqa: BLE001 - the tab may already be gone.
+                    pass
+            await super().__aexit__(exc_type, *rest)
+
+    return SharedContextSession
 
 
 class BrowserState:
@@ -81,6 +175,7 @@ class BrowserState:
 
     def __init__(self) -> None:
         self.enabled = False
+        self.attach = False
         self.session: Any = None
         self.toolset: Any = None
         self.cdp_url: str | None = None
@@ -91,27 +186,31 @@ class BrowserState:
 
     @property
     def attached(self) -> bool:
-        """Attaching to a Chrome someone else started, which is theirs to close."""
-        return bool(os.environ.get("PCODE_BROWSER_CDP_URL", "").strip())
+        """Joined a Chrome someone else started, which is theirs to close."""
+        return self.attach
 
     def open(self):
-        """Build (not launch) the session and toolset; idempotent."""
-        if self.session is None:
-            from pydantic_ai_harness.playwright import (
-                EgressPolicy,
-                PlaywrightBrowserSession,
-                PlaywrightBrowserToolset,
-            )
+        """Build (not launch) the session and toolset; idempotent.
 
-            if self.attached:
-                self.cdp_url = os.environ["PCODE_BROWSER_CDP_URL"].strip()
+        Raises `ValueError` in attach mode when no running Chrome is found.
+        """
+        if self.session is None:
+            from pydantic_ai_harness.playwright import EgressPolicy, PlaywrightBrowserToolset
+
+            if self.attach:
+                self.cdp_url = running_chrome_url()
+                if self.cdp_url is None:
+                    raise ValueError(
+                        "No running Chrome with remote debugging found. Turn it on at "
+                        "chrome://inspect/#remote-debugging, or set PCODE_BROWSER_CDP_URL."
+                    )
             elif chrome_executable():
                 # The port is chosen now so the session can be built before the
                 # browser exists; Chrome starts on the first tool call.
                 self.cdp_url = f"http://127.0.0.1:{_free_port()}"
             else:
                 self.cdp_url = None
-            self.session = PlaywrightBrowserSession(
+            self.session = _session_class()(
                 policy=EgressPolicy(block_private_addresses=BLOCK_PRIVATE_ADDRESSES),
                 headless=False,
                 cdp_url=self.cdp_url,
@@ -198,6 +297,7 @@ class BrowserState:
         process, self.process = self.process, None
         self._login_done = None
         self.cdp_url = None
+        self.attach = False
         try:
             if session is not None and armed:
                 await session.__aexit__(None, None, None)
@@ -242,9 +342,9 @@ class BrowserState:
         if self.cdp_url is None:
             how = "Playwright's Chromium (no Chrome found; Google sign-in will refuse it)"
         elif self.attached:
-            how = f"attached to {self.cdp_url}"
+            how = f"attached to your Chrome at {self.cdp_url}"
         else:
-            how = f"Chrome on {self.cdp_url}" + (
+            how = f"own Chrome on {self.cdp_url}, profile {profile_dir()}" + (
                 "" if self.process is not None and self.process.poll() is None else " (not started)"
             )
         page = self.session.page if self.launched else None
