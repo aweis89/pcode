@@ -148,13 +148,15 @@ def test_login_tool_reports_the_landing_page(tmp_path, fresh_state, monkeypatch)
     fresh_state.enabled = True
     _, extension = browser_extension(tmp_path)
     login = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_login"]
-    page = SimpleNamespace(url="https://x/account", fronted=False)
+    page = SimpleNamespace(url="https://x/login", fronted=False)
 
     async def title():
         return "Account"
 
     async def bring_to_front():
         page.fronted = True
+        # The user signs in while the tool waits; the page then moves on.
+        asyncio.get_running_loop().call_later(0.1, setattr, page, "url", "https://x/account")
 
     page.title, page.bring_to_front = title, bring_to_front
 
@@ -171,6 +173,39 @@ def test_login_tool_reports_the_landing_page(tmp_path, fresh_state, monkeypatch)
     result = asyncio.run(login.function("https://x/login", "https://x/account"))
     assert result == "User finished logging in. Now at 'https://x/account' ('Account')."
     assert page.fronted
+
+
+def test_login_tool_skips_the_wait_when_already_past_the_login(tmp_path, fresh_state, monkeypatch):
+    fresh_state.enabled = True
+    _, extension = browser_extension(tmp_path)
+    login = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_login"]
+    page = SimpleNamespace(url="https://x/inbox")
+
+    async def navigate(url):
+        fresh_state.session.page = page
+        return "navigated"
+
+    async def nothing():
+        return ""
+
+    monkeypatch.setattr(fresh_state.toolset, "navigate", navigate)
+    monkeypatch.setattr(fresh_state, "arm", nothing)
+    monkeypatch.setattr(fresh_state, "ensure_chrome", nothing)
+    result = asyncio.run(login.function("https://x/login", "https://x/inbox"))
+    assert result.startswith("Already logged in")
+
+
+def test_guidance_says_logins_persist_per_mode(tmp_path, fresh_state, monkeypatch):
+    fresh_state.enabled = True
+    _, extension = browser_extension(tmp_path)
+    text = str(extension.capabilities[0].get_instructions())
+    assert "persists between conversations" in text
+
+    asyncio.run(fresh_state.close())
+    monkeypatch.setenv("PCODE_BROWSER_CDP_URL", "ws://127.0.0.1:1/devtools/browser/x")
+    fresh_state.enabled = fresh_state.attach = True
+    _, extension = browser_extension(tmp_path)
+    assert "user's own Chrome" in str(extension.capabilities[0].get_instructions())
 
 
 def test_close_is_safe_before_launch_and_drops_the_session(fresh_state):
