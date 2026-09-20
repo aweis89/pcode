@@ -184,6 +184,7 @@ class PreviewRuntime:
                 "- Try `/theme light` or `/theme dark`, "
                 "then `/demo` again to compare syntax colors.\n"
                 "- Compare `/colors palette` with `/colors terminal`, then run `/demo` again.\n"
+                "- `/syntax monokai` restyles fenced code for the palette in use.\n"
                 "- Use terminal/tmux scrollback to compare previous output.\n\n"
                 "**No files were read or changed, and no tests were executed.**"
             ),
