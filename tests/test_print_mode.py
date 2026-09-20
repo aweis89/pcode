@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from rich.color import Color
 from rich.console import Console
 from rich.text import Text
 
@@ -21,6 +22,7 @@ from pcode.runtime import (
     ToolStarted,
     ToolSummary,
 )
+from pcode.ui import PALETTES
 
 
 def test_initial_prompt_is_sent_before_any_typing():
@@ -166,6 +168,37 @@ def test_print_renders_markdown_on_a_terminal():
     # Rendered once as a settled block: no markdown source, no duplicated deltas.
     assert "**" not in printed
     assert printed.count("things changed") == 1
+
+
+def test_print_rendering_follows_the_resolved_light_or_dark_profile(monkeypatch):
+    """The reply is a second console, so it has to inherit the transcript's palette and syntax."""
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("COLORTERM", "truecolor")
+
+    class Runtime:
+        session = None
+        recovery_blocked = ""
+
+        async def stream(self, text):
+            yield Message("# Heading\n\n```python\nimport os\n```\n")
+
+    def rendered(theme: str) -> str:
+        stdout = TerminalStringIO()
+        app = PreviewApp(
+            theme=theme,
+            model="test:local",
+            runtime=Runtime(),
+            console=Console(file=StringIO(), color_system=None, width=80),
+        )
+        assert asyncio.run(app.run_print_async("what changed?", stdout=stdout))
+        return stdout.getvalue()
+
+    for theme in ("light", "dark"):
+        output = rendered(theme)
+        accent = ";".join(Color.parse(PALETTES[theme].accent).get_ansi_codes())
+        assert accent in output, f"{theme} heading ignores the palette"
+    # Fenced code follows the per-palette Pygments style, so the two differ.
+    assert rendered("light") != rendered("dark")
 
 
 def test_print_renders_a_partial_block_left_by_a_failure_on_a_terminal():
