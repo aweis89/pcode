@@ -4,6 +4,7 @@ from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 from rich.markdown import Markdown
@@ -11,7 +12,7 @@ from rich.markdown import Markdown
 from pcode.runtime import ToolSummary
 from pcode.transcript_log import TranscriptLog
 from pcode.transcript_notice import TranscriptNotice
-from pcode.ui import CursorSafeOutput, TerminalOutput, Transcript
+from pcode.ui import CursorSafeOutput, Handoff, TerminalOutput, Transcript
 
 
 def view():
@@ -138,10 +139,10 @@ def test_rebuild_includes_arrivals_during_handoff_and_keeps_unfinished_tail(monk
         output.delta("COMMITTED_TEXT\n\nUNFINISHED_TAIL")
 
         @asynccontextmanager
-        async def handoff(app):
+        async def handoff(app, **kwargs):
             # Equivalent to events arriving while the handoff awaits CPR.
             transcript.note("ARRIVED_DURING_CPR")
-            yield
+            yield Handoff(None)
 
         monkeypatch.setattr("pcode.ui.suspended_editor", handoff)
         output.regenerate(transcript.replay)
@@ -166,8 +167,35 @@ def test_rebuild_includes_arrivals_during_handoff_and_keeps_unfinished_tail(monk
         output.finish()
         assert project(transcript).count("UNFINISHED_TAIL") == 1
 
-    async def empty_handoff(app):
-        yield
+    async def empty_handoff(app, **kwargs):
+        yield Handoff(None)
+
+    asyncio.run(run())
+
+
+def test_flush_reports_the_rows_written_at_the_terminal_width(monkeypatch):
+    async def run():
+        transcript = view()
+        terminal = DummyOutput()
+        terminal.get_size = lambda: Size(rows=40, columns=20)
+        app = SimpleNamespace(output=CursorSafeOutput(terminal))
+        output = TerminalOutput(transcript.console, app)
+        handoffs = []
+
+        async def handoff(app, **kwargs):
+            handoffs.append(Handoff(11))
+            yield handoffs[-1]
+
+        monkeypatch.setattr("pcode.ui.suspended_editor", asynccontextmanager(handoff))
+        output.print("x " * 25)  # wraps to three rows at width 20
+        output.print("second")
+        await output.flush()
+        assert handoffs[0].rows_written == transcript.console.file.getvalue().count("\n") == 4
+        # The console writes to its own file again once the batch is out.
+        assert transcript.console.file is not handoffs[0]
+        output.regenerate(transcript.replay)
+        await output.flush()
+        assert handoffs[1].top_row == 1
 
     asyncio.run(run())
 
@@ -187,8 +215,8 @@ def test_clear_erases_the_screen_and_keeps_what_is_written_after_it(monkeypatch)
         transcript.print("AFTER_CLEAR")
         transcript.note("NEW_NOTICE")
 
-        async def empty_handoff(app):
-            yield
+        async def empty_handoff(app, **kwargs):
+            yield Handoff(None)
 
         monkeypatch.setattr("pcode.ui.suspended_editor", asynccontextmanager(empty_handoff))
         transcript.console.file.seek(0)
