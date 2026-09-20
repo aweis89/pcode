@@ -288,6 +288,55 @@ def test_worktree_command(repo):
         mainline.registry.dispatch("/worktree bogus")
 
 
+def test_worktree_merge_runs_under_a_system_row_with_a_terminal(repo):
+    """With a live terminal the git work is deferred and labelled, not run inline."""
+    import asyncio
+    from types import SimpleNamespace
+
+    created = worktree.create(repo, "feature")
+    commit(created.path, "feature.txt")
+    app = PreviewApp(workspace=created.path)
+    notes, errors = [], []
+    app.transcript.note = lambda text, **_: notes.append(text)
+    app.transcript.error = lambda text, **_: errors.append(text)
+    app.transcript.output = SimpleNamespace(app=SimpleNamespace(invalidate=lambda: None))
+
+    app.worktree("merge")
+    assert notes == [] and app.job_requested is not None
+    label, detail, _ = app.job_requested
+    assert (label, detail) == ("Merging worktree", "feature")
+
+    seen = {}
+
+    async def run():
+        task = asyncio.ensure_future(app.perform_job())
+        await asyncio.sleep(0)
+        seen["kind"] = app.activity.prompt_kind
+        seen["prompt"] = app.activity.prompt
+        seen["state"] = app.activity.prompt_state
+        seen["busy"] = app.activity.busy
+        await task
+
+    asyncio.run(run())
+    assert seen == {
+        "kind": "system",
+        "prompt": "Merging worktree",
+        "state": "running",
+        "busy": True,
+    }
+    assert notes == ["merged feature into main"]
+    assert app.activity.prompt_state == "done" and not app.activity.busy
+    assert app.job_requested is None
+
+    # A refusal surfaces as a command error and the row ends failed.
+    commit(created.path, "README", "theirs\n")
+    commit(repo, "README", "ours\n")
+    app.worktree("merge")
+    asyncio.run(app.perform_job())
+    assert errors and "conflicts" in errors[-1]
+    assert app.activity.prompt_state == "failed"
+
+
 def test_module_cli_runs_project_setup_unconditionally(repo, monkeypatch, capsys):
     (repo / ".pcode").mkdir()
     (repo / ".pcode" / "worktree-setup").write_text("touch from-setup\n")
