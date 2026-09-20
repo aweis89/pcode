@@ -4,6 +4,7 @@ import select
 import sys
 import termios
 import threading
+import time
 from io import StringIO
 
 import pytest
@@ -50,12 +51,57 @@ def test_environment_fallback(monkeypatch, value, expected):
     assert theme.detect_theme() == "dark"
 
 
-def test_redirected_input_does_not_query(monkeypatch):
-    monkeypatch.setattr(sys, "stdin", StringIO())
-    monkeypatch.setattr(sys, "stdout", StringIO())
+def test_no_terminal_at_all_does_not_query(monkeypatch):
+    for name in ("stdin", "stdout", "stderr"):
+        monkeypatch.setattr(sys, name, StringIO())
     monkeypatch.delenv("COLORFGBG", raising=False)
     assert theme.detect_theme() == "dark"
     assert sys.stdout.getvalue() == ""
+
+
+def _detect_with_redirected_streams(timeout: float) -> str:
+    """In a child owning the pty: prompt on stdin, reply on stdout, both pipes."""
+    prompt_read, prompt_write = os.pipe()
+    os.write(prompt_write, b"summarize this")
+    os.close(prompt_write)
+    reply_read, reply_write = os.pipe()
+    sys.stdin = os.fdopen(prompt_read)
+    sys.stdout = os.fdopen(reply_write, "w")
+    sys.stderr = os.fdopen(2, "w", closefd=False)  # Undo pytest's capture: stderr is the pty.
+    os.environ["TERM"] = "xterm-256color"
+    detected = theme._query_background(timeout)
+    # The query must never land in the reply stream a pipe is reading.
+    leaked = bool(select.select([reply_read], [], [], 0)[0])
+    return f"DETECTED={detected} LEAKED={leaked}\n"
+
+
+def test_redirected_streams_still_query_the_controlling_terminal():
+    """`--print` takes its prompt on stdin and its reply on stdout, and still has a terminal."""
+    pid, fd = pty.fork()
+    if pid == 0:  # The child's controlling terminal is the pty.
+        report = "DETECTED=crashed LEAKED=?\n"
+        try:
+            report = _detect_with_redirected_streams(2)
+        finally:
+            os.write(2, report.encode())
+            os._exit(0)
+    seen = bytearray()
+    deadline = time.monotonic() + 10
+    try:
+        while b"DETECTED" not in seen and time.monotonic() < deadline:
+            if not select.select([fd], [], [], deadline - time.monotonic())[0]:
+                break
+            chunk = os.read(fd, 1024)
+            if not chunk:
+                break
+            seen.extend(chunk)
+            if b"\x1b]11;?" in seen:
+                seen.clear()  # Answer with a light background: a default would hide a failure.
+                os.write(fd, b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\")
+    finally:
+        os.close(fd)
+        os.waitpid(pid, 0)
+    assert "DETECTED=light LEAKED=False" in seen.decode(errors="replace")
 
 
 @pytest.mark.parametrize("respond", [True, False])

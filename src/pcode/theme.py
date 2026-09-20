@@ -27,15 +27,37 @@ def background_theme(response: bytes) -> str | None:
     return "light" if brightness >= 0.5 else "dark"
 
 
+def _terminal():
+    """Descriptors to read the reply on and write the query to, plus any handle to close.
+
+    Standard streams first, so an ordinary session queries exactly what it
+    talks to. `--print` can be fed its prompt on stdin and still render to a
+    terminal, so a redirected stream falls back to the controlling terminal
+    instead of costing detection. Reading and writing are separate because
+    stdin is not always opened for writing.
+    """
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        return sys.stdin.fileno(), sys.stdout.fileno(), None
+    try:
+        handle = open("/dev/tty", "r+b", buffering=0)
+    except OSError:  # No controlling terminal: a daemon, or a CI runner.
+        return None, None, None
+    return handle.fileno(), handle.fileno(), handle
+
+
 def _query_background(timeout: float = 0.15) -> str | None:
-    if not sys.stdin.isatty() or not sys.stdout.isatty() or os.environ.get("TERM") == "dumb":
+    # Nothing will be colored, so there is no palette to match: stay quiet
+    # rather than write an escape sequence into whatever stdout is.
+    if os.environ.get("TERM") == "dumb" or not (sys.stdout.isatty() or sys.stderr.isatty()):
         return None
     try:
         import termios
     except ImportError:
         return None
+    fd, query_fd, handle = _terminal()
+    if fd is None:
+        return None
     try:
-        fd = sys.stdin.fileno()
         # Don't steal already queued input, or flush it on entering/leaving cbreak.
         if select.select([fd], [], [], 0)[0]:
             return None
@@ -46,8 +68,10 @@ def _query_background(timeout: float = 0.15) -> str | None:
         mode[6][termios.VTIME] = 0
         try:
             termios.tcsetattr(fd, termios.TCSANOW, mode)
-            sys.stdout.write("\x1b]11;?\x1b\\")
-            sys.stdout.flush()
+            if handle is None:
+                # Keep the query behind any text already queued on stdout.
+                sys.stdout.flush()
+            os.write(query_fd, b"\x1b]11;?\x1b\\")
             deadline = time.monotonic() + timeout
             response = bytearray()
             while len(response) < 128:
@@ -65,6 +89,9 @@ def _query_background(timeout: float = 0.15) -> str | None:
             termios.tcsetattr(fd, termios.TCSANOW, original)
     except (OSError, ValueError, termios.error):
         pass
+    finally:
+        if handle is not None:
+            handle.close()
     return None
 
 
