@@ -26,7 +26,7 @@ app.run()
 
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
-def test_compaction_keeps_editor_height_and_cancels_with_draft(pane):
+def test_compaction_keeps_editor_height_and_cancels_after_clearing_draft(pane):
     assert input_rows(capture(pane, "❯")) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "/compact keep test failures")
     pane("send-keys", "-t", "preview:0.0", "Enter")
@@ -54,9 +54,15 @@ def test_compaction_keeps_editor_height_and_cancels_with_draft(pane):
         screen = capture(pane, "keep this draft", running=True, columns=columns)
         assert input_rows(screen) == 1
         assert prompt_row(screen)[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    # A draft absorbs the first Ctrl+C: only an empty prompt cancels the work.
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    screen = capture(pane, "Input discarded", running=True)
+    assert "keep this draft" not in screen
+    assert "Compaction cancelled" not in screen
+    assert prompt_row(screen)[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "Compaction cancelled")
-    assert "keep this draft" in screen
     assert input_rows(screen) == 1
     # The row is live-only: once the work ends, the notice carries the outcome.
     assert "◈ Compacting context" not in screen
