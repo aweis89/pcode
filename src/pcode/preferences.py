@@ -119,14 +119,42 @@ SETTINGS = {
 }
 
 
+# Settings a repository must not be able to set for whoever clones it: each
+# either runs code on launch or chooses which credential or local process to
+# use. They are read from the user file only; a project file setting them is
+# reported by `rejected_project_keys` and otherwise ignored.
+USER_ONLY = frozenset(
+    {"project_extensions", "extension_dirs", "meridian_managed", "anthropic_auth"}
+)
+
+PROJECT_PREFERENCES = Path(".pcode") / "preferences.json"
+
+# The launch workspace, fixed once by the CLI so every later load_preferences()
+# call sees the same overlay. Not the current directory: `-C` and worktrees
+# make those differ, and the worktree carries the same committed file anyway.
+_project_root: Path | None = None
+
+
+def set_project_root(path: Path | None) -> None:
+    global _project_root
+    _project_root = path.resolve() if path is not None else None
+
+
 def preferences_path() -> Path:
     root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     return root / "pcode" / "preferences.json"
 
 
-def load_preferences() -> dict[str, str]:
+def project_preferences_path() -> Path | None:
+    """The workspace's overlay file, or None before the CLI has named a workspace."""
+    return _project_root / PROJECT_PREFERENCES if _project_root is not None else None
+
+
+def _read_valid(path: Path | None) -> dict[str, str]:
+    if path is None:
+        return {}
     try:
-        data = json.loads(preferences_path().read_text())
+        data = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):
@@ -144,9 +172,30 @@ def load_preferences() -> dict[str, str]:
     return result
 
 
-def read_preferences() -> dict:
+def load_preferences() -> dict[str, str]:
+    """User defaults with the workspace's `.pcode/preferences.json` layered on top."""
+    merged = _read_valid(preferences_path())
+    for key, value in _read_valid(project_preferences_path()).items():
+        if key not in USER_ONLY:
+            merged[key] = value
+    return merged
+
+
+def rejected_project_keys() -> list[str]:
+    """User-only keys the project file tries to set, for a launch warning."""
+    path = project_preferences_path()
+    if path is None:
+        return []
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    return sorted(USER_ONLY & set(data)) if isinstance(data, dict) else []
+
+
+def read_preferences(path: Path | None = None) -> dict:
     """Read without discarding unknown keys or silently repairing a broken file."""
-    path = preferences_path()
+    path = path or preferences_path()
     try:
         data = json.loads(path.read_text())
     except FileNotFoundError:
@@ -164,12 +213,14 @@ def save_preferences(**updates: str) -> None:
     update_preferences(updates)
 
 
-def update_preferences(updates: dict[str, str], *, remove: tuple[str, ...] = ()) -> None:
-    path = preferences_path()
+def update_preferences(
+    updates: dict[str, str], *, remove: tuple[str, ...] = (), path: Path | None = None
+) -> None:
+    path = path or preferences_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # Serialize read/modify/write across terminals, including legacy shortcuts.
     with FileLock(str(path) + ".lock", timeout=5):
-        data = read_preferences()
+        data = read_preferences(path)
         for key in remove:
             data.pop(key, None)
         data.update(updates)

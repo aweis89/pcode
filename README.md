@@ -121,8 +121,8 @@ unaffected.
 ### Global configuration
 
 Global defaults are shared across workspaces in `~/.config/pcode/preferences.json`
-(or `$XDG_CONFIG_HOME/pcode/preferences.json`). No migration or second config file
-is needed. Inspect and edit them without opening a terminal UI or connecting a model:
+(or `$XDG_CONFIG_HOME/pcode/preferences.json`). Inspect and edit them without
+opening a terminal UI or connecting a model:
 
 ```sh
 pcode config                     # List effective startup defaults as JSON
@@ -142,6 +142,27 @@ The same commands are available inside pcode as `/config`, with tab completion:
 an active setting and save its default immediately, use `/theme`, `/effort`,
 `/model`, or `/autocompact` instead. CLI overrides such as `--theme` and `--model`
 do not rewrite global defaults, and resumed sessions retain their own model.
+
+#### Per-repository overrides
+
+A workspace's `.pcode/preferences.json` is layered over the user file at launch,
+so a setting can hold for one repository and be committed for everyone who
+clones it. `config list` and `config get` show the merged result;
+`config project` edits the repository file (from `-C DIR` or the current
+directory):
+
+```sh
+pcode config project set worktree on    # this repo only; writes .pcode/preferences.json
+pcode config project list               # the raw overlay
+pcode config project unset worktree
+```
+
+A cloned repository must not be able to run code or pick credentials on your
+behalf, so `project_extensions`, `extension_dirs`, `meridian_managed`, and
+`anthropic_auth` are user-only: the project file cannot set them, and pcode
+says so at launch if it tries. The overlay is read from the launch workspace
+before any worktree is created, so `worktree on` in a repository's file is
+what starts each of its sessions in a worktree.
 
 | Key | Built-in default | Values |
 | --- | --- | --- |
@@ -648,10 +669,11 @@ repository instructions, and the saved session all point there. The model needs
 no instructions and relative paths cannot land in the mainline by mistake.
 
 ```sh
-pcode --worktree              # .worktrees/<session-id-prefix> on a branch of the same name
-pcode --worktree fix-thing    # named directory and branch
-pcode config set worktree on  # default for every new session in a git repo
-pcode --no-worktree           # stay in the current checkout this once
+pcode --worktree                      # .worktrees/<session-id-prefix> on a branch of the same name
+pcode --worktree fix-thing            # named directory and branch
+pcode config project set worktree on  # default for this repository (committed in .pcode/)
+pcode config set worktree on          # default for every git repository
+pcode --no-worktree                   # stay in the current checkout this once
 ```
 
 The worktree lives under `.worktrees/` in the primary checkout (added to

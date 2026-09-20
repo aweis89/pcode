@@ -110,6 +110,12 @@ def isolated_preferences(monkeypatch, tmp_path):
     # skill_dirs defaults to ~/.agents/skills, so a developer's own skills would
     # otherwise register as commands in every app the suite builds.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The CLI fixes the project overlay root once per process; tests that run
+    # main() would otherwise leak this checkout's .pcode/preferences.json into
+    # every later test.
+    from pcode import preferences
+
+    monkeypatch.setattr(preferences, "_project_root", None)
 
 
 @pytest.fixture(autouse=True)
