@@ -572,6 +572,23 @@ extension, `web_research`; copy `src/pcode/extensions/web_research.py` to
 `~/.config/pcode/extensions/web_research.py` to change backends, limits, or
 instructions, or leave its `setup` empty to remove the tools.
 
+### Browser (per conversation)
+
+`/browser on` gives the model a real Chromium window, through Harness's
+[Playwright tools](https://pydantic.dev/docs/ai/harness/playwright/): navigate,
+click, type, snapshot, screenshot, and the rest, plus `browser_login(url)`, which
+opens a page in that window and waits for you to sign in by hand. Run
+`/browser done` when you have; the login then lasts for the conversation. A
+`browser` sub-agent shares the same window, so a multi-step task can run without
+every page landing in the main context. `/browser off` closes the window and
+removes the tools; nothing is saved, and a fresh pcode starts with it off.
+
+The window is visible and localhost is reachable, since a dev server is the
+usual target. Chromium is downloaded on first use if missing (about 100 MB). The
+trade-off of turning it on: any page the model reads can tell it to act with
+your login, and nothing enforces otherwise beyond you watching the window. This
+is the bundled `browser` extension; a user file of the same name replaces it.
+
 ### Code mode (opt-in)
 
 [Code mode](https://pydantic.dev/docs/ai/harness/code-mode/) replaces individual

@@ -1,0 +1,195 @@
+"""The bundled browser extension: off by default, one session across runs, a sub-agent.
+
+No Chromium here. The launch is Harness's; what pcode adds is the lifecycle
+around it, and a fake page stands in for the launched browser.
+"""
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+
+import pcode.browser as browser_state
+from pcode.agent import create_agent
+from pcode.browser import BrowserState
+from pcode.ext import ExtensionUI, load_extensions
+
+
+@pytest.fixture(autouse=True)
+def fresh_state(monkeypatch):
+    monkeypatch.setattr(browser_state, "STATE", BrowserState())
+    monkeypatch.setattr("pcode.extensions.browser.STATE", browser_state.STATE, raising=False)
+    yield browser_state.STATE
+
+
+def browser_extension(workspace, ui=None):
+    loaded = load_extensions(workspace, ui)
+    (extension,) = [e for e in loaded.extensions if e.name == "browser"]
+    assert extension.loaded, extension.error
+    return loaded, extension
+
+
+def test_off_by_default_contributes_only_the_command(tmp_path):
+    loaded, extension = browser_extension(tmp_path)
+    assert extension.capabilities == []
+    assert extension.subagents == []
+    assert [c.name for c in extension.commands] == ["/browser"]
+    assert extension.summary() == "/browser"
+    assert loaded.subagents == []
+    assert len(extension.closers) == 1
+
+
+def test_on_adds_the_tools_and_a_subagent_sharing_one_session(tmp_path, fresh_state):
+    fresh_state.enabled = True
+    loaded, extension = browser_extension(tmp_path)
+    assert extension.summary() == "19 tools, @browser, /browser"
+    assert [c.id for c in extension.capabilities] == ["browser", "ext.browser"]
+    capability = extension.capabilities[0]
+    (delegate,) = loaded.subagents
+    assert delegate.resolved_name == "browser"
+    # Parent and child drive the same toolset, so the child sees the parent's login.
+    child = next(c for c in delegate.agent.root_capability.capabilities if c.id == "browser")
+    assert child.get_toolset().toolsets[1] is fresh_state.toolset
+    assert "browser_login" in capability.get_toolset().toolsets[0].tools
+
+
+def test_command_toggles_state_and_requests_a_reload(tmp_path, fresh_state):
+    reloads = []
+    notices = []
+    ui = ExtensionUI(lambda text, level: notices.append(level), lambda: reloads.append(True))
+    _, extension = browser_extension(tmp_path, ui)
+    (command,) = extension.commands
+
+    command.handler("")
+    assert notices == ["info"]
+    with pytest.raises(ValueError, match="already off"):
+        command.handler("off")
+    command.handler("on")
+    assert fresh_state.enabled and reloads == [True]
+    with pytest.raises(ValueError, match="No browser is open"):
+        command.handler("done")
+    command.handler("off")
+    assert not fresh_state.enabled and reloads == [True, True]
+
+
+def test_a_refused_reload_leaves_state_untouched(tmp_path, fresh_state):
+    def refuse():
+        raise ValueError("busy")
+
+    _, extension = browser_extension(tmp_path, ExtensionUI(None, refuse))
+    with pytest.raises(ValueError, match="busy"):
+        extension.commands[0].handler("on")
+    assert not fresh_state.enabled
+
+
+def test_delegate_task_lists_the_browser_agent(tmp_path, monkeypatch, fresh_state):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    fresh_state.enabled = True
+    loaded, _ = browser_extension(tmp_path)
+    seen = []
+
+    async def respond(messages, info):
+        seen.append(info)
+        yield "ok"
+
+    agent = create_agent("test", tmp_path, loaded.capabilities, loaded.subagents)
+    agent.run_sync("hi", model=FunctionModel(stream_function=respond))
+    assert "- browser:" in seen[0].instructions
+    names = {tool.name for tool in seen[0].function_tools}
+    assert {"delegate_task", "browser_login", "navigate", "snapshot"} <= names
+
+
+def test_login_waits_for_the_user_or_the_url(fresh_state):
+    async def scenario():
+        fresh_state.session = SimpleNamespace(page=SimpleNamespace(url="https://x/login"))
+        # A stale `/browser done` from an earlier login does not count: the wait
+        # clears the event first, so it is set once the wait is running.
+        fresh_state.login_event().set()
+        asyncio.get_running_loop().call_later(0.1, fresh_state.login_event().set)
+        assert await fresh_state.wait_for_login(None) == "user"
+        fresh_state.session.page.url = "https://x/account"
+        assert await fresh_state.wait_for_login("https://x/account") == "url"
+
+    asyncio.run(scenario())
+
+
+def test_login_tool_reports_the_landing_page(tmp_path, fresh_state, monkeypatch):
+    fresh_state.enabled = True
+    _, extension = browser_extension(tmp_path)
+    login = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_login"]
+    page = SimpleNamespace(url="https://x/account", fronted=False)
+
+    async def title():
+        return "Account"
+
+    async def bring_to_front():
+        page.fronted = True
+
+    page.title, page.bring_to_front = title, bring_to_front
+
+    async def navigate(url):
+        fresh_state.session.page = page
+        return "navigated"
+
+    async def arm():
+        pass
+
+    monkeypatch.setattr(fresh_state.toolset, "navigate", navigate)
+    monkeypatch.setattr(fresh_state, "arm", arm)
+    result = asyncio.run(login.function("https://x/login", "https://x/account"))
+    assert result == "User finished logging in. Now at 'https://x/account' ('Account')."
+    assert page.fronted
+
+
+def test_close_is_safe_before_launch_and_drops_the_session(fresh_state):
+    fresh_state.open()
+    assert fresh_state.session is not None and not fresh_state.launched
+    asyncio.run(fresh_state.close())
+    assert fresh_state.session is None and fresh_state.toolset is None
+
+
+def test_extension_closers_run_on_exit():
+    from pcode.ext import Extension, LoadedExtensions
+
+    closed = []
+
+    async def ok():
+        closed.append("ok")
+
+    async def bad():
+        raise RuntimeError("nope")
+
+    first = Extension("first", None, "user")
+    first.closers = [bad, ok]
+    asyncio.run(LoadedExtensions([first]).close())
+    assert closed == ["ok"]
+
+
+def test_subagent_reaches_delegate_task(tmp_path, monkeypatch):
+    """The generic plumbing: any extension can add a delegate beside the explorer."""
+    from pydantic_ai import Agent
+
+    from pcode.ext import ExtensionAPI
+
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    api = ExtensionAPI("mine", tmp_path, ExtensionUI())
+    api.subagent(Agent(name="helper", description="Helps out", instructions="Help."))
+    (delegate,) = api.subagents
+    calls = 0
+
+    async def respond(messages, info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            yield {
+                0: DeltaToolCall(
+                    name="delegate_task", json_args='{"agent_name": "helper", "task": "go"}'
+                )
+            }
+            return
+        yield "done"
+
+    agent = create_agent("test", tmp_path, subagents=[delegate])
+    assert agent.run_sync("hi", model=FunctionModel(stream_function=respond)).output == "done"
+    assert calls == 3  # parent, child, parent

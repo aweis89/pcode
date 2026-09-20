@@ -446,7 +446,7 @@ class PreviewApp:
         loaded = await asyncio.to_thread(self._load_extensions)
         # Construct first, so a failure leaves the previous agent in place.
         agent = await asyncio.to_thread(
-            create_agent, self.model, self.workspace, loaded.capabilities
+            create_agent, self.model, self.workspace, loaded.capabilities, loaded.subagents
         )
         apply_effort(agent, self.model, load_preferences().get("effort"))
         apply_thinking(agent, self.model, self.activity.show_thinking)
@@ -481,7 +481,9 @@ class PreviewApp:
     def _load_extensions(self):
         from pcode.ext import ExtensionUI, load_extensions
 
-        return load_extensions(self.workspace, ExtensionUI(self._extension_notice))
+        return load_extensions(
+            self.workspace, ExtensionUI(self._extension_notice, lambda: self.reload(""))
+        )
 
     def _create_runtime(self):
         """Import and construct the backend off the terminal's event loop."""
@@ -490,7 +492,12 @@ class PreviewApp:
 
         self.extensions = self._load_extensions()
         return AgentRuntime(
-            create_agent(self.model, self.workspace, self.extensions.capabilities),
+            create_agent(
+                self.model,
+                self.workspace,
+                self.extensions.capabilities,
+                self.extensions.subagents,
+            ),
             self._saved_session,
             session_factory=self._create_session if self.save_sessions else None,
         )
@@ -726,7 +733,10 @@ class PreviewApp:
             return
         # Construct first: a missing provider/login must leave the old session intact.
         capabilities = self.extensions.capabilities if self.extensions else ()
-        agent = await asyncio.to_thread(create_agent, model, self.workspace, capabilities)
+        subagents = self.extensions.subagents if self.extensions else ()
+        agent = await asyncio.to_thread(
+            create_agent, model, self.workspace, capabilities, subagents
+        )
         apply_effort(agent, model, load_preferences().get("effort"))
         apply_thinking(agent, model, self.activity.show_thinking)
         save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
@@ -1369,7 +1379,9 @@ class PreviewApp:
         try:
             if Path(saved.info.workspace).resolve() != self.workspace:
                 raise SessionError("Workspace differs; refusing cross-repo resume.")
-            agent = create_agent(saved.info.model, self.workspace)
+            capabilities = self.extensions.capabilities if self.extensions else ()
+            subagents = self.extensions.subagents if self.extensions else ()
+            agent = create_agent(saved.info.model, self.workspace, capabilities, subagents)
             apply_effort(agent, saved.info.model, load_preferences().get("effort"))
             apply_thinking(agent, saved.info.model, self.activity.show_thinking)
             runtime = AgentRuntime(agent, saved)
@@ -2398,6 +2410,8 @@ class PreviewApp:
                 if not mcp_task.done() and not mcp_task.cancelling():
                     mcp_task.cancel()
                 await asyncio.gather(mcp_task, return_exceptions=True)
+            if self.extensions is not None:
+                await self.extensions.close()
             await output.flush()
             self.transcript.output = None
         self.print_resume_hint()

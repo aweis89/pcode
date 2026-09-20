@@ -56,8 +56,12 @@ def tool_retries() -> dict[str, int]:
     return {"tools": int(configured)}
 
 
-def create_coder(workspace: Path) -> CombinedCapability:
-    """Compose Harness's Coder with pcode's repository context and planning."""
+def create_coder(workspace: Path, subagents: Sequence = ()) -> CombinedCapability:
+    """Compose Harness's Coder with pcode's repository context and planning.
+
+    `subagents` are extension-contributed Harness `SubAgent` entries, listed
+    beside the explorer under the one `delegate_task` tool.
+    """
     workspace = workspace.resolve()
     # uv tool entry points do not activate their environment's bin directory.
     # Append it only when rg is missing, preserving the user's command precedence.
@@ -139,7 +143,8 @@ def create_coder(workspace: Path) -> CombinedCapability:
                     # `DelegationEndEvent.usage`.
                     usage_limits=UsageLimits(request_limit=EXPLORER_REQUEST_LIMIT),
                     timeout_seconds=EXPLORER_TIMEOUT_SECONDS,
-                )
+                ),
+                *subagents,
             ],
             agent_folders=None,
             event_stream_handler=stream_child_activity,
@@ -166,8 +171,10 @@ def create_coder(workspace: Path) -> CombinedCapability:
     )
 
 
-def create_agent(model: str, workspace: Path, extensions: Sequence = ()) -> Agent:
-    """Build the terminal's agent; `extensions` are user capabilities from `pcode.ext`."""
+def create_agent(
+    model: str, workspace: Path, extensions: Sequence = (), subagents: Sequence = ()
+) -> Agent:
+    """Build the terminal's agent; `extensions` and `subagents` come from `pcode.ext`."""
     proxy = os.environ.get("PCODE_LLM_PROXY", "").strip()
     # Subscription endpoints reject the explicit cache markers that Harness
     # Planning adds after write_plan. Keep the native provider/auth/model name;
@@ -224,5 +231,5 @@ def create_agent(model: str, workspace: Path, extensions: Sequence = ()) -> Agen
             "tools, guardrails on tool calls, extra instructions). When asked to change "
             f"how pcode behaves, first read {EXTENSION_GUIDE} and follow it."
         ),
-        capabilities=[create_coder(workspace), *extensions],
+        capabilities=[create_coder(workspace, subagents), *extensions],
     )
