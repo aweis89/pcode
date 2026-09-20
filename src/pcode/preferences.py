@@ -74,6 +74,10 @@ SETTINGS = {
     "extension_dirs": Setting("", path_list=True),
     # Extra automatic attempts after a dropped connection; 0 disables retrying.
     "retry_attempts": Setting("1", whole_number=True),
+    # Corrections offered to the model after a tool call fails argument validation
+    # or raises ModelRetry. Pydantic AI's default of 1 ends the turn on a second
+    # malformed call, which a long `replacements` array can hit by itself.
+    "tool_retries": Setting("3", whole_number=True),
     "error_scrollback_lines": Setting("20", positive_integer=True),
     # Failed tool calls otherwise dominate scrollback with their full diagnostic;
     # off keeps a one-line trace and leaves the detail to the saved transcript.

@@ -731,6 +731,53 @@ class AgentRuntime:
                         yield update
 
 
+RETRY_CEILING = re.compile(r"^Tool '(?P<tool>[^']+)' exceeded max retries count of (?P<limit>\d+)")
+
+
+def retry_ceiling(error: Exception) -> str | None:
+    """Explain a turn that ended because a tool call could not be corrected in time.
+
+    This is a local failure, not a provider one: the model kept sending
+    arguments the tool's schema rejected (or the tool kept raising ModelRetry),
+    and Pydantic AI stopped offering corrections. Saying "check your
+    credentials and connectivity" for it sends the reader to the wrong place.
+
+    Name the tool and the fields that failed, never their values: a rejected
+    argument is model-authored content that can quote a file or a secret.
+    """
+    cause = error.__cause__
+    if type(error).__name__ != "UnexpectedModelBehavior" or cause is None:
+        return None
+    match = RETRY_CEILING.match(str(error))
+    if match is None:
+        return None
+    tool, limit = match["tool"], int(match["limit"])
+    fields = ""
+    if callable(getattr(cause, "errors", None)):
+        try:
+            names = {
+                ".".join(str(part) for part in entry.get("loc", ()))
+                for entry in cause.errors()
+                if entry.get("loc")
+            }
+        except Exception:
+            names = set()
+        if names:
+            fields = " Rejected argument: " + ", ".join(sorted(names)) + "."
+    reason = (
+        "arguments that failed validation"
+        if type(cause).__name__ == "ValidationError"
+        else "a call the tool rejected"
+    )
+    return (
+        f"The model sent {reason} to `{tool}` more times than the retry limit "
+        f"({limit}) allowed, so the turn stopped.{fields} "
+        "Nothing is wrong with the model or the connection; rephrasing the request "
+        "usually clears it. Raise the budget with `/config set tool_retries N`. "
+        "See the saved session diagnostics."
+    )
+
+
 def error_message(error: Exception) -> str:
     """Don't print raw provider bodies/validation inputs; they can contain secrets."""
     if isinstance(error, BaseExceptionGroup) and error.exceptions:
@@ -774,6 +821,8 @@ def error_message(error: Exception) -> str:
         return f"Provider request failed (HTTP {status}).{suffix}"
     if isinstance(error, ImportError):
         return "Provider dependency missing. Install its pydantic-ai-slim extra and try again."
+    if (exhausted := retry_ceiling(error)) is not None:
+        return exhausted
     # SDKs wrap transport failures in ModelAPIError. Classify the bounded cause
     # chain, but never echo transport text: it may contain URLs or credentials.
     names = transport_types(error)
