@@ -19,10 +19,9 @@ SETUP_SCRIPT = Path(".pcode") / "worktree-setup"
 
 def trust_key(workspace: Path) -> Path:
     """The path trust is recorded under: the primary checkout of a git repo."""
-    from pcode.worktree import main_checkout
+    from pcode.worktree import repo_scope
 
-    workspace = workspace.resolve()
-    return main_checkout(workspace) or workspace
+    return repo_scope(workspace)
 
 
 def project_code(workspace: Path) -> list[Path]:

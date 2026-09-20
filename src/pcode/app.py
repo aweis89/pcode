@@ -1473,10 +1473,12 @@ class PreviewApp:
     async def choose_session(self, output: TerminalOutput, session) -> None:
         from pcode.session_ui import SessionBrowser
         from pcode.sessions import list_sessions, session_root
+        from pcode.worktree import repo_scope
 
         self.session_requested = False
         records = list_sessions(self.session_dir)
-        if not any(Path(info.workspace).resolve() == self.workspace for info in records):
+        scope = repo_scope(self.workspace)
+        if not any(repo_scope(Path(info.workspace)) == scope for info in records):
             self.transcript.note("No saved sessions for this workspace.")
             return
         current = getattr(self.runtime, "session", None)
