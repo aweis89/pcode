@@ -24,6 +24,7 @@ from pcode.popup_ui import (
     steer_list_from_query,
 )
 from pcode.sessions import SessionInfo, Turn, first_prompt, session_turns
+from pcode.task_prompt import TaskPrompt
 from pcode.tool_display import plain
 
 PROMPT_LINES = 6
@@ -31,13 +32,13 @@ RESPONSE_LINES = 3
 LINE_WIDTH = 160
 
 
-def excerpt(text: str, lines: int, *, indent: str = "", width: int = LINE_WIDTH) -> str:
+def excerpt(text: str, lines: int, *, width: int = LINE_WIDTH) -> str:
     """The first few non-blank lines of a prompt or response, safe for the terminal."""
     kept = [line for line in redact(text).splitlines() if line.strip()]
     shown = [plain(line, width) for line in kept[:lines]]
     if len(kept) > lines:
         shown.append("…")
-    return "\n".join(indent + line for line in shown)
+    return "\n".join(shown)
 
 
 class SessionBrowser:
@@ -234,9 +235,9 @@ class SessionBrowser:
             blocks.append(Text("(No prompt yet)"))
         for turn in turns:
             blocks.append(Text(""))
-            blocks.append(
-                Text("› " + excerpt(turn.prompt, PROMPT_LINES, indent="  ")[2:], style="bold")
-            )
+            # The same quote rail scrollback draws, so a remembered turn looks
+            # here the way it looked when it was live.
+            blocks.append(TaskPrompt(excerpt(turn.prompt, PROMPT_LINES)))
             if turn.response:
                 markdown = Markdown(
                     excerpt(turn.response, RESPONSE_LINES), code_theme=self.code_theme

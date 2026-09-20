@@ -87,13 +87,13 @@ def test_browser_scopes_searches_and_shows_turns(tmp_path):
         shown = app.detail.text()
         assert shown.startswith(f"{ids['newest'][:8]} · test:local · ")
         assert shown.endswith(
-            "2 turns\n\n› Add a theme\n  Done\n\n› Now tests\n  Wrote tests for the theme"
+            "2 turns\n\n▌ Add a theme\n  Done\n\n▌ Now tests\n  Wrote tests for the theme"
         )
         # Words are AND-ed against prompts and the detail keeps only matching turns.
         app.query.text = "tests now"
         assert [info.id for info in app.visible] == [ids["newest"]]
         assert app.detail.text().endswith(
-            "1 of 2 turns\n\n› Now tests\n  Wrote tests for the theme"
+            "1 of 2 turns\n\n▌ Now tests\n  Wrote tests for the theme"
         )
         # Responses are searched only when asked.
         app.query.text = "patched"
@@ -109,7 +109,7 @@ def test_browser_scopes_searches_and_shows_turns(tmp_path):
         app.refresh()
         assert [info.id for info in app.visible] == [ids["other"], ids["older"]]
         app.detail.set(app.details(app.visible[0]))
-        assert app.detail.text().endswith("› Cache question elsewhere\n  (no response text)")
+        assert app.detail.text().endswith("▌ Cache question elsewhere\n  (no response text)")
 
 
 def test_browser_marks_unreadable_and_empty_sessions(tmp_path):
@@ -140,8 +140,8 @@ def test_browser_renders_responses_as_markdown(tmp_path):
         shown = app.detail.text(width=40)
         assert "##" not in shown and "*" not in shown
         assert "Heading" in shown and "emphasis" in shown
-        # Styled fragments survive; the heading is bold in every theme.
-        assert any("bold" in style for style, *_ in app.detail.fragments(40))
+        # Styled fragments survive; emphasis is italic in every theme.
+        assert any("italic" in style for style, *_ in app.detail.fragments(40))
 
 
 def test_rich_pane_renders_current_content_in_one_pass():
@@ -165,7 +165,7 @@ def test_rich_pane_renders_current_content_in_one_pass():
 
 
 def test_excerpt_keeps_a_few_nonblank_lines():
-    assert excerpt("one\n\ntwo\nthree\nfour", 3, indent="  ") == "  one\n  two\n  three\n  …"
+    assert excerpt("one\n\ntwo\nthree\nfour", 3) == "one\ntwo\nthree\n…"
     assert excerpt("x" * 200, 1) == "x" * 159 + "…"
 
 
