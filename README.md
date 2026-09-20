@@ -579,11 +579,11 @@ instructions, or leave its `setup` empty to remove the tools.
 
 `/browser on` gives the model your installed Chrome, through Harness's
 [Playwright tools](https://pydantic.dev/docs/ai/harness/playwright/): navigate,
-click, type, snapshot, screenshot, and the rest, plus `browser_open()` and
-`browser_login(url)`, which opens a page in that window and waits for you to
-sign in by hand. Run `/browser done` when you have. `/browser launch` opens the
-window right away (and turns the tools on); otherwise it opens on the first
-browser tool call. A `browser` sub-agent shares the same window, so a multi-step
+click, type, snapshot, screenshot, and the rest, plus `browser_open()`, which
+brings the window to the front. When a page needs you to sign in, the model
+leaves it on screen and asks; log in there and tell it when you are done.
+`/browser launch` opens the window right away (and turns the tools on);
+otherwise it opens on the first browser tool call. A `browser` sub-agent shares the same window, so a multi-step
 task can run without every page landing in the main context. `/browser off`
 quits that Chrome and removes the tools; a fresh pcode starts with them off.
 
