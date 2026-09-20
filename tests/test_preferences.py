@@ -9,7 +9,12 @@ from pydantic_ai import Agent
 from rich.console import Console
 
 from pcode.app import PreviewApp, main
-from pcode.preferences import load_preferences, preferences_path, save_preferences
+from pcode.preferences import (
+    load_preferences,
+    model_efforts,
+    preferences_path,
+    save_preferences,
+)
 
 
 def make_app(model="openai-codex:test"):
@@ -20,19 +25,30 @@ def make_app(model="openai-codex:test"):
     )
 
 
-def test_effort_persists_and_restores():
+def test_effort_persists_per_model_and_restores():
     app = make_app()
     app.effort("high")
-    assert load_preferences() == {"model": "openai-codex:test", "effort": "high"}
+    assert load_preferences() == {"model": "openai-codex:test"}
+    assert model_efforts() == {"openai-codex:test": "high"}
     assert make_app().current_effort() == "high"
+    # Another model keeps its own effort: nothing saved means nothing applied.
     for provider in ("anthropic", "meridian"):
-        assert make_app(f"{provider}:test").runtime.agent.model_settings == {
-            "anthropic_effort": "high"
-        }
+        assert make_app(f"{provider}:test").runtime.agent.model_settings is None
+    make_app("anthropic:test").effort("low")
+    assert make_app("anthropic:test").runtime.agent.model_settings == {"anthropic_effort": "low"}
+    assert make_app().current_effort() == "high"
     assert make_app("google:test").runtime.agent.model_settings is None
     app.effort("default")
     assert make_app().current_effort() == "default"
-    assert load_preferences()["effort"] == "default"
+    assert make_app("anthropic:test").current_effort() == "low"
+
+
+def test_shared_effort_default_applies_only_to_models_without_their_own():
+    save_preferences(effort="medium")
+    assert make_app().current_effort() == "medium"
+    make_app().effort("low")
+    assert make_app().current_effort() == "low"
+    assert make_app("openai-codex:other").current_effort() == "medium"
 
 
 def test_switch_persists_only_successful_selection(monkeypatch):
