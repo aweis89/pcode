@@ -58,7 +58,7 @@ def test_ctrl_g_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pa
     assert input_rows(screen) == 1
 
     pane("send-keys", "-t", "preview:0.0", "C-g")
-    screen = capture(pane, "Command output in scrollback: on")
+    screen = capture(pane, "Show commands: on")
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "TURN_2_DONE")
@@ -73,7 +73,7 @@ def test_ctrl_g_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pa
         pane("resize-window", "-t", "preview:0", "-x", str(columns))
         assert input_rows(capture(pane, "❯", columns=columns)) == 1
     pane("send-keys", "-t", "preview:0.0", "C-g")
-    screen = capture(pane, "Command output in scrollback: off", columns=35)
+    screen = capture(pane, "Show commands: off", columns=35)
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "kept draft")
     time.sleep(0.2)
@@ -112,7 +112,7 @@ def test_toggle_rebuilds_existing_history_without_rerunning_commands(pane):
 RESIZE_SCRIPT = SCRIPT.replace(
     "from pcode.app import PreviewApp",
     "from pcode.preferences import save_preferences\n"
-    'save_preferences(command_scrollback="on")\n'
+    'save_preferences(show_commands="on")\n'
     "from pcode.app import PreviewApp",
 )
 
@@ -122,9 +122,9 @@ def test_resize_replay_reflows_history_without_duplicates_or_stretched_editor(pa
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     capture(pane, "TURN_1_DONE")
-    pane("send-keys", "-t", "preview:0.0", "-l", "/show-commands")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/show-commands on")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    capture(pane, "Command output in scrollback: on")
+    capture(pane, "Show commands: on")
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(width))
@@ -135,7 +135,7 @@ def test_resize_replay_reflows_history_without_duplicates_or_stretched_editor(pa
         history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
         assert history.count("OUTPUT_LINE_00") == 1
         assert history.count("TURN_1_DONE") == 1
-        assert "Command output in scrollback:" not in history
+        assert "Show commands:" not in history
 
 
 LIVE_SCRIPT = (
@@ -146,7 +146,7 @@ LIVE_SCRIPT = (
     .replace(
         "from pcode.app import PreviewApp",
         "from pcode.preferences import save_preferences\n"
-        'save_preferences(command_scrollback="on")\n'
+        'save_preferences(show_commands="on")\n'
         "from pcode.app import PreviewApp",
     )
     .replace(
@@ -164,14 +164,14 @@ def test_active_output_precedes_completion_and_keeps_real_cpr_height(pane):
     screen = capture(pane, "OUTPUT_LINE_03", running=True)
     assert "TURN_1_DONE" not in screen
     assert "$ printf MIRRORED_COMMAND" in screen
-    assert "Command output" not in screen
+    assert "Show commands" not in screen
     assert input_rows(screen) == 1
     for width in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(width))
         screen = capture(pane, "OUTPUT_LINE_03", columns=width, running=True)
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-g")
-    screen = capture(pane, "Command output in scrollback: off", columns=35, running=True)
+    screen = capture(pane, "Show commands: off", columns=35, running=True)
     assert "OUTPUT_LINE_03" not in screen
     pane("send-keys", "-t", "preview:0.0", "C-g")
     screen = capture(pane, "OUTPUT_LINE_03", columns=35, running=True)
@@ -198,8 +198,8 @@ def test_cancel_clears_active_command_preview(pane):
 
 PRESSURE_SCRIPT = (
     LIVE_SCRIPT.replace(
-        'save_preferences(command_scrollback="on")',
-        'save_preferences(command_scrollback="on", command_preview_lines="6")',
+        'save_preferences(show_commands="on")',
+        'save_preferences(show_commands="on", command_preview_lines="6")',
     )
     .replace("range(4)", "range(60)")
     .replace("await asyncio.sleep(4)", "await asyncio.sleep(60)")
@@ -229,7 +229,7 @@ def test_live_tail_uses_remaining_height_without_disappearing_or_growing_editor(
         if not 1 <= count <= 6:
             pytest.fail(f"height={height} count={count}\n{screen}")
         assert input_rows(screen) == 1
-        assert "Command output" not in screen
+        assert "Show commands" not in screen
         assert "Ctrl+G to hide" not in screen
         if height == 32:
             assert sum("OUTPUT_LINE_" in line for line in screen.splitlines()) == 6

@@ -39,7 +39,7 @@ def test_resume_popup_cancel_restores_prompt_height(pane):
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_session_info_popup_cancel_restores_prompt_height(pane):
     before = capture(pane, "effort:")
-    pane("send-keys", "-t", "preview:0.0", "/session", "Enter")
+    pane("send-keys", "-t", "preview:0.0", "/status", "Enter")
     modal(pane, "Preview turns")
     pane("send-keys", "-t", "preview:0.0", "Escape")
     after = capture(pane, "effort:")

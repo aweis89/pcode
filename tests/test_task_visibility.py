@@ -25,8 +25,8 @@ def test_visibility_preference_and_command(tmp_path, monkeypatch):
     assert not app.activity.show_tasks
     assert load_preferences()["show_tasks"] == "off"
     assert not PreviewApp().activity.show_tasks
-    assert app.registry.dispatch("/show-tasks")  # Reporting alone changes nothing.
-    assert not app.activity.show_tasks
+    assert app.registry.dispatch("/show-tasks")  # Bare toggles.
+    assert app.activity.show_tasks
     assert app.registry.dispatch("/show-tasks on")
     assert app.activity.show_tasks
     assert PreviewApp().activity.show_tasks

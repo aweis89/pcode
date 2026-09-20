@@ -132,6 +132,7 @@ def skill_commands(
                 lambda argument, skill=skill: handler(skill, argument),
                 aliases=tuple(names[1:]),
                 free_arguments=True,
+                group="Skills",
             )
         )
     return commands

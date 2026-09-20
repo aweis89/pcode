@@ -28,7 +28,7 @@ def test_command_mirroring_is_off_by_default():
 
 
 def test_enabled_option_mirrors_command_and_output():
-    save_preferences(command_scrollback="on")
+    save_preferences(show_commands="on")
     view, stream = transcript()
     event = ToolSummary(
         "run_command",
@@ -48,7 +48,7 @@ def test_enabled_option_mirrors_command_and_output():
 
 
 def test_mirroring_covers_process_tools_and_empty_output():
-    save_preferences(command_scrollback="on")
+    save_preferences(show_commands="on")
     view, stream = transcript()
     assert view.command_output(ToolSummary("check_command", "process → running", result="")) is True
     assert "(no output)" in stream.getvalue()
@@ -56,7 +56,7 @@ def test_mirroring_covers_process_tools_and_empty_output():
 
 
 def test_mirroring_ignores_tools_without_commands():
-    save_preferences(command_scrollback="on")
+    save_preferences(show_commands="on")
     view, stream = transcript()
     event = ToolSummary("read_file", "a.py · 2 lines", result="file body")
     assert view.command_output(event) is False
@@ -64,7 +64,7 @@ def test_mirroring_ignores_tools_without_commands():
 
 
 def test_failed_commands_report_failure_in_the_mirrored_block():
-    save_preferences(command_scrollback="on", tool_error_scrollback="on")
+    save_preferences(show_commands="on", tool_error_scrollback="on")
     view, stream = transcript()
     event = ToolSummary(
         "run_command",
@@ -80,7 +80,7 @@ def test_failed_commands_report_failure_in_the_mirrored_block():
 
 
 def test_mirrored_failure_replaces_the_error_excerpt_block():
-    save_preferences(command_scrollback="on", tool_error_scrollback="on")
+    save_preferences(show_commands="on", tool_error_scrollback="on")
     stream = StringIO()
     app = PreviewApp(console=Console(file=stream, width=80, color_system=None))
     event = ToolSummary(
@@ -112,7 +112,7 @@ def test_disabled_option_keeps_successful_commands_out_of_scrollback():
 
 @pytest.mark.parametrize("limit", [1, 3, 20])
 def test_command_scrollback_lines_bounds_rows_and_keeps_tail(limit):
-    save_preferences(command_scrollback="on", command_scrollback_lines=str(limit))
+    save_preferences(show_commands="on", command_scrollback_lines=str(limit))
     view, stream = transcript(width=45)
     view.command_output(
         ToolSummary(
@@ -133,17 +133,17 @@ def test_command_scrollback_lines_bounds_rows_and_keeps_tail(limit):
 
 
 def test_settings_round_trip_through_config():
-    configure(["set", "command_scrollback", "on"])
+    configure(["set", "show_commands", "on"])
     configure(["set", "command_scrollback_lines", "120"])
-    assert load_preferences()["command_scrollback"] == "on"
+    assert load_preferences()["show_commands"] == "on"
     assert load_preferences()["command_scrollback_lines"] == "120"
-    assert configure(["get", "command_scrollback"]) == "on"
-    configure(["unset", "command_scrollback"])
+    assert configure(["get", "show_commands"]) == "on"
+    configure(["unset", "show_commands"])
     configure(["unset", "command_scrollback_lines"])
-    assert configure(["get", "command_scrollback"]) == "off"
+    assert configure(["get", "show_commands"]) == "off"
     assert configure(["get", "command_scrollback_lines"]) == "20"
     with pytest.raises(ValueError):
-        configure(["set", "command_scrollback", "yes"])
+        configure(["set", "show_commands", "yes"])
     with pytest.raises(ValueError):
         configure(["set", "command_scrollback_lines", "0"])
 
@@ -152,16 +152,14 @@ def test_slash_command_toggles_state_and_saves_the_default():
     stream = StringIO()
     app = PreviewApp(console=Console(file=stream, width=80, color_system=None))
     assert app.registry.dispatch("/show-commands")
-    assert "Command output in scrollback: off" in stream.getvalue()
+    assert "Show commands: on" in stream.getvalue()
     assert app.registry.dispatch("/show-commands on")
     assert app.transcript.command_scrollback is True
-    assert load_preferences()["command_scrollback"] == "on"
-    assert "Command output in scrollback: on. Usage: /show-commands on|off (Ctrl+G)" in (
-        stream.getvalue()
-    )
+    assert load_preferences()["show_commands"] == "on"
+    assert "Show commands: on. Usage: /show-commands [on|off] (Ctrl+G)" in (stream.getvalue())
     assert app.registry.dispatch("/show-commands off")
     assert app.transcript.command_scrollback is False
-    assert load_preferences()["command_scrollback"] == "off"
+    assert load_preferences()["show_commands"] == "off"
     with pytest.raises(ValueError, match=r"Usage: /show-commands"):
         app.registry.dispatch("/show-commands yes")
 
@@ -175,7 +173,7 @@ def test_ctrl_g_toggles_mirroring_without_starting_a_search_or_inserting_text(vi
         with create_pipe_input() as pipe:
             prompt = create_prompt(
                 CommandRegistry(),
-                on_commands=app.toggle_command_scrollback,
+                on_commands=lambda: app.show_commands(""),
                 vi_mode=vi_mode,
                 input=pipe,
                 output=DummyOutput(),
@@ -185,8 +183,8 @@ def test_ctrl_g_toggles_mirroring_without_starting_a_search_or_inserting_text(vi
 
     assert asyncio.run(run()) == "draft"
     assert app.transcript.command_scrollback is True
-    assert load_preferences()["command_scrollback"] == "on"
-    notes = [line for line in stream.getvalue().splitlines() if "Command output" in line]
+    assert load_preferences()["show_commands"] == "on"
+    notes = [line for line in stream.getvalue().splitlines() if "Show commands" in line]
     assert [note.split(": ")[1].split(".")[0] for note in notes] == ["on", "off", "on"]
 
 
@@ -198,10 +196,10 @@ def test_toggle_survives_an_unwritable_preferences_file(monkeypatch):
         raise OSError("read-only configuration directory")
 
     monkeypatch.setattr("pcode.app.save_preferences", fail)
-    app.toggle_command_scrollback()
+    app.show_commands("")
     assert app.transcript.command_scrollback is True
     assert "Could not save defaults" in stream.getvalue()
-    assert "Command output in scrollback: on" in stream.getvalue()
+    assert "Show commands: on" in stream.getvalue()
 
 
 def test_toggled_mirroring_takes_effect_on_the_next_settled_command():
@@ -212,14 +210,14 @@ def test_toggled_mirroring_takes_effect_on_the_next_settled_command():
     )
     app.present_events((event,))
     assert "✓ Run" not in stream.getvalue()
-    app.toggle_command_scrollback()
+    app.show_commands("")
     app.present_events((event,))
     assert "✓ Run" in stream.getvalue()
     assert "$ echo hi" in stream.getvalue()
 
 
 def test_mirrored_output_is_sanitized_and_literal():
-    save_preferences(command_scrollback="on")
+    save_preferences(show_commands="on")
     view, stream = transcript()
     view.command_output(
         ToolSummary(
@@ -241,7 +239,7 @@ def test_mirrored_output_is_sanitized_and_literal():
 def test_command_block_wraps_without_losing_command_or_literal_indentation(width):
     from rich.cells import cell_len
 
-    save_preferences(command_scrollback="on", command_scrollback_lines="3")
+    save_preferences(show_commands="on", command_scrollback_lines="3")
     view, stream = transcript(width=width)
     view.command_output(
         ToolSummary(
@@ -260,7 +258,7 @@ def test_command_block_wraps_without_losing_command_or_literal_indentation(width
 
 
 def test_output_keeps_leading_indentation_and_markdown_literal_without_padding():
-    save_preferences(command_scrollback="on")
+    save_preferences(show_commands="on")
     view, stream = transcript()
     view.command_output(
         ToolSummary(
@@ -279,7 +277,7 @@ def test_output_keeps_leading_indentation_and_markdown_literal_without_padding()
 
 
 def test_process_details_are_not_presented_as_shell_source():
-    save_preferences(command_scrollback="on")
+    save_preferences(show_commands="on")
     view, stream = transcript()
     view.command_output(ToolSummary("check_command", "process → running", result="still running"))
     assert "$" not in stream.getvalue()
@@ -289,7 +287,7 @@ def test_process_details_are_not_presented_as_shell_source():
 def test_command_replay_uses_current_theme_and_output_budget():
     from pcode.command_transcript import CommandTranscript
 
-    save_preferences(command_scrollback="on")
+    save_preferences(show_commands="on")
     view, _ = transcript()
     view.tool_result(ToolSummary("run_command", "run", command="echo hi", result="one\ntwo\nthree"))
     view.theme = "light"
@@ -325,7 +323,7 @@ def test_command_highlighting_and_failure_title_do_not_style_output_as_code():
 
 
 def test_default_budget_retains_last_twenty_output_rows():
-    save_preferences(command_scrollback="on")
+    save_preferences(show_commands="on")
     view, stream = transcript()
     view.command_output(
         ToolSummary(

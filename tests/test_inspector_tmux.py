@@ -44,7 +44,7 @@ def modal(pane, expected):
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_modal_scroll_resize_and_restore_editor(pane):
     assert input_rows(capture(pane, "❯")) == 1
-    pane("send-keys", "-t", "preview:0.0", "-l", "/errors")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/tools failed")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     modal(pane, "Status: Failed")
     assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "1"

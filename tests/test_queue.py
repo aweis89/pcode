@@ -262,7 +262,7 @@ def test_queued_and_running_system_rows_share_one_label():
     assert queued.removeprefix("Queued ") == running.removeprefix("⠋ ")
 
 
-@pytest.mark.parametrize("inspector_command", ["/tools", "/errors"])
+@pytest.mark.parametrize("inspector_command", ["/tools", "/tools failed"])
 def test_commands_run_while_model_waits(inspector_command):
     async def run():
         started = asyncio.Event()
@@ -341,7 +341,7 @@ def test_commands_run_while_model_waits(inspector_command):
                     assert calls == ["first"]
                     pipe.send_text(inspector_command + "\r")
                     await wait_for(lambda: inspector is not None and inspector.app.is_running)
-                    assert inspector.failed == (inspector_command == "/errors")
+                    assert inspector.failed == (inspector_command == "/tools failed")
                     assert inspector.archive is not archive
                     assert inspector.archive.calls[0].state == "running"
                     assert not finish.is_set()

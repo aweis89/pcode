@@ -1300,8 +1300,8 @@ class Transcript:
         preferences = load_preferences() if preferences is None else preferences
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
         self.tool_error_scrollback = preferences.get("tool_error_scrollback", "off") == "on"
-        self.show_edits = preferences.get("edits", "show") == "show"
-        self.command_scrollback = preferences.get("command_scrollback", "off") == "on"
+        self.show_edits = preferences.get("show_edits", "on") == "on"
+        self.command_scrollback = preferences.get("show_commands", "off") == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
         self.command_preview_lines = int(preferences.get("command_preview_lines", "10"))
         self.activity = activity
@@ -1646,19 +1646,17 @@ class Transcript:
         table = Table(box=None, padding=(0, 2), show_header=False)
         table.add_column(style="pcode.accent", no_wrap=True)
         table.add_column()
-        for command in registry.commands:
-            table.add_row(command.name, command.description)
+        for group, commands in registry.grouped():
+            table.add_row(Text(group, style="pcode.muted"), "")
+            for command in commands:
+                name = " ".join((command.name, *command.aliases))
+                table.add_row(name, command.description)
         self.print(table)
         self.print()
-        self.note("/ commands · Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
+        self.note("Enter send · Alt+Enter newline (or Esc, Enter) · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
-        self.note("Ctrl+T show/hide saved thinking in scrollback (redraws output)")
-        self.note("Ctrl+G rebuild scrollback with/without command output (saves default)")
-        self.note(
-            "/redraw rebuilds retained output; regeneration clears pre-pcode terminal history."
-        )
-        self.note("Ctrl+L choose model (keep conversation)")
-        self.note("Ctrl+N increase effort · Ctrl+P decrease effort (next turn)")
+        self.note("Ctrl+O tasks widget · Ctrl+T thinking · Ctrl+G command output (each redraws)")
+        self.note("Ctrl+L choose model · Ctrl+N raise effort · Ctrl+P lower effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note(
             "During a run: Enter sends · Ctrl+S cycles steering/queue/interrupt. "

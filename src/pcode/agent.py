@@ -57,13 +57,13 @@ def create_coder(workspace: Path) -> CombinedCapability:
     #
     # Ids must be set at construction (`replace(..., id=...)` or the factory):
     # a `Capability` binds its instructions to its id in `__init__`, so a later
-    # `capability.id = ...` is silently ignored by /context attribution. Do not
+    # `capability.id = ...` is silently ignored by /status attribution. Do not
     # blanket-rename everything either: `replace()`-copied children compare
     # fields with their parent and a renamed parent breaks that match.
     coder.capabilities = [
         create_repo_context(workspace)
         if isinstance(capability, RepoContext)
-        # Named so /context can attribute its prompt; ids never reach the model.
+        # Named so /status can attribute its prompt; ids never reach the model.
         else replace(DisplayFileSystem.from_filesystem(capability), id="file_tools")
         if isinstance(capability, FileSystem)
         # Replace Coder's 64k truncation, so it cannot cut data before spilling.

@@ -87,7 +87,7 @@ def create_repo_context(workspace: Path) -> AutomaticRepoContext:
         home = Path.home().resolve()
         boundary = home if workspace.is_relative_to(home) else Path(workspace.anchor)
     return AutomaticRepoContext(
-        # Named so /context can attribute repository instructions and the asset
+        # Named so /status can attribute repository instructions and the asset
         # inventory to it; the id is metadata and never reaches the model.
         id=REPO_CONTEXT,
         workspace_dir=workspace,
