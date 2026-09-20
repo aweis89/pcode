@@ -35,7 +35,7 @@ asyncio.run(app.run_async())
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_resend_shows_previous_prompt_above_tasks_with_spinner(pane):
-    capture(pane, "send:")
+    capture(pane, "Enter:")
     pane("send-keys", "-t", "preview:0.0", "original requested work", "Enter")
     capture(pane, "Agent failed")
     pane("send-keys", "-t", "preview:0.0", "/resend", "Enter")
