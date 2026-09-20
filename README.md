@@ -577,13 +577,12 @@ instructions, or leave its `setup` empty to remove the tools.
 
 ### Browser (per conversation)
 
-`/browser on` gives the model your installed Chrome, through Harness's
+`/browser launch` gives the model your installed Chrome, through Harness's
 [Playwright tools](https://pydantic.dev/docs/ai/harness/playwright/): navigate,
 click, type, snapshot, screenshot, and the rest, plus `browser_open()`, which
-brings the window to the front. When a page needs you to sign in, the model
-leaves it on screen and asks; log in there and tell it when you are done.
-`/browser launch` opens the window right away (and turns the tools on);
-otherwise it opens on the first browser tool call. A `browser` sub-agent shares the same window, so a multi-step
+brings the window to the front, and `browser_tabs()`. When a page needs you to
+sign in, the model leaves it on screen and asks; log in there and tell it when
+you are done. A `browser` sub-agent shares the same window, so a multi-step
 task can run without every page landing in the main context. `/browser off`
 quits that Chrome and removes the tools; a fresh pcode starts with them off.
 
@@ -611,9 +610,8 @@ to.
 
 | `/browser …` | Does |
 | --- | --- |
-| `on` | Add the browser tools; pcode's own Chrome opens on first use |
-| `launch` | Open pcode's own Chrome window now (turns the tools on) |
-| `attach` | Join the Chrome you have open, logins included |
+| `launch` | Open pcode's own Chrome window, with its own persistent logins |
+| `attach` | Join the Chrome you have open, your logins included |
 | `off` | Close the browser (or pcode's tab in yours) and remove the tools |
 | `status` | Show which browser is in use and where it is |
 

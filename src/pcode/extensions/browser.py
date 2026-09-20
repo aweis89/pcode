@@ -1,10 +1,10 @@
 """A real Chrome the model can drive, with the user logging in by hand.
 
-Off by default and per conversation: `/browser on` adds Harness's eighteen
-Playwright tools plus `browser_open`, and a `browser` sub-agent that runs
-multi-step flows without the page text landing in the parent's context.
-`/browser launch` opens the window right away; otherwise it opens on the first
-browser tool call. `/browser off` closes it and removes the tools.
+Off by default and per conversation: `/browser launch` or `/browser attach`
+adds Harness's eighteen Playwright tools plus `browser_open` and
+`browser_tabs`, and a `browser` sub-agent that runs multi-step flows without
+the page text landing in the parent's context. `/browser off` closes it and
+removes the tools.
 
 The browser is the user's own Chrome, started with a debugging port and a
 profile of its own that keeps logins between pcode sessions; `/browser attach`
@@ -165,13 +165,10 @@ def setup(pcode) -> None:
 
     def browser(argument: str) -> None:
         argument = argument.strip() or "status"
-        if argument == "on":
-            if STATE.enabled:
-                raise ValueError("The browser is already on.")
+        if argument == "launch":
+            if STATE.session is not None:
+                raise ValueError("A browser is already open; /browser off first.")
             turn_on()
-        elif argument == "launch":
-            if not STATE.enabled:
-                turn_on()
             STATE.open()
             _spawn(_launch())
         elif argument == "attach":
@@ -204,7 +201,7 @@ def setup(pcode) -> None:
             _spawn(STATE.close())
             pcode.ui.notify("Browser closed; its tools leave on the next request.")
         else:
-            pcode.ui.notify(f"Browser {STATE.describe()}. /browser on|launch|attach|off.")
+            pcode.ui.notify(f"Browser {STATE.describe()}. /browser launch|attach|off.")
 
     async def _launch() -> None:
         try:
@@ -217,10 +214,9 @@ def setup(pcode) -> None:
         "/browser",
         "A real Chrome the model can drive; `launch` opens one, `attach` joins yours",
         browser,
-        arguments=("on", "launch", "attach", "off", "status"),
+        arguments=("launch", "attach", "off", "status"),
         argument_descriptions={
-            "on": "Add the browser tools; Chrome opens on first use",
-            "launch": "Open pcode's own Chrome window now (turns the tools on)",
+            "launch": "Open pcode's own Chrome window, with its own logins",
             "attach": "Join the Chrome you have open, logins included; needs remote debugging on",
             "off": "Close the browser and remove the tools",
             "status": "Show which browser is in use and where it is",

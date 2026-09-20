@@ -149,7 +149,7 @@ line in the transcript. Safe to call from tools, hooks, and commands.
 
 `pcode.ui.request_reload()` asks for `/reload` once the terminal is idle, for a
 command that changes what `setup` contributes (see the bundled `browser.py`,
-whose `/browser on` adds tools). It raises `ValueError` mid-turn, so call it
+whose `/browser launch` adds tools). It raises `ValueError` mid-turn, so call it
 before changing state. State that must survive the reload cannot live in the
 extension module, which is re-imported.
 
