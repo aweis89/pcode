@@ -103,7 +103,11 @@ cmd_remove() {
 	local name="${1:-}" dir
 	dir="$(worktree_path "$name")"
 	[ -d "$dir" ] || die "no worktree at $dir"
-	git -C "$MAIN" worktree remove --force "$dir"
+	# Never --force: another agent may still be working in there, and git
+	# refuses to delete a worktree holding uncommitted or untracked files.
+	if ! git -C "$MAIN" worktree remove "$dir"; then
+		die "not removing $dir; if that work is really disposable: git worktree remove --force $dir"
+	fi
 	echo "removed $dir (branch $name kept)"
 }
 
