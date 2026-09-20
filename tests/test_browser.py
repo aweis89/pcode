@@ -61,19 +61,26 @@ def test_on_adds_the_tools_and_a_subagent_sharing_one_session(tmp_path, fresh_st
     assert fresh_state.cdp_url.startswith("http://127.0.0.1:")
 
 
-def test_command_toggles_state_and_requests_a_reload(tmp_path, fresh_state):
+def test_command_toggles_state_and_requests_a_reload(tmp_path, fresh_state, monkeypatch):
     reloads = []
     notices = []
     ui = ExtensionUI(lambda text, level: notices.append(level), lambda: reloads.append(True))
     _, extension = browser_extension(tmp_path, ui)
     (command,) = extension.commands
 
+    async def nothing():
+        return ""
+
+    monkeypatch.setattr(fresh_state, "arm", nothing)
+    monkeypatch.setattr(fresh_state, "ensure_chrome", nothing)
     command.handler("")
     assert notices == ["info"]
     with pytest.raises(ValueError, match="already off"):
         command.handler("off")
-    command.handler("on")
+    command.handler("launch")
     assert fresh_state.enabled and reloads == [True]
+    with pytest.raises(ValueError, match="already open"):
+        command.handler("launch")
     command.handler("off")
     assert not fresh_state.enabled and reloads == [True, True]
     assert fresh_state.session is None
@@ -110,8 +117,8 @@ def test_a_refused_reload_leaves_state_untouched(tmp_path, fresh_state):
 
     _, extension = browser_extension(tmp_path, ExtensionUI(None, refuse))
     with pytest.raises(ValueError, match="busy"):
-        extension.commands[0].handler("on")
-    assert not fresh_state.enabled
+        extension.commands[0].handler("launch")
+    assert not fresh_state.enabled and fresh_state.session is None
 
 
 def test_delegate_task_lists_the_browser_agent(tmp_path, monkeypatch, fresh_state):
