@@ -1034,7 +1034,12 @@ def create_prompt(
     # Give the prompt line its own glyph so it reads as the overall turn, not as
     # another in-progress task row.
     prompt_spinner = Spinner("dots")
-    refresh_interval = min(plan_spinner.interval, prompt_spinner.interval) / 1000
+    # System rows (compaction, worktree git work) spin differently from a
+    # model turn, so a wait on pcode itself is never mistaken for one on the model.
+    system_spinner = Spinner("line")
+    refresh_interval = (
+        min(plan_spinner.interval, prompt_spinner.interval, system_spinner.interval) / 1000
+    )
 
     @per_render
     def base_plan_rows(budget: int | None = None):
@@ -1162,7 +1167,9 @@ def create_prompt(
         Window(
             FormattedTextControl(
                 lambda: activity.status_fragments(
-                    prompt_spinner.render(monotonic()).plain,
+                    (prompt_spinner if activity.prompt_kind == "user" else system_spinner)
+                    .render(monotonic())
+                    .plain,
                     session.app.output.get_size().columns,
                 ),
                 show_cursor=False,
