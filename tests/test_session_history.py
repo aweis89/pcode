@@ -1,0 +1,512 @@
+"""Session recall is scoped, read-only, bounded, and survives compaction."""
+
+import asyncio
+import json
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+from pydantic_ai import Agent, ModelRetry
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import FunctionModel
+
+from pcode.ext import BUNDLED_DIR, Extension, ExtensionUI, load_extension, user_extension_dir
+from pcode.history import CHUNK_CHARS, History, keyword_ranking, read_turns
+from pcode.history_embeddings import CACHE_NAME, semantic_ranking
+from pcode.sessions import SavedSession, SessionInfo
+
+
+@pytest.fixture(autouse=True)
+def no_embeddings(monkeypatch):
+    monkeypatch.delenv("PCODE_HISTORY_EMBEDDING_MODEL", raising=False)
+
+
+@pytest.fixture
+def root(tmp_path):
+    return tmp_path / "sessions"
+
+
+def save(root, workspace, identity="session-a", records=None, **metadata):
+    info = SessionInfo(
+        id=identity,
+        model="test",
+        workspace=str(workspace),
+        created="2026-01-01T00:00:00Z",
+        updated="2026-01-01T00:00:00Z",
+        packages={},
+        **metadata,
+    )
+    directory = root / identity
+    directory.mkdir(parents=True)
+    (directory / "session.json").write_text(info.model_dump_json())
+    (directory / "transcript.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in (records or turn()))
+    )
+    return info
+
+
+def turn(
+    prompt="Fix flicker", response="Suspend the editor during redraws.", identity="run-a", **start
+):
+    return [
+        {"kind": "turn_started", "run_id": identity, "prompt": prompt, **start},
+        {"kind": "Message", "markdown": response},
+        {"kind": "turn_completed"},
+    ]
+
+
+def extension(workspace, root):
+    result = load_extension(
+        Extension("session_history", BUNDLED_DIR / "session_history.py", "bundled"),
+        workspace,
+        ExtensionUI(),
+        session_dir=root,
+    )
+    assert result.loaded, result.error
+    return result
+
+
+def tools(workspace, root):
+    result = extension(workspace, root)
+    return result.capabilities[0].get_toolset().tools
+
+
+def call(tool, **kwargs):
+    return asyncio.run(tool.function(SimpleNamespace(conversation_id="session-a"), **kwargs))
+
+
+def test_load_is_lazy_and_registers_two_tools(tmp_path, root):
+    registered = tools(tmp_path, root)
+    assert set(registered) == {"search_sessions", "read_session"}
+    assert not root.exists()
+    assert registered["search_sessions"].takes_ctx
+
+
+def test_tools_search_and_read_with_custom_root(tmp_path, root):
+    save(root, tmp_path)
+    registered = tools(tmp_path, root)
+    result = call(registered["search_sessions"], query="redraws", scope="session")
+    assert result["mode"] == "keyword"
+    (hit,) = result["results"]
+    assert hit["session_id"] == "session-a"
+    assert hit["turn_id"] == "run-a"
+    assert hit["status"] == "completed"
+    assert hit["branch"] == "active"
+    assert "redraws" in hit["excerpt"]
+    read = call(registered["read_session"], session_id="session-a", turn_id="run-a")
+    assert "Suspend the editor" in read["text"]
+    assert read["next_offset"] is None
+    assert not (root / CACHE_NAME).exists()
+
+
+def test_real_agent_context_scopes_to_current_session(tmp_path, root):
+    save(root, tmp_path)
+    save(root, tmp_path, "other")
+    calls = []
+
+    def respond(messages, info):
+        returns = [
+            part for msg in messages for part in msg.parts if isinstance(part, ToolReturnPart)
+        ]
+        if not returns:
+            return ModelResponse(
+                parts=[ToolCallPart("search_sessions", {"query": "flicker", "scope": "session"})]
+            )
+        calls.append(returns[-1].content)
+        return ModelResponse(parts=[TextPart("Found it.")])
+
+    agent = Agent(FunctionModel(respond), capabilities=extension(tmp_path, root).capabilities)
+    agent.run_sync("Recall", conversation_id="session-a")
+    assert [r["session_id"] for r in calls[0]["results"]] == ["session-a"]
+
+
+def test_scope_and_read_fail_closed(tmp_path, root):
+    workspace = tmp_path / "repo"
+    save(root, workspace)
+    save(root, tmp_path / "other", "other")
+    history = History(workspace, root, "session-a")
+    assert len(history.sessions("project")) == 1
+    assert len(history.sessions("workspace")) == 1
+    assert len(history.sessions("all")) == 2
+    assert len(History(workspace, root).sessions("session")) == 0
+    with pytest.raises(ValueError, match="not found in scope"):
+        history.read("other", "run-a")
+    with pytest.raises(ValueError, match="not found in scope"):
+        history.read("../other", "run-a", "all")
+    assert history.read("other", "run-a", "all")["session_id"] == "other"
+
+
+def git(path, *args):
+    return subprocess.run(
+        ["git", "-C", str(path), *args], check=True, capture_output=True, text=True
+    )
+
+
+def test_project_scope_tracks_live_and_deleted_worktrees(tmp_path, root):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init")
+    git(
+        repo,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+    )
+    linked = repo / ".worktrees" / "old"
+    git(repo, "worktree", "add", "-b", "feature", str(linked))
+    saved = SavedSession.create("test", linked, root=root)
+    assert saved.info.project == str(repo)
+    saved.close()
+    save(root, linked, "legacy")
+    save(root, tmp_path / "external-deleted", "external", project=str(repo))
+    assert len(History(repo, root).sessions("project")) == 3
+    assert len(History(linked, root).sessions("project")) == 3
+    assert len(History(repo, root).sessions("workspace")) == 0
+    git(repo, "worktree", "remove", str(linked))
+    assert len(History(repo, root).sessions("project")) == 3
+
+
+def test_compaction_preserves_recall_and_ancestor_context(tmp_path, root):
+    records = (
+        turn("Original decision", "Use a bounded queue.")
+        + [
+            {
+                "kind": "compaction_checkpoint",
+                "node_id": "compact",
+                "parent_id": "run-a",
+                "messages": [],
+            },
+        ]
+        + turn("After compaction", "Continue.", "run-b", parent_id="compact")
+    )
+    info = save(root, tmp_path, records=records)
+    turns = read_turns(info, root)
+    assert turns["run-a"].active
+    assert turns["run-b"].parent == "run-a"
+    registered = tools(tmp_path, root)
+    result = call(registered["search_sessions"], query="bounded queue", scope="session")
+    assert result["results"][0]["turn_id"] == "run-a"
+    read = call(registered["read_session"], session_id=info.id, turn_id="run-b", scope="session")
+    assert "bounded queue" in read["context"][0]["text"]
+
+
+def test_inactive_branch_and_failed_turn_are_labelled(tmp_path, root):
+    records = (
+        turn()
+        + turn("Abandoned", "Do not ship", "abandoned", parent_id="run-a")
+        + [
+            {"kind": "tree_selected", "node_id": "run-a"},
+            {"kind": "turn_started", "run_id": "failed", "parent_id": "run-a", "prompt": "Retry"},
+            {"kind": "turn_failed"},
+        ]
+    )
+    save(root, tmp_path, records=records)
+    history = History(tmp_path, root)
+    assert history.read("session-a", "abandoned")["branch"] == "inactive"
+    read = history.read("session-a", "failed", context_turns=3)
+    assert read["status"] == "failed"
+    assert [c["turn_id"] for c in read["context"]] == ["run-a"]
+
+
+def test_searches_all_text_blocks_and_tool_summaries_not_raw_results(tmp_path, root):
+    records = turn()[:-1] + [
+        {
+            "kind": "ToolSummary",
+            "name": "shell",
+            "detail": "pytest",
+            "command": "pytest -q",
+            "result": "private-output",
+        },
+        {"kind": "ToolFinished", "result": "private-output"},
+        {"kind": "Message", "markdown": "Final"},
+        {"kind": "turn_completed"},
+    ]
+    save(root, tmp_path, records=records)
+    chunks, _ = History(tmp_path, root).chunks("project")
+    assert keyword_ranking(chunks, "redraws")
+    assert keyword_ranking(chunks, "pytest")
+    assert not keyword_ranking(chunks, "private-output")
+
+
+def test_live_locked_session_read_without_open_or_resume(tmp_path, root):
+    saved = SavedSession.create("test", tmp_path, root=root)
+    try:
+        saved.append("turn_started", run_id="live", prompt="Earlier detail")
+        saved.append("Message", markdown="Durable response")
+        history = History(tmp_path, root, saved.info.id)
+        assert history.read(saved.info.id, "live", "session")["text"].endswith("Durable response")
+        saved.append("Message", markdown="New detail")
+        assert "New detail" in history.read(saved.info.id, "live")["text"]
+    finally:
+        saved.close()
+
+
+def test_torn_journal_legacy_ids_unreadable_and_symlinks(tmp_path, root):
+    info = save(root, tmp_path, records=[{"kind": "turn_started", "prompt": "legacy"}])
+    with (root / info.id / "transcript.jsonl").open("a") as stream:
+        stream.write('not json\n{"torn":')
+    assert History(tmp_path, root).read(info.id, "turn-1")["text"] == "User: legacy"
+    other = save(root, tmp_path, "other")
+    (root / other.id / "transcript.jsonl").unlink()
+    (root / other.id / "transcript.jsonl").symlink_to(root / info.id / "transcript.jsonl")
+    (root / "alias").symlink_to(root / info.id, target_is_directory=True)
+    chunks, warnings = History(tmp_path, root).chunks("project")
+    assert len(chunks) == 1
+    assert warnings == ["Skipped unreadable session other."]
+
+
+def test_redaction_before_return_and_pagination(tmp_path, root, monkeypatch):
+    secret = "synthetic-secret-value"
+    monkeypatch.setenv("TEST_API_KEY", secret)
+    response = f"{secret} " + "a" * (CHUNK_CHARS * 2) + " unique-tail"
+    save(root, tmp_path, records=turn(response=response))
+    registered = tools(tmp_path, root)
+    hits = call(registered["search_sessions"], query="unique-tail")["results"]
+    assert len(hits) == 1
+    assert hits[0]["offset"] > CHUNK_CHARS
+    first = call(registered["read_session"], session_id="session-a", turn_id="run-a", max_chars=40)
+    assert secret not in str(first)
+    assert "[redacted]" in first["text"]
+    second = call(
+        registered["read_session"],
+        session_id="session-a",
+        turn_id="run-a",
+        offset=first["next_offset"],
+    )
+    assert second["offset"] == 40
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"query": ""}, {"query": "x", "limit": 0}, {"query": "x" * 1001}]
+)
+def test_invalid_search_arguments_retry(tmp_path, root, kwargs):
+    with pytest.raises(ModelRetry):
+        call(tools(tmp_path, root)["search_sessions"], **kwargs)
+
+
+def test_invalid_read_arguments_retry(tmp_path, root):
+    save(root, tmp_path)
+    with pytest.raises(ModelRetry):
+        call(
+            tools(tmp_path, root)["read_session"],
+            session_id="session-a",
+            turn_id="run-a",
+            max_chars=20000,
+        )
+
+
+class FakeEmbedder:
+    def __init__(self):
+        self.documents = []
+        self.queries = []
+
+    async def embed_documents(self, documents):
+        self.documents.extend(documents)
+        return SimpleNamespace(embeddings=[[1.0, 0.0] for _ in documents])
+
+    async def embed_query(self, query):
+        self.queries.append(query)
+        return SimpleNamespace(embeddings=[[1.0, 0.0]])
+
+
+def test_embedding_cache_incremental_model_specific_and_private(tmp_path, root):
+    save(root, tmp_path)
+    chunks, _ = History(tmp_path, root).chunks("project")
+    embedder = FakeEmbedder()
+    for _ in range(2):
+        ranking, warnings = asyncio.run(
+            semantic_ranking(chunks, "flashing", "test:model", root, embedder=embedder)
+        )
+        assert ranking == [0]
+        assert not warnings
+    assert len(embedder.documents) == 1
+    assert len(embedder.queries) == 2
+    assert (root / CACHE_NAME).stat().st_mode & 0o777 == 0o600
+    assert b"Suspend the editor" not in (root / CACHE_NAME).read_bytes()
+    asyncio.run(semantic_ranking(chunks, "flashing", "test:other", root, embedder=embedder))
+    assert len(embedder.documents) == 2
+    chunks[0].text += " Changed"
+    asyncio.run(semantic_ranking(chunks, "flashing", "test:model", root, embedder=embedder))
+    assert len(embedder.documents) == 3
+
+
+def test_hybrid_opt_in_redacts_and_keeps_scope(tmp_path, root, monkeypatch):
+    save(root, tmp_path, records=turn(response="Synthetic password=hiddenvalue flicker"))
+    save(root, tmp_path / "other", "other", records=turn(response="outside-project"))
+    embedder = FakeEmbedder()
+    monkeypatch.setenv("PCODE_HISTORY_EMBEDDING_MODEL", "test:model")
+    monkeypatch.setattr("pydantic_ai.Embedder", lambda model: embedder)
+    registered = tools(tmp_path, root)
+    result = call(registered["search_sessions"], query="flashing")
+    assert result["mode"] == "hybrid"
+    assert result["results"]
+    assert "hiddenvalue" not in str(embedder.documents)
+    assert "outside-project" not in str(embedder.documents)
+    call(registered["search_sessions"], query="flicker", semantic=False)
+    assert len(embedder.queries) == 1
+
+
+def test_provider_failure_falls_back_without_echoing_error(tmp_path, root, monkeypatch):
+    save(root, tmp_path)
+    monkeypatch.setenv("PCODE_HISTORY_EMBEDDING_MODEL", "test:model")
+
+    def fail(model):
+        raise ValueError("sensitive provider response")
+
+    monkeypatch.setattr("pydantic_ai.Embedder", fail)
+    result = call(tools(tmp_path, root)["search_sessions"], query="flicker")
+    assert result["mode"] == "keyword"
+    assert result["results"]
+    assert "sensitive" not in str(result)
+    assert "ValueError" in result["warnings"][0]
+
+
+def test_embedding_batch_budget_and_deleted_sessions_not_returned(tmp_path, root, monkeypatch):
+    save(root, tmp_path, records=turn(response="x" * CHUNK_CHARS * 3))
+    monkeypatch.setattr("pcode.history_embeddings.MAX_NEW_CHUNKS", 1)
+    chunks, _ = History(tmp_path, root).chunks("project")
+    embedder = FakeEmbedder()
+    ranking, warnings = asyncio.run(
+        semantic_ranking(chunks, "query", "test:model", root, embedder=embedder)
+    )
+    assert len(ranking) == 1
+    assert "partial" in warnings[0]
+    assert len(embedder.documents) == 1
+    (root / "session-a" / "session.json").unlink()
+    assert History(tmp_path, root).chunks("project")[0] == []
+
+
+def test_app_passes_session_dir_on_load_and_reload(tmp_path, root):
+    from pcode.app import PreviewApp
+
+    app = PreviewApp(workspace=tmp_path, session_dir=root)
+    for _ in range(2):
+        loaded = app._load_extensions()
+        (selected,) = [e for e in loaded.extensions if e.name == "session_history"]
+        assert selected.loaded, selected.error
+        save_path = root / "session-a"
+        if not save_path.exists():
+            save(root, tmp_path)
+        registered = selected.capabilities[0].get_toolset().tools
+        assert call(registered["search_sessions"], query="flicker")["results"]
+
+
+def test_environment_session_root_and_explicit_override(tmp_path, root, monkeypatch):
+    from pcode.ext import ExtensionAPI
+
+    monkeypatch.setenv("PCODE_SESSION_DIR", str(root))
+    assert ExtensionAPI("test", tmp_path, ExtensionUI()).session_dir == root
+    explicit = tmp_path / "explicit"
+    assert (
+        ExtensionAPI("test", tmp_path, ExtensionUI(), session_dir=explicit).session_dir == explicit
+    )
+
+
+def test_explicit_session_root_matches_storage_path_semantics(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from pcode.ext import ExtensionAPI
+
+    monkeypatch.chdir(tmp_path)
+    # Explicit roots are literal Paths in SavedSession; only session_root expands env values.
+    literal = Path("~") / "sessions"
+    saved = SavedSession.create("test", tmp_path, literal)
+    try:
+        api = ExtensionAPI("test", tmp_path, ExtensionUI(), session_dir=literal)
+        assert api.session_dir == saved.directory.parent.resolve()
+    finally:
+        saved.close()
+
+
+def test_scan_budget_reports_partial_results(tmp_path, root, monkeypatch):
+    save(root, tmp_path, records=turn(response="x" * CHUNK_CHARS * 3))
+    monkeypatch.setattr("pcode.history.MAX_CHUNKS", 1)
+    chunks, warnings = History(tmp_path, root).chunks("project")
+    assert len(chunks) == 1
+    assert "limited" in warnings[0]
+
+
+def test_scan_byte_budget_stops_before_decoding_oversized_record(tmp_path, root, monkeypatch):
+    from pcode.sessions import SessionReadBudget, session_records
+
+    records = turn() + [{"kind": "Message", "markdown": "x" * 10000}]
+    info = save(root, tmp_path, records=records)
+    prefix_size = sum(len((json.dumps(r) + "\n").encode()) for r in records[:3])
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", prefix_size)
+    chunks, warnings = History(tmp_path, root).chunks("project")
+    assert len(chunks) == 1
+    assert chunks[0].turn.branch == "unknown"
+    assert "byte budget" in warnings[0]
+    budget = SessionReadBudget(prefix_size)
+    assert len(list(session_records(info, root, budget=budget))) == 3
+    assert budget.remaining == 0 and budget.exhausted
+    read = History(tmp_path, root).read("session-a", "run-a")
+    assert read["warnings"] and read["branch"] == "unknown"
+    assert "xxxxx" not in read["text"]
+
+
+def test_semantic_shortlist_keeps_distinct_turns(tmp_path, root):
+    save(root, tmp_path, records=turn(response="x" * CHUNK_CHARS * 55) + turn(identity="run-b"))
+    chunks, _ = History(tmp_path, root).chunks("project")
+    # Simulate the long turn ranking first, so a chunk-level top-50 would hide run-b.
+    chunks.sort(key=lambda chunk: chunk.turn.id)
+    ranking, _ = asyncio.run(
+        semantic_ranking(chunks, "question", "test:model", root, embedder=FakeEmbedder())
+    )
+    assert [chunks[index].turn.id for index in ranking] == ["run-a", "run-b"]
+
+
+def test_consumed_steering_is_journaled_and_recallable(tmp_path, root):
+    from pcode.live import AgentRuntime
+
+    saved = SavedSession.create("test", tmp_path, root)
+    pending = ["Use a bounded queue instead"]
+
+    async def respond(messages, info):
+        yield "Acknowledged."
+
+    async def run():
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=respond)), saved)
+        runtime.take_steering = lambda: [pending.pop()] if pending else []
+        try:
+            _ = [event async for event in runtime.stream("Implement the worker")]
+            records = list(saved.records())
+            start = next(r for r in records if r["kind"] == "turn_started")
+            steering = next(r for r in records if r["kind"] == "steering")
+            assert steering["run_id"] == start["run_id"]
+            saved.append(
+                "compaction_checkpoint",
+                node_id="compact",
+                parent_id=start["run_id"],
+                messages=[],
+                plan=[],
+                before=100,
+                after=10,
+            )
+            history = History(tmp_path, root, saved.info.id)
+            chunks, _ = history.chunks("session")
+            hits = keyword_ranking(chunks, "bounded queue")
+            assert hits
+            read = history.read(saved.info.id, chunks[hits[0]].turn.id, "session")
+            assert "User (steering): Use a bounded queue instead" in read["text"]
+        finally:
+            runtime.close()
+
+    asyncio.run(run())
+
+
+def test_user_override_disables_extension(tmp_path, root):
+    from pcode.ext import load_extensions
+
+    directory = user_extension_dir()
+    directory.mkdir(parents=True)
+    (directory / "session_history.py").write_text("def setup(pcode):\n    pass\n")
+    loaded = load_extensions(tmp_path, session_dir=root)
+    (selected,) = [e for e in loaded.extensions if e.name == "session_history"]
+    assert selected.scope == "user"
+    assert not selected.capabilities
