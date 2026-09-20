@@ -1,16 +1,20 @@
-"""A real Chromium the model can drive, with the user logging in by hand.
+"""A real Chrome the model can drive, with the user logging in by hand.
 
 Off by default and per conversation: `/browser on` adds Harness's eighteen
-Playwright tools plus `browser_login`, and a `browser` sub-agent that runs
-multi-step flows without the page text landing in the parent's context.
-`/browser off` closes Chromium and removes the tools. Nothing is persisted, so
-a logged-in session ends with the process at the latest.
+Playwright tools plus `browser_open` and `browser_login`, and a `browser`
+sub-agent that runs multi-step flows without the page text landing in the
+parent's context. `/browser launch` opens the window right away; otherwise it
+opens on the first browser tool call. `/browser off` closes it and removes the
+tools. Nothing is persisted, so a logged-in session ends with the process at
+the latest.
 
-The browser window is visible on purpose: `browser_login(url)` opens a page
-there and waits for the user to sign in, and the user sees what the model does
-with that session afterwards. There is no sandbox around it beyond the address
-bar: a page the model reads can tell it to do things with the user's login,
-which is the trade-off of turning this on.
+The browser is the user's own Chrome, started with a debugging port and a
+profile of its own (see `pcode.browser` for why not Playwright's Chromium).
+The window is visible on purpose: `browser_login(url)` opens a page there and
+waits for the user to sign in, and the user sees what the model does with that
+session afterwards. There is no sandbox around it beyond the address bar: a
+page the model reads can tell it to do things with the user's login, which is
+the trade-off of turning this on.
 
 The state itself lives in `pcode.browser`, since `/reload` re-imports this file.
 Copy this file to `~/.config/pcode/extensions/browser.py` to change defaults;
@@ -45,10 +49,32 @@ def _spawn(coroutine) -> None:
         asyncio.run(coroutine)
 
 
+async def _start(pcode) -> None:
+    """Have Chrome up and the session armed, reporting a launch to the user."""
+    await STATE.arm()
+    if note := await STATE.ensure_chrome():
+        pcode.ui.notify(note)
+
+
 def _capability(pcode, toolset):
-    """The browser tools, the login tool, and their guidance, sharing one session."""
+    """The browser tools, the open and login tools, and their guidance, sharing one session."""
     from pydantic_ai.capabilities import Capability
     from pydantic_ai_harness.playwright import PlaywrightBrowser
+
+    browser_tools = set(toolset.tools) | {"browser_open", "browser_login"}
+
+    async def browser_open() -> str:
+        """Open the browser window now, without navigating anywhere.
+
+        The window also opens on the first navigate; call this to show it to
+        the user ahead of time, for example before asking them to log in.
+        """
+        await _start(pcode)
+        await toolset.navigate("about:blank")
+        page = STATE.session.page
+        if page is not None:
+            await page.bring_to_front()
+        return "The browser window is open and in front."
 
     async def browser_login(url: str, done_url_prefix: str | None = None) -> str:
         """Open `url` in the visible browser window and wait for the user to log in by hand.
@@ -58,7 +84,7 @@ def _capability(pcode, toolset):
         `done_url_prefix` when given, or after five minutes. The login persists
         for the rest of the conversation, so call this once per site.
         """
-        await STATE.arm()
+        await _start(pcode)
         result = await toolset.navigate(url)
         page = STATE.session.page
         if page is None:
@@ -79,9 +105,12 @@ def _capability(pcode, toolset):
         return f"User finished logging in. Now at {page.url!r} ({title!r})."
 
     class Browser(Capability):
-        async def before_run(self, ctx) -> None:
-            # Runs for the parent and the sub-agent alike, on the tools' loop.
-            await STATE.arm()
+        async def before_tool_execute(self, ctx, *, call, tool_def, args):
+            # Chrome starts on the first browser tool, for the parent and the
+            # sub-agent alike, on the loop the tools run on.
+            if tool_def.name in browser_tools:
+                await _start(pcode)
+            return args
 
     guidance = PlaywrightBrowser(
         headless=False, block_private_addresses=False, max_content_tokens=2500
@@ -89,7 +118,7 @@ def _capability(pcode, toolset):
     return Browser(
         id="browser",
         toolsets=[toolset],
-        tools=[browser_login],
+        tools=[browser_open, browser_login],
         instructions=guidance,
     )
 
@@ -109,17 +138,25 @@ def _subagent(pcode, toolset):
 
 
 def setup(pcode) -> None:
+    def turn_on() -> None:
+        pcode.ui.request_reload()  # Refuses mid-turn, before anything changes.
+        STATE.enabled = True
+        pcode.ui.notify(
+            "Browser tools on for this conversation. Pages the model reads can act on "
+            "whatever you log in to there."
+        )
+
     def browser(argument: str) -> None:
         argument = argument.strip() or "status"
         if argument == "on":
             if STATE.enabled:
                 raise ValueError("The browser is already on.")
-            pcode.ui.request_reload()  # Refuses mid-turn, before anything changes.
-            STATE.enabled = True
-            pcode.ui.notify(
-                "Browser tools on for this conversation. Chromium opens on first use "
-                "(downloaded first if missing). Pages the model reads can act on your logins."
-            )
+            turn_on()
+        elif argument == "launch":
+            if not STATE.enabled:
+                turn_on()
+            STATE.open()
+            _spawn(_launch())
         elif argument == "off":
             if not STATE.enabled:
                 raise ValueError("The browser is already off.")
@@ -133,16 +170,20 @@ def setup(pcode) -> None:
             STATE.login_event().set()
             pcode.ui.notify("Login reported; the model continues.")
         else:
-            state = "on" if STATE.enabled else "off"
-            page = STATE.session.page if STATE.launched else None
-            where = f", at {page.url}" if page is not None else ""
-            pcode.ui.notify(f"Browser {state}{where}. /browser on|off|done.")
+            pcode.ui.notify(f"Browser {STATE.describe()}. /browser on|launch|off|done.")
+
+    async def _launch() -> None:
+        try:
+            await _start(pcode)
+            await STATE.toolset.navigate("about:blank")
+        except Exception as error:  # noqa: BLE001 - a failed launch is a notice, not a crash.
+            pcode.ui.notify(f"Browser launch failed: {error}", "error")
 
     pcode.register_command(
         "/browser",
-        "Toggle a real browser the model can drive; `done` after you log in",
+        "A real Chrome the model can drive; `launch` opens it, `done` after you log in",
         browser,
-        arguments=("on", "off", "done", "status"),
+        arguments=("on", "launch", "off", "done", "status"),
     )
     pcode.on_close(STATE.close)
     if not STATE.enabled:

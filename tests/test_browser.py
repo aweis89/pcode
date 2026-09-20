@@ -20,6 +20,9 @@ from pcode.ext import ExtensionUI, load_extensions
 def fresh_state(monkeypatch):
     monkeypatch.setattr(browser_state, "STATE", BrowserState())
     monkeypatch.setattr("pcode.extensions.browser.STATE", browser_state.STATE, raising=False)
+    # No Chrome is ever started here; the session is built for a port nothing answers.
+    monkeypatch.setenv("PCODE_BROWSER_CHROME", "/nonexistent/chrome")
+    monkeypatch.delenv("PCODE_BROWSER_CDP_URL", raising=False)
     yield browser_state.STATE
 
 
@@ -43,7 +46,7 @@ def test_off_by_default_contributes_only_the_command(tmp_path):
 def test_on_adds_the_tools_and_a_subagent_sharing_one_session(tmp_path, fresh_state):
     fresh_state.enabled = True
     loaded, extension = browser_extension(tmp_path)
-    assert extension.summary() == "19 tools, @browser, /browser"
+    assert extension.summary() == "20 tools, @browser, /browser"
     assert [c.id for c in extension.capabilities] == ["browser", "ext.browser"]
     capability = extension.capabilities[0]
     (delegate,) = loaded.subagents
@@ -51,7 +54,8 @@ def test_on_adds_the_tools_and_a_subagent_sharing_one_session(tmp_path, fresh_st
     # Parent and child drive the same toolset, so the child sees the parent's login.
     child = next(c for c in delegate.agent.root_capability.capabilities if c.id == "browser")
     assert child.get_toolset().toolsets[1] is fresh_state.toolset
-    assert "browser_login" in capability.get_toolset().toolsets[0].tools
+    assert {"browser_open", "browser_login"} <= set(capability.get_toolset().toolsets[0].tools)
+    assert fresh_state.cdp_url.startswith("http://127.0.0.1:")
 
 
 def test_command_toggles_state_and_requests_a_reload(tmp_path, fresh_state):
@@ -71,6 +75,32 @@ def test_command_toggles_state_and_requests_a_reload(tmp_path, fresh_state):
         command.handler("done")
     command.handler("off")
     assert not fresh_state.enabled and reloads == [True, True]
+    assert fresh_state.session is None
+
+
+def test_launch_turns_on_and_starts_chrome(tmp_path, fresh_state, monkeypatch):
+    reloads = []
+    notices = []
+    ui = ExtensionUI(lambda text, level: notices.append((level, text)), lambda: reloads.append(1))
+    _, extension = browser_extension(tmp_path, ui)
+    started = []
+
+    async def ensure_chrome():
+        started.append(fresh_state.cdp_url)
+        return "Started Chrome."
+
+    async def navigate(url):
+        return url
+
+    monkeypatch.setattr(BrowserState, "ensure_chrome", staticmethod(ensure_chrome))
+    monkeypatch.setattr(fresh_state, "arm", ensure_chrome)
+    extension.commands[0].handler("launch")
+    assert fresh_state.enabled and reloads == [1]
+    # `open()` ran, so the session exists before the reload re-imports the extension.
+    assert started and fresh_state.session is not None
+    assert ("info", "Started Chrome.") in notices
+    # The port nothing answers on surfaces as a notice, not a crash.
+    assert notices[-1][0] == "error"
 
 
 def test_a_refused_reload_leaves_state_untouched(tmp_path, fresh_state):
@@ -132,11 +162,12 @@ def test_login_tool_reports_the_landing_page(tmp_path, fresh_state, monkeypatch)
         fresh_state.session.page = page
         return "navigated"
 
-    async def arm():
-        pass
+    async def nothing():
+        return ""
 
     monkeypatch.setattr(fresh_state.toolset, "navigate", navigate)
-    monkeypatch.setattr(fresh_state, "arm", arm)
+    monkeypatch.setattr(fresh_state, "arm", nothing)
+    monkeypatch.setattr(fresh_state, "ensure_chrome", nothing)
     result = asyncio.run(login.function("https://x/login", "https://x/account"))
     assert result == "User finished logging in. Now at 'https://x/account' ('Account')."
     assert page.fronted
@@ -147,6 +178,41 @@ def test_close_is_safe_before_launch_and_drops_the_session(fresh_state):
     assert fresh_state.session is not None and not fresh_state.launched
     asyncio.run(fresh_state.close())
     assert fresh_state.session is None and fresh_state.toolset is None
+    assert fresh_state.cdp_url is None
+
+
+def test_without_chrome_the_session_falls_back_to_chromium(fresh_state, monkeypatch):
+    monkeypatch.setenv("PCODE_BROWSER_CHROME", "")
+    monkeypatch.setattr(browser_state, "CHROME_CANDIDATES", ("/nonexistent/chrome",))
+    fresh_state.enabled = True
+    fresh_state.open()
+    assert fresh_state.cdp_url is None
+    assert "no Chrome found" in fresh_state.describe()
+    assert asyncio.run(fresh_state.ensure_chrome()) == ""
+
+
+def test_a_foreign_endpoint_is_attached_not_launched(fresh_state, monkeypatch):
+    monkeypatch.setenv("PCODE_BROWSER_CDP_URL", "http://127.0.0.1:9222")
+    fresh_state.enabled = True
+    fresh_state.open()
+    assert fresh_state.attached and fresh_state.cdp_url == "http://127.0.0.1:9222"
+    assert asyncio.run(fresh_state.ensure_chrome()) == ""
+    assert fresh_state.process is None
+    assert "attached to" in fresh_state.describe()
+
+
+def test_chrome_that_never_answers_is_reported(fresh_state, monkeypatch, tmp_path):
+    """A binary that exits at once yields a clear error rather than a hang."""
+    fake = tmp_path / "chrome"
+    fake.write_text("#!/bin/sh\nexit 3\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PCODE_BROWSER_CHROME", str(fake))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    fresh_state.enabled = True
+    fresh_state.open()
+    with pytest.raises(RuntimeError, match="exited at startup"):
+        asyncio.run(fresh_state.ensure_chrome())
+    assert (tmp_path / "state" / "pcode" / "chrome").is_dir()
 
 
 def test_extension_closers_run_on_exit():
