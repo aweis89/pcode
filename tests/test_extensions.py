@@ -4,6 +4,7 @@ import asyncio
 import textwrap
 from io import StringIO
 
+import pytest
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from rich.console import Console
 
@@ -19,6 +20,12 @@ from pcode.ext import (
     user_extension_dir,
 )
 from pcode.preferences import save_preferences
+
+
+@pytest.fixture(autouse=True)
+def no_bundled_extensions(tmp_path, monkeypatch):
+    """These tests count what they wrote; the shipped defaults are covered in test_search."""
+    monkeypatch.setattr("pcode.ext.BUNDLED_DIR", tmp_path / "no-bundled")
 
 
 def write_extension(directory, name, body):

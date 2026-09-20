@@ -167,8 +167,9 @@ def target(name: str, args: dict) -> str:
         if not isinstance(queries, list):
             return "queries unavailable"
         return ", ".join(argument(item) for item in queries if isinstance(item, str))
-    if name in {"get_page", "web_search"}:
-        key = "url" if name == "get_page" else "query"
+    if name in {"get_page", "web_fetch", "web_search"}:
+        # `web_fetch` is Anthropic's native fetch; the local tools keep Exa's names.
+        key = "query" if name == "web_search" else "url"
         value = args.get(key)
         return argument(value) if isinstance(value, str) else f"{key} unavailable"
     if name in {
@@ -407,6 +408,24 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
     ):
         result += " · truncated"
     return (f"{where} → {result}" if where and result else where or result), failed
+
+
+def native_result_detail(name: str, args: dict, content: object, outcome: str) -> tuple[str, bool]:
+    """Summarize a provider-executed tool (native web search or fetch) from its return part.
+
+    Providers return structured content rather than Harness text: Anthropic's
+    search yields a list of result blocks or an error block, so count what can
+    be counted and otherwise only report success or failure.
+    """
+    where = target(name, args)
+    error = isinstance(content, dict) and str(content.get("type", "")).endswith("error")
+    if outcome != "success" or error:
+        reason = content.get("error_code", "") if isinstance(content, dict) else ""
+        return f"{where} → Failed" + (f" · {plain(str(reason))}" if reason else ""), True
+    if isinstance(content, list):
+        count = len(content)
+        return f"{where} → {count} result{'s' if count != 1 else ''}", False
+    return where, False
 
 
 # Shell-facing tools whose captured output can be mirrored into scrollback.
