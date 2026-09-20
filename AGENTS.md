@@ -5,7 +5,7 @@
 Several agents edit this repo concurrently. Work in a worktree, never the
 mainline checkout, where another session's `git checkout`/`stash`/`reset` can
 eat your uncommitted edits. pcode sessions started with `--worktree` (or
-`worktree on`) already are one: the workspace *is* `.worktrees/<name>`, so
+`worktree on`) already are one: the workspace *is* `.worktrees/pcode-<name>`, so
 just edit, `make test`, and commit; `/worktree merge` folds it back. From
 another agent, or by hand:
 

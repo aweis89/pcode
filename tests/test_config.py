@@ -33,6 +33,7 @@ def test_defaults_and_path_do_not_create_files():
         "skill_commands": "prefix",
         "skill_dirs": "~/.agents/skills:.agents/skills",
         "project_extensions": "off",
+        "trusted_projects": "",
         "extension_dirs": "",
         "worktree": "off",
         "retry_attempts": "1",

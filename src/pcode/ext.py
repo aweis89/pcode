@@ -7,8 +7,8 @@ the `tool`, `instructions`, and `hooks` helpers exist so common cases need no
 knowledge of that class hierarchy. Commands and notices are pcode's.
 
 Extensions run in-process with the user's permissions: the same trust boundary
-as the shell tool. Project-local extensions load only when `project_extensions`
-is on, so cloning a repository cannot run its code at launch.
+as the shell tool. Project-local extensions load only for a repository the user
+has trusted (`project_trust`), so cloning one cannot run its code at launch.
 
 Loading happens with the rest of agent construction, off the terminal's startup
 path. Every failure is recorded on the extension and reported, never raised: a
@@ -43,9 +43,11 @@ def user_extension_dir() -> Path:
 
 def extension_dirs(workspace: Path) -> list[tuple[Path, str]]:
     """Resolve the searched directories with their scope, first match winning."""
+    from pcode.project_trust import is_trusted
+
     preferences = load_preferences()
     directories: list[tuple[Path, str]] = []
-    if preferences.get("project_extensions", SETTINGS["project_extensions"].default) == "on":
+    if is_trusted(workspace):
         directories.append((workspace / PROJECT_DIR, "project"))
     directories.append((user_extension_dir(), "user"))
     configured = preferences.get("extension_dirs", SETTINGS["extension_dirs"].default) or ""

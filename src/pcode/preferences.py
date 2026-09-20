@@ -69,7 +69,10 @@ SETTINGS = {
     "skill_dirs": Setting(DEFAULT_SKILL_DIRS, path_list=True),
     # Extensions run arbitrary Python at launch, so a workspace's `.pcode/extensions`
     # is opt-in; the user-level directory beside preferences.json always loads.
+    # `on` trusts every repository; `trusted_projects` is the per-repository grant
+    # the launch prompt appends to (primary checkout paths).
     "project_extensions": Setting("off", ("on", "off")),
+    "trusted_projects": Setting("", path_list=True),
     # Extra extension directories, searched after the user-level one.
     "extension_dirs": Setting("", path_list=True),
     # Start each new session in its own `.worktrees/<session>` git worktree so
@@ -124,7 +127,13 @@ SETTINGS = {
 # use. They are read from the user file only; a project file setting them is
 # reported by `rejected_project_keys` and otherwise ignored.
 USER_ONLY = frozenset(
-    {"project_extensions", "extension_dirs", "meridian_managed", "anthropic_auth"}
+    {
+        "project_extensions",
+        "trusted_projects",
+        "extension_dirs",
+        "meridian_managed",
+        "anthropic_auth",
+    }
 )
 
 PROJECT_PREFERENCES = Path(".pcode") / "preferences.json"

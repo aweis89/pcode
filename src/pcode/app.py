@@ -377,10 +377,15 @@ class PreviewApp:
         if not lines:
             lines = ["No extensions loaded."]
         lines.append(f"User extensions: {user_extension_dir()}")
-        project = load_preferences().get("project_extensions", "off") == "on"
+        from pcode.project_trust import is_trusted
+
         lines.append(
             f"Project extensions ({PROJECT_DIR}): "
-            + ("on" if project else "off; enable with /config set project_extensions on")
+            + (
+                "on (repository trusted)"
+                if is_trusted(self.workspace)
+                else "off; answer the launch prompt or /config set project_extensions on"
+            )
         )
         lines.append("Ask pcode to write one, then /reload.")
         self.transcript.note("\n".join(lines))
@@ -2391,6 +2396,9 @@ def main() -> None:
         _run_cli(args, parser)
 
 
+SESSION_WORKTREE_PREFIX = "pcode-"
+
+
 def _select_project_root(argv: list[str]) -> None:
     """Point preferences at `-C DIR` (else the cwd) ahead of full argument parsing."""
     from pcode.preferences import set_project_root
@@ -2410,9 +2418,11 @@ def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
     """Create the session's worktree when asked to, returning (workspace, session id).
 
     `requested` is None (use the `worktree` setting), True (unnamed), or a
-    name. Unnamed worktrees take the session's ID prefix as their name, so
-    `pcode -c NAME` resumes into them. Already inside a linked worktree, or
-    outside git, the workspace is left alone rather than nested.
+    name. Session worktrees are named `pcode-<name>` so `git worktree list`
+    and `git branch` show which ones pcode made; unnamed ones use the session
+    ID's prefix, so `pcode -c <prefix>` finds the session. Already inside a
+    linked worktree, or outside git, the workspace is left alone rather than
+    nested.
     """
     from uuid import uuid4
 
@@ -2430,7 +2440,7 @@ def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
         return workspace, None
     identity = str(uuid4())
     name = requested if isinstance(requested, str) else identity[:8]
-    created = worktree.create(workspace, name)
+    created = worktree.create(workspace, SESSION_WORKTREE_PREFIX + name)
     try:
         worktree.run_setup(created, stream=sys.stderr)
     except worktree.WorktreeError:
@@ -2532,6 +2542,11 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 f"{', '.join(rejected)} (set them with `pcode config set`)",
                 file=sys.stderr,
             )
+        from pcode.project_trust import prompt_trust
+
+        # Before the worktree, whose setup script is one of the things being
+        # trusted. --print has no one to ask, so untrusted code is skipped.
+        prompt_trust(workspace, ask=None if args.print else input)
         session_id = None
         if not args.resume and not args.no_worktree and not args.theme_preview:
             workspace, session_id = _enter_worktree(workspace, args.worktree)

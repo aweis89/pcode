@@ -52,7 +52,11 @@ def pane(request):
     # of the default auto-hide; a test that wants it turns it back on itself.
     config = pathlib.Path(env["XDG_CONFIG_HOME"]) / "pcode"
     config.mkdir(parents=True, exist_ok=True)
-    config.joinpath("preferences.json").write_text(json.dumps({"autohide_tasks": "off"}))
+    # The pane runs from this checkout, which ships .pcode/worktree-setup; trust
+    # it up front or the launch prompt blocks the pane.
+    config.joinpath("preferences.json").write_text(
+        json.dumps({"autohide_tasks": "off", "project_extensions": "on"})
+    )
     reaper = tmux_reaper(server, os.getpid())
 
     def command(*args):

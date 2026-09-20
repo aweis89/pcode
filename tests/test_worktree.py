@@ -177,8 +177,8 @@ def test_cli_worktree_flag_names_after_session(repo, monkeypatch, tmp_path):
         main()
     kwargs = app.call_args.kwargs
     identity = kwargs["session_id"]
-    assert identity and kwargs["workspace"] == repo / ".worktrees" / identity[:8]
-    assert git(kwargs["workspace"], "symbolic-ref", "--short", "HEAD") == identity[:8]
+    assert identity and kwargs["workspace"] == repo / ".worktrees" / ("pcode-" + identity[:8])
+    assert git(kwargs["workspace"], "symbolic-ref", "--short", "HEAD") == "pcode-" + identity[:8]
 
 
 def test_cli_worktree_name_and_setting(repo, monkeypatch, tmp_path):
@@ -186,7 +186,7 @@ def test_cli_worktree_name_and_setting(repo, monkeypatch, tmp_path):
     cli(monkeypatch, "-m", "test:local", "-C", str(repo), "--worktree", "named")
     with patch("pcode.app.PreviewApp") as app:
         main()
-    assert app.call_args.kwargs["workspace"] == repo / ".worktrees" / "named"
+    assert app.call_args.kwargs["workspace"] == repo / ".worktrees" / "pcode-named"
 
     save_preferences(worktree="on")
     cli(monkeypatch, "-m", "test:local", "-C", str(repo))
@@ -233,7 +233,7 @@ def test_cli_failed_setup_removes_worktree(repo, monkeypatch, capsys):
     with pytest.raises(SystemExit):
         main()
     assert "exited 1" in capsys.readouterr().err
-    assert not (repo / ".worktrees" / "broken").exists()
+    assert not (repo / ".worktrees" / "pcode-broken").exists()
 
 
 def test_cli_resume_never_creates_worktree(repo, monkeypatch, tmp_path):
