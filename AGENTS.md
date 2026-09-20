@@ -19,6 +19,7 @@ make worktree-remove NAME=fix-thing   # drop the worktree (branch is kept)
 - The mainline step is `git merge --ff-only`, which git refuses only when someone's uncommitted mainline edits touch the files you merged. That is the one case needing coordination: commit or stash those edits, then re-run the merge.
 - Creating a worktree costs a few seconds: it gets its own `.venv` (uv clones the packages from its local cache) and a `tmp` symlink to the shared Harness checkout, so there is nothing to reinstall and `make test` works immediately.
 - Do not share `.venv` between worktrees. The editable install records an absolute path to `src/`, so a shared env silently imports the *other* checkout's source and you test code you did not write.
+- Nothing here discards work: every step either refuses or stops with a message. `worktree-remove` never passes `--force`, so a worktree holding uncommitted or untracked files is kept, and neither merge step can overwrite a dirty file in either tree. The mainline checkout is still shared, though — plain `git checkout`, `git stash`, and `git reset` there will happily eat another session's uncommitted edits, which is the reason to work in a worktree in the first place.
 - `make install` from a worktree repoints the global `pcode` command at that worktree. Run it from the mainline checkout after merging, unless you deliberately want the installed command to track your branch.
 
 ## Notes
