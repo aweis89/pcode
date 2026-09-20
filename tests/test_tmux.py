@@ -107,7 +107,7 @@ def capture(pane, expected, *, running=False, columns=None):
             and len(lines) >= 2
             and lines[-2].startswith("└")
             and (columns is None or len(lines[-2]) == columns)
-            and "send:" in lines[-1]
+            and "Enter:" in lines[-1]
             # Mode and activity have priority even in narrow real-CPR panes.
             and (("working" in lines[-1]) == running)
         ):
@@ -132,7 +132,7 @@ def scrollback(pane):
 
 def input_rows(screen):
     lines = screen.splitlines()
-    assert "send:" in lines[-1], screen
+    assert "Enter:" in lines[-1], screen
     assert lines[-2].startswith("└"), screen
     cursor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
     top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("┌"))
@@ -151,7 +151,7 @@ def test_footer_theme_switch_keeps_editor_compact(pane):
             pane("send-keys", "-t", "preview:0.0", "Enter")
             screen = capture(pane, "Theme: auto (" if theme == "auto" else f"Theme: {theme}.")
             assert input_rows(screen) == 1
-            assert "preview · effort: n/a" in screen.splitlines()[-1]
+            assert "· preview" in screen.splitlines()[-1]
             pane("send-keys", "-t", "preview:0.0", "-l", "/theme-preview")
             pane("send-keys", "-t", "preview:0.0", "Enter")
             # The style gallery scrolls the sample away, so wait on its last row.
@@ -440,7 +440,7 @@ def test_cursor_is_hidden_while_committing_stream_and_returns_to_draft(pane):
         if "CURSOR_LINE_" in screen and not any(line.startswith("│❯") for line in lines):
             samples += 1
             assert not visible, snapshot
-        if "CURSOR_STREAM_DONE" in screen and "send:" in lines[-1] and "working" not in lines[-1]:
+        if "CURSOR_STREAM_DONE" in screen and "Enter:" in lines[-1] and "working" not in lines[-1]:
             assert visible, snapshot
             assert lines[y].startswith("│❯ draft text"), snapshot
             assert x == 9, snapshot  # Three-cell prompt plus 'draft '.

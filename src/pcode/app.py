@@ -1461,14 +1461,15 @@ class PreviewApp:
         location = plain(directory, limit=None)
         if self.branch:
             location += f" {self.branch}"
-        effort = self.current_effort()
         model = self.model if self.model else "preview"
         if self.pending_model:
             # The running turn keeps its model; show what the next one will use.
             model += f" → {self.pending_model}"
+        if self.model:
+            model += f" ({self.current_effort()})"
         # Put send mode and activity ahead of model/path metadata so they are
         # never pushed off the footer by long provider names or narrow panes.
-        segments = [("text", f"send: {self.send_mode}")]
+        segments = [("text", f"Enter: {self.send_mode}")]
         if self._startup_pending:
             segments.extend([("text", " · "), ("activity", "starting")])
         if self.activity.busy:
@@ -1480,13 +1481,7 @@ class PreviewApp:
                     segments.extend([("text", " · "), ("activity", f"{steering} steering pending")])
                 if queued:
                     segments.extend([("text", " · "), ("activity", f"{queued} queued")])
-        segments.extend(
-            [
-                ("text", " · "),
-                ("model", plain(model, limit=None)),
-                ("text", plain(f" · effort: {effort}", limit=None)),
-            ]
-        )
+        segments.extend([("text", " · "), ("model", plain(model, limit=None))])
         context = ""
         if self.model and not self._startup_pending and self._startup_error is None:
             from pcode.context_usage import context_label
