@@ -6,6 +6,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from rich.text import Text
+
 from pcode.code_mode import SANDBOXED_TOOLS
 from pcode.diagnostics import redact
 
@@ -82,6 +84,36 @@ def command_preview(value: str) -> str:
     elif len(lines) > 1:
         first += f" … [{len(lines) - 1} more lines]"
     return plain(first, limit=100)
+
+
+def tool_summary_lines(
+    name: str,
+    detail: str = "",
+    *,
+    failed: bool = False,
+    elapsed_seconds: float | None = None,
+    command: str = "",
+    width: int | None = None,
+) -> list[Text]:
+    """The settled-tool line, and a command's preview line, as scrollback draws them.
+
+    Shared so a browsed conversation looks like the one that scrolled past:
+    scrollback and the session browser differ only in how much of `detail`
+    they pass, which each caller decides before calling.
+    """
+    elapsed = f" · {elapsed_seconds:.1f}s" if elapsed_seconds is not None else ""
+    # The marker alone reports failure: a summary line keeps one style so a
+    # failed call does not shout louder than the diagnostic that follows it.
+    marker = "✗" if failed else "✓"
+    lines = [Text(f"{marker} {label(name)}{detail}{elapsed}", style="pcode.thinking")]
+    if command:
+        lines.append(Text("  " + command_preview(command), style="pcode.thinking"))
+    for line in lines:
+        line.no_wrap = True
+        line.overflow = "ellipsis"
+        if width is not None:
+            line.truncate(width, overflow="ellipsis")
+    return lines
 
 
 def sandboxed_calls(code: str) -> list[str]:
