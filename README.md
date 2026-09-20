@@ -299,6 +299,21 @@ Opening the app, using commands, or quitting without a prompt creates no session
 `/new` resets context without deleting the old conversation; its replacement is
 created on the next model prompt.
 
+### Shell completion
+
+`pcode --completions SHELL` prints a completion script for `zsh`, `fish`, or
+`bash`. It is generated from the argument parser itself, so flags and their
+choices (themes, color styles, shells) stay in step with the installed version;
+regenerate after upgrading.
+
+```sh
+pcode --completions zsh > ~/.zsh/completions/_pcode   # directory must be on $fpath
+pcode --completions fish > ~/.config/fish/completions/pcode.fish
+echo 'eval "$(pcode --completions bash)"' >> ~/.bashrc
+```
+
+The zsh script works either autoloaded from `$fpath` or sourced from `.zshrc`.
+
 ### Authentication
 
 For `openai-codex:`, use an existing subscription login. If missing or expired:
