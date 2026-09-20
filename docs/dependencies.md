@@ -15,6 +15,7 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | Rich (`rich`) | 14.3.4 | [Docs](https://rich.readthedocs.io/en/stable/) | [rich](https://github.com/Textualize/rich) |
 | Pydantic AI (`pydantic-ai-slim`) | 2.45.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
 | Pydantic AI Harness (`pydantic-ai-harness`) | 0.31.1.dev48+12bce878 (commit `12bce878da99bca61a5d8d798bff0a3bc93bd153`) | [Docs](https://ai.pydantic.dev/harness/) | [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) |
+| Playwright (`playwright`, via the Harness `playwright` extra; Chromium downloaded on first `/browser` use) | 1.63.0 | [Docs](https://playwright.dev/python/) | [playwright-python](https://github.com/microsoft/playwright-python) |
 
 From the repository root, this read-only command prints installed versions and
 package source locations without importing the agent runtime or loading credentials:

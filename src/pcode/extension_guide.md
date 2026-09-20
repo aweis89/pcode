@@ -122,10 +122,33 @@ Handlers run on the terminal's event loop, so keep them quick. Raise
 reported and skipped. Commands cannot send a prompt to the model; to do that,
 write a skill (`SKILL.md`) instead.
 
-### Notices
+### Sub-agents
+
+```python
+from pydantic_ai import Agent
+
+reviewer = Agent(name="reviewer", description="Review a diff for bugs", instructions="...")
+pcode.subagent(reviewer, timeout_seconds=600)
+```
+
+The agent is listed beside the explorer under `delegate_task`. Leave its model
+unset to run on the session's model; keyword options are Harness `SubAgent`
+fields (`usage_limits`, `timeout_seconds`, `max_calls`). Give it capabilities
+of its own; the parent's tools are not inherited.
+
+### Notices and lifecycle
 
 `pcode.ui.notify(text, level="info" | "warning" | "error")` prints a transient
 line in the transcript. Safe to call from tools, hooks, and commands.
+
+`pcode.ui.request_reload()` asks for `/reload` once the terminal is idle, for a
+command that changes what `setup` contributes (see the bundled `browser.py`,
+whose `/browser on` adds tools). It raises `ValueError` mid-turn, so call it
+before changing state. State that must survive the reload cannot live in the
+extension module, which is re-imported.
+
+`@pcode.on_close` registers an `async` function run when the terminal exits,
+for a process or connection a tool started.
 
 ### Anything else
 

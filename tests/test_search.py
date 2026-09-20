@@ -61,7 +61,10 @@ def test_bundled_extension_is_discovered_last_and_shadowed_by_user_files(tmp_pat
     assert extension.scope == "bundled"
     assert extension.path == BUNDLED_DIR / "web_research.py"
     assert extension.summary() == "2 tools"
-    assert load_extensions(tmp_path).report(tmp_path) == ["web_research (bundled): 2 tools"]
+    assert load_extensions(tmp_path).report(tmp_path) == [
+        "browser (bundled): /browser",
+        "web_research (bundled): 2 tools",
+    ]
 
     user_extension_dir().mkdir(parents=True, exist_ok=True)
     (user_extension_dir() / "web_research.py").write_text("def setup(pcode):\n    pass\n")
