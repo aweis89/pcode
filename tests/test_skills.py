@@ -158,7 +158,7 @@ def test_bare_style_never_shadows_a_builtin_command(tmp_path):
     write_skill(tmp_path, ".claude", "review")
     save_preferences(skill_commands="both")
     app = make_app(tmp_path, model="test:model")
-    assert app.registry.find("/help").description == "Commands and keyboard shortcuts"
+    assert app.registry.find("/help").description == "List commands and keyboard shortcuts"
     # The prefixed form still reaches a skill whose bare name was taken.
     assert app.registry.find("/skill:help") is not None
     assert app.registry.find("/review").name == "/skill:review"
@@ -169,7 +169,7 @@ def test_bare_style_drops_a_skill_named_like_a_command(tmp_path):
     save_preferences(skill_commands="bare")
     app = make_app(tmp_path, model="test:model")
     assert app.skill_command_names == []
-    assert app.registry.find("/help").description == "Commands and keyboard shortcuts"
+    assert app.registry.find("/help").description == "List commands and keyboard shortcuts"
 
 
 def test_skill_commands_complete(tmp_path):

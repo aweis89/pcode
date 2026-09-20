@@ -86,7 +86,7 @@ def test_preview_cache_keys_and_per_redraw_layout(monkeypatch):
         activity = Activity()
         activity.command_outputs["one"] = CommandOutput("one", "test", "first\nlast")
         view = Transcript(
-            Console(file=stream), activity=activity, preferences={"command_scrollback": "on"}
+            Console(file=stream), activity=activity, preferences={"show_commands": "on"}
         )
         with create_pipe_input() as pipe:
             session = create_prompt(
