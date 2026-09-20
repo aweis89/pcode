@@ -8,7 +8,7 @@ Setup that git cannot do (installing dependencies, copying untracked config,
 symlinking shared caches) lives in two optional scripts run after checkout:
 `~/.config/pcode/worktree-setup` for every repo, then `<repo>/.pcode/worktree-setup`
 for this one. The project script is arbitrary code shipped with the repo, so it
-only runs when `project_extensions` is on, like `.pcode/extensions`.
+only runs for a trusted repository, like `.pcode/extensions`.
 """
 
 import os
@@ -16,7 +16,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from pcode.preferences import SETTINGS, load_preferences, preferences_path
+from pcode.preferences import preferences_path
 
 WORKTREES_DIR = ".worktrees"
 SETUP_SCRIPT = "worktree-setup"
@@ -127,14 +127,15 @@ def setup_scripts(worktree: Worktree, project: bool | None = None) -> list[Path]
 
     The project script is taken from the new checkout when its branch has one
     (so it matches the code being set up), else from the mainline, where an
-    untracked local copy may live. `project` None defers to the
-    `project_extensions` preference; True runs it regardless, for an explicit
-    invocation inside that repo.
+    untracked local copy may live. `project` None defers to whether the
+    repository is trusted; True runs it regardless, for an explicit invocation
+    inside that repo.
     """
+    from pcode.project_trust import is_trusted
+
     scripts = [preferences_path().parent / SETUP_SCRIPT]
     if project is None:
-        default = SETTINGS["project_extensions"].default
-        project = load_preferences().get("project_extensions", default) == "on"
+        project = is_trusted(worktree.main)
     if project:
         scripts.append(
             next(

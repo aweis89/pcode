@@ -158,11 +158,30 @@ pcode config project unset worktree
 ```
 
 A cloned repository must not be able to run code or pick credentials on your
-behalf, so `project_extensions`, `extension_dirs`, `meridian_managed`, and
-`anthropic_auth` are user-only: the project file cannot set them, and pcode
-says so at launch if it tries. The overlay is read from the launch workspace
-before any worktree is created, so `worktree on` in a repository's file is
-what starts each of its sessions in a worktree.
+behalf, so `project_extensions`, `trusted_projects`, `extension_dirs`,
+`meridian_managed`, and `anthropic_auth` are user-only: the project file cannot
+set them, and pcode says so at launch if it tries. The overlay is read from the
+launch workspace before any worktree is created, so `worktree on` in a
+repository's file is what starts each of its sessions in a worktree.
+
+#### Trusting a repository's own code
+
+A repository can ship code that runs at launch with your permissions:
+`.pcode/extensions/*.py` (see `/extensions`) and `.pcode/worktree-setup`. Neither
+runs until you trust that repository. The first interactive launch inside one
+that ships either asks:
+
+```
+pcode: /path/to/repo ships code that runs at launch with your permissions: .pcode/worktree-setup
+Trust this repository? [y/N]
+```
+
+`y` records the repository's primary checkout in `trusted_projects` (so all of
+its worktrees are covered) and never asks again; `n` skips the code for this
+launch and asks next time. `--print` has nobody to ask, so it skips and says so.
+Revoke with `pcode config unset trusted_projects` (or edit the `:`-separated
+list). `pcode config set project_extensions on` trusts every repository, which
+is only sensible on a machine where you wrote all of them.
 
 | Key | Built-in default | Values |
 | --- | --- | --- |
@@ -183,6 +202,8 @@ what starts each of its sessions in a worktree.
 | `skill_commands` | `prefix` | `prefix`, `bare`, `both`, `off` (how discovered skills appear as slash commands) |
 | `skill_dirs` | `~/.agents/skills:.agents/skills` | `:`-separated directories searched for skills; relative entries resolve against the workspace |
 | `worktree` | `off` | `on`, `off` (start each new session in its own `.worktrees/` git worktree) |
+| `project_extensions` | `off` | `on`, `off` (`on` trusts every repository's `.pcode/extensions` and `worktree-setup`) |
+| `trusted_projects` | `` | `:`-separated repository paths whose shipped code may run; the launch prompt appends here |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
 
@@ -676,8 +697,8 @@ repository instructions, and the saved session all point there. The model needs
 no instructions and relative paths cannot land in the mainline by mistake.
 
 ```sh
-pcode --worktree                      # .worktrees/<session-id-prefix> on a branch of the same name
-pcode --worktree fix-thing            # named directory and branch
+pcode --worktree                      # .worktrees/pcode-<session-id-prefix>, branch of the same name
+pcode --worktree fix-thing            # .worktrees/pcode-fix-thing
 pcode config project set worktree on  # default for this repository (committed in .pcode/)
 pcode config set worktree on          # default for every git repository
 pcode --no-worktree                   # stay in the current checkout this once
@@ -686,7 +707,9 @@ pcode --no-worktree                   # stay in the current checkout this once
 The worktree lives under `.worktrees/` in the primary checkout (added to
 `.git/info/exclude`, so `git status` stays clean without touching `.gitignore`)
 and branches from the mainline's current branch, reusing a branch of that name if
-one exists. Starting pcode inside an existing worktree, outside git, or with
+one exists. Session worktrees and their branches are always prefixed `pcode-`, so
+`git worktree list` and `git branch` show which ones pcode made; `make worktree`
+style invocations of `python -m pcode.worktree` use the name as given. Starting pcode inside an existing worktree, outside git, or with
 `--continue` never creates another one. Resuming a session (`pcode -c`, or
 `pcode -C .worktrees/NAME -c` from elsewhere) lands back in its worktree because
 the workspace is what the session saved.
@@ -698,7 +721,7 @@ runs two optional scripts inside the new worktree, each with `PCODE_MAIN`,
 | Script | Runs |
 | --- | --- |
 | `~/.config/pcode/worktree-setup` | always (for what every repo needs: `direnv allow`, copying `.envrc`) |
-| `<repo>/.pcode/worktree-setup` | only with `project_extensions on`, like `.pcode/extensions`, since it is code shipped with the repo |
+| `<repo>/.pcode/worktree-setup` | only in a trusted repository (launch prompt, or `project_extensions on`), since it is code shipped with the repo |
 
 An executable script runs directly (give it a shebang); anything else runs
 through `sh`. A non-zero exit aborts the launch and removes the half-made

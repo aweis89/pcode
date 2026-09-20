@@ -9,7 +9,7 @@ it registered into the agent and the terminal.
 | Location | Scope | Loads |
 | --- | --- | --- |
 | `~/.config/pcode/extensions/<name>.py` (or `$XDG_CONFIG_HOME/pcode/extensions/`) | user, every workspace | always |
-| `<workspace>/.pcode/extensions/<name>.py` | this project | only after `/config set project_extensions on` |
+| `<workspace>/.pcode/extensions/<name>.py` | this project | only once the user trusts the repository (launch prompt, or `project_extensions on`) |
 | `/config set extension_dirs DIR:DIR` | extra directories | always |
 
 A directory with `__init__.py` works too, for multi-file extensions. Names

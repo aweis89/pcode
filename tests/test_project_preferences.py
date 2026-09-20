@@ -42,6 +42,7 @@ def test_project_file_overlays_user_except_user_only_keys(tmp_path):
         extension_dirs="/evil",
         meridian_managed="on",
         anthropic_auth="oauth",
+        trusted_projects="/",
         bogus="x",
         autocompact="maybe",  # invalid value: ignored, user default stands
     )
@@ -55,6 +56,7 @@ def test_project_file_overlays_user_except_user_only_keys(tmp_path):
     assert "extension_dirs" not in prefs
     assert "meridian_managed" not in prefs
     assert "anthropic_auth" not in prefs
+    assert "trusted_projects" not in prefs
     assert "autocompact" not in prefs
     assert rejected_project_keys() == sorted(USER_ONLY)
 

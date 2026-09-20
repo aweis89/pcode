@@ -7,12 +7,17 @@ from io import StringIO
 
 import pytest
 
+from pcode.preferences import save_preferences
+
 pexpect = pytest.importorskip("pexpect", reason="PTY smoke tests require a Unix terminal")
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Unix PTY required")
 
 
 @pytest.mark.parametrize("columns", [40, 100])
 def test_terminal_completion_resize_interrupt_and_exit(columns):
+    # The child runs from this checkout, which ships .pcode/worktree-setup;
+    # trust it up front or the launch prompt blocks the PTY.
+    save_preferences(project_extensions="on")
     log = StringIO()
     child = pexpect.spawn(
         sys.executable,
