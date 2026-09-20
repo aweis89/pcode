@@ -18,6 +18,9 @@ class Command:
     argument_provider: Callable[[], tuple[str, ...]] | None = None
     # /help groups commands under this heading, in first-seen order.
     group: str = "Other"
+    # Shown beside each argument in the completion menu, like the command's own
+    # description; arguments without an entry complete bare.
+    argument_descriptions: dict[str, str] | None = None
 
 
 class CommandRegistry:
@@ -87,6 +90,11 @@ class SlashCompleter(Completer):
             arguments = (
                 command.argument_provider() if command.argument_provider else command.arguments
             )
+            described = command.argument_descriptions or {}
             for argument in arguments:
                 if argument.startswith(prefix):
-                    yield Completion(argument, start_position=-len(prefix))
+                    yield Completion(
+                        argument,
+                        start_position=-len(prefix),
+                        display_meta=described.get(argument, ""),
+                    )
