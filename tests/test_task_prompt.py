@@ -51,6 +51,19 @@ def test_prompt_has_blank_line_after_repository_instructions():
     )
 
 
+def test_editor_draws_the_same_rail_on_every_line(tmp_path):
+    """What is being typed already looks like what scrollback will show."""
+    from pcode.commands import CommandRegistry
+    from pcode.task_prompt import RAIL
+    from pcode.ui import create_prompt
+
+    session = create_prompt(CommandRegistry(), workspace=tmp_path)
+    assert session.message == [("class:prompt", RAIL)]
+    # Hard newlines and soft wraps both continue the quote, as TaskPrompt does.
+    assert session.prompt_continuation(80, 1, False) == [("class:prompt", RAIL)]
+    assert session.prompt_continuation(80, 1, True) == [("class:prompt", RAIL)]
+
+
 def test_live_submission_does_not_echo_quote_before_response():
     from pcode.app import PreviewApp
 
@@ -76,4 +89,5 @@ def test_live_prompt_uses_muted_notice_style_without_changing_editor(theme):
         assert not attrs.bold
     editor_attrs = prompt_style.get_attrs_for_style_str("class:prompt")
     assert editor_attrs.color == palette.accent.lstrip("#")
-    assert editor_attrs.bold
+    # Plain accent, matching the rail TaskPrompt paints once the line is sent.
+    assert not editor_attrs.bold
