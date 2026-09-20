@@ -16,7 +16,14 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from pcode.profiling import profile_session
-from pcode.replay_benchmark import EndOnlyOutput, JournalSnapshot, ReplaySettings, replay_journal
+from pcode.replay_benchmark import (
+    EndOnlyOutput,
+    JournalRuntime,
+    JournalSnapshot,
+    ReplaySettings,
+    journal_turns,
+    replay_journal,
+)
 from pcode.ui import CursorSafeOutput, TerminalOutput
 
 
@@ -77,6 +84,9 @@ def main() -> None:
     source.add_argument("--kind", choices=("prose", "list", "fence"))
     source.add_argument("--replay", action="append", metavar="SESSION", help="ID/prefix or latest")
     source.add_argument("--recent", type=positive_int, metavar="N", help="Replay N newest sessions")
+    source.add_argument(
+        "--largest", type=positive_int, metavar="N", help="Replay the N biggest session journals"
+    )
     source.add_argument("--journal", type=Path, action="append", help="Replay explicit JSONL files")
     parser.add_argument("--session-dir", type=Path)
     parser.add_argument("--repeat", type=positive_int, default=1)
@@ -92,10 +102,30 @@ def main() -> None:
     parser.add_argument("--profile", type=Path, metavar="DIR")
     parser.add_argument("--profile-cpu", action="store_true")
     parser.add_argument("--profile-memory", action="store_true")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Replay one session through the real editor in this terminal, paced by its timestamps",
+    )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="Live pacing multiplier: 1 is real time, 0 replays as fast as possible",
+    )
+    parser.add_argument(
+        "--result",
+        type=Path,
+        metavar="FILE",
+        help="Also write the --live result JSON here (the terminal is busy being the UI)",
+    )
     args = parser.parse_args()
     if (args.profile_cpu or args.profile_memory) and args.profile is None:
         parser.error("--profile-cpu and --profile-memory require --profile DIR")
-    if args.replay or args.recent or args.journal:
+    if args.live:
+        _live(args, parser)
+        return
+    if args.replay or args.recent or args.largest or args.journal:
         _replay(args, parser)
         return
     if (
@@ -106,8 +136,10 @@ def main() -> None:
         or args.max_turns is not None
         or not args.show_thinking
         or args.command_scrollback
+        or args.speed != 1.0
+        or args.result is not None
     ):
-        parser.error("replay options require --replay, --recent, or --journal")
+        parser.error("replay options require --replay, --recent, --largest, or --journal")
     args.kind = args.kind or "list"
     with capture(args, args.profile):
         started = time.perf_counter()
@@ -135,21 +167,25 @@ def capture(args, directory):
     )
 
 
-def _replay(args, parser):
+def select_journals(args) -> list[Path]:
+    """The transcript files the replay options name; may raise OSError/ValueError."""
     from pcode.sessions import list_sessions, resolve_session, session_root
 
     root = args.session_dir or session_root()
+    if args.journal:
+        return args.journal
+    if args.recent:
+        return [root / info.id / "transcript.jsonl" for info in list_sessions(root)[: args.recent]]
+    if args.largest:
+        journals = [root / info.id / "transcript.jsonl" for info in list_sessions(root)]
+        journals = [path for path in journals if path.is_file()]
+        return sorted(journals, key=lambda path: path.stat().st_size, reverse=True)[: args.largest]
+    return [resolve_session(selector, root) / "transcript.jsonl" for selector in args.replay or ()]
+
+
+def _replay(args, parser):
     try:
-        if args.journal:
-            journals = args.journal
-        elif args.recent:
-            journals = [
-                root / info.id / "transcript.jsonl" for info in list_sessions(root)[: args.recent]
-            ]
-        else:
-            journals = [
-                resolve_session(selector, root) / "transcript.jsonl" for selector in args.replay
-            ]
+        journals = select_journals(args)
         if not journals:
             parser.error("no saved sessions found")
         if args.profile:
@@ -214,6 +250,81 @@ def _replay_pass(args, snapshot, settings, index, repeat, mode):
         memory_tracing=args.profile_memory,
         **result,
     )
+
+
+def _live(args, parser):
+    import resource
+
+    from pcode.app import PreviewApp
+
+    if args.render_mode != "streamed" or args.repeat != 1 or args.profile_memory:
+        parser.error("--live supports one streamed pass; --profile-cpu is allowed")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        parser.error("--live needs a terminal; script it in a tmux pane with --result FILE")
+    try:
+        journals = select_journals(args)
+        if len(journals) != 1:
+            parser.error("--live replays exactly one session")
+        with closing(JournalSnapshot(journals[0])) as snapshot:
+            turns = journal_turns(snapshot)
+        if args.profile:
+            args.profile.mkdir(mode=0o700, parents=True, exist_ok=False)
+    except (OSError, ValueError) as error:
+        parser.error(
+            f"Cannot prepare replay ({type(error).__name__}); check source and output paths"
+        )
+    stop = args.start_turn - 1 + (args.max_turns or len(turns))
+    turns = turns[args.start_turn - 1 : stop]
+    if not turns:
+        parser.error("no turns in the selected range")
+    runtime = JournalRuntime(turns, speed=args.speed)
+    stats = dict(turns=len(turns), speed=args.speed, renders=0, flushes=0)
+
+    class LiveReplayApp(PreviewApp):
+        """Play every journaled turn through the real turn path, then quit."""
+
+        async def run_live(self, output, text, *, resend=False):
+            app = output.app
+            if stats["renders"] == 0:
+                render, flush = app.renderer.render, output.flush
+
+                def counted_render(*a, **kw):
+                    stats["renders"] += 1
+                    return render(*a, **kw)
+
+                async def counted_flush():
+                    if output.pending or output._regenerate is not None:
+                        stats["flushes"] += 1
+                    await flush()
+
+                app.renderer.render, output.flush = counted_render, counted_flush
+                stats["started"] = time.perf_counter()
+                stats["rusage"] = resource.getrusage(resource.RUSAGE_SELF)
+            for turn in runtime.turns[:]:
+                await super().run_live(output, turn.prompt)
+            self.running = False
+            return True
+
+    app = LiveReplayApp(
+        model="journal-replay",
+        runtime=runtime,
+        initial_prompt=turns[0].prompt or "replay",
+        console=Console(),
+    )
+    app.activity.show_thinking = args.show_thinking
+    app.transcript.command_scrollback = args.command_scrollback
+    with capture(args, args.profile):
+        app.run()
+    before = stats.pop("rusage")
+    after = resource.getrusage(resource.RUSAGE_SELF)
+    stats["events"] = runtime.events_played
+    stats["wall_seconds"] = time.perf_counter() - stats.pop("started")
+    stats["cpu_seconds"] = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+    stats["cpu_fraction"] = stats["cpu_seconds"] / max(stats["wall_seconds"], 1e-9)
+    result = json.dumps(dict(scope="live_terminal_replay", **stats))
+    print(result)
+    if args.result:
+        args.result.write_text(result + "\n")
 
 
 if __name__ == "__main__":

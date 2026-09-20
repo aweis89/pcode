@@ -232,3 +232,88 @@ async def replay_journal(
         wall_seconds=time.perf_counter() - started,
         top_turns=sorted(turns, key=lambda item: item["render_cpu_seconds"], reverse=True)[:10],
     )
+
+
+# Real journals pause for minutes while a tool runs or the user types; a live
+# replay is about render cost, so no single gap waits longer than this.
+MAX_GAP_SECONDS = 2.0
+
+
+@dataclass
+class JournalTurn:
+    prompt: str
+    events: list  # (seconds since the previous event, display event)
+
+
+def journal_turns(snapshot: JournalSnapshot) -> list[JournalTurn]:
+    """Split a journal into prompts and their timestamped display events."""
+    turns: list[JournalTurn] = []
+    previous = None
+    for record in snapshot.records():
+        kind = record.get("kind")
+        if kind == "turn_started":
+            prompt = record.get("prompt", "")
+            turns.append(JournalTurn(prompt if isinstance(prompt, str) else "", []))
+            previous = _record_time(record)
+            continue
+        if kind not in ADAPTERS:
+            continue
+        if not turns:
+            turns.append(JournalTurn("", []))
+        try:
+            event = ADAPTERS[kind].validate_python(record)
+        except ValidationError:
+            continue
+        stamp = _record_time(record)
+        gap = 0.0
+        if stamp is not None and previous is not None:
+            gap = min(max(0.0, (stamp - previous).total_seconds()), MAX_GAP_SECONDS)
+        if stamp is not None:
+            previous = stamp
+        turns[-1].events.append((gap, event))
+    return [turn for turn in turns if turn.events]
+
+
+def _record_time(record):
+    from datetime import datetime
+
+    value = record.get("time")
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+class JournalRuntime:
+    """A runtime whose every ``stream`` call plays back the next journaled turn.
+
+    Only what ``PreviewApp.run_live`` reads is here; nothing contacts a model.
+    """
+
+    session = None
+    recovery_blocked = None
+    agent = None
+    inspections = None
+
+    def __init__(self, turns: list[JournalTurn], speed: float = 1.0):
+        self.turns = list(turns)
+        self.speed = speed
+        self.events_played = 0
+
+    async def stream(self, text):
+        import asyncio
+
+        turn = self.turns.pop(0)
+        for gap, event in turn.events:
+            if self.speed > 0 and gap > 0:
+                await asyncio.sleep(gap / self.speed)
+            else:
+                # Keep the editor responsive even at full speed.
+                await asyncio.sleep(0)
+            self.events_played += 1
+            yield event
+
+    def close(self) -> None:
+        pass

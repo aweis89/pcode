@@ -134,6 +134,9 @@ pcode-benchmark --recent 5 --repeat 3
 # Compare incremental parsing with experimental end-only rendering.
 pcode-benchmark --recent 5 --repeat 3 --render-mode both
 
+# The biggest journals, which is where long lists and tables live.
+pcode-benchmark --largest 3 --command-scrollback
+
 # Choose a specific session or a copied journal. Selectors can be repeated.
 pcode-benchmark --replay latest
 pcode-benchmark --replay SESSION_ID --session-dir /path/to/sessions
@@ -190,6 +193,45 @@ metadata and journals are read-only; replay creates no locks or new session file
 This measures **current-code CPU cost on historical input**, not the CPU consumed
 when the original session ran. Fast replay often occupies one core; that alone is
 not evidence of an interactive CPU problem.
+
+### Live replay through the real editor
+
+The offline replay leaves out the part that dominates a real session: every
+scrollback write erases and repaints the prompt_toolkit editor and live panel,
+and the spinner repaints them again between writes. On a saturated stream that
+was ~65% of process CPU where Markdown rendering was ~5%. `--live` plays one
+journal through the real turn path in the current terminal, paced by the
+journal's timestamps, and reports process CPU, wall time, editor renders, and
+scrollback flushes when the last turn ends:
+
+```sh
+# Real time, as the session originally streamed (gaps capped at 2 s).
+pcode-benchmark --live --replay SESSION_ID
+
+# Ten times faster, with a function profile of the whole run.
+pcode-benchmark --live --replay SESSION_ID --speed 10 \
+  --profile /tmp/pcode-live --profile-cpu
+
+# Unattended, from a script: the terminal is the UI, so the JSON goes to a file.
+tmux new-session -d -x 100 -y 40 \
+  'pcode-benchmark --live --largest 1 --speed 10 --result /tmp/live.json'
+```
+
+A repaint is a full prompt_toolkit layout pass over the bottom block. Measured
+on a silent turn (spinner only) it was 3.9 ms, 6.2 ms with a task panel, of
+which ~45% was `VSplit._divide_widths`/`HSplit._divide_heights` growing the
+children one cell at a time; `layout_speed.py` replaces those with an exact
+closed form, bringing a repaint to ~2.5/3.5 ms. What remains is the container
+walk and control rendering, spread thinly. The other lever is frame rate: the
+panel repaints at the rate of the fastest spinner on screen (`dots`, 80 ms,
+during a model turn).
+
+No model or tool runs; the journal's events are handed to the same code a live
+turn uses. `--speed 0` drops the pacing and mostly measures the flush loop's
+batching, so compare speeds against each other rather than against offline
+replay. `cpu_fraction` is process CPU over wall time: the share of one core the
+session would have cost at that speed. Keystrokes, resizes, and the original
+tool waits beyond the gap cap are not reproduced.
 
 ### Interpreting replay results
 

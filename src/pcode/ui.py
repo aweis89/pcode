@@ -41,6 +41,7 @@ from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
 from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
 from pcode.input_keys import configure_newline_keys
+from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN, PastedText
 from pcode.preferences import SETTINGS, SYNTAX_THEMES, load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
@@ -962,6 +963,7 @@ def create_prompt(
     **kwargs,
 ) -> PromptSession:
     configure_newline_keys()
+    install_fast_layout_division()
     activity = activity or Activity()
     keys = KeyBindings()
 
@@ -1181,9 +1183,23 @@ def create_prompt(
     # System rows (compaction, worktree git work) spin differently from a
     # model turn, so a wait on pcode itself is never mistaken for one on the model.
     system_spinner = Spinner("line")
-    refresh_interval = (
-        min(plan_spinner.interval, prompt_spinner.interval, system_spinner.interval) / 1000
-    )
+    fastest_interval = min(plan_spinner.interval, prompt_spinner.interval, system_spinner.interval)
+
+    def refresh_interval() -> float:
+        """Seconds until the next frame: the fastest spinner actually on screen.
+
+        Each frame is a full layout pass, so a system turn animates at its own
+        slower rate rather than at the prompt spinner's. Anything else that
+        keeps the timer alive (a queued prompt, an expiring notice) has no
+        spinner to pace, so it keeps the fastest rate as before.
+        """
+        if not activity.status_shown:
+            return fastest_interval / 1000
+        spinner = prompt_spinner if activity.prompt_kind == "user" else system_spinner
+        interval = spinner.interval
+        if activity.tasks_shown:
+            interval = min(interval, plan_spinner.interval)
+        return interval / 1000
 
     @per_render
     def base_plan_rows(budget: int | None = None):
@@ -1487,7 +1503,7 @@ def create_prompt(
 
     async def animate(app):
         nonlocal animation_task
-        await asyncio.sleep(refresh_interval)
+        await asyncio.sleep(refresh_interval())
         animation_task = None
         # Repaint unconditionally: this timer only exists because the previous
         # render was animated, and the frame that removes an expired notice or
