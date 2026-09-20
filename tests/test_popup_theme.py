@@ -83,3 +83,51 @@ def test_all_popups_share_style_scope(kind):
         assert app.layout.container.style == "class:popup"
         attrs = app.style.get_attrs_for_style_str("class:popup class:dialog.body")
         assert attrs.bgcolor == attrs.color == "default"
+
+
+def test_rich_pane_keyboard_scrolling_survives_a_render():
+    """The pane's reported cursor follows the scroll, or every render snaps it to the top."""
+    import asyncio
+    from io import StringIO
+
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.output.vt100 import Vt100_Output
+    from rich.text import Text
+
+    from pcode.popup_ui import RichPane
+
+    async def run():
+        with create_pipe_input() as pipe:
+            output = Vt100_Output(StringIO(), lambda: Size(rows=10, columns=80), enable_cpr=False)
+            pane = RichPane()
+            pane.set([Text("\n".join(f"line {i}" for i in range(100)))])
+            keys = KeyBindings()
+            pane.bind_scrolling(keys)
+            keys.add("escape", eager=True)(lambda event: event.app.exit())
+            app = Application(
+                layout=Layout(pane, focused_element=pane.window),
+                key_bindings=keys,
+                full_screen=True,
+                input=pipe,
+                output=output,
+            )
+            task = asyncio.create_task(app.run_async())
+            await asyncio.sleep(0.05)
+            pipe.send_text("\x1b[B")  # Down
+            await asyncio.sleep(0.05)
+            assert pane.window.vertical_scroll == 1
+            pipe.send_text("\x1b[6~")  # PageDown
+            await asyncio.sleep(0.05)
+            assert pane.window.vertical_scroll == 10
+            for _ in range(15):
+                pipe.send_text("\x1b[6~")
+                await asyncio.sleep(0.03)
+            assert pane.window.vertical_scroll == 90  # Clamped at the last page.
+            pipe.send_text("\x1b")
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())

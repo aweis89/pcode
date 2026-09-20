@@ -3,6 +3,7 @@
 import re
 from io import StringIO
 
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.formatted_text.utils import fragment_list_to_text
@@ -117,7 +118,14 @@ class RichPane:
                 self._fragment_cache.clear()
                 return super().create_content(width, height)
 
-        self.control = Control("", focusable=True, show_cursor=False)
+        # The window scrolls to keep the reported cursor visible on every render,
+        # so a fixed row 0 would snap keyboard scrolling straight back to the top.
+        self.control = Control(
+            "",
+            focusable=True,
+            show_cursor=False,
+            get_cursor_position=lambda: Point(0, self.window.vertical_scroll),
+        )
         self.window = Window(
             self.control, wrap_lines=False, right_margins=[ScrollbarMargin(display_arrows=True)]
         )
