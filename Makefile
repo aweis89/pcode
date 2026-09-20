@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test test-tmux test-all lint fmt cache-report harness-src worktree worktree-merge worktree-remove worktrees brew-install brew-update brew-uninstall
+.PHONY: help install update uninstall run test test-tmux test-all lint fmt cache-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees brew-install brew-update brew-uninstall
 
 HARNESS_DIR := tmp/pydantic-ai-harness
 HARNESS_URL := https://github.com/pydantic/pydantic-ai-harness.git
@@ -58,6 +58,9 @@ worktree-remove: ## Delete a worktree, keeping its branch (make worktree-remove 
 
 worktrees: ## List worktrees
 	@uv run python -m pcode.worktree list
+
+worktree-clean: ## Delete every worktree with nothing uncommitted or unmerged, and its branch
+	@uv run python -m pcode.worktree clean
 
 brew-install: ## Alternative: install the frozen HEAD build via Homebrew
 	brew tap aweis89/pcode https://github.com/aweis89/pcode.git

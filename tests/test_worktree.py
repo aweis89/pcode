@@ -351,6 +351,63 @@ def test_conflicts_point_at_resolve_and_the_prompt_names_the_files(repo):
     }
 
 
+def test_clean_removes_only_what_has_nothing_to_lose(repo):
+    spent = worktree.create(repo, "spent")
+    dirty = worktree.create(repo, "dirty")
+    ahead = worktree.create(repo, "ahead")
+    locked = worktree.create(repo, "locked")
+    (dirty.path / "scratch").write_text("x")  # untracked is still work
+    commit(ahead.path, "feature.txt")
+    git(repo, "worktree", "lock", str(locked.path))
+
+    report = "\n".join(worktree.clean(repo))
+    assert f"removed {spent.path}" in report
+    assert f"kept {dirty.path} (uncommitted or untracked files)" in report
+    assert f"kept {ahead.path} (1 unmerged commit)" in report
+    assert str(locked.path) not in report
+
+    assert not spent.path.exists()
+    assert git(repo, "branch", "--list", "spent") == ""
+    assert dirty.path.exists() and ahead.path.exists() and locked.path.exists()
+    assert "ahead" in git(repo, "branch", "--list", "ahead")
+    assert sorted(worktree.clean(repo)) == sorted(
+        [
+            f"kept {dirty.path} (uncommitted or untracked files)",
+            f"kept {ahead.path} (1 unmerged commit)",
+        ]
+    )
+
+
+def test_clean_keeps_the_callers_own_worktree_and_prunes_stale_entries(repo):
+    import shutil
+
+    mine = worktree.create(repo, "mine")
+    other = worktree.create(repo, "other")
+    gone = worktree.create(repo, "gone")
+    shutil.rmtree(gone.path)
+
+    notes = []
+    app = PreviewApp(workspace=mine.path)
+    app.transcript.note = lambda text, **_: notes.append(text)
+    app.worktree("clean")
+
+    assert notes == [f"removed {other.path}"]
+    assert mine.path.exists() and not other.path.exists()
+    assert str(gone.path) not in worktree.listing(repo)
+    # Called from inside a worktree, the caller's own directory is kept.
+    assert worktree.clean(mine.path) == ["nothing to clean"]
+
+
+def test_clean_reports_nothing_and_refuses_outside_a_repository(repo, tmp_path, capsys):
+    assert worktree.clean(repo) == ["nothing to clean"]
+    with pytest.raises(worktree.WorktreeError, match="not inside a git repository"):
+        worktree.clean(tmp_path / "elsewhere")
+    created = worktree.create(repo, "cli-clean")
+    with patch("pathlib.Path.cwd", return_value=repo):
+        assert worktree.main(["clean"]) == 0
+    assert f"removed {created.path}" in capsys.readouterr().out
+
+
 def test_run_setup_passes_environment(repo, monkeypatch):
     monkeypatch.setenv("KEEP_ME", "yes")
     user_script = preferences_path().parent / "worktree-setup"
