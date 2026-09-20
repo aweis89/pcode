@@ -33,6 +33,19 @@ DELEGATE_INSTRUCTIONS = (
     "and always for `browser_login`, which needs the user's attention."
 )
 
+LOGIN_INSTRUCTIONS = {
+    "attach": (
+        "This is the user's own Chrome: every site they are signed in to is already "
+        "signed in here. Never call `browser_login` before `navigate` has shown you an "
+        "actual sign-in page."
+    ),
+    "own": (
+        "The browser profile persists between conversations, so a site the user logged "
+        "in to before is still logged in. `navigate` to the page first; call "
+        "`browser_login` only when what comes back is a sign-in page."
+    ),
+}
+
 SUBAGENT_INSTRUCTIONS = (
     "You drive a real browser through the tools available to you and report back "
     "concisely: what you found, what worked, what failed, and the final URL. Do not "
@@ -79,16 +92,18 @@ def _capability(pcode, toolset):
     async def browser_login(url: str, done_url_prefix: str | None = None) -> str:
         """Open `url` in the visible browser window and wait for the user to log in by hand.
 
-        Use this before pages that need an account. Returns once the user says
-        they are done (`/browser done`), once the page URL starts with
-        `done_url_prefix` when given, or after five minutes. The login persists
-        for the rest of the conversation, so call this once per site.
+        Only for a page that `navigate` showed to be a sign-in page: logins
+        persist in this browser, so most sites are already signed in. Returns
+        once the user says they are done (`/browser done`), once the page URL
+        starts with `done_url_prefix` when given, or after five minutes.
         """
         await _start(pcode)
         result = await toolset.navigate(url)
         page = STATE.session.page
         if page is None:
             return str(result)
+        if done_url_prefix and page.url.startswith(done_url_prefix):
+            return f"Already logged in: the page is {page.url!r}. No user action needed."
         await page.bring_to_front()
         pcode.ui.notify(
             f"Log in to {url} in the browser window, then run /browser done. "
@@ -119,7 +134,7 @@ def _capability(pcode, toolset):
         id="browser",
         toolsets=[toolset],
         tools=[browser_open, browser_login],
-        instructions=guidance,
+        instructions=guidance + "\n" + LOGIN_INSTRUCTIONS["attach" if STATE.attach else "own"],
     )
 
 
