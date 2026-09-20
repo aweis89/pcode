@@ -61,12 +61,17 @@ def test_all_calls_retained_with_filters_and_selection():
         assert ui.selected.call_id == "24"
         ui.list.buffer.cursor_position = ui.list.document.translate_row_col_to_index(1, 0)
         assert ui.selected.call_id == "22"
-        assert "output 199" in ui.detail.text
-        assert "Summary: exit 1" in ui.detail.text
+        shown = ui.detail.text(width=100)
+        assert "output 199" in shown
+        assert "Summary            exit 1" in shown
+        assert "run_command · failed" in shown
+        # Arguments come from JSON as labelled rows, commands as a code block.
+        assert '{"command"' not in shown
+        assert "command\npytest -q" in shown
         ui.tool = "write_plan"
         ui.refresh()
         assert not ui.visible
-        assert "No matching" in ui.detail.text
+        assert "No matching" in ui.detail.text()
         ui.tool = "All"
         ui.query.text = "does not exist"
         assert not ui.visible
@@ -148,7 +153,9 @@ def test_inspector_keyboard_focus_scroll_filter_and_close():
         call(archive, "failed", failed=True)
         call(archive, "success")
         with create_pipe_input() as pipe:
-            ui = ToolInspector(archive, input=pipe, output=DummyOutput())
+            # A sized output so the pane renders; page scrolling needs render info.
+            output = Vt100_Output(StringIO(), lambda: Size(rows=24, columns=80), enable_cpr=False)
+            ui = ToolInspector(archive, input=pipe, output=output)
             task = asyncio.create_task(ui.run())
             await asyncio.sleep(0.05)
             assert ui.selected.call_id == "success"  # Newest first.
@@ -169,7 +176,7 @@ def test_inspector_keyboard_focus_scroll_filter_and_close():
             assert ui.app.layout.has_focus(ui.detail)
             pipe.send_text("\x1b[6~")  # PageDown
             await asyncio.sleep(0.05)
-            assert ui.detail.document.cursor_position_row > 0
+            assert ui.detail.window.vertical_scroll > 0
             pipe.send_text("\x06")  # Ctrl+F
             await asyncio.sleep(0.05)
             assert ui.app.layout.has_focus(ui.query)
