@@ -182,7 +182,7 @@ def test_system_prompt_row_is_badged_and_not_an_echoed_command():
         ("class:activity.system.detail", " ▸ keep {tests}"),
     ]
     rendered = "".join(text for _, text in fragments)
-    assert "/compact" not in rendered and "❯" not in rendered
+    assert "/compact" not in rendered and "▌" not in rendered
 
 
 def test_system_prompt_row_drops_empty_detail():

@@ -43,7 +43,7 @@ def modal(pane, expected):
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_modal_scroll_resize_and_restore_editor(pane):
-    assert input_rows(capture(pane, "❯")) == 1
+    assert input_rows(capture(pane, "▌")) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "/tools failed")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     modal(pane, "Status: Failed")
@@ -70,7 +70,7 @@ def test_modal_scroll_resize_and_restore_editor(pane):
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_mouse_wheel_scrolls_details_and_restores_editor(pane):
-    capture(pane, "❯")
+    capture(pane, "▌")
     pane("set-option", "-g", "mouse", "on")
     pane("send-keys", "-t", "preview:0.0", "-l", "/tools")
     pane("send-keys", "-t", "preview:0.0", "Enter")

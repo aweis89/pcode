@@ -27,7 +27,7 @@ app.run()
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_compaction_keeps_editor_height_and_cancels_after_clearing_draft(pane):
-    assert input_rows(capture(pane, "❯")) == 1
+    assert input_rows(capture(pane, "▌")) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "/compact keep test failures")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     screen = capture(pane, "Compacting context", running=True)
