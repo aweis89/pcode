@@ -13,10 +13,12 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import merge_completers
+from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Always, Condition, has_focus, is_searching, vi_mode
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.key_binding.vi_state import InputMode
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
@@ -39,6 +41,7 @@ from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
 from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
 from pcode.input_keys import configure_newline_keys
+from pcode.paste import MARKER_PATTERN, PastedText
 from pcode.preferences import SETTINGS, SYNTAX_THEMES, load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.syntax_colors import derive_colors
@@ -148,6 +151,9 @@ class Palette:
                 # A file reference is neither prose nor a command: underlining
                 # it marks the token without competing with the prompt chevron.
                 "reference": f"{self.task_heading} underline",
+                # The marker stands in for hidden text; make it impossible to
+                # mistake for something the user typed.
+                "paste-marker": "bold reverse",
                 "auto-suggestion": self.muted,
             }
         )
@@ -1006,6 +1012,15 @@ def create_prompt(
             on_effort(-1)
             event.app.invalidate()
 
+    pasted = PastedText()
+
+    @keys.add(Keys.BracketedPaste)
+    def paste(event: KeyPressEvent) -> None:
+        # Same line-ending cleanup as prompt_toolkit's default paste binding,
+        # then large pastes collapse to a preview until the prompt is sent.
+        data = event.data.replace("\r\n", "\n").replace("\r", "\n")
+        event.current_buffer.insert_text(pasted.collapse(data))
+
     @keys.add("enter", filter=~is_searching)
     def submit(event: KeyPressEvent) -> None:
         buffer = event.current_buffer
@@ -1013,6 +1028,10 @@ def create_prompt(
             # First Enter accepts the selected completion; next Enter sends it.
             buffer.complete_state = None
         else:
+            expanded = pasted.expand(buffer.text)
+            if expanded != buffer.text:
+                buffer.document = Document(expanded, len(expanded))
+            pasted.clear()
             buffer.validate_and_handle()
 
     @keys.add("escape", filter=vi_mode & ~is_searching, eager=True)
@@ -1070,6 +1089,7 @@ def create_prompt(
             if searching:
                 stop_search()
             session.default_buffer.reset()
+            pasted.clear()
             transcript.note(
                 "Input discarded. Ctrl+C again interrupts."
                 if activity.busy
@@ -1098,7 +1118,7 @@ def create_prompt(
         multiline=True,
         erase_when_done=True,
         completer=merge_completers([SlashCompleter(registry), FileReferenceCompleter(workspace)]),
-        lexer=ReferenceLexer(),
+        lexer=ReferenceLexer(extra=[(MARKER_PATTERN, "class:paste-marker")]),
         complete_while_typing=Condition(
             lambda: (
                 (

@@ -150,17 +150,30 @@ def reference_fragment(text: str) -> str | None:
 
 
 class ReferenceLexer(Lexer):
-    """Style file references in the editor so they read as paths, not prose."""
+    """Style file references in the editor so they read as paths, not prose.
+
+    ``extra`` adds further ``(pattern, style)`` tokens, such as paste markers.
+    """
+
+    def __init__(self, extra: list[tuple[re.Pattern[str], str]] = ()) -> None:
+        self.patterns = [(REFERENCE_PATTERN, "class:reference"), *extra]
 
     def lex_document(self, document: Document):
         def line_fragments(number: int):
             line = document.lines[number]
+            matches = sorted(
+                (match.start(), match.end(), style)
+                for pattern, style in self.patterns
+                for match in pattern.finditer(line)
+            )
             fragments = []
             position = 0
-            for match in REFERENCE_PATTERN.finditer(line):
-                fragments.append(("", line[position : match.start()]))
-                fragments.append(("class:reference", match.group()))
-                position = match.end()
+            for start, end, style in matches:
+                if start < position:
+                    continue
+                fragments.append(("", line[position:start]))
+                fragments.append((style, line[start:end]))
+                position = end
             fragments.append(("", line[position:]))
             return fragments
 
