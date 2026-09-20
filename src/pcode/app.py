@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from contextlib import ExitStack, aclosing
 from dataclasses import replace
 from pathlib import Path
@@ -152,6 +153,9 @@ class PreviewApp:
         self.skill_requested: str | None = None
         self.mcp_enable_requested: str | None = None
         self.mcp_enabling: str | None = None
+        # A slow command (git work, for example) handed off so the terminal can
+        # show a labelled system row while it runs off the event loop.
+        self.job_requested: tuple[str, str, Callable[[], list[str]]] | None = None
         self.model_requested = False
         self.pending_model: str | None = None
         # User extensions load with the runtime; their commands register once it exists.
@@ -1158,6 +1162,46 @@ class PreviewApp:
         for label, value in self.session_overview():
             self.transcript.note(f"{label}: {value}")
 
+    def defer(self, label: str, detail: str, job: Callable[[], list[str]]) -> None:
+        """Run a slow command's work under a system badge, or inline without a terminal.
+
+        Handlers run on the terminal's event loop, so a job that takes seconds
+        would freeze the screen with nothing to show for it. With a live
+        terminal the work is picked up by the command loop, which paints a
+        `◈ label ▸ detail` row (distinct from a model turn) and runs the job
+        in a thread. The job returns lines for the transcript; a ValueError
+        becomes the usual command error.
+        """
+        if self.transcript.output is None:
+            for line in job():
+                self.transcript.note(line)
+            return
+        self.job_requested = (label, detail, job)
+
+    async def perform_job(self) -> None:
+        assert self.job_requested is not None
+        label, detail, job = self.job_requested
+        self.job_requested = None
+        output = self.transcript.output
+        self.activity.busy = True
+        self.activity.start_prompt(label, kind="system", detail=detail)
+        if output is not None:
+            output.app.invalidate()
+        state = "failed"
+        try:
+            lines = await asyncio.to_thread(job)
+            state = "done"
+        except ValueError as error:
+            self.transcript.error(str(error))
+        else:
+            for line in lines:
+                self.transcript.note(line)
+        finally:
+            self.activity.finish_prompt(state)
+            self.activity.busy = bool(self.activity.queued_prompts)
+            if output is not None:
+                output.app.invalidate()
+
     def worktree(self, argument: str) -> None:
         from pcode import worktree
 
@@ -1167,8 +1211,7 @@ class PreviewApp:
             return
         if action == "clean":
             # Works from the mainline too, where the leftovers are most visible.
-            for line in worktree.clean(self.workspace):
-                self.transcript.note(line)
+            self.defer("Cleaning worktrees", "", lambda: worktree.clean(self.workspace))
             return
         linked = worktree.describe(self.workspace)
         if linked is None:
@@ -1199,18 +1242,26 @@ class PreviewApp:
             # A prompt in command clothing, dispatched like a skill.
             self.skill_requested = worktree.resolve_prompt(linked, files)
         elif action == "merge":
-            self.transcript.note(worktree.merge(linked))
+            self.defer("Merging worktree", linked.branch, lambda: [worktree.merge(linked)])
         elif action == "remove":
             if worktree.unmerged_commits(linked):
                 raise ValueError("Branch has unmerged commits; /worktree merge first.")
-            self.transcript.note(worktree.remove(linked))
-            self._leave_worktree(linked)
-            self.transcript.note("This session's workspace no longer exists; /quit.")
+
+            def remove() -> list[str]:
+                result = worktree.remove(linked)
+                self._leave_worktree(linked)
+                return [result, "This session's workspace no longer exists; /quit."]
+
+            self.defer("Removing worktree", linked.branch, remove)
         elif action == "finish":
             # Refusals raise before anything is deleted, so the session stays put.
-            self.transcript.note(worktree.finish(linked))
-            self._leave_worktree(linked)
-            self.running = False
+            def finish() -> list[str]:
+                result = worktree.finish(linked)
+                self._leave_worktree(linked)
+                self.running = False
+                return [result]
+
+            self.defer("Finishing worktree", linked.branch, finish)
 
     def _leave_worktree(self, linked) -> None:
         """Point the saved session at the mainline so `pcode -c` still finds a directory."""
@@ -2136,6 +2187,8 @@ class PreviewApp:
                             handler(parts[1] if len(parts) > 1 else "", before_queue=True)
                         else:
                             self.handle(text)
+                        if self.job_requested is not None:
+                            await self.perform_job()
                         if self.resend_requested:
                             self.resend_requested = False
                             previous = self.runtime.resend_prompt()
