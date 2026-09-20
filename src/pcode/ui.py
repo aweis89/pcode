@@ -253,6 +253,8 @@ class Activity:
     queued_modes: list[str] = field(default_factory=list)
     prompt: str = ""
     prompt_state: str = ""
+    # True while a `!command` typed at the prompt is running.
+    user_command: bool = False
     # "user" echoes what was typed; "system" marks work pcode runs on its own
     # behalf (compaction, for example) so it never reads as part of the prompt.
     prompt_kind: str = "user"
@@ -1065,7 +1067,11 @@ def create_prompt(
         if transcript is None:
             return None
         edits = transcript.show_edits and activity.edit_previews
-        commands = transcript.command_scrollback and activity.command_outputs
+        # A `!command` the user typed is shown while it runs whatever the
+        # scrollback setting for the model's commands says.
+        commands = (
+            transcript.command_scrollback or activity.user_command
+        ) and activity.command_outputs
         if not edits and not commands:
             return None
         size = session.app.output.get_size()
@@ -1698,6 +1704,24 @@ class Transcript:
             )
         )
         return True
+
+    @recorded
+    def shell_result(
+        self, command: str, output: str, *, failed: bool, elapsed_seconds: float | None
+    ) -> None:
+        """Mirror a `!command` the user ran; always shown, since they asked for it."""
+        output = command_text(output).rstrip("\n")
+        self.print(
+            CommandTranscript(
+                command=command_text(command),
+                output=output if output.strip() else "(no output)",
+                title="Shell",
+                failed=failed,
+                elapsed_seconds=elapsed_seconds,
+                max_lines=self.command_scrollback_lines,
+                code_theme=self.code_theme,
+            )
+        )
 
     def warning(self, text: str) -> None:
         self.print(TranscriptNotice(text, "warning", "Warning"))
