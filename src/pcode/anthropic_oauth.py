@@ -22,6 +22,7 @@ import tempfile
 import time
 import webbrowser
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
@@ -311,6 +312,20 @@ class AnthropicOAuthModel(SubscriptionOAuthWire, AnthropicModel):
         super().__init__(
             model.removeprefix("anthropic:"),
             provider=AnthropicProvider(anthropic_client=client),
+        )
+
+    @cached_property
+    def profile(self):
+        # The subscription endpoint accepts `web_search_20260209`/`web_fetch_20260209`
+        # but then only exposes them inside a rate-limited `code_execution` sandbox,
+        # so nothing ever searches. With the 2025 tool versions it runs the search
+        # itself (verified against the live endpoint). Narrow the profile the way
+        # Pydantic AI does for Bedrock and Vertex; it costs domain filtering only.
+        from pydantic_ai.profiles import merge_profile
+        from pydantic_ai.profiles.anthropic import AnthropicModelProfile
+
+        return merge_profile(
+            super().profile, AnthropicModelProfile(anthropic_supports_dynamic_filtering=False)
         )
 
 

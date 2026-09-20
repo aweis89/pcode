@@ -393,6 +393,31 @@ def test_requests_carry_bearer_auth_and_claude_code_wire_markers(store, monkeypa
     assert read_tokens(store).access == "synthetic-rotated"
 
 
+def test_subscription_requests_send_the_2025_web_tool_versions(store):
+    """The endpoint accepts the 20260209 versions but only runs them inside code_execution."""
+    from pydantic_ai.capabilities import WebFetch, WebSearch
+
+    save(store, access="synthetic-access")
+    requests = []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx2.Response(200, json=MESSAGE)
+
+    async def run():
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handle)) as client:
+            model = AnthropicOAuthModel("anthropic:claude-opus-4-6", http_client=client)
+            assert model.profile.get("anthropic_supports_dynamic_filtering") is False
+            await Agent(model, capabilities=[WebSearch(), WebFetch()]).run("hello")
+
+    asyncio.run(run())
+    (payload,) = requests
+    assert [tool["type"] for tool in payload["tools"]] == [
+        "web_search_20250305",
+        "web_fetch_20250910",
+    ]
+
+
 def test_building_the_model_without_a_stored_login_fails_early(store):
     with pytest.raises(LoginError, match="Run /login"):
         AnthropicOAuthModel("anthropic:test-model")

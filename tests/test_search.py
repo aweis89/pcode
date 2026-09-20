@@ -1,39 +1,113 @@
+"""Web research ships as a bundled extension: native tools first, Exa or local ones otherwise."""
+
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.messages import (
+    ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
+    TextPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
-from pydantic_ai_harness.exa import ExaSearch
+from pydantic_ai.profiles import ModelProfile
 
-from pcode.agent import create_coder
+from pcode.agent import create_agent, create_coder
+from pcode.ext import BUNDLED_DIR, load_extensions, user_extension_dir
+from pcode.live import AgentRuntime
+from pcode.preferences import save_preferences
+from pcode.runtime import ToolStarted, ToolSummary
+
+# FunctionModel advertises every native tool; this profile stands in for a
+# provider without server-side search.
+NO_NATIVE = ModelProfile(supported_native_tools=frozenset())
 
 
-@pytest.mark.parametrize("key", [None, "", "   "])
-def test_coder_without_exa_key_keeps_coding_tools(tmp_path, monkeypatch, key):
+def web_extension(workspace):
+    loaded = load_extensions(workspace)
+    (extension,) = [e for e in loaded.extensions if e.name == "web_research"]
+    assert extension.loaded, extension.error
+    return extension
+
+
+def request_shape(capabilities, profile=None):
+    seen = {}
+
+    def record(info):
+        seen["tools"] = [tool.name for tool in info.function_tools]
+        seen["native"] = [tool.kind for tool in info.model_request_parameters.native_tools]
+
+    def model(messages, info):
+        record(info)
+        return ModelResponse(parts=[TextPart("ok")])
+
+    async def stream(messages, info):
+        record(info)
+        yield "ok"
+
+    Agent(
+        FunctionModel(model, stream_function=stream, profile=profile), capabilities=capabilities
+    ).run_sync("hi")
+    return seen
+
+
+def test_bundled_extension_is_discovered_last_and_shadowed_by_user_files(tmp_path):
+    extension = web_extension(tmp_path)
+    assert extension.scope == "bundled"
+    assert extension.path == BUNDLED_DIR / "web_research.py"
+    assert extension.summary() == "2 tools"
+    assert load_extensions(tmp_path).report(tmp_path) == ["web_research (bundled): 2 tools"]
+
+    user_extension_dir().mkdir(parents=True, exist_ok=True)
+    (user_extension_dir() / "web_research.py").write_text("def setup(pcode):\n    pass\n")
+    extension = web_extension(tmp_path)
+    assert extension.scope == "user"
+    assert extension.capabilities == []
+
+
+def test_coder_itself_has_no_web_tools(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXA_API_KEY", "test-exa-key")
+    shape = request_shape([create_coder(tmp_path)])
+    assert {"read_file", "edit_file", "shell"} <= set(shape["tools"])
+    assert not {"web_search", "get_page"} & set(shape["tools"])
+    assert shape["native"] == []
+
+
+@pytest.mark.parametrize("key", [None, "", "   ", "test-exa-key"])
+def test_native_search_and_fetch_hide_the_local_tools(tmp_path, monkeypatch, key):
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     if key is not None:
         monkeypatch.setenv("EXA_API_KEY", key)
-    coder = create_coder(tmp_path)
-    assert not any(isinstance(c, ExaSearch) for c in coder.capabilities)
-
-    async def model(messages, info):
-        names = {tool.name for tool in info.function_tools}
-        assert {"read_file", "edit_file", "shell"} <= names
-        assert not {"web_search", "get_page", "deep_search"} & names
-        yield "Coding without search."
-
-    Agent(FunctionModel(stream_function=model), capabilities=[coder]).run_sync("Hello")
+    capabilities = web_extension(tmp_path).capabilities
+    assert request_shape(capabilities) == {"tools": [], "native": ["web_search", "web_fetch"]}
+    assert request_shape(capabilities, NO_NATIVE) == {
+        "tools": ["web_search", "get_page"],
+        "native": [],
+    }
 
 
-def test_coder_search_uses_default_client_and_returns_sources(tmp_path, monkeypatch):
+def test_local_policy_never_advertises_native_tools(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    save_preferences(web_search="local")
+    capabilities = web_extension(tmp_path).capabilities
+    assert request_shape(capabilities) == {
+        "tools": ["web_search", "get_page"],
+        "native": [],
+    }
+
+
+def test_off_policy_contributes_nothing(tmp_path):
+    save_preferences(web_search="off")
+    assert web_extension(tmp_path).capabilities == []
+
+
+def test_exa_backs_the_local_tools_when_a_key_is_set(tmp_path, monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "test-exa-key")
-    coder = create_coder(tmp_path)
-    search = next(c for c in coder.capabilities if isinstance(c, ExaSearch))
-    assert search.client is None  # Harness resolves EXA_API_KEY, not the model.
-    assert not search.include_deep_search
     result = SimpleNamespace(
         url="https://example.com/docs",
         title="Example docs",
@@ -55,15 +129,13 @@ def test_coder_search_uses_default_client_and_returns_sources(tmp_path, monkeypa
         assert {"web_search", "get_page", "read_file", "shell"} <= names
         assert "deep_search" not in names
         assert "test-exa-key" not in str(info)
+        assert "research the web" in info.instructions
         if requests == 1:
             yield {0: DeltaToolCall(name="web_search", json_args='{"query":"example docs"}')}
             return
         parts = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
         last = parts[-1]
         assert "https://example.com/docs" in str(last.content)
-        assert last.metadata["sources"] == [
-            {"url": "https://example.com/docs", "title": "Example docs"}
-        ]
         if requests == 2:
             assert "Search excerpt" in str(last.content)
             yield {
@@ -75,21 +147,107 @@ def test_coder_search_uses_default_client_and_returns_sources(tmp_path, monkeypa
 
     async def run():
         with patch("pydantic_ai_harness.exa._toolset.AsyncExa", return_value=client) as ctor:
-            agent = Agent(FunctionModel(stream_function=model), capabilities=[coder])
-            response = await agent.run("Find example docs")
+            extension = web_extension(tmp_path)
+            agent = create_agent("test", tmp_path, extension.capabilities)
+            response = await agent.run(
+                "Find example docs", model=FunctionModel(stream_function=model, profile=NO_NATIVE)
+            )
             assert response.output == "Found the docs."
-            assert ctor.call_count >= 1
             assert all(args == () and kwargs == {} for args, kwargs in ctor.call_args_list)
-        client.search.assert_awaited_once_with(
-            "example docs",
-            contents={"highlights": True},
-            num_results=5,
-            output_schema=None,
-            include_domains=None,
-            exclude_domains=None,
-        )
+        client.search.assert_awaited_once()
         client.get_contents.assert_awaited_once_with(
             "https://example.com/docs", text={"max_characters": 10_000}
         )
 
     asyncio.run(run())
+
+
+def test_duckduckgo_and_http_fetch_back_the_local_tools_without_a_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    requests = 0
+
+    async def model(messages, info):
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            yield {0: DeltaToolCall(name="web_search", json_args='{"query":"example docs"}')}
+            return
+        last = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)][-1]
+        assert "Example docs\nhttps://example.com/docs\nA snippet" in str(last.content)
+        yield "Searched."
+
+    async def run():
+        extension = web_extension(tmp_path)
+        fetch = next(
+            tool
+            for capability in extension.capabilities
+            if type(capability).__name__ == "WebFetch"
+            for tool in [capability.local]
+        )
+        assert fetch.name == "get_page"
+        agent = create_agent("test", tmp_path, extension.capabilities)
+        with patch("ddgs.ddgs.DDGS.text") as text:
+            text.return_value = [
+                {"title": "Example docs", "href": "https://example.com/docs", "body": "A snippet"}
+            ]
+            response = await agent.run(
+                "Find example docs", model=FunctionModel(stream_function=model, profile=NO_NATIVE)
+            )
+        assert response.output == "Searched."
+        text.assert_called_once_with("example docs", max_results=5)
+
+    asyncio.run(run())
+
+
+def test_native_search_streams_as_tool_rows():
+    """Provider-executed searches have no function events; the response parts drive the rows."""
+
+    async def model(messages, info):
+        yield {
+            0: NativeToolCallPart(
+                tool_name="web_search", args={"query": "pydantic ai"}, tool_call_id="srv1"
+            )
+        }
+        yield {
+            1: NativeToolReturnPart(
+                tool_name="web_search",
+                content=[{"type": "web_search_result", "url": "https://example.com"}],
+                tool_call_id="srv1",
+            )
+        }
+        yield {
+            2: NativeToolCallPart(
+                tool_name="web_fetch", args={"url": "https://example.com"}, tool_call_id="srv2"
+            )
+        }
+        yield {
+            3: NativeToolReturnPart(
+                tool_name="web_fetch",
+                content={"type": "web_fetch_tool_result_error", "error_code": "url_not_accessible"},
+                tool_call_id="srv2",
+            )
+        }
+        yield "Done."
+
+    async def run():
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+        try:
+            events = [event async for event in runtime.stream("hello")]
+        finally:
+            runtime.close()
+        started = [(e.name, e.detail) for e in events if isinstance(e, ToolStarted)]
+        assert started == [("web_search", "pydantic ai"), ("web_fetch", "https://example.com")]
+        summaries = [(e.name, e.detail, e.failed) for e in events if isinstance(e, ToolSummary)]
+        assert summaries == [
+            ("web_search", "pydantic ai → 1 result", False),
+            ("web_fetch", "https://example.com → Failed · url_not_accessible", True),
+        ]
+
+    asyncio.run(run())
+
+
+def test_bundled_file_is_valid_guide_material():
+    """The shipped file doubles as the example for overriding it."""
+    source = Path(BUNDLED_DIR / "web_research.py").read_text()
+    assert "def setup(pcode)" in source
+    assert "~/.config/pcode/extensions/web_research.py" in source

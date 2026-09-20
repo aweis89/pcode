@@ -11,10 +11,14 @@ it registered into the agent and the terminal.
 | `~/.config/pcode/extensions/<name>.py` (or `$XDG_CONFIG_HOME/pcode/extensions/`) | user, every workspace | always |
 | `<workspace>/.pcode/extensions/<name>.py` | this project | only once the user trusts the repository (launch prompt, or `project_extensions on`) |
 | `/config set extension_dirs DIR:DIR` | extra directories | always |
+| `src/pcode/extensions/` (shipped with pcode) | bundled defaults | always |
 
 A directory with `__init__.py` works too, for multi-file extensions. Names
 starting with `_` or `.` are skipped. When two directories hold the same name,
-the project one wins, then user, then configured.
+the project one wins, then user, then configured, then bundled. That is how a
+bundled default is replaced: a user file named `web_research.py` overrides the
+shipped web search and fetch tools, and one whose `setup` does nothing removes
+them. The bundled files are ordinary extensions and worth reading as examples.
 
 After writing or changing an extension, run `/reload` (or tell the user to). It
 rebuilds the agent around the current conversation and prints each extension's
