@@ -32,6 +32,7 @@ from pcode.meridian import MeridianSessionIdentity
 from pcode.meridian_reminders import MeridianLimitWarnings
 from pcode.output_limits import ModelOutputLimits
 from pcode.planning import IdentifiedPlanning
+from pcode.preferences import SETTINGS, load_preferences
 from pcode.repo_context import create_repo_context
 from pcode.tool_output_limits import create_tool_output_limits
 from pcode.workspace_filesystem import WorkspaceFileSystem
@@ -40,6 +41,20 @@ from pcode.workspace_filesystem import WorkspaceFileSystem
 # loop is stopped within a turn rather than after a session's worth of requests.
 EXPLORER_REQUEST_LIMIT = 120
 EXPLORER_TIMEOUT_SECONDS = 900
+
+
+def tool_retries() -> dict[str, int]:
+    """The correction budget for tool-argument validation and `ModelRetry`.
+
+    Pydantic AI defaults both tool and output retries to 1, so a second
+    malformed call to a tool ends the whole turn with `UnexpectedModelBehavior`.
+    A nested argument like `edit_file`'s `replacements` array is easy to mangle
+    twice in a row, and a correction costs one round trip where the failure
+    costs the turn. Output retries keep the stricter default: a model that
+    cannot produce the final output shape twice is not going to converge.
+    """
+    configured = load_preferences().get("tool_retries", SETTINGS["tool_retries"].default)
+    return {"tools": int(configured)}
 
 
 def create_coder(workspace: Path) -> CombinedCapability:
@@ -93,6 +108,7 @@ def create_coder(workspace: Path) -> CombinedCapability:
     parent_files = next(c for c in coder.capabilities if isinstance(c, FileSystem))
     explorer = Agent(
         name="explorer",
+        retries=tool_retries(),
         description=(
             "Explore files anywhere on the host and use shell commands for inspection "
             "and tests, without modifying the user's files or repository state"
@@ -196,6 +212,7 @@ def create_agent(model: str, workspace: Path, extensions: Sequence = ()) -> Agen
         defer_model_check=defer_model_check,
         model_settings=model_settings(model),
         name="pcode",
+        retries=tool_retries(),
         instructions=(
             "Responses are displayed in a terminal with Markdown rendering "
             "and syntax highlighting. "
