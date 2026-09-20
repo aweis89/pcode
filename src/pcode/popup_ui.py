@@ -1,5 +1,6 @@
 """Shared terminal-native styling for alternate-screen popups."""
 
+import re
 from io import StringIO
 
 from prompt_toolkit.filters import has_focus
@@ -18,6 +19,11 @@ from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.styles import Style, merge_styles
 from rich.console import Console
 from rich.theme import Theme
+
+# Rich writes Markdown links as OSC 8 hyperlinks on a terminal, but
+# prompt_toolkit's ANSI parser reads CSI only and spills the rest as literal
+# text ("8;id=1;https://…"). A pane cannot follow a link anyway, so drop them.
+OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 # Framed selector panes: rows of list content, before the frame's own borders.
 LIST_ROWS_MIN = 3
@@ -134,7 +140,8 @@ class RichPane:
             )
             for renderable in self.renderables:
                 console.print(renderable)
-            self._cache = (*key, to_formatted_text(ANSI(console.file.getvalue().rstrip("\n"))))
+            rendered = OSC.sub("", console.file.getvalue().rstrip("\n"))
+            self._cache = (*key, to_formatted_text(ANSI(rendered)))
         return self._cache[2]
 
     def text(self, width: int = 80) -> str:
