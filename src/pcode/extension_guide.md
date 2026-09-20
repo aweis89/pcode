@@ -35,6 +35,8 @@ def setup(pcode: ExtensionAPI) -> None: ...
 ```
 
 `pcode.name` is the file stem, `pcode.workspace` the resolved workspace path.
+`pcode.session_dir` is the resolved session-storage root, honoring `--session-dir`,
+`PCODE_SESSION_DIR`, and the default state directory.
 
 ### Tools the model can call
 
