@@ -38,7 +38,7 @@ from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
 from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
 from pcode.input_keys import configure_newline_keys
-from pcode.preferences import load_preferences
+from pcode.preferences import SETTINGS, load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
@@ -64,7 +64,6 @@ class Palette:
     surface: str
     foreground: str
     selected: str
-    syntax: str
     task_heading: str
 
     @cache
@@ -144,9 +143,23 @@ class Palette:
 
 
 PALETTES = {
-    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "nord", "#c4b5fd"),
-    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "friendly", "#7c3aed"),
+    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "#c4b5fd"),
+    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "#7c3aed"),
 }
+
+
+def syntax_themes(preferences: dict[str, str] | None = None) -> dict[str, str]:
+    """The saved Pygments style for each palette, by palette name.
+
+    Fenced code keeps its own background, so the style has to be chosen per
+    palette rather than derived from one: a dark style on a light terminal is
+    readable but jarring, and `theme auto` can pick either at startup.
+    """
+    preferences = load_preferences() if preferences is None else preferences
+    return {
+        name: preferences.get(f"syntax_{name}", SETTINGS[f"syntax_{name}"].default)
+        for name in PALETTES
+    }
 
 
 COLOR_STYLES = ("palette", "terminal")
@@ -571,7 +584,7 @@ class TerminalOutput:
         self.app = app
         self.tail = ""
         self.streamed = False
-        self.code_theme = code_theme or (lambda: PALETTES["dark"].syntax)
+        self.code_theme = code_theme or (lambda: SETTINGS["syntax_dark"].default)
         self.rich_theme = rich_theme or PALETTES["dark"].rich_theme
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.transient_pending: list[tuple[tuple[object, ...], str, bool]] = []
@@ -1296,6 +1309,7 @@ class Transcript:
         self.theme = theme
         self.detected_theme = detect_theme() if detected_theme is None else detected_theme
         self.color_style = color_style
+        self.syntax_themes = syntax_themes(preferences)
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
         self.log = TranscriptLog()
@@ -1429,7 +1443,9 @@ class Transcript:
     @property
     def code_theme(self) -> str:
         return (
-            f"ansi_{self.resolved_theme}" if self.color_style == "terminal" else self.palette.syntax
+            f"ansi_{self.resolved_theme}"
+            if self.color_style == "terminal"
+            else self.syntax_themes[self.resolved_theme]
         )
 
     def welcome(self, model: str | None = None, workspace: str = "") -> None:

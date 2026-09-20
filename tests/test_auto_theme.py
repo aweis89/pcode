@@ -11,7 +11,7 @@ from rich.console import Console
 
 from pcode import theme
 from pcode.app import PreviewApp
-from pcode.preferences import load_preferences, save_preferences
+from pcode.preferences import SETTINGS, load_preferences, save_preferences
 from pcode.ui import PALETTES, Transcript
 
 
@@ -96,7 +96,7 @@ def test_auto_palette_and_syntax(monkeypatch):
     transcript = Transcript(Console(file=StringIO()), "auto")
     assert transcript.theme == "auto"
     assert transcript.palette == PALETTES["light"]
-    assert transcript.code_theme == PALETTES["light"].syntax
+    assert transcript.code_theme == SETTINGS["syntax_light"].default
     transcript.color_style = "terminal"
     assert transcript.code_theme == "ansi_light"
     transcript.theme = "dark"
@@ -114,3 +114,36 @@ def test_auto_setting_persists_and_toggle_uses_resolved_theme(monkeypatch):
     app.theme("auto")
     assert load_preferences()["theme"] == "auto"
     assert "auto (light)" in app.transcript.console.file.getvalue()
+
+
+def test_saved_syntax_themes_apply_per_palette(monkeypatch):
+    monkeypatch.setattr("pcode.ui.detect_theme", lambda: "dark")
+    save_preferences(syntax_dark="monokai", syntax_light="tango")
+    transcript = Transcript(Console(file=StringIO()), "auto")
+    assert transcript.code_theme == "monokai"
+    transcript.theme = "light"
+    assert transcript.code_theme == "tango"
+
+
+def test_invalid_saved_syntax_theme_falls_back_to_default():
+    save_preferences(syntax_dark="no-such-style")
+    transcript = Transcript(Console(file=StringIO()), "dark")
+    assert transcript.code_theme == SETTINGS["syntax_dark"].default
+
+
+def test_syntax_command_persists_the_resolved_palette_only():
+    app = PreviewApp(theme="dark", console=Console(file=StringIO()))
+    app.syntax("dracula")
+    assert app.transcript.code_theme == "dracula"
+    assert load_preferences() == {"syntax_dark": "dracula"}
+    app.transcript.theme = "light"
+    assert app.transcript.code_theme == SETTINGS["syntax_light"].default
+    app.syntax("")
+    assert "Syntax (light)" in app.transcript.console.file.getvalue()
+
+
+def test_syntax_command_rejects_an_unknown_style():
+    app = PreviewApp(theme="dark", console=Console(file=StringIO()))
+    with pytest.raises(ValueError, match="must be one of"):
+        app.syntax("no-such-style")
+    assert load_preferences() == {}
