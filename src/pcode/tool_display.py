@@ -72,9 +72,37 @@ def command_text(value: str) -> str:
     return "\n".join(plain(line.expandtabs(4), limit=None) for line in value.split("\n"))
 
 
+_CD_PREFIX = re.compile(
+    r"^cd\s+(?P<dir>'[^']*'|\"[^\"]*\"|[^\s;&|]+)[ \t]*(?:&&|;|\n)[ \t\n]*",
+)
+
+
+def _is_current_directory(value: str) -> bool:
+    if len(value) > 1 and value[0] == value[-1] and value[0] in "'\"":
+        value = value[1:-1]
+    if not value or "$" in value or "`" in value:
+        return False
+    try:
+        return Path(value).expanduser().resolve() == Path.cwd().resolve()
+    except OSError:
+        return False
+
+
+def _strip_redundant_cd(text: str) -> str:
+    """Drop a leading `cd <dir> &&` that only names the directory we are in.
+
+    Agents habitually prefix commands with a `cd` to the workspace root, which
+    costs a preview line's worth of width and says nothing. A `cd` elsewhere is
+    real information, so it survives.
+    """
+    while (match := _CD_PREFIX.match(text)) and _is_current_directory(match.group("dir")):
+        text = text[match.end() :]
+    return text
+
+
 def command_preview(value: str) -> str:
     """Structural preview, not an inferred claim about a script's purpose."""
-    text = command_text(value)
+    text = _strip_redundant_cd(command_text(value).lstrip())
     lines = text.splitlines()
     first = next((line.strip() for line in lines if line.strip()), "(empty command)")
     # Inline interpreter payloads are implementation detail, not useful labels.

@@ -90,9 +90,15 @@ def test_configure_project_subcommands(tmp_path):
         configure(["project", "set", "nope", "1"])
     assert "Removed" in configure(["project", "unset", "worktree"])
     assert json.loads(configure(["project", "list"])) == {}
+    configure(["project", "set", "worktree", "on"])
+    assert "Reset project defaults: worktree" in configure(["project", "reset"])
+    assert json.loads(configure(["project", "list"])) == {}
+    assert configure(["project", "reset"]) == "No project defaults to reset."
     with pytest.raises(ValueError, match="Usage: config project"):
         configure(["project", "frobnicate"])
     completions = config_arguments()
+    assert "reset" in completions
+    assert "project reset" in completions
     assert "project set worktree on" in completions
     assert "project set project_extensions on" not in completions
 
