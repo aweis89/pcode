@@ -32,6 +32,15 @@ class CommandRegistry:
         self.commands.append(command)
         self._lookup.update((name, command) for name in names)
 
+    def unregister(self, name: str) -> None:
+        """Remove a command and its aliases; unknown names are ignored."""
+        command = self._lookup.get(name)
+        if command is None:
+            return
+        self.commands.remove(command)
+        for alias in (command.name, *command.aliases):
+            self._lookup.pop(alias, None)
+
     def find(self, name: str) -> Command | None:
         return self._lookup.get(name)
 

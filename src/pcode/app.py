@@ -6,6 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 from contextlib import ExitStack, aclosing
 from dataclasses import replace
 from pathlib import Path
@@ -124,6 +125,11 @@ class PreviewApp:
         self.mcp_enabling: str | None = None
         self.model_requested = False
         self.pending_model: str | None = None
+        # User extensions load with the runtime; their commands register once it exists.
+        self.extensions = None
+        self.extension_command_names: list[str] = []
+        self.reload_requested = False
+        self._loop: asyncio.AbstractEventLoop | None = None
         self.registry = CommandRegistry()
         for command in (
             Command(
@@ -198,6 +204,18 @@ class PreviewApp:
                 group="Model",
             ),
             Command("/logout", "Remove the stored Anthropic login", self.logout, group="Model"),
+            Command(
+                "/extensions",
+                "List loaded extensions and where they come from",
+                self.list_extensions,
+                group="Model",
+            ),
+            Command(
+                "/reload",
+                "Reload extensions; keeps the conversation",
+                self.reload,
+                group="Model",
+            ),
             Command(
                 "/new", "Start a new conversation; clears the screen", self.new, group="Session"
             ),
@@ -319,14 +337,106 @@ class PreviewApp:
             raise ValueError(f"/skill:{skill.name} requires a live model session.")
         self.skill_requested = skill_prompt(skill, argument)
 
+    def register_extension_commands(self) -> None:
+        """Expose extension commands, replacing the previous load's; built-ins win."""
+        for name in self.extension_command_names:
+            self.registry.unregister(name)
+        self.extension_command_names = []
+        if self.extensions is None:
+            return
+        for extension in self.extensions.extensions:
+            for command in extension.commands:
+                names = (command.name, *command.aliases)
+                if taken := [name for name in names if self.registry.find(name)]:
+                    self.transcript.warning(
+                        f"Extension {extension.name}: {', '.join(taken)} already exists; skipped."
+                    )
+                    continue
+                self.registry.register(command)
+                self.extension_command_names.append(command.name)
+
+    def list_extensions(self, argument: str) -> None:
+        from pcode.ext import PROJECT_DIR, user_extension_dir
+
+        if argument:
+            raise ValueError("/extensions takes no arguments.")
+        if not self.model:
+            raise ValueError("/extensions requires a live model session.")
+        lines = self.extensions.report(self.workspace) if self.extensions else []
+        if not lines:
+            lines = ["No extensions loaded."]
+        lines.append(f"User extensions: {user_extension_dir()}")
+        project = load_preferences().get("project_extensions", "off") == "on"
+        lines.append(
+            f"Project extensions ({PROJECT_DIR}): "
+            + ("on" if project else "off; enable with /config set project_extensions on")
+        )
+        lines.append("Ask pcode to write one, then /reload.")
+        self.transcript.note("\n".join(lines))
+
+    def reload(self, argument: str) -> None:
+        if argument:
+            raise ValueError("/reload takes no arguments.")
+        if not self.model or not hasattr(self.runtime, "replace_agent"):
+            raise ValueError("/reload requires a live model session.")
+        if self.activity.busy or self.activity.queued_prompts:
+            raise ValueError("/reload is unavailable while working. Cancel or wait, then retry.")
+        self.reload_requested = True
+
+    async def reload_extensions(self) -> None:
+        """Re-import every extension and rebuild the agent around the same conversation."""
+        from pcode.agent import create_agent
+
+        self.reload_requested = False
+        loaded = await asyncio.to_thread(self._load_extensions)
+        # Construct first, so a failure leaves the previous agent in place.
+        agent = await asyncio.to_thread(
+            create_agent, self.model, self.workspace, loaded.capabilities
+        )
+        apply_effort(agent, self.model, load_preferences().get("effort"))
+        apply_thinking(agent, self.model, self.activity.show_thinking)
+        self.extensions = loaded
+        self.runtime.replace_agent(agent)
+        await self.runtime.refresh_context()
+        self.register_extension_commands()
+        count = len(loaded.extensions) - len(loaded.failed)
+        summary = f"Reloaded {count} extension{'s' if count != 1 else ''}"
+        if loaded.failed:
+            summary += f", {len(loaded.failed)} failed"
+        # A changed tool list or instruction invalidates the cached prompt prefix.
+        self.transcript.note(f"{summary}. The next request rebuilds the prompt cache.")
+        for line in loaded.report(self.workspace):
+            self.transcript.note("Extension " + line)
+
+    def _extension_notice(self, text: str, level: str) -> None:
+        """Route an extension's notice to the transcript from any thread."""
+        show = {"warning": self.transcript.warning, "error": self.transcript.error}.get(
+            level, self.transcript.note
+        )
+        loop = self._loop
+        if (
+            loop is not None
+            and loop.is_running()
+            and threading.current_thread() is not threading.main_thread()
+        ):
+            loop.call_soon_threadsafe(show, text)
+        else:
+            show(text)
+
+    def _load_extensions(self):
+        from pcode.ext import ExtensionUI, load_extensions
+
+        return load_extensions(self.workspace, ExtensionUI(self._extension_notice))
+
     def _create_runtime(self):
         """Import and construct the backend off the terminal's event loop."""
         from pcode.agent import create_agent
         from pcode.live import AgentRuntime
         from pcode.sessions import SavedSession
 
+        self.extensions = self._load_extensions()
         return AgentRuntime(
-            create_agent(self.model, self.workspace),
+            create_agent(self.model, self.workspace, self.extensions.capabilities),
             self._saved_session,
             session_factory=(
                 lambda: SavedSession.create(self.model, self.workspace, self.session_dir)
@@ -336,6 +446,7 @@ class PreviewApp:
         )
 
     async def _initialize_runtime(self) -> None:
+        self._loop = asyncio.get_running_loop()
         if self._needs_runtime:
             # A cancelled to_thread await does not stop its thread. Keep ownership
             # until it finishes so a late-created runtime cannot leak on exit.
@@ -356,6 +467,7 @@ class PreviewApp:
             if agent is not None:
                 apply_effort(agent, self.model, load_preferences().get("effort"))
                 apply_thinking(agent, self.model, self.activity.show_thinking)
+            self.register_extension_commands()
         if self.resuming:
             await self.runtime.restore()
 
@@ -553,7 +665,8 @@ class PreviewApp:
             self.transcript.note(f"Already using {model}.")
             return
         # Construct first: a missing provider/login must leave the old session intact.
-        agent = await asyncio.to_thread(create_agent, model, self.workspace)
+        capabilities = self.extensions.capabilities if self.extensions else ()
+        agent = await asyncio.to_thread(create_agent, model, self.workspace, capabilities)
         apply_effort(agent, model, load_preferences().get("effort"))
         apply_thinking(agent, model, self.activity.show_thinking)
         save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
@@ -1429,11 +1542,20 @@ class PreviewApp:
             lines.extend(summary())
         if self.skill_command_names:
             lines.append("Skill commands: " + ", ".join(self.skill_command_names))
-        for line in lines:
+        warnings = []
+        if self.extensions is not None:
+            for extension, line in zip(
+                self.extensions.extensions, self.extensions.report(self.workspace), strict=True
+            ):
+                (lines if extension.loaded else warnings).append("Extension " + line)
+        for line in lines + warnings:
             if line in self._startup_context_shown:
                 continue
             self._startup_context_shown.add(line)
-            self.transcript.retained_note(line)
+            if line in warnings:
+                self.transcript.warning(line)
+            else:
+                self.transcript.retained_note(line)
 
     def warn_without_credentials(self) -> None:
         """Say so at startup, not on the first prompt.
@@ -1834,6 +1956,8 @@ class PreviewApp:
                                 await asyncio.gather(*active, return_exceptions=True)
                         if self.model_requested:
                             await self.choose_model(output, session)
+                        if self.reload_requested:
+                            await self.reload_extensions()
                         if self.login_requested:
                             await self.perform_login()
                         if self.tree_requested:
