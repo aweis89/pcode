@@ -972,6 +972,10 @@ candidate's size so that cost is visible before you pick.
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed`: open the same inspector filtered to failures.
 - `/diffs`: browse this conversation's file diffs in a full-screen popup.
+- `/links`: pick any URL mentioned in this conversation (your prompts or the
+  assistant's replies, newest first) and open it in the default browser via
+  `open` (macOS), `xdg-open` (Linux), or the shell association (Windows). Useful
+  when the terminal or an older tmux does not make rendered links clickable.
 - `/status`: current model, workspace, session storage path, completed turns, token usage,
   and a breakdown of the prompt overhead the model is re-sent every request — see
   [Where the fixed prompt goes](#where-the-fixed-prompt-goes). Opens a popup in the
@@ -1935,3 +1939,27 @@ Set the default with `pcode config set send_mode steering` (or `queue` / `interr
 changes it immediately. Idle input starts a normal turn in every mode. Slash
 commands retain their existing behavior, and Ctrl+D (or Ctrl+C on an empty
 prompt) still cancels and clears pending messages.
+
+### Running a command yourself: `!command`
+
+A message starting with `!` runs the rest as a shell command in the agent's
+working directory and environment, without asking the model anything:
+
+```text
+❯ !make test
+```
+
+Output streams into the live command panel while it runs and is mirrored to
+scrollback when it ends (the last `command_scrollback_lines` rows). Ctrl+C kills
+the command and its process group. There is no timeout.
+
+The model hears about it with your next message, as if it had called the
+`shell` tool itself: the request carries a `shell` tool call for that command
+followed by its output (and `[exit code: N]` when non-zero). The result goes
+through the same `tool_output_*` reduction as real tool results, so a long test
+log over `tool_output_threshold` characters is spilled to a `read_tool_result`
+handle with a `tool_output_preview_chars` preview, and the model reads only
+the slices it needs. A `!command` typed while a turn is running waits its turn
+in the queue, whatever the send mode; nothing is sent to the model until you
+send a message, so `!make test` followed by `why did that fail?` is the usual
+shape.

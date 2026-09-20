@@ -34,6 +34,7 @@ from pcode.preferences import (
 )
 from pcode.runtime import (
     CacheBust,
+    CommandOutput,
     EditCompleted,
     Message,
     PlanPreview,
@@ -46,6 +47,7 @@ from pcode.runtime import (
     ToolStarted,
     ToolSummary,
 )
+from pcode.shell_mode import execute, shell_command
 from pcode.stream_display import present_events, present_stream_event
 from pcode.theme import THEMES
 from pcode.tool_display import plain
@@ -136,6 +138,7 @@ class PreviewApp:
         self.running = True
         self.inspector_requested: str | None = None
         self.diffs_requested = False
+        self.links_requested = False
         # Unsaved conversations have no journal to re-read, so keep their changes.
         self.edits: list[EditCompleted] = []
         self.session_requested = False
@@ -188,6 +191,12 @@ class PreviewApp:
                 group="Inspect",
             ),
             Command("/diffs", "Browse this conversation's file diffs", self.diffs, group="Inspect"),
+            Command(
+                "/links",
+                "Pick a URL from this conversation and open it in the browser",
+                self.links,
+                group="Inspect",
+            ),
             Command(
                 "/tree",
                 "Browse the conversation tree and fork from any point",
@@ -898,6 +907,46 @@ class PreviewApp:
         if argument:
             raise ValueError("Usage: /diffs")
         self.diffs_requested = True
+
+    def links(self, argument: str) -> None:
+        if argument:
+            raise ValueError("Usage: /links")
+        self.links_requested = True
+
+    async def choose_link(self, output: TerminalOutput, session) -> None:
+        from pcode.links import conversation_links, open_link
+        from pcode.links_ui import links_dialog
+
+        self.links_requested = False
+        tree = getattr(self.runtime, "tree", None)
+        links = conversation_links(tree) if tree is not None and tree.nodes else []
+        if not links:
+            self.transcript.note("No links in this conversation yet.")
+            return
+        await output.flush()
+        async with output.lock:
+            async with suspended_editor(session.app):
+                stdin = getattr(session.app.input, "stdin", None)
+                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
+                try:
+                    dialog = links_dialog(
+                        links,
+                        input=modal_input,
+                        output=session.app.output,
+                        style=session.app.style,
+                    )
+                    url = await dialog.run_async()
+                finally:
+                    if modal_input is not session.app.input:
+                        modal_input.close()
+        if url is None:
+            return
+        try:
+            open_link(url)
+        except (OSError, RuntimeError) as error:
+            self.transcript.error(f"Could not open {url}: {error}")
+            return
+        self.transcript.note(f"Opened {url}")
 
     def recorded_edits(self) -> list[EditCompleted]:
         """Prefer the saved journal on the active branch; fall back to this process."""
@@ -1632,6 +1681,67 @@ class PreviewApp:
                 self.transcript.warning(self.runtime.recovery_blocked)
         return not (cancelled or failure)
 
+    async def run_shell(self, output: TerminalOutput, text: str) -> bool:
+        """Run a `!command` the user typed and hand its result to the runtime.
+
+        Output streams into the live command panel while it runs and is
+        mirrored to scrollback when it ends. The model sees it on the next
+        prompt, as a `shell` tool call, so ask a follow-up to discuss it.
+        """
+        # Lazy: pcode.shell pulls in the agent stack, which startup avoids.
+        from pcode.shell import preview_text
+
+        command = shell_command(text)
+        assert command is not None
+        call_id = f"shell_mode_{id(self):x}"
+        cwd, env = (
+            self.runtime.shell_environment()
+            if hasattr(self.runtime, "shell_environment")
+            else (self.workspace, None)
+        )
+        self.transcript.user(text)
+        self.activity.start_prompt(text)
+        self.activity.user_command = True
+        self.activity.status = "Running command…"
+        buffered = ""
+
+        def show(chunk: str) -> None:
+            nonlocal buffered
+            buffered += chunk
+            self.present_events((CommandOutput(call_id, command, preview_text(buffered)),))
+            output.app.invalidate()
+
+        run = None
+        try:
+            run = await execute(command, cwd=cwd, env=env, on_output=show)
+        except asyncio.CancelledError:
+            pass
+        except OSError as error:
+            self.transcript.error(str(error), title="Command failed to start")
+        finally:
+            self.activity.command_outputs.pop(call_id, None)
+            self.activity.user_command = False
+            self.activity.status = ""
+        if run is None:
+            self.activity.finish_prompt("cancelled")
+            self.transcript.warning("Command cancelled; the model was not told about it.")
+            output.app.invalidate()
+            return False
+        self.transcript.shell_result(
+            command, run.output, failed=run.failed, elapsed_seconds=run.elapsed_seconds
+        )
+        if hasattr(self.runtime, "record_shell"):
+            visible = await self.runtime.record_shell(run)
+            reduced = not isinstance(visible, str) or visible != run.tool_result()
+            self.transcript.note(
+                "The model sees this command and its "
+                + ("reduced output" if reduced else "output")
+                + " with your next message."
+            )
+        self.activity.finish_prompt("done")
+        output.app.invalidate()
+        return True
+
     def show_startup_context(self) -> None:
         """Report repository instructions and skills, each line only once.
 
@@ -1834,6 +1944,14 @@ class PreviewApp:
                     # Enter + Ctrl+C in one input batch must cancel activation
                     # before its command worker has had a chance to start OAuth.
                     self.activity.busy = True
+            elif shell_command(text) is not None:
+                # Runs in turn, never as steering: its result rides the next
+                # request rather than being spliced into a running one.
+                queue.put_nowait((queue_generation, text, "shell"))
+                self.activity.queued_prompts.append(text)
+                self.activity.queued_modes.append("shell")
+                self.activity.queued = len(self.activity.queued_prompts)
+                self.activity.busy = True
             elif text:
                 if self.send_mode == "interrupt" and live_task and not live_task.done():
                     clear_queue()
@@ -2077,6 +2195,8 @@ class PreviewApp:
                             await self.inspect_tools(output, session)
                         if self.diffs_requested:
                             await self.browse_diffs(output, session)
+                        if self.links_requested:
+                            await self.choose_link(output, session)
                 except Exception as error:
                     from pcode.live import error_message
 
@@ -2120,7 +2240,15 @@ class PreviewApp:
                 success = True
                 try:
                     resend = _mode == "resend"
-                    if resend or self.handle(text):
+                    if _mode == "shell":
+                        live_task = asyncio.create_task(self.run_shell(output, text))
+                        try:
+                            success = await live_task
+                        except asyncio.CancelledError:
+                            if not session.app.is_running:
+                                return
+                            success = False
+                    elif resend or self.handle(text):
                         self.activity.start_prompt(text)
                         self.runtime.take_steering = take_steering
                         live_task = asyncio.create_task(
