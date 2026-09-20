@@ -147,7 +147,7 @@ def test_failed_command_block_keeps_the_ordinary_title_color(command):
     """A non-zero exit is routine: it is marked, not coloured like a crash."""
     from pcode.preferences import save_preferences
 
-    save_preferences(command_scrollback="on", tool_error_scrollback="on")
+    save_preferences(show_commands="on", tool_error_scrollback="on")
 
     def render(failed: bool) -> str:
         stream = StringIO()
@@ -230,7 +230,7 @@ def test_failed_commands_need_mirroring_before_the_failure_option_applies():
 def test_mirrored_command_failures_keep_only_their_summary_line_by_default():
     from pcode.preferences import save_preferences
 
-    save_preferences(command_scrollback="on")
+    save_preferences(show_commands="on")
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=80, color_system=None))
     event = ToolSummary(

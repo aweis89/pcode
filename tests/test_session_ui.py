@@ -1,6 +1,6 @@
 import asyncio
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from prompt_toolkit.input import create_pipe_input
@@ -64,8 +64,8 @@ def test_session_overview_reports_storage_and_feeds_context(tmp_path):
         assert rows["Saved in"] == str(saved.directory)
         # Nothing has been sent yet, so there is no resolved prompt to attribute.
         assert rows["Prompt overhead"] == "Measured on the first model request."
-        # /context prints exactly what the popup shows, so the two cannot drift.
-        app.handle("/context")
+        # Without an editor, /status prints exactly what the popup shows.
+        app.handle("/status")
         assert f"Saved in: {saved.directory}" in stream.getvalue()
     finally:
         app.runtime.close()
@@ -87,19 +87,20 @@ def test_session_overview_attributes_prompt_overhead_after_a_request(tmp_path):
         assert "tokens" in rows["Prompt overhead"]
         assert rows["  Instructions"].startswith("~")
         assert "tools" in rows["  Tool schemas"]
-        app.handle("/context")
+        app.handle("/status")
         assert "AGENTS.md" in stream.getvalue()
     finally:
         app.runtime.close()
 
 
-def test_session_command_requests_the_info_popup(tmp_path):
+def test_status_requests_the_popup_only_with_a_live_editor(tmp_path):
     app = PreviewApp(workspace=tmp_path, console=Console(file=StringIO()))
-    app.handle("/session")
+    app.transcript.output = Mock()
+    app.handle("/status")
     assert app.session_info_requested
     assert not app.session_requested
-    with pytest.raises(ValueError, match="Usage: /session"):
-        app.registry.find("/session").handler("extra")
+    with pytest.raises(ValueError, match="Usage: /status"):
+        app.registry.find("/status").handler("extra")
 
 
 def test_first_prompt_is_not_latest_and_handles_empty_session(tmp_path):
