@@ -15,6 +15,7 @@ from prompt_toolkit.input import create_input
 from prompt_toolkit.styles import DynamicStyle
 from rich.cells import cell_len
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.text import Text
 
@@ -2003,20 +2004,39 @@ class PreviewApp:
         asyncio.run(self.run_async())
 
     async def run_print_async(self, prompt: str, *, stdout=None) -> bool:
-        """Answer one prompt without an editor: reply text to `stdout`, the rest to the transcript.
+        """Answer one prompt without an editor: the reply to `stdout`, the rest to the transcript.
 
         The transcript console is expected to be stderr, so a pipe reading
-        stdout sees only the model's markdown. Returns whether the turn succeeded.
+        stdout sees the reply alone. A terminal gets rendered Markdown; a pipe
+        gets its source, which is what a reader downstream can work with.
+        Returns whether the turn succeeded.
         """
         from pcode.live import error_message
 
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         stdout = sys.stdout if stdout is None else stdout
+        reply = Console(file=stdout, theme=self.transcript.rich_theme)
+        # Rendering replaces token-by-token output with settled blocks, so it
+        # must not be chosen for a destination that cannot display it.
+        console = reply if reply.is_terminal else None
+
+        def write_reply(markdown: str, *, streamed: bool) -> None:
+            """Settle one block of reply text; `streamed` means its source is already out."""
+            if console is not None:
+                console.print(Markdown(markdown, code_theme=self.transcript.code_theme))
+                console.print()
+                return
+            if not streamed:
+                stdout.write(markdown)
+            if not markdown.endswith("\n"):
+                stdout.write("\n")
+            stdout.write("\n")
+            stdout.flush()
+
         if not self.model:
             for event in self.preview.reply(prompt):
                 if isinstance(event, Message):
-                    stdout.write(event.markdown.rstrip("\n") + "\n")
-            stdout.flush()
+                    write_reply(event.markdown, streamed=False)
             return True
         try:
             await self._initialize_runtime()
@@ -2026,25 +2046,25 @@ class PreviewApp:
         self.runtime.compaction_notice = self.transcript.note
         if hasattr(self.runtime, "retry_notice"):
             self.runtime.retry_notice = self.transcript.note
-        written = ""
+        # Text streamed since the last settled message, so a turn that ends
+        # mid-block still prints what arrived.
+        block = ""
         try:
             async with aclosing(self.runtime.stream(prompt)) as stream:
                 async for event in stream:
                     if isinstance(event, TextDelta):
-                        stdout.write(event.text)
-                        stdout.flush()
-                        written += event.text
+                        block += event.text
+                        if console is None:
+                            stdout.write(event.text)
+                            stdout.flush()
                     elif isinstance(event, Message):
                         # Deltas usually carried this text already; a message
                         # without them (a structured result) is written whole.
-                        if not written:
-                            written = event.markdown
-                            stdout.write(written)
-                        if not written.endswith("\n"):
-                            stdout.write("\n")
-                        stdout.write("\n")
-                        stdout.flush()
-                        written = ""
+                        write_reply(
+                            event.markdown or block,
+                            streamed=console is None and bool(block),
+                        )
+                        block = ""
                     elif isinstance(event, Thinking):
                         self.transcript.events((event,))
                     elif isinstance(event, (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated)):
@@ -2052,14 +2072,15 @@ class PreviewApp:
                     else:
                         self.present_events((event,))
         except Exception as error:
-            if written and not written.endswith("\n"):
-                stdout.write("\n")
-                stdout.flush()
+            if block:
+                write_reply(block, streamed=console is None)
             self.transcript.error(error_message(error), title="Agent failed")
             saved = getattr(self.runtime, "session", None)
             if saved is not None:
                 self.transcript.note(f"Session and diagnostics: {saved.directory}")
             return False
+        if block:
+            write_reply(block, streamed=console is None)
         self.print_resume_hint()
         return True
 
