@@ -23,7 +23,7 @@ pcode --profile /tmp/pcode-memory --profile-memory
 
 # Also works with a continued session and with the offline sample:
 pcode --continue --profile /tmp/pcode-resume
-pcode --demo --profile /tmp/pcode-demo --profile-cpu
+pcode --theme-preview --profile /tmp/pcode-preview --profile-cpu
 ```
 
 Function and allocation tracing can substantially slow Python down and increase

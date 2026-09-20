@@ -22,6 +22,6 @@ class Pcode < Formula
     assert_match "--model", shell_output("#{bin}/pcode --help")
     assert_match "No saved sessions.",
                  shell_output("#{bin}/pcode --sessions --session-dir #{testpath}/sessions")
-    assert_match "pcode", shell_output("#{bin}/pcode --demo")
+    assert_match "pcode", shell_output("#{bin}/pcode --theme-preview")
   end
 end

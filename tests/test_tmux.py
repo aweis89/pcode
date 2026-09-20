@@ -112,6 +112,10 @@ def capture(pane, expected, *, running=False, columns=None):
     pytest.fail(f"Prompt did not settle with {expected!r}:\n{screen}")
 
 
+# The last row `/theme-preview` writes: everything above it can scroll away.
+GALLERY_TAIL = "pcode config set syntax_dark NAME"
+
+
 def scrollback(pane):
     """History above the visible screen.
 
@@ -144,18 +148,20 @@ def test_footer_theme_switch_keeps_editor_compact(pane):
             screen = capture(pane, "Theme: auto (" if theme == "auto" else f"Theme: {theme}.")
             assert input_rows(screen) == 1
             assert "preview · effort: n/a" in screen.splitlines()[-1]
-            pane("send-keys", "-t", "preview:0.0", "-l", "/demo")
+            pane("send-keys", "-t", "preview:0.0", "-l", "/theme-preview")
             pane("send-keys", "-t", "preview:0.0", "Enter")
-            assert input_rows(capture(pane, "No files were")) == 1
+            # The style gallery scrolls the sample away, so wait on its last row.
+            assert input_rows(capture(pane, GALLERY_TAIL)) == 1
 
 
 def test_transcript_uses_terminal_scrollback(pane):
     assert input_rows(capture(pane, "❯")) == 1
-    pane("send-keys", "-t", "preview:0.0", "-l", "/demo")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/theme-preview")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    assert input_rows(capture(pane, "No files were")) == 1
+    assert input_rows(capture(pane, GALLERY_TAIL)) == 1
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert "Hello, world!" in history
+    assert "No files were" in history
     assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "0"
     assert "pcode  /  UI preview" in history
 

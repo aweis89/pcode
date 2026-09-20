@@ -40,7 +40,7 @@ def assert_colors(text, color_style, keyword, transcript):
 
 @pytest.mark.parametrize("color_style", ["palette", "terminal"])
 @pytest.mark.parametrize("queued", [False, True])
-def test_demo_colors_after_theme_and_style_switches(queued, color_style):
+def test_theme_preview_colors_after_theme_and_style_switches(queued, color_style):
     async def run():
         stream = StringIO()
         console = Console(file=stream, width=100, force_terminal=True, color_system="truecolor")
@@ -66,7 +66,7 @@ def test_demo_colors_after_theme_and_style_switches(queued, color_style):
                 await output.flush()
             stream.seek(0)
             stream.truncate()
-            app.handle("/demo")
+            app.handle("/theme-preview")
             if queued:
                 await output.flush()
             text = stream.getvalue()
@@ -84,7 +84,7 @@ def test_demo_colors_after_theme_and_style_switches(queued, color_style):
 
 @pytest.mark.parametrize("color_style", ["palette", "terminal"])
 @pytest.mark.parametrize("theme, keyword", [("dark", 94), ("light", 34)])
-def test_streamed_demo_uses_selected_styles(theme, keyword, color_style):
+def test_streamed_sample_uses_selected_styles(theme, keyword, color_style):
     async def run():
         stream = StringIO()
         console = Console(file=stream, width=100, force_terminal=True, color_system="truecolor")
