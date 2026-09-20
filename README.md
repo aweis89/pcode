@@ -10,7 +10,7 @@ With [Homebrew](https://brew.sh/) installed:
 ```sh
 brew tap aweis89/pcode https://github.com/aweis89/pcode.git
 brew install --HEAD aweis89/pcode/pcode
-pcode --demo
+pcode --theme-preview
 pcode -m openai-codex:gpt-5.6-luna
 ```
 
@@ -56,7 +56,7 @@ conversations and `--no-save`. Run `pcode` with no model argument to reuse the
 saved model; without a saved default it opens the offline preview. The saved
 effort applies to OpenAI/Codex, Anthropic, and Meridian models, including new and resumed conversations;
 `/effort default` restores provider-default behavior. Use `pcode config unset KEY`
-to reset an individual default. `--demo` always stays offline.
+to reset an individual default. `--theme-preview` always stays offline.
 
 `-m` / `--model` overrides the saved model for that launch; `--continue` uses the
 session's model. Neither changes the saved default by itself.
@@ -193,6 +193,8 @@ style: `syntax_dark` applies whenever the resolved theme is dark, `syntax_light`
 whenever it is light. `/syntax NAME` changes the style for the palette in use and
 saves it as that palette's default; `/syntax` alone reports the current one. Tab
 completion lists the styles, and an unknown name is rejected with the full list.
+`/theme-preview` renders each of them on one line, marks the one in use, and
+repeats the commands below, so a style can be chosen by eye rather than by name.
 
 These are the styles Pygments installs here; a Pygments style plugin package adds
 to the list automatically.
@@ -214,7 +216,12 @@ unhighlighted even though the lexer ran. Compare a few against your own terminal
 background before settling on one.
 
 `/colors terminal` ignores both settings and uses `ansi_dark` / `ansi_light`
-instead, which follow the terminal's own sixteen colors.
+instead, which follow the terminal's own sixteen colors. In that mode
+`/theme-preview` lists the style names without samples: drawing them would need
+the RGB colors that mode exists to avoid.
+
+Outside the editor, `pcode config set syntax_dark NAME` and
+`pcode config set syntax_light NAME` save the same two settings.
 
 Automatic compaction still requires a known context window; setting its global
 preference does not validate a particular model or trigger a compaction. For custom
@@ -830,7 +837,7 @@ not the original session's CPU, live prompt redraws, or external processes.
 
 ```sh
 uv run pcode                 # no model, canned replies only
-uv run pcode --demo          # print a sample and exit, no terminal/auth needed
+uv run pcode --theme-preview # print a sample and the style gallery, then exit
 uv run pcode --theme light   # light input palette
 uv run pcode --theme auto    # detect terminal background at startup
 ```
@@ -853,8 +860,11 @@ The path is all that is sent: pcode never reads a referenced file for you, so
 the model decides whether reading it is worth a call. The menu shows each
 candidate's size so that cost is visible before you pick.
 
-- `/demo`: fictional Markdown, code, diff, table, and tool summaries; never calls
-  the model, even in live mode, and does not enter its conversation history.
+- `/theme-preview`: fictional Markdown, code, diff, table, and tool summaries,
+  followed by a gallery of every installed Pygments style with the commands that
+  select one. Never calls the model, even in live mode, and does not enter its
+  conversation history. `--theme-preview` (formerly `--demo`, still accepted)
+  prints the same thing without a terminal.
 - `/theme light`, `/theme dark`, or `/theme auto`: change the input and future output palette.
   Auto uses the terminal background detected at startup with an OSC 11 query,
   falling back to `COLORFGBG`, then dark when unavailable (including redirected
@@ -867,13 +877,13 @@ candidate's size so that cost is visible before you pick.
 - `/syntax NAME`: change the Pygments style for fenced code on the active palette
   and save it as that palette's default; `/syntax` alone reports the current
   style. See [Code highlighting styles](#code-highlighting-styles) for the list;
-  `/demo` prints a sample to compare against.
+  `/theme-preview` renders every style, marking the one in use.
 - `/colors terminal`: opt into terminal-defined ANSI colors with unpainted code
   backgrounds and `ansi_dark` / `ansi_light` syntax. `/colors palette` restores
   the default coordinated palette; `/colors` shows the current selection.
   This affects Rich output, not the input/completion palette. You can also start
-  with `--color-style terminal` (default: `--color-style palette`). Run `/demo`
-  after switching to compare headings, links, quotes, tables, Python, and diffs.
+  with `--color-style terminal` (default: `--color-style palette`). Run
+  `/theme-preview` after switching to compare headings, links, quotes, tables, Python, and diffs.
   Existing scrollback is not repainted.
 - Session, conversation-tree, model, and tool popups share terminal-default
   backgrounds and text, with reverse-video selection highlights. They follow your
@@ -1003,7 +1013,8 @@ failed calls. Plans and tools persist across turns and saved-session resumes;
 Routine tool summaries no longer enter conversation scrollback. `/tools` opens a
 read-only alternate-screen inspector, separate from this ten-call activity panel.
 It retains all live conversation calls, including successful planning operations.
-The non-interactive `--demo` sample still prints its fictional tool summaries.
+The non-interactive `--theme-preview` sample still prints its fictional tool
+summaries.
 
 ### Edit diff browser
 
@@ -1069,8 +1080,8 @@ words together across streamed chunks. The separating space becomes a newline;
 explicit newlines and indentation are retained. Tokens longer than the available
 width must still split. The live tail stays small. Finishing a message flushes the
 tail without replacing the response
-with rendered Markdown. Tool summaries live inside the task widget. `/demo`
-and restored session messages still use Rich Markdown.
+with rendered Markdown. Tool summaries live inside the task widget.
+`/theme-preview` and restored session messages still use Rich Markdown.
 
 The editor remains usable throughout generation, including multiline input,
 history, slash completion, and `@` file references. Enter sends using the active mode (steering by
@@ -1137,7 +1148,7 @@ unfinished block stays hidden until ready; lists, quotes, and open code blocks
 may remain buffered until a following block or the end of the response. The
 running-prompt spinner and task/tool activity remain visible while text is buffered. Cancellation and tool boundaries flush any remaining text. Already
 committed blocks are not rewritten, so reference links defined in later blocks
-cannot retroactively update earlier output. `--demo`
+cannot retroactively update earlier output. `--theme-preview`
 remains a noninteractive print-and-exit command.
 
 **Transcript means persistent scrollback.** Anything written to `Transcript` should
