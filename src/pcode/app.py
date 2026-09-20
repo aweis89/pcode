@@ -302,7 +302,7 @@ class PreviewApp:
             ),
             Command(
                 "/syntax",
-                "Set the code and completion-menu style for the active palette",
+                "Set the code, menu and prompt style for the active palette",
                 self.syntax,
                 SYNTAX_THEMES,
                 group="Display",
@@ -942,7 +942,7 @@ class PreviewApp:
         self.transcript.regenerate()
 
     def syntax(self, argument: str) -> None:
-        """Choose the Pygments style for fenced code and the completion menu.
+        """Choose the Pygments style for code, the completion menu and the prompt.
 
         Each palette keeps its own style, so switching to the other palette and
         back restores the style picked for it rather than the last one set.

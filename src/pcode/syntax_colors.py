@@ -85,8 +85,17 @@ def _token(style, token) -> str | None:
     return dict(style).get(token, {}).get("color")
 
 
-def derive_colors(style_name: str, fallback: Mapping[str, str]) -> dict[str, str]:
+def derive_colors(
+    style_name: str, fallback: Mapping[str, str], backdrop: str | None = None
+) -> dict[str, str]:
     """Palette field values for `style_name`, backed by `fallback`'s values.
+
+    Without a `backdrop` the colors are meant for the popup, which paints the
+    style's own background behind them. Prompt chrome has no such background:
+    it sits on whatever the terminal paints, and a style chosen for the other
+    appearance would vanish there (`bw` hands out near-black on a dark
+    terminal). Pass the background it will actually land on, and the accents
+    are checked against that instead, falling back to the palette's own.
 
     An unknown style name yields the fallback unchanged: a saved preference
     can outlive the Pygments plugin that provided the style.
@@ -111,24 +120,33 @@ def derive_colors(style_name: str, fallback: Mapping[str, str]) -> dict[str, str
         ((surface, _BAND_GAP), (foreground, _TEXT_GAP)),
         _mix(surface, foreground, 0.25),
     )
+    # An accent is written on the surface and on the selected row both, unless
+    # the caller named the one background that really is behind it.
+    if backdrop is None:
+        on_surface = ((surface, _ACCENT_GAP),)
+        on_selection = ((surface, _ACCENT_GAP), (selected, _ACCENT_GAP))
+        last_resort = {field: foreground for field in ("accent", "task_heading")}
+        last_resort["muted"] = _mix(foreground, surface, 0.45)
+    else:
+        on_surface = on_selection = ((backdrop, _ACCENT_GAP),)
+        last_resort = {field: fallback[field] for field in ("accent", "muted", "task_heading")}
     return {
         "surface": surface,
         "foreground": foreground,
         "selected": selected,
-        # The accent is written on the surface and on the selected row both.
         "accent": _pick(
             (
                 _token(style, Token.Name.Function),
                 _token(style, Token.Keyword),
                 fallback["accent"],
             ),
-            ((surface, _ACCENT_GAP), (selected, _ACCENT_GAP)),
-            foreground,
+            on_selection,
+            last_resort["accent"],
         ),
         "muted": _pick(
             (_token(style, Token.Comment), fallback["muted"]),
-            ((surface, _ACCENT_GAP),),
-            _mix(foreground, surface, 0.45),
+            on_surface,
+            last_resort["muted"],
         ),
         "task_heading": _pick(
             (
@@ -136,7 +154,7 @@ def derive_colors(style_name: str, fallback: Mapping[str, str]) -> dict[str, str
                 _token(style, Token.Name.Class),
                 fallback["task_heading"],
             ),
-            ((surface, _ACCENT_GAP),),
-            foreground,
+            on_surface,
+            last_resort["task_heading"],
         ),
     }

@@ -158,14 +158,17 @@ PALETTES = {
 
 
 @cache
-def syntax_palette(style_name: str, fallback: Palette) -> Palette:
+def syntax_palette(style_name: str, fallback: Palette, backdrop: str | None = None) -> Palette:
     """The palette a Pygments style implies, backed by `fallback`'s colors.
+
+    `backdrop` is the background the colors will be painted on when it is not
+    the style's own; see `derive_colors`.
 
     Cached because prompt_toolkit's DynamicStyle invalidates on the identity of
     the object it is handed: a fresh Palette on every redraw would rebuild the
     whole style tree. Palette is frozen, so it is a usable cache key.
     """
-    return Palette(**derive_colors(style_name, asdict(fallback)))
+    return Palette(**derive_colors(style_name, asdict(fallback), backdrop))
 
 
 def syntax_themes(preferences: dict[str, str] | None = None) -> dict[str, str]:
@@ -1522,8 +1525,8 @@ class Transcript:
         return PALETTES[self.resolved_theme]
 
     @property
-    def syntax_palette(self) -> Palette:
-        """The palette implied by the syntax style in use, for prompt chrome.
+    def menu_palette(self) -> Palette:
+        """The palette implied by the syntax style in use, for the popup.
 
         `/colors terminal` has no Pygments style to read -- code falls back to
         the ANSI pseudo-styles -- so the hardcoded palette stands in.
@@ -1532,9 +1535,22 @@ class Transcript:
             return self.palette
         return syntax_palette(self.syntax_themes[self.resolved_theme], self.palette)
 
+    @property
+    def chrome_palette(self) -> Palette:
+        """The same style read for text drawn straight onto the terminal.
+
+        The popup brings its own background; the prompt, the plan rows and the
+        frame do not, so the palette's surface stands in for the terminal's
+        background and any color that would be lost against it is dropped.
+        """
+        if self.color_style == "terminal":
+            return self.palette
+        style = self.syntax_themes[self.resolved_theme]
+        return syntax_palette(style, self.palette, self.palette.surface)
+
     def prompt_style(self) -> Style:
         """The prompt_toolkit style for the current theme and syntax style."""
-        return self.palette.prompt_style(self.syntax_palette)
+        return self.chrome_palette.prompt_style(self.menu_palette)
 
     @property
     def rich_theme(self) -> Theme:
