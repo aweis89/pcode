@@ -38,7 +38,11 @@ from pcode.workspace_filesystem import WorkspaceFileSystem
 
 # Generous enough for a real investigation, small enough that a child stuck in a
 # loop is stopped within a turn rather than after a session's worth of requests.
-EXPLORER_REQUEST_LIMIT = 120
+# Harness isolates a child's request budget only when its `SubAgent` carries
+# `usage_limits`; without one the child shares the parent's usage counter and
+# silently gets the library's 50-request default, which a busy session has
+# already spent. `pcode.ext.subagent` applies this to extension delegates too.
+SUBAGENT_REQUEST_LIMIT = 120
 EXPLORER_TIMEOUT_SECONDS = 900
 
 
@@ -141,7 +145,7 @@ def create_coder(workspace: Path, subagents: Sequence = ()) -> CombinedCapabilit
                     # observation instead of aborting the turn. Child usage is
                     # then isolated too, and rejoins session totals through
                     # `DelegationEndEvent.usage`.
-                    usage_limits=UsageLimits(request_limit=EXPLORER_REQUEST_LIMIT),
+                    usage_limits=UsageLimits(request_limit=SUBAGENT_REQUEST_LIMIT),
                     timeout_seconds=EXPLORER_TIMEOUT_SECONDS,
                 ),
                 *subagents,
