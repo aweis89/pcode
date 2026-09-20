@@ -24,7 +24,7 @@ from rich.text import Text
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.config import USAGE as CONFIG_USAGE
-from pcode.config import config_arguments, configure
+from pcode.config import config_argument_descriptions, config_arguments, configure
 from pcode.preferences import (
     SETTINGS,
     SYNTAX_THEMES,
@@ -179,6 +179,7 @@ class PreviewApp:
                 self.config,
                 free_arguments=True,
                 argument_provider=config_arguments,
+                argument_descriptions=config_argument_descriptions(),
                 group="App",
             ),
             Command("/quit", "Exit pcode", self.quit, aliases=("/exit",), group="App"),
