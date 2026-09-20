@@ -173,7 +173,7 @@ still need explicit handling because they are separate agent runs that never
 reach the hook: manual `/compact` and the auto-compaction summarizer.
 
 Totals track cache reads and writes separately, since a write costs more than an
-uncached token and a read a fraction of one; `/context` shows the split.
+uncached token and a read a fraction of one; `/status` shows the split.
 `SessionInfo` gained defaulted fields, so a session written before this still
 loads.
 

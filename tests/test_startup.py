@@ -124,7 +124,7 @@ def test_editor_accepts_input_while_backend_starts(outcome):
                     await wait_for(lambda: session.default_buffer.text == "early draft")
                     assert not calls
                     if outcome == "quit":
-                        pipe.send_text("\x03/context\r/quit\r")
+                        pipe.send_text("\x03/status\r/quit\r")
                         await wait_for(lambda: not session.app.is_running)
                         release.set()
                         return

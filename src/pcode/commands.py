@@ -16,6 +16,8 @@ class Command:
     aliases: tuple[str, ...] = ()
     free_arguments: bool = False
     argument_provider: Callable[[], tuple[str, ...]] | None = None
+    # /help groups commands under this heading, in first-seen order.
+    group: str = "Other"
 
 
 class CommandRegistry:
@@ -32,6 +34,13 @@ class CommandRegistry:
 
     def find(self, name: str) -> Command | None:
         return self._lookup.get(name)
+
+    def grouped(self) -> list[tuple[str, list[Command]]]:
+        """Commands by group, groups and members both in registration order."""
+        groups: dict[str, list[Command]] = {}
+        for command in self.commands:
+            groups.setdefault(command.group, []).append(command)
+        return list(groups.items())
 
     def dispatch(self, text: str) -> bool:
         parts = text.strip().split(maxsplit=1)

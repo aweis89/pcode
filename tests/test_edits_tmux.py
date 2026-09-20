@@ -76,19 +76,19 @@ def test_completed_edits_toggle_and_resize_without_duplicates(pane):
     capture(pane, "TURN_1_DONE")
     assert history(pane).count("+SAVED_EDIT_LINE") == 1
     assert "LIVE_EDIT_LINE" not in history(pane)
-    for state in ("hide", "show", "hide", "show"):
-        pane("send-keys", "-t", "preview:0.0", f"/edits {state}", "Enter")
+    for state in ("off", "on", "off", "on"):
+        pane("send-keys", "-t", "preview:0.0", f"/show-edits {state}", "Enter")
         deadline = time.monotonic() + 4
         while True:
             screen = capture(pane, "❯")
             text = history(pane)
-            if ("+SAVED_EDIT_LINE" in text) == (state == "show"):
+            if ("+SAVED_EDIT_LINE" in text) == (state == "on"):
                 break
             assert time.monotonic() < deadline, text
             time.sleep(0.1)
         assert input_rows(screen) == 1
         assert text.count("TURN_1_DONE") == 1
-        assert text.count("+SAVED_EDIT_LINE") == (1 if state == "show" else 0)
+        assert text.count("+SAVED_EDIT_LINE") == (1 if state == "on" else 0)
     pane("send-keys", "-t", "preview:0.0", "-l", "kept draft")
     for width in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(width))

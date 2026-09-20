@@ -24,7 +24,7 @@ from pcode.ui import Activity, Transcript, create_prompt
 @pytest.mark.parametrize("tasks", [False, True])
 @pytest.mark.parametrize("draft,queued", [("", 0), ("one\ntwo\nthree", 3)])
 def test_preview_shares_space_with_actual_editor_and_queue(height, cap, tasks, draft, queued):
-    save_preferences(command_scrollback="on", command_preview_lines=str(cap))
+    save_preferences(show_commands="on", command_preview_lines=str(cap))
 
     async def run():
         stream = StringIO()
@@ -64,7 +64,7 @@ def test_preview_shares_space_with_actual_editor_and_queue(height, cap, tasks, d
                     preview = next(text for text in visible if "$ noisy" in text)
                     assert preview.endswith("OUTPUT_59")
                     assert 1 <= preview.count("OUTPUT_") <= cap
-                    assert "Command output" not in stream.getvalue()
+                    assert "Show commands" not in stream.getvalue()
                     # No stretching to fill otherwise unused space.
                     editor = app.layout.current_window
                     assert 1 <= editor.render_info.window_height <= draft.count("\n") + 1

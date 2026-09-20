@@ -83,7 +83,7 @@ def _asset_detail(block: str) -> str:
         )
     except ValueError:
         # An unreadable inventory is still a measurable number of tokens, and
-        # /context must not be the thing that fails on it.
+        # /status must not be the thing that fails on it.
         inventory = None
     if inventory is None:
         return "paths only"

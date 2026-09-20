@@ -249,7 +249,7 @@ class AutoCompaction(AbstractCapability):
             self.runtime.history = deepcopy(request_context.messages)
         self.runtime.context_history = list(request_context.messages)
         # Instructions and tool schemas as resolved for a real request: the only
-        # place /context can read them without re-deriving the system prompt.
+        # place /status can read them without re-deriving the system prompt.
         self.runtime.request_parameters = request_context.model_request_parameters
         from pcode.model_metadata import refresh_context
 

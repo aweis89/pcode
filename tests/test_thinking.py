@@ -72,8 +72,11 @@ def test_show_thinking_command_redraws_and_saves_default(tmp_path, monkeypatch):
     assert app.registry.dispatch("/show-thinking on")
     assert "RETAINED_REASONING" in redraws[-1]
     assert load_preferences()["show_thinking"] == "on"
-    assert app.registry.dispatch("/show-thinking")
-    assert len(redraws) == 1
+    assert app.registry.dispatch("/show-thinking")  # Bare toggles.
+    assert len(redraws) == 2
+    assert "RETAINED_REASONING" not in redraws[-1]
+    assert load_preferences()["show_thinking"] == "off"
+    assert app.registry.dispatch("/show-thinking on")
     assert app.registry.dispatch("/show-thinking off")
     assert "RETAINED_REASONING" not in redraws[-1]
     assert load_preferences()["show_thinking"] == "off"

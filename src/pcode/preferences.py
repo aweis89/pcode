@@ -69,8 +69,8 @@ SETTINGS = {
     # off keeps a one-line trace and leaves the detail to the saved transcript.
     "tool_error_scrollback": Setting("off", ("on", "off")),
     "regenerate_on_resize": Setting("on", ("on", "off")),
-    "edits": Setting("show", ("show", "hide")),
-    "command_scrollback": Setting("off", ("on", "off")),
+    "show_edits": Setting("on", ("on", "off")),
+    "show_commands": Setting("off", ("on", "off")),
     "command_scrollback_lines": Setting("20", positive_integer=True),
     # The pinned live preview competes with the editor for screen space, so it
     # caps separately from the scrollback mirror. Visibility stays on Ctrl+G.

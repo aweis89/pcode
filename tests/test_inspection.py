@@ -204,7 +204,7 @@ def test_slash_commands_dispatch_and_complete():
     app.inspector_requested = None
     app.handle("/tools invalid")
     assert app.inspector_requested is None
-    app.handle("/errors")
+    app.handle("/tools failed")
     assert app.inspector_requested == "failed"
     from pcode.commands import SlashCompleter
 

@@ -82,12 +82,12 @@ def test_toggle_persists_and_requests_redraw(tmp_path):
 
     app = PreviewApp(console=Console(file=StringIO()))
     app.transcript.regenerate = Mock()
-    app.show_edits("hide")
+    app.show_edits("off")
     assert not app.transcript.show_edits
-    assert load_preferences()["edits"] == "hide"
+    assert load_preferences()["show_edits"] == "off"
     app.show_edits("")
     assert app.transcript.show_edits
-    assert load_preferences()["edits"] == "show"
+    assert load_preferences()["show_edits"] == "on"
     assert app.transcript.regenerate.call_count == 2
     with pytest.raises(ValueError, match="Usage"):
         app.show_edits("bogus")

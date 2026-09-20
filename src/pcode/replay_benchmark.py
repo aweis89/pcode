@@ -121,7 +121,7 @@ async def replay_journal(
     transcript = Transcript(
         output.console,
         activity=activity,
-        preferences={"command_scrollback": "on" if settings.command_scrollback else "off"},
+        preferences={"show_commands": "on" if settings.command_scrollback else "off"},
         detected_theme="dark",
     )
     transcript.output = output
