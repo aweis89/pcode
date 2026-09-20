@@ -187,11 +187,13 @@ class ExtensionAPI:
         *,
         arguments: tuple[str, ...] = (),
         aliases: tuple[str, ...] = (),
+        argument_descriptions: dict[str, str] | None = None,
     ) -> None:
         """Add a slash command. `handler(argument)` runs on the terminal's event loop.
 
-        Without `arguments`, any text is accepted; with them, only those values.
-        Names taken by pcode itself are reported and skipped, never overridden.
+        Without `arguments`, any text is accepted; with them, only those values,
+        and `argument_descriptions` labels each in the completion menu. Names
+        taken by pcode itself are reported and skipped, never overridden.
         """
         if not name.startswith("/"):
             name = "/" + name
@@ -204,6 +206,7 @@ class ExtensionAPI:
                 aliases=aliases,
                 free_arguments=not arguments,
                 group="Extensions",
+                argument_descriptions=argument_descriptions,
             )
         )
 

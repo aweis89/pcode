@@ -36,6 +36,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -59,9 +60,8 @@ CHROME_CANDIDATES = (
 def chrome_executable() -> str | None:
     """The Chrome to launch: `PCODE_BROWSER_CHROME`, else the first installed candidate."""
     configured = os.environ.get("PCODE_BROWSER_CHROME", "").strip()
-    if configured:
-        return configured
-    for candidate in CHROME_CANDIDATES:
+    candidates = (configured,) if configured else CHROME_CANDIDATES
+    for candidate in candidates:
         if "/" in candidate:
             if Path(candidate).is_file():
                 return candidate
@@ -107,6 +107,41 @@ def running_chrome_url() -> str | None:
             continue
         return f"ws://127.0.0.1:{int(port)}{path}"
     return None
+
+
+REMOTE_DEBUGGING_PAGE = "chrome://inspect/#remote-debugging"
+
+
+def show_remote_debugging_toggle() -> bool:
+    """Open Chrome's remote-debugging switch in the user's own Chrome; False if none is installed.
+
+    Chrome forwards a URL given to a second invocation to the running instance,
+    or starts one on the default profile, so this lands in the everyday browser
+    either way. On macOS that goes through `open -a`: a cold start from the
+    binary itself drops a `chrome://` URL on the floor. Detached: the process
+    is not ours to wait on.
+    """
+    executable = chrome_executable()
+    if executable is None:
+        return False
+    command = [executable, REMOTE_DEBUGGING_PAGE]
+    if sys.platform == "darwin" and ".app/Contents/MacOS/" in executable:
+        bundle = Path(executable)
+        while bundle.suffix != ".app":
+            bundle = bundle.parent
+        command = ["open", "-a", str(bundle), REMOTE_DEBUGGING_PAGE]
+    _detach(command)
+    return True
+
+
+def _detach(command: list[str]) -> None:
+    subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def _free_port() -> int:

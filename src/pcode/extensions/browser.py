@@ -22,7 +22,7 @@ an empty `setup` removes the feature.
 
 import asyncio
 
-from pcode.browser import STATE
+from pcode.browser import REMOTE_DEBUGGING_PAGE, STATE, show_remote_debugging_toggle
 
 DELEGATE_INSTRUCTIONS = (
     "A `browser` sub-agent shares the same browser window and login. Delegate to it "
@@ -182,6 +182,12 @@ def setup(pcode) -> None:
                 STATE.open()
             except ValueError:
                 STATE.attach = False
+                if show_remote_debugging_toggle():
+                    pcode.ui.notify(
+                        f"Opened {REMOTE_DEBUGGING_PAGE} in your Chrome. Turn the switch on, "
+                        "then run /browser attach again."
+                    )
+                    return
                 raise
             if not STATE.enabled:
                 turn_on()
@@ -212,6 +218,13 @@ def setup(pcode) -> None:
         "A real Chrome the model can drive; `launch` opens one, `attach` joins yours",
         browser,
         arguments=("on", "launch", "attach", "off", "status"),
+        argument_descriptions={
+            "on": "Add the browser tools; Chrome opens on first use",
+            "launch": "Open pcode's own Chrome window now (turns the tools on)",
+            "attach": "Join the Chrome you have open, logins included; needs remote debugging on",
+            "off": "Close the browser and remove the tools",
+            "status": "Show which browser is in use and where it is",
+        },
     )
     pcode.on_close(STATE.close)
     if not STATE.enabled:

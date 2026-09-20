@@ -599,13 +599,23 @@ downloaded on first use.
 `/browser attach` joins the Chrome you already have open instead, logins
 included, so nothing needs signing in to. The model works in a tab of its own,
 and `browser_tabs()` shows it what you have open, so "check my email" finds the
-mail tab and opens that site rather than guessing. Turn on remote debugging at
-`chrome://inspect/#remote-debugging` (or start Chrome with
-`--remote-debugging-port`); pcode finds the port from Chrome's
-`DevToolsActivePort` file, or from `PCODE_BROWSER_CDP_URL` /
-`PCODE_BROWSER_PORT_FILE`. pcode opens its own tab there and closes it on
-`/browser off`, never quitting your Chrome. This is the higher-risk mode: the
-model can act as every account that browser is signed in to.
+mail tab and opens that site rather than guessing. Chrome only exposes itself
+once remote debugging is on: the first `/browser attach` opens
+`chrome://inspect/#remote-debugging` in your Chrome for you to flip the switch,
+then run it again. (Starting Chrome with `--remote-debugging-port` works too.)
+pcode finds the port from Chrome's `DevToolsActivePort` file, or from
+`PCODE_BROWSER_CDP_URL` / `PCODE_BROWSER_PORT_FILE`. pcode opens its own tab
+there and closes it on `/browser off`, never quitting your Chrome. This is the
+higher-risk mode: the model can act as every account that browser is signed in
+to.
+
+| `/browser …` | Does |
+| --- | --- |
+| `on` | Add the browser tools; pcode's own Chrome opens on first use |
+| `launch` | Open pcode's own Chrome window now (turns the tools on) |
+| `attach` | Join the Chrome you have open, logins included |
+| `off` | Close the browser (or pcode's tab in yours) and remove the tools |
+| `status` | Show which browser is in use and where it is |
 
 The window is visible and localhost is reachable, since a dev server is the
 usual target. The trade-off of turning it on at all: any page the model reads
