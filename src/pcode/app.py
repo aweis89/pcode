@@ -2533,7 +2533,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 file=sys.stderr,
             )
         session_id = None
-        if not args.resume and not args.no_worktree and not args.demo:
+        if not args.resume and not args.no_worktree and not args.theme_preview:
             workspace, session_id = _enter_worktree(workspace, args.worktree)
         app = PreviewApp(
             theme=args.theme,
