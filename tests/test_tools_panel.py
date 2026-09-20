@@ -43,6 +43,24 @@ def test_settled_calls_do_not_linger_in_the_panel():
     assert panel_fragments(history.rows(5), 100) == []
 
 
+def test_a_command_that_finishes_instantly_still_holds_the_status_row(monkeypatch):
+    history = ToolHistory()
+    history.record(ToolStarted("run_command", "quick", "one", command="true"))
+    history.record(ToolSummary("run_command", "quick", call_id="one"))
+    # Gone from the panel, but the status row keeps it long enough to read.
+    assert history.calls == []
+    assert history.active is not None and history.active.event.call_id == "one"
+    frozen = history.active.line()
+    assert history.active.line() == frozen  # Its duration stops ticking.
+    # Real work always wins the row back.
+    history.record(ToolStarted("grep", "pattern", "two"))
+    assert history.active.event.call_id == "two"
+    history.record(ToolSummary("grep", "pattern", call_id="two"))
+    monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 0.0)
+    assert history.active is None
+    assert history.recent is None
+
+
 @pytest.mark.parametrize("width", [1, 8, 24, 80])
 def test_panel_rows_are_cell_bounded_and_controls_cannot_change_layout(width):
     history = ToolHistory()
