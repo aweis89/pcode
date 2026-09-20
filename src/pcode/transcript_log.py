@@ -98,6 +98,12 @@ class TranscriptLog:
             self.chars -= self.entries.popleft().chars
             self.dropped = True
 
+    def clear(self) -> None:
+        """Forget retained history so the next rebuild starts from an empty screen."""
+        self.entries.clear()
+        self.chars = 0
+        self.dropped = False
+
 
 def recorded(method):
     """Record the outermost presentation operation, never its nested prints."""

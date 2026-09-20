@@ -196,7 +196,7 @@ class PreviewApp:
             ),
             Command("/logout", "Remove the stored Anthropic login", self.logout, group="Model"),
             Command(
-                "/new", "Start a new conversation; keeps scrollback", self.new, group="Session"
+                "/new", "Start a new conversation; clears the screen", self.new, group="Session"
             ),
             Command(
                 "/resume", "Choose a saved session to resume", self.select_session, group="Session"
@@ -985,9 +985,10 @@ class PreviewApp:
         self.runtime.reset()
         self.activity.reset()
         self.edits.clear()
+        self.transcript.clear()
         self.transcript.print(Rule("New conversation", style="pcode.muted"))
         self.transcript.note(
-            "Context reset; MCP servers are off. Input history and transcript are unchanged."
+            "Context reset; MCP servers are off. Screen cleared; input history is unchanged."
         )
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")

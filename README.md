@@ -771,7 +771,7 @@ candidate's size so that cost is visible before you pick.
 - `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
 - `/autocompact on|off`: opt into automatic LLM compaction (saved user preference; default off).
-- `/new`: start a new saved conversation without clearing the on-screen transcript or input history.
+- `/new`: start a new saved conversation; clears the screen and retained scrollback, keeps input history.
 - `/resume`: choose a saved conversation by its first prompt and resume it in place.
 - `/tree`: [browse and fork the conversation](docs/conversation-tree.md); select a user prompt to
   edit it, or an assistant response to continue from there. Existing branches are kept.
