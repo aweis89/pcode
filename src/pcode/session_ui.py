@@ -1,48 +1,235 @@
 """Temporary session popups; the editor is suspended while one owns the terminal."""
 
-from prompt_toolkit.application import Application
+from pathlib import Path
+
+from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.document import Document
+from prompt_toolkit.filters import Always, has_focus
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit
-from prompt_toolkit.widgets import Dialog, Label, RadioList, TextArea
+from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
+from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
+from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.widgets import Dialog, Frame, Label, TextArea
 
-from pcode.popup_ui import popup_container, popup_style
+from pcode.diagnostics import redact
+from pcode.popup_ui import list_pane_height, popup_container, popup_style
+from pcode.sessions import SessionInfo, Turn, first_prompt, session_turns
+from pcode.tool_display import plain
+
+PROMPT_LINES = 6
+RESPONSE_LINES = 3
+LINE_WIDTH = 160
 
 
-def session_dialog(values, *, input=None, output=None, style=None):
-    choices = RadioList(values, select_on_focus=True)
-    bindings = KeyBindings()
+def excerpt(text: str, lines: int, *, indent: str = "", width: int = LINE_WIDTH) -> str:
+    """The first few non-blank lines of a prompt or response, safe for the terminal."""
+    kept = [line for line in redact(text).splitlines() if line.strip()]
+    shown = [plain(line, width) for line in kept[:lines]]
+    if len(kept) > lines:
+        shown.append("…")
+    return "\n".join(indent + line for line in shown)
 
-    @bindings.add("enter", eager=True)
-    def accept(event):
-        event.app.exit(result=choices.current_value)
 
-    @bindings.add("escape", eager=True)
-    @bindings.add("c-c")
-    @bindings.add("c-d")
-    def cancel(event):
-        event.app.exit(result=None)
+class SessionBrowser:
+    """Full-screen browser over saved sessions: list, per-turn detail, and search.
 
-    dialog = Dialog(
-        title="Resume session",
-        body=HSplit(
+    Turns are read lazily from each transcript and cached. Typing a query reads
+    every session in scope once; a session stays listed only if a turn matches
+    every query word (prompts by default, responses too with ``r``).
+    """
+
+    def __init__(
+        self,
+        records: list[SessionInfo],
+        *,
+        root: Path,
+        workspace: Path,
+        active_id: str | None = None,
+        **app_options,
+    ) -> None:
+        self.records = records
+        self.root = root
+        self.workspace = workspace.resolve()
+        self.active_id = active_id
+        self.everywhere = False
+        self.responses = False
+        self.visible: list[SessionInfo] = []
+        self.selected: SessionInfo | None = None
+        self._turns: dict[str, list[Turn] | None] = {}
+        self._titles: dict[str, str] = {}
+        self._refreshing = False
+        self.query = TextArea(height=1, prompt="Search prompts: ", multiline=False)
+        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.list.window.cursorline = Always()
+        self.detail = TextArea(read_only=True, wrap_lines=True, scrollbar=True)
+        self.query.buffer.on_text_changed += lambda _: self.refresh()
+        self.list.buffer.on_cursor_position_changed += lambda _: self.select()
+        keys = KeyBindings()
+
+        @keys.add("escape", eager=True)
+        @keys.add("c-c")
+        @keys.add("c-d")
+        def close(event):
+            event.app.exit(result=None)
+
+        keys.add("tab")(focus_next)
+        keys.add("s-tab")(focus_previous)
+
+        @keys.add("enter", filter=has_focus(self.list) | has_focus(self.detail))
+        def resume(event):
+            event.app.exit(result=self.selected.id if self.selected else None)
+
+        @keys.add("/", filter=has_focus(self.list))
+        @keys.add("c-f")
+        def search(event):
+            event.app.layout.focus(self.query)
+
+        @keys.add("enter", filter=has_focus(self.query))
+        def search_done(event):
+            event.app.layout.focus(self.list)
+
+        @keys.add("w", filter=has_focus(self.list))
+        def workspaces(event):
+            self.everywhere = not self.everywhere
+            self.refresh()
+
+        @keys.add("r", filter=has_focus(self.list))
+        def responses(event):
+            self.responses = not self.responses
+            self.refresh()
+
+        header = Label(
+            lambda: (
+                f"Sessions · {len(self.visible)}/{len(self.in_scope())} · "
+                f"Workspace: {'all' if self.everywhere else self.workspace.name} · "
+                f"Search: {'prompts + responses' if self.responses else 'prompts'}"
+            )
+        )
+        wide = VSplit(
             [
-                Label("↑/↓ select · Enter resume · Esc cancel", dont_extend_height=True),
-                choices,
-            ],
-            padding=1,
-        ),
-        with_background=True,
-    )
-    return Application(
-        layout=Layout(popup_container(dialog), focused_element=choices),
-        key_bindings=bindings,
-        full_screen=True,
-        mouse_support=True,
-        input=input,
-        output=output,
-        style=popup_style(style),
-    )
+                Frame(self.list, title="Sessions", width=Dimension(weight=2)),
+                Frame(self.detail, title="Turns", width=Dimension(weight=3)),
+            ]
+        )
+        narrow = HSplit(
+            [
+                Frame(
+                    self.list,
+                    title="Sessions",
+                    height=lambda: list_pane_height(len(self.visible)),
+                ),
+                Frame(self.detail, title="Turns"),
+            ]
+        )
+        body = DynamicContainer(
+            lambda: wide if get_app().output.get_size().columns >= 100 else narrow
+        )
+        root_container = HSplit(
+            [
+                header,
+                self.query,
+                body,
+                Label("↑↓ Select/scroll · Enter Resume · Tab Focus · Esc Cancel"),
+                Label("In Sessions: / Search · r Search responses too · w All workspaces"),
+            ]
+        )
+        self.app = Application(
+            layout=Layout(popup_container(root_container), focused_element=self.list),
+            key_bindings=keys,
+            full_screen=True,
+            mouse_support=True,
+            style=popup_style(app_options.pop("style", None)),
+            **app_options,
+        )
+        self.refresh()
+
+    def turns(self, info: SessionInfo) -> list[Turn]:
+        if info.id not in self._turns:
+            self._turns[info.id] = session_turns(info, self.root)
+        return self._turns[info.id] or []
+
+    def in_scope(self) -> list[SessionInfo]:
+        if self.everywhere:
+            return self.records
+        return [info for info in self.records if Path(info.workspace).resolve() == self.workspace]
+
+    def matches(self, turn: Turn, words: list[str]) -> bool:
+        haystack = turn.prompt.casefold()
+        if self.responses:
+            haystack += "\n" + turn.response.casefold()
+        return all(word in haystack for word in words)
+
+    def matching_turns(self, info: SessionInfo) -> list[Turn]:
+        words = self.query.text.casefold().split()
+        turns = self.turns(info)
+        if not words:
+            return turns
+        return [turn for turn in turns if self.matches(turn, words)]
+
+    def title(self, info: SessionInfo) -> str:
+        # Listing reads only the first prompt; the full transcript loads on select/search.
+        if info.id not in self._titles:
+            marker = "* " if info.id == self.active_id else "  "
+            first = plain(redact(first_prompt(info, self.root)), 80)
+            self._titles[info.id] = f"{marker}{info.updated[5:16].replace('T', ' ')}  {first}"
+        return self._titles[info.id]
+
+    def heading(self, info: SessionInfo, shown: int, total: int) -> str:
+        parts = [info.id[:8], plain(info.model, 40), info.updated[:16].replace("T", " ")]
+        if info.id == self.active_id:
+            parts.append("active")
+        parts.append(f"{shown} of {total} turns" if shown < total else f"{total} turns")
+        return " · ".join(parts)
+
+    def refresh(self) -> None:
+        previous = self.selected
+        searching = bool(self.query.text.strip())
+        self.visible = [
+            info for info in self.in_scope() if not searching or self.matching_turns(info)
+        ]
+        selected = next((i for i, info in enumerate(self.visible) if info is previous), 0)
+        lines = [self.title(info) for info in self.visible]
+        text = "\n".join(lines) or "No matching sessions."
+        position = sum(len(line) + 1 for line in lines[:selected])
+        self._refreshing = True
+        self.list.buffer.set_document(Document(text, position), bypass_readonly=True)
+        self._refreshing = False
+        self.select(force=True)
+
+    def select(self, force: bool = False) -> None:
+        if self._refreshing:
+            return
+        row = self.list.document.cursor_position_row
+        info = self.visible[row] if row < len(self.visible) else None
+        if info is self.selected and info is not None and not force:
+            return
+        self.selected = info
+        self.detail.buffer.set_document(Document(self.details(info), 0), bypass_readonly=True)
+        self.detail.window.vertical_scroll = 0
+
+    def details(self, info: SessionInfo | None) -> str:
+        if info is None:
+            return "No matching sessions."
+        total = len(self.turns(info))
+        if self._turns[info.id] is None:
+            return "(Transcript unavailable)"
+        turns = self.matching_turns(info)
+        blocks = [self.heading(info, len(turns), total)]
+        if not turns:
+            blocks.append("(No prompt yet)")
+        for turn in turns:
+            block = "› " + excerpt(turn.prompt, PROMPT_LINES, indent="  ")[2:]
+            if turn.response:
+                block += "\n" + excerpt(turn.response, RESPONSE_LINES, indent="  ")
+            elif turn.status != "complete":
+                block += f"\n  ({turn.status})"
+            else:
+                block += "\n  (no response text)"
+            blocks.append(block)
+        return "\n\n".join(blocks)
+
+    async def run(self) -> str | None:
+        return await self.app.run_async()
 
 
 def session_info_dialog(rows, *, input=None, output=None, style=None):
