@@ -29,7 +29,6 @@ def make_app(width=80, workspace=None):
             [
                 "/help",
                 "/config",
-                "/demo",
                 "/quit",
                 "/status",
                 "/tools",
@@ -55,13 +54,14 @@ def make_app(width=80, workspace=None):
                 "/theme",
                 "/colors",
                 "/syntax",
+                "/theme-preview",
                 "/redraw",
             ],
         ),
         ("/sta", ["/status"]),
         ("/session", []),
         ("/res", ["/resume", "/resend"]),
-        ("/de", ["/demo"]),
+        ("/theme-p", ["/theme-preview"]),
         ("/theme ", ["dark", "light", "auto"]),
         ("/theme l", ["light"]),
         ("/colors ", ["palette", "terminal"]),
@@ -69,7 +69,7 @@ def make_app(width=80, workspace=None):
         ("/syntax gruvbox", ["gruvbox-dark", "gruvbox-light"]),
         ("/ex", ["/quit", "/extensions"]),
         ("hello /", []),
-        ("/demo\n/", []),
+        ("/theme-preview\n/", []),
         ("/missing", []),
         ("/tool", ["/tools"]),
     ],
@@ -81,8 +81,8 @@ def test_completion(text, expected, tmp_path):
         SlashCompleter(app.registry).get_completions(Document(text), CompleteEvent())
     )
     assert [item.text for item in completions] == expected
-    if text == "/de":
-        assert completions[0].start_position == -3
+    if text == "/theme-p":
+        assert completions[0].start_position == -8
         assert completions[0].display_meta_text
 
 
@@ -96,7 +96,8 @@ def test_registry_guards_duplicate_names():
 
 def test_dispatch_theme_errors_reset_and_exit():
     app, stream = make_app()
-    for text in ("hello", "/demo", "/theme light", "/theme invalid", "/missing", "/context"):
+    commands = ("hello", "/theme-preview", "/theme light", "/theme invalid", "/missing")
+    for text in (*commands, "/context"):
         app.handle(text)
     assert app.runtime.turns == 2
     assert app.transcript.theme == "light"
@@ -114,7 +115,16 @@ def test_dispatch_theme_errors_reset_and_exit():
 
 @pytest.mark.parametrize(
     "command",
-    ["/tree", "/new", "/help", "/demo", "/theme light", "/theme invalid", "/missing", "/exit"],
+    [
+        "/tree",
+        "/new",
+        "/help",
+        "/theme-preview",
+        "/theme light",
+        "/theme invalid",
+        "/missing",
+        "/exit",
+    ],
 )
 def test_commands_are_not_echoed_as_prompts(command):
     app, _ = make_app()
@@ -140,7 +150,7 @@ def test_rendering_fits_terminal(width, theme, color_style):
     app.transcript.color_style = color_style
     app.transcript.welcome()
     app.help("")
-    app.demo("")
+    app.theme_preview("")
     app.handle("Hello 世界 👋 " + "unbroken" * 30)
     output = stream.getvalue()
     assert "世界" in output
@@ -149,6 +159,19 @@ def test_rendering_fits_terminal(width, theme, color_style):
     assert app.activity.tools.calls == []
     assert all(cell_len(line) <= width for line in output.splitlines())
     assert "\x1b" not in output
+
+
+def test_theme_preview_gallery_marks_the_style_in_use_on_replay():
+    app, stream = make_app(width=100)
+    app.theme_preview("")
+    assert "▸ gruvbox-dark " in stream.getvalue()
+    app.handle("/syntax monokai")
+    console = Console(file=StringIO(), width=100, color_system=None)
+    for objects, end, _ in app.transcript.replay():
+        console.print(*objects, end=end)
+    replayed = console.file.getvalue()
+    assert "▸ monokai " in replayed
+    assert "▸ gruvbox-dark " not in replayed
 
 
 @pytest.mark.parametrize(
@@ -179,8 +202,8 @@ def test_prompt_accepts_completion_before_sending():
                 pipe.send_text("\t\r\r")
 
         session.default_buffer.on_completions_changed += complete
-        pipe.send_text("/de")
-        assert session.prompt() == "/demo"
+        pipe.send_text("/theme-p")
+        assert session.prompt() == "/theme-preview"
 
 
 def test_history_search_survives_compact_layout():

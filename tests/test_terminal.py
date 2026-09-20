@@ -30,7 +30,7 @@ def test_terminal_completion_resize_interrupt_and_exit(columns):
         child.sendcontrol("c")
         child.expect_exact("Input discarded.")
         child.expect_exact("\x1b[?25h")  # A completed prompt repaint; PTYs do not answer CPR.
-        child.send("/demo\r")
+        child.send("/theme-preview\r")
         child.expect_exact("No files were")
         child.expect_exact("\x1b[?25h")  # A completed prompt repaint; PTYs do not answer CPR.
         assert "\x1b[3J" not in log.getvalue()  # Ordinary writes remain append-only.

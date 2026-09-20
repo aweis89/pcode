@@ -147,12 +147,6 @@ class PreviewApp:
                 argument_provider=config_arguments,
                 group="App",
             ),
-            Command(
-                "/demo",
-                "Print sample Markdown, code, diff, and tool output",
-                self.demo,
-                group="App",
-            ),
             Command("/quit", "Exit pcode", self.quit, aliases=("/exit",), group="App"),
             Command(
                 "/status",
@@ -299,6 +293,12 @@ class PreviewApp:
                 "Set the code highlighting style for the active palette",
                 self.syntax,
                 SYNTAX_THEMES,
+                group="Display",
+            ),
+            Command(
+                "/theme-preview",
+                "Sample output plus every syntax style and how to select one",
+                self.theme_preview,
                 group="Display",
             ),
             Command(
@@ -903,8 +903,9 @@ class PreviewApp:
     def present_events(self, events) -> None:
         present_events(events, activity=self.activity, transcript=self.transcript, edits=self.edits)
 
-    def demo(self, argument: str) -> None:
+    def theme_preview(self, argument: str) -> None:
         self.present_events(self.preview.demo())
+        self.transcript.syntax_gallery()
 
     def theme(self, argument: str) -> None:
         self.transcript.theme = argument or (
@@ -1844,6 +1845,7 @@ class PreviewApp:
                         "/help",
                         "/commands",
                         "/theme",
+                        "/theme-preview",
                         "/colors",
                         "/syntax",
                         "/show-tasks",
@@ -2252,7 +2254,15 @@ def main() -> None:
         action="store_true",
         help="Answer PROMPT without the editor: reply on stdout, tool activity on stderr",
     )
-    parser.add_argument("--demo", action="store_true", help="Print an offline sample and exit")
+    parser.add_argument(
+        "--theme-preview",
+        # The flag was named --demo before it grew the style gallery; keep the
+        # old spelling working for scripts and the Homebrew smoke test.
+        "--demo",
+        dest="theme_preview",
+        action="store_true",
+        help="Print an offline sample and the syntax-style gallery, then exit",
+    )
     parser.add_argument("--sessions", action="store_true", help="List saved sessions and exit")
     parser.add_argument(
         "-c",
@@ -2323,11 +2333,11 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         except (OSError, ValueError) as error:
             parser.exit(2, f"{error}\n")
         return
-    if args.resume and (args.no_save or args.demo):
-        parser.error("--continue cannot be combined with --no-save or --demo")
+    if args.resume and (args.no_save or args.theme_preview):
+        parser.error("--continue cannot be combined with --no-save or --theme-preview")
     if args.print:
-        if args.demo or args.sessions:
-            parser.error("--print cannot be combined with --demo or --sessions")
+        if args.theme_preview or args.sessions:
+            parser.error("--print cannot be combined with --theme-preview or --sessions")
         if args.prompt is None:
             if sys.stdin.isatty():
                 parser.error("--print needs a PROMPT argument or text on stdin")
@@ -2344,12 +2354,13 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         for info in records:
             console.note(f"{info.id}  {info.status}  {info.model}  {info.workspace}")
         return
-    if args.demo:
-        # --demo never constructs a provider, even when -m is also supplied.
+    if args.theme_preview:
+        # --theme-preview never constructs a provider, even when -m is also supplied.
         app = PreviewApp(theme=args.theme, color_style=args.color_style)
         app.transcript.welcome()
         # There is no mutable panel in the non-interactive sample.
         app.transcript.events(app.preview.demo(), show_tools=True)
+        app.transcript.syntax_gallery()
         return
     if not args.print and (not sys.stdin.isatty() or not sys.stdout.isatty()):
         parser.error("interactive mode needs a terminal; use --print PROMPT to answer without one")
