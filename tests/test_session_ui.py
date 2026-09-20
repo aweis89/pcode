@@ -115,7 +115,7 @@ def test_browser_scopes_searches_and_shows_turns(tmp_path):
 def test_browser_scopes_without_git(tmp_path):
     with (
         create_pipe_input() as pipe,
-        patch("pcode.session_ui.main_checkout", side_effect=FileNotFoundError),
+        patch("pcode.worktree.main_checkout", side_effect=FileNotFoundError),
     ):
         app, ids = browser(tmp_path, input=pipe)
         assert [info.id for info in app.visible] == [ids["newest"], ids["older"]]

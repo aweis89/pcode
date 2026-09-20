@@ -74,7 +74,7 @@ def test_session_browser_groups_repository_worktrees(repo, tmp_path, location):
     records = list_sessions(root)
     with (
         create_pipe_input() as pipe,
-        patch("pcode.session_ui.main_checkout", wraps=worktree.main_checkout) as resolve,
+        patch("pcode.worktree.main_checkout", wraps=worktree.main_checkout) as resolve,
     ):
         browser = SessionBrowser(
             records, root=root, workspace=paths[location], input=pipe, output=DummyOutput()
