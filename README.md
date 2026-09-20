@@ -527,16 +527,33 @@ Do not include proxy URLs containing credentials in prompts or diagnostics.
 
 ### Web search
 
-Set `EXA_API_KEY` in the environment before starting pcode to enable Exa-backed
-`web_search` and `get_page` tools for the coder. The key is read by the Exa client,
-not passed to the model. Without a nonblank key, search tools are omitted and
-ordinary coding sessions work as before. The explorer stays local and does not receive web tools.
+The coder can search the web and read pages. Search and page fetching are
+separate because provider-native search returns snippets only; reading
+documentation needs the fetch either way. Each picks the best backend available:
 
-Search returns up to five results with excerpts and source URLs; page retrieval
-returns up to 10,000 characters. Deep search is disabled. Queries and requested
-URLs are sent to Exa and may incur API charges; returned content is sent to the
-model and can be saved in session history. Restart pcode after changing the key,
-including when resuming a session.
+| | Search | Fetch a URL |
+| --- | --- | --- |
+| Model has a native tool (Anthropic, OpenAI) | provider runs it server-side | Anthropic runs it server-side |
+| `EXA_API_KEY` set | Exa `web_search` | Exa `get_page` |
+| Otherwise | DuckDuckGo `web_search` | HTTP fetch `get_page`, converted to Markdown |
+
+Native tools are billed by the provider per search; the Exa key is read by the
+Exa client and never passed to the model. Search returns up to five results;
+page retrieval returns up to 10,000 characters. Queries, URLs, and returned
+content go to whichever backend is in use, reach the model, and can be saved in
+session history. The explorer sub-agent receives no web tools.
+
+```sh
+pcode config set web_search local   # Never advertise native tools to the model
+pcode config set web_search off     # No web tools at all
+pcode config unset web_search       # Back to auto
+```
+
+`local` is the escape hatch for an endpoint that rejects server-side tools.
+Changes apply on `/reload` or the next launch. This is all one bundled
+extension, `web_research`; copy `src/pcode/extensions/web_research.py` to
+`~/.config/pcode/extensions/web_research.py` to change backends, limits, or
+instructions, or leave its `setup` empty to remove the tools.
 
 ### Code mode (opt-in)
 

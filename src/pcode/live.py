@@ -28,6 +28,8 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
     ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     RetryPromptPart,
 )
 from pydantic_ai.usage import RunUsage, UsageLimits
@@ -78,6 +80,7 @@ from pcode.tool_display import (
     command_text,
     delegation_detail,
     label,
+    native_result_detail,
     result_detail,
     shell_result_status,
     shell_status,
@@ -608,6 +611,26 @@ class AgentRuntime:
                         if event.part.content:
                             yield ThinkingDelta(event.part.content)
                         yield RunStatus("Thinking…")
+                    elif isinstance(event.part, NativeToolReturnPart):
+                        # Provider-executed tools (native web search/fetch) return
+                        # inside the response stream; there is no function event.
+                        name, args, started = tools.pop(
+                            event.part.tool_call_id, (event.part.tool_name, {}, monotonic())
+                        )
+                        detail, failed = native_result_detail(
+                            name, args, event.part.content, event.part.outcome
+                        )
+                        yield ToolSummary(
+                            name,
+                            detail,
+                            failed=failed,
+                            call_id=event.part.tool_call_id,
+                            result=capture(event.part.content),
+                            run_id=run_id,
+                            outcome=event.part.outcome if not failed else "error",
+                            elapsed_seconds=max(0, monotonic() - started),
+                        )
+                        yield activity()
                 elif isinstance(event, PartDeltaEvent):
                     if isinstance(event.delta, TextPartDelta):
                         yield TextDelta(event.delta.content_delta)
@@ -621,6 +644,21 @@ class AgentRuntime:
                         yield Message(event.part.content)
                     elif isinstance(event.part, ThinkingPart) and event.part.content:
                         yield Thinking(event.part.content)
+                    elif isinstance(event.part, NativeToolCallPart):
+                        try:
+                            args = event.part.args_as_dict()
+                        except (ValueError, TypeError):
+                            args = {}
+                        tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
+                        yield ToolStarted(
+                            event.part.tool_name,
+                            target(event.part.tool_name, args),
+                            event.part.tool_call_id,
+                            arguments=capture(args if args else event.part.args),
+                            run_id=run_id,
+                            started_at=datetime.now(timezone.utc).isoformat(),
+                        )
+                        yield activity()
                 elif isinstance(event, FunctionToolCallEvent):
                     try:
                         args = event.part.args_as_dict()

@@ -14,7 +14,6 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
-from pydantic_ai_harness.exa import ExaSearch
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
@@ -157,10 +156,8 @@ def create_coder(workspace: Path) -> CombinedCapability:
     # whatever toolset the capabilities above compose.
     if code_mode := create_code_mode():
         coder.capabilities.append(code_mode)
-    # Missing credentials must not prevent ordinary coding sessions. Let the
-    # capability read the key itself; never put it in instructions or tool args.
-    if os.environ.get("EXA_API_KEY", "").strip():
-        coder.capabilities.append(ExaSearch(id="web_research"))
+    # Web search and fetch come from the bundled `web_research` extension, so a
+    # user file of the same name can replace them.
     # Recompose so instruction sources track replaced/added capabilities too.
     # Summarize evidence before discarding it. Coder defaults to clearing old
     # tool results at 70%, which otherwise runs before pcode compaction.

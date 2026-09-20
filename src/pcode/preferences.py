@@ -114,6 +114,11 @@ SETTINGS = {
     # Batch read-only tools through one sandboxed run_code snippet; edits, plans,
     # shell, and delegation stay native so their transcript display survives.
     "code_mode": Setting("off", ("on", "off")),
+    # Read by the bundled web_research extension: `auto` uses the provider's
+    # native search and fetch when the model has them and local tools otherwise,
+    # `local` never sends native tools (some endpoints reject them), `off` adds
+    # no web tools at all. Applies on /reload or next launch.
+    "web_search": Setting("auto", ("auto", "local", "off")),
     "tool_output_mode": Setting("spill", ("spill", "truncate", "off")),
     "tool_output_threshold": Setting("10000", positive_integer=True),
     "tool_output_preview_chars": Setting("1000", positive_integer=True),

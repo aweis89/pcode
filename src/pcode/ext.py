@@ -28,6 +28,10 @@ from pcode.commands import Command
 from pcode.preferences import SETTINGS, load_preferences, preferences_path
 
 PROJECT_DIR = Path(".pcode") / "extensions"
+# Defaults shipped with pcode, written against the same API as user extensions.
+# Searched last, so a user or project file of the same name replaces one (an
+# empty `setup` disables it). Keep this the only place they are special.
+BUNDLED_DIR = Path(__file__).with_name("extensions")
 ID_PREFIX = "ext."
 # The authoring reference, shipped with the package so the model can read it
 # with its file tools instead of the API being repeated in every prompt.
@@ -57,6 +61,7 @@ def extension_dirs(workspace: Path) -> list[tuple[Path, str]]:
             continue
         path = Path(entry).expanduser()
         directories.append((path if path.is_absolute() else workspace / path, "configured"))
+    directories.append((BUNDLED_DIR, "bundled"))
     return directories
 
 
@@ -217,6 +222,9 @@ class Extension:
 
 def _tool_count(capability) -> int:
     toolset = capability.get_toolset() if hasattr(capability, "get_toolset") else None
+    # Native-or-local capabilities wrap their function toolset in a prepared one.
+    while toolset is not None and not hasattr(toolset, "tools"):
+        toolset = getattr(toolset, "wrapped", None)
     tools = getattr(toolset, "tools", None)
     return len(tools) if isinstance(tools, dict) else 0
 
@@ -300,7 +308,11 @@ class LoadedExtensions:
         for extension in self.extensions:
             path = extension.path
             shown = (
-                path.relative_to(workspace).as_posix() if path.is_relative_to(workspace) else path
+                "bundled"
+                if extension.scope == "bundled"
+                else path.relative_to(workspace).as_posix()
+                if path.is_relative_to(workspace)
+                else path
             )
             if extension.loaded:
                 lines.append(f"{extension.name} ({shown}): {extension.summary()}")

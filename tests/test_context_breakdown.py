@@ -113,7 +113,7 @@ def test_rows_are_ordered_by_cost_and_group_anonymous_sources():
             part("planning " * 10, "planning"),
             part("anonymous " * 40),
             part("more anonymous " * 40),
-            part("web " * 5, "web_research"),
+            part("web " * 5, "ext.web_research"),
         ]
     )
     assert [row.label for row in rows] == [ANONYMOUS_LABEL, "Planning tool", "Web research"]
