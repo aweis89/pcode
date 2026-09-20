@@ -29,7 +29,7 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_animation_elapsed_resize_and_cancel_after_idle(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     time.sleep(0.3)
     pane("send-keys", "-t", "preview:0.0", "ANIMATING_PROMPT", "Enter")
 

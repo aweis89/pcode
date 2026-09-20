@@ -68,7 +68,7 @@ def history(pane):
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_completed_edits_toggle_and_resize_without_duplicates(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "go", "Enter")
     screen = capture(pane, "LIVE_EDIT_LINE", running=True)
     assert "not applied" in screen and "TURN_1_DONE" not in screen
@@ -80,7 +80,7 @@ def test_completed_edits_toggle_and_resize_without_duplicates(pane):
         pane("send-keys", "-t", "preview:0.0", f"/show-edits {state}", "Enter")
         deadline = time.monotonic() + 4
         while True:
-            screen = capture(pane, "▌")
+            screen = capture(pane, "❯")
             text = history(pane)
             if ("+SAVED_EDIT_LINE" in text) == (state == "on"):
                 break
@@ -100,7 +100,7 @@ def test_completed_edits_toggle_and_resize_without_duplicates(pane):
 
 @pytest.mark.parametrize("pane", [CODE_SCRIPT], indirect=True)
 def test_sandboxed_snippets_preview_as_code_without_growing_the_editor(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "go", "Enter")
     screen = capture(pane, "LIVE_CODE_LINE", running=True)
     assert "Preparing code" in screen and "not applied" not in screen
@@ -112,7 +112,7 @@ def test_sandboxed_snippets_preview_as_code_without_growing_the_editor(pane):
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_cancelled_preview_never_enters_scrollback_and_keeps_editor_height(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "hold", "Enter")
     capture(pane, "LIVE_EDIT_LINE", running=True)
     for height in (18, 12, 32):
@@ -125,5 +125,5 @@ def test_cancelled_preview_never_enters_scrollback_and_keeps_editor_height(pane)
     assert "LIVE_EDIT_LINE" not in screen
     assert "SAVED_EDIT_LINE" not in history(pane)
     pane("send-keys", "-t", "preview:0.0", "/redraw", "Enter")
-    capture(pane, "▌")
+    capture(pane, "❯")
     assert "LIVE_EDIT_LINE" not in history(pane)

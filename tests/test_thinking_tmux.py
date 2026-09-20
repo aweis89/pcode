@@ -50,7 +50,7 @@ def assert_compact(screen):
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "REASONING_29", running=True)
     assert_compact(screen)
@@ -88,7 +88,7 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_thinking_scrollback_resize_keeps_real_prompt_height_and_no_duplicates(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     capture(pane, "REASONING_29", running=True)
     for width, height in ((80, 24), (35, 16), (120, 40)):
@@ -105,7 +105,7 @@ COMPLETION_SCRIPT = SCRIPT.replace("await asyncio.sleep(60)", "await asyncio.sle
 
 @pytest.mark.parametrize("pane", [COMPLETION_SCRIPT], indirect=True)
 def test_completed_thinking_stays_in_scrollback(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     capture(pane, "Public answer")
     assert history(pane).count("REASONING_29") == 1

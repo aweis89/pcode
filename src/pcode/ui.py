@@ -40,7 +40,7 @@ from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fr
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
-from pcode.task_prompt import RAIL, TaskPrompt
+from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
 from pcode.thinking_markdown import ThinkingMarkdown
 from pcode.tool_display import (
@@ -107,9 +107,7 @@ class Palette:
                 "plan": self.muted,
                 "plan.heading": f"{self.task_heading} bold",
                 "plan.active": f"{self.accent} bold",
-                # Plain accent, not bold: terminals brighten bold, and the rail
-                # has to match the one TaskPrompt paints in scrollback exactly.
-                "prompt": self.accent,
+                "prompt": f"{self.accent} bold",
                 "activity.prompt": self.muted,
                 # System work is pcode's own, so it gets the accent colour and
                 # an italic detail rather than the muted prompt echo styling.
@@ -140,7 +138,7 @@ class Palette:
                 "completion-menu.meta.completion": f"bg:{self.surface} {self.muted}",
                 "completion-menu.meta.completion.current": f"bg:{self.selected} {self.foreground}",
                 # A file reference is neither prose nor a command: underlining
-                # it marks the token without competing with the prompt rail.
+                # it marks the token without competing with the prompt chevron.
                 "reference": f"{self.task_heading} underline",
                 "auto-suggestion": self.muted,
             }
@@ -201,7 +199,7 @@ TERMINAL_THEME = Theme(
 
 
 # Marks rows pcode drives itself. The diamond reads as a system marker rather
-# than the prompt's quote rail, and the arrows suggest folding history inward.
+# than the "❯" prompt chevron, and the arrows suggest folding history inward.
 SYSTEM_BADGE = "◈"
 SYSTEM_SEPARATOR = "▸"
 # Slash commands pcode runs itself, labelled the same whether queued or running.
@@ -949,10 +947,8 @@ def create_prompt(
         output = CursorSafeOutput(output if output is not None else create_output())
     session = PromptSession(
         output=output,
-        message=[("class:prompt", RAIL)],
-        # Every physical line carries the rail, wraps included, the way
-        # TaskPrompt renders the same text once it reaches scrollback.
-        prompt_continuation=lambda width, line, soft: [("class:prompt", RAIL)],
+        message=[("class:prompt", "❯ ")],
+        prompt_continuation=lambda width, line, soft: [("class:prompt", "  " if soft else "· ")],
         multiline=True,
         erase_when_done=True,
         completer=merge_completers([SlashCompleter(registry), FileReferenceCompleter(workspace)]),

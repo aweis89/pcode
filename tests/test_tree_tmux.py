@@ -49,7 +49,7 @@ def test_tree_cancel_edit_fork_and_resize(pane):
     modal(pane, "Second tree question")
     # Default is the active answer. Previous row edits that turn's user prompt.
     pane("send-keys", "-t", "preview:0.0", "Up", "Enter")
-    screen = capture(pane, "▌ Second tree question", columns=80)
+    screen = capture(pane, "❯ Second tree question", columns=80)
     assert input_rows(screen) == 1
     assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "0"
     pane("send-keys", "-t", "preview:0.0", "C-c", "Alternative question", "Enter")

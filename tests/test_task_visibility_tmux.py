@@ -7,7 +7,7 @@ from test_tmux import PLAN_SCRIPT, capture, input_rows, pane, pytestmark  # noqa
 @pytest.mark.parametrize("pane", [PLAN_SCRIPT], indirect=True)
 @pytest.mark.parametrize("split", ["-h", "-v"])
 def test_toggle_removes_entire_widget_and_restores_the_latest_plan(pane, split):  # noqa: F811
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     # Hide mid-turn: the widget must stay gone once the turn finishes too.
     capture(pane, "Task 8", running=True)
@@ -39,7 +39,7 @@ AUTOHIDE_SCRIPT = PLAN_SCRIPT.replace(
 
 @pytest.mark.parametrize("pane", [AUTOHIDE_SCRIPT], indirect=True)
 def test_autohide_reclaims_the_frame_when_the_turn_ends(pane):  # noqa: F811
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     assert "Task 8" in capture(pane, "Task 8", running=True)
     pane("send-keys", "-t", "preview:0.0", "-l", "kept draft")

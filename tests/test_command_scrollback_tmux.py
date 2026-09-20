@@ -49,7 +49,7 @@ app.run()
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_ctrl_g_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pane):
-    assert input_rows(capture(pane, "▌")) == 1
+    assert input_rows(capture(pane, "❯")) == 1
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "TURN_1_DONE")
     assert "OUTPUT_LINE_00" not in screen
@@ -71,7 +71,7 @@ def test_ctrl_g_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pa
 
     for columns in (40, 100, 35):
         pane("resize-window", "-t", "preview:0", "-x", str(columns))
-        assert input_rows(capture(pane, "▌", columns=columns)) == 1
+        assert input_rows(capture(pane, "❯", columns=columns)) == 1
     pane("send-keys", "-t", "preview:0.0", "C-g")
     screen = capture(pane, "Show commands: off", columns=35)
     assert input_rows(screen) == 1
@@ -83,7 +83,7 @@ def test_ctrl_g_mirrors_commands_into_scrollback_and_keeps_the_prompt_compact(pa
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_toggle_rebuilds_existing_history_without_rerunning_commands(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     capture(pane, "TURN_1_DONE")
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
@@ -119,7 +119,7 @@ RESIZE_SCRIPT = SCRIPT.replace(
 
 @pytest.mark.parametrize("pane", [RESIZE_SCRIPT], indirect=True)
 def test_resize_replay_reflows_history_without_duplicates_or_stretched_editor(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     capture(pane, "TURN_1_DONE")
     pane("send-keys", "-t", "preview:0.0", "-l", "/show-commands on")
@@ -161,7 +161,7 @@ LIVE_SCRIPT = (
 
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
 def test_active_output_precedes_completion_and_keeps_real_cpr_height(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "OUTPUT_LINE_03", running=True)
     assert "TURN_1_DONE" not in screen
@@ -189,7 +189,7 @@ def test_active_output_precedes_completion_and_keeps_real_cpr_height(pane):
 
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
 def test_cancel_clears_active_command_preview(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     capture(pane, "OUTPUT_LINE_03", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-d")
@@ -218,7 +218,7 @@ PRESSURE_SCRIPT = (
 
 @pytest.mark.parametrize("pane", [PRESSURE_SCRIPT], indirect=True)
 def test_live_tail_uses_remaining_height_without_disappearing_or_growing_editor(pane):
-    capture(pane, "▌")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "OUTPUT_LINE_59", running=True)
     assert sum("OUTPUT_LINE_" in line for line in screen.splitlines()) == 6
