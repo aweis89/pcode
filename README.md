@@ -1068,6 +1068,11 @@ It expands upward for wrapped text or explicit newlines, and shrinks when text i
 removed. Completion appears above the frame. Very long input scrolls within the
 available pane height. Multiline bracketed paste works; mouse capture is off.
 
+Wrapping is word aware: a word that would straddle the right edge moves to the
+next row whole, instead of being cut in half. The buffer text is unchanged — the
+padding is display only, so editing positions, selection, and what gets sent are
+all unaffected. A single word wider than the pane still has to be split.
+
 Tasks and recent tool activity share one compact, headerless widget above the
 editor. Task rows show status icons and keep the active item visible. Up to five
 recent tool calls appear as indented subitems immediately below the active task;
