@@ -201,6 +201,11 @@ def divergence(previous: RequestFingerprint, current: RequestFingerprint) -> str
 
     Order matters: instructions and tool definitions sit ahead of every message, so
     a change there explains a collapse that a message-level diff would misattribute.
+
+    Read this line and the dumped fingerprints before theorizing about Harness's
+    own warning text. Its generic suffix ``(e.g. a gap longer than the cache TTL)``
+    means the gap was *under* the TTL: Harness names the measured gap when it
+    actually exceeds it. Its ``model request N`` is per-run, not per-session.
     """
     if previous.instructions != current.instructions:
         return (
