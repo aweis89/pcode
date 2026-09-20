@@ -20,6 +20,7 @@ Add new ideas under the relevant heading or create a new section.
 
 ## Worktree
 
+- [x] Make `/resume` worktree-aware: list sessions from any worktree of the current repo, not just the active workspace.
 - [ ] Help automate `/worktree merge` to merge completed work back into mainline:
   - [ ] Consider exposing the merge action to the model and documenting how to opt in through instructions in a project's `AGENTS.md`.
   - [ ] Alternatively, consider a configurable option that adds an instruction to the system prompt to merge work back when finished.
