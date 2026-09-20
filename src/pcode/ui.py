@@ -1255,7 +1255,7 @@ def create_prompt(
         filter=Condition(lambda: bool(activity.queued_prompts)),
     )
     menu = CompletionsMenu(
-        max_height=6, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
+        max_height=20, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
     )
     menu.content.dont_extend_height = Always()
     editor_frame = Frame(editor, height=frame_height)
