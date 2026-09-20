@@ -40,23 +40,43 @@ def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
     app.branch = "master"
     assert (
         fragment_list_to_text(app.toolbar())
-        == " ~/p/pcode master · send: steering · openai:gpt-5 · effort: default · ctx: 0/400k"
+        == " ~/p/pcode@master · Enter: steering · openai:gpt-5 (default) · ctx: 0/400k"
     )
     app.runtime.agent = SimpleNamespace(
         model=SimpleNamespace(settings={"openai_reasoning_effort": "low"}),
         model_settings={"openai_reasoning_effort": "high"},
     )
-    assert fragment_list_to_text(app.toolbar()).endswith(
-        "openai:gpt-5 · effort: high · ctx: 0/400k"
-    )
+    assert fragment_list_to_text(app.toolbar()).endswith("openai:gpt-5 (high) · ctx: 0/400k")
     app.runtime.agent.model_settings = None
-    assert fragment_list_to_text(app.toolbar()).endswith("effort: low · ctx: 0/400k")
+    assert fragment_list_to_text(app.toolbar()).endswith("openai:gpt-5 (low) · ctx: 0/400k")
+
+
+@pytest.mark.parametrize(
+    ("relative", "branch", "expected"),
+    [
+        # A session worktree names itself three times; keep one copy.
+        ("p/pcode/.worktrees/pcode-f2135546", "pcode-f2135546", "~/p/pcode@f2135546"),
+        # Hand-made worktrees collapse the same way, keeping their full branch.
+        ("p/pcode/.worktrees/fix-thing", "fix-thing", "~/p/pcode@fix-thing"),
+        # A worktree checked out elsewhere keeps its own path.
+        ("p/pcode/.worktrees/fix-thing", "other", "~/p/pcode/.worktrees/fix-thing@other"),
+        # Detached HEAD in a worktree: no branch to collapse onto.
+        ("p/pcode/.worktrees/pcode-f2135546", "", "~/p/pcode/.worktrees/pcode-f2135546"),
+        # A checkout whose directory already is the branch name.
+        ("p/main", "main", "~/p/main"),
+    ],
+)
+def test_footer_location_is_compact(tmp_path, monkeypatch, relative, branch, expected):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    app, _ = make_app(tmp_path / relative, monkeypatch, width=200)
+    app.branch = branch
+    assert fragment_list_to_text(app.toolbar()).startswith(f" {expected} · Enter:")
 
 
 def test_preview_home_and_help(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, stream = make_app(tmp_path, monkeypatch)
-    assert fragment_list_to_text(app.toolbar()) == " ~ · send: steering · preview · effort: n/a"
+    assert fragment_list_to_text(app.toolbar()) == " ~ · Enter: steering · preview"
     app.handle("/help")
     help_text = stream.getvalue()
     for hint in (
@@ -79,7 +99,7 @@ def test_footer_outside_home_and_busy(tmp_path, monkeypatch):
     app.activity.queued = 2
     text = fragment_list_to_text(app.toolbar())
     assert str(tmp_path) in text
-    assert text.endswith("send: steering · working · 2 queued · preview · effort: n/a")
+    assert text.endswith("Enter: steering · working · 2 queued · preview")
     assert "Ctrl" not in text
 
 
@@ -90,7 +110,7 @@ def test_footer_shows_a_model_chosen_during_a_run(tmp_path, monkeypatch):
     app.pending_model = "anthropic:claude-opus-5"
     text = fragment_list_to_text(app.toolbar())
     # The running turn keeps its model; the arrow names what the next one uses.
-    assert "openai:gpt-5 → anthropic:claude-opus-5 · effort:" in text
+    assert "openai:gpt-5 → anthropic:claude-opus-5 (default)" in text
 
 
 @pytest.mark.parametrize("width", [20, 40, 60, 100])
@@ -100,14 +120,14 @@ def test_long_unicode_path_stays_one_row(tmp_path, monkeypatch, width):
     assert cell_len(text) <= width
     assert "\n" not in text
     if width >= 40:
-        assert "preview · effort: n/a" in text
+        assert "· preview" in text
 
 
 def test_narrow_busy_footer_keeps_send_mode_and_activity(tmp_path, monkeypatch):
     app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=40)
     app.activity.busy = True
     text = fragment_list_to_text(app.toolbar())
-    assert text.startswith(" send: steering · working · test:local")
+    assert text.startswith(" Enter: steering · working · test:local")
     assert text.endswith("…")
     assert cell_len(text) <= 40
 
@@ -182,7 +202,7 @@ def test_footer_segments_highlight_context_and_activity(tmp_path, monkeypatch):
     app.activity.queued = 2
     fragments = app.toolbar()
     assert ("class:bottom-toolbar.location", str(tmp_path)) in fragments
-    assert ("class:bottom-toolbar.model", "test:local") in fragments
+    assert ("class:bottom-toolbar.model", "test:local (default)") in fragments
     assert ("class:bottom-toolbar.activity", "working") in fragments
     assert ("class:bottom-toolbar.activity", "2 queued") in fragments
 
@@ -226,5 +246,5 @@ def test_send_mode_survives_long_model_and_path(tmp_path, monkeypatch, mode, wid
     )
     app.send_mode = mode
     text = fragment_list_to_text(app.toolbar())
-    assert text.startswith(f" send: {mode}")
+    assert text.startswith(f" Enter: {mode}")
     assert cell_len(text) <= width

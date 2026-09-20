@@ -19,6 +19,7 @@ from pathlib import Path
 from pcode.preferences import preferences_path
 
 WORKTREES_DIR = ".worktrees"
+DETACHED = "(detached)"
 SETUP_SCRIPT = "worktree-setup"
 PROJECT_SETUP = Path(".pcode") / SETUP_SCRIPT
 
@@ -119,7 +120,7 @@ def describe(path: Path) -> Worktree | None:
     if toplevel == main:
         return None
     branch = _git(toplevel, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
-    return Worktree(path=toplevel, branch=branch.stdout.strip() or "(detached)", main=main)
+    return Worktree(path=toplevel, branch=branch.stdout.strip() or DETACHED, main=main)
 
 
 def setup_scripts(worktree: Worktree, project: bool | None = None) -> list[Path]:
@@ -191,20 +192,51 @@ def unmerged_commits(worktree: Worktree) -> int:
     return int(result.stdout.strip() or 0) if result.returncode == 0 else 0
 
 
+def conflicted_files(path: Path) -> list[str]:
+    """Paths still holding conflict markers from an in-progress merge, or empty."""
+    if _git(path, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode:
+        return []
+    out = _git(path, "diff", "--name-only", "--diff-filter=U").stdout
+    return [line for line in out.splitlines() if line]
+
+
+def resolve_prompt(worktree: Worktree, files: list[str]) -> str:
+    """What to ask the model once a merge has stopped on conflicts."""
+    mainline = mainline_branch(worktree.main)
+    listed = "\n".join(f"- {name}" for name in files)
+    return (
+        f"Merging `{mainline}` into `{worktree.branch}` in {worktree.path} stopped on "
+        f"conflicts in:\n{listed}\n\n"
+        "Resolve each file so the intent of both sides survives: read the conflict "
+        "markers, check `git log -p` on both branches for a hunk when its purpose is "
+        "unclear, and remove every marker. Run the relevant tests. Then `git add` the "
+        "resolved files and `git commit` (no message needed; the merge message is "
+        "prepared) to complete the merge. Do not run `git merge --abort`, and do not "
+        "discard either side's change without saying so."
+    )
+
+
 def merge(worktree: Worktree) -> str:
     """Merge the mainline branch into the worktree, then fast-forward the mainline.
 
     Conflicts are resolved inside the worktree so the mainline checkout is
     never left mid-merge; it only ever moves by fast-forward.
     """
+    if conflicted := conflicted_files(worktree.path):
+        raise WorktreeError(
+            f"a merge is already in progress with conflicts in {', '.join(conflicted)}; "
+            "/worktree resolve has the model finish it"
+        )
     if is_dirty(worktree.path):
         raise WorktreeError(f"{worktree.path} has uncommitted changes; commit them first")
     mainline = mainline_branch(worktree.main)
     result = _git(worktree.path, "merge", "--no-edit", mainline, check=False)
     if result.returncode:
+        conflicted = conflicted_files(worktree.path)
         raise WorktreeError(
-            f"conflicts merging {mainline} into {worktree.branch}: "
-            f"resolve them in {worktree.path}, commit, then run /worktree merge again"
+            f"conflicts merging {mainline} into {worktree.branch} in "
+            f"{', '.join(conflicted) or worktree.path}; /worktree resolve has the model fix "
+            "them, then run this again"
         )
     result = _git(worktree.main, "merge", "--ff-only", worktree.branch, check=False)
     if result.returncode:
@@ -233,19 +265,30 @@ def remove(worktree: Worktree, force: bool = False) -> str:
     return f"removed {worktree.path}"
 
 
-def is_untouched(worktree: Worktree) -> bool:
-    """Nothing to lose: no tracked changes, no untracked files, nothing unmerged.
+def keep_reason(worktree: Worktree) -> str:
+    """Why this worktree must not be deleted, or "" when there is nothing to lose.
 
     Ignored files (a `.venv`, the shared `tmp` symlink) do not count, matching
     what a non-forced `git worktree remove` tolerates.
     """
-    status = _git(worktree.path, "status", "--porcelain").stdout.strip()
-    return not status and unmerged_commits(worktree) == 0
+    status = _git(worktree.path, "status", "--porcelain", check=False)
+    if status.returncode:
+        return "git status failed"
+    if status.stdout.strip():
+        return "uncommitted or untracked files"
+    count = unmerged_commits(worktree)
+    return f"{count} unmerged commit{'s' if count != 1 else ''}" if count else ""
+
+
+def is_untouched(worktree: Worktree) -> bool:
+    """Nothing to lose: no tracked changes, no untracked files, nothing unmerged."""
+    return not keep_reason(worktree)
 
 
 def delete_branch(worktree: Worktree) -> None:
     """Drop a fully merged branch; `-d` refuses anything unmerged, which is the point."""
-    _git(worktree.main, "branch", "-d", worktree.branch, check=False)
+    if worktree.branch != DETACHED:
+        _git(worktree.main, "branch", "-d", worktree.branch, check=False)
 
 
 def finish(worktree: Worktree) -> str:
@@ -254,8 +297,8 @@ def finish(worktree: Worktree) -> str:
     Any refusal (dirty tree, conflicts, blocked fast-forward, untracked files)
     raises before anything is deleted, leaving the worktree resumable.
     """
-    if is_dirty(worktree.path):
-        raise WorktreeError(f"{worktree.path} has uncommitted changes; commit them first")
+    if conflicted_files(worktree.path) or is_dirty(worktree.path):
+        merge(worktree)  # raises with the precise reason
     merged = merge(worktree) if unmerged_commits(worktree) else None
     removed = remove(worktree)
     delete_branch(worktree)
@@ -266,8 +309,74 @@ def listing(repo: Path) -> str:
     return _git(repo, "worktree", "list").stdout.rstrip()
 
 
+def linked_worktrees(repo: Path) -> list[Worktree]:
+    """Every secondary worktree of this repository, mainline first entry excluded.
+
+    Locked worktrees are left out: a lock is someone saying "this one is in
+    use", and `git worktree remove` refuses them anyway.
+    """
+    result = _git(repo, "worktree", "list", "--porcelain", check=False)
+    if result.returncode:
+        return []
+    blocks = [
+        dict(line.partition(" ")[::2] for line in block.splitlines())
+        for block in result.stdout.strip().split("\n\n")
+    ]
+    if not blocks:
+        return []
+    main = Path(blocks[0]["worktree"]).resolve()
+    return [
+        Worktree(
+            path=Path(block["worktree"]).resolve(),
+            branch=block.get("branch", "").removeprefix("refs/heads/") or DETACHED,
+            main=main,
+        )
+        for block in blocks[1:]
+        if "worktree" in block and "locked" not in block
+    ]
+
+
+def clean(repo: Path, keep: Path | None = None) -> list[str]:
+    """Remove every worktree of this repository that has nothing to lose.
+
+    "Nothing to lose" is `keep_reason`: no uncommitted or untracked files and
+    nothing the mainline branch does not already have. Everything else is left
+    alone and reported with the reason, so this is never a destructive command.
+    `keep` defaults to the worktree `repo` itself sits in, so cleaning from
+    inside one never deletes the caller's own directory out from under it.
+
+    An idle session sitting in one of the others loses its working directory,
+    not its work; stale registrations whose directory is already gone are
+    pruned first.
+    """
+    main = main_checkout(repo)
+    if main is None:
+        raise WorktreeError(f"{repo} is not inside a git repository")
+    _git(main, "worktree", "prune", check=False)
+    own = describe(repo)
+    keep = keep or (own.path if own else None)
+    keep = keep.resolve() if keep else None
+    report = []
+    for tree in linked_worktrees(main):
+        if tree.path == keep:
+            continue
+        reason = keep_reason(tree) or _removal_failure(tree)
+        report.append(f"kept {tree.path} ({reason})" if reason else f"removed {tree.path}")
+    return report or ["nothing to clean"]
+
+
+def _removal_failure(tree: Worktree) -> str:
+    """Delete the worktree and its branch, returning "" or why git refused."""
+    try:
+        remove(tree)
+    except WorktreeError as error:
+        return str(error).splitlines()[0].removeprefix(f"not removing {tree.path}: ")
+    delete_branch(tree)
+    return ""
+
+
 def main(argv: list[str] | None = None) -> int:
-    """`python -m pcode.worktree new|merge|remove|list [NAME]`, for Makefiles and humans.
+    """`python -m pcode.worktree new|merge|remove|list|clean [NAME]`, for Makefiles and humans.
 
     Same operations as `pcode --worktree` and `/worktree`, without a session.
     The project's setup script runs unconditionally here: invoking this inside
@@ -277,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     import sys
 
     parser = argparse.ArgumentParser(prog="python -m pcode.worktree")
-    parser.add_argument("command", choices=("new", "merge", "remove", "list"))
+    parser.add_argument("command", choices=("new", "merge", "remove", "list", "clean"))
     parser.add_argument("name", nargs="?")
     parser.add_argument("--base", help="branch or commit to start from (new only)")
     args = parser.parse_args(argv)
@@ -285,6 +394,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "list":
             print(listing(cwd))
+            return 0
+        if args.command == "clean":
+            print("\n".join(clean(cwd)))
             return 0
         if not args.name:
             parser.error(f"{args.command} needs a NAME")

@@ -58,6 +58,28 @@ from pcode.ui import (
     create_prompt,
     suspended_editor,
 )
+from pcode.worktree import WORKTREES_DIR
+
+
+def location_label(workspace: Path, branch: str) -> str:
+    """Compact `path@branch` for the footer.
+
+    A session worktree repeats itself three times (`…/.worktrees/pcode-abc123`
+    plus branch `pcode-abc123`), so collapse it to the repository it belongs to
+    and let the branch name the checkout: `~/p/pcode@abc123`.
+    """
+    path, label = workspace, branch
+    if branch and path.name == branch and path.parent.name == WORKTREES_DIR:
+        path = path.parent.parent
+        label = branch.removeprefix(SESSION_WORKTREE_PREFIX) or branch
+    try:
+        relative = path.relative_to(Path.home())
+        directory = "~" if relative == Path(".") else f"~/{relative}"
+    except ValueError:
+        directory = str(path)
+    if not label or label == path.name:
+        return directory
+    return f"{directory}@{label}"
 
 
 class PreviewApp:
@@ -245,11 +267,12 @@ class PreviewApp:
             ),
             Command(
                 "/worktree",
-                "This session's git worktree: status / merge / finish (merge, remove, quit) / "
-                "remove / list",
+                "This session's git worktree: status / merge / resolve / finish / remove"
+                " / list / clean",
                 self.worktree,
-                ("status", "merge", "finish", "remove", "list"),
+                tuple(WORKTREE_ACTIONS),
                 group="Session",
+                argument_descriptions=WORKTREE_ACTIONS,
             ),
             Command(
                 "/show-tasks",
@@ -1090,6 +1113,11 @@ class PreviewApp:
         if action == "list":
             self.transcript.note(worktree.listing(self.workspace) or "Not a git repository.")
             return
+        if action == "clean":
+            # Works from the mainline too, where the leftovers are most visible.
+            for line in worktree.clean(self.workspace):
+                self.transcript.note(line)
+            return
         linked = worktree.describe(self.workspace)
         if linked is None:
             self.transcript.note(
@@ -1110,7 +1138,15 @@ class PreviewApp:
             return
         if self.activity.busy:
             raise ValueError("Wait for the current turn to finish before changing the worktree.")
-        if action == "merge":
+        if action == "resolve":
+            if not self.model:
+                raise ValueError("/worktree resolve needs a live model session.")
+            files = worktree.conflicted_files(linked.path)
+            if not files:
+                raise ValueError("No merge conflicts to resolve; run /worktree merge first.")
+            # A prompt in command clothing, dispatched like a skill.
+            self.skill_requested = worktree.resolve_prompt(linked, files)
+        elif action == "merge":
             self.transcript.note(worktree.merge(linked))
         elif action == "remove":
             if worktree.unmerged_commits(linked):
@@ -1453,22 +1489,16 @@ class PreviewApp:
 
     def toolbar(self):
         width = get_app().output.get_size().columns
-        try:
-            relative = self.workspace.relative_to(Path.home())
-            directory = "~" if relative == Path(".") else f"~/{relative}"
-        except ValueError:
-            directory = str(self.workspace)
-        location = plain(directory, limit=None)
-        if self.branch:
-            location += f" {self.branch}"
-        effort = self.current_effort()
+        location = plain(location_label(self.workspace, self.branch), limit=None)
         model = self.model if self.model else "preview"
         if self.pending_model:
             # The running turn keeps its model; show what the next one will use.
             model += f" → {self.pending_model}"
+        if self.model:
+            model += f" ({self.current_effort()})"
         # Put send mode and activity ahead of model/path metadata so they are
         # never pushed off the footer by long provider names or narrow panes.
-        segments = [("text", f"send: {self.send_mode}")]
+        segments = [("text", f"Enter: {self.send_mode}")]
         if self._startup_pending:
             segments.extend([("text", " · "), ("activity", "starting")])
         if self.activity.busy:
@@ -1480,13 +1510,7 @@ class PreviewApp:
                     segments.extend([("text", " · "), ("activity", f"{steering} steering pending")])
                 if queued:
                     segments.extend([("text", " · "), ("activity", f"{queued} queued")])
-        segments.extend(
-            [
-                ("text", " · "),
-                ("model", plain(model, limit=None)),
-                ("text", plain(f" · effort: {effort}", limit=None)),
-            ]
-        )
+        segments.extend([("text", " · "), ("model", plain(model, limit=None))])
         context = ""
         if self.model and not self._startup_pending and self._startup_error is None:
             from pcode.context_usage import context_label
@@ -2413,6 +2437,15 @@ def main() -> None:
 
 
 SESSION_WORKTREE_PREFIX = "pcode-"
+WORKTREE_ACTIONS = {
+    "status": "Branch, mainline, and what is unmerged",
+    "merge": "Merge the mainline into this branch, then fast-forward the mainline",
+    "resolve": "Ask the model to resolve the conflicts a merge stopped on",
+    "finish": "Merge, remove the worktree and its branch, and quit",
+    "remove": "Delete the merged worktree; the branch stays",
+    "list": "Every worktree of this repository",
+    "clean": "Delete every other worktree with nothing uncommitted or unmerged",
+}
 
 
 def _select_project_root(argv: list[str]) -> None:
