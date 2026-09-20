@@ -1405,6 +1405,15 @@ class Transcript:
         if self.output is not None and self.console.is_terminal:
             self.output.regenerate(self.replay)
 
+    def clear(self) -> None:
+        """Drop retained scrollback and rebuild the screen from what comes next.
+
+        The rebuild is deferred to the next flush, so writes made after this
+        call are replayed onto the cleared screen rather than erased with it.
+        """
+        self.log.clear()
+        self.regenerate()
+
     @property
     def resolved_theme(self) -> str:
         return self.detected_theme if self.theme == "auto" else self.theme

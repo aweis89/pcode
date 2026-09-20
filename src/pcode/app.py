@@ -216,7 +216,7 @@ class PreviewApp:
                 self.resend,
             ),
             Command("/context", "Model, workspace, and session usage", self.context),
-            Command("/new", "Start a new saved conversation; keep transcript", self.new),
+            Command("/new", "Start a new saved conversation; clear the screen", self.new),
             Command("/tree", "Navigate and fork the conversation interactively", self.select_tree),
             Command("/resume", "Choose a saved session to resume", self.select_session),
             Command("/session", "Show the current session's details", self.show_session),
@@ -929,9 +929,10 @@ class PreviewApp:
         self.runtime.reset()
         self.activity.reset()
         self.edits.clear()
+        self.transcript.clear()
         self.transcript.print(Rule("New conversation", style="pcode.muted"))
         self.transcript.note(
-            "Context reset; MCP servers are off. Input history and transcript are unchanged."
+            "Context reset; MCP servers are off. Screen cleared; input history is unchanged."
         )
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")
