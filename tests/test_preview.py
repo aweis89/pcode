@@ -98,8 +98,12 @@ def test_dispatch_theme_errors_reset_and_exit():
     assert app.transcript.theme == "light"
     assert "Usage: /theme [dark|light|auto]" in stream.getvalue()
     assert "Unknown command" in stream.getvalue()
-    app.handle("/new")
+    with patch.object(app.transcript, "clear", wraps=app.transcript.clear) as clear:
+        app.handle("/new")
+        clear.assert_called_once_with()
     assert app.runtime.turns == 0
+    # Only the "New conversation" rule survives; earlier scrollback is gone.
+    assert len(app.transcript.log.entries) == 1
     app.handle("/exit")
     assert not app.running
 
