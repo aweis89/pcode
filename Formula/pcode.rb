@@ -23,9 +23,12 @@ class Pcode < Formula
   # extension modules from PyPI wheels in place. The bytes come out identical,
   # but macOS then kills any Python that loads them (CODESIGNING "Invalid
   # Page"). Re-signing writes fresh files, which clears that state.
-  def post_install
-    Dir[libexec/".venv/lib/python*/site-packages/**/*.{so,dylib}"].each do |lib|
-      system "codesign", "--force", "--sign", "-", lib
+  post_install_steps do
+    on_macos do
+      run "/usr/bin/find", args: [
+        ".", "(", "-name", "*.so", "-o", "-name", "*.dylib", ")",
+        "-exec", "/usr/bin/codesign", "--force", "--sign", "-", "{}", "+"
+      ], chdir: "{{libexec}}/.venv/lib"
     end
   end
 
