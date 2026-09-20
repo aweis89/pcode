@@ -500,6 +500,26 @@ def test_consumed_steering_is_journaled_and_recallable(tmp_path, root):
     asyncio.run(run())
 
 
+def test_bm25_ranking_prefers_rare_terms_and_short_documents(tmp_path, root):
+    records = (
+        turn("Common", "editor " * 200 + "layout", "many-common")
+        + turn("Rare", "The editor flicker came from redraws.", "rare-term")
+        + turn("Phrase", "Fix the flicker in the editor.", "phrase")
+        + turn("Nothing", "Unrelated database migration.", "none")
+    )
+    save(root, tmp_path, records=records)
+    chunks, _ = History(tmp_path, root).chunks("project")
+    by_turn = {chunk.turn.id: index for index, chunk in enumerate(chunks)}
+    ranking = keyword_ranking(chunks, "editor flicker")
+    assert [chunks[i].turn.id for i in ranking][0] == "rare-term"
+    assert by_turn["none"] not in ranking
+    # Repeating a common term does not beat the document holding the rare one.
+    assert ranking.index(by_turn["many-common"]) > ranking.index(by_turn["phrase"])
+    # Punctuation and case are ignored; an empty or symbol-only query matches nothing.
+    assert keyword_ranking(chunks, "FLICKER.") == keyword_ranking(chunks, "flicker")
+    assert keyword_ranking(chunks, "!!!") == []
+
+
 def test_user_override_disables_extension(tmp_path, root):
     from pcode.ext import load_extensions
 
