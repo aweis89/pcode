@@ -38,10 +38,11 @@ from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
 from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
 from pcode.input_keys import configure_newline_keys
-from pcode.preferences import SETTINGS, load_preferences
+from pcode.preferences import SETTINGS, SYNTAX_THEMES, load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
+from pcode.theme_gallery import SyntaxGallery
 from pcode.thinking_markdown import ThinkingMarkdown
 from pcode.tool_display import (
     COMMAND_TOOLS,
@@ -1529,8 +1530,28 @@ class Transcript:
             self.retained_note("Live model · file edits and shell tools enabled · not a sandbox")
         else:
             self.retained_note("Local only · no model connected · no files or shell tools")
-        self.retained_note("Type / for commands, /demo for a sample response, /help for keys.")
+        self.retained_note(
+            "Type / for commands, /theme-preview for a sample response, /help for keys."
+        )
         self.print()
+
+    @recorded
+    def syntax_gallery(self) -> None:
+        """Preview every selectable style, marking the one in use.
+
+        Recorded without arguments so a replay re-reads the current palette and
+        saved styles: the marked row still answers "what am I looking at?"
+        after `/theme` or `/syntax` rebuilds scrollback.
+        """
+        self.print(
+            SyntaxGallery(
+                SYNTAX_THEMES,
+                palette=self.resolved_theme,
+                dark=self.syntax_themes["dark"],
+                light=self.syntax_themes["light"],
+                terminal_colors=self.color_style == "terminal",
+            )
+        )
 
     @recorded
     def retained_note(self, text: str) -> None:

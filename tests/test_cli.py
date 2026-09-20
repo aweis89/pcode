@@ -138,12 +138,17 @@ def test_continue_keeps_an_unquoted_prompt_out_of_the_session_selector(monkeypat
     assert app.call_args.kwargs["saved_session"].info.id == identity
 
 
-def test_demo_never_initializes_a_provider(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["pcode", "--demo", "-m", "invalid:provider"])
+def test_theme_preview_never_initializes_a_provider(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["pcode", "--theme-preview", "-m", "invalid:provider"])
     with patch("pcode.agent.create_agent") as create:
         main()
     create.assert_not_called()
-    assert "no model connected" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "no model connected" in output
+    # The gallery is the reason the sample exists; every style has to appear.
+    for style in ("monokai", "gruvbox-dark", "solarized-light"):
+        assert style in output
+    assert "/config set syntax_light NAME" in output
 
 
 def test_cli_passes_initial_prompt_to_interactive_app(monkeypatch, tmp_path):
@@ -221,7 +226,8 @@ def test_missing_login_has_actionable_message_without_dumping_auth(monkeypatch, 
 
 
 @pytest.mark.parametrize("color_style", ["palette", "terminal"])
-def test_demo_cli_passes_color_style(monkeypatch, color_style):
+def test_theme_preview_cli_passes_color_style(monkeypatch, color_style):
+    # `--demo` is the old name for this flag, kept so scripts keep working.
     monkeypatch.setattr(
         sys, "argv", ["pcode", "--demo", "--theme", "light", "--color-style", color_style]
     )
@@ -229,3 +235,4 @@ def test_demo_cli_passes_color_style(monkeypatch, color_style):
         main()
     app.assert_called_once_with(theme="light", color_style=color_style)
     app.return_value.transcript.events.assert_called_once()
+    app.return_value.transcript.syntax_gallery.assert_called_once_with()

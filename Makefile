@@ -17,7 +17,7 @@ update: ## Rebuild the tool env after dependency changes
 uninstall: ## Remove the `pcode` command
 	uv tool uninstall pcode
 
-run: ## Run from source without installing (make run ARGS="--demo")
+run: ## Run from source without installing (make run ARGS="--theme-preview")
 	uv run pcode $(ARGS)
 
 test: ## Run the fast suite in parallel (real-tmux regressions skipped)
