@@ -6,7 +6,7 @@ import re
 import tempfile
 from collections import deque
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -86,15 +86,42 @@ def list_sessions(root: Path | None = None) -> list[SessionInfo]:
 
 
 @dataclass
+class ToolCall:
+    """One settled tool call, summarized the way scrollback summarized it.
+
+    The transcript's own `result` is deliberately left behind: it is most of a
+    transcript's bulk (hundreds of KB where the summaries are tens), and the
+    tool inspector is where a full result belongs.
+    """
+
+    name: str
+    detail: str = ""
+    failed: bool = False
+    elapsed_seconds: float | None = None
+    command: str = ""
+
+
+@dataclass
 class Turn:
     """One prompt and the final response it produced, for browsing and search."""
 
     prompt: str
     response: str = ""
     status: str = "running"  # "complete", "cancelled", "failed", or still "running".
+    # Text blocks and settled tool calls in transcript order, so a browsed turn
+    # can be replayed in the order it happened. `response` stays the last text
+    # block: the session list and the conversation tree want that one alone.
+    blocks: list["str | ToolCall"] = field(default_factory=list)
 
 
-_TURN_KINDS = ("turn_started", "Message", "turn_completed", "turn_cancelled", "turn_failed")
+_TURN_KINDS = (
+    "turn_started",
+    "Message",
+    "ToolSummary",
+    "turn_completed",
+    "turn_cancelled",
+    "turn_failed",
+)
 
 
 def _turn_records(info: SessionInfo, root: Path | None):
@@ -146,6 +173,18 @@ def session_turns(info: SessionInfo, root: Path | None = None) -> list[Turn] | N
                 markdown = record.get("markdown")
                 if isinstance(markdown, str):
                     turns[-1].response = markdown
+                    turns[-1].blocks.append(markdown)
+            elif kind == "ToolSummary":
+                elapsed = record.get("elapsed_seconds")
+                turns[-1].blocks.append(
+                    ToolCall(
+                        str(record.get("name", "")),
+                        str(record.get("detail", "")),
+                        bool(record.get("failed")),
+                        elapsed if isinstance(elapsed, (int, float)) else None,
+                        str(record.get("command") or ""),
+                    )
+                )
             elif kind == "turn_completed":
                 turns[-1].status = "complete"
             elif kind == "turn_cancelled":
@@ -232,10 +271,13 @@ class SavedSession:
             raise
 
     @classmethod
-    def create(cls, model: str, workspace: Path, root: Path | None = None):
+    def create(
+        cls, model: str, workspace: Path, root: Path | None = None, identity: str | None = None
+    ):
+        """Create a session; `identity` lets a worktree named before the session share its ID."""
         root = root or session_root()
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        identity = str(uuid4())
+        identity = identity or str(uuid4())
         directory = root / identity
         directory.mkdir(mode=0o700)
         info = SessionInfo(

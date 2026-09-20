@@ -12,7 +12,7 @@ from rich.text import Text
 
 from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
-from pcode.session_ui import SessionBrowser, excerpt, session_info_dialog
+from pcode.session_ui import SessionBrowser, literal, session_info_dialog
 from pcode.sessions import SavedSession, SessionError, Turn, first_prompt, session_turns
 
 
@@ -87,13 +87,13 @@ def test_browser_scopes_searches_and_shows_turns(tmp_path):
         shown = app.detail.text()
         assert shown.startswith(f"{ids['newest'][:8]} · test:local · ")
         assert shown.endswith(
-            "2 turns\n\n▌ Add a theme\n  Done\n\n▌ Now tests\n  Wrote tests for the theme"
+            "2 turns\n\n▌ Add a theme\n\n  Done\n\n▌ Now tests\n\n  Wrote tests for the theme"
         )
         # Words are AND-ed against prompts and the detail keeps only matching turns.
         app.query.text = "tests now"
         assert [info.id for info in app.visible] == [ids["newest"]]
         assert app.detail.text().endswith(
-            "1 of 2 turns\n\n▌ Now tests\n  Wrote tests for the theme"
+            "1 of 2 turns\n\n▌ Now tests\n\n  Wrote tests for the theme"
         )
         # Responses are searched only when asked.
         app.query.text = "patched"
@@ -109,7 +109,7 @@ def test_browser_scopes_searches_and_shows_turns(tmp_path):
         app.refresh()
         assert [info.id for info in app.visible] == [ids["other"], ids["older"]]
         app.detail.set(app.details(app.visible[0]))
-        assert app.detail.text().endswith("▌ Cache question elsewhere\n  (no response text)")
+        assert app.detail.text().endswith("▌ Cache question elsewhere\n\n  (no response text)")
 
 
 def test_browser_marks_unreadable_and_empty_sessions(tmp_path):
@@ -144,6 +144,88 @@ def test_browser_renders_responses_as_markdown(tmp_path):
         assert any("italic" in style for style, *_ in app.detail.fragments(40))
 
 
+def browsed_turn(tmp_path, events, prompt="Do the thing"):
+    """Render one recorded turn's detail pane."""
+    from pcode.runtime import ToolSummary
+
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    saved.append("turn_started", prompt=prompt)
+    for event in events:
+        saved.event(event)
+    saved.append("turn_completed")
+    saved.close()
+    with create_pipe_input() as pipe:
+        app = SessionBrowser(
+            [saved.info], root=root, workspace=tmp_path, input=pipe, output=DummyOutput()
+        )
+        return app.detail.text(width=100), ToolSummary
+
+
+def test_tool_calls_appear_between_the_text_they_ran_between(tmp_path):
+    from pcode.runtime import Message, ToolSummary
+
+    shown, _ = browsed_turn(
+        tmp_path,
+        [
+            Message("Looking now."),
+            ToolSummary("read_file", "src/pcode/ui.py → 40 lines", elapsed_seconds=0.25),
+            ToolSummary("shell", "ls → failed", failed=True, command="ls /nope\nsecond line"),
+            Message("All done."),
+        ],
+    )
+    body = shown.split("▌ Do the thing\n\n", 1)[1].splitlines()
+    # Tool lines stay flush with each other and a blank row brackets the run,
+    # the spacing scrollback gives the same sequence.
+    assert body == [
+        "  Looking now.",
+        "",
+        "  ✓ Read · src/pcode/ui.py → 40 lines · 0.2s",
+        "  ✗ Run · ls → failed",
+        "    ls /nope … [1 more lines]",
+        "",
+        "  All done.",
+    ]
+
+
+def test_long_turns_are_shown_whole(tmp_path):
+    from pcode.runtime import Message
+
+    prompt = "\n".join(f"prompt line {i}" for i in range(40))
+    response = "\n".join(f"response line {i}" for i in range(40))
+    shown, _ = browsed_turn(tmp_path, [Message(response)], prompt=prompt)
+    assert "prompt line 39" in shown and "response line 39" in shown
+    assert "…" not in shown
+
+
+def test_scrollback_and_browser_share_one_tool_line(tmp_path):
+    """Same glyph, label, and style; the browser only passes more of the detail."""
+    from pcode.tool_display import tool_summary_lines
+
+    (line,) = tool_summary_lines("read_file", " · src/x.py → 40 lines", elapsed_seconds=0.25)
+    assert line.plain == "✓ Read · src/x.py → 40 lines · 0.2s"
+    assert line.style == "pcode.thinking"
+    failed, preview = tool_summary_lines("shell", "", failed=True, command="rm -rf /\nmore")
+    assert failed.plain == "✗ Run"
+    assert preview.plain == "  rm -rf / … [1 more lines]"
+    # A width truncates rather than wraps, as the scrollback line does.
+    (narrow,) = tool_summary_lines("read_file", " · " + "x" * 200, width=20)
+    assert len(narrow.plain) == 20 and narrow.plain.endswith("…")
+
+
+def test_markdown_links_do_not_leak_their_escape_wrapper():
+    """Rich writes OSC 8 links; prompt_toolkit's ANSI parser would spill the wrapper."""
+    from rich.markdown import Markdown
+
+    from pcode.popup_ui import RichPane
+
+    pane = RichPane()
+    pane.set([Markdown("See [docs](https://example.com/page) for more.")])
+    shown = pane.text(width=60)
+    assert "See docs for more." in shown
+    assert "8;id=" not in shown and "example.com" not in shown
+
+
 def test_rich_pane_renders_current_content_in_one_pass():
     """preferred_width caches fragments before create_content; the pane must not lag a frame."""
     from prompt_toolkit.application import Application
@@ -164,9 +246,13 @@ def test_rich_pane_renders_current_content_in_one_pass():
         assert "second" in "".join(t for _, t in content.get_line(0))
 
 
-def test_excerpt_keeps_a_few_nonblank_lines():
-    assert excerpt("one\n\ntwo\nthree\nfour", 3) == "one\ntwo\nthree\n…"
-    assert excerpt("x" * 200, 1) == "x" * 159 + "…"
+def test_literal_keeps_every_line_and_drops_only_the_outer_blanks():
+    assert literal("\n\none\n\ntwo\n\n") == "one\n\ntwo"
+    # Long lines are not cut: the pane scrolls and wraps instead.
+    assert literal("x" * 400) == "x" * 400
+    # Terminal controls still cannot survive, and secrets are still redacted.
+    assert "\x1b" not in literal("a\x1b[31mb")
+    assert "hunter2" not in literal("export PASSWORD=hunter2")
 
 
 @pytest.mark.parametrize("keys", ["\x1b", "\r", "q"])
@@ -271,10 +357,13 @@ def test_session_turns_pairs_prompts_with_final_responses(tmp_path):
         saved.append("turn_cancelled", run_id="d")
         with (saved.directory / "transcript.jsonl").open("a") as file:
             file.write('{"kind": "turn_started", "prompt": "torn')  # Torn final record.
+        # `response` is the final text block; `blocks` keeps every one, in order.
         assert session_turns(saved.info, root) == [
-            Turn("First question", "Final answer", "complete"),
-            Turn("Second", "Retry worked", "complete"),
-            Turn("Third", "", "cancelled"),
+            Turn(
+                "First question", "Final answer", "complete", ["Interim thoughts", "Final answer"]
+            ),
+            Turn("Second", "Retry worked", "complete", ["Retry worked"]),
+            Turn("Third", "", "cancelled", []),
         ]
         assert first_prompt(saved.info, root) == "First question"
     finally:

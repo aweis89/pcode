@@ -47,17 +47,17 @@ harness-src: ## Check out upstream Harness source at the pinned SHA under tmp/
 	git -C $(HARNESS_DIR) checkout --quiet --detach "$$sha"; \
 	echo "$(HARNESS_DIR) @ $$sha"
 
-worktree: ## Create an isolated worktree under .worktrees/ (make worktree NAME=fix-foo [BASE=ref])
-	@scripts/worktree.sh new $(NAME) $(BASE)
+worktree: ## Create an isolated worktree under .worktrees/ (make worktree NAME=fix-foo [BASE=ref]); `pcode --worktree` does this per session
+	@uv run python -m pcode.worktree new $(NAME) $(if $(BASE),--base $(BASE))
 
 worktree-merge: ## Merge a worktree's branch back into the mainline (make worktree-merge NAME=fix-foo)
-	@scripts/worktree.sh merge $(NAME)
+	@uv run python -m pcode.worktree merge $(NAME)
 
 worktree-remove: ## Delete a worktree, keeping its branch (make worktree-remove NAME=fix-foo)
-	@scripts/worktree.sh remove $(NAME)
+	@uv run python -m pcode.worktree remove $(NAME)
 
 worktrees: ## List worktrees
-	@scripts/worktree.sh list
+	@uv run python -m pcode.worktree list
 
 brew-install: ## Alternative: install the frozen HEAD build via Homebrew
 	brew tap aweis89/pcode https://github.com/aweis89/pcode.git

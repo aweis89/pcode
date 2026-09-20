@@ -784,8 +784,10 @@ def error_message(error: Exception) -> str:
         return error_message(error.exceptions[0])
     from pcode.auth import LoginError
     from pcode.compaction import CompactionError
+    from pcode.worktree import WorktreeError
 
-    if isinstance(error, CompactionError):
+    if isinstance(error, (CompactionError, WorktreeError)):
+        # Both carry only local paths and git's own messages.
         return str(error)
     name = type(error).__name__
     if isinstance(error, (SessionError, LoginError)):
