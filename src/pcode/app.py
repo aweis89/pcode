@@ -86,6 +86,7 @@ class PreviewApp:
         self._needs_runtime = bool(model and runtime is None)
         self._startup_pending = self._needs_runtime or resume
         self._startup_error: Exception | None = None
+        self._startup_context_shown: set[str] = set()
         agent = getattr(self.runtime, "agent", None)
         if agent is not None and model:
             apply_effort(agent, model, load_preferences().get("effort"))
@@ -1342,12 +1343,23 @@ class PreviewApp:
         return not (cancelled or failure)
 
     def show_startup_context(self) -> None:
+        """Report repository instructions and skills, each line only once.
+
+        A model switch re-runs this because starting without a model leaves
+        nothing to report until a runtime exists. Repeating lines the
+        transcript already carries is just noise, so only new ones print.
+        """
+        lines = []
         summary = getattr(self.runtime, "startup_context", None)
         if summary is not None:
-            for line in summary():
-                self.transcript.retained_note(line)
+            lines.extend(summary())
         if self.skill_command_names:
-            self.transcript.retained_note("Skill commands: " + ", ".join(self.skill_command_names))
+            lines.append("Skill commands: " + ", ".join(self.skill_command_names))
+        for line in lines:
+            if line in self._startup_context_shown:
+                continue
+            self._startup_context_shown.add(line)
+            self.transcript.retained_note(line)
 
     def warn_without_credentials(self) -> None:
         """Say so at startup, not on the first prompt.
