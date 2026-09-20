@@ -161,6 +161,7 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 | `repo_context_nested` | `off` | `off`, `pointer`, `contents` (discover instructions on file-tool traversal) |
 | `skill_commands` | `prefix` | `prefix`, `bare`, `both`, `off` (how discovered skills appear as slash commands) |
 | `skill_dirs` | `~/.agents/skills:.agents/skills` | `:`-separated directories searched for skills; relative entries resolve against the workspace |
+| `worktree` | `off` | `on`, `off` (start each new session in its own `.worktrees/` git worktree) |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
 
@@ -637,6 +638,52 @@ dropped, and the built-in wins. Discovery happens at launch, so add a skill (or
 change this setting) and restart to pick it up. The startup banner lists the
 commands that were registered. Only the frontmatter `description` is read at
 launch, to label the completion menu.
+
+### One git worktree per session
+
+Several sessions editing one checkout trample each other: one session's
+`git checkout` or `stash` eats another's uncommitted edits. pcode can give each
+session its own worktree and make that the workspace, so file tools, the shell,
+repository instructions, and the saved session all point there. The model needs
+no instructions and relative paths cannot land in the mainline by mistake.
+
+```sh
+pcode --worktree              # .worktrees/<session-id-prefix> on a branch of the same name
+pcode --worktree fix-thing    # named directory and branch
+pcode config set worktree on  # default for every new session in a git repo
+pcode --no-worktree           # stay in the current checkout this once
+```
+
+The worktree lives under `.worktrees/` in the primary checkout (added to
+`.git/info/exclude`, so `git status` stays clean without touching `.gitignore`)
+and branches from the mainline's current branch, reusing a branch of that name if
+one exists. Starting pcode inside an existing worktree, outside git, or with
+`--continue` never creates another one. Resuming a session (`pcode -c`, or
+`pcode -C .worktrees/NAME -c` from elsewhere) lands back in its worktree because
+the workspace is what the session saved.
+
+Git cannot install dependencies or copy untracked config, so after checkout pcode
+runs two optional scripts inside the new worktree, each with `PCODE_MAIN`,
+`PCODE_WORKTREE`, and `PCODE_BRANCH` set:
+
+| Script | Runs |
+| --- | --- |
+| `~/.config/pcode/worktree-setup` | always (for what every repo needs: `direnv allow`, copying `.envrc`) |
+| `<repo>/.pcode/worktree-setup` | only with `project_extensions on`, like `.pcode/extensions`, since it is code shipped with the repo |
+
+An executable script runs directly (give it a shebang); anything else runs
+through `sh`. A non-zero exit aborts the launch and removes the half-made
+worktree. This repository's own script symlinks the shared `tmp/` cache and runs
+`uv sync`, because the editable install records an absolute `src/` path and a
+shared `.venv` would silently import the other checkout.
+
+Inside the session, `/worktree` shows the branch and what is unmerged,
+`/worktree merge` merges the mainline branch into the worktree (so conflicts are
+resolved there, never in the mainline checkout) and then fast-forwards the
+mainline, `/worktree remove` deletes the directory once it is merged and clean
+(the branch is kept; nothing is ever forced), and `/worktree list` shows every
+worktree. On exit pcode prints what the worktree still holds and how to resume
+it, so leaving never silently orphans work.
 
 ## Sessions and debugging
 

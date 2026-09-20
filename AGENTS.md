@@ -4,7 +4,10 @@
 
 Several agents edit this repo concurrently. Work in a worktree, never the
 mainline checkout, where another session's `git checkout`/`stash`/`reset` can
-eat your uncommitted edits:
+eat your uncommitted edits. pcode sessions started with `--worktree` (or
+`worktree on`) already are one: the workspace *is* `.worktrees/<name>`, so
+just edit, `make test`, and commit; `/worktree merge` folds it back. From
+another agent, or by hand:
 
 ```bash
 make worktree NAME=fix-thing          # .worktrees/fix-thing, branch fix-thing, own .venv
@@ -14,7 +17,7 @@ make worktree-remove NAME=fix-thing   # drop the worktree (branch is kept)
 ```
 
 - The only failure needing coordination is the final `--ff-only` refusing because someone's uncommitted mainline edits touch your files: have them commit or stash, then re-run.
-- Never share a `.venv` between worktrees: the editable install records an absolute `src/` path, so a shared env silently imports the *other* checkout's source.
+- `.pcode/worktree-setup` is what gives each worktree its own `.venv`. Never share one: the editable install records an absolute `src/` path, so a shared env silently imports the *other* checkout's source.
 - Always commit and push after changes. Run `make install` afterwards from the mainline checkout; running it from a worktree repoints the global `pcode` command at that branch.
 - Before touching terminal or agent integrations, read [docs/dependencies.md](docs/dependencies.md).
 - `make harness-src` checks out Harness upstream source, docs, and tests at the pinned SHA under `tmp/pydantic-ai-harness`. Read that rather than the website, which can describe an unreleased Coder API and extras.
