@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs inside a fresh worktree after `pcode --worktree` checks it out (needs
+# `pcode config set project_extensions on`; the Makefile target runs it too).
+# Each worktree gets its own .venv: uv clones it from the local cache in a
+# couple of seconds, and the editable install records an absolute path to
+# src/, so a shared .venv would silently import the other checkout's source.
+# Only genuinely shared, path-independent state is symlinked (tmp/).
+set -eu
+mkdir -p "$PCODE_MAIN/tmp"
+ln -sfn "$PCODE_MAIN/tmp" tmp
+uv sync --quiet
