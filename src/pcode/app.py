@@ -10,7 +10,7 @@ from contextlib import ExitStack, aclosing
 from dataclasses import replace
 from pathlib import Path
 
-from prompt_toolkit.application import get_app, in_terminal
+from prompt_toolkit.application import get_app
 from prompt_toolkit.input import create_input
 from prompt_toolkit.styles import DynamicStyle
 from rich.cells import cell_len
@@ -46,6 +46,7 @@ from pcode.ui import (
     TerminalOutput,
     Transcript,
     create_prompt,
+    suspended_editor,
 )
 
 
@@ -524,7 +525,7 @@ class PreviewApp:
         values = model_catalog(providers, self.model)
         await output.flush()
         async with output.lock:
-            async with in_terminal():
+            async with suspended_editor(session.app):
                 stdin = getattr(session.app.input, "stdin", None)
                 modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
                 try:
@@ -643,7 +644,7 @@ class PreviewApp:
         # One terminal owner: drain permanent output, suspend the editor, and
         # hold the writer lock until the alternate screen has been restored.
         async with output.lock:
-            async with in_terminal():
+            async with suspended_editor(session.app):
                 # The suspended editor can still have an escape-flush timer.
                 # Give the modal its own parser, or that timer can steal an
                 # early Escape from the shared input object's parser buffer.
@@ -689,7 +690,7 @@ class PreviewApp:
         # One terminal owner: drain permanent output, suspend the editor, and
         # hold the writer lock until the alternate screen has been restored.
         async with output.lock:
-            async with in_terminal():
+            async with suspended_editor(session.app):
                 # The suspended editor can still have an escape-flush timer.
                 # Give the modal its own parser, or that timer can steal an
                 # early Escape from the shared input object's parser buffer.
@@ -1007,7 +1008,7 @@ class PreviewApp:
             return
         await output.flush()
         async with output.lock:
-            async with in_terminal():
+            async with suspended_editor(session.app):
                 stdin = getattr(session.app.input, "stdin", None)
                 modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
                 try:
@@ -1055,7 +1056,7 @@ class PreviewApp:
         ]
         await output.flush()
         async with output.lock:
-            async with in_terminal():
+            async with suspended_editor(session.app):
                 stdin = getattr(session.app.input, "stdin", None)
                 modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
                 try:
@@ -1081,7 +1082,7 @@ class PreviewApp:
         # One terminal owner: drain permanent output, suspend the editor, and
         # hold the writer lock until the alternate screen has been restored.
         async with output.lock:
-            async with in_terminal():
+            async with suspended_editor(session.app):
                 # The suspended editor can still have an escape-flush timer.
                 # Give the modal its own parser, or that timer can steal an
                 # early Escape from the shared input object's parser buffer.

@@ -35,6 +35,8 @@ make worktree-remove NAME=fix-thing   # drop the worktree (branch is kept)
 
 - `make test` is xdist-parallel, so it needs a stable tree for its duration: saving a source or test file mid-run yields bulk failures or a `Different tests were collected between gw0 and gwN` collection error, neither of which means the change is broken. Re-run on a quiet tree (or `uv run pytest -n0`) before believing a mass failure.
 
+- `capture-pane` only shows the settled frame, so it cannot see flicker: a flash is usually two paints inside one 1/30 s `min_redraw_interval`. Record the raw byte stream with timestamps instead (`tmux pipe-pane -o 'python3 stamp.py >> out.bin'`) and look for a second editor paint after a scrollback write. Terminal handoffs go through `suspended_editor`, not prompt_toolkit's `in_terminal`, precisely because `in_terminal` repaints before its CPR reply arrives.
+
 - A PTY with `PROMPT_TOOLKIT_NO_CPR=1` does not exercise real prompt height: cursor-position reports can make the layout stretch into the remaining pane. Keep the real-tmux height regression tests, not just PTY startup/exit checks.
 - Harness's latest website can describe an unreleased Coder API and extras; verify the installed release's signatures/tool composition instead of assuming the website matches PyPI.
 

@@ -426,10 +426,10 @@ def test_modal_result_is_applied_only_on_accept(monkeypatch, selection):
     monkeypatch.setattr("pcode.model_ui.ModelPicker", factory)
 
     @asynccontextmanager
-    async def terminal():
+    async def terminal(app):
         yield
 
-    monkeypatch.setattr("pcode.app.in_terminal", terminal)
+    monkeypatch.setattr("pcode.app.suspended_editor", terminal)
 
     async def run():
         output = SimpleNamespace(lock=asyncio.Lock(), flush=AsyncMock())

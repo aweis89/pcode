@@ -138,12 +138,12 @@ def test_rebuild_includes_arrivals_during_handoff_and_keeps_unfinished_tail(monk
         output.delta("COMMITTED_TEXT\n\nUNFINISHED_TAIL")
 
         @asynccontextmanager
-        async def handoff():
-            # Equivalent to events arriving while in_terminal awaits CPR.
+        async def handoff(app):
+            # Equivalent to events arriving while the handoff awaits CPR.
             transcript.note("ARRIVED_DURING_CPR")
             yield
 
-        monkeypatch.setattr("pcode.ui.in_terminal", handoff)
+        monkeypatch.setattr("pcode.ui.suspended_editor", handoff)
         output.regenerate(transcript.replay)
         output.regenerate(transcript.replay)
         await output.flush()
@@ -158,7 +158,7 @@ def test_rebuild_includes_arrivals_during_handoff_and_keeps_unfinished_tail(monk
         assert not output.changed.is_set()
         terminal.write_raw.assert_called_once_with("\x1b[H\x1b[2J\x1b[3J")
         output.regenerate(transcript.replay)
-        monkeypatch.setattr("pcode.ui.in_terminal", asynccontextmanager(empty_handoff))
+        monkeypatch.setattr("pcode.ui.suspended_editor", asynccontextmanager(empty_handoff))
         transcript.console.file.seek(0)
         transcript.console.file.truncate()
         await output.flush()
@@ -166,7 +166,7 @@ def test_rebuild_includes_arrivals_during_handoff_and_keeps_unfinished_tail(monk
         output.finish()
         assert project(transcript).count("UNFINISHED_TAIL") == 1
 
-    async def empty_handoff():
+    async def empty_handoff(app):
         yield
 
     asyncio.run(run())
