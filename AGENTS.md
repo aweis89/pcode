@@ -17,6 +17,7 @@ make worktree-remove NAME=fix-thing   # drop the worktree (branch is kept)
 ```
 
 - The only failure needing coordination is the final `--ff-only` refusing because someone's uncommitted mainline edits touch your files: have them commit or stash, then re-run.
+- Two branches that are each green can merge without a conflict and still leave mainline broken: one renamed `--demo`'s dest to `theme_preview` while the other added a read of `args.demo`, and every interactive launch died on startup. Git cannot see that; run `make test` on the merged tree (in the worktree, after `worktree-merge` folds mainline in) before trusting the merge.
 - `.pcode/worktree-setup` is what gives each worktree its own `.venv`. Never share one: the editable install records an absolute `src/` path, so a shared env silently imports the *other* checkout's source.
 - Always commit and push after changes. Run `make install` afterwards from the mainline checkout; running it from a worktree repoints the global `pcode` command at that branch.
 - Before touching terminal or agent integrations, read [docs/dependencies.md](docs/dependencies.md).
