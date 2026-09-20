@@ -575,6 +575,9 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     # /new zeroes the whole widget: tasks, tools, and the live status row.
     assert "✓ h" not in screen
     assert screen.count("┌") == screen.count("└") == 1
+    # The clear reaches scrollback too, not just the visible rows.
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert "Type / for commands" not in history
 
 
 PAUSED_STREAM_SCRIPT = """

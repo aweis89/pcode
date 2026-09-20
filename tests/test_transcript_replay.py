@@ -172,6 +172,39 @@ def test_rebuild_includes_arrivals_during_handoff_and_keeps_unfinished_tail(monk
     asyncio.run(run())
 
 
+def test_clear_erases_the_screen_and_keeps_what_is_written_after_it(monkeypatch):
+    async def run():
+        transcript = Transcript(
+            Console(file=StringIO(), width=80, color_system=None, force_terminal=True)
+        )
+        terminal = DummyOutput()
+        terminal.write_raw = Mock()
+        app = SimpleNamespace(output=CursorSafeOutput(terminal))
+        output = TerminalOutput(transcript.console, app)
+        transcript.output = output
+        transcript.print("OLD_HISTORY")
+        transcript.clear()
+        transcript.print("AFTER_CLEAR")
+        transcript.note("NEW_NOTICE")
+
+        async def empty_handoff(app):
+            yield
+
+        monkeypatch.setattr("pcode.ui.suspended_editor", asynccontextmanager(empty_handoff))
+        transcript.console.file.seek(0)
+        transcript.console.file.truncate()
+        await output.flush()
+        text = transcript.console.file.getvalue()
+        terminal.write_raw.assert_called_once_with("\x1b[H\x1b[2J\x1b[3J")
+        assert "OLD_HISTORY" not in text
+        assert "AFTER_CLEAR" in text and "NEW_NOTICE" in text
+        # A later redraw must not resurrect the cleared history either.
+        assert "OLD_HISTORY" not in project(transcript)
+        assert "omitted" not in project(transcript)
+
+    asyncio.run(run())
+
+
 def test_informational_notices_are_shown_once_and_not_retained():
     transcript = view()
     transcript.log = TranscriptLog(limit=2)
