@@ -42,6 +42,11 @@ def pane(request):
     server = "pcode-test-" + uuid.uuid4().hex
     base = ["tmux", "-L", server, "-f", "/dev/null"]
     env = {**os.environ}
+    # These tests exist because a PTY with PROMPT_TOOLKIT_NO_CPR=1 (as in
+    # test_terminal.py) never exercises real prompt height: cursor-position
+    # reports can stretch the layout into the remaining pane. Keep them on a
+    # real tmux, and keep them serial: pane-paint deadlines expire under
+    # xdist, even `-n 4`.
     env.pop("PROMPT_TOOLKIT_NO_CPR", None)
     # Most panes assert on the widget while the prompt is idle, so opt them out
     # of the default auto-hide; a test that wants it turns it back on itself.

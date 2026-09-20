@@ -414,6 +414,12 @@ async def suspended_editor(app: Application):
     Whenever the transcript leaves rows free below it (startup, the first tool
     calls of a session) every write makes the editor visibly jump up and back.
     Waiting for the report first paints the editor at its final position.
+
+    To check for a regression, do not trust ``tmux capture-pane``: it shows only
+    the settled frame and cannot see two paints inside one redraw interval.
+    Record the raw byte stream with timestamps instead
+    (``tmux pipe-pane -o 'python3 stamp.py >> out.bin'``) and look for a second
+    editor paint after a scrollback write.
     """
     # Offline harnesses pass a bare stand-in for the app; nothing to suspend.
     if not isinstance(app, Application) or not app._is_running:

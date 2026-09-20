@@ -54,6 +54,12 @@ def create_coder(workspace: Path) -> CombinedCapability:
     output_limits = create_tool_output_limits()
     # Keep Coder's tool selection, including its persistent shell. File display
     # and repository discovery remain local adapters; planning is now opt-in.
+    #
+    # Ids must be set at construction (`replace(..., id=...)` or the factory):
+    # a `Capability` binds its instructions to its id in `__init__`, so a later
+    # `capability.id = ...` is silently ignored by /context attribution. Do not
+    # blanket-rename everything either: `replace()`-copied children compare
+    # fields with their parent and a renamed parent breaks that match.
     coder.capabilities = [
         create_repo_context(workspace)
         if isinstance(capability, RepoContext)
