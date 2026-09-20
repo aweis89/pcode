@@ -136,6 +136,32 @@ def configure(arguments: Sequence[str]) -> str:
     raise ValueError(f"Usage: {USAGE}")
 
 
+def config_argument_descriptions() -> dict[str, str]:
+    """Completion-menu text: the setting's purpose beside each key, its default beside values."""
+    described: dict[str, str] = {
+        "list": "Show every effective setting",
+        "path": "Print the user preferences file",
+        "get": "Show one effective setting",
+        "set": "Save a user default (applies on next launch)",
+        "unset": "Remove a user default",
+        "reset": "Remove every user default",
+        "project": "Edit the workspace's .pcode/preferences.json",
+        "project list": "Show the project file",
+        "project path": "Print the project preferences file",
+        "project reset": "Remove every project default",
+    }
+    for key, setting in SETTINGS.items():
+        default = "unset" if setting.default is None else setting.default
+        text = f"{setting.description} (default {default})" if setting.description else ""
+        for action in ("get", "unset", "set", "project set", "project unset"):
+            described[f"{action} {key}"] = text
+        for value in setting.choices:
+            marker = " (default)" if value == setting.default else ""
+            described[f"set {key} {value}"] = f"{setting.description}{marker}"
+            described[f"project set {key} {value}"] = described[f"set {key} {value}"]
+    return described
+
+
 def config_arguments() -> tuple[str, ...]:
     """Complete subcommands, keys, and enum values with the existing completer."""
     project_keys = [key for key in SETTINGS if key not in USER_ONLY]
