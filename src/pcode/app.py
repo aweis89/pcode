@@ -30,8 +30,10 @@ from pcode.preferences import (
     SYNTAX_THEMES,
     apply_effort,
     apply_thinking,
+    effort_for,
     effort_setting,
     load_preferences,
+    save_model_effort,
     save_preferences,
 )
 from pcode.runtime import (
@@ -123,7 +125,7 @@ class PreviewApp:
         self._startup_context_shown: set[str] = set()
         agent = getattr(self.runtime, "agent", None)
         if agent is not None and model:
-            apply_effort(agent, model, load_preferences().get("effort"))
+            apply_effort(agent, model, effort_for(model))
         self.activity = Activity(
             show_tasks=load_preferences().get("show_tasks", "on") == "on",
             autohide_tasks=load_preferences().get("autohide_tasks", "on") == "on",
@@ -448,7 +450,7 @@ class PreviewApp:
         agent = await asyncio.to_thread(
             create_agent, self.model, self.workspace, loaded.capabilities
         )
-        apply_effort(agent, self.model, load_preferences().get("effort"))
+        apply_effort(agent, self.model, effort_for(self.model))
         apply_thinking(agent, self.model, self.activity.show_thinking)
         self.extensions = loaded
         self.runtime.replace_agent(agent)
@@ -523,7 +525,7 @@ class PreviewApp:
             self._needs_runtime = False
             agent = getattr(runtime, "agent", None)
             if agent is not None:
-                apply_effort(agent, self.model, load_preferences().get("effort"))
+                apply_effort(agent, self.model, effort_for(self.model))
                 apply_thinking(agent, self.model, self.activity.show_thinking)
             self.register_extension_commands()
         if self.resuming:
@@ -727,7 +729,7 @@ class PreviewApp:
         # Construct first: a missing provider/login must leave the old session intact.
         capabilities = self.extensions.capabilities if self.extensions else ()
         agent = await asyncio.to_thread(create_agent, model, self.workspace, capabilities)
-        apply_effort(agent, model, load_preferences().get("effort"))
+        apply_effort(agent, model, effort_for(model))
         apply_thinking(agent, model, self.activity.show_thinking)
         save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
         factory = (lambda: self._create_session(model)) if save else None
@@ -1069,7 +1071,12 @@ class PreviewApp:
             return
         # Replace rather than mutate: an active run keeps its captured settings.
         apply_effort(agent, self.model, value)
-        self.persist_defaults(model=self.model, effort=value)
+        self.persist_defaults(model=self.model)
+        # Per model: raising effort on one model must not raise it on the next.
+        try:
+            save_model_effort(self.model, value)
+        except (OSError, ValueError):
+            self.transcript.warning("Could not save defaults; this selection applies only here.")
         self.transcript.flash(f"Effort: {self.current_effort()} (next turn).")
 
     def adjust_effort(self, direction: int) -> None:
@@ -1370,7 +1377,7 @@ class PreviewApp:
             if Path(saved.info.workspace).resolve() != self.workspace:
                 raise SessionError("Workspace differs; refusing cross-repo resume.")
             agent = create_agent(saved.info.model, self.workspace)
-            apply_effort(agent, saved.info.model, load_preferences().get("effort"))
+            apply_effort(agent, saved.info.model, effort_for(saved.info.model))
             apply_thinking(agent, saved.info.model, self.activity.show_thinking)
             runtime = AgentRuntime(agent, saved)
             await runtime.restore()

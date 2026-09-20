@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from pcode.preferences import (
+    MODEL_EFFORTS_KEY,
     SETTINGS,
     USER_ONLY,
     Setting,
@@ -62,7 +63,10 @@ def _effective_data() -> dict:
 
 def _reset(path: Path | None, label: str) -> str:
     """Drop every known setting, leaving unrecognized keys the file may carry."""
-    removed = sorted(set(read_preferences(path)) & set(SETTINGS))
+    # Per-model efforts are a setting in every sense a user cares about, so a
+    # reset must clear them too even though they live outside SETTINGS.
+    known = set(SETTINGS) | {MODEL_EFFORTS_KEY}
+    removed = sorted(set(read_preferences(path)) & known)
     if not removed:
         return f"No {label} defaults to reset."
     update_preferences({}, remove=tuple(removed), path=path)

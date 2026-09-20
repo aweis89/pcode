@@ -150,7 +150,7 @@ def test_effort_changes_apply_to_next_turn_not_next_tool_step(provider, key):
 @pytest.mark.parametrize("provider", ["anthropic", "meridian"])
 @pytest.mark.parametrize("native_xhigh", [False, True])
 def test_anthropic_effort_settings_and_restore(provider, native_xhigh):
-    from pcode.preferences import apply_effort, load_preferences
+    from pcode.preferences import apply_effort, effort_for
 
     app, _ = make_app(f"{provider}:test")
     agent = app.runtime.agent
@@ -164,7 +164,7 @@ def test_anthropic_effort_settings_and_restore(provider, native_xhigh):
     assert original == {"temperature": 0.5}
     assert app.current_effort() == "xhigh"
     agent.model_settings = {}
-    apply_effort(agent, app.model, load_preferences()["effort"])
+    apply_effort(agent, app.model, effort_for(app.model))
     assert app.current_effort() == "xhigh"
     app.adjust_effort(-1)
     assert agent.model_settings == {"anthropic_effort": "high"}
