@@ -39,12 +39,12 @@ def test_cli_passes_model_and_workspace(monkeypatch, tmp_path):
     app.return_value.run.assert_called_once()
 
 
-def test_resume_restores_model_workspace_and_releases_lock(monkeypatch, tmp_path):
+def test_continue_restores_model_workspace_and_releases_lock(monkeypatch, tmp_path):
     root = tmp_path / "sessions"
     saved = SavedSession.create("test:local", tmp_path, root)
     identity = saved.info.id
     saved.close()
-    monkeypatch.setattr(sys, "argv", ["pcode", "--resume", identity, "--session-dir", str(root)])
+    monkeypatch.setattr(sys, "argv", ["pcode", "--continue", identity, "--session-dir", str(root)])
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     with patch("pcode.app.PreviewApp") as app:
@@ -68,22 +68,17 @@ def test_no_save_never_creates_session(monkeypatch, tmp_path):
     assert list_sessions(root) == []
 
 
-def test_resume_rejects_different_workspace(monkeypatch, tmp_path, capsys):
+def test_continue_rejects_different_workspace(monkeypatch, tmp_path, capsys):
     root = tmp_path / "sessions"
     saved = SavedSession.create("test:local", tmp_path, root)
+    identity = saved.info.id
     saved.close()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
     monkeypatch.setattr(
         sys,
         "argv",
-        [
-            "pcode",
-            "--resume",
-            "latest",
-            "--session-dir",
-            str(root),
-            "-C",
-            str(tmp_path / "elsewhere"),
-        ],
+        ["pcode", "--continue", identity, "--session-dir", str(root), "-C", str(elsewhere)],
     )
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
@@ -91,6 +86,56 @@ def test_resume_rejects_different_workspace(monkeypatch, tmp_path, capsys):
         main()
     assert raised.value.code == 2
     assert "cross-repo resume" in capsys.readouterr().err
+
+
+def test_continue_without_session_picks_this_workspaces_latest(monkeypatch, tmp_path, capsys):
+    root = tmp_path / "sessions"
+    here = tmp_path / "here"
+    elsewhere = tmp_path / "elsewhere"
+    here.mkdir()
+    elsewhere.mkdir()
+    mine = SavedSession.create("test:local", here, root)
+    mine.close()
+    # Newer, but another checkout's: it must not win "latest".
+    other = SavedSession.create("test:other", elsewhere, root)
+    other.close()
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        sys, "argv", ["pcode", "--continue", "--session-dir", str(root), "-C", str(here)]
+    )
+    with patch("pcode.app.PreviewApp") as app:
+        main()
+    assert app.call_args.kwargs["saved_session"].info.id == mine.info.id
+    assert app.call_args.kwargs["model"] == "test:local"
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(
+        sys, "argv", ["pcode", "--continue", "--session-dir", str(root), "-C", str(empty)]
+    )
+    with pytest.raises(SystemExit) as raised:
+        main()
+    assert raised.value.code == 2
+    assert f"No saved session for {empty}" in capsys.readouterr().err
+
+
+def test_continue_keeps_an_unquoted_prompt_out_of_the_session_selector(monkeypatch, tmp_path):
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    identity = saved.info.id
+    saved.close()
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["pcode", "-c", "fix", "the", "bug", "--session-dir", str(root), "-C", str(tmp_path)],
+    )
+    with patch("pcode.app.PreviewApp") as app:
+        main()
+    assert app.call_args.kwargs["initial_prompt"] == "fix the bug"
+    assert app.call_args.kwargs["saved_session"].info.id == identity
 
 
 def test_demo_never_initializes_a_provider(monkeypatch, capsys):

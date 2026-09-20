@@ -107,14 +107,27 @@ def first_prompt(info: SessionInfo, root: Path | None = None) -> str:
     return "(No prompt yet)"
 
 
-def resolve_session(selector: str, root: Path | None = None) -> Path:
+def is_session_selector(value: str) -> bool:
+    """Tell an ID/prefix apart from prompt text after an optional-argument flag."""
+    return value == "latest" or bool(re.fullmatch(r"[a-f0-9-]{8,36}", value))
+
+
+def resolve_session(selector: str, root: Path | None = None, workspace: Path | None = None) -> Path:
+    """Resolve an ID/prefix, or the newest session, optionally scoped to a workspace."""
     root = root or session_root()
-    if selector != "latest" and not re.fullmatch(r"[a-f0-9-]{8,36}", selector):
-        raise SessionError("Use a session ID from --sessions, or 'latest'.")
+    if not is_session_selector(selector):
+        raise SessionError("Use a session ID from --sessions, or omit it for the latest.")
     sessions = list_sessions(root)
-    matches = (
-        sessions[:1] if selector == "latest" else [s for s in sessions if s.id.startswith(selector)]
-    )
+    if selector != "latest":
+        matches = [s for s in sessions if s.id.startswith(selector)]
+    elif workspace is None:
+        matches = sessions[:1]
+    else:
+        # "Latest" means this checkout's newest session, never another repo's.
+        home = str(workspace.resolve())
+        matches = [s for s in sessions if s.workspace == home][:1]
+        if not matches:
+            raise SessionError(f"No saved session for {home}; use --sessions to pick one.")
     if len(matches) != 1:
         raise SessionError("Session not found or prefix is ambiguous; use --sessions.")
     return root / matches[0].id
@@ -181,8 +194,8 @@ class SavedSession:
         return session
 
     @classmethod
-    def open(cls, selector: str, root: Path | None = None):
-        path = resolve_session(selector, root)
+    def open(cls, selector: str, root: Path | None = None, workspace: Path | None = None):
+        path = resolve_session(selector, root, workspace)
         return cls(path, read_info(path))
 
     def save_info(self) -> None:

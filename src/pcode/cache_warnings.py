@@ -27,6 +27,12 @@ class CacheBustReporting(WarnOnCacheBusts):
     )
 
     async def after_model_request(self, ctx, *, request_context, response):
+        # Harness hooks are filters, not listeners: the return value replaces the
+        # response (or request context, for `before_model_request`). A hook that
+        # only records something must still return it, or the loss surfaces far
+        # away as `AttributeError: 'NoneType' object has no attribute 'usage'`
+        # from the upstream `WarnOnCacheBusts` this class extends.
+        #
         # The pinned upstream hook does not suspend: only its synchronous warning
         # emission is captured, never model/tool execution or another task's work.
         # Emit outside this scope; ctx.emit can suspend. No global warning handler.
