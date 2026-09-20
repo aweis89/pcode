@@ -19,6 +19,16 @@ class Pcode < Formula
     generate_completions_from_executable(bin/"pcode", "--completions")
   end
 
+  # Homebrew's post-install relocation rewrites the universal2 (x86_64+arm64)
+  # extension modules from PyPI wheels in place. The bytes come out identical,
+  # but macOS then kills any Python that loads them (CODESIGNING "Invalid
+  # Page"). Re-signing writes fresh files, which clears that state.
+  def post_install
+    Dir[libexec/".venv/lib/python*/site-packages/**/*.{so,dylib}"].each do |lib|
+      system "codesign", "--force", "--sign", "-", lib
+    end
+  end
+
   test do
     assert_match "--model", shell_output("#{bin}/pcode --help")
     assert_match "No saved sessions.",
