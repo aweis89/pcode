@@ -5,7 +5,7 @@ import os
 import re
 from asyncio import Future
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from functools import cache, lru_cache, wraps
 from time import monotonic
 
@@ -40,6 +40,7 @@ from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fr
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import SETTINGS, SYNTAX_THEMES, load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
+from pcode.syntax_colors import derive_colors
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
 from pcode.theme_gallery import SyntaxGallery
@@ -101,9 +102,12 @@ class Palette:
         )
 
     @cache
-    def prompt_style(self) -> Style:
+    def prompt_style(self, menu: "Palette | None" = None) -> Style:
         # Palette is immutable. Reuse the Style so DynamicStyle's identity-based
         # invalidation hash changes only with the palette, not on every redraw.
+        # `menu` colors the completion popup, which follows the selected syntax
+        # style rather than this palette; it is immutable and cached too.
+        menu = self if menu is None else menu
         return Style.from_dict(
             {
                 "plan": self.muted,
@@ -128,17 +132,17 @@ class Palette:
                 "bottom-toolbar.location": "fg:default bold",
                 "bottom-toolbar.model": "fg:default",
                 "bottom-toolbar.activity": "fg:default bold",
-                "completion-menu": f"bg:{self.surface} {self.foreground}",
-                "completion-menu.completion": f"bg:{self.surface} {self.foreground}",
+                "completion-menu": f"bg:{menu.surface} {menu.foreground}",
+                "completion-menu.completion": f"bg:{menu.surface} {menu.foreground}",
                 # The toolkit's selected-row default uses reverse; explicitly
                 # disable it so light themes keep dark text on a light surface.
                 "completion-menu.completion.current": (
-                    f"noreverse bg:{self.selected} {self.accent} bold"
+                    f"noreverse bg:{menu.selected} {menu.accent} bold"
                 ),
-                "completion-menu scrollbar.background": f"bg:{self.surface}",
-                "completion-menu scrollbar.button": f"bg:{self.selected}",
-                "completion-menu.meta.completion": f"bg:{self.surface} {self.muted}",
-                "completion-menu.meta.completion.current": f"bg:{self.selected} {self.foreground}",
+                "completion-menu scrollbar.background": f"bg:{menu.surface}",
+                "completion-menu scrollbar.button": f"bg:{menu.selected}",
+                "completion-menu.meta.completion": f"bg:{menu.surface} {menu.muted}",
+                "completion-menu.meta.completion.current": f"bg:{menu.selected} {menu.foreground}",
                 # A file reference is neither prose nor a command: underlining
                 # it marks the token without competing with the prompt chevron.
                 "reference": f"{self.task_heading} underline",
@@ -151,6 +155,17 @@ PALETTES = {
     "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "#c4b5fd"),
     "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "#7c3aed"),
 }
+
+
+@cache
+def syntax_palette(style_name: str, fallback: Palette) -> Palette:
+    """The palette a Pygments style implies, backed by `fallback`'s colors.
+
+    Cached because prompt_toolkit's DynamicStyle invalidates on the identity of
+    the object it is handed: a fresh Palette on every redraw would rebuild the
+    whole style tree. Palette is frozen, so it is a usable cache key.
+    """
+    return Palette(**derive_colors(style_name, asdict(fallback)))
 
 
 def syntax_themes(preferences: dict[str, str] | None = None) -> dict[str, str]:
@@ -1505,6 +1520,21 @@ class Transcript:
     @property
     def palette(self) -> Palette:
         return PALETTES[self.resolved_theme]
+
+    @property
+    def syntax_palette(self) -> Palette:
+        """The palette implied by the syntax style in use, for prompt chrome.
+
+        `/colors terminal` has no Pygments style to read -- code falls back to
+        the ANSI pseudo-styles -- so the hardcoded palette stands in.
+        """
+        if self.color_style == "terminal":
+            return self.palette
+        return syntax_palette(self.syntax_themes[self.resolved_theme], self.palette)
+
+    def prompt_style(self) -> Style:
+        """The prompt_toolkit style for the current theme and syntax style."""
+        return self.palette.prompt_style(self.syntax_palette)
 
     @property
     def rich_theme(self) -> Theme:

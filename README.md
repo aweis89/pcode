@@ -218,6 +218,12 @@ completion lists the styles, and an unknown name is rejected with the full list.
 `/theme-preview` renders each of them on one line, marks the one in use, and
 repeats the commands below, so a style can be chosen by eye rather than by name.
 
+The completion menu is painted from the same style, so the popup matches the
+code on screen. A Pygments style only colors code, though, so any color it
+leaves out or that would be unreadable against its background falls back to the
+palette's own. `/colors terminal` drops the style entirely and the menu returns
+to the palette.
+
 These are the styles Pygments installs here; a Pygments style plugin package adds
 to the list automatically.
 
@@ -909,8 +915,9 @@ candidate's size so that cost is visible before you pick.
   and tables follow this palette; fenced code uses the palette's own Pygments
   style, `gruvbox-dark` or `gruvbox-light`. Normal body text and the overall
   background remain terminal-native.
-- `/syntax NAME`: change the Pygments style for fenced code on the active palette
-  and save it as that palette's default; `/syntax` alone reports the current
+- `/syntax NAME`: change the Pygments style for fenced code and the completion
+  menu on the active palette and save it as that palette's default; `/syntax`
+  alone reports the current
   style. See [Code highlighting styles](#code-highlighting-styles) for the list;
   `/theme-preview` renders every style, marking the one in use.
 - `/colors terminal`: opt into terminal-defined ANSI colors with unpainted code

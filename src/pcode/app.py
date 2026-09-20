@@ -302,7 +302,7 @@ class PreviewApp:
             ),
             Command(
                 "/syntax",
-                "Set the code highlighting style for the active palette",
+                "Set the code and completion-menu style for the active palette",
                 self.syntax,
                 SYNTAX_THEMES,
                 group="Display",
@@ -942,7 +942,7 @@ class PreviewApp:
         self.transcript.regenerate()
 
     def syntax(self, argument: str) -> None:
-        """Choose the Pygments style for fenced code on the palette in use.
+        """Choose the Pygments style for fenced code and the completion menu.
 
         Each palette keeps its own style, so switching to the other palette and
         back restores the style picked for it rather than the last one set.
@@ -2155,7 +2155,7 @@ class PreviewApp:
             rich_theme=lambda: self.transcript.rich_theme,
         )
         self.transcript.output = output
-        session.app.style = DynamicStyle(lambda: self.transcript.palette.prompt_style())
+        session.app.style = DynamicStyle(lambda: self.transcript.prompt_style())
 
         async def watch_branch():
             while True:
