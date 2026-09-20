@@ -230,10 +230,13 @@ def test_stream_resize_and_cancellation(pane):
     assert input_rows(capture(pane, "❯", running=True)) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "next input")
     capture(pane, "❯ next input", running=True)
+    # Ctrl+C clears the draft first; only an empty prompt cancels the run.
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    discarded = capture(pane, "Input discarded", running=True)
+    assert "❯ next input" not in discarded
     pane("send-keys", "-t", "preview:0.0", "C-c")
     cancelled = capture(pane, "! Run cancelled")
     assert input_rows(cancelled) == 1
-    assert "❯ next input" in cancelled
 
 
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
@@ -671,10 +674,11 @@ def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
         assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
         assert "keep draft" in screen
         assert input_rows(screen) == 1
+    pane("send-keys", "-t", "preview:0.0", "C-c")  # Clears the draft.
+    assert "keep draft" not in capture(pane, "Input discarded", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "! Run cancelled")
     assert "Run · " not in screen
-    assert "│❯ keep draft" in screen
 
 
 RESIZE_TRANSCRIPT_SCRIPT = TOOLS_SCRIPT.replace(
@@ -776,10 +780,11 @@ def test_queued_messages_stay_directly_above_editor(pane, mode):
         assert "active prompt" not in lines[editor_top - 3]
         assert "│❯ keep draft" in screen
         assert input_rows(screen) == 1
+    pane("send-keys", "-t", "preview:0.0", "C-c")  # Clears the draft.
+    assert "keep draft" not in capture(pane, "Input discarded", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "! Run cancelled")
     assert f"{label}:" not in screen
-    assert "│❯ keep draft" in screen
 
 
 @pytest.mark.parametrize(

@@ -852,16 +852,26 @@ def create_prompt(
 
     if transcript is not None:
 
-        @keys.add("c-c")
         @keys.add("c-d", filter=Condition(lambda: activity.busy))
+        def interrupt_turn(event):
+            on_cancel()
+
+        @keys.add("c-c")
         def interrupt(event):
-            if activity.busy:
+            # Never discard a draft and interrupt the turn in one keypress: clear
+            # the editor first, so interrupting a busy turn needs an empty prompt.
+            searching = is_searching()
+            if activity.busy and not searching and not session.default_buffer.text:
                 on_cancel()
-            else:
-                if is_searching():
-                    stop_search()
-                session.default_buffer.reset()
-                transcript.note("Input discarded. Ctrl+D on an empty prompt exits.")
+                return
+            if searching:
+                stop_search()
+            session.default_buffer.reset()
+            transcript.note(
+                "Input discarded. Ctrl+C again interrupts."
+                if activity.busy
+                else "Input discarded. Ctrl+D on an empty prompt exits."
+            )
 
         @keys.add("c-d", filter=Condition(lambda: not activity.busy))
         def exit_or_delete(event):
@@ -1621,7 +1631,7 @@ class Transcript:
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note(
             "During a run: Enter sends · Ctrl+S cycles steering/queue/interrupt. "
-            "Ctrl+C/Ctrl+D cancel, keep draft."
+            "Ctrl+C discards a draft first, then cancels · Ctrl+D cancels, keeps draft."
         )
         self.note("Cancellation clears queued messages. Use terminal/tmux scrollback for history.")
         self.print()
