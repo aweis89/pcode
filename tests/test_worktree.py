@@ -118,7 +118,7 @@ def test_remove_keeps_branch_and_never_forces_user_work(repo):
         worktree.remove(created)
     assert created.path.exists()
     (created.path / "scratch").unlink()
-    assert "kept" in worktree.remove(created)
+    assert "removed" in worktree.remove(created)
     assert not created.path.exists()
     assert "feature" in git(repo, "branch", "--list", "feature")
 

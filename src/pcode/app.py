@@ -245,9 +245,10 @@ class PreviewApp:
             ),
             Command(
                 "/worktree",
-                "This session's git worktree: status / merge (into mainline) / remove / list",
+                "This session's git worktree: status / merge / finish (merge, remove, quit) / "
+                "remove / list",
                 self.worktree,
-                ("status", "merge", "remove", "list"),
+                ("status", "merge", "finish", "remove", "list"),
                 group="Session",
             ),
             Command(
@@ -1115,9 +1116,24 @@ class PreviewApp:
             if worktree.unmerged_commits(linked):
                 raise ValueError("Branch has unmerged commits; /worktree merge first.")
             self.transcript.note(worktree.remove(linked))
-            self.transcript.note(
-                "This session's workspace no longer exists; /quit and start pcode in the mainline."
-            )
+            self._leave_worktree(linked)
+            self.transcript.note("This session's workspace no longer exists; /quit.")
+        elif action == "finish":
+            # Refusals raise before anything is deleted, so the session stays put.
+            self.transcript.note(worktree.finish(linked))
+            self._leave_worktree(linked)
+            self.running = False
+
+    def _leave_worktree(self, linked) -> None:
+        """Point the saved session at the mainline so `pcode -c` still finds a directory."""
+        session = getattr(self.runtime, "session", None)
+        if session is None:
+            return
+        session.info.workspace = str(linked.main)
+        try:
+            session.save_info()
+        except OSError:
+            pass
 
     def mcp_arguments(self) -> tuple[str, ...]:
         from pcode.mcp import configured_servers
@@ -2450,27 +2466,79 @@ def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
     return created.path, identity
 
 
-def _worktree_exit_note(workspace: Path) -> None:
-    """Say what a linked worktree still holds, so leaving never silently orphans work."""
+def _leave_worktree_on_exit(app, ask=input, stream=None) -> None:
+    """Tidy a session worktree on the way out, never losing work.
+
+    Untouched (clean, nothing unmerged): removed with its branch, no question;
+    a session that never had a turn is deleted too. Unmerged commits: per
+    `worktree_exit`, ask (default yes), merge silently, or keep. Uncommitted
+    changes, refusals, and hand-made worktrees (no `pcode-` prefix): kept, with
+    a note on how to resume. `ask=None` means nobody is there to answer.
+    """
+    import shutil
+
     from pcode import worktree
 
+    stream = stream or sys.stderr
     try:
-        linked = worktree.describe(workspace)
+        linked = worktree.describe(app.workspace)
         if linked is None:
             return
-        pending = []
-        if worktree.is_dirty(linked.path):
-            pending.append("uncommitted changes")
-        if count := worktree.unmerged_commits(linked):
-            pending.append(f"{count} unmerged commit{'s' if count != 1 else ''}")
+        ours = linked.branch.startswith(SESSION_WORKTREE_PREFIX)
+        dirty = worktree.is_dirty(linked.path)
+        unmerged = worktree.unmerged_commits(linked)
+        untouched = ours and worktree.is_untouched(linked)
     except worktree.WorktreeError:
         return
-    state = ", ".join(pending) if pending else "nothing unmerged"
-    print(
-        f"worktree: {linked.path} ({linked.branch}) has {state}; "
-        f"`pcode -C {linked.path} -c` resumes there",
-        file=sys.stderr,
-    )
+    session = getattr(app.runtime, "session", None)
+    resume = f"`pcode -C {linked.path} -c` resumes there"
+
+    def repoint():
+        if session is not None:
+            session.info.workspace = str(linked.main)
+            session.save_info()
+
+    try:
+        if untouched:
+            worktree.remove(linked)
+            worktree.delete_branch(linked)
+            if session is not None and session.info.turns == 0:
+                session.close()
+                app.runtime.session = None
+                shutil.rmtree(session.directory, ignore_errors=True)
+            else:
+                repoint()
+            print(f"worktree: removed untouched {linked.path}", file=stream)
+            return
+        if dirty or not ours or not unmerged:
+            state = "uncommitted changes" if dirty else f"{unmerged} unmerged commit(s)"
+            print(f"worktree: {linked.path} ({linked.branch}) has {state}; {resume}", file=stream)
+            return
+        mode = load_preferences().get("worktree_exit", "ask")
+        mainline = worktree.mainline_branch(linked.main)
+        if mode == "ask" and ask is not None:
+            print(
+                f"worktree: {linked.branch} has {unmerged} commit(s) not in {mainline}.",
+                file=stream,
+            )
+            try:
+                answer = ask("Merge and remove the worktree? [Y/n] ").strip().lower()
+            except (EOFError, OSError, KeyboardInterrupt):
+                answer = "n"
+            if answer not in ("", "y", "yes"):
+                print(f"worktree: kept; {resume}", file=stream)
+                return
+        elif mode != "merge":
+            print(
+                f"worktree: {linked.path} ({linked.branch}) has {unmerged} unmerged commit(s); "
+                f"{resume}",
+                file=stream,
+            )
+            return
+        print("worktree: " + worktree.finish(linked), file=stream)
+        repoint()
+    except (worktree.WorktreeError, OSError) as error:
+        print(f"worktree: {error}\nworktree: kept; {resume}", file=stream)
 
 
 def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
@@ -2565,11 +2633,13 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             console=Console(stderr=True) if args.print else None,
         )
         if args.print:
-            if not app.run_print(args.prompt):
+            ok = app.run_print(args.prompt)
+            _leave_worktree_on_exit(app, ask=None)
+            if not ok:
                 parser.exit(1)
         else:
             app.run()
-            _worktree_exit_note(app.workspace)
+            _leave_worktree_on_exit(app)
     except Exception as error:
         from pcode.live import error_message
 

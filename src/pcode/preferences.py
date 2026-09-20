@@ -79,6 +79,10 @@ SETTINGS = {
     # concurrent sessions never edit the same checkout. `--worktree [NAME]` and
     # `--no-worktree` override per run.
     "worktree": Setting("off", ("on", "off")),
+    # Leaving a session worktree with unmerged commits: ask whether to merge and
+    # remove it, do so silently when it fast-forwards, or keep it. An untouched
+    # worktree is always removed; uncommitted changes are always kept.
+    "worktree_exit": Setting("ask", ("ask", "merge", "keep")),
     # Extra automatic attempts after a dropped connection; 0 disables retrying.
     "retry_attempts": Setting("1", whole_number=True),
     # Corrections offered to the model after a tool call fails argument validation

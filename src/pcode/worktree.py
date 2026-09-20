@@ -230,7 +230,36 @@ def remove(worktree: Worktree, force: bool = False) -> str:
             f"not removing {worktree.path}: {detail}\n"
             f"If that work is disposable: git worktree remove --force {worktree.path}"
         )
-    return f"removed {worktree.path} (branch {worktree.branch} kept)"
+    return f"removed {worktree.path}"
+
+
+def is_untouched(worktree: Worktree) -> bool:
+    """Nothing to lose: no tracked changes, no untracked files, nothing unmerged.
+
+    Ignored files (a `.venv`, the shared `tmp` symlink) do not count, matching
+    what a non-forced `git worktree remove` tolerates.
+    """
+    status = _git(worktree.path, "status", "--porcelain").stdout.strip()
+    return not status and unmerged_commits(worktree) == 0
+
+
+def delete_branch(worktree: Worktree) -> None:
+    """Drop a fully merged branch; `-d` refuses anything unmerged, which is the point."""
+    _git(worktree.main, "branch", "-d", worktree.branch, check=False)
+
+
+def finish(worktree: Worktree) -> str:
+    """Merge into the mainline, then remove the worktree and its branch.
+
+    Any refusal (dirty tree, conflicts, blocked fast-forward, untracked files)
+    raises before anything is deleted, leaving the worktree resumable.
+    """
+    if is_dirty(worktree.path):
+        raise WorktreeError(f"{worktree.path} has uncommitted changes; commit them first")
+    merged = merge(worktree) if unmerged_commits(worktree) else None
+    removed = remove(worktree)
+    delete_branch(worktree)
+    return f"{merged}; {removed}" if merged else removed
 
 
 def listing(repo: Path) -> str:

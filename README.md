@@ -202,6 +202,7 @@ is only sensible on a machine where you wrote all of them.
 | `skill_commands` | `prefix` | `prefix`, `bare`, `both`, `off` (how discovered skills appear as slash commands) |
 | `skill_dirs` | `~/.agents/skills:.agents/skills` | `:`-separated directories searched for skills; relative entries resolve against the workspace |
 | `worktree` | `off` | `on`, `off` (start each new session in its own `.worktrees/` git worktree) |
+| `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `project_extensions` | `off` | `on`, `off` (`on` trusts every repository's `.pcode/extensions` and `worktree-setup`) |
 | `trusted_projects` | `` | `:`-separated repository paths whose shipped code may run; the launch prompt appends here |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
@@ -732,10 +733,21 @@ shared `.venv` would silently import the other checkout.
 Inside the session, `/worktree` shows the branch and what is unmerged,
 `/worktree merge` merges the mainline branch into the worktree (so conflicts are
 resolved there, never in the mainline checkout) and then fast-forwards the
-mainline, `/worktree remove` deletes the directory once it is merged and clean
-(the branch is kept; nothing is ever forced), and `/worktree list` shows every
-worktree. On exit pcode prints what the worktree still holds and how to resume
-it, so leaving never silently orphans work.
+mainline, `/worktree finish` does that and then removes the worktree and its
+branch and quits, `/worktree remove` deletes the directory once it is merged
+and clean, and `/worktree list` shows every worktree. Nothing is ever forced.
+
+Leaving a session tidies its own worktree (one pcode made, prefixed `pcode-`;
+hand-made ones are only reported):
+
+| State on exit | What happens |
+| --- | --- |
+| Untouched: clean, nothing unmerged | Removed with its branch, no question. A session that never had a turn is deleted too; otherwise it is repointed at the mainline so `pcode -c` still works. |
+| Committed but unmerged | `worktree_exit`: `ask` (default) prompts `Merge and remove the worktree? [Y/n]`; `merge` does it silently; `keep` leaves it. A merge that conflicts or cannot fast-forward keeps everything and prints how to resume. |
+| Uncommitted changes | Kept, with the resume command. Committing on your behalf at exit is not pcode's call. |
+
+`--print` has nobody to ask, so it only does the untouched cleanup. Merging
+never pushes; push from the mainline when you are ready.
 
 ## Sessions and debugging
 
