@@ -1,9 +1,12 @@
 import asyncio
 from io import StringIO
 
+from prompt_toolkit.application.current import set_app
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.vt100 import Vt100_Output
 from prompt_toolkit.styles import Style
 from pygments.token import Generic
 from rich.console import Console
@@ -101,6 +104,28 @@ def test_keyboard_scrolls_the_diff_from_the_file_pane_and_closes():
             assert ui.app.layout.has_focus(ui.diff)
             pipe.send_text("\x1b")
             await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+
+
+def test_file_list_keeps_its_rows_when_the_diff_is_long():
+    """A long diff must not squeeze the Files pane down to its minimum height."""
+
+    async def run():
+        long = "\n".join(f"+line {i:03}" for i in range(500))
+        changes = [change(f"file_{i}.py", call_id=str(i), patch=long) for i in range(10)]
+        with create_pipe_input() as pipe:
+            ui = EditBrowser(
+                changes,
+                input=pipe,
+                output=Vt100_Output(
+                    StringIO(), lambda: Size(rows=24, columns=80), enable_cpr=False
+                ),
+            )
+            with set_app(ui.app):
+                ui.app.renderer.render(ui.app, ui.app.layout)
+                assert ui.files.window.render_info.window_height == 6
+                assert ui.diff.window.render_info.window_height > 6
 
     asyncio.run(run())
 
