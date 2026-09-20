@@ -6,8 +6,9 @@ from unittest.mock import patch
 import pytest
 
 from pcode.app import main
-from pcode.config import config_arguments, configure
+from pcode.config import config_argument_descriptions, config_arguments, configure
 from pcode.preferences import (
+    SETTINGS,
     USER_ONLY,
     load_preferences,
     project_preferences_path,
@@ -101,6 +102,19 @@ def test_configure_project_subcommands(tmp_path):
     assert "project reset" in completions
     assert "project set worktree on" in completions
     assert "project set project_extensions on" not in completions
+
+
+def test_every_setting_describes_itself_in_completions():
+    described = config_argument_descriptions()
+    for key, setting in SETTINGS.items():
+        assert setting.description, key
+        assert described[f"set {key}"].startswith(setting.description)
+        assert "(default " in described[f"get {key}"]
+    assert described["set worktree off"].endswith("(default)")
+    assert not described["set worktree on"].endswith("(default)")
+    assert described["set model"].endswith("(default unset)")
+    for argument in config_arguments():
+        assert argument in described, argument
 
 
 def git(cwd, *args):
