@@ -6,8 +6,9 @@ Several agents edit this repo concurrently. Work in a worktree, never the
 mainline checkout, where another session's `git checkout`/`stash`/`reset` can
 eat your uncommitted edits. pcode sessions started with `--worktree` (or
 `worktree on`) already are one: the workspace *is* `.worktrees/pcode-<name>`, so
-just edit, `make test`, and commit; `/worktree merge` folds it back. From
-another agent, or by hand:
+just edit, `make test`, and commit; `/worktree finish` merges it back and
+removes the worktree (`/worktree merge` keeps it). From another agent, or by
+hand:
 
 ```bash
 make worktree NAME=fix-thing          # .worktrees/fix-thing, branch fix-thing, own .venv
@@ -19,7 +20,7 @@ make worktree-remove NAME=fix-thing   # drop the worktree (branch is kept)
 - The only failure needing coordination is the final `--ff-only` refusing because someone's uncommitted mainline edits touch your files: have them commit or stash, then re-run.
 - Two branches that are each green can merge without a conflict and still leave mainline broken: one renamed `--demo`'s dest to `theme_preview` while the other added a read of `args.demo`, and every interactive launch died on startup. Git cannot see that; run `make test` on the merged tree (in the worktree, after `worktree-merge` folds mainline in) before trusting the merge.
 - `.pcode/worktree-setup` is what gives each worktree its own `.venv`. Never share one: the editable install records an absolute `src/` path, so a shared env silently imports the *other* checkout's source.
-- Always commit after changes. Run `make install` afterwards from the mainline checkout; running it from a worktree repoints the global `pcode` command at that branch.
+- Always commit after changes. The global `pcode` is an editable install pointing at the mainline `src/`, so a merged change is live on the next start with no reinstall. Only `pyproject.toml`/`uv.lock` changes need `make install`, and the `.githooks/post-merge` hook runs it on the mainline when a merge touches them (needs `git config core.hooksPath .githooks`). Never run `make install` from a worktree: it repoints the global `pcode` at that branch.
 - Before touching terminal or agent integrations, read [docs/dependencies.md](docs/dependencies.md).
 - `make harness-src` checks out Harness upstream source, docs, and tests at the pinned SHA under `tmp/pydantic-ai-harness`. Read that rather than the website, which can describe an unreleased Coder API and extras.
 
