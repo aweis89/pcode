@@ -251,7 +251,9 @@ SETTINGS = {
         whole_number=True,
         description="Hours to keep spilled results on disk; 0 keeps them forever",
     ),
-    "effort": Setting("default", EFFORTS, description="Reasoning effort requested from the model"),
+    "effort": Setting(
+        "default", EFFORTS, description="Default reasoning effort for models /effort has not set"
+    ),
     "model": Setting(None, description="Model name; unset uses the offline preview"),
 }
 
@@ -382,6 +384,54 @@ def _write_preferences(path: Path, data: dict) -> None:
     finally:
         if name is not None:
             Path(name).unlink(missing_ok=True)
+
+
+# Per-model effort lives outside SETTINGS: it is a mapping, not a string, and
+# the `effort` setting stays as the fallback for models never chosen explicitly.
+MODEL_EFFORTS_KEY = "model_efforts"
+
+
+def _model_efforts(path: Path | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    stored = data.get(MODEL_EFFORTS_KEY) if isinstance(data, dict) else None
+    if not isinstance(stored, dict):
+        return {}
+    return {
+        model: effort
+        for model, effort in stored.items()
+        if isinstance(model, str) and effort in EFFORTS
+    }
+
+
+def model_efforts() -> dict[str, str]:
+    """Saved effort per model, with the workspace overlay layered on top."""
+    merged = _model_efforts(preferences_path())
+    merged.update(_model_efforts(project_preferences_path()))
+    return merged
+
+
+def effort_for(model: str | None) -> str | None:
+    """The effort to request for `model`: its own, else the shared default."""
+    saved = model_efforts().get(model or "")
+    return saved if saved is not None else load_preferences().get("effort")
+
+
+def save_model_effort(model: str, effort: str) -> None:
+    """Record `effort` for `model` alone, leaving other models untouched."""
+    with FileLock(str(preferences_path()) + ".lock", timeout=5):
+        path = preferences_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = read_preferences(path)
+        stored = data.get(MODEL_EFFORTS_KEY)
+        stored = dict(stored) if isinstance(stored, dict) else {}
+        stored[model] = effort
+        data[MODEL_EFFORTS_KEY] = stored
+        _write_preferences(path, data)
 
 
 def effort_setting(model: str | None) -> str | None:
