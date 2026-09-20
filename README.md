@@ -222,10 +222,11 @@ Try asking: `What does this repository do? Read the README and cite relevant fil
 Live conversations save automatically when the first model prompt is submitted.
 
 A prompt on the command line is sent as the first message, then the editor opens
-as usual. Add `-p`/`--print` to skip the editor: the reply streams to stdout as
-markdown, tool activity and errors go to stderr, and the exit status reports
-whether the turn succeeded. Without a prompt argument, `--print` reads one from
-stdin.
+as usual. Add `-p`/`--print` to skip the editor: the reply goes to stdout, tool
+activity and errors go to stderr, and the exit status reports whether the turn
+succeeded. On a terminal the reply is rendered Markdown, block by block as each
+response settles; redirected to a file or a pipe it is the Markdown source,
+streamed as it arrives. Without a prompt argument, `--print` reads one from stdin.
 
 ```sh
 pcode "Summarize the open TODOs in this repo"          # first message, then interactive
