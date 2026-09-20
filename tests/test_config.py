@@ -35,6 +35,7 @@ def test_defaults_and_path_do_not_create_files():
         "project_extensions": "off",
         "extension_dirs": "",
         "retry_attempts": "1",
+        "tool_retries": "3",
         "show_thinking": "off",
         "show_tasks": "on",
         "autohide_tasks": "on",

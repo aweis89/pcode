@@ -708,6 +708,18 @@ pcode config set retry_attempts 3   # Three extra attempts per turn, next launch
 pcode config set retry_attempts 0   # Disable automatic retries
 ```
 
+A tool call whose arguments fail the tool's schema is a separate budget. The
+model is told what was wrong and gets three corrections by default; past that
+the turn ends, naming the tool and the rejected field rather than blaming the
+provider. Nested arguments such as `edit_file`'s `replacements` array are the
+usual cause, and the correction costs a round trip where the old limit of one
+cost the turn. Output validation keeps the stricter single retry.
+
+```sh
+pcode config set tool_retries 5   # More corrections before a turn is abandoned
+pcode config set tool_retries 0   # Fail on the first rejected tool call
+```
+
 Use `/resend` while idle to try again manually without adding another user
 message. The original prompt appears above the task bar with the normal running
 spinner. Completed tool results stay in context; if the last answer completed,
