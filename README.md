@@ -134,6 +134,7 @@ pcode config set effort high
 pcode config set model openai-codex:gpt-5.6-luna
 pcode config unset model          # Remove saved model; return to offline preview
 pcode config unset theme          # Restore built-in dark theme
+pcode config reset                # Remove every saved default at once
 ```
 
 The same commands are available inside pcode as `/config`, with tab completion:
@@ -155,6 +156,7 @@ directory):
 pcode config project set worktree on    # this repo only; writes .pcode/preferences.json
 pcode config project list               # the raw overlay
 pcode config project unset worktree
+pcode config project reset              # Drop the whole overlay
 ```
 
 A cloned repository must not be able to run code or pick credentials on your
