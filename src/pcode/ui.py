@@ -3,13 +3,14 @@
 import asyncio
 import os
 import re
-from contextlib import contextmanager
+from asyncio import Future
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field, replace
 from functools import cache, lru_cache, wraps
 from time import monotonic
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import Application, get_app, in_terminal
+from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import merge_completers
 from prompt_toolkit.enums import EditingMode
@@ -399,6 +400,56 @@ class CursorSafeOutput:
                 self.output.flush()
 
 
+@asynccontextmanager
+async def suspended_editor(app: Application):
+    """Hand the terminal to direct output, then repaint the editor exactly once.
+
+    This mirrors prompt_toolkit's ``in_terminal``, except for when the editor
+    is painted again. ``in_terminal`` repaints immediately after the handoff,
+    before the cursor position report it has just requested arrives, so that
+    paint knows nothing about the space below the cursor and lands the editor
+    at its preferred height, directly under the new output. The report then
+    re-renders the layout across the remaining screen ~1/30 s later (bounded
+    by ``min_redraw_interval``), which moves the editor back to the bottom.
+    Whenever the transcript leaves rows free below it (startup, the first tool
+    calls of a session) every write makes the editor visibly jump up and back.
+    Waiting for the report first paints the editor at its final position.
+    """
+    # Offline harnesses pass a bare stand-in for the app; nothing to suspend.
+    if not isinstance(app, Application) or not app._is_running:
+        yield
+        return
+    # Chain to any handoff already in progress, as in_terminal does.
+    previous = app._running_in_terminal_f
+    done: Future[None] = Future()
+    app._running_in_terminal_f = done
+    try:
+        if previous is not None:
+            await previous
+        if app.output.responds_to_cpr:
+            await app.renderer.wait_for_cpr_responses()
+        app.renderer.erase()
+        app._running_in_terminal = True
+        try:
+            with app.input.detach(), app.input.cooked_mode():
+                yield
+        finally:
+            app.renderer.reset()
+            app._request_absolute_cursor_position()
+            try:
+                # Input is attached again, so the report can be read here.
+                # Rendering stays disabled meanwhile: an invalidation from a
+                # keystroke or the spinner would otherwise paint the early frame.
+                if app.output.responds_to_cpr:
+                    await app.renderer.wait_for_cpr_responses()
+            finally:
+                app._running_in_terminal = False
+                app._redraw()
+    finally:
+        if not done.done():
+            done.set_result(None)
+
+
 class ReflowAwareRenderer(Renderer):
     """Erase every physical row tmux produced from the last layout on narrowing.
 
@@ -649,16 +700,16 @@ class TerminalOutput:
             if self.pending or self._regenerate is not None:
                 # Renderer.reset() shows the cursor at the transcript position
                 # both when erasing and before repainting. Suppress those shows
-                # until in_terminal has restored the editor and its cursor.
+                # until the handoff has restored the editor and its cursor.
                 with self.app.output.hidden_cursor():
-                    async with in_terminal():
+                    async with suspended_editor(self.app):
                         # Snapshot after entering: input/model events can arrive while
-                        # in_terminal waits for CPR, but not during these sync writes.
+                        # the handoff waits for CPR, but not during these sync writes.
                         if self._regenerate is not None:
                             pending = self._regenerate() + self.transient_pending
                             self._regenerate = None
                             self.pending.clear()
-                            # in_terminal has erased/reset the editor. Clear the
+                            # The handoff has erased the editor. Clear the
                             # normal-screen history and home before replay; its
                             # exit will request fresh CPR and restore the draft.
                             self.app.output.write_raw("\x1b[H\x1b[2J\x1b[3J")
@@ -675,7 +726,7 @@ class TerminalOutput:
                                 self.console.print(
                                     *objects, end=end, soft_wrap=soft_wrap, width=width
                                 )
-                # in_terminal already repainted the editor on exit.
+                # The handoff already repainted the editor on exit.
             self.changed.clear()
 
     async def run(self) -> None:
