@@ -36,6 +36,7 @@ def test_defaults_and_path_do_not_create_files():
         "trusted_projects": "",
         "extension_dirs": "",
         "worktree": "off",
+        "worktree_exit": "ask",
         "retry_attempts": "1",
         "tool_retries": "3",
         "show_thinking": "off",
