@@ -51,6 +51,9 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
         assert lines[top + 3].startswith("└")
         assert input_rows(screen) == 1
         assert "keep draft" in screen
+    # The draft absorbs the first Ctrl+C; the second one reaches the run.
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    capture(pane, "Input discarded", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "! Run cancelled")
     # Only the editor is left: the widget above it is gone, not merely emptied.

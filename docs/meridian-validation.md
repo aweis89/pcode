@@ -86,7 +86,7 @@ Already-running Python processes retain the old integration. After the active
 turn completes (or after explicitly cancelling it), exit pcode and resume with:
 
 ```sh
-pcode --resume <session-id>
+pcode --continue <session-id>
 ```
 
 The first request after migrating a previously headerless conversation may need
