@@ -449,10 +449,16 @@ async def suspended_editor(app: Application):
             await app.renderer.wait_for_cpr_responses()
         app.renderer.erase()
         app._running_in_terminal = True
+        # A popup takes over SIGWINCH, but the editor's ``_poll_output_size``
+        # task keeps calling ``_on_resize`` on any size change. That erases
+        # from the cursor down (over the popup) and requests a CPR the popup
+        # then reads as input. Ignore resizes until the handoff repaints below.
+        app._on_resize = lambda: None
         try:
             with app.input.detach(), app.input.cooked_mode():
                 yield
         finally:
+            del app._on_resize
             app.renderer.reset()
             app._request_absolute_cursor_position()
             try:

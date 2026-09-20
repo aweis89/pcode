@@ -151,6 +151,16 @@ def test_inspector_keyboard_focus_scroll_filter_and_close():
             ui = ToolInspector(archive, input=pipe, output=DummyOutput())
             task = asyncio.create_task(ui.run())
             await asyncio.sleep(0.05)
+            assert ui.selected.call_id == "success"  # Newest first.
+            # Arrows steer the list while the query keeps focus.
+            pipe.send_text("/\x1b[B")
+            await asyncio.sleep(0.05)
+            assert ui.app.layout.has_focus(ui.query)
+            assert ui.selected.call_id == "failed"
+            pipe.send_text("\x1b[A\t")  # Up, then Tab to the list.
+            await asyncio.sleep(0.05)
+            assert ui.selected.call_id == "success"
+            assert ui.app.layout.has_focus(ui.list)
             pipe.send_text("f")
             await asyncio.sleep(0.05)
             assert ui.selected.call_id == "failed"
