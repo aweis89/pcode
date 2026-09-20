@@ -46,7 +46,7 @@ def test_off_by_default_contributes_only_the_command(tmp_path):
 def test_on_adds_the_tools_and_a_subagent_sharing_one_session(tmp_path, fresh_state):
     fresh_state.enabled = True
     loaded, extension = browser_extension(tmp_path)
-    assert extension.summary() == "19 tools, @browser, /browser"
+    assert extension.summary() == "20 tools, @browser, /browser"
     assert [c.id for c in extension.capabilities] == ["browser", "ext.browser"]
     capability = extension.capabilities[0]
     (delegate,) = loaded.subagents
@@ -160,6 +160,37 @@ def test_browser_open_fronts_the_current_page(tmp_path, fresh_state, monkeypatch
     # With a page already open nothing is navigated.
     assert asyncio.run(open_tool.function()).endswith("https://x/login.")
     assert navigated == ["about:blank"]
+
+
+def test_browser_tabs_lists_the_users_tabs_and_marks_ours(tmp_path, fresh_state, monkeypatch):
+    fresh_state.enabled = True
+    _, extension = browser_extension(tmp_path)
+    tabs = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_tabs"]
+
+    def page(url, title):
+        async def get_title():
+            if title is None:
+                raise RuntimeError("closing")
+            return title
+
+        return SimpleNamespace(url=url, title=get_title)
+
+    mail = page("https://mail.example.com/inbox", "Inbox")
+    ours = page("about:blank", "")
+    fresh_state.session._context = SimpleNamespace(pages=[mail, page("https://x/", None), ours])
+    fresh_state.session.pages = [ours]
+
+    async def nothing():
+        return ""
+
+    monkeypatch.setattr(fresh_state, "arm", nothing)
+    monkeypatch.setattr(fresh_state, "ensure_chrome", nothing)
+    monkeypatch.setattr(fresh_state.session, "ensure_page", nothing)
+    assert asyncio.run(tabs.function()).splitlines() == [
+        "- Inbox: https://mail.example.com/inbox",
+        "- (untitled): https://x/",
+        "- (untitled) (yours): about:blank",
+    ]
 
 
 def test_guidance_says_logins_persist_per_mode(tmp_path, fresh_state, monkeypatch):
