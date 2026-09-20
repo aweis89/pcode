@@ -88,7 +88,7 @@ class SessionBrowser:
 
         @keys.add("escape", eager=True)
         @keys.add("c-c")
-        @keys.add("c-d")
+        @keys.add("c-d", filter=~has_focus(self.detail.window))
         def close(event):
             event.app.exit(result=None)
 
@@ -149,6 +149,7 @@ class SessionBrowser:
                 self.query,
                 body,
                 Label("↑↓ Select/scroll · Enter Resume · Tab Focus · Esc Cancel"),
+                Label("In Turns: PgUp/PgDn Page · Ctrl+U/D Half page"),
                 Label("In Sessions: / Search (↑↓ select while typing) · r Responses too · w All"),
             ]
         )
