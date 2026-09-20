@@ -16,6 +16,7 @@ class Pcode < Formula
     system "uv", "sync", "--directory", libexec, "--locked", "--no-dev",
                  "--no-editable", "--no-cache", "--python", formula_opt_bin("python@3.13")/"python3.13"
     bin.install_symlink libexec/".venv/bin/pcode"
+    generate_completions_from_executable(bin/"pcode", "--completions")
   end
 
   test do
