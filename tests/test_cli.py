@@ -1,3 +1,4 @@
+import io
 import sys
 from unittest.mock import patch
 
@@ -98,6 +99,63 @@ def test_demo_never_initializes_a_provider(monkeypatch, capsys):
         main()
     create.assert_not_called()
     assert "no model connected" in capsys.readouterr().out
+
+
+def test_cli_passes_initial_prompt_to_interactive_app(monkeypatch, tmp_path):
+    monkeypatch.setenv("PCODE_SESSION_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(sys, "argv", ["pcode", "-m", "test:local", "fix the failing test"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with patch("pcode.app.PreviewApp") as app:
+        main()
+    assert app.call_args.kwargs["initial_prompt"] == "fix the failing test"
+    assert app.call_args.kwargs["console"] is None
+    app.return_value.run.assert_called_once()
+    app.return_value.run_print.assert_not_called()
+
+
+def test_print_runs_without_a_terminal_and_exits_with_turn_status(monkeypatch, tmp_path):
+    monkeypatch.setenv("PCODE_SESSION_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(sys, "argv", ["pcode", "-m", "test:local", "--print", "summarize"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    with patch("pcode.app.PreviewApp") as app:
+        app.return_value.run_print.return_value = True
+        main()
+    assert app.call_args.kwargs["initial_prompt"] == "summarize"
+    assert app.call_args.kwargs["console"].stderr is True
+    app.return_value.run_print.assert_called_once_with("summarize")
+    app.return_value.run.assert_not_called()
+    with patch("pcode.app.PreviewApp") as app:
+        app.return_value.run_print.return_value = False
+        with pytest.raises(SystemExit) as raised:
+            main()
+    assert raised.value.code == 1
+
+
+def test_print_reads_prompt_from_stdin_when_omitted(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("PCODE_SESSION_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(sys, "argv", ["pcode", "-m", "test:local", "-p"])
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("piped question\n"))
+    with patch("pcode.app.PreviewApp") as app:
+        app.return_value.run_print.return_value = True
+        main()
+    app.return_value.run_print.assert_called_once_with("piped question\n")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("   \n"))
+    with pytest.raises(SystemExit) as raised:
+        main()
+    assert raised.value.code == 2
+    assert "non-empty prompt" in capsys.readouterr().err
+
+
+def test_print_without_prompt_on_a_terminal_is_an_error(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["pcode", "-m", "test:local", "-p"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    with pytest.raises(SystemExit) as raised:
+        main()
+    assert raised.value.code == 2
+    assert "PROMPT argument or text on stdin" in capsys.readouterr().err
 
 
 def test_invalidated_login_shows_safe_error_code_only():
