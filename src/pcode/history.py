@@ -1,6 +1,8 @@
 """Read-only, bounded retrieval over saved conversations, independent of the UI."""
 
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -265,14 +267,54 @@ class History:
         }
 
 
+_TOKEN = re.compile(r"\w+")
+# Harness ConversationSearch's defaults: k1 above Lucene's 1.2 favors repeated terms.
+BM25_K1 = 1.5
+BM25_B = 0.75
+PHRASE_BONUS = 1.0
+
+
+def _tokenize(text: str) -> list[str]:
+    return [match.group().casefold() for match in _TOKEN.finditer(text)]
+
+
 def keyword_ranking(chunks: list[Chunk], query: str) -> list[int]:
-    words = re.findall(r"[\w./-]+", query.casefold())
+    """BM25 over chunks, ported from Harness ConversationSearch, plus an exact-phrase bonus.
+
+    Rare terms outrank common ones and long chunks are length-normalized, so
+    a query like "editor flicker" finds the turn about it rather than the
+    turn that merely mentions "editor" the most times.
+    """
+    query_tokens = list(dict.fromkeys(_tokenize(query)))
+    if not query_tokens or not chunks:
+        return []
+    documents = [_tokenize(chunk.text) for chunk in chunks]
+    avgdl = sum(len(tokens) for tokens in documents) / len(documents)
+    if not avgdl:
+        return []
+    frequencies = [Counter(tokens) for tokens in documents]
+    total = len(documents)
+    idf = {}
+    for term in query_tokens:
+        df = sum(1 for counts in frequencies if term in counts)
+        idf[term] = math.log((total - df + 0.5) / (df + 0.5) + 1.0) if df else 0.0
+    phrase = " ".join(query.casefold().split())
     scored = []
-    for index, chunk in enumerate(chunks):
-        text = chunk.text.casefold()
-        matches = sum(word in text for word in words)
-        if matches:
-            score = matches / len(words) + (2 if query.casefold() in text else 0)
+    for index, (counts, chunk) in enumerate(zip(frequencies, chunks)):
+        dl = sum(counts.values())
+        score = 0.0
+        for term in query_tokens:
+            tf = counts.get(term, 0)
+            if tf:
+                score += (
+                    idf[term]
+                    * tf
+                    * (BM25_K1 + 1.0)
+                    / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl))
+                )
+        if score > 0 and phrase in " ".join(chunk.text.casefold().split()):
+            score += PHRASE_BONUS
+        if score > 0:
             scored.append((score, index))
     return [index for _, index in sorted(scored, key=lambda item: (-item[0], item[1]))]
 
