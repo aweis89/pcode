@@ -23,22 +23,24 @@ from pcode.popup_ui import (
     popup_style,
     steer_list_from_query,
 )
-from pcode.sessions import SessionInfo, Turn, first_prompt, session_turns
+from pcode.sessions import SessionInfo, ToolCall, Turn, first_prompt, session_turns
 from pcode.task_prompt import TaskPrompt
-from pcode.tool_display import plain
-
-PROMPT_LINES = 6
-RESPONSE_LINES = 3
-LINE_WIDTH = 160
+from pcode.tool_display import plain, tool_summary_lines
 
 
-def excerpt(text: str, lines: int, *, width: int = LINE_WIDTH) -> str:
-    """The first few non-blank lines of a prompt or response, safe for the terminal."""
-    kept = [line for line in redact(text).splitlines() if line.strip()]
-    shown = [plain(line, width) for line in kept[:lines]]
-    if len(kept) > lines:
-        shown.append("…")
-    return "\n".join(shown)
+def literal(text: str) -> str:
+    """Every line of a prompt or response, redacted and safe for the terminal.
+
+    Nothing is dropped: the pane scrolls, and a turn read here should say what
+    the turn said. Blank lines inside are structure, so only the surrounding
+    ones go, which would otherwise draw an empty quote rail.
+    """
+    lines = [plain(line, limit=None) for line in redact(text).splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
 
 
 class SessionBrowser:
@@ -171,7 +173,11 @@ class SessionBrowser:
     def matches(self, turn: Turn, words: list[str]) -> bool:
         haystack = turn.prompt.casefold()
         if self.responses:
-            haystack += "\n" + turn.response.casefold()
+            # Every text block, not just the final one: a turn's answer is often
+            # split by tool calls, and the searched-for sentence can be in any part.
+            haystack += "\n" + "\n".join(
+                block.casefold() for block in turn.blocks if isinstance(block, str)
+            )
         return all(word in haystack for word in words)
 
     def matching_turns(self, info: SessionInfo) -> list[Turn]:
@@ -236,17 +242,41 @@ class SessionBrowser:
         for turn in turns:
             blocks.append(Text(""))
             # The same quote rail scrollback draws, so a remembered turn looks
-            # here the way it looked when it was live.
-            blocks.append(TaskPrompt(excerpt(turn.prompt, PROMPT_LINES)))
-            if turn.response:
-                markdown = Markdown(
-                    excerpt(turn.response, RESPONSE_LINES), code_theme=self.code_theme
-                )
-                blocks.append(Padding(markdown, (0, 0, 0, 2)))
-            elif turn.status != "complete":
+            # here the way it looked when it was live, blank line included.
+            blocks.append(TaskPrompt(literal(turn.prompt)))
+            blocks.append(Text(""))
+            # Consecutive tool lines stay flush and a blank row marks entering or
+            # leaving that run, the rule Transcript.print applies to scrollback.
+            previous = "blank"
+            for block in turn.blocks:
+                if isinstance(block, ToolCall):
+                    # The whole detail, unlike scrollback: there is no live tool
+                    # panel here to have already named what the call worked on.
+                    kind = "tools"
+                    rendered = [
+                        Padding(line, (0, 0, 0, 2))
+                        for line in tool_summary_lines(
+                            block.name,
+                            " · " + plain(block.detail, limit=None) if block.detail else "",
+                            failed=block.failed,
+                            elapsed_seconds=block.elapsed_seconds,
+                            command=block.command,
+                        )
+                    ]
+                elif text := literal(block):
+                    kind = "text"
+                    rendered = [Padding(Markdown(text, code_theme=self.code_theme), (0, 0, 0, 2))]
+                else:
+                    continue
+                if previous not in ("blank", kind):
+                    blocks.append(Text(""))
+                blocks.extend(rendered)
+                previous = kind
+            if not turn.blocks:
+                state = turn.status if turn.status != "complete" else "no response text"
+                blocks.append(Text(f"  ({state})", style="dim"))
+            elif turn.status not in ("complete", "running"):
                 blocks.append(Text(f"  ({turn.status})", style="dim"))
-            else:
-                blocks.append(Text("  (no response text)", style="dim"))
         return blocks
 
     async def run(self) -> str | None:

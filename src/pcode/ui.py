@@ -52,6 +52,7 @@ from pcode.tool_display import (
     command_text,
     label,
     plain,
+    tool_summary_lines,
 )
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
@@ -1666,32 +1667,23 @@ class Transcript:
         self.print()
 
     def command_summary(self, event: ToolSummary) -> None:
+        # Scrollback shows the outcome only: the live panel already named the
+        # target while the call ran. The session browser, which has no such
+        # panel, passes the whole detail to the same renderer.
         result = (
             " · " + plain(event.detail.rsplit(" → ", 1)[-1], limit=60)
             if event.failed or (event.name != "run_command" and " → " in event.detail)
             else ""
         )
-        elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
-        # The marker alone reports failure: a summary line keeps one style so a
-        # failed call does not shout louder than the diagnostic that follows it.
-        header = Text(
-            f"{'✗' if event.failed else '✓'} {label(event.name)}{result}{elapsed}",
-            style="pcode.thinking",
-            no_wrap=True,
-            overflow="ellipsis",
-        )
-        header.truncate(self.console.width, overflow="ellipsis")
-        self.print(header, tool_line=True)
-        if not event.command:
-            return
-        preview = Text(
-            "  " + command_preview(event.command),
-            style="pcode.thinking",
-            no_wrap=True,
-            overflow="ellipsis",
-        )
-        preview.truncate(self.console.width, overflow="ellipsis")
-        self.print(preview, tool_line=True)
+        for line in tool_summary_lines(
+            event.name,
+            result,
+            failed=event.failed,
+            elapsed_seconds=event.elapsed_seconds,
+            command=event.command,
+            width=self.console.width,
+        ):
+            self.print(line, tool_line=True)
 
     @recorded
     def events(self, events: tuple[Event, ...], *, show_tools: bool = False) -> None:
