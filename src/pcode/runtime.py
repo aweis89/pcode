@@ -148,7 +148,8 @@ class PreviewRuntime:
             Message(
                 "This is a **local UI preview**, not a connected model. "
                 f"Your {len(prompt.splitlines())}-line message arrived intact.\n\n"
-                "Try `/demo` for a sample coding response, `/theme light` to change the palette, "
+                "Try `/theme-preview` for a sample coding response, "
+                "`/theme light` to change the palette, "
                 "or type `/` to browse commands. Nothing is sent anywhere."
             ),
         )
@@ -182,9 +183,11 @@ class PreviewRuntime:
                 "| `世界` | Hello, 世界! |\n\n"
                 "- Markdown, code, and this table reflow when the terminal is resized.\n"
                 "- Try `/theme light` or `/theme dark`, "
-                "then `/demo` again to compare syntax colors.\n"
-                "- Compare `/colors palette` with `/colors terminal`, then run `/demo` again.\n"
-                "- `/syntax monokai` restyles fenced code for the palette in use.\n"
+                "then `/theme-preview` again to compare syntax colors.\n"
+                "- Compare `/colors palette` with `/colors terminal`, "
+                "then run `/theme-preview` again.\n"
+                "- `/syntax monokai` restyles fenced code for the palette in use; "
+                "the gallery below samples every style.\n"
                 "- Use terminal/tmux scrollback to compare previous output.\n\n"
                 "**No files were read or changed, and no tests were executed.**"
             ),
