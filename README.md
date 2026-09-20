@@ -58,7 +58,7 @@ effort applies to OpenAI/Codex, Anthropic, and Meridian models, including new an
 `/effort default` restores provider-default behavior. Use `pcode config unset KEY`
 to reset an individual default. `--demo` always stays offline.
 
-`-m` / `--model` overrides the saved model for that launch; `--resume` uses the
+`-m` / `--model` overrides the saved model for that launch; `--continue` uses the
 session's model. Neither changes the saved default by itself.
 
 `-m` / `--model` selects the Pydantic model/provider without remapping either name.
@@ -199,7 +199,7 @@ stdin.
 pcode "Summarize the open TODOs in this repo"          # first message, then interactive
 pcode -p "Which files handle sessions?" > answer.md    # non-interactive
 git diff | pcode -p --no-save                          # prompt from stdin
-pcode -p --resume "And the tests for those?"           # continue a saved session
+pcode -p --continue "And the tests for those?"         # continue this directory's latest session
 ```
 Opening the app, using commands, or quitting without a prompt creates no session.
 `/new` resets context without deleting the old conversation; its replacement is
@@ -609,14 +609,16 @@ launch, to label the completion menu.
 
 ```sh
 uv run pcode --sessions
-uv run pcode --resume latest
-uv run pcode --resume SESSION_ID
+uv run pcode --continue                             # this directory's newest session
+uv run pcode --continue SESSION_ID
 uv run pcode -m openai-codex:gpt-5.6-sol --no-save  # opt out for a sensitive session
 ```
 
-Resume accepts an unambiguous ID prefix (at least 8 characters) and restores the
-saved model, workspace, and structured message history. It prints recent transcript
-blocks and waits for your next message; it does not automatically re-run tools.
+`-c` / `--continue` accepts an unambiguous ID prefix (at least 8 characters) and
+restores the saved model, workspace, and structured message history. Without an ID
+it picks the newest session whose workspace is the current directory (or `-C`), not
+the newest session overall. It prints recent transcript blocks and waits for your
+next message; it does not automatically re-run tools.
 A different explicit `-m` or `-C` is rejected on resume. Only one process may open
 a session for writing. `/resume` opens a popup of saved conversations in the current
 workspace, labeled by their first prompt (newest first). Use ↑/↓ and Enter to

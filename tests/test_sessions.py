@@ -197,6 +197,24 @@ def test_session_lock_and_path_validation(tmp_path):
     reopened.close()
 
 
+def test_latest_is_scoped_to_the_given_workspace(tmp_path):
+    root = tmp_path / "sessions"
+    here, elsewhere = tmp_path / "here", tmp_path / "elsewhere"
+    here.mkdir()
+    elsewhere.mkdir()
+    mine = SavedSession.create("test:local", here, root)
+    mine.close()
+    # Newer, but belongs to another checkout.
+    other = SavedSession.create("test:local", elsewhere, root)
+    other.close()
+
+    assert resolve_session("latest", root).name == other.info.id
+    assert resolve_session("latest", root, here).name == mine.info.id
+    assert resolve_session("latest", root, elsewhere).name == other.info.id
+    with pytest.raises(SessionError, match="No saved session for"):
+        resolve_session("latest", root, tmp_path)
+
+
 @pytest.mark.parametrize("tail", [b'{"kind":"TextDelta","text":"torn', b'{"text":"\xf0\x9f'])
 def test_torn_journal_does_not_hide_future_events(tmp_path, tail):
     saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
