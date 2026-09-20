@@ -132,6 +132,43 @@ def test_terminal_newline_encodings(transcript, vi_mode, newline):
     asyncio.run(run())
 
 
+DOWN = "\x1b[B"
+
+
+@pytest.mark.parametrize("vi_mode", [False, True])
+@pytest.mark.parametrize(
+    ("keys", "expected"),
+    [
+        # On the last line with nothing else for Down to do, it opens a new line.
+        ("first" + DOWN + "second\r", "first\nsecond"),
+        # On an earlier line Down still moves the cursor instead of inserting.
+        ("ab\ncd" + "\x1b[A" + DOWN + "X\r", "ab\ncdX"),
+    ],
+)
+def test_down_arrow_newline(vi_mode, keys, expected):
+    async def run():
+        with create_pipe_input() as pipe:
+            prompt = create_prompt(
+                CommandRegistry(), vi_mode=vi_mode, input=pipe, output=DummyOutput()
+            )
+            pipe.send_text(keys)
+            assert await asyncio.wait_for(prompt.prompt_async(), timeout=3) == expected
+
+    asyncio.run(run())
+
+
+def test_down_arrow_in_vi_normal_mode_does_not_insert():
+    async def run():
+        with create_pipe_input() as pipe:
+            prompt = create_prompt(
+                CommandRegistry(), vi_mode=True, input=pipe, output=DummyOutput()
+            )
+            pipe.send_text("first\x1b" + DOWN + "asecond\r")
+            assert await asyncio.wait_for(prompt.prompt_async(), timeout=3) == "firstsecond"
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("transcript", [False, True])
 def test_vi_escape_alone_is_responsive(transcript):
     async def run():

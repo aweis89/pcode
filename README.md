@@ -997,7 +997,8 @@ candidate's size so that cost is visible before you pick.
 | --- | --- |
 | Enter | Send using the active send mode, or accept a selected completion |
 | Ctrl+S | Cycle steering → queue → interrupt (saves the default) |
-| Ctrl+J | Newline (map Shift+Enter to this in your terminal) |
+| ↓ | Newline when on the last line with nothing to complete or recall (works in vi insert mode) |
+| Ctrl+J / Shift+Enter | Newline; see [Newlines in tmux](#newlines-in-tmux) if neither reaches pcode |
 | Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
 | Ctrl+L | Choose a model (keeps the conversation; applies from the next request) |
@@ -1054,7 +1055,32 @@ xterm modifyOtherKeys sequence. Ctrl+J supports both the traditional LF byte and
 those extended encodings. If your terminal sends ordinary Enter for Shift+Enter,
 pcode cannot distinguish them: configure Shift+Enter to send Ctrl+J (the single
 LF byte, hex `0a`, often written `\x0a`). This is a terminal key mapping, not a
-pcode setting; verify it inside tmux too if you use it.
+pcode setting; verify it inside tmux too if you use it. The ↓ key inserts a
+newline whenever it would otherwise do nothing (last line, no completion menu,
+not browsing older history), so it works even where no chord gets through.
+
+#### Newlines in tmux
+
+Inside tmux, Shift+Enter arriving as a plain Enter is almost always tmux, not
+the terminal. Two things have to be true, and `extended-keys on` alone gives you
+neither:
+
+- tmux only asks the outer terminal for modified keys when its terminfo
+  advertises `extkeys`; Ghostty's and kitty's do not, so declare it.
+- `extended-keys on` forwards those keys only to apps that opted into the
+  protocol themselves. pcode (prompt_toolkit) does not, so use `always`.
+
+```tmux
+set -as terminal-features ',xterm-ghostty:extkeys'
+set -g extended-keys always
+set -g extended-keys-format csi-u
+```
+
+Reload, then detach and reattach: `#{client_termfeatures}` is computed when a
+client connects. Check with `cat -v`: Shift+Enter should print `^[[13;2u`. If
+Ctrl+J prints `^[[B` instead, a remapper (Karabiner, a Ghostty `keybind`) is
+turning it into ↓ before tmux sees it; ↓ still inserts a newline on the last
+line, so that is usually fine.
 
 Vi mode uses a 100 ms terminal escape-sequence timeout and an eager Escape binding.
 This avoids waiting for an Alt-key chord before entering normal mode; particularly
