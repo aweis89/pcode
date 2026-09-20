@@ -34,7 +34,7 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
-    capture(pane, "❯")
+    capture(pane, "▌")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "src/auth.py", running=True)
     assert "explorer" in screen

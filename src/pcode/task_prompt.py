@@ -6,6 +6,10 @@ from rich.console import Console, ConsoleOptions, RenderResult
 from rich.segment import Segment
 from rich.text import Text
 
+# The quote rail a prompt is drawn with. The editor draws the same one, so a
+# line being composed already looks like the line it becomes once submitted.
+RAIL = "▌ "
+
 
 @dataclass(frozen=True)
 class TaskPrompt:
@@ -15,7 +19,7 @@ class TaskPrompt:
         style = console.get_style("pcode.accent")
         # Leave room for a quote rail on every physical line, including wraps.
         # On one-column terminals prioritize the text rather than the decoration.
-        prefix = "▌ " if options.max_width > 2 else ""
+        prefix = RAIL if options.max_width > 2 else ""
         lines = console.render_lines(
             Text(self.text, style=style),
             options.update(width=max(1, options.max_width - len(prefix))),
