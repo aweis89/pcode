@@ -21,8 +21,15 @@ from pcode.preferences import (
     update_preferences,
 )
 
-USAGE = "config [list | path | get KEY | set KEY VALUE | unset KEY | project ...]"
-PROJECT_USAGE = "config project [list | path | set KEY VALUE | unset KEY]"
+USAGE = "config [list | path | get KEY | set KEY VALUE | unset KEY | reset | project ...]"
+PROJECT_USAGE = "config project [list | path | set KEY VALUE | unset KEY | reset]"
+
+# Resetting clears the recorded /login choice and every per-repository extension
+# grant, so say so rather than leaving the next launch to re-prompt unexplained.
+_RESET_NOTICE = {
+    "anthropic_auth": "re-run /login to choose a credential",
+    "trusted_projects": "repositories must be trusted again",
+}
 
 
 def _setting(key: str) -> Setting:
@@ -53,6 +60,16 @@ def _effective_data() -> dict:
     return data
 
 
+def _reset(path: Path | None, label: str) -> str:
+    """Drop every known setting, leaving unrecognized keys the file may carry."""
+    removed = sorted(set(read_preferences(path)) & set(SETTINGS))
+    if not removed:
+        return f"No {label} defaults to reset."
+    update_preferences({}, remove=tuple(removed), path=path)
+    notice = "".join(f" {_RESET_NOTICE[key]}." for key in removed if key in _RESET_NOTICE)
+    return f"Reset {label} defaults: {', '.join(removed)}. Applies on next launch.{notice}"
+
+
 def _project_path() -> Path:
     path = project_preferences_path()
     if path is None:
@@ -78,6 +95,8 @@ def _configure_project(args: list[str]) -> str:
         _setting(key)
         update_preferences({}, remove=(key,), path=_project_path())
         return f"Removed project default: {key}. Applies on next launch."
+    if action == "reset" and len(args) == 1:
+        return _reset(_project_path(), "project")
     raise ValueError(f"Usage: {PROJECT_USAGE}")
 
 
@@ -85,7 +104,7 @@ def configure(arguments: Sequence[str]) -> str:
     """Inspect or edit saved defaults without starting a model or session.
 
     `list` and `get` report the effective value, with the project overlay
-    applied; `set` and `unset` edit the user file.
+    applied; `set`, `unset`, and `reset` edit the user file.
     """
     args = list(arguments) or ["list"]
     action = args[0]
@@ -112,6 +131,8 @@ def configure(arguments: Sequence[str]) -> str:
         update_preferences({}, remove=(key,))
         value = setting.default if setting.default is not None else "null (offline preview)"
         return f"Reset global default: {key} = {value}. Applies on next launch."
+    if action == "reset" and len(args) == 1:
+        return _reset(None, "global")
     raise ValueError(f"Usage: {USAGE}")
 
 
@@ -124,6 +145,7 @@ def config_arguments() -> tuple[str, ...]:
         "get",
         "set",
         "unset",
+        "reset",
         "project",
         *(f"get {key}" for key in SETTINGS),
         *(f"unset {key}" for key in SETTINGS),
@@ -131,6 +153,7 @@ def config_arguments() -> tuple[str, ...]:
         *(f"set {key} {value}" for key, setting in SETTINGS.items() for value in setting.choices),
         "project list",
         "project path",
+        "project reset",
         *(f"project set {key}" for key in project_keys),
         *(f"project unset {key}" for key in project_keys),
         *(f"project set {key} {value}" for key in project_keys for value in SETTINGS[key].choices),
