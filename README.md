@@ -146,6 +146,8 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `theme` | `dark` | `dark`, `light`, `auto` |
+| `syntax_dark` | `gruvbox-dark` | A Pygments style for fenced code on the dark palette |
+| `syntax_light` | `gruvbox-light` | A Pygments style for fenced code on the light palette |
 | `autocompact` | `off` | `on`, `off` |
 | `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
 | `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |
@@ -161,6 +163,36 @@ do not rewrite global defaults, and resumed sessions retain their own model.
 | `skill_dirs` | `~/.agents/skills:.agents/skills` | `:`-separated directories searched for skills; relative entries resolve against the workspace |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
+
+#### Code highlighting styles
+
+Fenced code keeps its own background, so each palette gets its own Pygments
+style: `syntax_dark` applies whenever the resolved theme is dark, `syntax_light`
+whenever it is light. `/syntax NAME` changes the style for the palette in use and
+saves it as that palette's default; `/syntax` alone reports the current one. Tab
+completion lists the styles, and an unknown name is rejected with the full list.
+
+These are the styles Pygments installs here; a Pygments style plugin package adds
+to the list automatically.
+
+Darker backgrounds: `coffee`, `dracula`, `fruity`, `github-dark`, `gruvbox-dark`,
+`inkpot`, `lightbulb`, `material`, `monokai`, `native`, `night-owl`, `nord`,
+`nord-darker`, `one-dark`, `paraiso-dark`, `rrt`, `solarized-dark`, `stata-dark`,
+`vim`, `zenburn`.
+
+Lighter backgrounds: `abap`, `algol`, `algol_nu`, `arduino`, `autumn`, `borland`,
+`bw`, `colorful`, `default`, `emacs`, `friendly`, `friendly_grayscale`, `igor`,
+`lilypond`, `lovelace`, `manni`, `murphy`, `paraiso-light`, `pastie`, `perldoc`,
+`rainbow_dash`, `sas`, `solarized-light`, `staroffice`, `stata-light`, `tango`,
+`trac`, `vs`, `xcode`.
+
+Styles differ in how much they color: some leave plain identifiers and
+punctuation at the default foreground, so a snippet that is mostly names can look
+unhighlighted even though the lexer ran. Compare a few against your own terminal
+background before settling on one.
+
+`/colors terminal` ignores both settings and uses `ansi_dark` / `ansi_light`
+instead, which follow the terminal's own sixteen colors.
 
 Automatic compaction still requires a known context window; setting its global
 preference does not validate a particular model or trigger a compaction. For custom
@@ -745,8 +777,13 @@ candidate's size so that cost is visible before you pick.
   output). Restart pcode after changing your terminal background. Save auto mode
   with `/theme auto` or `pcode config set theme auto`; the built-in default remains dark.
   `/theme` alone toggles. By default, Rich headings, links, quotes, inline code,
-  and tables follow this palette; fenced code uses `nord` (dark) / `friendly`
-  (light). Normal body text and the overall background remain terminal-native.
+  and tables follow this palette; fenced code uses the palette's own Pygments
+  style, `gruvbox-dark` or `gruvbox-light`. Normal body text and the overall
+  background remain terminal-native.
+- `/syntax NAME`: change the Pygments style for fenced code on the active palette
+  and save it as that palette's default; `/syntax` alone reports the current
+  style. See [Code highlighting styles](#code-highlighting-styles) for the list;
+  `/demo` prints a sample to compare against.
 - `/colors terminal`: opt into terminal-defined ANSI colors with unpainted code
   backgrounds and `ansi_dark` / `ansi_light` syntax. `/colors palette` restores
   the default coordinated palette; `/colors` shows the current selection.

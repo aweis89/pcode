@@ -10,6 +10,7 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from pcode.app import PreviewApp
+from pcode.preferences import SETTINGS
 from pcode.runtime import Message, PreviewRuntime
 from pcode.ui import CursorSafeOutput, TerminalOutput
 
@@ -30,7 +31,7 @@ def assert_colors(text, color_style, keyword, transcript):
     else:
         assert "38;2;" in text
         assert "48;2;" in text
-        assert transcript.code_theme == ("nord" if transcript.theme == "dark" else "friendly")
+        assert transcript.code_theme == SETTINGS[f"syntax_{transcript.theme}"].default
         inline = transcript.rich_theme.styles["markdown.code"]
         assert inline.color.name == transcript.palette.foreground
         assert inline.bgcolor.name == transcript.palette.surface
@@ -113,7 +114,7 @@ def test_default_palette_and_color_command_validation():
     stream = StringIO()
     app = PreviewApp(console=Console(file=stream, color_system=None))
     assert app.transcript.color_style == "palette"
-    assert app.transcript.code_theme == "nord"
+    assert app.transcript.code_theme == SETTINGS["syntax_dark"].default
     app.handle("/colors terminal")
     app.handle("/theme light")
     assert app.transcript.code_theme == "ansi_light"
@@ -123,7 +124,9 @@ def test_default_palette_and_color_command_validation():
     app.handle("/colors")
     assert app.transcript.color_style == "terminal"
     app.handle("/colors palette")
-    assert app.transcript.code_theme == "friendly"
+    assert app.transcript.code_theme == SETTINGS["syntax_light"].default
+    app.handle("/syntax monokai")
+    assert app.transcript.code_theme == "monokai"
     assert app.transcript.palette.rich_theme() is app.transcript.rich_theme
     # Palette themes do not set an overall foreground/background for prose.
     for name in ("markdown.text", "markdown.paragraph"):

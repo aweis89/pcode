@@ -44,6 +44,8 @@ def test_defaults_and_path_do_not_create_files():
         "command_scrollback_lines": "20",
         "command_preview_lines": "10",
         "theme": "dark",
+        "syntax_dark": "gruvbox-dark",
+        "syntax_light": "gruvbox-light",
         "editing_mode": "emacs",
         "autocompact": "off",
         "code_mode": "off",

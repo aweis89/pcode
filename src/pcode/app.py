@@ -22,6 +22,8 @@ from pcode.commands import Command, CommandRegistry
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_arguments, configure
 from pcode.preferences import (
+    SETTINGS,
+    SYNTAX_THEMES,
     apply_effort,
     apply_thinking,
     effort_setting,
@@ -184,6 +186,12 @@ class PreviewApp:
             ),
             Command("/theme", "Switch palette: dark / light / auto", self.theme, THEMES),
             Command("/colors", "Rich colors: palette / terminal", self.colors, COLOR_STYLES),
+            Command(
+                "/syntax",
+                "Code highlighting style for the active palette",
+                self.syntax,
+                SYNTAX_THEMES,
+            ),
             Command(
                 "/effort",
                 "Reasoning effort: low / medium / high / xhigh / default",
@@ -742,6 +750,26 @@ class PreviewApp:
         if argument:
             self.transcript.color_style = argument
         self.transcript.note(f"Colors: {self.transcript.color_style}.")
+        self.transcript.regenerate()
+
+    def syntax(self, argument: str) -> None:
+        """Choose the Pygments style for fenced code on the palette in use.
+
+        Each palette keeps its own style, so switching to the other palette and
+        back restores the style picked for it rather than the last one set.
+        """
+        palette = self.transcript.resolved_theme
+        if argument:
+            SETTINGS[f"syntax_{palette}"].validate(f"syntax_{palette}", argument)
+            self.transcript.syntax_themes[palette] = argument
+            self.persist_defaults(**{f"syntax_{palette}": argument})
+        selected = self.transcript.syntax_themes[palette]
+        if self.transcript.color_style == "terminal":
+            self.transcript.note(
+                f"Syntax ({palette}): {selected}, unused while /colors is terminal."
+            )
+        else:
+            self.transcript.note(f"Syntax ({palette}): {selected}.")
         self.transcript.regenerate()
 
     def current_effort(self) -> str:
@@ -1643,6 +1671,7 @@ class PreviewApp:
                         "/help",
                         "/theme",
                         "/colors",
+                        "/syntax",
                         "/show-thinking",
                         "/show-commands",
                         "/config",

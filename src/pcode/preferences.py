@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from filelock import FileLock
+from pygments.styles import get_all_styles
+
+# Every Pygments style installed here, including any added by a plugin package.
+# The scan costs a few milliseconds once; Rich imports Pygments regardless.
+SYNTAX_THEMES = tuple(sorted(get_all_styles()))
 
 EFFORTS = ("low", "medium", "high", "xhigh", "default")
 OPENAI_PROVIDERS = ("openai", "openai-chat", "openai-responses", "openai-codex")
@@ -80,6 +85,11 @@ SETTINGS = {
     "show_thinking": Setting("off", ("on", "off")),
     "editing_mode": Setting("emacs", ("emacs", "vi")),
     "theme": Setting("dark", ("dark", "light", "auto")),
+    # Pygments styles for fenced code, chosen per palette so `theme auto` keeps
+    # highlighting legible on either background. `/colors terminal` overrides
+    # both with the ANSI styles, which follow the terminal's own colors.
+    "syntax_dark": Setting("gruvbox-dark", SYNTAX_THEMES),
+    "syntax_light": Setting("gruvbox-light", SYNTAX_THEMES),
     "autocompact": Setting("off", ("on", "off")),
     # Batch read-only tools through one sandboxed run_code snippet; edits, plans,
     # shell, and delegation stay native so their transcript display survives.
