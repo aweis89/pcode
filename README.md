@@ -58,7 +58,7 @@ effort applies to OpenAI/Codex, Anthropic, and Meridian models, including new an
 `/effort default` restores provider-default behavior. Use `pcode config unset KEY`
 to reset an individual default. `--demo` always stays offline.
 
-`-m` / `--model` overrides the saved model for that launch; `--resume` uses the
+`-m` / `--model` overrides the saved model for that launch; `--continue` uses the
 session's model. Neither changes the saved default by itself.
 
 `-m` / `--model` selects the Pydantic model/provider without remapping either name.
@@ -199,7 +199,7 @@ stdin.
 pcode "Summarize the open TODOs in this repo"          # first message, then interactive
 pcode -p "Which files handle sessions?" > answer.md    # non-interactive
 git diff | pcode -p --no-save                          # prompt from stdin
-pcode -p --resume "And the tests for those?"           # continue a saved session
+pcode -p --continue "And the tests for those?"         # continue this directory's latest session
 ```
 Opening the app, using commands, or quitting without a prompt creates no session.
 `/new` resets context without deleting the old conversation; its replacement is
@@ -609,14 +609,16 @@ launch, to label the completion menu.
 
 ```sh
 uv run pcode --sessions
-uv run pcode --resume latest
-uv run pcode --resume SESSION_ID
+uv run pcode --continue                             # this directory's newest session
+uv run pcode --continue SESSION_ID
 uv run pcode -m openai-codex:gpt-5.6-sol --no-save  # opt out for a sensitive session
 ```
 
-Resume accepts an unambiguous ID prefix (at least 8 characters) and restores the
-saved model, workspace, and structured message history. It prints recent transcript
-blocks and waits for your next message; it does not automatically re-run tools.
+`-c` / `--continue` accepts an unambiguous ID prefix (at least 8 characters) and
+restores the saved model, workspace, and structured message history. Without an ID
+it picks the newest session whose workspace is the current directory (or `-C`), not
+the newest session overall. It prints recent transcript blocks and waits for your
+next message; it does not automatically re-run tools.
 A different explicit `-m` or `-C` is rejected on resume. Only one process may open
 a session for writing. `/resume` opens a popup of saved conversations in the current
 workspace, labeled by their first prompt (newest first). Use ↑/↓ and Enter to
@@ -791,7 +793,7 @@ candidate's size so that cost is visible before you pick.
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
 | Ctrl+R | Search this process's input history |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
-| Ctrl+C | Discard idle input; during generation, cancel without deleting the draft |
+| Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
 
 Press **Ctrl+O** or use `/show-tasks on|off` to hide or show the Tasks/Tools
@@ -946,8 +948,9 @@ handler, so help, inspection, theme, context, and effort controls remain availab
 while the model works. `/model` also opens while working and applies from the next
 request. `/new`, `/resume`, `/login`, and `/logout` require an idle conversation: cancel
 or wait, then retry. `/quit` (or `/exit`) cancels the active run and waits for its
-cleanup before exiting. Ctrl+C or Ctrl+D cancels the current turn, clears queued
-messages, and preserves the unsubmitted draft and cursor. A failed turn also
+cleanup before exiting. Ctrl+D cancels the current turn, clears queued messages,
+and preserves the unsubmitted draft and cursor. Ctrl+C discards the draft first,
+so cancelling with it takes a second press when the prompt has text. A failed turn also
 clears queued messages rather than automatically running more requests. Commands
 are not discarded with that queue. The queue is in memory only, not saved until
 submitted to the runtime.
@@ -1709,5 +1712,5 @@ keep their submission mode.
 Set the default with `pcode config set send_mode steering` (or `queue` / `interrupt`).
 `/config set send_mode queue` changes the default for the next launch; Ctrl+S
 changes it immediately. Idle input starts a normal turn in every mode. Slash
-commands retain their existing behavior, and Ctrl+C/Ctrl+D still cancel and clear
-pending messages.
+commands retain their existing behavior, and Ctrl+D (or Ctrl+C on an empty
+prompt) still cancels and clears pending messages.

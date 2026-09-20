@@ -21,8 +21,8 @@ function tracing. If its memory keeps growing, do a separate allocation capture:
 pcode --profile /tmp/pcode-functions --profile-cpu
 pcode --profile /tmp/pcode-memory --profile-memory
 
-# Also works with resume and with the offline sample:
-pcode --resume latest --profile /tmp/pcode-resume
+# Also works with a continued session and with the offline sample:
+pcode --continue --profile /tmp/pcode-resume
 pcode --demo --profile /tmp/pcode-demo --profile-cpu
 ```
 

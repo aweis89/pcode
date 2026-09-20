@@ -71,6 +71,8 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     capture(pane, "REASONING_29", running=True)
     assert history(pane).count("REASONING_00") == 1
     assert history(pane).count("REASONING_29") == 1
+    pane("send-keys", "-t", "preview:0.0", "C-c")  # Discards the draft.
+    capture(pane, "Input discarded", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "Run cancelled")
     assert "REASONING_29" in history(pane)

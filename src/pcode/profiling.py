@@ -48,6 +48,9 @@ class ResourceProfile:
         if self.memory and tracemalloc.is_tracing():
             raise ValueError("allocation tracing is already active")
         if self.cpu:
+            # Not cProfile: on Python 3.14 it can observe worker threads, and a
+            # `time.thread_time` timer then produces negative timings. Yappi
+            # accounts CPU per thread.
             import yappi
 
             if yappi.is_running() or yappi.get_func_stats():

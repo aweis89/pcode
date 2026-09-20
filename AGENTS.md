@@ -1,54 +1,33 @@
 # Development notes
 
-## Work in a worktree, not the mainline checkout
+## Workflow
 
-Several agents edit this repo at the same time, so editing the mainline working
-tree directly means fighting over files edit by edit — expect another session to
-commit, `git checkout`, or `git stash` your uncommitted work out from under you.
-Branch into a worktree before making changes and merge back when the change is
-done:
+Several agents edit this repo concurrently. Work in a worktree, never the
+mainline checkout, where another session's `git checkout`/`stash`/`reset` can
+eat your uncommitted edits:
 
 ```bash
-make worktree NAME=fix-thing          # .worktrees/fix-thing, branch fix-thing
+make worktree NAME=fix-thing          # .worktrees/fix-thing, branch fix-thing, own .venv
 cd .worktrees/fix-thing               # edit, make test, commit here
-make worktree-merge NAME=fix-thing    # merge mainline in, then fast-forward mainline
+make worktree-merge NAME=fix-thing    # merge mainline into the branch, then ff mainline
 make worktree-remove NAME=fix-thing   # drop the worktree (branch is kept)
 ```
 
-- `make worktree-merge` merges the mainline branch **into** the worktree first, so any conflict surfaces in `.worktrees/<name>`, where you are the only writer. Fix it there, commit, and re-run; the mainline tree is never left in a conflicted state.
-- The mainline step is `git merge --ff-only`, which git refuses only when someone's uncommitted mainline edits touch the files you merged. That is the one case needing coordination: commit or stash those edits, then re-run the merge.
-- Creating a worktree costs a few seconds: it gets its own `.venv` (uv clones the packages from its local cache) and a `tmp` symlink to the shared Harness checkout, so there is nothing to reinstall and `make test` works immediately.
-- Do not share `.venv` between worktrees. The editable install records an absolute path to `src/`, so a shared env silently imports the *other* checkout's source and you test code you did not write.
-- Nothing here discards work: every step either refuses or stops with a message. `worktree-remove` never passes `--force`, so a worktree holding uncommitted or untracked files is kept, and neither merge step can overwrite a dirty file in either tree. The mainline checkout is still shared, though — plain `git checkout`, `git stash`, and `git reset` there will happily eat another session's uncommitted edits, which is the reason to work in a worktree in the first place.
-- `make install` from a worktree repoints the global `pcode` command at that worktree. Run it from the mainline checkout after merging, unless you deliberately want the installed command to track your branch.
+- The only failure needing coordination is the final `--ff-only` refusing because someone's uncommitted mainline edits touch your files: have them commit or stash, then re-run.
+- Never share a `.venv` between worktrees: the editable install records an absolute `src/` path, so a shared env silently imports the *other* checkout's source.
+- Always commit and push after changes. Run `make install` afterwards from the mainline checkout; running it from a worktree repoints the global `pcode` command at that branch.
+- Before touching terminal or agent integrations, read [docs/dependencies.md](docs/dependencies.md).
+- `make harness-src` checks out Harness upstream source, docs, and tests at the pinned SHA under `tmp/pydantic-ai-harness`. Read that rather than the website, which can describe an unreleased Coder API and extras.
 
-## Notes
+## Testing and debugging
 
-- Always commit code changes after making them, and push them.
+- `make test` skips the real-tmux regressions (75% of the runtime). Run `make test-all` before pushing anything touching layout, streaming, the editor, or the prompt. Never parallelize the tmux tests.
+- `make test` is xdist-parallel and needs a stable tree: saving a file mid-run yields bulk failures or `Different tests were collected between gw0 and gwN`. Re-run on a quiet tree (or `uv run pytest -n0`) before believing a mass failure.
+- `make install` is editable, so a running session keeps whatever source was on disk when each module was first imported: a mid-turn fix does not reach it, and a broken intermediate state stays loaded until restart. Before hunting an unreproducible failure, compare its timestamp against file mtimes and check whether another session was editing.
+- Failed turns save their frames to `<session-dir>/errors.log`; the transcript's `turn_failed` record carries only a type and message.
 
-- Run `make install` after changes so the installed `pcode` tool env picks them up.
-
-- Before changing terminal or agent integrations, consult [the dependency reference guide](docs/dependencies.md) for official docs, installed-source discovery, and version-verification guidance.
-
-- Run `make harness-src` to get Harness upstream source, docs, tests, and examples at the pinned SHA under `tmp/pydantic-ai-harness` (gitignored), then read that instead of searching the web. It is idempotent and safe to run whenever you are unsure the checkout is current — see "Local Harness checkout" in the dependency guide.
-
-- `make test` skips the real-tmux regressions (they are 75% of the suite's runtime). Run `make test-all` before pushing anything touching layout, streaming, the editor, or the prompt. Do not parallelize the tmux tests: under `-n auto` they fail in bulk because their pane-paint deadlines expire, and even `-n 4`/`-n 8` flake.
-
-- `make test` is xdist-parallel, so it needs a stable tree for its duration: saving a source or test file mid-run yields bulk failures or a `Different tests were collected between gw0 and gwN` collection error, neither of which means the change is broken. Re-run on a quiet tree (or `uv run pytest -n0`) before believing a mass failure.
-
-- `capture-pane` only shows the settled frame, so it cannot see flicker: a flash is usually two paints inside one 1/30 s `min_redraw_interval`. Record the raw byte stream with timestamps instead (`tmux pipe-pane -o 'python3 stamp.py >> out.bin'`) and look for a second editor paint after a scrollback write. Terminal handoffs go through `suspended_editor`, not prompt_toolkit's `in_terminal`, precisely because `in_terminal` repaints before its CPR reply arrives.
-
-- A PTY with `PROMPT_TOOLKIT_NO_CPR=1` does not exercise real prompt height: cursor-position reports can make the layout stretch into the remaining pane. Keep the real-tmux height regression tests, not just PTY startup/exit checks.
-- Harness's latest website can describe an unreleased Coder API and extras; verify the installed release's signatures/tool composition instead of assuming the website matches PyPI.
-
-- Resuming with `Agent.run(None)` and history ending in a final `ModelResponse` can return that saved answer without calling the provider; retry from the failed request boundary instead.
-
-- On Python 3.14, `cProfile` can observe worker threads too: using `time.thread_time` as its timer produces negative/nonsensical timings. Use Yappi's per-thread CPU accounting for function profiling, not a custom `cProfile` CPU clock.
-
-- Instruction parts are attributed to a capability only when that capability has an `id`, and Harness leaves several of the ones with prompts anonymous. Name them at construction (`create_coder`, `create_repo_context`): a concrete `Capability` binds its instructions to its id in `__init__`, so a later `capability.id = ...` is silently ignored, and blanket-renaming everything breaks `replace()`-copied children that compare fields with their parent.
-
-- `after_model_request` and `before_model_request` are filters, not listeners: whatever a hook returns replaces the response or request context, so a hook that only records something must still `return` it. Dropping the return blows up somewhere else entirely — a `None` response surfaces as `AttributeError: 'NoneType' object has no attribute 'usage'` from Harness's `WarnOnCacheBusts`, several capabilities downstream of the one at fault.
-
-- `make install` is editable, so a running session keeps whatever source was on disk when each module was first imported — a fix saved mid-turn does not reach it, and a broken intermediate state stays loaded until restart. Before hunting a failure you cannot reproduce, compare its timestamp against `git log`/file mtimes and check whether another session was editing. Failed turns save their frames to `<session-dir>/errors.log`; the transcript's `turn_failed` record carries only a type and a message.
-
-- A cache-collapse warning ending in the generic `(e.g. a gap longer than the cache TTL)` means the gap was *under* the TTL: Harness names the measured gap whenever it actually exceeds it, so that phrasing rules expiry out rather than suggesting it. Its `model request N` is also per-run, not per-session. Read the `Message N changed` / `Prefix intact` line that `cache_diagnostics.py` appends, and the dumped fingerprints, before theorizing about a cause.
+Narrower traps live as comments next to the code they concern: Harness hook
+and capability-id semantics in `agent.py` and `cache_warnings.py`, cache-collapse
+warning reading in `cache_diagnostics.divergence`, terminal handoff and flicker
+in `ui.suspended_editor`, resume semantics in `live.py`, profiler choice in
+`profiling.py`, and why the tmux tests exist in `tests/test_tmux.py`.
