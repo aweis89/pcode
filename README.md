@@ -655,10 +655,10 @@ next message; it does not automatically re-run tools.
 A different explicit `-m` or `-C` is rejected on resume. Only one process may open
 a session for writing. `/resume` opens a full-screen browser of saved conversations
 in the current workspace (newest first, labeled by their first prompt) with every
-prompt and a truncated response for the selected session alongside. `/` searches
-prompts across sessions (space-separated words are all required); `r` includes
-responses, `w` includes every workspace. Enter resumes the selected session in
-place, Esc cancels. Resuming restores the saved model, history, and plan.
+prompt and a truncated, rendered response for the selected session alongside. `/`
+searches prompts across sessions (space-separated words are all required) and ↑/↓
+move the selection while you type; `r` includes responses, `w` includes every
+workspace. Enter resumes the selected session in place, Esc cancels. Resuming restores the saved model, history, and plan.
 
 Default location: `$XDG_STATE_HOME/pcode/sessions`, or
 `~/.local/state/pcode/sessions`. Override with `--session-dir PATH` or

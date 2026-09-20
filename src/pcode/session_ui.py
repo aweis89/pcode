@@ -10,9 +10,19 @@ from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Dialog, Frame, Label, TextArea
+from rich.markdown import Markdown
+from rich.padding import Padding
+from rich.text import Text
+from rich.theme import Theme
 
 from pcode.diagnostics import redact
-from pcode.popup_ui import list_pane_height, popup_container, popup_style
+from pcode.popup_ui import (
+    RichPane,
+    list_pane_height,
+    popup_container,
+    popup_style,
+    steer_list_from_query,
+)
 from pcode.sessions import SessionInfo, Turn, first_prompt, session_turns
 from pcode.tool_display import plain
 
@@ -45,12 +55,16 @@ class SessionBrowser:
         root: Path,
         workspace: Path,
         active_id: str | None = None,
+        rich_theme: Theme | None = None,
+        code_theme: str = "ansi_dark",
+        color_system: str | None = "truecolor",
         **app_options,
     ) -> None:
         self.records = records
         self.root = root
         self.workspace = workspace.resolve()
         self.active_id = active_id
+        self.code_theme = code_theme
         self.everywhere = False
         self.responses = False
         self.visible: list[SessionInfo] = []
@@ -61,10 +75,11 @@ class SessionBrowser:
         self.query = TextArea(height=1, prompt="Search prompts: ", multiline=False)
         self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
         self.list.window.cursorline = Always()
-        self.detail = TextArea(read_only=True, wrap_lines=True, scrollbar=True)
+        self.detail = RichPane(theme=rich_theme, color_system=color_system)
         self.query.buffer.on_text_changed += lambda _: self.refresh()
         self.list.buffer.on_cursor_position_changed += lambda _: self.select()
         keys = KeyBindings()
+        self.detail.bind_scrolling(keys)
 
         @keys.add("escape", eager=True)
         @keys.add("c-c")
@@ -74,19 +89,18 @@ class SessionBrowser:
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
+        steer_list_from_query(keys, self.query, self.list)
 
-        @keys.add("enter", filter=has_focus(self.list) | has_focus(self.detail))
+        @keys.add("enter")
         def resume(event):
-            event.app.exit(result=self.selected.id if self.selected else None)
+            # Like the model picker: Enter while typing accepts the selection.
+            if self.selected is not None:
+                event.app.exit(result=self.selected.id)
 
         @keys.add("/", filter=has_focus(self.list))
         @keys.add("c-f")
         def search(event):
             event.app.layout.focus(self.query)
-
-        @keys.add("enter", filter=has_focus(self.query))
-        def search_done(event):
-            event.app.layout.focus(self.list)
 
         @keys.add("w", filter=has_focus(self.list))
         def workspaces(event):
@@ -130,7 +144,7 @@ class SessionBrowser:
                 self.query,
                 body,
                 Label("↑↓ Select/scroll · Enter Resume · Tab Focus · Esc Cancel"),
-                Label("In Sessions: / Search · r Search responses too · w All workspaces"),
+                Label("In Sessions: / Search (↑↓ select while typing) · r Responses too · w All"),
             ]
         )
         self.app = Application(
@@ -178,7 +192,8 @@ class SessionBrowser:
         parts = [info.id[:8], plain(info.model, 40), info.updated[:16].replace("T", " ")]
         if info.id == self.active_id:
             parts.append("active")
-        parts.append(f"{shown} of {total} turns" if shown < total else f"{total} turns")
+        noun = "turn" if total == 1 else "turns"
+        parts.append(f"{shown} of {total} {noun}" if shown < total else f"{total} {noun}")
         return " · ".join(parts)
 
     def refresh(self) -> None:
@@ -204,29 +219,34 @@ class SessionBrowser:
         if info is self.selected and info is not None and not force:
             return
         self.selected = info
-        self.detail.buffer.set_document(Document(self.details(info), 0), bypass_readonly=True)
-        self.detail.window.vertical_scroll = 0
+        self.detail.set(self.details(info))
 
-    def details(self, info: SessionInfo | None) -> str:
+    def details(self, info: SessionInfo | None) -> list:
+        """Rich renderables for the Turns pane: prompts verbatim, responses as Markdown."""
         if info is None:
-            return "No matching sessions."
+            return [Text("No matching sessions.")]
         total = len(self.turns(info))
         if self._turns[info.id] is None:
-            return "(Transcript unavailable)"
+            return [Text("(Transcript unavailable)")]
         turns = self.matching_turns(info)
-        blocks = [self.heading(info, len(turns), total)]
+        blocks: list = [Text(self.heading(info, len(turns), total), style="dim")]
         if not turns:
-            blocks.append("(No prompt yet)")
+            blocks.append(Text("(No prompt yet)"))
         for turn in turns:
-            block = "› " + excerpt(turn.prompt, PROMPT_LINES, indent="  ")[2:]
+            blocks.append(Text(""))
+            blocks.append(
+                Text("› " + excerpt(turn.prompt, PROMPT_LINES, indent="  ")[2:], style="bold")
+            )
             if turn.response:
-                block += "\n" + excerpt(turn.response, RESPONSE_LINES, indent="  ")
+                markdown = Markdown(
+                    excerpt(turn.response, RESPONSE_LINES), code_theme=self.code_theme
+                )
+                blocks.append(Padding(markdown, (0, 0, 0, 2)))
             elif turn.status != "complete":
-                block += f"\n  ({turn.status})"
+                blocks.append(Text(f"  ({turn.status})", style="dim"))
             else:
-                block += "\n  (no response text)"
-            blocks.append(block)
-        return "\n\n".join(blocks)
+                blocks.append(Text("  (no response text)", style="dim"))
+        return blocks
 
     async def run(self) -> str | None:
         return await self.app.run_async()
