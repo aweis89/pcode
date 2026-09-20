@@ -17,11 +17,14 @@ from pcode.ext import ExtensionUI, load_extensions
 
 
 @pytest.fixture(autouse=True)
-def fresh_state(monkeypatch):
+def fresh_state(monkeypatch, tmp_path):
     monkeypatch.setattr(browser_state, "STATE", BrowserState())
     monkeypatch.setattr("pcode.extensions.browser.STATE", browser_state.STATE, raising=False)
-    # No Chrome is ever started here; the session is built for a port nothing answers.
-    monkeypatch.setenv("PCODE_BROWSER_CHROME", "/nonexistent/chrome")
+    # A Chrome that exists but is never started: the session is built for a
+    # port nothing answers, and tests that would launch stub `ensure_chrome`.
+    fake_chrome = tmp_path / "fake-chrome"
+    fake_chrome.touch()
+    monkeypatch.setenv("PCODE_BROWSER_CHROME", str(fake_chrome))
     monkeypatch.delenv("PCODE_BROWSER_CDP_URL", raising=False)
     yield browser_state.STATE
 
@@ -247,13 +250,48 @@ def test_attach_reads_chromes_port_file(fresh_state, monkeypatch, tmp_path):
     assert running_chrome_url() == "ws://127.0.0.1:9333/devtools/browser/abc"
 
 
-def test_attach_command_fails_cleanly_without_a_chrome(tmp_path, fresh_state, monkeypatch):
+def test_attach_command_fails_cleanly_without_any_chrome(tmp_path, fresh_state, monkeypatch):
     monkeypatch.setenv("PCODE_BROWSER_PORT_FILE", str(tmp_path / "missing"))
+    monkeypatch.setenv("PCODE_BROWSER_CHROME", "/nonexistent/chrome")
     reloads = []
     _, extension = browser_extension(tmp_path, ExtensionUI(None, lambda: reloads.append(1)))
     with pytest.raises(ValueError, match="No running Chrome"):
         extension.commands[0].handler("attach")
     assert not fresh_state.attach and not fresh_state.enabled and reloads == []
+
+
+def test_attach_opens_the_debugging_switch_when_chrome_is_not_listening(
+    tmp_path, fresh_state, monkeypatch
+):
+    monkeypatch.setenv("PCODE_BROWSER_PORT_FILE", str(tmp_path / "missing"))
+    launched = []
+    monkeypatch.setattr(browser_state, "_detach", launched.append)
+    app = tmp_path / "Google Chrome.app" / "Contents" / "MacOS"
+    app.mkdir(parents=True)
+    (app / "Google Chrome").touch()
+    monkeypatch.setenv("PCODE_BROWSER_CHROME", str(app / "Google Chrome"))
+    monkeypatch.setattr(browser_state.sys, "platform", "darwin")
+    notices = []
+    _, extension = browser_extension(tmp_path, ExtensionUI(lambda text, _: notices.append(text)))
+    extension.commands[0].handler("attach")
+    page = "chrome://inspect/#remote-debugging"
+    assert launched == [["open", "-a", str(tmp_path / "Google Chrome.app"), page]]
+    assert "Turn the switch on" in notices[-1]
+    assert not fresh_state.attach and not fresh_state.enabled
+
+    monkeypatch.setattr(browser_state.sys, "platform", "linux")
+    linux = tmp_path / "google-chrome"
+    linux.touch()
+    monkeypatch.setenv("PCODE_BROWSER_CHROME", str(linux))
+    extension.commands[0].handler("attach")
+    assert launched[-1] == [str(linux), page]
+
+
+def test_command_arguments_are_described_for_completion(tmp_path):
+    _, extension = browser_extension(tmp_path)
+    (command,) = extension.commands
+    assert set(command.argument_descriptions) == set(command.arguments)
+    assert "remote debugging" in command.argument_descriptions["attach"]
 
 
 def test_attach_command_turns_on_with_a_warning(tmp_path, fresh_state, monkeypatch):
