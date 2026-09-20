@@ -78,7 +78,27 @@ def _capability(pcode, toolset):
     from pydantic_ai.capabilities import Capability
     from pydantic_ai_harness.playwright import PlaywrightBrowser
 
-    browser_tools = set(toolset.tools) | {"browser_open"}
+    browser_tools = set(toolset.tools) | {"browser_open", "browser_tabs"}
+
+    async def browser_tabs() -> str:
+        """List every tab open in the browser, including the user's own, as title and URL.
+
+        The `tabs` tool covers only tabs this session opened; this one also shows
+        what the user already has open, which tells you which sites and
+        accounts they use (their mail, their issue tracker) so you can open the
+        right URL in your own tab. Read only: act through `navigate`.
+        """
+        await _start(pcode)
+        await STATE.session.ensure_page()
+        lines = []
+        for page in STATE.all_pages():
+            try:
+                title = await page.title()
+            except Exception:  # noqa: BLE001 - a tab mid-navigation or closing has no title.
+                title = ""
+            ours = " (yours)" if page in STATE.session.pages else ""
+            lines.append(f"- {title or '(untitled)'}{ours}: {page.url}")
+        return "\n".join(lines) or "No tabs are open."
 
     async def browser_open() -> str:
         """Bring the browser window to the front, opening it first if needed.
@@ -109,7 +129,7 @@ def _capability(pcode, toolset):
     return Browser(
         id="browser",
         toolsets=[toolset],
-        tools=[browser_open],
+        tools=[browser_open, browser_tabs],
         instructions="\n".join(
             (
                 guidance,
