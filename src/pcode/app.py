@@ -32,7 +32,13 @@ from pcode.runtime import (
     CacheBust,
     EditCompleted,
     Message,
+    PlanPreview,
+    PlanUpdated,
     PreviewRuntime,
+    RunStatus,
+    TextDelta,
+    Thinking,
+    ThinkingDelta,
     ToolStarted,
     ToolSummary,
 )
@@ -64,9 +70,11 @@ class PreviewApp:
         save: bool = False,
         session_dir: Path | None = None,
         resume: bool = False,
+        initial_prompt: str | None = None,
     ) -> None:
         self.send_mode = load_preferences().get("send_mode", "steering")
         self.model = model
+        self.initial_prompt = initial_prompt
         self.resuming = resume
         self.save_sessions = save or saved_session is not None
         self.workspace = (workspace or Path.cwd()).resolve()
@@ -1868,6 +1876,10 @@ class PreviewApp:
             session.app.create_background_task(output.run())
             session.app.create_background_task(consume())
             session.app.create_background_task(consume_commands())
+            if self.initial_prompt:
+                # Queued like a typed message: it waits for the backend the same
+                # way, and Ctrl+C clears it the same way.
+                submit(self.initial_prompt)
 
         try:
             await session.app.run_async(pre_run=start)
@@ -1882,6 +1894,9 @@ class PreviewApp:
                 await asyncio.gather(mcp_task, return_exceptions=True)
             await output.flush()
             self.transcript.output = None
+        self.print_resume_hint()
+
+    def print_resume_hint(self) -> None:
         saved = getattr(self.runtime, "session", None)
         if saved is None:
             self.transcript.console.print("Session not saved; no resume command available.")
@@ -1896,9 +1911,76 @@ class PreviewApp:
     def run(self) -> None:
         asyncio.run(self.run_async())
 
+    async def run_print_async(self, prompt: str, *, stdout=None) -> bool:
+        """Answer one prompt without an editor: reply text to `stdout`, the rest to the transcript.
+
+        The transcript console is expected to be stderr, so a pipe reading
+        stdout sees only the model's markdown. Returns whether the turn succeeded.
+        """
+        from pcode.live import error_message
+
+        os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+        stdout = sys.stdout if stdout is None else stdout
+        if not self.model:
+            for event in self.preview.reply(prompt):
+                if isinstance(event, Message):
+                    stdout.write(event.markdown.rstrip("\n") + "\n")
+            stdout.flush()
+            return True
+        try:
+            await self._initialize_runtime()
+        except Exception as error:
+            self.transcript.error(error_message(error), title="Agent startup failed")
+            return False
+        self.runtime.compaction_notice = self.transcript.note
+        if hasattr(self.runtime, "retry_notice"):
+            self.runtime.retry_notice = self.transcript.note
+        written = ""
+        try:
+            async with aclosing(self.runtime.stream(prompt)) as stream:
+                async for event in stream:
+                    if isinstance(event, TextDelta):
+                        stdout.write(event.text)
+                        stdout.flush()
+                        written += event.text
+                    elif isinstance(event, Message):
+                        # Deltas usually carried this text already; a message
+                        # without them (a structured result) is written whole.
+                        if not written:
+                            written = event.markdown
+                            stdout.write(written)
+                        if not written.endswith("\n"):
+                            stdout.write("\n")
+                        stdout.write("\n")
+                        stdout.flush()
+                        written = ""
+                    elif isinstance(event, Thinking):
+                        self.transcript.events((event,))
+                    elif isinstance(event, (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated)):
+                        continue
+                    else:
+                        self.present_events((event,))
+        except Exception as error:
+            if written and not written.endswith("\n"):
+                stdout.write("\n")
+                stdout.flush()
+            self.transcript.error(error_message(error), title="Agent failed")
+            saved = getattr(self.runtime, "session", None)
+            if saved is not None:
+                self.transcript.note(f"Session and diagnostics: {saved.directory}")
+            return False
+        self.print_resume_hint()
+        return True
+
+    def run_print(self, prompt: str) -> bool:
+        return asyncio.run(self.run_print_async(prompt))
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Streaming terminal with a Coder agent")
+    parser = argparse.ArgumentParser(
+        description="Streaming terminal with a Coder agent",
+        epilog=f"Global defaults, without starting a session: pcode {CONFIG_USAGE}",
+    )
     parser.add_argument("--theme", choices=THEMES, default=load_preferences().get("theme", "dark"))
     parser.add_argument(
         "--color-style",
@@ -1913,6 +1995,20 @@ def main() -> None:
     )
     parser.add_argument(
         "-C", "--workspace", type=Path, help="Coder workspace (default: current directory)"
+    )
+    # One positional list serves both the message and the `config` subcommand,
+    # so an unquoted `pcode fix the bug` works and `config` needs no subparser.
+    parser.add_argument(
+        "prompt",
+        nargs="*",
+        metavar="PROMPT",
+        help="Send this message first; with --print, read stdin when omitted",
+    )
+    parser.add_argument(
+        "-p",
+        "--print",
+        action="store_true",
+        help="Answer PROMPT without the editor: reply on stdout, tool activity on stderr",
     )
     parser.add_argument("--demo", action="store_true", help="Print an offline sample and exit")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions and exit")
@@ -1939,14 +2035,12 @@ def main() -> None:
         action="store_true",
         help="Also trace Python allocations (slower; requires --profile)",
     )
-    subparsers = parser.add_subparsers(dest="command")
-    config_parser = subparsers.add_parser(
-        "config",
-        help="Inspect or edit global defaults without starting a session",
-        description=f"Global defaults. Usage: pcode {CONFIG_USAGE}",
-    )
-    config_parser.add_argument("arguments", nargs="*", metavar="ARG")
     args = parser.parse_args()
+    args.command = None
+    if args.prompt and args.prompt[0] == "config":
+        args.command = "config"
+        args.arguments = args.prompt[1:]
+    args.prompt = " ".join(args.prompt).strip() or None
     if (args.profile_cpu or args.profile_memory) and args.profile is None:
         parser.error("--profile-cpu and --profile-memory require --profile DIR")
     with ExitStack() as stack:
@@ -1973,6 +2067,15 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         return
     if args.resume and (args.no_save or args.demo):
         parser.error("--resume cannot be combined with --no-save or --demo")
+    if args.print:
+        if args.demo or args.sessions:
+            parser.error("--print cannot be combined with --demo or --sessions")
+        if args.prompt is None:
+            if sys.stdin.isatty():
+                parser.error("--print needs a PROMPT argument or text on stdin")
+            args.prompt = sys.stdin.read()
+        if not args.prompt.strip():
+            parser.error("--print needs a non-empty prompt")
     if args.sessions:
         from pcode.sessions import list_sessions
 
@@ -1990,8 +2093,8 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         # There is no mutable panel in the non-interactive sample.
         app.transcript.events(app.preview.demo(), show_tools=True)
         return
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        parser.error("interactive mode needs a terminal; use --demo for a non-interactive sample")
+    if not args.print and (not sys.stdin.isatty() or not sys.stdout.isatty()):
+        parser.error("interactive mode needs a terminal; use --print PROMPT to answer without one")
     saved = None
     app = None
     try:
@@ -2023,8 +2126,15 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             save=not args.no_save,
             session_dir=args.session_dir,
             resume=bool(args.resume),
+            initial_prompt=args.prompt,
+            # Keep stdout for the reply alone when printing.
+            console=Console(stderr=True) if args.print else None,
         )
-        app.run()
+        if args.print:
+            if not app.run_print(args.prompt):
+                parser.exit(1)
+        else:
+            app.run()
     except Exception as error:
         from pcode.live import error_message
 

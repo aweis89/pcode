@@ -188,6 +188,19 @@ pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
 
 Try asking: `What does this repository do? Read the README and cite relevant files.`
 Live conversations save automatically when the first model prompt is submitted.
+
+A prompt on the command line is sent as the first message, then the editor opens
+as usual. Add `-p`/`--print` to skip the editor: the reply streams to stdout as
+markdown, tool activity and errors go to stderr, and the exit status reports
+whether the turn succeeded. Without a prompt argument, `--print` reads one from
+stdin.
+
+```sh
+pcode "Summarize the open TODOs in this repo"          # first message, then interactive
+pcode -p "Which files handle sessions?" > answer.md    # non-interactive
+git diff | pcode -p --no-save                          # prompt from stdin
+pcode -p --resume "And the tests for those?"           # continue a saved session
+```
 Opening the app, using commands, or quitting without a prompt creates no session.
 `/new` resets context without deleting the old conversation; its replacement is
 created on the next model prompt.
