@@ -22,3 +22,9 @@ Add new ideas under the relevant heading or create a new section.
 - [ ] Help automate `/worktree merge` to merge completed work back into mainline:
   - [ ] Consider exposing the merge action to the model and documenting how to opt in through instructions in a project's `AGENTS.md`.
   - [ ] Alternatively, consider a configurable option that adds an instruction to the system prompt to merge work back when finished.
+
+## Docs
+
+- [ ] Review the existing documentation for accuracy, clarity, and gaps.
+- [ ] Consider creating a dedicated documentation site.
+- [ ] Consider marketing for the project.
