@@ -472,9 +472,55 @@ class CursorSafeOutput:
                 self.output.flush()
 
 
+# DEC private mode 2026: the terminal holds the frame between these, so the
+# editor's erase, the transcript write, and the repaint appear as one change.
+# Terminals without it ignore both sequences.
+SYNC_START = "\x1b[?2026h"
+SYNC_END = "\x1b[?2026l"
+
+
+class Handoff:
+    """What the body of an atomic ``suspended_editor`` reports for the repaint.
+
+    ``top_row`` is the 1-based terminal row the erase left the cursor on; the
+    body overrides it when it homes the cursor itself. ``rows_written`` is how
+    many rows the body's output advanced the cursor; leaving it ``None`` falls
+    back to asking the terminal where the cursor ended up.
+    """
+
+    def __init__(self, top_row: int | None):
+        self.top_row = top_row
+        self.rows_written: int | None = None
+
+
+def layout_top_row(app: Application) -> int | None:
+    """The terminal row the editor starts on, if the renderer still knows it."""
+    renderer = app.renderer
+    if (
+        renderer._in_alternate_screen
+        or renderer._min_available_height <= 0
+        or renderer._last_size != app.output.get_size()
+    ):
+        return None
+    return renderer.rows_above_layout + 1
+
+
 @asynccontextmanager
-async def suspended_editor(app: Application):
+async def suspended_editor(app: Application, *, atomic: bool = False):
     """Hand the terminal to direct output, then repaint the editor exactly once.
+
+    With ``atomic`` the handoff is wrapped in synchronized output and, when the
+    body reports how many rows it wrote (``Handoff.rows_written``), the editor
+    is repainted immediately from the computed cursor row instead of after a
+    cursor position report. The whole erase, write, and repaint then reach the
+    terminal as one frame with no await in between, so the editor and live
+    panel never visibly disappear. A report is still requested and lands
+    before the next handoff; the renderer's cursor bookkeeping is relative, so
+    a miscount (Rich and the terminal disagreeing on a glyph's width) only
+    misjudges the free rows below the editor until that reply corrects it,
+    exactly as prompt_toolkit tolerates a layout taller than its report.
+    Popups and external programs must not use ``atomic``: a frame held across
+    them would freeze the terminal until its guard timeout.
 
     This mirrors prompt_toolkit's ``in_terminal``, except for when the editor
     is painted again. ``in_terminal`` repaints immediately after the handoff,
@@ -495,7 +541,7 @@ async def suspended_editor(app: Application):
     """
     # Offline harnesses pass a bare stand-in for the app; nothing to suspend.
     if not isinstance(app, Application) or not app._is_running:
-        yield
+        yield Handoff(None)
         return
     # Chain to any handoff already in progress, as in_terminal does.
     previous = app._running_in_terminal_f
@@ -505,7 +551,12 @@ async def suspended_editor(app: Application):
         if previous is not None:
             await previous
         if app.output.responds_to_cpr:
+            # Also collects the report an atomic exit left outstanding, before
+            # cooked mode could echo it onto the screen as text.
             await app.renderer.wait_for_cpr_responses()
+        handoff = Handoff(layout_top_row(app) if atomic else None)
+        if atomic:
+            app.output.write_raw(SYNC_START)  # erase() flushes it
         app.renderer.erase()
         app._running_in_terminal = True
         # A popup takes over SIGWINCH, but the editor's ``_poll_output_size``
@@ -515,20 +566,36 @@ async def suspended_editor(app: Application):
         app._on_resize = lambda: None
         try:
             with app.input.detach(), app.input.cooked_mode():
-                yield
+                yield handoff
         finally:
             del app._on_resize
             app.renderer.reset()
-            app._request_absolute_cursor_position()
-            try:
-                # Input is attached again, so the report can be read here.
-                # Rendering stays disabled meanwhile: an invalidation from a
-                # keystroke or the spinner would otherwise paint the early frame.
-                if app.output.responds_to_cpr:
-                    await app.renderer.wait_for_cpr_responses()
-            finally:
+            if handoff.top_row is not None and handoff.rows_written is not None:
+                rows = app.output.get_size().rows
+                row = min(handoff.top_row + handoff.rows_written, rows)
+                app.renderer._min_available_height = rows - row + 1
+                # Sent with the cursor still on the editor's top row, as the
+                # renderer requires; the reply only refines the guess above.
+                app._request_absolute_cursor_position()
                 app._running_in_terminal = False
                 app._redraw()
+                app.output.write_raw(SYNC_END)
+                app.output.flush()
+            else:
+                if atomic:
+                    # Nothing to hold the frame for across the report round trip.
+                    app.output.write_raw(SYNC_END)
+                    app.output.flush()
+                app._request_absolute_cursor_position()
+                try:
+                    # Input is attached again, so the report can be read here.
+                    # Rendering stays disabled meanwhile: an invalidation from a
+                    # keystroke or the spinner would otherwise paint the early frame.
+                    if app.output.responds_to_cpr:
+                        await app.renderer.wait_for_cpr_responses()
+                finally:
+                    app._running_in_terminal = False
+                    app._redraw()
     finally:
         if not done.done():
             done.set_result(None)
@@ -628,6 +695,26 @@ def install_reflow_renderer(app: Application) -> None:
         mouse_support=False,
         cpr_not_supported_callback=app.cpr_not_supported_callback,
     )
+
+
+class RowCounter:
+    """Tee for the Rich console's file that counts the rows a batch advances.
+
+    Rich wraps every line to the width it is given and ends it with a newline,
+    so newlines are terminal rows as long as Rich and the terminal agree on
+    cell widths; see ``suspended_editor`` for what a disagreement costs.
+    """
+
+    def __init__(self, file):
+        self.file = file
+        self.rows = 0
+
+    def write(self, text: str) -> int:
+        self.rows += text.count("\n")
+        return self.file.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self.file, name)
 
 
 class TerminalOutput:
@@ -786,7 +873,7 @@ class TerminalOutput:
                 # both when erasing and before repainting. Suppress those shows
                 # until the handoff has restored the editor and its cursor.
                 with self.app.output.hidden_cursor():
-                    async with suspended_editor(self.app):
+                    async with suspended_editor(self.app, atomic=True) as handoff:
                         # Snapshot after entering: input/model events can arrive while
                         # the handoff waits for CPR, but not during these sync writes.
                         if self._regenerate is not None:
@@ -798,6 +885,7 @@ class TerminalOutput:
                             # exit will request fresh CPR and restore the draft.
                             self.app.output.write_raw("\x1b[H\x1b[2J\x1b[3J")
                             self.app.output.flush()
+                            handoff.top_row = 1
                         else:
                             pending, self.pending = self.pending, []
                         self.transient_pending = []
@@ -805,11 +893,18 @@ class TerminalOutput:
                         # Rich's public buffer context coalesces the batch's
                         # prints (including separators) into one output flush.
                         # Keep it synchronous and inside the single-writer handoff.
-                        with self.console, self.console.use_theme(self.rich_theme()):
-                            for objects, end, soft_wrap in pending:
-                                self.console.print(
-                                    *objects, end=end, soft_wrap=soft_wrap, width=width
-                                )
+                        counter = RowCounter(self.console.file)
+                        previous_file = self.console._file
+                        self.console.file = counter
+                        try:
+                            with self.console, self.console.use_theme(self.rich_theme()):
+                                for objects, end, soft_wrap in pending:
+                                    self.console.print(
+                                        *objects, end=end, soft_wrap=soft_wrap, width=width
+                                    )
+                        finally:
+                            self.console.file = previous_file
+                        handoff.rows_written = counter.rows
                 # The handoff already repainted the editor on exit.
             self.changed.clear()
 
