@@ -94,23 +94,29 @@ class InspectedCall:
     def title(self) -> str:
         return f"{self.state:11} {self.name} · {self.detail}"
 
-    def details(self, calls: list["InspectedCall"]) -> str:
+    def metadata(self, calls: list["InspectedCall"]) -> list[tuple[str, str]]:
+        """Label/value rows describing the call, shared by text and Rich renderings."""
         timing = f"{self.elapsed:.2f}s" if self.elapsed is not None else "unavailable"
-        related = [
-            c.call_id
-            for c in calls
-            if c is not self and self.process_id and c.process_id == self.process_id
+        rows = [
+            ("Call", self.call_id),
+            ("Run", self.run_id),
+            ("Started", self.started_at),
+            ("Duration", timing),
+            ("Framework outcome", self.outcome or "unavailable"),
+            ("Summary", self.summary),
         ]
-        metadata = (
-            f"{self.name} · {self.state}\nCall: {self.call_id}\nRun: {self.run_id}\n"
-            f"Started: {self.started_at}\nDuration: {timing}\n"
-            f"Framework outcome: {self.outcome or 'unavailable'}\nSummary: {self.summary}\n"
-        )
         if self.process_id:
-            metadata += (
-                f"Background process: {self.process_id}\n"
-                f"Related calls: {', '.join(related) or 'none'}\n"
-            )
+            related = [
+                c.call_id for c in calls if c is not self and c.process_id == self.process_id
+            ]
+            rows.append(("Background process", self.process_id))
+            rows.append(("Related calls", ", ".join(related) or "none"))
+        return rows
+
+    def details(self, calls: list["InspectedCall"]) -> str:
+        metadata = f"{self.name} · {self.state}\n" + "".join(
+            f"{label}: {value}\n" for label, value in self.metadata(calls)
+        )
         return command_text(
             metadata
             + "\nArguments\n─────────\n"
