@@ -23,6 +23,7 @@ from pydantic_ai import (
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
+    ToolReturn,
 )
 from pydantic_ai.messages import (
     ModelMessage,
@@ -37,9 +38,11 @@ from pydantic_ai_harness.shell import (
     CommandFinishedEvent,
     CommandOutputEvent,
     CommandStartedEvent,
+    Shell,
 )
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersistence
 from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent, SubAgents
+from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, summarize
@@ -70,6 +73,7 @@ from pcode.runtime import (
 )
 from pcode.sessions import SavedSession, SessionError
 from pcode.shell import ShellPreview, result_projection
+from pcode.shell_mode import ShellRun, reduce_result, shell_exchange
 from pcode.steering import Steering
 from pcode.token_accounting import TokenAccounting, TokenTotals
 from pcode.tool_display import (
@@ -187,6 +191,8 @@ class AgentRuntime:
         self.tree = self.session.tree if self.session else ConversationTree()
         self.inspections = ToolArchive()
         self.history: list[ModelMessage] = []
+        # Shell-mode exchanges the next request carries; see `record_shell`.
+        self.pending_shell: list[ModelMessage] = []
         self.context_history: list[ModelMessage] | None = None
         self.conversation_id = info.id if info else str(uuid4())
         self.turns = info.turns if info else 0
@@ -296,6 +302,38 @@ class AgentRuntime:
     def close(self) -> None:
         if self.session:
             self.session.close()
+
+    def shell_environment(self) -> tuple[Path, dict[str, str] | None]:
+        """Where and with what environment `!command` runs: the agent's own shell settings."""
+        for capability in self.agent.root_capability.capabilities:
+            if isinstance(capability, Shell):
+                return Path(capability.cwd or Path.cwd()), capability.env
+        return Path.cwd(), None
+
+    async def record_shell(self, run: ShellRun) -> str | ToolReturn:
+        """Queue a finished `!command` as a shell tool exchange for the next request.
+
+        It is not written to history yet: nothing has been sent, and a turn
+        that fails before its first request must not leave a tool call the
+        session's snapshots never saw. `_stream` appends it to the request's
+        message history, so the turn's own persistence carries it from then on.
+        Returns what the model will see, reduced by the agent's output limits.
+        """
+        call_id = f"shell_mode_{uuid4().hex[:12]}"
+        content: str | ToolReturn = run.tool_result()
+        limits = next(
+            (c for c in self.agent.root_capability.capabilities if isinstance(c, ToolOutputLimits)),
+            None,
+        )
+        if limits is not None:
+            content = await reduce_result(
+                limits, call_id=call_id, command=run.command, result=content
+            )
+        first = not self.history and not self.pending_shell
+        self.pending_shell.extend(
+            shell_exchange(run.command, content, call_id=call_id, first=first)
+        )
+        return content
 
     def resend_prompt(self) -> str:
         """The original prompt is a display label, not another model message."""
@@ -438,6 +476,9 @@ class AgentRuntime:
                     # failed. Never silently re-run a side effect on retry.
                     checkpoint = self._request_checkpoint
                     if checkpoint.messages is not None:
+                        # The failed request already carried any shell-mode
+                        # exchange; recovering it below must not queue it twice.
+                        self.pending_shell = []
                         # Override any partial response saved during unwind. This
                         # also persists a bare first prompt, which Harness omits.
                         await saved.store.save_snapshot(
@@ -456,6 +497,7 @@ class AgentRuntime:
                     error, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit)
                 )
                 if self._request_checkpoint.messages is not None:
+                    self.pending_shell = []
                     self.history = self._request_checkpoint.messages
                 self.tree.consume(
                     {
@@ -531,7 +573,7 @@ class AgentRuntime:
             self.agent,
             self.agent.run_stream_events(
                 prompt,
-                message_history=self.history,
+                message_history=self.history + self.pending_shell,
                 toolsets=self.mcp.toolsets(),
                 conversation_id=self.conversation_id,
                 run_id=run_id,
@@ -725,6 +767,7 @@ class AgentRuntime:
                     # Full successful history. The outer persistence wrapper also
                     # recovers settled tool-boundary snapshots after failures.
                     self.history = result.all_messages()
+                    self.pending_shell = []
                     self.turns += 1
                 if preview is not None:
                     if (update := preview.update(event, plan_items)) is not None:
