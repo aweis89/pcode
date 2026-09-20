@@ -115,7 +115,12 @@ class ExtensionUI:
 class ExtensionAPI:
     """The object handed to `setup`. Collects contributions; `capabilities()` builds them."""
 
-    def __init__(self, name: str, workspace: Path, ui: ExtensionUI) -> None:
+    def __init__(
+        self, name: str, workspace: Path, ui: ExtensionUI, *, session_dir: Path | None = None
+    ) -> None:
+        from pcode.sessions import session_root
+
+        self.session_dir = (session_dir or session_root()).resolve()
         self.name = name
         self.workspace = workspace
         self.ui = ui
@@ -286,7 +291,9 @@ def _failure(error: BaseException, path: Path) -> str:
     return message
 
 
-def load_extension(extension: Extension, workspace: Path, ui: ExtensionUI) -> Extension:
+def load_extension(
+    extension: Extension, workspace: Path, ui: ExtensionUI, *, session_dir: Path | None = None
+) -> Extension:
     """Import the module, run `setup`, and validate what it contributed."""
     extension.error = None
     extension.capabilities = []
@@ -310,7 +317,7 @@ def load_extension(extension: Extension, workspace: Path, ui: ExtensionUI) -> Ex
         setup = getattr(module, "setup", None)
         if not callable(setup):
             raise AttributeError("extension defines no setup(pcode) function")
-        api = ExtensionAPI(extension.name, workspace, ui)
+        api = ExtensionAPI(extension.name, workspace, ui, session_dir=session_dir)
         setup(api)
         capabilities = api.capabilities()
         for capability in capabilities:
@@ -382,10 +389,15 @@ class LoadedExtensions:
         return lines
 
 
-def load_extensions(workspace: Path, ui: ExtensionUI | None = None) -> LoadedExtensions:
+def load_extensions(
+    workspace: Path, ui: ExtensionUI | None = None, *, session_dir: Path | None = None
+) -> LoadedExtensions:
     """Discover and load every extension; failures are recorded, not raised."""
     workspace = workspace.resolve()
     ui = ui or ExtensionUI()
     return LoadedExtensions(
-        [load_extension(extension, workspace, ui) for extension in discover_extensions(workspace)]
+        [
+            load_extension(extension, workspace, ui, session_dir=session_dir)
+            for extension in discover_extensions(workspace)
+        ]
     )
