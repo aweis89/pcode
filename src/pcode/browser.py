@@ -341,10 +341,22 @@ class BrowserState:
                 except subprocess.TimeoutExpired:
                     process.kill()
 
-    def all_pages(self) -> list:
-        """Every page in the shared context, the user's tabs included; empty before launch."""
-        context = getattr(self.session, "_context", None) if self.session is not None else None
-        return list(context.pages) if context is not None else []
+    async def list_tabs(self) -> list[tuple[str, str]]:
+        """Every tab as (title, url), the user's included, without touching the pages.
+
+        Asks Chrome's `/json/list` endpoint rather than each page: a tab Chrome
+        has discarded or that is otherwise unresponsive never answers a page
+        evaluation, and `page.title()` has no timeout. Empty in the Chromium
+        fallback, which exposes no endpoint.
+        """
+        if self.cdp_url is None:
+            return []
+        import httpx
+
+        base = self.cdp_url.replace("ws://", "http://", 1).split("/devtools/", 1)[0].rstrip("/")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            targets = (await client.get(base + "/json/list")).json()
+        return [(t.get("title", ""), t.get("url", "")) for t in targets if t.get("type") == "page"]
 
     @property
     def launched(self) -> bool:
