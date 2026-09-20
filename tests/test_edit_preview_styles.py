@@ -8,7 +8,9 @@ from rich.cells import cell_len
 from rich.console import Console
 from rich.syntax import Syntax
 
-from pcode.edit_transcript import edit_preview_rows
+from pcode.edit_transcript import EditTranscript, edit_preview_rows
+from pcode.preferences import SETTINGS
+from pcode.runtime import EditCompleted
 from pcode.ui import Transcript
 
 
@@ -49,6 +51,29 @@ def test_preview_is_literal_sanitized_and_cell_width_aware():
     assert "\x1b" not in text and "synthetic-secret" not in text
     assert "[redacted]" in text.replace("\n", "")
     assert all(cell_len(line) <= 8 for _, line in rows)
+
+
+@pytest.mark.parametrize(
+    "theme",
+    [SETTINGS["syntax_dark"].default, SETTINGS["syntax_light"].default, "gruvbox-dark"],
+)
+def test_styles_that_color_diffs_by_background_stay_visible(theme):
+    """Diff markers keep their color under styles that encode it as a background."""
+    background = Syntax.get_theme(theme).get_background_style().bgcolor
+    change = EditCompleted("call", "x.py", "edit", "@@ -1 +1 @@\n-old\n+new\n", 1, 1)
+    segments = [
+        segment
+        for segment in Console(width=40).render(EditTranscript(change, code_theme=theme))
+        if segment.text.strip() in ("-old", "+new")
+    ]
+    colors = {segment.text.strip(): segment.style.color for segment in segments}
+    assert len(colors) == 2
+    assert colors["-old"] != colors["+new"]
+    for segment in segments:
+        assert segment.style.bgcolor is None
+        assert segment.style.color != background
+    rows = edit_preview_rows("-old\n+new", 40, theme)
+    assert rows[0][0] != rows[1][0]
 
 
 def test_theme_and_terminal_color_mode_changes_recompute_preview_styles():

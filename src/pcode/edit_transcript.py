@@ -15,6 +15,7 @@ from rich.text import Text
 
 from pcode.edits import edit_text
 from pcode.runtime import EditCompleted
+from pcode.syntax import transparent_theme
 from pcode.tool_display import command_text
 
 
@@ -36,9 +37,8 @@ class EditTranscript:
             patch = Syntax(
                 edit_text(change.patch),
                 "diff",
-                theme=self.code_theme,
+                theme=transparent_theme(self.code_theme),
                 word_wrap=True,
-                background_color="default",
             )
             rows = console.render_lines(patch, options, pad=False)
             for row in rows[: self.max_rows]:
@@ -54,7 +54,7 @@ class EditTranscript:
 @cache
 def _token_style(code_theme: str, token) -> str:
     """Render one syntax token as a prompt_toolkit style string."""
-    style = Syntax.get_theme(code_theme).get_style_for_token(token)
+    style = transparent_theme(code_theme).get_style_for_token(token)
     # Convert only a library-generated marker, never file content. This keeps
     # ANSI palette colors native while matching Rich's RGB syntax colors too.
     marker = Style(color=style.color, bold=style.bold).render("x", color_system="truecolor")
