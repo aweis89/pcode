@@ -58,6 +58,28 @@ from pcode.ui import (
     create_prompt,
     suspended_editor,
 )
+from pcode.worktree import WORKTREES_DIR
+
+
+def location_label(workspace: Path, branch: str) -> str:
+    """Compact `path@branch` for the footer.
+
+    A session worktree repeats itself three times (`…/.worktrees/pcode-abc123`
+    plus branch `pcode-abc123`), so collapse it to the repository it belongs to
+    and let the branch name the checkout: `~/p/pcode@abc123`.
+    """
+    path, label = workspace, branch
+    if branch and path.name == branch and path.parent.name == WORKTREES_DIR:
+        path = path.parent.parent
+        label = branch.removeprefix(SESSION_WORKTREE_PREFIX) or branch
+    try:
+        relative = path.relative_to(Path.home())
+        directory = "~" if relative == Path(".") else f"~/{relative}"
+    except ValueError:
+        directory = str(path)
+    if not label or label == path.name:
+        return directory
+    return f"{directory}@{label}"
 
 
 class PreviewApp:
@@ -1453,14 +1475,7 @@ class PreviewApp:
 
     def toolbar(self):
         width = get_app().output.get_size().columns
-        try:
-            relative = self.workspace.relative_to(Path.home())
-            directory = "~" if relative == Path(".") else f"~/{relative}"
-        except ValueError:
-            directory = str(self.workspace)
-        location = plain(directory, limit=None)
-        if self.branch:
-            location += f" {self.branch}"
+        location = plain(location_label(self.workspace, self.branch), limit=None)
         model = self.model if self.model else "preview"
         if self.pending_model:
             # The running turn keeps its model; show what the next one will use.

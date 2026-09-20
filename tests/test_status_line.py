@@ -40,7 +40,7 @@ def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
     app.branch = "master"
     assert (
         fragment_list_to_text(app.toolbar())
-        == " ~/p/pcode master · Enter: steering · openai:gpt-5 (default) · ctx: 0/400k"
+        == " ~/p/pcode@master · Enter: steering · openai:gpt-5 (default) · ctx: 0/400k"
     )
     app.runtime.agent = SimpleNamespace(
         model=SimpleNamespace(settings={"openai_reasoning_effort": "low"}),
@@ -49,6 +49,28 @@ def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
     assert fragment_list_to_text(app.toolbar()).endswith("openai:gpt-5 (high) · ctx: 0/400k")
     app.runtime.agent.model_settings = None
     assert fragment_list_to_text(app.toolbar()).endswith("openai:gpt-5 (low) · ctx: 0/400k")
+
+
+@pytest.mark.parametrize(
+    ("relative", "branch", "expected"),
+    [
+        # A session worktree names itself three times; keep one copy.
+        ("p/pcode/.worktrees/pcode-f2135546", "pcode-f2135546", "~/p/pcode@f2135546"),
+        # Hand-made worktrees collapse the same way, keeping their full branch.
+        ("p/pcode/.worktrees/fix-thing", "fix-thing", "~/p/pcode@fix-thing"),
+        # A worktree checked out elsewhere keeps its own path.
+        ("p/pcode/.worktrees/fix-thing", "other", "~/p/pcode/.worktrees/fix-thing@other"),
+        # Detached HEAD in a worktree: no branch to collapse onto.
+        ("p/pcode/.worktrees/pcode-f2135546", "", "~/p/pcode/.worktrees/pcode-f2135546"),
+        # A checkout whose directory already is the branch name.
+        ("p/main", "main", "~/p/main"),
+    ],
+)
+def test_footer_location_is_compact(tmp_path, monkeypatch, relative, branch, expected):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    app, _ = make_app(tmp_path / relative, monkeypatch, width=200)
+    app.branch = branch
+    assert fragment_list_to_text(app.toolbar()).startswith(f" {expected} · Enter:")
 
 
 def test_preview_home_and_help(tmp_path, monkeypatch):
