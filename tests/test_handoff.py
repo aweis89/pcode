@@ -13,8 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 from prompt_toolkit.application import Application
+from prompt_toolkit.data_structures import Size
 
-from pcode.ui import suspended_editor
+from pcode.ui import SYNC_END, SYNC_START, suspended_editor
 
 
 class FakeApp(Application):
@@ -24,11 +25,19 @@ class FakeApp(Application):
         self.__dict__.update(attrs)
 
 
+SIZE = Size(rows=40, columns=80)
+
+
 class Renderer:
     def __init__(self, cpr_replies: bool):
         self.cpr_replies = cpr_replies
         self.futures = []
         self.log = []
+        # State a real renderer holds after its last cursor report and paint.
+        self._in_alternate_screen = False
+        self._min_available_height = 0
+        self._last_size = None
+        self.rows_above_layout = 0
 
     def erase(self):
         self.log.append("erase")
@@ -66,7 +75,12 @@ def fake_app(cpr_replies: bool, running: bool = True):
         _running_in_terminal=False,
         _running_in_terminal_f=None,
         renderer=renderer,
-        output=SimpleNamespace(responds_to_cpr=True),
+        output=SimpleNamespace(
+            responds_to_cpr=True,
+            get_size=lambda: SIZE,
+            write_raw=lambda data: renderer.log.append(data),
+            flush=lambda: None,
+        ),
         input=SimpleNamespace(detach=noop, cooked_mode=noop),
     )
     app._request_absolute_cursor_position = renderer.request_cpr
@@ -135,6 +149,106 @@ def test_handoffs_chain_in_order():
         "erase", "first", "reset", "cpr", "report", "paint",
         "erase", "second", "reset", "cpr", "report", "paint",
     ]  # fmt: skip
+
+
+def painted_app(cpr_replies: bool = True, rows_above: int = 10):
+    """An app whose renderer knows where the editor sits, as after one report."""
+    app = fake_app(cpr_replies)
+    app.renderer._min_available_height = SIZE.rows - rows_above
+    app.renderer._last_size = SIZE
+    app.renderer.rows_above_layout = rows_above
+    return app
+
+
+def test_atomic_handoff_repaints_at_once_inside_one_synchronized_frame():
+    app = painted_app()
+
+    async def run():
+        async with suspended_editor(app, atomic=True) as handoff:
+            assert handoff.top_row == 11
+            app.renderer.log.append("write")
+            handoff.rows_written = 5
+
+    asyncio.run(run())
+    # Painted straight after the write, before the report; nothing awaited.
+    assert app.renderer.log == [
+        SYNC_START, "erase", "write", "reset", "cpr", "paint", SYNC_END, "report"
+    ]  # fmt: skip
+    # The renderer was told the rows left below row 16 without asking.
+    assert app.renderer._min_available_height == SIZE.rows - 16 + 1
+
+
+def test_atomic_handoff_clamps_the_cursor_to_the_last_row():
+    app = painted_app(rows_above=30)
+
+    async def run():
+        async with suspended_editor(app, atomic=True) as handoff:
+            handoff.rows_written = 500  # scrolled the screen
+
+    asyncio.run(run())
+    assert app.renderer._min_available_height == 1
+
+
+def test_atomic_handoff_honours_a_body_that_homed_the_cursor():
+    app = painted_app(rows_above=30)
+
+    async def run():
+        async with suspended_editor(app, atomic=True) as handoff:
+            handoff.top_row = 1  # after a clear-and-home
+            handoff.rows_written = 3
+
+    asyncio.run(run())
+    assert app.renderer._min_available_height == SIZE.rows - 4 + 1
+
+
+def test_next_handoff_waits_for_the_outstanding_report_before_cooked_mode():
+    app = painted_app()
+
+    async def run():
+        async with suspended_editor(app, atomic=True) as handoff:
+            handoff.rows_written = 1
+        async with suspended_editor(app, atomic=True) as handoff:
+            handoff.rows_written = 1
+
+    asyncio.run(run())
+    first_report = app.renderer.log.index("report")
+    second_erase = app.renderer.log.index("erase", first_report)
+    assert first_report < second_erase
+
+
+@pytest.mark.parametrize("reason", ["no_report_yet", "resized", "rows_unknown"])
+def test_atomic_handoff_falls_back_to_the_report_when_the_row_is_unknown(reason):
+    app = painted_app()
+    if reason == "no_report_yet":
+        app.renderer._min_available_height = 0
+    elif reason == "resized":
+        app.renderer._last_size = Size(rows=24, columns=80)
+
+    async def run():
+        async with suspended_editor(app, atomic=True) as handoff:
+            app.renderer.log.append("write")
+            if reason != "rows_unknown":
+                handoff.rows_written = 2
+
+    asyncio.run(run())
+    # The frame is released before the round trip, not held across it.
+    assert app.renderer.log == [
+        SYNC_START, "erase", "write", "reset", SYNC_END, "cpr", "report", "paint"
+    ]  # fmt: skip
+
+
+def test_atomic_handoff_failure_still_propagates_and_restores_the_editor():
+    app = painted_app()
+
+    async def run():
+        with pytest.raises(RuntimeError):
+            async with suspended_editor(app, atomic=True) as handoff:
+                handoff.rows_written = 1
+                raise RuntimeError("print failed")
+
+    asyncio.run(run())
+    assert not app._running_in_terminal
+    assert app.renderer.log[-3:] == ["paint", SYNC_END, "report"]
 
 
 def test_stand_in_app_passes_straight_through():
