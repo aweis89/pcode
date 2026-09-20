@@ -245,11 +245,11 @@ class PreviewApp:
             ),
             Command(
                 "/worktree",
-                "This session's git worktree: status / merge / finish (merge, remove, quit) / "
-                "remove / list",
+                "This session's git worktree: status / merge / resolve / finish / remove / list",
                 self.worktree,
-                ("status", "merge", "finish", "remove", "list"),
+                tuple(WORKTREE_ACTIONS),
                 group="Session",
+                argument_descriptions=WORKTREE_ACTIONS,
             ),
             Command(
                 "/show-tasks",
@@ -1110,7 +1110,15 @@ class PreviewApp:
             return
         if self.activity.busy:
             raise ValueError("Wait for the current turn to finish before changing the worktree.")
-        if action == "merge":
+        if action == "resolve":
+            if not self.model:
+                raise ValueError("/worktree resolve needs a live model session.")
+            files = worktree.conflicted_files(linked.path)
+            if not files:
+                raise ValueError("No merge conflicts to resolve; run /worktree merge first.")
+            # A prompt in command clothing, dispatched like a skill.
+            self.skill_requested = worktree.resolve_prompt(linked, files)
+        elif action == "merge":
             self.transcript.note(worktree.merge(linked))
         elif action == "remove":
             if worktree.unmerged_commits(linked):
@@ -2413,6 +2421,14 @@ def main() -> None:
 
 
 SESSION_WORKTREE_PREFIX = "pcode-"
+WORKTREE_ACTIONS = {
+    "status": "Branch, mainline, and what is unmerged",
+    "merge": "Merge the mainline into this branch, then fast-forward the mainline",
+    "resolve": "Ask the model to resolve the conflicts a merge stopped on",
+    "finish": "Merge, remove the worktree and its branch, and quit",
+    "remove": "Delete the merged worktree; the branch stays",
+    "list": "Every worktree of this repository",
+}
 
 
 def _select_project_root(argv: list[str]) -> None:
