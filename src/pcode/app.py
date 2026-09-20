@@ -201,7 +201,10 @@ class PreviewApp:
                 "/new", "Start a new conversation; clears the screen", self.new, group="Session"
             ),
             Command(
-                "/resume", "Choose a saved session to resume", self.select_session, group="Session"
+                "/resume",
+                "Browse and search saved sessions to resume",
+                self.select_session,
+                group="Session",
             ),
             Command(
                 "/compact",
@@ -1121,42 +1124,31 @@ class PreviewApp:
                 session.default_buffer.cursor_position = len(draft)
 
     async def choose_session(self, output: TerminalOutput, session) -> None:
-        from pcode.diagnostics import redact
-        from pcode.session_ui import session_dialog
-        from pcode.sessions import first_prompt, list_sessions
+        from pcode.session_ui import SessionBrowser
+        from pcode.sessions import list_sessions, session_root
 
         self.session_requested = False
-        records = [
-            info
-            for info in list_sessions(self.session_dir)
-            if Path(info.workspace).resolve() == self.workspace
-        ]
-        if not records:
+        records = list_sessions(self.session_dir)
+        if not any(Path(info.workspace).resolve() == self.workspace for info in records):
             self.transcript.note("No saved sessions for this workspace.")
             return
         current = getattr(self.runtime, "session", None)
-        values = [
-            (
-                info.id,
-                f"{plain(redact(first_prompt(info, self.session_dir)), 100)}"
-                f"\n  {info.updated[:16]} · {plain(info.model)} · {info.id[:8]}"
-                + (" · active" if current and current.info.id == info.id else ""),
-            )
-            for info in records
-        ]
         await output.flush()
         async with output.lock:
             async with suspended_editor(session.app):
                 stdin = getattr(session.app.input, "stdin", None)
                 modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
                 try:
-                    dialog = session_dialog(
-                        values,
+                    browser = SessionBrowser(
+                        records,
+                        root=self.session_dir or session_root(),
+                        workspace=self.workspace,
+                        active_id=current.info.id if current else None,
                         input=modal_input,
                         output=session.app.output,
                         style=session.app.style,
                     )
-                    identity = await dialog.run_async()
+                    identity = await browser.run()
                 finally:
                     if modal_input is not session.app.input:
                         modal_input.close()
