@@ -80,6 +80,10 @@ def test_edit_and_queue_during_generation(outcome):
                     assert app.activity.prompt == "first"
                     assert app.activity.prompt_state == "running"
                     if outcome == "cancel":
+                        # The draft absorbs the first Ctrl+C; the run keeps going.
+                        pipe.send_text("\x03")
+                        await wait_for(lambda: not session.default_buffer.text)
+                        assert app.activity.busy
                         pipe.send_text("\x03")
                     else:
                         finish.set()
@@ -96,6 +100,9 @@ def test_edit_and_queue_during_generation(outcome):
                         == {"success": "done", "failure": "failed", "cancel": "cancelled"}[outcome]
                     )
                     assert app.activity.prompt == ("second" if outcome == "success" else "first")
+                    if outcome == "cancel":
+                        pipe.send_text("draft text\x1b[D\x1b[D\x1b[D\x1b[D")
+                        await wait_for(lambda: session.default_buffer.text == "draft text")
                     assert session.default_buffer.text == "draft text"
                     assert session.default_buffer.cursor_position == 6
                     pipe.send_text("my ")
