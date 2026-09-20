@@ -898,7 +898,9 @@ paginates long text, and includes bounded ancestor context (not sibling branches
   Older sessions use Git discovery or the conventional `.worktrees/` layout;
   a deleted legacy worktree elsewhere may need `scope="all"`.
 
-Keyword retrieval needs no credentials or network. Optional hybrid retrieval uses
+Keyword retrieval is BM25 (the same ranking as Harness's `ConversationSearch`)
+with a bonus for an exact phrase match; it needs no credentials or network.
+Optional hybrid retrieval uses
 Pydantic AI's `Embedder` when you explicitly set a model before launching:
 
 ```sh
