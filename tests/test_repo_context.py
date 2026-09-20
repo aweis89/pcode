@@ -152,6 +152,34 @@ def test_app_displays_actual_agent_context_and_preview_stays_local(tmp_path, mon
     assert output.getvalue() == ""
 
 
+def test_startup_context_is_not_repeated_after_a_model_switch(tmp_path, monkeypatch):
+    from io import StringIO
+
+    from rich.console import Console
+
+    from pcode.app import PreviewApp
+    from pcode.live import AgentRuntime
+
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    (tmp_path / "AGENTS.md").write_text("guidance")
+    output = StringIO()
+    app = PreviewApp(
+        model="test",
+        workspace=tmp_path,
+        console=Console(file=output, width=160, color_system=None),
+        runtime=AgentRuntime(create_agent("test", tmp_path)),
+    )
+    app.skill_command_names = ["/skill:review"]
+    app.show_startup_context()
+    first = output.getvalue()
+    assert "Loaded repository instructions: AGENTS.md" in first
+    assert "Skill commands: /skill:review" in first
+    output.seek(0)
+    output.truncate()
+    app.show_startup_context()
+    assert output.getvalue() == ""
+
+
 def test_walk_up_loads_both_filenames_in_ancestor_first_order(tmp_path, monkeypatch):
     home = tmp_path / "home"
     repo = home / "project"
