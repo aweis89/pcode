@@ -22,6 +22,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from pcode.commands import Command, CommandRegistry
+from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_arguments, configure
 from pcode.preferences import (
@@ -2508,7 +2509,12 @@ def main() -> None:
     # The workspace's `.pcode/preferences.json` overlays user defaults, so it has
     # to be known before the first load_preferences() (the --theme default).
     _select_project_root(sys.argv[1:])
-    parser.add_argument("--theme", choices=THEMES, default=load_preferences().get("theme", "dark"))
+    parser.add_argument(
+        "--theme",
+        choices=THEMES,
+        default=load_preferences().get("theme", "dark"),
+        help="Color theme (default: saved preference)",
+    )
     parser.add_argument(
         "--color-style",
         choices=COLOR_STYLES,
@@ -2560,6 +2566,12 @@ def main() -> None:
     )
     parser.add_argument("--sessions", action="store_true", help="List saved sessions and exit")
     parser.add_argument(
+        "--completions",
+        choices=COMPLETION_SHELLS,
+        metavar="SHELL",
+        help=f"Print a shell completion script ({', '.join(COMPLETION_SHELLS)}) and exit",
+    )
+    parser.add_argument(
         "-c",
         "--continue",
         dest="resume",
@@ -2591,6 +2603,12 @@ def main() -> None:
         help="Also trace Python allocations (slower; requires --profile)",
     )
     args = parser.parse_args()
+    if args.completions:
+        from pcode.completion import install_hint, render
+
+        print(render(parser, args.completions), end="")
+        print(f"# Install: {install_hint(args.completions)}")
+        return
     args.command = None
     if args.resume is not None:
         from pcode.sessions import is_session_selector
