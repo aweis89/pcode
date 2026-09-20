@@ -112,6 +112,15 @@ def test_browser_scopes_searches_and_shows_turns(tmp_path):
         assert app.detail.text().endswith("▌ Cache question elsewhere\n\n  (no response text)")
 
 
+def test_browser_scopes_without_git(tmp_path):
+    with (
+        create_pipe_input() as pipe,
+        patch("pcode.session_ui.main_checkout", side_effect=FileNotFoundError),
+    ):
+        app, ids = browser(tmp_path, input=pipe)
+        assert [info.id for info in app.visible] == [ids["newest"], ids["older"]]
+
+
 def test_browser_marks_unreadable_and_empty_sessions(tmp_path):
     with create_pipe_input() as pipe:
         app, ids = browser(tmp_path, input=pipe)
@@ -227,7 +236,7 @@ def test_markdown_links_do_not_leak_their_escape_wrapper():
 
 
 def test_rich_pane_renders_current_content_in_one_pass():
-    """preferred_width caches fragments before create_content; the pane must not lag a frame."""
+    """Layout sizing must not leave the pane showing the previous frame's content."""
     from prompt_toolkit.application import Application
     from prompt_toolkit.application.current import set_app
     from prompt_toolkit.layout import Layout
@@ -241,7 +250,7 @@ def test_rich_pane_renders_current_content_in_one_pass():
         control = pane.control
         assert control.preferred_width(80) is not None
         pane.set([Text("second")])
-        assert control.preferred_width(80) is not None  # Caches "first" for this pass.
+        assert control.preferred_width(80) is not None
         content = control.create_content(80, None)
         assert "second" in "".join(t for _, t in content.get_line(0))
 
