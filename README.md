@@ -955,6 +955,10 @@ candidate's size so that cost is visible before you pick.
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed`: open the same inspector filtered to failures.
 - `/diffs`: browse this conversation's file diffs in a full-screen popup.
+- `/links`: pick any URL mentioned in this conversation (your prompts or the
+  assistant's replies, newest first) and open it in the default browser via
+  `open` (macOS), `xdg-open` (Linux), or the shell association (Windows). Useful
+  when the terminal or an older tmux does not make rendered links clickable.
 - `/status`: current model, workspace, session storage path, completed turns, token usage,
   and a breakdown of the prompt overhead the model is re-sent every request — see
   [Where the fixed prompt goes](#where-the-fixed-prompt-goes). Opens a popup in the

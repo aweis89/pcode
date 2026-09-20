@@ -33,6 +33,7 @@ def make_app(width=80, workspace=None):
                 "/status",
                 "/tools",
                 "/diffs",
+                "/links",
                 "/tree",
                 "/model",
                 "/effort",
