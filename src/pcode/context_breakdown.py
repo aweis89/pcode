@@ -34,7 +34,7 @@ SOURCE_LABELS = {
     "planning": "Planning tool",
     "sub_agents": "Sub-agents",
     "tool_output_limits": "Tool output limits",
-    "web_research": "Web research",
+    "ext.web_research": "Web research",
 }
 AGENT_LABEL = "Terminal instructions"
 # Coder's base prompt is a concrete `Capability`, which attributes its

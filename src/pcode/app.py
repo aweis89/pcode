@@ -1650,6 +1650,9 @@ class PreviewApp:
             for extension, line in zip(
                 self.extensions.extensions, self.extensions.report(self.workspace), strict=True
             ):
+                # Shipped defaults are not news at every launch; /extensions lists them.
+                if extension.loaded and extension.scope == "bundled":
+                    continue
                 (lines if extension.loaded else warnings).append("Extension " + line)
         for line in lines + warnings:
             if line in self._startup_context_shown:
