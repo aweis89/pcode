@@ -1,5 +1,7 @@
 """All modal surfaces override toolkit colors without painting a background."""
 
+from pathlib import Path
+
 import pytest
 from prompt_toolkit.styles import merge_styles
 from prompt_toolkit.styles.defaults import default_ui_style
@@ -65,13 +67,13 @@ def test_all_popups_share_style_scope(kind):
     from pcode.inspection import ToolArchive
     from pcode.inspector_ui import ToolInspector
     from pcode.model_ui import ModelPicker
-    from pcode.session_ui import session_dialog
+    from pcode.session_ui import SessionBrowser
     from pcode.tree_ui import tree_dialog
 
     with create_pipe_input() as pipe:
         options = dict(input=pipe, output=DummyOutput(), style=PALETTES["dark"].prompt_style())
         if kind == "sessions":
-            app = session_dialog([("one", "First session")], **options)
+            app = SessionBrowser([], root=Path("."), workspace=Path("."), **options).app
         elif kind == "tree":
             app = tree_dialog(ConversationTree(), **options)
         elif kind == "models":

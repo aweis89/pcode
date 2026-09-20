@@ -652,10 +652,12 @@ it picks the newest session whose workspace is the current directory (or `-C`), 
 the newest session overall. It prints recent transcript blocks and waits for your
 next message; it does not automatically re-run tools.
 A different explicit `-m` or `-C` is rejected on resume. Only one process may open
-a session for writing. `/resume` opens a popup of saved conversations in the current
-workspace, labeled by their first prompt (newest first). Use ↑/↓ and Enter to
-resume in place, or Esc to cancel. Resuming restores the saved model, history,
-and plan.
+a session for writing. `/resume` opens a full-screen browser of saved conversations
+in the current workspace (newest first, labeled by their first prompt) with every
+prompt and a truncated response for the selected session alongside. `/` searches
+prompts across sessions (space-separated words are all required); `r` includes
+responses, `w` includes every workspace. Enter resumes the selected session in
+place, Esc cancels. Resuming restores the saved model, history, and plan.
 
 Default location: `$XDG_STATE_HOME/pcode/sessions`, or
 `~/.local/state/pcode/sessions`. Override with `--session-dir PATH` or
@@ -809,7 +811,7 @@ candidate's size so that cost is visible before you pick.
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
 - `/autocompact on|off`: opt into automatic LLM compaction (saved user preference; default off).
 - `/new`: start a new saved conversation; clears the screen and retained scrollback, keeps input history.
-- `/resume`: choose a saved conversation by its first prompt and resume it in place.
+- `/resume`: browse and search saved conversations by their prompts; resume one in place.
 - `/tree`: [browse and fork the conversation](docs/conversation-tree.md); select a user prompt to
   edit it, or an assistant response to continue from there. Existing branches are kept.
 - `/skill:NAME [text]`: run a discovered skill; see

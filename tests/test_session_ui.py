@@ -11,26 +11,115 @@ from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
-from pcode.session_ui import session_dialog, session_info_dialog
-from pcode.sessions import SavedSession, SessionError, first_prompt
+from pcode.session_ui import SessionBrowser, excerpt, session_info_dialog
+from pcode.sessions import SavedSession, SessionError, Turn, first_prompt, session_turns
 
 
-@pytest.mark.parametrize("keys,expected", [("\x1b[B\r", "second"), ("\x1b", None)])
-def test_popup_keyboard(keys, expected):
+def two_sessions(tmp_path):
+    """Newest-first: `older` in this workspace, `newer` in another, `newest` here."""
+    from pcode.runtime import Message
+
+    root = tmp_path / "sessions"
+    ids = {}
+    for name, workspace, prompts in [
+        ("older", tmp_path, [("Fix the cache warning", "Patched cache_warnings.py")]),
+        ("other", tmp_path / "elsewhere", [("Cache question elsewhere", "")]),
+        ("newest", tmp_path, [("Add a theme", "Done"), ("Now tests", "Wrote tests for the theme")]),
+    ]:
+        saved = SavedSession.create("test:local", workspace, root)
+        for prompt, response in prompts:
+            saved.append("turn_started", prompt=prompt)
+            if response:
+                saved.event(Message(response))
+            saved.append("turn_completed")
+        saved.save_info()
+        saved.close()
+        ids[name] = saved.info.id
+    return root, ids
+
+
+def browser(tmp_path, **options):
+    from pcode.sessions import list_sessions
+
+    root, ids = two_sessions(tmp_path)
+    records = list_sessions(root)
+    assert [info.id for info in records] == [ids["newest"], ids["other"], ids["older"]]
+    return SessionBrowser(
+        records, root=root, workspace=tmp_path, output=DummyOutput(), **options
+    ), ids
+
+
+@pytest.mark.parametrize(
+    "keys,expected",
+    [
+        ("\r", "newest"),
+        ("\x1b[B\r", "older"),
+        ("\x1b", None),
+        # Search narrows the list to the session whose prompt matches, Enter leaves the field.
+        ("/cache warn\r\r", "older"),
+        ("/nothing-matches\r\r", None),
+    ],
+)
+def test_browser_keyboard(tmp_path, keys, expected):
     async def run():
         with create_pipe_input() as pipe:
-            dialog = session_dialog(
-                [("first", "First prompt"), ("second", "Second prompt")],
-                input=pipe,
-                output=DummyOutput(),
-            )
-            assert dialog.mouse_support()
-            task = asyncio.create_task(dialog.run_async())
+            app, ids = browser(tmp_path, input=pipe)
+            assert app.app.mouse_support()
+            task = asyncio.create_task(app.run())
             await asyncio.sleep(0.05)
             pipe.send_text(keys)
-            assert await asyncio.wait_for(task, 2) == expected
+            result = await asyncio.wait_for(task, 2)
+            assert result == (ids[expected] if expected else None)
 
     asyncio.run(run())
+
+
+def test_browser_scopes_searches_and_shows_turns(tmp_path):
+    with create_pipe_input() as pipe:
+        app, ids = browser(tmp_path, input=pipe)
+        # Only this workspace, newest first; the detail pane lists every turn.
+        assert [info.id for info in app.visible] == [ids["newest"], ids["older"]]
+        assert app.list.text.startswith(app.title(app.visible[0]))
+        assert "Add a theme" in app.list.text
+        assert app.detail.text.startswith(f"{ids['newest'][:8]} · test:local · ")
+        assert app.detail.text.endswith(
+            "2 turns\n\n› Add a theme\n  Done\n\n› Now tests\n  Wrote tests for the theme"
+        )
+        # Words are AND-ed against prompts and the detail keeps only matching turns.
+        app.query.text = "tests now"
+        assert [info.id for info in app.visible] == [ids["newest"]]
+        assert app.detail.text.endswith("1 of 2 turns\n\n› Now tests\n  Wrote tests for the theme")
+        # Responses are searched only when asked.
+        app.query.text = "patched"
+        assert app.visible == []
+        assert app.detail.text == "No matching sessions."
+        app.responses = True
+        app.refresh()
+        assert [info.id for info in app.visible] == [ids["older"]]
+        # Widening to every workspace brings the other repo in.
+        app.query.text = "cache"
+        assert [info.id for info in app.visible] == [ids["older"]]
+        app.everywhere = True
+        app.refresh()
+        assert [info.id for info in app.visible] == [ids["other"], ids["older"]]
+        assert app.details(app.visible[0]).endswith(
+            "› Cache question elsewhere\n  (no response text)"
+        )
+
+
+def test_browser_marks_unreadable_and_empty_sessions(tmp_path):
+    with create_pipe_input() as pipe:
+        app, ids = browser(tmp_path, input=pipe)
+        empty = SavedSession.create("test:local", tmp_path, app.root)
+        empty.close()
+        gone = empty.info.model_copy(update={"id": "missing"})
+        assert app.details(empty.info).endswith("0 turns\n\n(No prompt yet)")
+        assert app.details(gone) == "(Transcript unavailable)"
+
+
+def test_excerpt_keeps_a_few_nonblank_lines():
+    assert excerpt("one\n\ntwo\nthree\nfour", 3, indent="  ") == "  one\n  two\n  three\n  …"
+    assert excerpt("x" * 200, 1) == "x" * 159 + "…"
 
 
 @pytest.mark.parametrize("keys", ["\x1b", "\r", "q"])
@@ -112,6 +201,40 @@ def test_first_prompt_is_not_latest_and_handles_empty_session(tmp_path):
         assert first_prompt(saved.info, saved.directory.parent) == "First question"
     finally:
         saved.close()
+
+
+def test_session_turns_pairs_prompts_with_final_responses(tmp_path):
+    from pcode.runtime import Message
+
+    saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
+    root = saved.directory.parent
+    try:
+        assert session_turns(saved.info, root) == []
+        saved.append("turn_started", prompt="First question", run_id="a")
+        saved.event(Message("Interim thoughts"))
+        saved.event(Message("Final answer"))
+        saved.append("turn_completed", run_id="a")
+        saved.append("turn_started", prompt="Second", run_id="b")
+        saved.append("turn_failed", run_id="b", error="boom")
+        # A /resend retry keeps the turn and replaces its outcome.
+        saved.append("turn_started", prompt="Second", run_id="c", continuation=True)
+        saved.event(Message("Retry worked"))
+        saved.append("turn_completed", run_id="c")
+        saved.append("turn_started", prompt="Third", run_id="d")
+        saved.append("turn_cancelled", run_id="d")
+        with (saved.directory / "transcript.jsonl").open("a") as file:
+            file.write('{"kind": "turn_started", "prompt": "torn')  # Torn final record.
+        assert session_turns(saved.info, root) == [
+            Turn("First question", "Final answer", "complete"),
+            Turn("Second", "Retry worked", "complete"),
+            Turn("Third", "", "cancelled"),
+        ]
+        assert first_prompt(saved.info, root) == "First question"
+    finally:
+        saved.close()
+    missing = saved.info.model_copy(update={"id": "nope"})
+    assert session_turns(missing, root) is None
+    assert first_prompt(missing, root) == "(Prompt unavailable)"
 
 
 def test_resume_restores_before_replacing_runtime(tmp_path):

@@ -6,7 +6,7 @@ import re
 import tempfile
 from collections import deque
 from copy import deepcopy
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -85,23 +85,84 @@ def list_sessions(root: Path | None = None) -> list[SessionInfo]:
     return sorted(result, key=lambda info: info.updated, reverse=True)
 
 
-def first_prompt(info: SessionInfo, root: Path | None = None) -> str:
-    """Read the first submitted prompt without opening or locking the session."""
+@dataclass
+class Turn:
+    """One prompt and the final response it produced, for browsing and search."""
+
+    prompt: str
+    response: str = ""
+    status: str = "running"  # "complete", "cancelled", "failed", or still "running".
+
+
+_TURN_KINDS = ("turn_started", "Message", "turn_completed", "turn_cancelled", "turn_failed")
+
+
+def _turn_records(info: SessionInfo, root: Path | None):
+    """Yield turn-level records without opening or locking the session.
+
+    Raises ``OSError`` when the transcript cannot be read. Transcripts are
+    mostly streaming deltas, so only candidate lines are parsed.
+    """
     directory = (root or session_root()) / info.id
     path = directory / "transcript.jsonl"
     if directory.is_symlink() or path.is_symlink():
-        return "(Prompt unavailable)"
+        raise OSError("symlinked session")
+    markers = tuple(f'"{kind}"' for kind in _TURN_KINDS)
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            if not any(marker in line for marker in markers):
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("kind") in _TURN_KINDS:
+                yield record
+
+
+def session_turns(info: SessionInfo, root: Path | None = None) -> list[Turn] | None:
+    """Read every turn in file order; ``None`` when the transcript is unreadable.
+
+    Forked branches are included: reconstructing the active path needs the
+    session lock, which the live session holds, and abandoned prompts are
+    still worth finding.
+    """
+    turns: list[Turn] = []
     try:
-        with path.open() as stream:
-            for line in stream:
-                try:
-                    record = json.loads(line)
-                except ValueError:
+        for record in _turn_records(info, root):
+            kind = record["kind"]
+            if kind == "turn_started":
+                prompt = record.get("prompt")
+                if not isinstance(prompt, str):
                     continue
-                if isinstance(record, dict) and record.get("kind") == "turn_started":
-                    prompt = record.get("prompt")
-                    if isinstance(prompt, str):
-                        return prompt
+                # A /resend retry reuses the prompt; its outcome belongs to the same turn.
+                if record.get("continuation") and turns and turns[-1].prompt == prompt:
+                    turns[-1].status = "running"
+                    continue
+                turns.append(Turn(prompt))
+            elif not turns:
+                continue
+            elif kind == "Message":
+                markdown = record.get("markdown")
+                if isinstance(markdown, str):
+                    turns[-1].response = markdown
+            elif kind == "turn_completed":
+                turns[-1].status = "complete"
+            elif kind == "turn_cancelled":
+                turns[-1].status = "cancelled"
+            elif kind == "turn_failed":
+                turns[-1].status = "failed"
+    except OSError:
+        return None
+    return turns
+
+
+def first_prompt(info: SessionInfo, root: Path | None = None) -> str:
+    """The first submitted prompt, stopping at the first record so listing stays cheap."""
+    try:
+        for record in _turn_records(info, root):
+            if record["kind"] == "turn_started" and isinstance(record.get("prompt"), str):
+                return record["prompt"]
     except OSError:
         return "(Prompt unavailable)"
     return "(No prompt yet)"
