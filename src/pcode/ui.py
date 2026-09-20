@@ -25,6 +25,7 @@ from prompt_toolkit.output import Output, create_output
 from prompt_toolkit.renderer import Renderer
 from prompt_toolkit.search import stop_search
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame, Label
 from rich.console import Console
 from rich.markdown import Markdown
@@ -58,6 +59,7 @@ from pcode.tool_display import (
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
+from pcode.word_wrap import WordWrapProcessor
 
 
 @dataclass(frozen=True)
@@ -933,6 +935,10 @@ class TerminalOutput:
             await self.flush()
 
 
+PROMPT_PREFIX = "❯ "
+CONTINUATION_PREFIX = "· "
+
+
 def create_prompt(
     registry: CommandRegistry,
     *,
@@ -1064,8 +1070,13 @@ def create_prompt(
         output = CursorSafeOutput(output if output is not None else create_output())
     session = PromptSession(
         output=output,
-        message=[("class:prompt", "❯ ")],
-        prompt_continuation=lambda width, line, soft: [("class:prompt", "  " if soft else "· ")],
+        message=[("class:prompt", PROMPT_PREFIX)],
+        prompt_continuation=lambda width, line, soft: [
+            ("class:prompt", "  " if soft else CONTINUATION_PREFIX)
+        ],
+        # Every prefix is the same width, so wrapped rows all get the same
+        # amount of text space.
+        input_processors=[WordWrapProcessor(prefix_width=get_cwidth(PROMPT_PREFIX))],
         multiline=True,
         erase_when_done=True,
         completer=merge_completers([SlashCompleter(registry), FileReferenceCompleter(workspace)]),
@@ -1129,7 +1140,12 @@ def create_prompt(
     # Give the prompt line its own glyph so it reads as the overall turn, not as
     # another in-progress task row.
     prompt_spinner = Spinner("dots")
-    refresh_interval = min(plan_spinner.interval, prompt_spinner.interval) / 1000
+    # System rows (compaction, worktree git work) spin differently from a
+    # model turn, so a wait on pcode itself is never mistaken for one on the model.
+    system_spinner = Spinner("line")
+    refresh_interval = (
+        min(plan_spinner.interval, prompt_spinner.interval, system_spinner.interval) / 1000
+    )
 
     @per_render
     def base_plan_rows(budget: int | None = None):
@@ -1257,7 +1273,9 @@ def create_prompt(
         Window(
             FormattedTextControl(
                 lambda: activity.status_fragments(
-                    prompt_spinner.render(monotonic()).plain,
+                    (prompt_spinner if activity.prompt_kind == "user" else system_spinner)
+                    .render(monotonic())
+                    .plain,
                     session.app.output.get_size().columns,
                 ),
                 show_cursor=False,
