@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from pcode.preferences import (
+    MODEL_EFFORTS_KEY,
     SETTINGS,
     USER_ONLY,
     Setting,
@@ -21,8 +22,15 @@ from pcode.preferences import (
     update_preferences,
 )
 
-USAGE = "config [list | path | get KEY | set KEY VALUE | unset KEY | project ...]"
-PROJECT_USAGE = "config project [list | path | set KEY VALUE | unset KEY]"
+USAGE = "config [list | path | get KEY | set KEY VALUE | unset KEY | reset | project ...]"
+PROJECT_USAGE = "config project [list | path | set KEY VALUE | unset KEY | reset]"
+
+# Resetting clears the recorded /login choice and every per-repository extension
+# grant, so say so rather than leaving the next launch to re-prompt unexplained.
+_RESET_NOTICE = {
+    "anthropic_auth": "re-run /login to choose a credential",
+    "trusted_projects": "repositories must be trusted again",
+}
 
 
 def _setting(key: str) -> Setting:
@@ -53,6 +61,19 @@ def _effective_data() -> dict:
     return data
 
 
+def _reset(path: Path | None, label: str) -> str:
+    """Drop every known setting, leaving unrecognized keys the file may carry."""
+    # Per-model efforts are a setting in every sense a user cares about, so a
+    # reset must clear them too even though they live outside SETTINGS.
+    known = set(SETTINGS) | {MODEL_EFFORTS_KEY}
+    removed = sorted(set(read_preferences(path)) & known)
+    if not removed:
+        return f"No {label} defaults to reset."
+    update_preferences({}, remove=tuple(removed), path=path)
+    notice = "".join(f" {_RESET_NOTICE[key]}." for key in removed if key in _RESET_NOTICE)
+    return f"Reset {label} defaults: {', '.join(removed)}. Applies on next launch.{notice}"
+
+
 def _project_path() -> Path:
     path = project_preferences_path()
     if path is None:
@@ -78,6 +99,8 @@ def _configure_project(args: list[str]) -> str:
         _setting(key)
         update_preferences({}, remove=(key,), path=_project_path())
         return f"Removed project default: {key}. Applies on next launch."
+    if action == "reset" and len(args) == 1:
+        return _reset(_project_path(), "project")
     raise ValueError(f"Usage: {PROJECT_USAGE}")
 
 
@@ -85,7 +108,7 @@ def configure(arguments: Sequence[str]) -> str:
     """Inspect or edit saved defaults without starting a model or session.
 
     `list` and `get` report the effective value, with the project overlay
-    applied; `set` and `unset` edit the user file.
+    applied; `set`, `unset`, and `reset` edit the user file.
     """
     args = list(arguments) or ["list"]
     action = args[0]
@@ -112,7 +135,35 @@ def configure(arguments: Sequence[str]) -> str:
         update_preferences({}, remove=(key,))
         value = setting.default if setting.default is not None else "null (offline preview)"
         return f"Reset global default: {key} = {value}. Applies on next launch."
+    if action == "reset" and len(args) == 1:
+        return _reset(None, "global")
     raise ValueError(f"Usage: {USAGE}")
+
+
+def config_argument_descriptions() -> dict[str, str]:
+    """Completion-menu text: the setting's purpose beside each key, its default beside values."""
+    described: dict[str, str] = {
+        "list": "Show every effective setting",
+        "path": "Print the user preferences file",
+        "get": "Show one effective setting",
+        "set": "Save a user default (applies on next launch)",
+        "unset": "Remove a user default",
+        "reset": "Remove every user default",
+        "project": "Edit the workspace's .pcode/preferences.json",
+        "project list": "Show the project file",
+        "project path": "Print the project preferences file",
+        "project reset": "Remove every project default",
+    }
+    for key, setting in SETTINGS.items():
+        default = "unset" if setting.default is None else setting.default
+        text = f"{setting.description} (default {default})" if setting.description else ""
+        for action in ("get", "unset", "set", "project set", "project unset"):
+            described[f"{action} {key}"] = text
+        for value in setting.choices:
+            marker = " (default)" if value == setting.default else ""
+            described[f"set {key} {value}"] = f"{setting.description}{marker}"
+            described[f"project set {key} {value}"] = described[f"set {key} {value}"]
+    return described
 
 
 def config_arguments() -> tuple[str, ...]:
@@ -124,6 +175,7 @@ def config_arguments() -> tuple[str, ...]:
         "get",
         "set",
         "unset",
+        "reset",
         "project",
         *(f"get {key}" for key in SETTINGS),
         *(f"unset {key}" for key in SETTINGS),
@@ -131,6 +183,7 @@ def config_arguments() -> tuple[str, ...]:
         *(f"set {key} {value}" for key, setting in SETTINGS.items() for value in setting.choices),
         "project list",
         "project path",
+        "project reset",
         *(f"project set {key}" for key in project_keys),
         *(f"project unset {key}" for key in project_keys),
         *(f"project set {key} {value}" for key in project_keys for value in SETTINGS[key].choices),

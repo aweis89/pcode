@@ -49,13 +49,16 @@ uv run pcode -m openai-codex:gpt-5.6-luna
 
 Selecting a model with `/model` (Ctrl+L) saves it as the default for future
 startups once the selection takes effect (immediately when idle, otherwise on the
-next request). `/effort` and Ctrl+N/Ctrl+P also save the selected reasoning effort
-and current model. Preferences live in `~/.config/pcode/preferences.json`
+next request). `/effort` and Ctrl+N/Ctrl+P save the selected reasoning effort for
+the current model only, plus that model as the default. Preferences live in
+`~/.config/pcode/preferences.json`
 (or `$XDG_CONFIG_HOME/pcode/preferences.json` when set), independently of saved
 conversations and `--no-save`. Run `pcode` with no model argument to reuse the
-saved model; without a saved default it opens the offline preview. The saved
-effort applies to OpenAI/Codex, Anthropic, and Meridian models, including new and resumed conversations;
-`/effort default` restores provider-default behavior. Use `pcode config unset KEY`
+saved model; without a saved default it opens the offline preview. Saved effort
+applies per model to OpenAI/Codex, Anthropic, and Meridian models, including new
+and resumed conversations, so changing effort on one model leaves the others
+alone; a model you have never set falls back to the `effort` default.
+`/effort default` restores provider-default behavior for the current model. Use `pcode config unset KEY`
 to reset an individual default. `--theme-preview` always stays offline.
 
 `-m` / `--model` overrides the saved model for that launch; `--continue` uses the
@@ -134,6 +137,7 @@ pcode config set effort high
 pcode config set model openai-codex:gpt-5.6-luna
 pcode config unset model          # Remove saved model; return to offline preview
 pcode config unset theme          # Restore built-in dark theme
+pcode config reset                # Remove every saved default at once
 ```
 
 The same commands are available inside pcode as `/config`, with tab completion:
@@ -155,6 +159,7 @@ directory):
 pcode config project set worktree on    # this repo only; writes .pcode/preferences.json
 pcode config project list               # the raw overlay
 pcode config project unset worktree
+pcode config project reset              # Drop the whole overlay
 ```
 
 A cloned repository must not be able to run code or pick credentials on your
@@ -205,7 +210,7 @@ is only sensible on a machine where you wrote all of them.
 | `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `project_extensions` | `off` | `on`, `off` (`on` trusts every repository's `.pcode/extensions` and `worktree-setup`) |
 | `trusted_projects` | `` | `:`-separated repository paths whose shipped code may run; the launch prompt appends here |
-| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian) |
+| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian); fallback for models `/effort` has not set |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
 
 #### Code highlighting styles
@@ -1383,7 +1388,8 @@ with its threshold rather than exact provider counts.
 
 For OpenAI/Codex, Anthropic, and Meridian models, use **Ctrl+N** to increase effort and **Ctrl+P** to
 decrease it, or `/effort low|medium|high|xhigh`. `/effort` shows the current
-setting; `/effort default` removes the override. Slash completion includes these
+setting; `/effort default` removes the override. Each model remembers its own
+level, so raising effort on one model does not raise it elsewhere. Slash completion includes these
 values, and the footer shows the selected effort.
 
 Shortcuts stop at the lowest/highest level rather than wrapping. From the

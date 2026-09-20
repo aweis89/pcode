@@ -16,6 +16,20 @@ class Pcode < Formula
     system "uv", "sync", "--directory", libexec, "--locked", "--no-dev",
                  "--no-editable", "--no-cache", "--python", formula_opt_bin("python@3.13")/"python3.13"
     bin.install_symlink libexec/".venv/bin/pcode"
+    generate_completions_from_executable(bin/"pcode", "--completions")
+  end
+
+  # Homebrew's post-install relocation rewrites the universal2 (x86_64+arm64)
+  # extension modules from PyPI wheels in place. The bytes come out identical,
+  # but macOS then kills any Python that loads them (CODESIGNING "Invalid
+  # Page"). Re-signing writes fresh files, which clears that state.
+  post_install_steps do
+    on_macos do
+      run "/usr/bin/find", args: [
+        ".", "(", "-name", "*.so", "-o", "-name", "*.dylib", ")",
+        "-exec", "/usr/bin/codesign", "--force", "--sign", "-", "{}", "+"
+      ], chdir: "{{libexec}}/.venv/lib"
+    end
   end
 
   test do

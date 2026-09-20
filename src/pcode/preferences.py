@@ -26,6 +26,8 @@ class Setting:
     whole_number: bool = False
     # An os.pathsep-separated list of directories; empty means "none".
     path_list: bool = False
+    # One line shown beside the key in /config completions.
+    description: str = ""
 
     def validate(self, key: str, value: str) -> None:
         if self.path_list:
@@ -56,78 +58,203 @@ DEFAULT_SKILL_DIRS = os.pathsep.join(("~/.agents/skills", ".agents/skills"))
 
 
 SETTINGS = {
-    "send_mode": Setting("steering", SEND_MODES),
-    # Which Anthropic credential /login selected; PCODE_ANTHROPIC_AUTH still wins.
-    "anthropic_auth": Setting(None, ANTHROPIC_AUTH_SOURCES),
-    "meridian_managed": Setting("off", ("on", "off")),
-    "repo_context_walk_up": Setting("on", ("on", "off")),
-    "repo_context_nested": Setting("off", ("off", "pointer", "contents")),
-    # How discovered SKILL.md assets appear as slash commands.
-    "skill_commands": Setting("prefix", ("prefix", "bare", "both", "off")),
-    # Extra skill directories, searched after the workspace asset roots. Relative
-    # entries resolve against the workspace; `~` expands to the user's home.
-    "skill_dirs": Setting(DEFAULT_SKILL_DIRS, path_list=True),
+    "send_mode": Setting(
+        "steering",
+        SEND_MODES,
+        description="Enter mid-turn: steer the running turn, queue for after, or interrupt",
+    ),
+    # PCODE_ANTHROPIC_AUTH still wins over the saved choice.
+    "anthropic_auth": Setting(
+        None,
+        ANTHROPIC_AUTH_SOURCES,
+        description="Anthropic credential /login selected; env PCODE_ANTHROPIC_AUTH overrides",
+    ),
+    "meridian_managed": Setting(
+        "off",
+        ("on", "off"),
+        description="Launch a process-owned Meridian instance instead of using a shared one",
+    ),
+    "repo_context_walk_up": Setting(
+        "on",
+        ("on", "off"),
+        description="Also load AGENTS.md files from directories above the workspace",
+    ),
+    "repo_context_nested": Setting(
+        "off",
+        ("off", "pointer", "contents"),
+        description="Nested AGENTS.md found while reading: ignore, mention its path, or inject it",
+    ),
+    "skill_commands": Setting(
+        "prefix",
+        ("prefix", "bare", "both", "off"),
+        description="SKILL.md assets as slash commands: /skill:NAME, /NAME, both, or none",
+    ),
+    # Relative entries resolve against the workspace; `~` expands to the user's home.
+    "skill_dirs": Setting(
+        DEFAULT_SKILL_DIRS,
+        path_list=True,
+        description=f"Extra skill directories, '{os.pathsep}'-separated, after workspace roots",
+    ),
     # Extensions run arbitrary Python at launch, so a workspace's `.pcode/extensions`
     # is opt-in; the user-level directory beside preferences.json always loads.
     # `on` trusts every repository; `trusted_projects` is the per-repository grant
     # the launch prompt appends to (primary checkout paths).
-    "project_extensions": Setting("off", ("on", "off")),
-    "trusted_projects": Setting("", path_list=True),
-    # Extra extension directories, searched after the user-level one.
-    "extension_dirs": Setting("", path_list=True),
-    # Start each new session in its own `.worktrees/<session>` git worktree so
-    # concurrent sessions never edit the same checkout. `--worktree [NAME]` and
-    # `--no-worktree` override per run.
-    "worktree": Setting("off", ("on", "off")),
-    # Leaving a session worktree with unmerged commits: ask whether to merge and
-    # remove it, do so silently when it fast-forwards, or keep it. An untouched
-    # worktree is always removed; uncommitted changes are always kept.
-    "worktree_exit": Setting("ask", ("ask", "merge", "keep")),
-    # Extra automatic attempts after a dropped connection; 0 disables retrying.
-    "retry_attempts": Setting("1", whole_number=True),
-    # Corrections offered to the model after a tool call fails argument validation
-    # or raises ModelRetry. Pydantic AI's default of 1 ends the turn on a second
-    # malformed call, which a long `replacements` array can hit by itself.
-    "tool_retries": Setting("3", whole_number=True),
-    "error_scrollback_lines": Setting("20", positive_integer=True),
-    # Failed tool calls otherwise dominate scrollback with their full diagnostic;
-    # off keeps a one-line trace and leaves the detail to the saved transcript.
-    "tool_error_scrollback": Setting("off", ("on", "off")),
-    "regenerate_on_resize": Setting("on", ("on", "off")),
-    "show_edits": Setting("on", ("on", "off")),
-    "show_commands": Setting("off", ("on", "off")),
-    "command_scrollback_lines": Setting("20", positive_integer=True),
+    "project_extensions": Setting(
+        "off",
+        ("on", "off"),
+        description="Load every workspace's .pcode/extensions without asking (runs code at launch)",
+    ),
+    "trusted_projects": Setting(
+        "",
+        path_list=True,
+        description="Checkouts whose .pcode/extensions load without asking (launch prompt appends)",
+    ),
+    "extension_dirs": Setting(
+        "",
+        path_list=True,
+        description=f"Extra extension directories, '{os.pathsep}'-separated, after the user one",
+    ),
+    # `--worktree [NAME]` and `--no-worktree` override per run.
+    "worktree": Setting(
+        "off",
+        ("on", "off"),
+        description="Start each session in its own .worktrees/<session> git worktree",
+    ),
+    # An untouched worktree is always removed; uncommitted changes are always kept.
+    "worktree_exit": Setting(
+        "ask",
+        ("ask", "merge", "keep"),
+        description="Worktree with unmerged commits on exit: ask, merge and remove, or keep",
+    ),
+    "retry_attempts": Setting(
+        "1",
+        whole_number=True,
+        description="Automatic retries after a dropped connection; 0 disables",
+    ),
+    # Pydantic AI's default of 1 ends the turn on a second malformed call, which a
+    # long `replacements` array can hit by itself.
+    "tool_retries": Setting(
+        "3",
+        whole_number=True,
+        description="Corrections offered to the model per turn when a tool call fails validation",
+    ),
+    "error_scrollback_lines": Setting(
+        "20",
+        positive_integer=True,
+        description="Lines of an error notice kept in scrollback before it is clipped",
+    ),
+    "tool_error_scrollback": Setting(
+        "off",
+        ("on", "off"),
+        description="Keep a failed tool call's full diagnostic in scrollback, not one line",
+    ),
+    "regenerate_on_resize": Setting(
+        "on",
+        ("on", "off"),
+        description="Rebuild scrollback at the new width when the terminal resizes",
+    ),
+    "show_edits": Setting(
+        "on",
+        ("on", "off"),
+        description="Show a diff preview of each file edit in the transcript",
+    ),
+    "show_commands": Setting(
+        "off",
+        ("on", "off"),
+        description="Mirror shell command output into scrollback (Ctrl+G toggles the live preview)",
+    ),
+    "command_scrollback_lines": Setting(
+        "20",
+        positive_integer=True,
+        description="Lines of shell output mirrored into scrollback per command",
+    ),
     # The pinned live preview competes with the editor for screen space, so it
-    # caps separately from the scrollback mirror. Visibility stays on Ctrl+G.
-    "command_preview_lines": Setting("10", positive_integer=True),
-    "show_tasks": Setting("on", ("on", "off")),
-    "autohide_tasks": Setting("on", ("on", "off")),
-    "show_thinking": Setting("off", ("on", "off")),
-    "editing_mode": Setting("emacs", ("emacs", "vi")),
-    "theme": Setting("dark", ("dark", "light", "auto")),
-    # Pygments styles for fenced code, chosen per palette so `theme auto` keeps
-    # highlighting legible on either background. `/colors terminal` overrides
-    # both with the ANSI styles, which follow the terminal's own colors.
-    "syntax_dark": Setting("gruvbox-dark", SYNTAX_THEMES),
-    "syntax_light": Setting("gruvbox-light", SYNTAX_THEMES),
-    "autocompact": Setting("off", ("on", "off")),
-    # Batch read-only tools through one sandboxed run_code snippet; edits, plans,
-    # shell, and delegation stay native so their transcript display survives.
-    "code_mode": Setting("off", ("on", "off")),
-    # Read by the bundled web_research extension: `auto` uses the provider's
-    # native search and fetch when the model has them and local tools otherwise,
-    # `local` never sends native tools (some endpoints reject them), `off` adds
-    # no web tools at all. Applies on /reload or next launch.
-    "web_search": Setting("auto", ("auto", "local", "off")),
-    "tool_output_mode": Setting("spill", ("spill", "truncate", "off")),
-    "tool_output_threshold": Setting("10000", positive_integer=True),
-    "tool_output_preview_chars": Setting("1000", positive_integer=True),
-    "tool_output_max_chars": Setting("4000", positive_integer=True),
-    "tool_output_strategy": Setting("head_tail", ("head", "tail", "head_tail")),
-    # Zero keeps spilled results indefinitely, preserving saved-session handles.
-    "tool_output_retention_hours": Setting("0", whole_number=True),
-    "effort": Setting("default", EFFORTS),
-    "model": Setting(None),
+    # caps separately from the scrollback mirror.
+    "command_preview_lines": Setting(
+        "10",
+        positive_integer=True,
+        description="Lines of the pinned live preview of a running shell command",
+    ),
+    "show_tasks": Setting(
+        "on", ("on", "off"), description="Show the model's plan as a pinned task list"
+    ),
+    "autohide_tasks": Setting(
+        "on", ("on", "off"), description="Hide the task list once every step is done"
+    ),
+    "show_thinking": Setting(
+        "off", ("on", "off"), description="Stream the model's thinking into the transcript"
+    ),
+    "editing_mode": Setting(
+        "emacs", ("emacs", "vi"), description="Key bindings for the prompt editor"
+    ),
+    "theme": Setting(
+        "dark",
+        ("dark", "light", "auto"),
+        description="Palette for the terminal background; auto detects it",
+    ),
+    # Chosen per palette so `theme auto` keeps highlighting legible on either
+    # background. `/colors terminal` overrides both with the ANSI styles.
+    "syntax_dark": Setting(
+        "gruvbox-dark",
+        SYNTAX_THEMES,
+        description="Pygments style for fenced code on the dark palette (/theme previews)",
+    ),
+    "syntax_light": Setting(
+        "gruvbox-light",
+        SYNTAX_THEMES,
+        description="Pygments style for fenced code on the light palette (/theme previews)",
+    ),
+    "autocompact": Setting(
+        "off",
+        ("on", "off"),
+        description="Compact the conversation automatically as the context window fills",
+    ),
+    # Edits, plans, shell, and delegation stay native so their transcript display survives.
+    "code_mode": Setting(
+        "off",
+        ("on", "off"),
+        description="Batch read-only tool calls through one sandboxed run_code snippet",
+    ),
+    # Read by the bundled web_research extension. Applies on /reload or next launch.
+    "web_search": Setting(
+        "auto",
+        ("auto", "local", "off"),
+        description="Web tools: provider-native when available, local-only, or none",
+    ),
+    "tool_output_mode": Setting(
+        "spill",
+        ("spill", "truncate", "off"),
+        description="Large tool results: spill to a file with a handle, truncate, or keep whole",
+    ),
+    "tool_output_threshold": Setting(
+        "10000",
+        positive_integer=True,
+        description="Characters a tool result may have before it is spilled or truncated",
+    ),
+    "tool_output_preview_chars": Setting(
+        "1000",
+        positive_integer=True,
+        description="Characters of a spilled result shown inline beside its handle",
+    ),
+    "tool_output_max_chars": Setting(
+        "4000",
+        positive_integer=True,
+        description="Characters kept when a tool result is truncated",
+    ),
+    "tool_output_strategy": Setting(
+        "head_tail",
+        ("head", "tail", "head_tail"),
+        description="Which part of a truncated tool result survives",
+    ),
+    "tool_output_retention_hours": Setting(
+        "0",
+        whole_number=True,
+        description="Hours to keep spilled results on disk; 0 keeps them forever",
+    ),
+    "effort": Setting(
+        "default", EFFORTS, description="Default reasoning effort for models /effort has not set"
+    ),
+    "model": Setting(None, description="Model name; unset uses the offline preview"),
 }
 
 
@@ -257,6 +384,54 @@ def _write_preferences(path: Path, data: dict) -> None:
     finally:
         if name is not None:
             Path(name).unlink(missing_ok=True)
+
+
+# Per-model effort lives outside SETTINGS: it is a mapping, not a string, and
+# the `effort` setting stays as the fallback for models never chosen explicitly.
+MODEL_EFFORTS_KEY = "model_efforts"
+
+
+def _model_efforts(path: Path | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    stored = data.get(MODEL_EFFORTS_KEY) if isinstance(data, dict) else None
+    if not isinstance(stored, dict):
+        return {}
+    return {
+        model: effort
+        for model, effort in stored.items()
+        if isinstance(model, str) and effort in EFFORTS
+    }
+
+
+def model_efforts() -> dict[str, str]:
+    """Saved effort per model, with the workspace overlay layered on top."""
+    merged = _model_efforts(preferences_path())
+    merged.update(_model_efforts(project_preferences_path()))
+    return merged
+
+
+def effort_for(model: str | None) -> str | None:
+    """The effort to request for `model`: its own, else the shared default."""
+    saved = model_efforts().get(model or "")
+    return saved if saved is not None else load_preferences().get("effort")
+
+
+def save_model_effort(model: str, effort: str) -> None:
+    """Record `effort` for `model` alone, leaving other models untouched."""
+    with FileLock(str(preferences_path()) + ".lock", timeout=5):
+        path = preferences_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = read_preferences(path)
+        stored = data.get(MODEL_EFFORTS_KEY)
+        stored = dict(stored) if isinstance(stored, dict) else {}
+        stored[model] = effort
+        data[MODEL_EFFORTS_KEY] = stored
+        _write_preferences(path, data)
 
 
 def effort_setting(model: str | None) -> str | None:
