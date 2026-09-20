@@ -8,6 +8,7 @@ import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
+from rich.text import Text
 
 from pcode.app import PreviewApp
 from pcode.runtime import (
@@ -123,10 +124,67 @@ def test_print_reports_failure_on_transcript_and_returns_false():
         console=Console(file=transcript, color_system=None, width=80),
     )
     assert not asyncio.run(app.run_print_async("go", stdout=stdout))
-    assert stdout.getvalue() == "partial\n"
+    # An interrupted block still reaches the reader, terminated.
+    assert stdout.getvalue() == "partial\n\n"
     printed = transcript.getvalue()
     assert "Agent failed" in printed
     assert "private provider body" not in printed
+
+
+class TerminalStringIO(StringIO):
+    """Stand in for a terminal so Rich chooses rendering over raw source."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def plain_text(stdout: TerminalStringIO) -> str:
+    """Rendered output carries styling; compare the words it displays."""
+    return Text.from_ansi(stdout.getvalue()).plain
+
+
+def test_print_renders_markdown_on_a_terminal():
+    class Runtime:
+        session = None
+        recovery_blocked = ""
+
+        async def stream(self, text):
+            yield TextDelta("**Two** things")
+            yield TextDelta(" changed.")
+            yield Message("**Two** things changed.\n\n- `example.py`\n")
+
+    stdout = TerminalStringIO()
+    app = PreviewApp(
+        model="test:local",
+        runtime=Runtime(),
+        console=Console(file=StringIO(), color_system=None, width=80),
+    )
+    assert asyncio.run(app.run_print_async("what changed?", stdout=stdout))
+    printed = plain_text(stdout)
+    assert "Two things changed." in printed
+    assert "example.py" in printed
+    # Rendered once as a settled block: no markdown source, no duplicated deltas.
+    assert "**" not in printed
+    assert printed.count("things changed") == 1
+
+
+def test_print_renders_a_partial_block_left_by_a_failure_on_a_terminal():
+    class Runtime:
+        session = None
+        recovery_blocked = ""
+
+        async def stream(self, text):
+            yield TextDelta("**partial** answer")
+            raise RuntimeError("private provider body")
+
+    stdout = TerminalStringIO()
+    app = PreviewApp(
+        model="test:local",
+        runtime=Runtime(),
+        console=Console(file=StringIO(), color_system=None, width=80),
+    )
+    assert not asyncio.run(app.run_print_async("go", stdout=stdout))
+    assert "partial answer" in plain_text(stdout)
 
 
 def test_print_without_a_model_uses_the_offline_preview():
