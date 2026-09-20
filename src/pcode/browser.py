@@ -306,6 +306,11 @@ class BrowserState:
                 except subprocess.TimeoutExpired:
                     process.kill()
 
+    def all_pages(self) -> list:
+        """Every page in the shared context, the user's tabs included; empty before launch."""
+        context = getattr(self.session, "_context", None) if self.session is not None else None
+        return list(context.pages) if context is not None else []
+
     @property
     def launched(self) -> bool:
         return self.session is not None and self.session.page is not None

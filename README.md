@@ -596,8 +596,10 @@ the directory to forget everything. Set `PCODE_BROWSER_CHROME` to pick the
 binary. With no Chrome installed it falls back to Playwright's Chromium,
 downloaded on first use.
 
-`/browser attach` joins the Chrome you already have open instead, tabs and
-logins included, so nothing needs signing in to. Turn on remote debugging at
+`/browser attach` joins the Chrome you already have open instead, logins
+included, so nothing needs signing in to. The model works in a tab of its own,
+and `browser_tabs()` shows it what you have open, so "check my email" finds the
+mail tab and opens that site rather than guessing. Turn on remote debugging at
 `chrome://inspect/#remote-debugging` (or start Chrome with
 `--remote-debugging-port`); pcode finds the port from Chrome's
 `DevToolsActivePort` file, or from `PCODE_BROWSER_CDP_URL` /
