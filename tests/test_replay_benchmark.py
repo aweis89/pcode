@@ -9,7 +9,14 @@ from unittest.mock import patch
 import pytest
 
 from pcode.profile_benchmark import benchmark_output, main
-from pcode.replay_benchmark import JournalSnapshot, ReplaySettings, replay_journal
+from pcode.replay_benchmark import (
+    MAX_GAP_SECONDS,
+    JournalRuntime,
+    JournalSnapshot,
+    ReplaySettings,
+    journal_turns,
+    replay_journal,
+)
 from pcode.ui import TerminalOutput
 
 
@@ -329,6 +336,105 @@ def test_cli_selects_recent_sessions_readonly_and_profiles_separate_passes(
     assert "PRIVATE" not in captured.out + captured.err
     assert all((destination / f"session-{n}-streamed-1" / "cpu.pstats").exists() for n in (1, 2))
     assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == original
+
+
+def test_cli_selects_largest_journals_by_size(tmp_path, monkeypatch, capsys):
+    from pcode.sessions import SessionInfo
+
+    root = tmp_path / "sessions"
+    digests = {}
+    # Newest is the smallest, so recency order and size order disagree.
+    for number, lines in ((1, 30), (2, 10), (3, 1)):
+        identity = f"00000000-0000-0000-0000-{number:012d}"
+        directory = root / identity
+        directory.mkdir(parents=True)
+        info = SessionInfo(
+            id=identity,
+            model="test:offline",
+            workspace="PRIVATE_WORKSPACE",
+            created=f"2025-01-0{number}",
+            updated=f"2025-01-0{number}",
+            packages={},
+        )
+        (directory / "session.json").write_text(info.model_dump_json())
+        path = journal(directory, [{"kind": "Message", "markdown": "PRIVATE_TEXT"}] * lines)
+        digests[number] = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        sys, "argv", ["pcode-benchmark", "--session-dir", str(root), "--largest", "2"]
+    )
+    main()
+    captured = capsys.readouterr()
+    results = [json.loads(line) for line in captured.out.splitlines()]
+    assert [r["journal_sha256"] for r in results] == [digests[1], digests[2]]
+    assert "PRIVATE" not in captured.out + captured.err
+
+
+def test_journal_turns_pace_events_by_timestamp_with_capped_gaps(tmp_path):
+    path = journal(
+        tmp_path,
+        [
+            {"kind": "TextDelta", "text": "legacy, before any turn marker"},
+            {"kind": "turn_started", "prompt": "first", "time": "2025-01-01T00:00:00+00:00"},
+            {"kind": "TextDelta", "text": "a", "time": "2025-01-01T00:00:00.250000+00:00"},
+            {"kind": "TextDelta", "text": "b", "time": "2025-01-01T00:05:00+00:00"},
+            {"kind": "TextDelta", "text": "c", "time": "not a time"},
+            {"kind": "TextDelta", "text": "d", "time": "2025-01-01T00:04:00+00:00"},
+            {"kind": "turn_completed"},
+            {"kind": "turn_started", "prompt": "second"},
+            {"kind": "tree_selected"},
+            {"kind": "TextDelta", "text": 5},
+            {"kind": "turn_started", "prompt": "third"},
+            {"kind": "Message", "markdown": "done"},
+        ],
+    )
+    with closing(JournalSnapshot(path)) as snapshot:
+        turns = journal_turns(snapshot)
+    assert [turn.prompt for turn in turns] == ["", "first", "third"]
+    first = turns[1]
+    assert [text for _, event in first.events for text in [event.text]] == list("abcd")
+    gaps = [gap for gap, _ in first.events]
+    # A tool that ran for minutes is capped; unparsable and backwards stamps wait nothing.
+    assert gaps == [0.25, MAX_GAP_SECONDS, 0.0, 0.0]
+
+
+def test_journal_runtime_plays_one_turn_per_stream_and_scales_pacing(tmp_path, monkeypatch):
+    path = journal(
+        tmp_path,
+        [
+            {"kind": "turn_started", "prompt": "one", "time": "2025-01-01T00:00:00+00:00"},
+            {"kind": "TextDelta", "text": "a", "time": "2025-01-01T00:00:01+00:00"},
+            {"kind": "turn_started", "prompt": "two"},
+            {"kind": "TextDelta", "text": "b"},
+        ],
+    )
+    with closing(JournalSnapshot(path)) as snapshot:
+        runtime = JournalRuntime(journal_turns(snapshot), speed=4)
+    slept = []
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+    async def drain():
+        return [event.text async for event in runtime.stream("ignored")]
+
+    assert asyncio.run(drain()) == ["a"]
+    assert asyncio.run(drain()) == ["b"]
+    assert slept == [0.25, 0]
+    assert runtime.events_played == 2
+
+
+def test_live_mode_refuses_without_a_terminal(tmp_path, monkeypatch, capsys):
+    path = journal(tmp_path, [{"kind": "Message", "markdown": "PRIVATE_TEXT"}])
+    monkeypatch.setattr(sys, "argv", ["pcode-benchmark", "--live", "--journal", str(path)])
+    monkeypatch.setattr("sys.stdin", StringIO())
+    with pytest.raises(SystemExit) as raised:
+        main()
+    assert raised.value.code == 2
+    captured = capsys.readouterr()
+    assert "needs a terminal" in captured.err
+    assert "PRIVATE" not in captured.out + captured.err
 
 
 def test_cli_replay_prefix_and_empty_store_errors(tmp_path, monkeypatch, capsys):
