@@ -136,6 +136,7 @@ class PreviewApp:
         self.running = True
         self.inspector_requested: str | None = None
         self.diffs_requested = False
+        self.links_requested = False
         # Unsaved conversations have no journal to re-read, so keep their changes.
         self.edits: list[EditCompleted] = []
         self.session_requested = False
@@ -188,6 +189,12 @@ class PreviewApp:
                 group="Inspect",
             ),
             Command("/diffs", "Browse this conversation's file diffs", self.diffs, group="Inspect"),
+            Command(
+                "/links",
+                "Pick a URL from this conversation and open it in the browser",
+                self.links,
+                group="Inspect",
+            ),
             Command(
                 "/tree",
                 "Browse the conversation tree and fork from any point",
@@ -898,6 +905,46 @@ class PreviewApp:
         if argument:
             raise ValueError("Usage: /diffs")
         self.diffs_requested = True
+
+    def links(self, argument: str) -> None:
+        if argument:
+            raise ValueError("Usage: /links")
+        self.links_requested = True
+
+    async def choose_link(self, output: TerminalOutput, session) -> None:
+        from pcode.links import conversation_links, open_link
+        from pcode.links_ui import links_dialog
+
+        self.links_requested = False
+        tree = getattr(self.runtime, "tree", None)
+        links = conversation_links(tree) if tree is not None and tree.nodes else []
+        if not links:
+            self.transcript.note("No links in this conversation yet.")
+            return
+        await output.flush()
+        async with output.lock:
+            async with suspended_editor(session.app):
+                stdin = getattr(session.app.input, "stdin", None)
+                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
+                try:
+                    dialog = links_dialog(
+                        links,
+                        input=modal_input,
+                        output=session.app.output,
+                        style=session.app.style,
+                    )
+                    url = await dialog.run_async()
+                finally:
+                    if modal_input is not session.app.input:
+                        modal_input.close()
+        if url is None:
+            return
+        try:
+            open_link(url)
+        except (OSError, RuntimeError) as error:
+            self.transcript.error(f"Could not open {url}: {error}")
+            return
+        self.transcript.note(f"Opened {url}")
 
     def recorded_edits(self) -> list[EditCompleted]:
         """Prefer the saved journal on the active branch; fall back to this process."""
@@ -2074,6 +2121,8 @@ class PreviewApp:
                             await self.inspect_tools(output, session)
                         if self.diffs_requested:
                             await self.browse_diffs(output, session)
+                        if self.links_requested:
+                            await self.choose_link(output, session)
                 except Exception as error:
                     from pcode.live import error_message
 
