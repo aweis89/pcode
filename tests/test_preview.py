@@ -47,6 +47,7 @@ def make_app(width=80, workspace=None):
                 "/compact",
                 "/autocompact",
                 "/resend",
+                "/worktree",
                 "/show-tasks",
                 "/autohide-tasks",
                 "/show-thinking",

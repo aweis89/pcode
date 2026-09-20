@@ -75,10 +75,14 @@ class PreviewApp:
         session_dir: Path | None = None,
         resume: bool = False,
         initial_prompt: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         self.send_mode = load_preferences().get("send_mode", "steering")
         self.model = model
         self.initial_prompt = initial_prompt
+        # Consumed by the first saved session so it shares its ID with the
+        # worktree created for it; later `/new` sessions get their own.
+        self._session_id = session_id
         self.resuming = resume
         self.save_sessions = save or saved_session is not None
         self.workspace = (workspace or Path.cwd()).resolve()
@@ -243,6 +247,13 @@ class PreviewApp:
                 "/resend",
                 "Ask the model again from the last checkpoint, without a new message",
                 self.resend,
+                group="Session",
+            ),
+            Command(
+                "/worktree",
+                "This session's git worktree: status / merge (into mainline) / remove / list",
+                self.worktree,
+                ("status", "merge", "remove", "list"),
                 group="Session",
             ),
             Command(
@@ -432,17 +443,20 @@ class PreviewApp:
         """Import and construct the backend off the terminal's event loop."""
         from pcode.agent import create_agent
         from pcode.live import AgentRuntime
-        from pcode.sessions import SavedSession
 
         self.extensions = self._load_extensions()
         return AgentRuntime(
             create_agent(self.model, self.workspace, self.extensions.capabilities),
             self._saved_session,
-            session_factory=(
-                lambda: SavedSession.create(self.model, self.workspace, self.session_dir)
-            )
-            if self.save_sessions
-            else None,
+            session_factory=self._create_session if self.save_sessions else None,
+        )
+
+    def _create_session(self, model: str | None = None):
+        from pcode.sessions import SavedSession
+
+        identity, self._session_id = self._session_id, None
+        return SavedSession.create(
+            model or self.model, self.workspace, self.session_dir, identity=identity
         )
 
     async def _initialize_runtime(self) -> None:
@@ -660,7 +674,6 @@ class PreviewApp:
     async def activate_model(self, model: str) -> None:
         from pcode.agent import create_agent
         from pcode.live import AgentRuntime
-        from pcode.sessions import SavedSession
 
         self.pending_model = None
         if model == self.model:
@@ -673,9 +686,7 @@ class PreviewApp:
         apply_effort(agent, model, load_preferences().get("effort"))
         apply_thinking(agent, model, self.activity.show_thinking)
         save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
-        root = self.session_dir
-        workspace = self.workspace
-        factory = (lambda: SavedSession.create(model, workspace, root)) if save else None
+        factory = (lambda: self._create_session(model)) if save else None
         if isinstance(self.runtime, AgentRuntime):
             saved = self.runtime.session
             if saved is not None:
@@ -1064,6 +1075,43 @@ class PreviewApp:
             return
         for label, value in self.session_overview():
             self.transcript.note(f"{label}: {value}")
+
+    def worktree(self, argument: str) -> None:
+        from pcode import worktree
+
+        action = argument or "status"
+        if action == "list":
+            self.transcript.note(worktree.listing(self.workspace) or "Not a git repository.")
+            return
+        linked = worktree.describe(self.workspace)
+        if linked is None:
+            self.transcript.note(
+                f"{self.workspace} is not a linked worktree. Start one with "
+                "`pcode --worktree` or `/config set worktree on`."
+            )
+            return
+        if action == "status":
+            dirty = worktree.is_dirty(linked.path)
+            count = worktree.unmerged_commits(linked)
+            self.transcript.note(f"Worktree: {linked.path} (branch {linked.branch})")
+            mainline = worktree.mainline_branch(linked.main)
+            self.transcript.note(f"Mainline: {linked.main} ({mainline})")
+            self.transcript.note(
+                f"{count} unmerged commit{'s' if count != 1 else ''}"
+                + (", uncommitted changes" if dirty else "")
+            )
+            return
+        if self.activity.busy:
+            raise ValueError("Wait for the current turn to finish before changing the worktree.")
+        if action == "merge":
+            self.transcript.note(worktree.merge(linked))
+        elif action == "remove":
+            if worktree.unmerged_commits(linked):
+                raise ValueError("Branch has unmerged commits; /worktree merge first.")
+            self.transcript.note(worktree.remove(linked))
+            self.transcript.note(
+                "This session's workspace no longer exists; /quit and start pcode in the mainline."
+            )
 
     def mcp_arguments(self) -> tuple[str, ...]:
         from pcode.mcp import configured_servers
@@ -2238,6 +2286,18 @@ def main() -> None:
     parser.add_argument(
         "-C", "--workspace", type=Path, help="Coder workspace (default: current directory)"
     )
+    parser.add_argument(
+        "--worktree",
+        nargs="?",
+        const=True,
+        metavar="NAME",
+        help="Work in a fresh .worktrees/NAME git worktree (default NAME: the session ID)",
+    )
+    parser.add_argument(
+        "--no-worktree",
+        action="store_true",
+        help="Stay in the current checkout even when the worktree default is on",
+    )
     # One positional list serves both the message and the `config` subcommand,
     # so an unquoted `pcode fix the bug` works and `config` needs no subparser.
     parser.add_argument(
@@ -2301,6 +2361,8 @@ def main() -> None:
     args.prompt = " ".join(args.prompt).strip() or None
     if (args.profile_cpu or args.profile_memory) and args.profile is None:
         parser.error("--profile-cpu and --profile-memory require --profile DIR")
+    if args.worktree and args.no_worktree:
+        parser.error("--worktree and --no-worktree are mutually exclusive")
     with ExitStack() as stack:
         if args.profile is not None:
             from pcode.profiling import profile_session
@@ -2314,6 +2376,63 @@ def main() -> None:
                     f"Cannot start profile ({type(error).__name__}); use a new writable DIR"
                 )
         _run_cli(args, parser)
+
+
+def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
+    """Create the session's worktree when asked to, returning (workspace, session id).
+
+    `requested` is None (use the `worktree` setting), True (unnamed), or a
+    name. Unnamed worktrees take the session's ID prefix as their name, so
+    `pcode -c NAME` resumes into them. Already inside a linked worktree, or
+    outside git, the workspace is left alone rather than nested.
+    """
+    from uuid import uuid4
+
+    from pcode import worktree
+
+    if requested is None and load_preferences().get("worktree", "off") != "on":
+        return workspace, None
+    if worktree.main_checkout(workspace) is None:
+        if requested is None:
+            return workspace, None
+        raise worktree.WorktreeError(
+            f"--worktree needs a git repository; {workspace} is not in one."
+        )
+    if worktree.is_linked(workspace):
+        return workspace, None
+    identity = str(uuid4())
+    name = requested if isinstance(requested, str) else identity[:8]
+    created = worktree.create(workspace, name)
+    try:
+        worktree.run_setup(created, stream=sys.stderr)
+    except worktree.WorktreeError:
+        worktree.remove(created, force=True)
+        raise
+    print(f"worktree: {created.path} (branch {created.branch})", file=sys.stderr)
+    return created.path, identity
+
+
+def _worktree_exit_note(workspace: Path) -> None:
+    """Say what a linked worktree still holds, so leaving never silently orphans work."""
+    from pcode import worktree
+
+    try:
+        linked = worktree.describe(workspace)
+        if linked is None:
+            return
+        pending = []
+        if worktree.is_dirty(linked.path):
+            pending.append("uncommitted changes")
+        if count := worktree.unmerged_commits(linked):
+            pending.append(f"{count} unmerged commit{'s' if count != 1 else ''}")
+    except worktree.WorktreeError:
+        return
+    state = ", ".join(pending) if pending else "nothing unmerged"
+    print(
+        f"worktree: {linked.path} ({linked.branch}) has {state}; "
+        f"`pcode -C {linked.path} -c` resumes there",
+        file=sys.stderr,
+    )
 
 
 def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
@@ -2375,6 +2494,9 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         workspace = args.workspace or Path.cwd()
         if not workspace.is_dir():
             raise ValueError("Workspace must be an existing directory.")
+        session_id = None
+        if not args.resume and not args.no_worktree and not args.demo:
+            workspace, session_id = _enter_worktree(workspace, args.worktree)
         app = PreviewApp(
             theme=args.theme,
             color_style=args.color_style,
@@ -2385,6 +2507,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             session_dir=args.session_dir,
             resume=bool(args.resume),
             initial_prompt=args.prompt,
+            session_id=session_id,
             # Keep stdout for the reply alone when printing.
             console=Console(stderr=True) if args.print else None,
         )
@@ -2393,6 +2516,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 parser.exit(1)
         else:
             app.run()
+            _worktree_exit_note(app.workspace)
     except Exception as error:
         from pcode.live import error_message
 

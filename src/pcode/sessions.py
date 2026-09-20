@@ -271,10 +271,13 @@ class SavedSession:
             raise
 
     @classmethod
-    def create(cls, model: str, workspace: Path, root: Path | None = None):
+    def create(
+        cls, model: str, workspace: Path, root: Path | None = None, identity: str | None = None
+    ):
+        """Create a session; `identity` lets a worktree named before the session share its ID."""
         root = root or session_root()
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        identity = str(uuid4())
+        identity = identity or str(uuid4())
         directory = root / identity
         directory.mkdir(mode=0o700)
         info = SessionInfo(
