@@ -8,6 +8,7 @@ from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent
 from pydantic_ai.models.function import FunctionModel
 from rich.console import Console
+from rich.text import Text
 
 from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
@@ -55,9 +56,11 @@ def browser(tmp_path, **options):
         ("\r", "newest"),
         ("\x1b[B\r", "older"),
         ("\x1b", None),
-        # Search narrows the list to the session whose prompt matches, Enter leaves the field.
-        ("/cache warn\r\r", "older"),
-        ("/nothing-matches\r\r", None),
+        # Search narrows the list to the matching session; Enter resumes it while typing.
+        ("/cache warn\r", "older"),
+        # Arrows steer the list while typing; Enter does nothing with no match.
+        ("/a\x1b[B\r", "older"),
+        ("/nothing-matches\r\x1b", None),
     ],
 )
 def test_browser_keyboard(tmp_path, keys, expected):
@@ -81,18 +84,21 @@ def test_browser_scopes_searches_and_shows_turns(tmp_path):
         assert [info.id for info in app.visible] == [ids["newest"], ids["older"]]
         assert app.list.text.startswith(app.title(app.visible[0]))
         assert "Add a theme" in app.list.text
-        assert app.detail.text.startswith(f"{ids['newest'][:8]} · test:local · ")
-        assert app.detail.text.endswith(
+        shown = app.detail.text()
+        assert shown.startswith(f"{ids['newest'][:8]} · test:local · ")
+        assert shown.endswith(
             "2 turns\n\n› Add a theme\n  Done\n\n› Now tests\n  Wrote tests for the theme"
         )
         # Words are AND-ed against prompts and the detail keeps only matching turns.
         app.query.text = "tests now"
         assert [info.id for info in app.visible] == [ids["newest"]]
-        assert app.detail.text.endswith("1 of 2 turns\n\n› Now tests\n  Wrote tests for the theme")
+        assert app.detail.text().endswith(
+            "1 of 2 turns\n\n› Now tests\n  Wrote tests for the theme"
+        )
         # Responses are searched only when asked.
         app.query.text = "patched"
         assert app.visible == []
-        assert app.detail.text == "No matching sessions."
+        assert app.detail.text() == "No matching sessions."
         app.responses = True
         app.refresh()
         assert [info.id for info in app.visible] == [ids["older"]]
@@ -102,9 +108,8 @@ def test_browser_scopes_searches_and_shows_turns(tmp_path):
         app.everywhere = True
         app.refresh()
         assert [info.id for info in app.visible] == [ids["other"], ids["older"]]
-        assert app.details(app.visible[0]).endswith(
-            "› Cache question elsewhere\n  (no response text)"
-        )
+        app.detail.set(app.details(app.visible[0]))
+        assert app.detail.text().endswith("› Cache question elsewhere\n  (no response text)")
 
 
 def test_browser_marks_unreadable_and_empty_sessions(tmp_path):
@@ -113,8 +118,50 @@ def test_browser_marks_unreadable_and_empty_sessions(tmp_path):
         empty = SavedSession.create("test:local", tmp_path, app.root)
         empty.close()
         gone = empty.info.model_copy(update={"id": "missing"})
-        assert app.details(empty.info).endswith("0 turns\n\n(No prompt yet)")
-        assert app.details(gone) == "(Transcript unavailable)"
+        app.detail.set(app.details(empty.info))
+        assert app.detail.text().endswith("0 turns\n(No prompt yet)")
+        app.detail.set(app.details(gone))
+        assert app.detail.text() == "(Transcript unavailable)"
+
+
+def test_browser_renders_responses_as_markdown(tmp_path):
+    from pcode.runtime import Message
+
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    saved.append("turn_started", prompt="Explain")
+    saved.event(Message("## Heading\n\nSome *emphasis* here."))
+    saved.append("turn_completed")
+    saved.close()
+    with create_pipe_input() as pipe:
+        app = SessionBrowser(
+            [saved.info], root=root, workspace=tmp_path, input=pipe, output=DummyOutput()
+        )
+        shown = app.detail.text(width=40)
+        assert "##" not in shown and "*" not in shown
+        assert "Heading" in shown and "emphasis" in shown
+        # Styled fragments survive; the heading is bold in every theme.
+        assert any("bold" in style for style, *_ in app.detail.fragments(40))
+
+
+def test_rich_pane_renders_current_content_in_one_pass():
+    """preferred_width caches fragments before create_content; the pane must not lag a frame."""
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.application.current import set_app
+    from prompt_toolkit.layout import Layout
+
+    from pcode.popup_ui import RichPane
+
+    pane = RichPane()
+    pane.set([Text("first")])
+    app = Application(layout=Layout(pane.window), output=DummyOutput())
+    with set_app(app):
+        control = pane.control
+        assert control.preferred_width(80) is not None
+        pane.set([Text("second")])
+        assert control.preferred_width(80) is not None  # Caches "first" for this pass.
+        content = control.create_content(80, None)
+        assert "second" in "".join(t for _, t in content.get_line(0))
 
 
 def test_excerpt_keeps_a_few_nonblank_lines():

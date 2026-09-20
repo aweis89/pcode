@@ -1,6 +1,7 @@
 """Exercise session popup ownership and prompt height with real cursor reports."""
 
 import shutil
+import time
 
 import pytest
 from test_inspector_tmux import modal
@@ -32,6 +33,30 @@ def test_resume_popup_cancel_restores_prompt_height(pane):
     pane("send-keys", "-t", "preview:0.0", "Escape")
     after = capture(pane, "effort:")
     assert input_rows(before) == input_rows(after)
+    pane("send-keys", "-t", "preview:0.0", "still editable")
+    capture(pane, "still editable")
+
+
+@pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
+def test_resume_popup_survives_resize(pane):
+    """The suspended editor's size poll must not erase or CPR over a popup.
+
+    Both applications poll the size every 0.5 s and the popup survives only if
+    its poll fires last, a fixed phase per popup. Spread the resizes across the
+    poll cycle so at least one lands in the losing phase.
+    """
+    capture(pane, "effort:")
+    pane("send-keys", "-t", "preview:0.0", "/resume", "Enter")
+    modal(pane, "First popup question")
+    for step in range(10):
+        width = "80" if step % 2 == 0 else "90"
+        pane("resize-window", "-t", "preview", "-x", width, "-y", "24")
+        time.sleep(0.6 + step * 0.05)  # Past both polls; a bad erase has happened by now.
+        screen = modal(pane, "First popup question")
+        assert "Esc Cancel" in screen, screen  # The footer, below the cursor row.
+    pane("send-keys", "-t", "preview:0.0", "Escape")
+    after = capture(pane, "effort:")
+    assert input_rows(after) == 1
     pane("send-keys", "-t", "preview:0.0", "still editable")
     capture(pane, "still editable")
 

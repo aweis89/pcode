@@ -10,7 +10,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Frame, Label, TextArea
 
 from pcode.inspection import ToolArchive
-from pcode.popup_ui import list_pane_height, popup_container, popup_style
+from pcode.popup_ui import list_pane_height, popup_container, popup_style, steer_list_from_query
 
 
 class ToolInspector:
@@ -38,6 +38,7 @@ class ToolInspector:
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
+        steer_list_from_query(keys, self.query, self.list)
 
         @keys.add("f", filter=has_focus(self.list))
         def failures(event):
@@ -85,7 +86,7 @@ class ToolInspector:
                 self.query,
                 body,
                 Label("↑↓ Select/scroll · PgUp/PgDn Page · Tab Focus · Esc Close"),
-                Label("In Calls: f Failures · t Tool filter · / Search · Ctrl+Home/End First/last"),
+                Label("In Calls: f Failures · t Tool filter · / Search (↑↓ select while typing)"),
             ]
         )
         self.app = Application(
