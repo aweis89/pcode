@@ -747,6 +747,20 @@ mainline, `/worktree finish` does that and then removes the worktree and its
 branch and quits, `/worktree remove` deletes the directory once it is merged
 and clean, and `/worktree list` shows every worktree. Nothing is ever forced.
 
+`/worktree clean` sweeps up the leftovers: every other worktree of the
+repository with nothing uncommitted, nothing untracked, and nothing the mainline
+branch lacks is removed along with its branch. Anything else is listed with the
+reason it was kept, so the command cannot lose work. It runs from the mainline
+checkout too (`make worktree-clean`), which is usually where the pile is
+visible. A worktree someone locked with `git worktree lock` is skipped.
+
+When a merge stops on conflicts it says which files, and `/worktree resolve`
+hands them to the model: it gets the branch names and the conflicted paths and
+is asked to resolve each so both sides survive, run the tests, and commit the
+merge (never abort it). Run `/worktree merge` or `finish` again afterwards. The
+merge is never started for you, and the model is never asked without you typing
+the command; a conflict at exit prints the resume command and that same hint.
+
 Leaving a session tidies its own worktree (one pcode made, prefixed `pcode-`;
 hand-made ones are only reported):
 
