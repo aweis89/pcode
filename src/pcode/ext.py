@@ -20,7 +20,7 @@ import os
 import re
 import sys
 import traceback
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -86,10 +86,13 @@ def discover_extensions(workspace: Path) -> list["Extension"]:
 
 
 class ExtensionUI:
-    """What an extension may show the user. Bound to the terminal by the app."""
+    """What an extension may ask of the terminal. Bound to it by the app."""
 
-    def __init__(self, notify: Notify | None = None) -> None:
+    def __init__(
+        self, notify: Notify | None = None, request_reload: Callable[[], None] | None = None
+    ) -> None:
         self._notify = notify
+        self._request_reload = request_reload
 
     def notify(self, text: str, level: str = "info") -> None:
         """Print a transient notice in the transcript."""
@@ -97,6 +100,16 @@ class ExtensionUI:
             raise ValueError(f"level must be one of {', '.join(LEVELS)}")
         if self._notify is not None:
             self._notify(str(text), level)
+
+    def request_reload(self) -> None:
+        """Ask for `/reload` once the terminal is idle.
+
+        For an extension whose contributions depend on state a command just
+        changed: `setup` runs again and the agent is rebuilt around the same
+        conversation. Raises `ValueError` when a turn is in progress.
+        """
+        if self._request_reload is not None:
+            self._request_reload()
 
 
 class ExtensionAPI:
@@ -112,6 +125,8 @@ class ExtensionAPI:
         self._capabilities: list = []
         self._hooks = None
         self.commands: list[Command] = []
+        self.subagents: list = []
+        self.closers: list[Callable[[], Awaitable[None]]] = []
 
     def tool(self, function):
         """Register a plain function as a model-callable tool (decorator).
@@ -147,6 +162,22 @@ class ExtensionAPI:
             except (AttributeError, TypeError):
                 pass  # Frozen or slotted: it stays anonymous in /status.
         self._capabilities.append(capability)
+
+    def subagent(self, agent, **options) -> None:
+        """Offer `agent` to the model through `delegate_task`, beside the explorer.
+
+        `agent` is a Pydantic AI `Agent` with a `name` and `description`; leave
+        its model unset to run on the session's model. `options` are the
+        Harness `SubAgent` fields (`usage_limits`, `timeout_seconds`, ...).
+        """
+        from pydantic_ai_harness.subagents import SubAgent
+
+        self.subagents.append(SubAgent(agent, **options))
+
+    def on_close(self, function: Callable[[], Awaitable[None]]):
+        """Run `await function()` when the terminal exits, for resources a tool started."""
+        self.closers.append(function)
+        return function
 
     def register_command(
         self,
@@ -204,6 +235,8 @@ class Extension:
     error: str | None = None
     capabilities: list = field(default_factory=list)
     commands: list[Command] = field(default_factory=list)
+    subagents: list = field(default_factory=list)
+    closers: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
 
     @property
     def loaded(self) -> bool:
@@ -215,15 +248,23 @@ class Extension:
             counts.append(f"{tools} tool{'s' if tools != 1 else ''}")
         if hooks := [c for c in self.capabilities if type(c).__name__ == "Hooks"]:
             counts.append(f"{sum(len(h._registry) for h in hooks)} hooks")
+        if self.subagents:
+            counts.append(", ".join(f"@{s.resolved_name}" for s in self.subagents))
         if self.commands:
             counts.append(", ".join(c.name for c in self.commands))
         return ", ".join(counts) or "no contributions"
 
 
 def _tool_count(capability) -> int:
-    toolset = capability.get_toolset() if hasattr(capability, "get_toolset") else None
-    # Native-or-local capabilities wrap their function toolset in a prepared one.
+    return _toolset_size(capability.get_toolset() if hasattr(capability, "get_toolset") else None)
+
+
+def _toolset_size(toolset) -> int:
+    # Native-or-local capabilities wrap their function toolset in a prepared one;
+    # a capability given both `tools` and `toolsets` combines them.
     while toolset is not None and not hasattr(toolset, "tools"):
+        if (parts := getattr(toolset, "toolsets", None)) is not None:
+            return sum(_toolset_size(part) for part in parts)
         toolset = getattr(toolset, "wrapped", None)
     tools = getattr(toolset, "tools", None)
     return len(tools) if isinstance(tools, dict) else 0
@@ -247,6 +288,8 @@ def load_extension(extension: Extension, workspace: Path, ui: ExtensionUI) -> Ex
     extension.error = None
     extension.capabilities = []
     extension.commands = []
+    extension.subagents = []
+    extension.closers = []
     target = extension.path / "__init__.py" if extension.path.is_dir() else extension.path
     name = _module_name(extension)
     try:
@@ -274,6 +317,8 @@ def load_extension(extension: Extension, workspace: Path, ui: ExtensionUI) -> Ex
             capability.get_toolset()
         extension.capabilities = capabilities
         extension.commands = api.commands
+        extension.subagents = api.subagents
+        extension.closers = api.closers
     except BaseException as error:  # noqa: BLE001 - a bad extension must not stop launch.
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise
@@ -297,8 +342,21 @@ class LoadedExtensions:
         return [c for extension in self.extensions for c in extension.commands]
 
     @property
+    def subagents(self) -> list:
+        return [s for extension in self.extensions for s in extension.subagents]
+
+    @property
     def failed(self) -> list[Extension]:
         return [extension for extension in self.extensions if not extension.loaded]
+
+    async def close(self) -> None:
+        """Run every extension's close hooks; one failing does not skip the rest."""
+        for extension in self.extensions:
+            for closer in extension.closers:
+                try:
+                    await closer()
+                except Exception as error:  # noqa: BLE001 - exit must not stall on an extension.
+                    print(f"Extension {extension.name} failed to close: {error}", file=sys.stderr)
 
     def report(self, workspace: Path) -> list[str]:
         """Human lines for /extensions and the startup notice."""

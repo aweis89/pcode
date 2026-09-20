@@ -10,7 +10,9 @@ dependencies = [
     "prompt-toolkit>=3.0.52,<4",
     "psutil>=6,<8",
     "yappi>=1.7.6,<2",
-    "pydantic-ai-harness[exa,coder,codemode] @ git+https://github.com/pydantic/pydantic-ai-harness.git@12bce878da99bca61a5d8d798bff0a3bc93bd153",
+    # playwright backs the bundled browser extension (/browser on); Chromium
+    # itself is downloaded on first use, not at install.
+    "pydantic-ai-harness[exa,coder,codemode,playwright] @ git+https://github.com/pydantic/pydantic-ai-harness.git@12bce878da99bca61a5d8d798bff0a3bc93bd153",
     # duckduckgo and web-fetch back the bundled web_research extension when no
     # provider-native search or Exa key is available.
     "pydantic-ai-slim[anthropic,duckduckgo,mcp,openai,web-fetch]>=2.44.0,<3",
