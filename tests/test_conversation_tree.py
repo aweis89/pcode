@@ -265,6 +265,28 @@ def test_tree_browser_shows_selected_branch_and_anchors_selection():
         assert "Answer b" in lines[browser.detail.line_offset(browser.detail._anchor, 80)]
 
 
+def test_tree_browser_conversation_pane_highlights_the_selected_row():
+    """The Conversation pane marks the Tree list's current selection, like the list itself."""
+    from prompt_toolkit.filters import Always
+
+    from pcode.tree_ui import TreeBrowser
+
+    tree = ConversationTree()
+    tree.consume({"kind": "turn_started", "run_id": "a", "parent_id": None, "prompt": "ask a"})
+    tree.consume({"kind": "Message", "markdown": "Answer a"})
+    tree.consume({"kind": "turn_completed"})
+    with create_pipe_input() as pipe:
+        browser = TreeBrowser(tree, input=pipe, output=DummyOutput())
+        assert isinstance(browser.detail.window.cursorline, Always)
+        # The pane always reports its scrolled-to row as the cursor, so enabling
+        # cursorline highlights whatever the Tree selection scrolled to.
+        browser.list.buffer.cursor_position = browser.list.document.translate_row_col_to_index(1, 0)
+        assert browser.selected == ("a", True)
+        row = browser.detail.line_offset(browser.detail._anchor, 80)
+        content = browser.detail.control.create_content(80, 10)
+        assert content.cursor_position.y == row
+
+
 def test_app_navigation_and_busy_guard():
     async def run():
         runtime = AgentRuntime(Agent("test"))
