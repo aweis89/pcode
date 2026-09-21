@@ -11,12 +11,14 @@ from rich.console import Console
 
 from pcode.app import PreviewApp, main
 from pcode.commands import SlashCompleter
-from pcode.config import SETTINGS, configure
+from pcode.config import SETTINGS, config_arguments, configure
 from pcode.preferences import (
     load_preferences,
     preferences_path,
     read_preferences,
+    save_model_effort,
     save_preferences,
+    set_project_root,
     update_preferences,
 )
 
@@ -103,6 +105,23 @@ def test_set_get_unset(key, value):
     assert json.loads(configure(["list"]))[key] == SETTINGS[key].default
     if key != "theme":
         assert load_preferences()["theme"] == "dark"
+
+
+def test_diff_reports_only_changed_settings(tmp_path):
+    assert configure(["diff"]) == "Every setting is at its default."
+    save_preferences(theme="dark", effort="high")
+    save_model_effort("test:local", "low")
+    set_project_root(tmp_path)
+    configure(["project", "set", "worktree", "on"])
+    lines = configure(["diff"]).splitlines()
+    assert "effort = high (default default, from user)" in lines
+    assert "worktree = on (default off, from project)" in lines
+    assert "model_efforts = test:local=low (default none, from user)" in lines
+    # A stored value equal to the default is not a difference.
+    assert not [line for line in lines if line.startswith("theme ")]
+    with pytest.raises(ValueError):
+        configure(["diff", "extra"])
+    assert "diff" in config_arguments()
 
 
 def test_reset_clears_known_settings_and_keeps_unknown_keys():

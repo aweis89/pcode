@@ -177,7 +177,7 @@ class PreviewApp:
             ),
             Command(
                 "/config",
-                "Inspect or edit saved defaults: get KEY / set KEY VALUE / unset KEY / reset",
+                "Inspect or edit saved defaults: diff / get KEY / set KEY VALUE / unset KEY",
                 self.config,
                 free_arguments=True,
                 argument_provider=config_arguments,
