@@ -9,7 +9,7 @@ from typing import Literal
 
 from pcode.diagnostics import redact
 from pcode.sessions import SessionInfo, SessionReadBudget, list_sessions, session_records
-from pcode.worktree import WORKTREES_DIR, main_checkout
+from pcode.worktree import WORKTREES_DIR, project_checkout
 
 Scope = Literal["session", "project", "workspace", "all"]
 KINDS = (
@@ -139,7 +139,7 @@ def read_turns(
 def project_path(workspace: Path) -> Path:
     workspace = workspace.resolve()
     if workspace.exists():
-        project = main_checkout(workspace)
+        project = project_checkout(workspace)
         if project:
             return project
     # Older metadata did not save project identity. Recover pcode's conventional
