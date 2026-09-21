@@ -26,6 +26,8 @@ class Setting:
     whole_number: bool = False
     # An os.pathsep-separated list of directories; empty means "none".
     path_list: bool = False
+    # A comma-separated list of extension names; empty means "none".
+    name_list: bool = False
     # One line shown beside the key in /config completions.
     description: str = ""
 
@@ -33,6 +35,12 @@ class Setting:
         if self.path_list:
             if value and any(not entry.strip() for entry in value.split(os.pathsep)):
                 raise ValueError(f"{key} must be directories separated by '{os.pathsep}'.")
+        elif self.name_list:
+            if value and any(
+                not entry.strip() or any(char.isspace() for char in entry.strip())
+                for entry in value.split(",")
+            ):
+                raise ValueError(f"{key} must be comma-separated names without whitespace.")
         elif self.positive_integer or self.whole_number:
             floor = 0 if self.whole_number else 1
             if not value.isascii() or not value.isdecimal() or int(value) < floor:
@@ -113,6 +121,19 @@ SETTINGS = {
         "",
         path_list=True,
         description=f"Extra extension directories, '{os.pathsep}'-separated, after the user one",
+    ),
+    # Which discovered extensions run, by name. An extension loads unless it is
+    # named in `extensions_off`, or declares `DEFAULT_ENABLED = False` and is not
+    # named in `extensions_on`. `/extensions on|off NAME` writes both.
+    "extensions_off": Setting(
+        "",
+        name_list=True,
+        description="Extensions never loaded, comma-separated (/extensions off NAME)",
+    ),
+    "extensions_on": Setting(
+        "",
+        name_list=True,
+        description="Opt-in extensions to load, comma-separated (/extensions on NAME)",
     ),
     # `--worktree [NAME]` and `--no-worktree` override per run.
     "worktree": Setting(
@@ -267,6 +288,8 @@ USER_ONLY = frozenset(
         "project_extensions",
         "trusted_projects",
         "extension_dirs",
+        "extensions_off",
+        "extensions_on",
         "meridian_managed",
         "anthropic_auth",
     }

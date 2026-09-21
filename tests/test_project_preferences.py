@@ -41,6 +41,8 @@ def test_project_file_overlays_user_except_user_only_keys(tmp_path):
         worktree="on",
         project_extensions="on",
         extension_dirs="/evil",
+        extensions_off="web_research",
+        extensions_on="evil",
         meridian_managed="on",
         anthropic_auth="oauth",
         trusted_projects="/",
@@ -55,6 +57,7 @@ def test_project_file_overlays_user_except_user_only_keys(tmp_path):
     assert prefs["effort"] == "high"
     assert prefs["project_extensions"] == "off"
     assert "extension_dirs" not in prefs
+    assert "extensions_off" not in prefs and "extensions_on" not in prefs
     assert "meridian_managed" not in prefs
     assert "anthropic_auth" not in prefs
     assert "trusted_projects" not in prefs

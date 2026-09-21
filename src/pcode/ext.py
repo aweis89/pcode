@@ -10,6 +10,11 @@ Extensions run in-process with the user's permissions: the same trust boundary
 as the shell tool. Project-local extensions load only for a repository the user
 has trusted (`project_trust`), so cloning one cannot run its code at launch.
 
+A discovered extension runs unless the user turned it off (`extensions_off`), or
+it declares `DEFAULT_ENABLED = False` and the user has not turned it on
+(`extensions_on`). That is how a bundled default ships opt-in. `/extensions`
+lists the state and writes both preferences.
+
 Loading happens with the rest of agent construction, off the terminal's startup
 path. Every failure is recorded on the extension and reported, never raised: a
 broken extension must not prevent a coding session.
@@ -25,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from pcode.commands import Command
-from pcode.preferences import SETTINGS, load_preferences, preferences_path
+from pcode.preferences import SETTINGS, load_preferences, preferences_path, update_preferences
 
 PROJECT_DIR = Path(".pcode") / "extensions"
 # Defaults shipped with pcode, written against the same API as user extensions.
@@ -33,11 +38,36 @@ PROJECT_DIR = Path(".pcode") / "extensions"
 # empty `setup` disables it). Keep this the only place they are special.
 BUNDLED_DIR = Path(__file__).with_name("extensions")
 ID_PREFIX = "ext."
+# A module declaring `DEFAULT_ENABLED = False` is opt-in: discovered and listed,
+# but `setup` runs only once its name is in `extensions_on`.
+DEFAULT_FLAG = "DEFAULT_ENABLED"
 # The authoring reference, shipped with the package so the model can read it
 # with its file tools instead of the API being repeated in every prompt.
 EXTENSION_GUIDE = Path(__file__).with_name("extension_guide.md")
 Notify = Callable[[str, str], None]
 LEVELS = ("info", "warning", "error")
+
+
+def name_list(key: str) -> set[str]:
+    """A comma-separated preference read as a set of extension names."""
+    value = load_preferences().get(key, SETTINGS[key].default) or ""
+    return {entry.strip() for entry in value.split(",") if entry.strip()}
+
+
+def set_enabled(name: str, enabled: bool) -> None:
+    """Record that `name` should (not) load, clearing the opposite list.
+
+    Both lists are written because "on" must beat a `DEFAULT_ENABLED = False`
+    module *and* an earlier "off", and neither knows which applied.
+    """
+    off, on = name_list("extensions_off"), name_list("extensions_on")
+    off, on = (off - {name}, on | {name}) if enabled else (off | {name}, on - {name})
+    values = {"extensions_off": ",".join(sorted(off)), "extensions_on": ",".join(sorted(on))}
+    # An empty list is the default, so drop the key rather than saving "".
+    update_preferences(
+        {key: value for key, value in values.items() if value},
+        remove=tuple(key for key, value in values.items() if not value),
+    )
 
 
 def user_extension_dir() -> Path:
@@ -236,14 +266,28 @@ class Extension:
     path: Path
     scope: str
     error: str | None = None
+    # Why `setup` was not run: the user turned it off, or it ships opt-in.
+    disabled: str | None = None
     capabilities: list = field(default_factory=list)
     commands: list[Command] = field(default_factory=list)
     subagents: list = field(default_factory=list)
     closers: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
 
     @property
+    def enabled(self) -> bool:
+        return self.disabled is None
+
+    @property
     def loaded(self) -> bool:
-        return self.error is None
+        return self.enabled and self.error is None
+
+    def state(self) -> str:
+        """One phrase for the report: what it contributed, or why it did not."""
+        if self.disabled is not None:
+            return f"{self.disabled} (/extensions on {self.name})"
+        if self.error is not None:
+            return f"failed, {self.error}"
+        return self.summary()
 
     def summary(self) -> str:
         counts = []
@@ -286,13 +330,29 @@ def _failure(error: BaseException, path: Path) -> str:
     return message
 
 
-def load_extension(extension: Extension, workspace: Path, ui: ExtensionUI) -> Extension:
-    """Import the module, run `setup`, and validate what it contributed."""
+def load_extension(
+    extension: Extension,
+    workspace: Path,
+    ui: ExtensionUI,
+    off: set[str] | None = None,
+    on: set[str] | None = None,
+) -> Extension:
+    """Import the module, run `setup`, and validate what it contributed.
+
+    An extension the user turned off is never imported; one that ships opt-in is
+    imported (that is where the flag lives) but its `setup` does not run.
+    """
     extension.error = None
+    extension.disabled = None
     extension.capabilities = []
     extension.commands = []
     extension.subagents = []
     extension.closers = []
+    off = name_list("extensions_off") if off is None else off
+    on = name_list("extensions_on") if on is None else on
+    if extension.name in off:
+        extension.disabled = "off"
+        return extension
     target = extension.path / "__init__.py" if extension.path.is_dir() else extension.path
     name = _module_name(extension)
     try:
@@ -307,6 +367,10 @@ def load_extension(extension: Extension, workspace: Path, ui: ExtensionUI) -> Ex
         # Registered first so dataclasses and pickling inside the module resolve.
         sys.modules[name] = module
         spec.loader.exec_module(module)
+        if not getattr(module, DEFAULT_FLAG, True) and extension.name not in on:
+            extension.disabled = "off by default"
+            sys.modules.pop(name, None)
+            return extension
         setup = getattr(module, "setup", None)
         if not callable(setup):
             raise AttributeError("extension defines no setup(pcode) function")
@@ -350,7 +414,11 @@ class LoadedExtensions:
 
     @property
     def failed(self) -> list[Extension]:
-        return [extension for extension in self.extensions if not extension.loaded]
+        return [extension for extension in self.extensions if extension.error is not None]
+
+    @property
+    def disabled(self) -> list[Extension]:
+        return [extension for extension in self.extensions if not extension.enabled]
 
     async def close(self) -> None:
         """Run every extension's close hooks; one failing does not skip the rest."""
@@ -375,10 +443,7 @@ class LoadedExtensions:
                 if path.is_relative_to(workspace)
                 else path
             )
-            if extension.loaded:
-                lines.append(f"{extension.name} ({shown}): {extension.summary()}")
-            else:
-                lines.append(f"{extension.name} ({shown}): failed, {extension.error}")
+            lines.append(f"{extension.name} ({shown}): {extension.state()}")
         return lines
 
 
@@ -386,6 +451,10 @@ def load_extensions(workspace: Path, ui: ExtensionUI | None = None) -> LoadedExt
     """Discover and load every extension; failures are recorded, not raised."""
     workspace = workspace.resolve()
     ui = ui or ExtensionUI()
+    off, on = name_list("extensions_off"), name_list("extensions_on")
     return LoadedExtensions(
-        [load_extension(extension, workspace, ui) for extension in discover_extensions(workspace)]
+        [
+            load_extension(extension, workspace, ui, off, on)
+            for extension in discover_extensions(workspace)
+        ]
     )
