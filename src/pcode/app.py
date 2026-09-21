@@ -1476,7 +1476,7 @@ class PreviewApp:
 
     async def enable_mcp_defaults(self, names: list[str]) -> None:
         """Enable `"enabled": true` servers, using saved sign-ins but never a browser."""
-        from pcode.live import error_message
+        from pcode.mcp import error_message
         from pcode.mcp_oauth import SignInRequired
 
         for name in names:
@@ -2250,7 +2250,7 @@ class PreviewApp:
                 except asyncio.CancelledError:
                     self.transcript.warning(cancelled)
                 except Exception as error:
-                    from pcode.live import error_message
+                    from pcode.mcp import error_message
 
                     self.transcript.error(f"MCP '{name}' remains off: {error_message(error)}")
                 finally:
