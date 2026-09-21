@@ -13,9 +13,3 @@
 - `make test` is xdist-parallel and needs a stable tree: saving a file mid-run yields bulk failures or `Different tests were collected between gw0 and gwN`. Re-run on a quiet tree (or `uv run pytest -n0`) before believing a mass failure.
 - `make install` is editable, so a running session keeps whatever source was on disk when each module was first imported: a mid-turn fix does not reach it, and a broken intermediate state stays loaded until restart. Before hunting an unreproducible failure, compare its timestamp against file mtimes and check whether another session was editing.
 - Failed turns save their frames to `<session-dir>/errors.log`; the transcript's `turn_failed` record carries only a type and message.
-
-Narrower traps live as comments next to the code they concern: Harness hook
-and capability-id semantics in `agent.py` and `cache_warnings.py`, cache-collapse
-warning reading in `cache_diagnostics.divergence`, terminal handoff and flicker
-in `ui.suspended_editor`, resume semantics in `live.py`, profiler choice in
-`profiling.py`, and why the tmux tests exist in `tests/test_tmux.py`.
