@@ -94,11 +94,11 @@ def test_completed_request_updates_live_context_without_changing_replay_history(
 
     from pydantic_ai.models import ModelRequestParameters
 
-    from pcode.compaction import AutoCompaction
+    from pcode.compaction import ContextTracking
 
     history = [ModelRequest(parts=[UserPromptPart("do work")])]
     runtime = SimpleNamespace(history=[], session=object(), context_history=None)
-    hook = AutoCompaction(runtime, "run")
+    hook = ContextTracking(runtime)
     request = SimpleNamespace(messages=history, model_request_parameters=ModelRequestParameters())
     completed = response(12_500, cache_read_tokens=8_000)
     asyncio.run(hook.after_model_request(None, request_context=request, response=completed))
@@ -131,7 +131,7 @@ def test_pending_first_request_exposes_estimate_before_response():
 
     from pydantic_ai.models import ModelRequestParameters
 
-    from pcode.compaction import AutoCompaction, context_estimate
+    from pcode.compaction import ContextTracking, context_estimate
 
     history = [ModelRequest(parts=[UserPromptPart("Inspect the project and explain it. " * 100)])]
     runtime = SimpleNamespace(history=[], session=object(), context_history=None)
@@ -140,12 +140,47 @@ def test_pending_first_request_exposes_estimate_before_response():
         model="unknown-provider:example",
         model_request_parameters=ModelRequestParameters(),
     )
-    with (
-        patch("pcode.model_metadata.refresh_context"),
-        patch("pcode.compaction.effective_window", return_value=None),
-    ):
-        asyncio.run(AutoCompaction(runtime, "run").before_model_request(None, request))
+    asyncio.run(ContextTracking(runtime).before_model_request(None, request))
     with patch("pcode.context_usage.context_window", return_value=100_000):
         estimate = compact_tokens(context_estimate(history))
         assert context_label("test:model", runtime.context_history) == f" · ctx: ~{estimate}/100k"
     assert runtime.history == []
+
+
+def test_first_turn_context_is_live_without_autocompact():
+    """The footer read `runtime.history`, which is empty until the first turn ends."""
+    import asyncio
+
+    from pydantic_ai import Agent
+    from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+
+    from pcode.compaction import SCHEMAS
+    from pcode.live import AgentRuntime
+
+    async def model(messages, info):
+        if any(part.part_kind == "user-prompt" for part in messages[-1].parts):
+            yield {0: DeltaToolCall(name="probe", json_args="{}")}
+            return
+        yield "done"
+
+    agent = Agent(FunctionModel(stream_function=model))
+    runtime = AgentRuntime(agent)
+    runtime.auto_compact = False
+    seen = []
+
+    @agent.tool_plain
+    def probe() -> str:
+        # Mid-turn, while a tool runs: the request that called it is visible.
+        seen.append(runtime.context_history)
+        return "ok"
+
+    async def exercise():
+        async for _ in runtime.stream("start"):
+            pass
+
+    asyncio.run(exercise())
+    assert seen and seen[0]
+    assert isinstance(seen[0][-1], ModelResponse)
+    assert SCHEMAS in (seen[0][-1].metadata or {})
+    assert runtime.context_history is None
+    assert SCHEMAS in (runtime.history[-1].metadata or {})

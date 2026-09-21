@@ -1485,9 +1485,11 @@ identifier, reasoning effort, and activity. Live models also show context, for
 example `ctx: 12.5k/200k` (tokens used / effective working window).
 
 Used context is the **latest completed request's input tokens**, including cached
-input, not cumulative session usage. It updates after a turn and follows the
-selected conversation history when resuming or navigating branches. It does not
-include unsent drafts, subsequent tool results, or a response still streaming.
+input, not cumulative session usage. It updates as each request completes, so it
+moves during a long tool loop rather than only at the end of the turn, and it
+follows the selected conversation history when resuming or navigating branches.
+It does not include unsent drafts, subsequent tool results, or a response still
+streaming.
 The working window is shared with compaction. Pcode first uses metadata from the
 actual serving provider: Codex's authenticated models endpoint or Anthropic's
 Models API. Otherwise it uses an exact provider/model match from

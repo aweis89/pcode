@@ -293,6 +293,9 @@ def test_auto_compacts_inside_tool_loop_and_saves_before_next_request(tmp_path, 
                 main_calls.append(deepcopy(messages))
                 assert "Tests failed; not yet fixed." in str(messages)
                 assert is_provider_valid(messages)
+                # Tracking sits inside compaction: the footer shows the compacted request.
+                assert "Tests failed; not yet fixed." in str(runtime.context_history)
+                assert any(MARKER in (m.metadata or {}) for m in runtime.context_history)
                 snapshot = await session.store.latest_snapshot(run_id=runtime.tree.active)
                 assert "Tests failed; not yet fixed." in str(snapshot.messages)
                 raise RuntimeError("next request failed")
