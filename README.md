@@ -56,7 +56,8 @@ Deeper notes: [prompt caching](docs/prompt-caching.md),
 [conversation tree](docs/conversation-tree.md), [profiling](docs/profiling.md),
 [dependencies](docs/dependencies.md), [Meridian validation](docs/meridian-validation.md).
 
-The same pages build into a browsable site with `make docs-serve`.
+The same pages build into a browsable site with `make docs-serve`; `make docs`
+checks every page and anchor link.
 
 ## Contributing
 

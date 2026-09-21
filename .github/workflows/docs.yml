@@ -24,6 +24,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Strict mode fails on broken page and anchor links, so this doubles as the
+  # docs check on pull requests.
   build:
     runs-on: ubuntu-latest
     steps:
@@ -35,8 +37,6 @@ jobs:
           path: site
 
   deploy:
-    # Publishing needs Pages enabled once in the repo settings, with
-    # "GitHub Actions" as the source.
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest

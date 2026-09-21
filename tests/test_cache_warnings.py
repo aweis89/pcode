@@ -4,13 +4,20 @@ import asyncio
 import warnings
 from contextlib import asynccontextmanager
 from io import StringIO
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import (
+    ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
+    TextPart,
+    ToolCallPart,
+)
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel as LocalModel
+from pydantic_ai.usage import RequestUsage
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
 from pydantic_ai_harness.warn_on_cache_busts import CacheBustWarning, WarnOnCacheBusts
 from rich.console import Console
@@ -98,6 +105,61 @@ def test_streamed_detector_preserves_threshold_and_latch(usages, count):
         assert "prefix moved" in bust.text and "cache expired" in bust.text
         assert "To silence" not in bust.text
         assert "test/test:" in bust.text
+
+
+def reply(read, write, *, server_tool=False):
+    parts = [TextPart("x")]
+    if server_tool:
+        # A server-side tool (web search) runs extra sampling passes inside one
+        # API call; the provider reports one usage summed over all of them.
+        parts = [
+            NativeToolCallPart("web_search", {"query": "x"}, tool_call_id="srv"),
+            NativeToolReturnPart("web_search", [], tool_call_id="srv"),
+            *parts,
+        ]
+    return ModelResponse(
+        parts=parts,
+        usage=RequestUsage(cache_read_tokens=read, cache_write_tokens=write),
+        provider_name="test",
+        model_name="test",
+    )
+
+
+@pytest.mark.parametrize(
+    "last, count",
+    [
+        # The next request reads the real prefix (8200 + 17000) and must not be
+        # judged against the summed figure.
+        ((25200, 100), 0),
+        # A genuine collapse right after the server-tool step is still caught.
+        ((0, 0), 1),
+    ],
+)
+def test_server_tool_usage_does_not_establish_a_prefix(last, count):
+    # TestModel cannot stream native tool parts, so drive the hook directly.
+    # Five passes over an 8200 prefix report read=5*8200 plus the summed writes.
+    replies = [
+        reply(0, 8000),
+        reply(8000, 200),
+        reply(41000, 17000, server_tool=True),
+        reply(*last),
+    ]
+    monitor = CacheBustReporting()
+    ctx = MagicMock()
+    ctx.emit = AsyncMock()
+
+    async def run():
+        for response in replies:
+            result = await monitor.after_model_request(
+                ctx, request_context=MagicMock(messages=[]), response=response
+            )
+            assert result is response
+
+    asyncio.run(run())
+    busts = [call.args[0] for call in ctx.emit.await_args_list]
+    assert len(busts) == count
+    for bust in busts:
+        assert "established ~8200" in bust.text
 
 
 def test_turns_and_parallel_runs_have_independent_detectors():
