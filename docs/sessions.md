@@ -17,7 +17,9 @@ restores the saved model, workspace, and structured message history. Without an 
 it picks the newest session whose workspace is the current directory (or `-C`), not
 the newest session overall. It prints recent transcript blocks and waits for your
 next message; it does not automatically re-run tools.
-A different explicit `-m` or `-C` is rejected on resume. Only one process may open
+A different explicit `-m` is rejected on resume, as is a `-C` in another
+repository; `-C` pointing at another worktree of the same repository is fine and
+the session goes back to its own directory. Only one process may open
 a session for writing. `/resume` opens a full-screen browser of saved conversations
 in the current repository, including its linked worktrees (newest first, labeled
 by their first prompt), or the exact workspace outside Git, with every
@@ -27,6 +29,11 @@ move the selection while you type (Ctrl+U/Ctrl+D by half a page); `r` includes
 responses, `w` includes every workspace. Tab focuses the content pane, where arrows
 scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page. Enter resumes the selected
 session in place, Esc cancels. Resuming restores the saved model, history, and plan.
+A session from another worktree of the same repository switches the workspace to
+that worktree: file tools, the shell, extensions, and skill commands are rebuilt
+there, and the worktree being left is tidied as on exit (an untouched `pcode-`
+worktree is removed; unmerged work is kept with a note). Sessions from another
+repository are refused.
 
 ## Recalling earlier sessions
 

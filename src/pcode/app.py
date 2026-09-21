@@ -510,11 +510,11 @@ class PreviewApp:
         else:
             show(text)
 
-    def _load_extensions(self):
+    def _load_extensions(self, workspace: Path | None = None):
         from pcode.ext import ExtensionUI, load_extensions
 
         return load_extensions(
-            self.workspace,
+            workspace or self.workspace,
             ExtensionUI(self._extension_notice, lambda: self.reload("")),
             session_dir=self.session_dir,
         )
@@ -1451,7 +1451,7 @@ class PreviewApp:
     async def resume_session(self, identity: str) -> None:
         from pcode.agent import create_agent
         from pcode.live import AgentRuntime
-        from pcode.sessions import SavedSession, SessionError
+        from pcode.sessions import SavedSession
 
         current = getattr(self.runtime, "session", None)
         if current is not None and current.info.id == identity:
@@ -1459,11 +1459,15 @@ class PreviewApp:
             return
         saved = SavedSession.open(identity, self.session_dir)
         try:
-            if Path(saved.info.workspace).resolve() != self.workspace:
-                raise SessionError("Workspace differs; refusing cross-repo resume.")
-            capabilities = self.extensions.capabilities if self.extensions else ()
-            subagents = self.extensions.subagents if self.extensions else ()
-            agent = create_agent(saved.info.model, self.workspace, capabilities, subagents)
+            target = self._resume_workspace(saved.info.workspace)
+            # A session from another worktree gets that worktree's extensions
+            # and skills; the same workspace keeps what is already loaded.
+            extensions = self.extensions
+            if target != self.workspace:
+                extensions = await asyncio.to_thread(self._load_extensions, target)
+            capabilities = extensions.capabilities if extensions else ()
+            subagents = extensions.subagents if extensions else ()
+            agent = create_agent(saved.info.model, target, capabilities, subagents)
             apply_effort(agent, saved.info.model, effort_for(saved.info.model))
             apply_thinking(agent, saved.info.model, self.activity.show_thinking)
             runtime = AgentRuntime(agent, saved)
@@ -1473,9 +1477,15 @@ class PreviewApp:
             saved.close()
             raise
         # Keep the current conversation intact until recovery has succeeded.
+        if target != self.workspace:
+            # The worktree being left is tidied like at exit, but nobody is
+            # asked: unmerged work stays put with a note on how to get back.
+            leave_worktree(self.workspace, current, ask=None, notify=self.transcript.note)
         close = getattr(self.runtime, "close", None)
         if close is not None:
             close()
+        if target != self.workspace:
+            self._switch_workspace(target, extensions)
         self.runtime = runtime
         self.model = saved.info.model
         self.session_dir = saved.directory.parent
@@ -1484,6 +1494,41 @@ class PreviewApp:
         self.activity.prompt_detail = ""
         self.replay()
         self.mcp_defaults_requested = True
+
+    def _resume_workspace(self, recorded: str) -> Path:
+        """Where a resumed session works: its own directory, if this repository's.
+
+        Another worktree of the same repository is fine (the session browser
+        lists them), another repository is not: the conversation's paths,
+        instructions, and extensions would all be wrong there.
+        """
+        from pcode.sessions import SessionError
+        from pcode.worktree import repo_scope
+
+        target = Path(recorded).resolve()
+        if target == self.workspace:
+            return target
+        if not target.is_dir():
+            raise SessionError(f"Session workspace no longer exists: {target}")
+        if repo_scope(target) != repo_scope(self.workspace):
+            raise SessionError("Workspace differs; refusing cross-repo resume.")
+        return target
+
+    def _switch_workspace(self, workspace: Path, extensions) -> None:
+        """Rebind everything keyed on the workspace to another worktree.
+
+        The agent is the caller's to replace; this covers what the app itself
+        derives from the path: extension commands, skill commands, and the
+        status line (whose branch watcher picks the new path up on its own).
+        Project preferences and trust are per repository, so they stay.
+        """
+        self.workspace = workspace
+        self.extensions = extensions
+        self.register_extension_commands()
+        for name in self.skill_command_names:
+            self.registry.unregister(name)
+        self.register_skills()
+        self.transcript.note(f"Workspace: {workspace}")
 
     def select_tree(self, argument: str) -> None:
         if self.activity.busy or self.activity.queued:
@@ -2853,30 +2898,42 @@ def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
 
 
 def _leave_worktree_on_exit(app, ask=input, stream=None) -> None:
-    """Tidy a session worktree on the way out, never losing work.
+    """`leave_worktree` for the process exit: notes go to stderr, and a deleted
+    session is dropped from the runtime so nothing writes to it afterwards."""
+    stream = stream or sys.stderr
+    session = getattr(app.runtime, "session", None)
+    deleted = leave_worktree(
+        app.workspace, session, ask=ask, notify=lambda text: print(text, file=stream)
+    )
+    if deleted:
+        app.runtime.session = None
+
+
+def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
+    """Tidy a session worktree on the way out of it, never losing work.
 
     Untouched (clean, nothing unmerged): removed with its branch, no question;
-    a session that never had a turn is deleted too. Unmerged commits: per
-    `worktree_exit`, ask (default yes), merge silently, or keep. Uncommitted
-    changes, refusals, and hand-made worktrees (no `pcode-` prefix): kept, with
-    a note on how to resume. `ask=None` means nobody is there to answer.
+    a session that never had a turn is deleted too, and True is returned.
+    Unmerged commits: per `worktree_exit`, ask (default yes), merge silently,
+    or keep. Uncommitted changes, refusals, and hand-made worktrees (no
+    `pcode-` prefix): kept, with a note on how to resume. `ask=None` means
+    nobody is there to answer. Used at process exit and when a live session
+    switches to another worktree of the same repository.
     """
     import shutil
 
     from pcode import worktree
 
-    stream = stream or sys.stderr
     try:
-        linked = worktree.describe(app.workspace)
+        linked = worktree.describe(workspace)
         if linked is None:
-            return
+            return False
         ours = linked.branch.startswith(SESSION_WORKTREE_PREFIX)
         dirty = worktree.is_dirty(linked.path)
         unmerged = worktree.unmerged_commits(linked)
         untouched = ours and worktree.is_untouched(linked)
     except worktree.WorktreeError:
-        return
-    session = getattr(app.runtime, "session", None)
+        return False
     resume = f"`pcode -C {linked.path} -c` resumes there"
 
     def repoint():
@@ -2888,43 +2945,40 @@ def _leave_worktree_on_exit(app, ask=input, stream=None) -> None:
         if untouched:
             worktree.remove(linked)
             worktree.delete_branch(linked)
-            if session is not None and session.info.turns == 0:
+            deleted = session is not None and session.info.turns == 0
+            if deleted:
                 session.close()
-                app.runtime.session = None
                 shutil.rmtree(session.directory, ignore_errors=True)
             else:
                 repoint()
-            print(f"worktree: removed untouched {linked.path}", file=stream)
-            return
+            notify(f"worktree: removed untouched {linked.path}")
+            return deleted
         if dirty or not ours or not unmerged:
             state = "uncommitted changes" if dirty else f"{unmerged} unmerged commit(s)"
-            print(f"worktree: {linked.path} ({linked.branch}) has {state}; {resume}", file=stream)
-            return
+            notify(f"worktree: {linked.path} ({linked.branch}) has {state}; {resume}")
+            return False
         mode = load_preferences().get("worktree_exit", "ask")
         mainline = worktree.mainline_branch(linked.main)
         if mode == "ask" and ask is not None:
-            print(
-                f"worktree: {linked.branch} has {unmerged} commit(s) not in {mainline}.",
-                file=stream,
-            )
+            notify(f"worktree: {linked.branch} has {unmerged} commit(s) not in {mainline}.")
             try:
                 answer = ask("Merge and remove the worktree? [Y/n] ").strip().lower()
             except (EOFError, OSError, KeyboardInterrupt):
                 answer = "n"
             if answer not in ("", "y", "yes"):
-                print(f"worktree: kept; {resume}", file=stream)
-                return
+                notify(f"worktree: kept; {resume}")
+                return False
         elif mode != "merge":
-            print(
+            notify(
                 f"worktree: {linked.path} ({linked.branch}) has {unmerged} unmerged commit(s); "
-                f"{resume}",
-                file=stream,
+                f"{resume}"
             )
-            return
-        print("worktree: " + worktree.finish(linked), file=stream)
+            return False
+        notify("worktree: " + worktree.finish(linked))
         repoint()
     except (worktree.WorktreeError, OSError) as error:
-        print(f"worktree: {error}\nworktree: kept; {resume}", file=stream)
+        notify(f"worktree: {error}\nworktree: kept; {resume}")
+    return False
 
 
 def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
@@ -2977,9 +3031,14 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     "Cannot change models when resuming; start a new session instead."
                 )
             if args.workspace and str(args.workspace.resolve()) != saved.info.workspace:
-                raise SessionError(
-                    "Workspace differs from the saved session; refusing cross-repo resume."
-                )
+                # Another worktree of the same repository is fine: the session
+                # goes back to its own directory. Another repository is not.
+                from pcode.worktree import repo_scope
+
+                if repo_scope(args.workspace) != repo_scope(Path(saved.info.workspace)):
+                    raise SessionError(
+                        "Workspace differs from the saved session; refusing cross-repo resume."
+                    )
             args.model = saved.info.model
             args.workspace = Path(saved.info.workspace)
         if not args.resume and not args.model:
