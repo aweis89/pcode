@@ -4,7 +4,15 @@ Use `/tree` while the agent is idle to browse and fork the current conversation.
 This follows the user/assistant selection model of
 [pi-coding-agent's session tree](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md).
 
+The picker is laid out like `/resume`: the tree on the left, and on the right a
+Conversation pane showing the full branch through the selected row, root to
+leaf. Moving the selection scrolls that pane so the selected prompt or response
+sits at the top, with what led to it above and what followed below. Below a
+selected row the pane follows the active branch where the tree forks.
+
 - **↑ / ↓:** move through the tree. PageUp / PageDown scroll through longer trees.
+- **Tab:** focus the Conversation pane; ↑ / ↓, PageUp / PageDown, and Ctrl+U /
+  Ctrl+D scroll it. Tab again returns to the tree.
 - **Enter on a user prompt:** restore the context **before** that turn and place
   its original prompt in the editor. Edit and send it to create another branch.
 - **Enter on an assistant response:** restore the context **after** that turn.
