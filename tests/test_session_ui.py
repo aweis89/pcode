@@ -410,6 +410,7 @@ def test_resume_restores_before_replacing_runtime(tmp_path):
             original = app.runtime
             await app.resume_session(identity)
             assert app.runtime is original
+            (tmp_path / "other").mkdir()
             other = SavedSession.create("test:local", tmp_path / "other", root)
             other_id = other.info.id
             other.close()

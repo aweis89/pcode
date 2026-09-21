@@ -133,6 +133,8 @@ resolved there, never in the mainline checkout) and then fast-forwards the
 mainline, `/worktree finish` does that and then removes the worktree and its
 branch and quits, `/worktree remove` deletes the directory once it is merged
 and clean, and `/worktree list` shows every worktree. Nothing is ever forced.
+`/resume` can pick a session from another worktree of the repository and move
+this session there; see [sessions](sessions.md).
 
 `/worktree clean` sweeps up the leftovers: every other worktree of the
 repository with nothing uncommitted, nothing untracked, and nothing the mainline

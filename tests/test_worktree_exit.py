@@ -1,15 +1,20 @@
 """Leaving a session worktree: untouched ones vanish, unmerged ones ask, work is never lost."""
 
+import asyncio
 import io
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from pydantic_ai import Agent
+from pydantic_ai.models.function import FunctionModel
 
 from pcode import worktree
 from pcode.app import PreviewApp, _leave_worktree_on_exit
+from pcode.live import AgentRuntime
 from pcode.preferences import save_preferences
-from pcode.sessions import SavedSession
+from pcode.sessions import SavedSession, SessionError
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -196,4 +201,90 @@ def test_finish_command_refusal_changes_nothing(repo, tmp_path):
     with pytest.raises(ValueError, match="uncommitted"):
         app.worktree("finish")
     assert created.path.exists() and app.running
+    session.close()
+
+
+def saved_session_in(path: Path, root: Path) -> str:
+    """A closed session with one turn, recorded as working in `path`."""
+
+    async def model(messages, info):
+        yield "Saved answer"
+
+    saved = SavedSession.create("test:local", path, root)
+    runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)), saved)
+
+    async def turn():
+        _ = [event async for event in runtime.stream("First question")]
+
+    asyncio.run(turn())
+    runtime.close()
+    return saved.info.id
+
+
+def test_resume_switches_to_a_sibling_worktree_and_tidies_the_old_one(repo, tmp_path):
+    root = tmp_path / "sessions"
+    other = worktree.create(repo, "pcode-other")
+    commit(other.path, "f.txt")  # unmerged work, so its session is worth resuming
+    (other.path / ".agents" / "skills" / "demo").mkdir(parents=True)
+    (other.path / ".agents" / "skills" / "demo" / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: d\n---\nbody\n"
+    )
+    identity = saved_session_in(other.path, root)
+    created, session, app = make(repo, tmp_path)  # untouched pcode-abc, empty session
+    app.session_dir = root
+    notes = []
+    app.transcript.note = lambda text, **_: notes.append(text)
+    with patch("pcode.agent.create_agent", return_value=Agent("test")) as create:
+        asyncio.run(app.resume_session(identity))
+    try:
+        assert create.call_args.args[1] == other.path
+        assert app.workspace == other.path
+        assert app.runtime.session.info.id == identity
+        assert app.runtime.turns == 1
+        assert app.registry.find("/skill:demo") is not None
+        # The untouched worktree left behind is gone, with its empty session.
+        assert not created.path.exists()
+        assert git(repo, "branch", "--list", "pcode-abc") == ""
+        assert not session.directory.exists()
+        assert any("removed untouched" in note for note in notes)
+        assert any(str(other.path) in note for note in notes)
+    finally:
+        app.runtime.close()
+
+
+def test_resume_leaves_unmerged_worktree_with_a_note(repo, tmp_path):
+    root = tmp_path / "sessions"
+    identity = saved_session_in(repo, root)  # a mainline session
+    created, session, app = make(repo, tmp_path, turns=1)
+    commit(created.path, "f.txt")
+    app.session_dir = root
+    notes = []
+    app.transcript.note = lambda text, **_: notes.append(text)
+    with patch("pcode.agent.create_agent", return_value=Agent("test")):
+        asyncio.run(app.resume_session(identity))
+    try:
+        assert app.workspace == repo
+        assert created.path.exists()
+        assert not (repo / "f.txt").exists()
+        assert any("1 unmerged commit" in note and "resumes there" in note for note in notes)
+    finally:
+        app.runtime.close()
+        session.close()
+
+
+def test_resume_refuses_another_repository_or_a_missing_directory(repo, tmp_path):
+    root = tmp_path / "sessions"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    foreign = saved_session_in(elsewhere, root)
+    gone = saved_session_in(tmp_path / "gone", root)
+    created, session, app = make(repo, tmp_path)
+    app.session_dir = root
+    original = app.runtime
+    with pytest.raises(SessionError, match="cross-repo"):
+        asyncio.run(app.resume_session(foreign))
+    with pytest.raises(SessionError, match="no longer exists"):
+        asyncio.run(app.resume_session(gone))
+    assert app.runtime is original
+    assert app.workspace == created.path and created.path.exists()
     session.close()
