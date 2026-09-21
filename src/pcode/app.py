@@ -177,7 +177,7 @@ class PreviewApp:
             ),
             Command(
                 "/config",
-                "Inspect or edit saved defaults: get KEY / set KEY VALUE / unset KEY / reset",
+                "Inspect or edit saved defaults: diff / get KEY / set KEY VALUE / unset KEY",
                 self.config,
                 free_arguments=True,
                 argument_provider=config_arguments,
@@ -803,7 +803,7 @@ class PreviewApp:
             self.transcript.note(
                 "No active model providers. Use /login to sign in to Anthropic, "
                 "set ANTHROPIC_API_KEY, run codex login, or export another "
-                "provider's API key (see README: Supported providers)."
+                "provider's API key (see docs/providers.md)."
             )
             return
         values = model_catalog(providers, self.model)
