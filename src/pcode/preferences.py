@@ -308,9 +308,22 @@ def set_project_root(path: Path | None) -> None:
     _project_root = path.resolve() if path is not None else None
 
 
-def preferences_path() -> Path:
+def config_dir() -> Path:
+    """pcode's own config directory: preferences, credentials, mcp.json, extensions.
+
+    `PCODE_CONFIG_DIR` names it directly so several independent instances (each
+    with its own login and settings) can coexist without moving every other
+    XDG-aware program along with it; otherwise `$XDG_CONFIG_HOME/pcode`.
+    """
+    override = os.environ.get("PCODE_CONFIG_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
     root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return root / "pcode" / "preferences.json"
+    return root / "pcode"
+
+
+def preferences_path() -> Path:
+    return config_dir() / "preferences.json"
 
 
 def project_preferences_path() -> Path | None:

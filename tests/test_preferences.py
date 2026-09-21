@@ -146,3 +146,22 @@ def test_theme_save_failure_keeps_current_selection():
         app.theme("light")
     assert app.transcript.theme == "light"
     assert "Could not save defaults" in app.transcript.console.file.getvalue()
+
+
+def test_config_dir_override_moves_every_config_file(monkeypatch, tmp_path):
+    from pcode.anthropic_oauth import credentials_path
+    from pcode.ext import user_extension_dir
+    from pcode.mcp import config_path as mcp_config_path
+
+    instance = tmp_path / "instance-b"
+    monkeypatch.setenv("PCODE_CONFIG_DIR", str(instance))
+
+    assert preferences_path() == instance / "preferences.json"
+    assert credentials_path() == instance / "credentials.json"
+    assert mcp_config_path() == instance / "mcp.json"
+    assert user_extension_dir() == instance / "extensions"
+
+
+def test_config_dir_falls_back_to_xdg_when_override_is_blank(monkeypatch, tmp_path):
+    monkeypatch.setenv("PCODE_CONFIG_DIR", "  ")
+    assert preferences_path() == tmp_path / "config" / "pcode" / "preferences.json"

@@ -34,6 +34,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from pcode.auth import LoginError, SubscriptionOAuthWire
 from pcode.oauth_pages import callback_page
+from pcode.preferences import config_dir
 
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
@@ -70,8 +71,7 @@ def credentials_path() -> Path:
     override = os.environ.get("PCODE_CREDENTIALS_FILE", "").strip()
     if override:
         return Path(override).expanduser()
-    root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return root / "pcode" / "credentials.json"
+    return config_dir() / "credentials.json"
 
 
 def have_credentials(path: Path | None = None) -> bool:
