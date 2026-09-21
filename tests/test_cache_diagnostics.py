@@ -108,9 +108,10 @@ def test_appended_history_reports_an_intact_prefix():
     before = print_for(turn())
     after = print_for([*turn(), ModelRequest(parts=[UserPromptPart(content="next")])])
     summary = divergence(before, after)
-    assert "Prefix intact" in summary
-    assert "all 3 earlier messages" in summary and "1 were appended" in summary
-    assert "TTL" in summary
+    assert "Request fingerprints unchanged" in summary
+    assert "1 messages appended" in summary
+    assert "cause unknown" in summary
+    assert "TTL" not in summary and "byte-identical" not in summary
 
 
 def test_rewritten_middle_message_is_named_with_its_index():
@@ -120,8 +121,8 @@ def test_rewritten_middle_message_is_named_with_its_index():
     after = print_for([*messages, ModelRequest(parts=[UserPromptPart(content="tail")])])
     summary = divergence(before, after)
     assert "Message 1 of 4 changed" in summary
-    assert "3 message(s) after it were re-sent" in summary
-    assert "Prefix intact" not in summary
+    assert "3 prior message(s) from that index" in summary
+    assert "Request fingerprints unchanged" not in summary
 
 
 def test_dropped_history_is_distinguished_from_a_rewrite():
@@ -171,7 +172,7 @@ def test_bust_event_names_the_cause_and_dump_excludes_prompt_text(monkeypatch, t
         events = asyncio.run(run())
 
     bust = next(event for event in events if isinstance(event, CacheBust))
-    assert "Prefix intact" in bust.text or "changed" in bust.text
+    assert "Request fingerprints unchanged" in bust.text or "changed" in bust.text
     assert "Request fingerprints:" in bust.text
 
     dumps = list((tmp_path / "pcode" / "cache-diagnostics").glob("*.json"))
@@ -205,8 +206,8 @@ def test_unreadable_request_degrades_to_silence_without_ending_the_run(monkeypat
     # The provider's own verdict still reaches the user; only the extra
     # diagnosis is missing, and no stale window invents a divergence.
     bust = next(event for event in events if isinstance(event, CacheBust))
-    assert "read 0 cached tokens" in bust.text
-    assert "Prefix intact" not in bust.text and "Message" not in bust.text
+    assert "cached 0 vs ~8,000" in bust.text
+    assert "Request fingerprints unchanged" not in bust.text and "Message" not in bust.text
 
 
 def test_dumps_can_be_disabled_without_losing_the_warning(monkeypatch, tmp_path):
@@ -218,7 +219,7 @@ def test_dumps_can_be_disabled_without_losing_the_warning(monkeypatch, tmp_path)
         events = asyncio.run(collect(runtime_for([(8000, 0), (0, 0)])))
 
     bust = next(event for event in events if isinstance(event, CacheBust))
-    assert "read 0 cached tokens" in bust.text
+    assert "cached 0 vs ~8,000" in bust.text
     assert "Request fingerprints:" not in bust.text
     assert not (tmp_path / "pcode" / "cache-diagnostics").exists()
 

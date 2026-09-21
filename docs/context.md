@@ -181,11 +181,21 @@ For the planning-specific cache issue and why reminders are now append-only, see
 [prompt caching and plan reminders](prompt-caching.md). `make cache-report`
 summarizes how prompt caching actually performed in saved sessions.
 
-Pcode enables Harness's [cache-bust monitor](https://pydantic.dev/docs/ai/harness/warn-on-cache-busts/)
-for the main agent and sub-agents. A `Prompt cache miss` warning appears in the
-transcript when cache reads drop below half of an established prefix of at least
-1,024 tokens. It includes the model, token counts, and a possible cache-expiry
-hint. Warnings survive redraw and saved-session resume; they do not interrupt the run.
+Prompt-cache warnings and fingerprint collection are **off by default**. Enable
+`debug` for the main agent and sub-agents through the existing configuration:
+
+```sh
+pcode config set debug on   # Or /config set debug on inside pcode
+pcode config set debug off  # Default
+```
+
+Restart pcode or use `/reload` after changing this setting. With debug enabled,
+Harness's [cache-bust monitor](https://pydantic.dev/docs/ai/harness/warn-on-cache-busts/)
+shows a `Prompt cache miss` warning when cache reads drop below half of an
+established prefix of at least 1,024 tokens. It includes the model, token counts,
+and request fingerprint comparison, without guessing the provider-side cause.
+Warnings survive redraw and saved-session resume; turning debug off does not
+remove old warnings. They do not interrupt the run.
 
 The monitor compares requests within each agent run, not across chat turns or
 restarts. A sustained collapse warns once until cache reads recover. It stays
@@ -200,19 +210,19 @@ fingerprints every model request and keeps a rolling window of the last few. Whe
 a miss fires, the warning gains a one-line diagnosis and the window is written to
 `~/.local/state/pcode/cache-diagnostics/` (`XDG_STATE_HOME` is honored):
 
-```
+```text
 ! Prompt cache miss
-  anthropic/claude-opus-5: Cache hit collapsed at model request 14: read 11105 ...
-  Message 6 of 31 changed (kind request -> request, 8100 -> 240 chars, cache points 0 -> 0). 25 message(s) after it were re-sent.
+  provider/model: request 14: cached 3,712 vs ~10,752 established tokens.
+  Request fingerprints unchanged; 2 messages appended (~10s gap). Cache-miss cause unknown.
   Request fingerprints: ~/.local/state/pcode/cache-diagnostics/20260919T035812-4821-step14.json
 ```
 
-The diagnosis separates the two causes that the token counts conflate:
+The comparison describes what pcode observed, not a proven cache-miss cause:
 
-- **`Prefix intact: ... nothing rewrote history`** — every earlier message was
-  byte-identical and the rest were appended. The prompt is stable, so suspect the
-  cache TTL (the line reports the gap since the previous request) or where the
-  breakpoints landed, which the dump lists as `cache_point_indexes`.
+- **`Request fingerprints unchanged`** — the tracked instructions, tools,
+  settings, and earlier messages match; new messages were appended. These are
+  application-level fingerprints, not the final HTTP payload. The cause remains
+  unknown; the measured gap alone does not establish cache expiry.
 - **`Message N of M changed`** — something rewrote history in place, and the named
   index is the first one that moved. `Instructions changed`, `Tool definitions
   changed`, `Cache settings changed`, and `History shrank` cover the cases that sit

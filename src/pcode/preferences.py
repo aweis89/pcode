@@ -172,6 +172,11 @@ SETTINGS = {
         whole_number=True,
         description="Corrections offered to the model per turn when a tool call fails validation",
     ),
+    "debug": Setting(
+        "off",
+        ("on", "off"),
+        description="Enable prompt-cache warnings and diagnostic fingerprints",
+    ),
     "error_scrollback_lines": Setting(
         "20",
         positive_integer=True,
