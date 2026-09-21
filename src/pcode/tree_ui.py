@@ -55,6 +55,11 @@ class TreeBrowser:
         self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
         self.list.window.cursorline = Always()
         self.detail = RichPane(theme=rich_theme, color_system=color_system)
+        # The pane always reports its top row as the cursor position, so this
+        # marks whichever line the Tree selection scrolled to (or wherever the
+        # Conversation pane was scrolled to by hand), the same "cursor-line"
+        # highlight the Tree list uses for its own selection.
+        self.detail.window.cursorline = Always()
         self.list.buffer.on_cursor_position_changed += lambda _: self.select()
         keys = KeyBindings()
         self.detail.bind_scrolling(keys)
