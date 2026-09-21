@@ -26,6 +26,7 @@ from pcode.preferences import (
 def test_defaults_and_path_do_not_create_files():
     assert configure(["path"]) == str(preferences_path())
     assert json.loads(configure([])) == {
+        "model_providers": "",
         "send_mode": "steering",
         # No Anthropic credential has been chosen until /login stores one.
         "anthropic_auth": None,
@@ -53,7 +54,7 @@ def test_defaults_and_path_do_not_create_files():
         "show_edits": "on",
         "command_scrollback_lines": "20",
         "command_preview_lines": "10",
-        "theme": "dark",
+        "theme": "auto",
         "syntax_dark": "gruvbox-dark",
         "syntax_light": "gruvbox-light",
         "editing_mode": "emacs",
@@ -109,7 +110,7 @@ def test_set_get_unset(key, value):
 
 def test_diff_reports_only_changed_settings(tmp_path):
     assert configure(["diff"]) == "Every setting is at its default."
-    save_preferences(theme="dark", effort="high")
+    save_preferences(theme="auto", effort="high")
     save_model_effort("test:local", "low")
     set_project_root(tmp_path)
     configure(["project", "set", "worktree", "on"])
@@ -131,7 +132,7 @@ def test_reset_clears_known_settings_and_keeps_unknown_keys():
     message = configure(["reset"])
     assert "effort, theme" in message
     assert read_preferences() == {"future": {"nested": True}}
-    assert json.loads(configure(["list"]))["theme"] == "dark"
+    assert json.loads(configure(["list"]))["theme"] == "auto"
     assert configure(["reset"]) == "No global defaults to reset."
 
 

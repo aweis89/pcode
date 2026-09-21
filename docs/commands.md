@@ -35,8 +35,9 @@ candidate's size so that cost is visible before you pick.
 - `/theme light`, `/theme dark`, or `/theme auto`: change the input and future output palette.
   Auto uses the terminal background detected at startup with an OSC 11 query,
   falling back to `COLORFGBG`, then dark when unavailable (including redirected
-  output). Restart pcode after changing your terminal background. Save auto mode
-  with `/theme auto` or `pcode config set theme auto`; the built-in default remains dark.
+  output). Auto is the built-in default; saved theme choices still take precedence.
+  Restart pcode after changing your terminal background. Restore auto mode
+  with `/theme auto` or `pcode config set theme auto`.
   `/theme` alone toggles. By default, Rich headings, links, quotes, inline code,
   and tables follow this palette; fenced code uses the palette's own Pygments
   style, `gruvbox-dark` or `gruvbox-light`. Normal body text and the overall

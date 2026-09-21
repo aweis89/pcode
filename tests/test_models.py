@@ -28,6 +28,45 @@ def isolated_providers(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
 
+@pytest.mark.parametrize("allowed", ["openai-codex,anthropic", " openai-codex , anthropic "])
+def test_provider_filter_matches_exact_names(monkeypatch, tmp_path, allowed):
+    from pcode.preferences import save_preferences
+
+    monkeypatch.setenv("PCODE_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-key")
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").touch()
+    save_preferences(model_providers=allowed)
+    providers = active_providers("openai:custom")
+    assert providers == {"openai-codex", "anthropic"}
+    assert {
+        name.partition(":")[0] for name in model_catalog(providers, "openai:custom")
+    } == providers
+
+
+def test_provider_filter_does_not_activate_providers(monkeypatch, tmp_path):
+    from pcode.preferences import save_preferences
+
+    monkeypatch.setenv("PCODE_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.chdir(tmp_path)
+    save_preferences(model_providers="anthropic")
+    assert active_providers("openai:custom") == set()
+    save_preferences(model_providers="")
+    assert active_providers("openai:custom") == {"openai"}
+
+
+@pytest.mark.parametrize(
+    "value", ["openai-code", "anthropic,,openai", "anthropic,", "openai codex"]
+)
+def test_provider_filter_rejects_invalid_names(value):
+    from pcode.preferences import SETTINGS
+
+    with pytest.raises(ValueError):
+        SETTINGS["model_providers"].validate("model_providers", value)
+
+
 def test_no_configuration():
     assert active_providers(None) == set()
 

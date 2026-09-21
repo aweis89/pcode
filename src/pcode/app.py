@@ -135,7 +135,7 @@ class PreviewApp:
             apply_thinking(agent, model, self.activity.show_thinking)
         self.transcript = Transcript(
             console or Console(),
-            theme or load_preferences().get("theme", "dark"),
+            theme or load_preferences().get("theme", SETTINGS["theme"].default),
             activity=self.activity,
             color_style=color_style,
         )
@@ -814,7 +814,8 @@ class PreviewApp:
             self.transcript.note(
                 "No active model providers. Use /login to sign in to Anthropic, "
                 "set ANTHROPIC_API_KEY, run codex login, or export another "
-                "provider's API key (see docs/providers.md)."
+                "provider's API key (see docs/providers.md). "
+                "If model_providers is set, check that it allows an active provider."
             )
             return
         values = model_catalog(providers, self.model)
@@ -2773,7 +2774,7 @@ def main() -> None:
     parser.add_argument(
         "--theme",
         choices=THEMES,
-        default=load_preferences().get("theme", "dark"),
+        default=load_preferences().get("theme", SETTINGS["theme"].default),
         help="Color theme (default: saved preference)",
     )
     parser.add_argument(
