@@ -16,7 +16,7 @@ pcode config set autocompact on
 pcode config set effort high
 pcode config set model openai-codex:gpt-5.6-luna
 pcode config unset model          # Remove saved model; return to offline preview
-pcode config unset theme          # Restore built-in dark theme
+pcode config unset theme          # Restore automatic theme detection
 pcode config reset                # Remove every saved default at once
 ```
 
@@ -89,7 +89,7 @@ is only sensible on a machine where you wrote all of them.
 
 | Key | Built-in default | Values |
 | --- | --- | --- |
-| `theme` | `dark` | `dark`, `light`, `auto` |
+| `theme` | `auto` | `dark`, `light`, `auto` |
 | `syntax_dark` | `gruvbox-dark` | A Pygments style for fenced code on the dark palette |
 | `syntax_light` | `gruvbox-light` | A Pygments style for fenced code on the light palette |
 | `autocompact` | `off` | `on`, `off` |

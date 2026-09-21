@@ -209,7 +209,7 @@ SETTINGS = {
         "emacs", ("emacs", "vi"), description="Key bindings for the prompt editor"
     ),
     "theme": Setting(
-        "dark",
+        "auto",
         ("dark", "light", "auto"),
         description="Palette for the terminal background; auto detects it",
     ),

@@ -155,7 +155,7 @@ def test_cli_project_file_turns_worktree_on_for_one_repo(tmp_path, monkeypatch, 
     with patch("pcode.app.PreviewApp") as app:
         main()
     assert app.call_args.kwargs["workspace"] == other
-    assert app.call_args.kwargs["theme"] == "dark"
+    assert app.call_args.kwargs["theme"] == "auto"
 
 
 def test_cli_config_project_uses_workspace_flag(tmp_path, monkeypatch, capsys):
