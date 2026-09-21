@@ -8,3 +8,5 @@ dist/
 # no trailing slash: in a worktree, tmp is a symlink to the main checkout's
 tmp
 .worktrees/
+# built docs site (make docs)
+site/

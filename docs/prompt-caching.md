@@ -125,7 +125,7 @@ Regression coverage checks request structure, not simulated cache-hit counts:
 Live confirmation requires observing cache reads advance with the conversation
 while writes mostly track new content, rather than repeatedly tracking the whole
 tail since the last user prompt. A passing wire test does not prove provider-side
-reuse. See the [README's cache diagnostics](../README.md#prompt-cache-warnings)
+reuse. See the [cache diagnostics](context.md#prompt-cache-warnings)
 for fingerprint dumps and warning interpretation.
 
 ## Delegated runs
