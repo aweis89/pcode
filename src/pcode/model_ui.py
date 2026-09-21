@@ -11,33 +11,16 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Dialog, Label, TextArea
 
 from pcode.models import PROVIDERS
-from pcode.popup_ui import popup_container, popup_style
+from pcode.popup_ui import fuzzy_match, popup_container, popup_style
 
 
 def matches_model(term: str, model: str) -> bool:
-    """Match substrings or joined word prefixes, e.g. anth + opus.
-
-    Gaps are allowed between words, not inside them. This keeps 'anthopus'
-    from matching an unrelated Sonnet via scattered letters in 'anthropic:claude'.
-    """
+    """Match the id or the provider's display name plus model, e.g. anth + opus."""
     provider, _, name = model.partition(":")
-    for text in (model.casefold(), f"{PROVIDERS.get(provider, provider)} {name}".casefold()):
-        if term in text:
-            return True
-        # Track how much of the query can be consumed by successive word prefixes.
-        positions = {0}
-        for word in re.findall(r"[a-z0-9]+", text):
-            following = set(positions)  # Skipping a word is allowed.
-            for position in positions:
-                for length, character in enumerate(word, 1):
-                    index = position + length - 1
-                    if index >= len(term) or character != term[index]:
-                        break
-                    following.add(index + 1)
-            if len(term) in following:
-                return True
-            positions = following
-    return False
+    return any(
+        fuzzy_match(term, text)
+        for text in (model.casefold(), f"{PROVIDERS.get(provider, provider)} {name}".casefold())
+    )
 
 
 class ModelPicker:

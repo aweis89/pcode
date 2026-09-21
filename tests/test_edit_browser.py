@@ -108,6 +108,86 @@ def test_keyboard_scrolls_the_diff_from_the_file_pane_and_closes():
     asyncio.run(run())
 
 
+def test_path_search_fuzzy_filters_the_file_list():
+    changes = [
+        change("src/pcode/edit_ui.py", call_id="1"),
+        change("tests/test_edit_browser.py", call_id="2"),
+        change("docs/commands.md", call_id="3"),
+    ]
+    with create_pipe_input() as pipe:
+        ui = EditBrowser(changes, input=pipe, output=DummyOutput())
+        ui.query.text = "ed_ui"  # Joined word prefixes, not a plain substring.
+        assert [c.path for c in ui.visible] == ["src/pcode/edit_ui.py"]
+        assert ui.selected.path == "src/pcode/edit_ui.py"
+        ui.query.text = "test edit"
+        assert [c.path for c in ui.visible] == ["tests/test_edit_browser.py"]
+        ui.query.text = "nothing-here"
+        assert ui.visible == [] and ui.selected is None
+        assert "No matching edits" in ui.files.text and "No matching edits" in ui.diff.text
+        ui.query.text = ""
+        assert len(ui.visible) == 3
+
+
+def test_diff_search_filters_changes_and_jumps_between_matching_rows():
+    patch = "@@ -1 +3 @@\n-old\n+self.selected_row = 1\n context\n+selected_row += 1"
+    changes = [change("a.py", call_id="1", patch=patch), change("b.py", call_id="2")]
+    with create_pipe_input() as pipe:
+        ui = EditBrowser(changes, input=pipe, output=DummyOutput())
+        ui.search("diffs")
+        assert ui.scope == "diffs" and ui.app.layout.has_focus(ui.query)
+        ui.query.text = "sel_row"
+        assert [c.path for c in ui.visible] == ["a.py"]
+        rows = ui.diff_rows()
+        assert len(rows) == 2 and ui.diff.document.cursor_position_row == rows[0]
+        ui.jump(1)
+        assert ui.diff.document.cursor_position_row == rows[1]
+        ui.jump(1)  # Wraps around.
+        assert ui.diff.document.cursor_position_row == rows[0]
+        ui.jump(-1)
+        assert ui.diff.document.cursor_position_row == rows[1]
+        # Switching scope drops the query typed for the other pane.
+        ui.search("paths")
+        assert ui.query.text == "" and len(ui.visible) == 2
+
+
+def test_diff_search_matches_the_redacted_text():
+    with create_pipe_input() as pipe:
+        ui = EditBrowser(
+            [change("app.py", patch='+token = "synthetic-secret"')],
+            input=pipe,
+            output=DummyOutput(),
+        )
+        ui.search("diffs")
+        ui.query.text = "synthetic-secret"
+        assert ui.visible == []
+        ui.query.text = "redacted"
+        assert len(ui.visible) == 1 and ui.diff_rows()
+
+
+def test_slash_targets_the_focused_pane_and_enter_returns_to_it():
+    async def run():
+        with create_pipe_input() as pipe:
+            ui = EditBrowser([change("x.py")], input=pipe, output=DummyOutput())
+            task = asyncio.create_task(ui.run())
+            await asyncio.sleep(0.05)
+            pipe.send_text("/")
+            await asyncio.sleep(0.05)
+            assert ui.scope == "paths" and ui.app.layout.has_focus(ui.query)
+            pipe.send_text("\r")
+            await asyncio.sleep(0.05)
+            assert ui.app.layout.has_focus(ui.files)
+            pipe.send_text("\t/")
+            await asyncio.sleep(0.05)
+            assert ui.scope == "diffs" and ui.app.layout.has_focus(ui.query)
+            pipe.send_text("new\r")
+            await asyncio.sleep(0.05)
+            assert ui.app.layout.has_focus(ui.diff) and ui.query.text == "new"
+            pipe.send_text("\x1b")
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+
+
 def test_file_list_keeps_its_rows_when_the_diff_is_long():
     """A long diff must not squeeze the Files pane down to its minimum height."""
 

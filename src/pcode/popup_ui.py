@@ -60,6 +60,35 @@ def _list_page(listing) -> int:
     return max(1, info.window_height - 1) if info else 10
 
 
+def fuzzy_match(term: str, text: str) -> bool:
+    """Match a casefolded substring or joined word prefixes, e.g. ed_ui + edit_ui.py.
+
+    Gaps are allowed between words, not inside them. This keeps 'anthopus'
+    from matching an unrelated Sonnet via scattered letters in 'anthropic:claude',
+    and a three-letter query from matching every diff line with those initials.
+    """
+    if term in text:
+        return True
+    # Separators in the query are word boundaries, so ed_ui and ed/ui both find edit_ui.
+    term = "".join(re.findall(r"[a-z0-9]+", term))
+    if not term:
+        return False
+    # Track how much of the query can be consumed by successive word prefixes.
+    positions = {0}
+    for word in re.findall(r"[a-z0-9]+", text):
+        following = set(positions)  # Skipping a word is allowed.
+        for position in positions:
+            for length, character in enumerate(word, 1):
+                index = position + length - 1
+                if index >= len(term) or character != term[index]:
+                    break
+                following.add(index + 1)
+        if len(term) in following:
+            return True
+        positions = following
+    return False
+
+
 def bind_list_paging(keys, listing, filter) -> None:
     """Ctrl+U/Ctrl+D move a TextArea list's selection by half a page.
 

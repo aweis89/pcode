@@ -9,7 +9,23 @@ from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
-from pcode.popup_ui import RichPane
+from pcode.popup_ui import RichPane, fuzzy_match
+
+
+@pytest.mark.parametrize(
+    ("term", "text", "expected"),
+    [
+        ("edit_ui", "src/pcode/edit_ui.py", True),  # Plain substring.
+        ("ed_ui", "src/pcode/edit_ui.py", True),  # Separators split the query into prefixes.
+        ("pc/edui", "src/pcode/edit_ui.py", True),
+        ("edui", "src/pcode/edit_ui.py", True),
+        ("dtui", "src/pcode/edit_ui.py", False),  # Gaps inside a word do not count.
+        ("sel_row", "+self.selected_row = 1", True),
+        ("_", "anything", False),
+    ],
+)
+def test_fuzzy_match_uses_substrings_or_joined_word_prefixes(term, text, expected):
+    assert fuzzy_match(term, text) is expected
 
 
 def test_rich_pane_scroll_reuses_prepared_lines():
