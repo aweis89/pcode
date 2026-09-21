@@ -22,7 +22,7 @@ from pcode.preferences import (
     update_preferences,
 )
 
-USAGE = "config [list | path | get KEY | set KEY VALUE | unset KEY | reset | project ...]"
+USAGE = "config [list | diff | path | get KEY | set KEY VALUE | unset KEY | reset | project ...]"
 PROJECT_USAGE = "config project [list | path | set KEY VALUE | unset KEY | reset]"
 
 # Resetting clears the recorded /login choice and every per-repository extension
@@ -74,6 +74,33 @@ def _reset(path: Path | None, label: str) -> str:
     return f"Reset {label} defaults: {', '.join(removed)}. Applies on next launch.{notice}"
 
 
+def _diff() -> str:
+    """Only the settings actually changed, and which file changed them.
+
+    A stored value equal to the default is not a difference, and neither is an
+    invalid one: both leave the effective value where `list` shows it.
+    """
+    user = read_preferences()
+    project_path = project_preferences_path()
+    project = read_preferences(project_path) if project_path is not None else {}
+    data = _effective_data()
+    lines = []
+    for key, setting in SETTINGS.items():
+        value = _effective(data, key)
+        if value == setting.default:
+            continue
+        source = "project" if key in project and key not in USER_ONLY else "user"
+        default = "unset" if setting.default is None else setting.default
+        lines.append(f"{key} = {value} (default {default}, from {source})")
+    efforts = user.get(MODEL_EFFORTS_KEY)
+    if isinstance(efforts, dict) and efforts:
+        chosen = ", ".join(f"{model}={effort}" for model, effort in sorted(efforts.items()))
+        lines.append(f"{MODEL_EFFORTS_KEY} = {chosen} (default none, from user)")
+    if not lines:
+        return "Every setting is at its default."
+    return "\n".join(lines)
+
+
 def _project_path() -> Path:
     path = project_preferences_path()
     if path is None:
@@ -107,8 +134,8 @@ def _configure_project(args: list[str]) -> str:
 def configure(arguments: Sequence[str]) -> str:
     """Inspect or edit saved defaults without starting a model or session.
 
-    `list` and `get` report the effective value, with the project overlay
-    applied; `set`, `unset`, and `reset` edit the user file.
+    `list`, `diff`, and `get` report the effective value, with the project
+    overlay applied; `set`, `unset`, and `reset` edit the user file.
     """
     args = list(arguments) or ["list"]
     action = args[0]
@@ -119,6 +146,8 @@ def configure(arguments: Sequence[str]) -> str:
     if action == "list" and len(args) == 1:
         data = _effective_data()
         return json.dumps({key: _effective(data, key) for key in SETTINGS}, indent=2)
+    if action == "diff" and len(args) == 1:
+        return _diff()
     if action == "get" and len(args) == 2:
         key = args[1]
         _setting(key)
@@ -144,6 +173,7 @@ def config_argument_descriptions() -> dict[str, str]:
     """Completion-menu text: the setting's purpose beside each key, its default beside values."""
     described: dict[str, str] = {
         "list": "Show every effective setting",
+        "diff": "Show only settings that differ from their defaults",
         "path": "Print the user preferences file",
         "get": "Show one effective setting",
         "set": "Save a user default (applies on next launch)",
@@ -171,6 +201,7 @@ def config_arguments() -> tuple[str, ...]:
     project_keys = [key for key in SETTINGS if key not in USER_ONLY]
     return (
         "list",
+        "diff",
         "path",
         "get",
         "set",
