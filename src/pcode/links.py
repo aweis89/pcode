@@ -9,8 +9,8 @@ from dataclasses import dataclass
 
 # Markdown [label](url) first so the label survives; then bare URLs. Trailing
 # punctuation that prose attaches to a URL is not part of it.
-MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
-BARE_URL = re.compile(r"https?://[^\s<>\"'`\]]+")
+MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)\\]+)\)")
+BARE_URL = re.compile(r"https?://[^\s<>\"'`\]\\]+")
 _TRAILING = ".,;:!?'\""
 
 
@@ -18,7 +18,7 @@ _TRAILING = ".,;:!?'\""
 class Link:
     url: str
     label: str = ""
-    source: str = ""  # "user" or "assistant"
+    source: str = ""  # "user", "assistant", or a tool name
 
 
 def _strip(url: str) -> str:
@@ -29,29 +29,41 @@ def _strip(url: str) -> str:
     return url
 
 
+def remember_link(found: dict[str, Link], link: Link) -> None:
+    """Move repeated URLs to their latest position, retaining useful labels."""
+    previous = found.pop(link.url, None)
+    label = link.label or (previous.label if previous else "")
+    found[link.url] = Link(link.url, label, link.source)
+
+
 def extract_links(text: str, source: str = "") -> list[Link]:
-    """Return links in first-seen order, one per distinct URL."""
+    """Return distinct URLs in last-seen order, oldest first."""
+    matches = [
+        (match.start(), Link(_strip(match.group(2)), match.group(1).strip(), source))
+        for match in MARKDOWN_LINK.finditer(text)
+    ]
+    # Preserve offsets while hiding Markdown links from the bare-URL pass.
+    remainder = MARKDOWN_LINK.sub(lambda match: " " * len(match.group(0)), text)
+    matches.extend(
+        (match.start(), Link(_strip(match.group(0)), "", source))
+        for match in BARE_URL.finditer(remainder)
+    )
     found: dict[str, Link] = {}
-    for match in MARKDOWN_LINK.finditer(text):
-        url = _strip(match.group(2))
-        found.setdefault(url, Link(url, match.group(1).strip(), source))
-    remainder = MARKDOWN_LINK.sub(" ", text)
-    for match in BARE_URL.finditer(remainder):
-        url = _strip(match.group(0))
-        found.setdefault(url, Link(url, "", source))
+    for _, link in sorted(matches, key=lambda item: item[0]):
+        remember_link(found, link)
     return list(found.values())
 
 
-def conversation_links(tree) -> list[Link]:
-    """Links from every prompt and response on the active path, oldest first."""
+def conversation_links(tree, *, include_tools: bool = True) -> list[Link]:
+    """Links on the active path, oldest first; filter before deduplicating URLs."""
     found: dict[str, Link] = {}
     for identity in tree.path(tree.active):
         node = tree.nodes[identity]
         if node.kind != "turn":
             continue
-        for text, source in ((node.prompt, "user"), (node.response, "assistant")):
-            for link in extract_links(text, source):
-                found.setdefault(link.url, link)
+        links = node.links if include_tools else node.message_links
+        for link in links.values():
+            remember_link(found, link)
     return list(found.values())
 
 

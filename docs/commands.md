@@ -66,8 +66,17 @@ candidate's size so that cost is visible before you pick.
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed`: open the same inspector filtered to failures.
 - `/diffs`: browse this conversation's file diffs in a full-screen popup.
-- `/links`: pick any URL mentioned in this conversation (your prompts or the
-  assistant's replies, newest first) and open it in the default browser via
+- `/links`: pick a URL from the active conversation branch (your prompts, tool
+  arguments and captured results, or the assistant's replies, last appearance first).
+  Tool links show the tool name; duplicate URLs appear once, at their most recent
+  position. Press `t` to show/hide tool links (shown by default); URLs also present
+  in prompts or replies remain when tools are hidden. Press `/` to search URLs,
+  labels, and sources, case-insensitively. Search filters as you type; `↑`/`↓`
+  move the selection, `Enter` returns to the list with the filter applied, and
+  `Esc` clears the search and returns to the list. In the list, `Enter` opens the
+  selected URL and `Esc` closes the picker. Filters reset when you reopen `/links`.
+  Output omitted by truncation or stored only in a spill file is not searched. Open the selection
+  in the default browser via
   `open` (macOS), `xdg-open` (Linux), or the shell association (Windows). Useful
   when the terminal or an older tmux does not make rendered links clickable.
 - `/status`: current model, workspace, session storage path, completed turns, token usage,
