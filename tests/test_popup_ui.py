@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 from prompt_toolkit.data_structures import Point
+from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import DummyOutput
@@ -62,6 +63,9 @@ def test_popup_content_half_pages_and_full_pages(tmp_path, kind):
                 popup = SessionBrowser([], root=tmp_path, workspace=tmp_path, **options)
             else:
                 popup = ToolInspector(ToolArchive(), **options)
+            popup.list.buffer.set_document(
+                Document("\n".join(f"Row {i}" for i in range(300)), 0), bypass_readonly=True
+            )
             popup.detail.set([Text("\n".join(f"Line {i}" for i in range(300)))])
             popup.app.layout.focus(popup.detail.window)
             task = asyncio.create_task(popup.app.run_async())
@@ -92,9 +96,19 @@ def test_popup_content_half_pages_and_full_pages(tmp_path, kind):
                 assert window.vertical_scroll == 300 - height
                 await press("\x15" * 50)
                 assert window.vertical_scroll == 0
-                # Ctrl+D still closes when the list, rather than content, has focus.
-                popup.app.layout.focus(popup.list)
-                pipe.send_text("\x04")
+                # The same keys half-page the list, whether it or the query has focus.
+                for focus in (popup.list, popup.query):
+                    popup.app.layout.focus(focus)
+                    await asyncio.sleep(0.05)
+                    rows = popup.list.window.render_info.window_height
+                    half = max(1, rows // 2)
+                    start = popup.list.document.cursor_position_row
+                    await press("\x04")
+                    assert popup.list.document.cursor_position_row == start + half
+                    await press("\x15")
+                    assert popup.list.document.cursor_position_row == start
+                assert popup.query.text == "", "Paging keys must not type into the query"
+                pipe.send_text("\x1b")
                 await asyncio.wait_for(task, 2)
             finally:
                 if not task.done():

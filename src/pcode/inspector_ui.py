@@ -19,6 +19,7 @@ from rich.theme import Theme
 from pcode.inspection import InspectedCall, ToolArchive
 from pcode.popup_ui import (
     RichPane,
+    bind_list_paging,
     list_pane_height,
     popup_container,
     popup_style,
@@ -111,13 +112,13 @@ class ToolInspector:
 
         @keys.add("escape", eager=True)
         @keys.add("c-c")
-        @keys.add("c-d", filter=~has_focus(self.detail.window))
         def close(event):
             event.app.exit()
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
         steer_list_from_query(keys, self.query, self.list)
+        bind_list_paging(keys, self.list, has_focus(self.list) | has_focus(self.query))
 
         @keys.add("f", filter=has_focus(self.list))
         def failures(event):
@@ -164,8 +165,8 @@ class ToolInspector:
                 header,
                 self.query,
                 body,
-                Label("↑↓ Select/scroll · PgUp/PgDn Page · Tab Focus · Esc Close"),
-                Label("In Details: Ctrl+U/D Half page"),
+                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
+                Label("Tab Focus · Esc Close"),
                 Label("In Calls: f Failures · t Tool filter · / Search (↑↓ select while typing)"),
             ]
         )
