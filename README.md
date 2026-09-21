@@ -129,6 +129,7 @@ opening a terminal UI or connecting a model:
 
 ```sh
 pcode config                     # List effective startup defaults as JSON
+pcode config diff                # List only settings that differ from defaults
 pcode config path                # Print the resolved config path
 pcode config get theme
 pcode config set theme light
