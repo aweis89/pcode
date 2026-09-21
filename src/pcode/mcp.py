@@ -150,7 +150,15 @@ def build_toolset(name: str, raw: Any, *, interactive: bool = True):
             from pcode.mcp_oauth import LoopbackOAuth
 
             auth = LoopbackOAuth(interactive=interactive) if config.auth == "oauth" else None
-            toolset = MCPToolset(config.url, id=name, headers=config.headers, auth=auth)
+            toolset = MCPToolset(
+                config.url,
+                id=name,
+                headers=config.headers,
+                auth=auth,
+                # The default five-second handshake deadline also covers OAuth.
+                # Give interactive sign-in a bounded five-minute window instead.
+                **({"init_timeout": 300} if auth is not None else {}),
+            )
         # Hidden until Pydantic AI's auto-injected ToolSearch reveals them, so a
         # server's schemas cost one `search_tools` call instead of every request.
         if not config.direct:
