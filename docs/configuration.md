@@ -16,7 +16,7 @@ pcode config set autocompact on
 pcode config set effort high
 pcode config set model openai-codex:gpt-5.6-luna
 pcode config unset model          # Remove saved model; return to offline preview
-pcode config unset theme          # Restore built-in dark theme
+pcode config unset theme          # Restore automatic theme detection
 pcode config reset                # Remove every saved default at once
 ```
 
@@ -26,6 +26,27 @@ The same commands are available inside pcode as `/config`, with tab completion:
 an active setting and save its default immediately, use `/theme`, `/effort`,
 `/model`, or `/autocompact` instead. CLI overrides such as `--theme` and `--model`
 do not rewrite global defaults, and resumed sessions retain their own model.
+
+## Model provider filter
+
+Limit the `/model` selector to specific providers:
+
+```sh
+pcode config set model_providers openai-codex,anthropic
+pcode config unset model_providers # Restore automatic detection of all active providers
+```
+
+Or run `/config set model_providers openai-codex,anthropic` inside pcode.
+This setting is read each time the selector opens, without a restart. In
+`preferences.json` it is a string: `"model_providers": "openai-codex,anthropic"`.
+Names match exactly: `openai-codex` does not include `openai`, `openai-chat`, or
+`openai-responses`. Unknown provider names are rejected.
+
+An unset or empty value shows all automatically detected active providers.
+A nonempty list filters those providers; it does not configure credentials or
+force inactive providers to appear. The current provider is also hidden if it
+is excluded. This only filters the selector, not explicit `/model PROVIDER:MODEL`
+commands, CLI model overrides, or resumed sessions.
 
 ## Independent instances
 
@@ -89,7 +110,7 @@ is only sensible on a machine where you wrote all of them.
 
 | Key | Built-in default | Values |
 | --- | --- | --- |
-| `theme` | `dark` | `dark`, `light`, `auto` |
+| `theme` | `auto` | `dark`, `light`, `auto` |
 | `syntax_dark` | `gruvbox-dark` | A Pygments style for fenced code on the dark palette |
 | `syntax_light` | `gruvbox-light` | A Pygments style for fenced code on the light palette |
 | `autocompact` | `off` | `on`, `off` |
