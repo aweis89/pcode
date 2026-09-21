@@ -3,7 +3,7 @@
 A collapse warning reports only the provider's token verdict, which cannot say
 whether the prompt prefix was rewritten or the cache simply expired. This keeps a
 small rolling fingerprint of each model request so the next collapse answers that
-question directly: an intact prefix points at TTL or breakpoint placement, and a
+question partially: unchanged fingerprints leave the cause unknown, and a
 changed prefix names the message index that moved.
 
 Fingerprints are content-free by construction: digests, sizes and kinds only,
@@ -211,7 +211,7 @@ def divergence(previous: RequestFingerprint, current: RequestFingerprint) -> str
         return (
             "Instructions changed "
             f"({previous.instruction_chars} -> {current.instruction_chars} chars): "
-            "everything after the instruction block was re-sent."
+            "request prefix differs."
         )
     if previous.tools != current.tools:
         added = [name for name in current.tool_names if name not in previous.tool_names]
@@ -237,7 +237,7 @@ def divergence(previous: RequestFingerprint, current: RequestFingerprint) -> str
                 f"Message {index} of {len(previous.messages)} changed "
                 f"(kind {before.kind} -> {after.kind}, {before.chars} -> {after.chars} chars, "
                 f"cache points {before.cache_points} -> {after.cache_points}). "
-                f"{len(previous.messages) - index} message(s) after it were re-sent."
+                f"{len(previous.messages) - index} prior message(s) from that index."
             )
     if len(current.messages) < len(previous.messages):
         return (
@@ -252,9 +252,8 @@ def divergence(previous: RequestFingerprint, current: RequestFingerprint) -> str
     )
     gap = current.at - previous.at
     return (
-        f"Prefix intact: all {len(previous.messages)} earlier messages are byte-identical "
-        f"and {appended} were appended, so nothing rewrote history. Suspect cache TTL "
-        f"(~{gap:.0f}s since the previous request) or breakpoint placement.{points}"
+        f"Request fingerprints unchanged; {appended} messages appended (~{gap:.0f}s gap). "
+        f"Cache-miss cause unknown.{points}"
     )
 
 
