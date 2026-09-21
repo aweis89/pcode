@@ -105,7 +105,9 @@ def create_coder(workspace: Path, subagents: Sequence = ()) -> CombinedCapabilit
     coder.capabilities.append(DelegationReporting())
     coder.capabilities.append(MeridianSessionIdentity())
     coder.capabilities.append(ModelOutputLimits())
-    coder.capabilities.append(CacheBustReporting())
+    debug = load_preferences().get("debug", SETTINGS["debug"].default) == "on"
+    if debug:
+        coder.capabilities.append(CacheBustReporting())
     for capability in coder.capabilities:
         if isinstance(capability, Shell):
             # direnv writes its status banner to stderr on every cd into a
@@ -156,7 +158,7 @@ def create_coder(workspace: Path, subagents: Sequence = ()) -> CombinedCapabilit
             shared_capabilities=[
                 MeridianSessionIdentity(),
                 ModelOutputLimits(),
-                CacheBustReporting(),
+                *([CacheBustReporting()] if debug else []),
                 ProviderCacheSettings(),
                 replace(output_limits),
             ],
