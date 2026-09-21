@@ -54,6 +54,18 @@ def main_checkout(path: Path) -> Path | None:
     return Path(first.removeprefix("worktree ")).resolve()
 
 
+def project_checkout(path: Path) -> Path | None:
+    """`main_checkout`, but None when git is missing rather than an error.
+
+    What a caller labelling or grouping a workspace wants: saving a session or
+    listing history must keep working on a machine without git.
+    """
+    try:
+        return main_checkout(path)
+    except OSError:
+        return None
+
+
 def repo_scope(path: Path) -> Path:
     """The identity to group a workspace by: its main checkout, or itself.
 
@@ -62,11 +74,7 @@ def repo_scope(path: Path) -> Path:
     the same repository regardless of which worktree created them.
     """
     path = path.resolve()
-    try:
-        main = main_checkout(path)
-    except OSError:
-        main = None  # Git may not be installed; non-Git use still works.
-    return main or path
+    return project_checkout(path) or path
 
 
 def is_linked(path: Path) -> bool:

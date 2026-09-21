@@ -5,10 +5,10 @@ Add new ideas under the relevant heading or create a new section.
 
 ## Extensions
 
-- [ ] Improve the `/extensions` API and controls:
-  - [ ] Show which extensions are currently loaded.
-  - [ ] Allow extensions loaded by default to be turned on or off.
-  - [ ] Give built-in extensions a default include/exclude option.
+- [x] Improve the `/extensions` API and controls:
+  - [x] Show which extensions are currently loaded.
+  - [x] Allow extensions loaded by default to be turned on or off.
+  - [x] Give built-in extensions a default include/exclude option.
 - [ ] Review [Pydantic AI third-party capabilities](https://pydantic.dev/docs/ai/capabilities/third-party/) and evaluate which, if any, should be integrated into pcode.
 
 ## Tree

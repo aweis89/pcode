@@ -101,8 +101,10 @@ class RichPane:
         self.color_system = color_system
         self.renderables: list = []
         self._version = 0
-        self._cache: tuple[int, int, list] | None = None
+        self._cache: tuple[int, int, list, list[int]] | None = None
         self._line_cache: tuple[int, int, list] | None = None
+        # Renderable index to scroll to on the next render, once the width is known.
+        self._anchor: int | None = None
         pane = self
 
         class Control(UIControl):
@@ -119,6 +121,11 @@ class RichPane:
 
             def create_content(self, width, height):
                 lines = pane.lines(width)
+                if pane._anchor is not None:
+                    # Line offsets depend on the wrap width, which only the
+                    # render knows, so a requested anchor is applied here.
+                    pane.window.vertical_scroll = pane.line_offset(pane._anchor, width)
+                    pane._anchor = None
                 return UIContent(
                     get_line=lines.__getitem__,
                     line_count=len(lines),
@@ -133,10 +140,22 @@ class RichPane:
             self.control, wrap_lines=False, right_margins=[ScrollbarMargin(display_arrows=True)]
         )
 
-    def set(self, renderables: list) -> None:
+    def set(self, renderables: list, *, anchor: int | None = None) -> None:
+        """Replace the content, scrolled to the top or to ``renderables[anchor]``."""
         self.renderables = renderables
         self._version += 1
         self.window.vertical_scroll = 0
+        self.scroll_to(anchor)
+
+    def scroll_to(self, index: int | None) -> None:
+        """Put the start of ``renderables[index]`` on the pane's top row at the next render."""
+        self._anchor = index
+
+    def line_offset(self, index: int, width: int) -> int:
+        """First rendered line of ``renderables[index]`` at ``width``."""
+        self.fragments(width)
+        offsets = self._cache[3]
+        return offsets[min(max(index, 0), len(offsets) - 1)] if offsets else 0
 
     def fragments(self, width: int) -> list:
         key = (self._version, width)
@@ -149,10 +168,17 @@ class RichPane:
                 theme=self.theme,
                 highlight=False,
             )
+            offsets, lines, position = [], 0, 0
             for renderable in self.renderables:
+                offsets.append(lines)
                 console.print(renderable)
+                # Read only the new output; re-reading the whole buffer per
+                # renderable would be quadratic on a long transcript.
+                console.file.seek(position)
+                lines += console.file.read().count("\n")
+                position = console.file.tell()
             rendered = OSC.sub("", console.file.getvalue().rstrip("\n"))
-            self._cache = (*key, to_formatted_text(ANSI(rendered)))
+            self._cache = (*key, to_formatted_text(ANSI(rendered)), offsets)
         return self._cache[2]
 
     def lines(self, width: int) -> list:

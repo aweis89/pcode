@@ -301,9 +301,9 @@ class SavedSession:
         identity = identity or str(uuid4())
         directory = root / identity
         directory.mkdir(mode=0o700)
-        from pcode.worktree import main_checkout
+        from pcode.worktree import project_checkout
 
-        project = main_checkout(workspace)
+        project = project_checkout(workspace)
         info = SessionInfo(
             id=identity,
             project=str(project) if project else None,

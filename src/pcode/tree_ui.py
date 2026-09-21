@@ -1,57 +1,172 @@
 """Temporary conversation tree chooser; never executes a model request."""
 
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.document import Document
+from prompt_toolkit.filters import Always, has_focus
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit
-from prompt_toolkit.widgets import Dialog, Label, RadioList
+from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
+from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
+from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.widgets import Frame, Label, TextArea
+from rich.markdown import Markdown
+from rich.padding import Padding
+from rich.text import Text
+from rich.theme import Theme
 
-from pcode.popup_ui import popup_container, popup_style
+from pcode.conversation_tree import ConversationTree, TurnNode
+from pcode.popup_ui import RichPane, list_pane_height, popup_container, popup_style
+from pcode.session_ui import literal
+from pcode.task_prompt import TaskPrompt
+
+Selection = tuple[str | None, bool]
 
 
-def tree_dialog(tree, *, input=None, output=None, style=None):
-    choices = RadioList(
-        tree.rows(),
-        default=(tree.active, False),
-        select_on_focus=True,
-    )
-    bindings = KeyBindings()
+class TreeBrowser:
+    """Full-screen chooser over the conversation tree, laid out like ``/resume``.
 
-    @bindings.add("enter", eager=True)
-    def accept(event):
-        event.app.exit(result=choices.current_value)
+    The tree lists every user and assistant row; the Conversation pane shows
+    the branch through the selected row, root to leaf, and scrolls so the
+    selected prompt or response is at the top, with what led there above and
+    what followed below.
+    """
 
-    @bindings.add("escape", eager=True)
-    @bindings.add("c-c")
-    @bindings.add("c-d")
-    def cancel(event):
-        event.app.exit(result=None)
+    def __init__(
+        self,
+        tree: ConversationTree,
+        *,
+        rich_theme: Theme | None = None,
+        code_theme: str = "ansi_dark",
+        color_system: str | None = "truecolor",
+        **app_options,
+    ) -> None:
+        self.tree = tree
+        self.code_theme = code_theme
+        self.rows = tree.rows()
+        self.selected: Selection = (tree.active, False)
+        self._branch: tuple[str, ...] | None = None
+        self._anchors: dict[Selection, int] = {}
+        self._refreshing = False
+        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.list.window.cursorline = Always()
+        self.detail = RichPane(theme=rich_theme, color_system=color_system)
+        self.list.buffer.on_cursor_position_changed += lambda _: self.select()
+        keys = KeyBindings()
+        self.detail.bind_scrolling(keys)
 
-    dialog = Dialog(
-        title="Conversation tree",
-        body=HSplit(
+        @keys.add("escape", eager=True)
+        @keys.add("c-c")
+        @keys.add("c-d", filter=~has_focus(self.detail.window))
+        def cancel(event):
+            event.app.exit(result=None)
+
+        @keys.add("enter")
+        def accept(event):
+            event.app.exit(result=self.selected)
+
+        keys.add("tab")(focus_next)
+        keys.add("s-tab")(focus_previous)
+
+        header = Label(
+            lambda: (
+                f"Conversation tree · {len(tree.nodes)} turns · "
+                "User: edit & fork · Assistant: continue · Start: empty context"
+            )
+        )
+        wide = VSplit(
             [
-                Label("↑/↓ select · Enter navigate · Esc cancel", dont_extend_height=True),
-                Label(
-                    "User: edit & fork · Assistant: continue · Start: empty context",
-                    dont_extend_height=True,
-                ),
-                choices,
-                Label(
-                    "Switching context does not undo file changes or tool effects.",
-                    dont_extend_height=True,
-                ),
-            ],
-            padding=1,
-        ),
-        with_background=True,
-    )
-    return Application(
-        layout=Layout(popup_container(dialog), focused_element=choices),
-        key_bindings=bindings,
-        full_screen=True,
-        mouse_support=True,
-        input=input,
-        output=output,
-        style=popup_style(style),
-    )
+                Frame(self.list, title="Tree", width=Dimension(weight=2)),
+                Frame(self.detail, title="Conversation", width=Dimension(weight=3)),
+            ]
+        )
+        narrow = HSplit(
+            [
+                Frame(self.list, title="Tree", height=lambda: list_pane_height(len(self.rows))),
+                Frame(self.detail, title="Conversation"),
+            ]
+        )
+        body = DynamicContainer(
+            lambda: wide if get_app().output.get_size().columns >= 100 else narrow
+        )
+        root_container = HSplit(
+            [
+                header,
+                body,
+                Label("↑↓ Select/scroll · Enter Navigate · Tab Focus · Esc Cancel"),
+                Label("In Conversation: PgUp/PgDn Page · Ctrl+U/D Half page"),
+                Label("Switching context does not undo file changes or tool effects."),
+            ]
+        )
+        self.app = Application(
+            layout=Layout(popup_container(root_container), focused_element=self.list),
+            key_bindings=keys,
+            full_screen=True,
+            mouse_support=True,
+            style=popup_style(app_options.pop("style", None)),
+            **app_options,
+        )
+        self.refresh()
+
+    def refresh(self) -> None:
+        lines = [label for _, label in self.rows]
+        index = next((i for i, (value, _) in enumerate(self.rows) if value == self.selected), 0)
+        position = sum(len(line) + 1 for line in lines[:index])
+        self._refreshing = True
+        self.list.buffer.set_document(Document("\n".join(lines), position), bypass_readonly=True)
+        self._refreshing = False
+        self.select(force=True)
+
+    def select(self, force: bool = False) -> None:
+        if self._refreshing:
+            return
+        row = self.list.document.cursor_position_row
+        value = self.rows[row][0] if row < len(self.rows) else (None, False)
+        if value == self.selected and not force:
+            return
+        self.selected = value
+        branch = self.branch(value[0])
+        if branch != self._branch:
+            self._branch = branch
+            self.detail.set(self.details(branch), anchor=self._anchors.get(value))
+        else:
+            self.detail.scroll_to(self._anchors.get(value, 0))
+
+    def branch(self, identity: str | None) -> tuple[str, ...]:
+        """Root-to-leaf path through ``identity``, following the active branch below it."""
+        path = self.tree.path(identity)
+        active = set(self.tree.path(self.tree.active))
+        children: dict[str | None, list[TurnNode]] = {}
+        for node in self.tree.nodes.values():
+            children.setdefault(node.parent, []).append(node)
+        while descendants := children.get(path[-1] if path else None):
+            chosen = next((n for n in descendants if n.id in active), descendants[-1])
+            path.append(chosen.id)
+        return tuple(path)
+
+    def details(self, branch: tuple[str, ...]) -> list:
+        """Rich renderables for the branch, recording where each row's block starts."""
+        self._anchors = {(None, False): 0}
+        blocks: list = [Text("Conversation start", style="dim")]
+        for identity in branch:
+            node = self.tree.nodes[identity]
+            if node.kind != "compaction":
+                blocks.append(Text(""))
+                self._anchors[(identity, True)] = len(blocks)
+                blocks.append(TaskPrompt(literal(node.prompt)))
+            blocks.append(Text(""))
+            self._anchors[(identity, False)] = len(blocks)
+            if node.kind == "compaction":
+                blocks.append(Text(f"  ({node.response})", style="dim"))
+            elif text := literal(node.response):
+                blocks.append(Padding(Markdown(text, code_theme=self.code_theme), (0, 0, 0, 2)))
+                if node.status != "completed":
+                    blocks.append(Text(f"  ({node.status})", style="dim"))
+            else:
+                blocks.append(Text(f"  ({node.status}; last safe checkpoint)", style="dim"))
+        return blocks
+
+    async def run(self) -> Selection | None:
+        return await self.app.run_async()
+
+
+def tree_dialog(tree, **options) -> Application:
+    return TreeBrowser(tree, **options).app
