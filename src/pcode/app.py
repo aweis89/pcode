@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable
-from contextlib import ExitStack, aclosing
+from contextlib import ExitStack, aclosing, asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -804,6 +804,31 @@ class PreviewApp:
         self.show_startup_context()
         self.warn_without_credentials()
 
+    @asynccontextmanager
+    async def popup(self, output: TerminalOutput, session):
+        """Give a modal exclusive terminal ownership, then restore the transcript."""
+        await output.flush()
+        try:
+            async with output.lock:
+                async with suspended_editor(session.app):
+                    # A separate parser prevents the editor's escape-flush timer
+                    # from stealing the modal's first Escape key.
+                    stdin = getattr(session.app.input, "stdin", None)
+                    modal_input = (
+                        create_input(stdin=stdin) if stdin is not None else session.app.input
+                    )
+                    try:
+                        yield modal_input
+                    finally:
+                        if modal_input is not session.app.input:
+                            modal_input.close()
+        finally:
+            # Reuse resize's transcript replay, even when resize replay is off.
+            # Flush only after releasing the writer lock and restoring the
+            # normal screen, including dismissal, cancellation, and failures.
+            self.transcript.regenerate()
+            await output.flush()
+
     async def choose_model(self, output: TerminalOutput, session) -> None:
         from pcode.model_ui import ModelPicker
         from pcode.models import active_providers, model_catalog
@@ -819,24 +844,16 @@ class PreviewApp:
             )
             return
         values = model_catalog(providers, self.model)
-        await output.flush()
-        async with output.lock:
-            async with suspended_editor(session.app):
-                stdin = getattr(session.app.input, "stdin", None)
-                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
-                try:
-                    picker = ModelPicker(
-                        values,
-                        providers,
-                        current=self.model,
-                        input=modal_input,
-                        output=session.app.output,
-                        style=session.app.style,
-                    )
-                    model = await picker.run()
-                finally:
-                    if modal_input is not session.app.input:
-                        modal_input.close()
+        async with self.popup(output, session) as modal_input:
+            picker = ModelPicker(
+                values,
+                providers,
+                current=self.model,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            model = await picker.run()
         if model is not None:
             await self.switch_model(model)
 
@@ -995,31 +1012,18 @@ class PreviewApp:
         if tree is not None:
             selected = set(tree.path(tree.active))
             archive.calls = [call for call in archive.calls if call.run_id in selected]
-        await output.flush()
-        # One terminal owner: drain permanent output, suspend the editor, and
-        # hold the writer lock until the alternate screen has been restored.
-        async with output.lock:
-            async with suspended_editor(session.app):
-                # The suspended editor can still have an escape-flush timer.
-                # Give the modal its own parser, or that timer can steal an
-                # early Escape from the shared input object's parser buffer.
-                stdin = getattr(session.app.input, "stdin", None)
-                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
-                try:
-                    inspector = ToolInspector(
-                        archive,
-                        failed=failed,
-                        rich_theme=self.transcript.rich_theme,
-                        code_theme=self.transcript.code_theme,
-                        color_system=self.transcript.console.color_system,
-                        input=modal_input,
-                        output=session.app.output,
-                        style=session.app.style,
-                    )
-                    await inspector.run()
-                finally:
-                    if modal_input is not session.app.input:
-                        modal_input.close()
+        async with self.popup(output, session) as modal_input:
+            inspector = ToolInspector(
+                archive,
+                failed=failed,
+                rich_theme=self.transcript.rich_theme,
+                code_theme=self.transcript.code_theme,
+                color_system=self.transcript.console.color_system,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            await inspector.run()
 
     def diffs(self, argument: str) -> None:
         if argument:
@@ -1041,23 +1045,15 @@ class PreviewApp:
         if not links:
             self.transcript.note("No links in this conversation yet.")
             return
-        await output.flush()
-        async with output.lock:
-            async with suspended_editor(session.app):
-                stdin = getattr(session.app.input, "stdin", None)
-                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
-                try:
-                    dialog = links_dialog(
-                        links,
-                        message_links=conversation_links(tree, include_tools=False),
-                        input=modal_input,
-                        output=session.app.output,
-                        style=session.app.style,
-                    )
-                    url = await dialog.run_async()
-                finally:
-                    if modal_input is not session.app.input:
-                        modal_input.close()
+        async with self.popup(output, session) as modal_input:
+            dialog = links_dialog(
+                links,
+                message_links=conversation_links(tree, include_tools=False),
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            url = await dialog.run_async()
         if url is None:
             return
         try:
@@ -1085,28 +1081,15 @@ class PreviewApp:
 
         self.diffs_requested = False
         changes = await asyncio.to_thread(self.recorded_edits)
-        await output.flush()
-        # One terminal owner: drain permanent output, suspend the editor, and
-        # hold the writer lock until the alternate screen has been restored.
-        async with output.lock:
-            async with suspended_editor(session.app):
-                # The suspended editor can still have an escape-flush timer.
-                # Give the modal its own parser, or that timer can steal an
-                # early Escape from the shared input object's parser buffer.
-                stdin = getattr(session.app.input, "stdin", None)
-                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
-                try:
-                    browser = EditBrowser(
-                        changes,
-                        code_theme=self.transcript.code_theme,
-                        input=modal_input,
-                        output=session.app.output,
-                        style=session.app.style,
-                    )
-                    await browser.run()
-                finally:
-                    if modal_input is not session.app.input:
-                        modal_input.close()
+        async with self.popup(output, session) as modal_input:
+            browser = EditBrowser(
+                changes,
+                code_theme=self.transcript.code_theme,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            await browser.run()
 
     def help(self, argument: str) -> None:
         self.transcript.help(self.registry)
@@ -1649,25 +1632,17 @@ class PreviewApp:
         if tree is None or not tree.nodes:
             self.transcript.note("No conversation turns yet. Send a message to start a tree.")
             return
-        await output.flush()
-        async with output.lock:
-            async with suspended_editor(session.app):
-                stdin = getattr(session.app.input, "stdin", None)
-                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
-                try:
-                    dialog = tree_dialog(
-                        tree,
-                        rich_theme=self.transcript.rich_theme,
-                        code_theme=self.transcript.code_theme,
-                        color_system=self.transcript.console.color_system,
-                        input=modal_input,
-                        output=session.app.output,
-                        style=session.app.style,
-                    )
-                    selection = await dialog.run_async()
-                finally:
-                    if modal_input is not session.app.input:
-                        modal_input.close()
+        async with self.popup(output, session) as modal_input:
+            dialog = tree_dialog(
+                tree,
+                rich_theme=self.transcript.rich_theme,
+                code_theme=self.transcript.code_theme,
+                color_system=self.transcript.console.color_system,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            selection = await dialog.run_async()
         if selection is not None:
             identity, edit = selection
             draft = await self.navigate_tree(identity, edit=edit)
@@ -1688,28 +1663,20 @@ class PreviewApp:
             self.transcript.note("No saved sessions for this workspace.")
             return
         current = getattr(self.runtime, "session", None)
-        await output.flush()
-        async with output.lock:
-            async with suspended_editor(session.app):
-                stdin = getattr(session.app.input, "stdin", None)
-                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
-                try:
-                    browser = SessionBrowser(
-                        records,
-                        root=self.session_dir or session_root(),
-                        workspace=self.workspace,
-                        active_id=current.info.id if current else None,
-                        rich_theme=self.transcript.rich_theme,
-                        code_theme=self.transcript.code_theme,
-                        color_system=self.transcript.console.color_system,
-                        input=modal_input,
-                        output=session.app.output,
-                        style=session.app.style,
-                    )
-                    identity = await browser.run()
-                finally:
-                    if modal_input is not session.app.input:
-                        modal_input.close()
+        async with self.popup(output, session) as modal_input:
+            browser = SessionBrowser(
+                records,
+                root=self.session_dir or session_root(),
+                workspace=self.workspace,
+                active_id=current.info.id if current else None,
+                rich_theme=self.transcript.rich_theme,
+                code_theme=self.transcript.code_theme,
+                color_system=self.transcript.console.color_system,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            identity = await browser.run()
         if identity is not None:
             await self.resume_session(identity)
 
@@ -1718,27 +1685,14 @@ class PreviewApp:
 
         self.session_info_requested = False
         rows = self.session_overview()
-        await output.flush()
-        # One terminal owner: drain permanent output, suspend the editor, and
-        # hold the writer lock until the alternate screen has been restored.
-        async with output.lock:
-            async with suspended_editor(session.app):
-                # The suspended editor can still have an escape-flush timer.
-                # Give the modal its own parser, or that timer can steal an
-                # early Escape from the shared input object's parser buffer.
-                stdin = getattr(session.app.input, "stdin", None)
-                modal_input = create_input(stdin=stdin) if stdin is not None else session.app.input
-                try:
-                    dialog = session_info_dialog(
-                        rows,
-                        input=modal_input,
-                        output=session.app.output,
-                        style=session.app.style,
-                    )
-                    await dialog.run_async()
-                finally:
-                    if modal_input is not session.app.input:
-                        modal_input.close()
+        async with self.popup(output, session) as modal_input:
+            dialog = session_info_dialog(
+                rows,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            await dialog.run_async()
 
     def replay(self) -> None:
         from pcode.diagnostics import redact

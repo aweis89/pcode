@@ -28,6 +28,11 @@ asyncio.run(prepare())
 class App(PreviewApp):
     async def choose_tree(self, output, session):
         session.default_buffer.text = "draft survives cancellation"
+        self.transcript.user("Transcript restored after popup")
+        await output.flush()
+        # Simulate a terminal losing normal-screen contents during a handoff.
+        session.app.output.write_raw("\x1b[H\x1b[2J")
+        session.app.output.flush()
         await super().choose_tree(output, session)
 
 App(runtime=runtime, model="test").run()
@@ -41,7 +46,8 @@ def test_tree_cancel_edit_fork_and_resize(pane):
     modal(pane, "Second tree question")
     assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "1"
     pane("send-keys", "-t", "preview:0.0", "Escape")
-    after = capture(pane, "draft survives cancellation")
+    after = capture(pane, "Transcript restored after popup")
+    assert "draft survives cancellation" in after
     assert input_rows(before) == input_rows(after)
     pane("send-keys", "-t", "preview:0.0", "C-c", "/tree", "Enter")
     modal(pane, "Second tree question")

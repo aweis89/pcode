@@ -220,6 +220,12 @@ Resize replay is debounced to avoid rebuilding on every intermediate size during
 a drag. Without it, the editor still resizes normally; `/redraw` remains available
 for an explicit transcript reflow.
 
+Closing an alternate-screen popup (modal dialog), such as `/tree`, `/links`,
+`/model`, `/resume`, `/status`, `/tools`, or `/diffs`, also rebuilds the retained
+transcript. This restores the conversation even if the terminal lost its previous
+screen contents. Dismissal with Escape does the same; the editor draft is preserved.
+Popup restoration is independent of `regenerate_on_resize`.
+
 **Terminal-history warning:** regeneration clears the terminal's visible screen
 and scrollback, including shell output from before pcode started. It then rebuilds
 only the transcript retained by this pcode process. This uses the normal-screen
