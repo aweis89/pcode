@@ -26,6 +26,43 @@ async def expire_stored_access_token(url=URL):
     )
 
 
+def test_basic_token_auth_filter_preserves_other_fields_and_headers():
+    from pcode.mcp_oauth import _single_token_auth
+
+    request = httpx2.Request(
+        "POST",
+        ISSUER + "/token",
+        headers={"Authorization": "Basic fake-credentials", "X-Test": "preserved"},
+        data={
+            "grant_type": "authorization_code",
+            "client_id": "fake-client",
+            "client_secret": "fake-secret",
+            "code": "code+with&encoding",
+            "code_verifier": "verifier",
+            "redirect_uri": "http://127.0.0.1:1234/callback",
+            "resource": URL,
+            "empty": "",
+        },
+        extensions={"test": "preserved"},
+    )
+    filtered = _single_token_auth(request)
+    form = parse_qs(filtered.content.decode(), keep_blank_values=True)
+    assert form == {
+        key: value
+        for key, value in parse_qs(request.content.decode(), keep_blank_values=True).items()
+        if key not in {"client_id", "client_secret"}
+    }
+    assert filtered.headers["Authorization"] == request.headers["Authorization"]
+    assert filtered.headers["X-Test"] == "preserved"
+    assert filtered.headers["Content-Type"] == request.headers["Content-Type"]
+    assert int(filtered.headers["Content-Length"]) == len(filtered.content)
+    assert filtered.url == request.url
+    assert filtered.method == request.method
+    assert filtered.extensions == request.extensions
+    assert _single_token_auth(filtered) is filtered  # Safe after an upstream fix, too.
+    assert "client_id" in parse_qs(request.content.decode())  # Do not mutate SDK input.
+
+
 def test_native_oauth_is_constructed_without_network_or_browser(monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("Building a toolset must not authenticate")
@@ -200,7 +237,8 @@ def test_forget_rejects_unknown_or_non_oauth_servers():
 class FakeOAuthProvider:
     """Real SDK discovery, DCR, PKCE, exchange, and refresh over a mock transport."""
 
-    def __init__(self):
+    def __init__(self, token_auth_method="none"):
+        self.token_auth_method = token_auth_method
         self.authorization = None
         self.registrations = 0
         self.grants = []
@@ -261,10 +299,41 @@ class FakeOAuthProvider:
             metadata = json.loads(request.content)
             return httpx2.Response(
                 201,
-                json={**metadata, "client_id": "fake-client", "token_endpoint_auth_method": "none"},
+                json={
+                    **metadata,
+                    "client_id": "fake-client",
+                    "token_endpoint_auth_method": self.token_auth_method,
+                    **(
+                        {"client_secret": "fake-client-secret"}
+                        if self.token_auth_method != "none"
+                        else {}
+                    ),
+                },
             )
         if path == "/token":
             form = parse_qs(request.content.decode())
+            authorization = request.headers.get("Authorization")
+            if self.token_auth_method == "client_secret_basic":
+                if "client_id" in form or "client_secret" in form:
+                    return httpx2.Response(
+                        400,
+                        json={
+                            "error": "invalid_request",
+                            "error_description": (
+                                "Client must not use multiple authentication methods"
+                            ),
+                        },
+                    )
+                expected = base64.b64encode(b"fake-client:fake-client-secret").decode()
+                assert authorization == f"Basic {expected}"
+            else:
+                assert authorization is None
+                assert form["client_id"] == ["fake-client"]
+                if self.token_auth_method == "client_secret_post":
+                    assert form["client_secret"] == ["fake-client-secret"]
+                else:
+                    assert "client_secret" not in form
+            assert int(request.headers["Content-Length"]) == len(request.content)
             grant = form["grant_type"][0]
             self.grants.append(grant)
             if grant == "authorization_code":
@@ -307,18 +376,33 @@ class FakeOAuthProvider:
         return httpx2.MockTransport(self.http)
 
 
-def test_native_oauth_exchange_reuse_and_refresh():
+@pytest.mark.parametrize("method", ["none", "client_secret_post", "client_secret_basic"])
+@pytest.mark.parametrize("registered", [False, True])
+def test_native_oauth_exchange_reuse_and_refresh(method, registered):
     async def run():
         toolset = build_toolset("remote", {"url": URL, "auth": "oauth"})
         auth = mcp_transport(toolset).auth
-        provider = FakeOAuthProvider()
+        provider = FakeOAuthProvider(method)
+        if registered:
+            # A failed exchange leaves a valid registration but no tokens. A
+            # retry must use it without requiring logout or re-registration.
+            from mcp.shared.auth import OAuthClientInformationFull
+
+            await auth.token_storage_adapter.set_client_info(
+                OAuthClientInformationFull(
+                    client_id="fake-client",
+                    client_secret="fake-client-secret" if method != "none" else None,
+                    token_endpoint_auth_method=method,
+                    redirect_uris=auth.context.client_metadata.redirect_uris,
+                )
+            )
         transport = provider.install(auth)
         async with httpx2.AsyncClient(auth=auth, transport=transport) as client:
             response = await client.get(URL)
             assert response.status_code == 200
             assert provider.grants == ["authorization_code"]
             assert provider.browser_visits == 1
-            assert provider.registrations == 1
+            assert provider.registrations == (0 if registered else 1)
         # A new HTTP connection reuses the enabled toolset's OAuth object.
         async with httpx2.AsyncClient(auth=auth, transport=transport) as client:
             assert (await client.get(URL)).status_code == 200
@@ -328,6 +412,18 @@ def test_native_oauth_exchange_reuse_and_refresh():
             assert provider.grants == ["authorization_code", "refresh_token"]
             assert provider.browser_visits == 1
         assert (await auth.token_storage_adapter.get_tokens()).access_token == provider.access_token
+        # A fresh OAuth instance must reuse the saved registration and its auth
+        # method, including when refreshing without an interactive browser.
+        await expire_stored_access_token()
+        restarted = mcp_transport(
+            build_toolset("remote", {"url": URL, "auth": "oauth"}, interactive=False)
+        ).auth
+        transport = provider.install(restarted)
+        async with httpx2.AsyncClient(auth=restarted, transport=transport) as client:
+            assert (await client.get(URL)).status_code == 200
+        assert provider.registrations == (0 if registered else 1)
+        assert provider.browser_visits == 1
+        assert provider.grants == ["authorization_code", "refresh_token", "refresh_token"]
 
     asyncio.run(run())
 
