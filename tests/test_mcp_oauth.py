@@ -10,13 +10,20 @@ from urllib.parse import parse_qs, urlsplit
 import httpx2
 import pytest
 from fastmcp.client.auth import OAuth
-from key_value.aio.stores.memory import MemoryStore
 from mcp.shared.auth import AuthorizationCodeResult
 
 from pcode.mcp import MCPState, build_toolset, config_path, mcp_transport
+from pcode.mcp_oauth import CredentialStore, SignInRequired, credentials_path
 
 URL = "https://resource.example/mcp"
 ISSUER = "https://auth.example"
+
+
+async def expire_stored_access_token(url=URL):
+    """Age the saved access token as a restart hours later would find it."""
+    await CredentialStore().put(
+        key=f"{url}/token_expiry", value={"expires_at": 1}, collection="mcp-oauth-token-expiry"
+    )
 
 
 def test_native_oauth_is_constructed_without_network_or_browser(monkeypatch):
@@ -29,10 +36,11 @@ def test_native_oauth_is_constructed_without_network_or_browser(monkeypatch):
         toolset = build_toolset("remote", {"url": URL, "auth": "oauth"})
     auth = mcp_transport(toolset).auth
     assert isinstance(auth, OAuth)
-    assert isinstance(auth.token_storage_adapter._key_value_store, MemoryStore)
-    assert not caught  # Storage lifetime is explained by pcode instead of a raw prompt warning.
+    assert isinstance(auth.token_storage_adapter._key_value_store, CredentialStore)
+    assert not caught  # Neither FastMCP's memory-store nor key-value's stability warning.
     assert not auth._initialized
     assert toolset.prefix == "mcp_remote"
+    assert not credentials_path().exists()  # Nothing is written before a sign-in.
 
 
 @pytest.mark.parametrize(
@@ -58,16 +66,62 @@ def test_oauth_allows_non_auth_headers():
     assert mcp_transport(toolset).headers == {"X-Tenant": "test"}
 
 
-def test_activation_does_not_persist_tokens_or_read_disabled_credentials(monkeypatch):
+def test_credential_store_is_owner_only_and_shared_between_processes(tmp_path):
+    from fastmcp.client.auth.oauth import TokenStorageAdapter
+    from mcp.shared.auth import OAuthToken
+
+    path = tmp_path / "nested" / "mcp-credentials.json"
+
+    async def run():
+        writer = TokenStorageAdapter(CredentialStore(path), URL)
+        assert await writer.get_tokens() is None
+        assert not path.exists()
+        await writer.set_tokens(OAuthToken(access_token="a", refresh_token="r", expires_in=60))
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
+        # Another process (a fresh store over the same file) sees the tokens and
+        # a rotation performed there is visible here without a restart.
+        reader = TokenStorageAdapter(CredentialStore(path), URL)
+        assert (await reader.get_tokens()).refresh_token == "r"
+        assert (await reader.get_token_expiry()) is not None
+        await reader.set_tokens(OAuthToken(access_token="b", refresh_token="r2"))
+        assert (await writer.get_tokens()).refresh_token == "r2"
+        # Other servers' credentials survive one server's sign-out.
+        other = TokenStorageAdapter(CredentialStore(path), "https://other.example/mcp")
+        await other.set_tokens(OAuthToken(access_token="c"))
+        await writer.clear()
+        assert await reader.get_tokens() is None
+        assert (await other.get_tokens()).access_token == "c"
+        assert '"a"' not in path.read_text() and "r2" not in path.read_text()
+
+    asyncio.run(run())
+
+
+def test_credential_store_rejects_unreadable_file_without_echoing_it(tmp_path):
+    path = tmp_path / "mcp-credentials.json"
+    path.write_text("{not json: secret-bearer-value")
+
+    async def run():
+        with pytest.raises(RuntimeError, match="Cannot read MCP credentials") as error:
+            await CredentialStore(path).get(key="k", collection="c")
+        assert "secret-bearer-value" not in str(error.value)
+
+    asyncio.run(run())
+
+
+def test_sign_in_persists_across_enable_cycles_and_processes(monkeypatch):
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"mcpServers": {"remote": {"url": URL, "auth": "oauth"}}}))
     before = path.read_bytes()
     providers = []
+    interactive_flags = []
 
-    def configured_toolset(name, raw):
-        toolset = build_toolset(name, raw)
-        provider = FakeMCPOAuthProvider()
+    def configured_toolset(name, raw, *, interactive=True):
+        toolset = build_toolset(name, raw, interactive=interactive)
+        interactive_flags.append(interactive)
+        # One fake authorization server, so tokens minted by one "process" are
+        # valid for the next; only the browser/callback plumbing is per toolset.
+        provider = providers[0] if providers else FakeMCPOAuthProvider()
         provider.install_toolset(toolset)
         providers.append(provider)
         return toolset
@@ -75,25 +129,70 @@ def test_activation_does_not_persist_tokens_or_read_disabled_credentials(monkeyp
     monkeypatch.setattr("pcode.mcp.build_toolset", configured_toolset)
 
     async def run():
+        provider_holder = providers
         state = MCPState()
         assert state.toolsets() == []
         await state.enable("remote")
+        provider = provider_holder[0]
         first = mcp_transport(state.enabled["remote"]).auth
-        assert providers[0].browser_visits == 1
+        assert provider.browser_visits == 1
+        assert provider.registrations == 1
+        assert credentials_path().exists()
+        assert oct(credentials_path().stat().st_mode & 0o777) == "0o600"
         await state.enable("remote")
-        assert len(providers) == 1
         assert mcp_transport(state.enabled["remote"]).auth is first
         # Ordinary subsequent MCP connections use the already authenticated client.
         async with state.enabled["remote"]:
             pass
-        assert providers[0].browser_visits == 1
+        assert provider.browser_visits == 1
         state.disable("remote")
-        assert state.toolsets() == []
+        # Re-enable, and a fresh process (new MCPState), reuse the saved sign-in and
+        # registration without a browser, including when non-interactive.
         await state.enable("remote")
         assert mcp_transport(state.enabled["remote"]).auth is not first
-        assert providers[1].browser_visits == 1
+        await MCPState().enable("remote", interactive=False)
+        assert provider.browser_visits == 1
+        assert provider.registrations == 1
+        assert interactive_flags == [True, True, False]
+        # The access token expires: the saved refresh token is used silently, and
+        # the rotated tokens are saved for the next process.
+        await expire_stored_access_token()
+        restarted = MCPState()
+        await restarted.enable("remote", interactive=False)
+        assert provider.grants[-1] == "refresh_token"
+        assert provider.browser_visits == 1
+        stored = mcp_transport(restarted.enabled["remote"]).auth.token_storage_adapter
+        assert (await stored.get_tokens()).access_token == "fake-refreshed-access-token"
+        # Signing out forgets the credentials; the next enable needs a browser.
+        await restarted.forget("remote")
+        assert restarted.toolsets() == []
+        with pytest.raises(SignInRequired):
+            await MCPState().enable("remote", interactive=False)
+        assert provider.browser_visits == 1
+        await MCPState().enable("remote")
+        assert provider.browser_visits == 2
         assert path.read_bytes() == before
-        assert list(path.parent.iterdir()) == [path]
+        assert sorted(p.name for p in path.parent.iterdir()) == [
+            "mcp-credentials.json",
+            "mcp-credentials.json.lock",
+            path.name,
+        ]
+
+    asyncio.run(run())
+
+
+def test_forget_rejects_unknown_or_non_oauth_servers():
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mcpServers": {"local": {"command": "echo"}}}))
+
+    async def run():
+        state = MCPState()
+        with pytest.raises(ValueError, match="Unknown MCP server"):
+            await state.forget("missing")
+        with pytest.raises(ValueError, match="does not use OAuth"):
+            await state.forget("local")
+        assert not credentials_path().exists()
 
     asyncio.run(run())
 
@@ -194,8 +293,16 @@ class FakeOAuthProvider:
         pytest.fail(f"Unexpected fake provider request: {request.method} {request.url}")
 
     def install(self, auth):
-        # Replace just browser/callback I/O. OAuth state validation and PKCE stay native.
-        auth.context.redirect_handler = self.redirect
+        # Replace just browser/callback I/O. OAuth state validation and PKCE stay
+        # native, as do pcode's gate on non-interactive sign-in and its callback
+        # socket ownership, which the real redirect handler performs before browsing.
+        async def redirect(url):
+            if not getattr(auth, "interactive", True):
+                raise SignInRequired("This MCP server needs a browser sign-in.")
+            await auth._reserve_callback()
+            await self.redirect(url)
+
+        auth.context.redirect_handler = redirect
         auth.context.callback_handler = self.callback
         return httpx2.MockTransport(self.http)
 
@@ -377,10 +484,46 @@ def test_registered_port_collision_is_recoverable_without_browser():
             occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             occupied.bind(("127.0.0.1", auth.redirect_port))
             occupied.listen()
-            with pytest.raises(RuntimeError, match="Disable and re-enable"):
+            with pytest.raises(RuntimeError, match="Retry sign-in"):
                 await auth._reserve_callback()
         assert provider.browser_visits == 1
         assert auth._callback_socket is None
+        # The stale registration is forgotten so the retry registers on a free port.
+        assert await auth.token_storage_adapter.get_client_info() is None
+        assert await auth.token_storage_adapter.get_tokens() is None
+
+    asyncio.run(run())
+
+
+def test_restart_reuses_the_registered_callback_port():
+    """A saved registration names a redirect port; a new process must serve that one."""
+
+    async def run():
+        provider = FakeOAuthProvider()
+        auth = mcp_transport(build_toolset("remote", {"url": URL, "auth": "oauth"})).auth
+        async with httpx2.AsyncClient(auth=auth, transport=provider.install(auth)) as client:
+            assert (await client.get(URL)).status_code == 200
+        registered_port = urlsplit(provider.authorization["redirect_uri"][0]).port
+        # A refresh that the server rejects forces a new authorization after restart.
+        restarted = mcp_transport(build_toolset("remote", {"url": URL, "auth": "oauth"})).auth
+        provider.install(restarted)  # Fake browser/callback only; the transport is below.
+        original = provider.http
+
+        async def http(request):
+            if request.url.path == "/token":
+                form = parse_qs(request.content.decode())
+                if form["grant_type"] == ["refresh_token"]:
+                    return httpx2.Response(400, json={"error": "invalid_grant"})
+            return await original(request)
+
+        provider.http = http
+        transport = httpx2.MockTransport(http)
+        await expire_stored_access_token()
+        async with httpx2.AsyncClient(auth=restarted, transport=transport) as client:
+            assert (await client.get(URL)).status_code == 200
+        assert provider.browser_visits == 2
+        assert provider.registrations == 1
+        assert urlsplit(provider.authorization["redirect_uri"][0]).port == registered_port
 
     asyncio.run(run())
 
@@ -458,6 +601,30 @@ def test_callback_timeout_releases_reserved_port():
     asyncio.run(run())
 
 
+def test_non_interactive_enable_never_opens_a_browser(monkeypatch):
+    monkeypatch.setattr(
+        "webbrowser.open", lambda *a, **k: pytest.fail("non-interactive must not browse")
+    )
+
+    async def run():
+        auth = mcp_transport(
+            build_toolset("remote", {"url": URL, "auth": "oauth"}, interactive=False)
+        ).auth
+        provider = FakeOAuthProvider()
+        transport = provider.install(auth)
+        # The fake provider never browses; exercise pcode's own gate here.
+        auth.context.redirect_handler = auth.redirect_handler
+        async with httpx2.AsyncClient(auth=auth, transport=transport) as client:
+            with pytest.raises(SignInRequired):
+                await client.get(URL)
+        assert provider.browser_visits == 0
+        assert provider.grants == []
+        assert auth._callback_socket is None
+        assert await auth.token_storage_adapter.get_tokens() is None
+
+    asyncio.run(run())
+
+
 class FakeMCPOAuthProvider(FakeOAuthProvider):
     """Fake OAuth provider plus the real MCP HTTP initialization exchange."""
 
@@ -506,7 +673,7 @@ def test_enable_oauth_failure_or_cancel_leaves_server_off(monkeypatch, mode):
         provider = FakeMCPOAuthProvider()
         provider.callback_mode = mode
         provider.install_toolset(toolset)
-        monkeypatch.setattr("pcode.mcp.build_toolset", lambda name, raw: toolset)
+        monkeypatch.setattr("pcode.mcp.build_toolset", lambda name, raw, **kw: toolset)
         if mode == "wait":
             task = asyncio.create_task(state.enable("remote"))
             try:
@@ -556,7 +723,7 @@ def test_enable_publishes_only_after_connection_teardown(monkeypatch, outcome):
                     raise RuntimeError("Connection teardown failed")
 
         connection = Connection()
-        monkeypatch.setattr("pcode.mcp.build_toolset", lambda name, raw: connection)
+        monkeypatch.setattr("pcode.mcp.build_toolset", lambda name, raw, **kw: connection)
         state = MCPState()
         task = asyncio.create_task(state.enable("remote"))
         try:

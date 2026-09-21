@@ -1,22 +1,111 @@
-"""Keep native OAuth, but own the loopback socket instead of probing a free port.
+"""Keep native OAuth, but own the loopback socket and the credential file.
 
 FastMCP 4.0.4 probes/closes a port at construction, then Uvicorn binds it much
 later. A collision raises SystemExit inside its background task. Reserve the
 actual socket before registration and pass it to an embedded, signal-free server.
+
+Tokens and the dynamic client registration outlive the process in one
+owner-only JSON file, like pcode's Anthropic sign-in, so a server can be enabled
+at startup without a browser round trip. No keychain: it locks over SSH, prompts
+after upgrades, and other tools sharing the item have wiped MCP sign-ins.
 """
 
 import asyncio
+import json
+import os
 import socket
+import tempfile
 from contextlib import aclosing, nullcontext
+from pathlib import Path
 
 import anyio
 from fastmcp.client.auth import OAuth
 from fastmcp.client.oauth_callback import OAuthCallbackResult, create_oauth_callback_server
+from filelock import FileLock
+from key_value.aio.stores.base import BaseStore
 from mcp.shared.auth import AuthorizationCodeResult
 from pydantic import AnyHttpUrl
 from uvicorn import Server
 
+from pcode.preferences import preferences_path
+
 _HOST = "127.0.0.1"
+
+
+class SignInRequired(RuntimeError):
+    """The server wants a browser login, which a non-interactive enable must not start."""
+
+
+def credentials_path() -> Path:
+    return preferences_path().with_name("mcp-credentials.json")
+
+
+class CredentialStore(BaseStore):
+    """FastMCP's AsyncKeyValue over one 0600 JSON file, keyed by server URL.
+
+    Every operation re-reads the file under a lock, so concurrent pcode processes
+    see each other's refreshed tokens instead of clobbering them with stale ones.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        super().__init__(stable_api=True)
+        self._path = path or credentials_path()
+        self._lock = FileLock(f"{self._path}.lock", mode=0o600)
+
+    def _read(self) -> dict:
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            raise RuntimeError(f"Cannot read MCP credentials: {self._path}") from None
+        return data if isinstance(data, dict) else {}
+
+    def _write(self, data: dict) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        name = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=self._path.parent, delete=False, encoding="utf-8"
+            ) as file:
+                name = file.name
+                # Restrict before any token bytes reach the filesystem.
+                os.chmod(file.fileno(), 0o600)
+                json.dump(data, file, indent=2)
+                file.write("\n")
+            os.replace(name, self._path)
+            name = None
+        finally:
+            if name is not None:
+                os.unlink(name)
+
+    async def _get_managed_entry(self, *, collection: str, key: str):
+        with self._lock:
+            raw = self._read().get(collection, {}).get(key)
+        if not isinstance(raw, dict):
+            return None
+        return self._serialization_adapter.load_dict(data=raw)
+
+    async def _put_managed_entry(self, *, collection: str, key: str, managed_entry) -> None:
+        with self._lock:
+            data = self._read()
+            data.setdefault(collection, {})[key] = self._serialization_adapter.dump_dict(
+                entry=managed_entry
+            )
+            self._write(data)
+
+    async def _delete_managed_entry(self, *, key: str, collection: str) -> bool:
+        with self._lock:
+            data = self._read()
+            removed = data.get(collection, {}).pop(key, None) is not None
+            if removed:
+                self._write(data)
+        return removed
+
+    async def _get_collection_keys(self, *, collection: str, limit: int | None = None) -> list[str]:
+        with self._lock:
+            keys = list(self._read().get(collection, {}))
+        return keys[:limit] if limit is not None else keys
 
 
 class _CallbackServer(Server):
@@ -41,27 +130,51 @@ class _CallbackServer(Server):
 class LoopbackOAuth(OAuth):
     """FastMCP handles protocol/security; this adapter owns callback I/O lifetime."""
 
-    def __init__(self):
-        super().__init__(client_name="pcode", callback_host=_HOST)
+    def __init__(self, store: CredentialStore | None = None, *, interactive: bool = True):
+        super().__init__(
+            client_name="pcode", callback_host=_HOST, token_storage=store or CredentialStore()
+        )
+        self.interactive = interactive
         self._callback_socket: socket.socket | None = None
         self._flow_lock = asyncio.Lock()
+
+    def _adopt_registered_port(self, registered) -> int:
+        """A registration from an earlier process names its own callback port; the
+        authorization and token requests must present that same redirect URI."""
+        if registered is not None and registered.redirect_uris:
+            port = registered.redirect_uris[0].port
+            if port and port != self.redirect_port:
+                self.redirect_port = port
+                self.context.client_metadata.redirect_uris = [
+                    AnyHttpUrl(f"http://{_HOST}:{port}/callback")
+                ]
+        return self.redirect_port
+
+    async def _initialize(self) -> None:
+        # The SDK builds the authorization URL from client_metadata before calling
+        # redirect_handler, so the saved registration's port must be adopted here.
+        await super()._initialize()
+        self._adopt_registered_port(self.context.client_info)
 
     async def _reserve_callback(self) -> socket.socket:
         if self._callback_socket is not None:
             return self._callback_socket
         registered = await self.token_storage_adapter.get_client_info()
+        port = self._adopt_registered_port(registered)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                sock.bind((_HOST, self.redirect_port))
+                sock.bind((_HOST, port))
             except OSError:
                 if registered is not None:
-                    # A registered redirect URI cannot be silently changed. Let
-                    # the user discard the in-memory registration and try again.
+                    # A registered redirect URI cannot be silently changed. Forget
+                    # the registration (its tokens are already unusable here) so the
+                    # next attempt registers afresh on a free port.
+                    await self.token_storage_adapter.clear()
+                    self.context.client_info = None
                     raise RuntimeError(
-                        "MCP OAuth callback port is unavailable. Disable and re-enable "
-                        "this MCP server, then retry sign-in."
+                        "MCP OAuth callback port is unavailable. Retry sign-in."
                     ) from None
                 sock.bind((_HOST, 0))
             sock.listen()
@@ -100,6 +213,8 @@ class LoopbackOAuth(OAuth):
                 self._close_callback()
 
     async def redirect_handler(self, authorization_url: str) -> None:
+        if not self.interactive:
+            raise SignInRequired("This MCP server needs a browser sign-in.")
         # Refresh can fail and require a new login even when the flow began with
         # tokens. Verify socket ownership before opening a browser in that case.
         await self._reserve_callback()

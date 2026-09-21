@@ -215,7 +215,15 @@ def test_native_search_streams_as_tool_rows():
         yield {
             1: NativeToolReturnPart(
                 tool_name="web_search",
-                content=[{"type": "web_search_result", "url": "https://example.com"}],
+                content=[
+                    {
+                        "type": "web_search_result",
+                        "title": "Example",
+                        "url": "https://example.com",
+                        "page_age": "2 weeks ago",
+                        "encrypted_content": "EvEICioIFBgCIiQ2MmRjNGMxMy0zZDA2",
+                    }
+                ],
                 tool_call_id="srv1",
             )
         }
@@ -246,6 +254,11 @@ def test_native_search_streams_as_tool_rows():
             ("web_search", "pydantic ai → 1 result", False),
             ("web_fetch", "https://example.com → Failed · url_not_accessible", True),
         ]
+        # /tools shows the readable hit, not the provider-only ciphertext.
+        search = next(e for e in events if isinstance(e, ToolSummary) and e.name == "web_search")
+        assert "EvEICioI" not in search.result
+        assert "Example\nhttps://example.com\nAge: 2 weeks ago" in search.result
+        assert "encrypted" in search.result
 
     asyncio.run(run())
 
