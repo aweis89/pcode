@@ -2,14 +2,19 @@
 
 ## Authentication
 
-For `openai-codex:`, use an existing subscription login. If missing or expired:
+For `openai-codex:`, use an existing subscription login. If missing or expired,
+run `/login openai-codex` inside pcode or, equivalently, in a shell:
 
 ```sh
 codex login
 ```
 
-Pydantic reads the CLI's credential store (`CODEX_HOME` is honored); pcode never
-prints, copies, or writes it. This provider does not fall back to `OPENAI_API_KEY`.
+Both need the [Codex CLI](https://github.com/openai/codex) on `PATH`: `/login
+openai-codex` runs `codex login` and relays the sign-in URL into the transcript
+(Ctrl+C cancels; on a headless machine use `codex login --device-auth` in a
+shell instead). `/logout openai-codex` runs `codex logout`. Pydantic reads the
+CLI's credential store (`CODEX_HOME` is honored); pcode never prints, copies, or
+writes it. This provider does not fall back to `OPENAI_API_KEY`.
 Refreshed credentials live only in the provider's memory with the default loader,
 so you may need to sign in again after restarting. Model availability still
 depends on your account. Authentication failures are displayed without raw
@@ -107,7 +112,8 @@ pcode -m anthropic:<model-id>   # then: /login
   supported path remains `ANTHROPIC_API_KEY`.
 - No API key is minted, and nothing is written to another tool's credential store.
 
-For OpenAI Codex, continue to use `codex login`.
+For OpenAI Codex, `/login openai-codex` delegates to `codex login`; the CLI owns
+that credential store.
 
 There is no API-key entry UI; pcode's own credential storage holds only its own
 `/login` tokens. For ordinary API-key access, set `ANTHROPIC_API_KEY` in your
@@ -147,7 +153,7 @@ requests**. This is not an account-entitlement list: the provider checks model
 availability and credentials when you use the model. A typed `provider:model-id`
 is accepted for any supported provider, configured or not, so you can point at a
 provider whose key you export after launch. If no provider is configured, use
-`/login`, set `ANTHROPIC_API_KEY`, or run `codex login` first.
+`/login`, set `ANTHROPIC_API_KEY`, or run `/login openai-codex` first.
 
 **Changing models continues the current conversation.** Message history, session ID,
 plan, tool panel, usage totals, transcript, and editor draft are preserved. The

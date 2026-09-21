@@ -234,6 +234,19 @@ to `False` so turn cleanup closes subprocesses. Keep the real-stdio tests in
 schemas alone is insufficient to prevent disabled servers from connecting;
 disabled servers must not enter the agent's toolset collection at all.
 
+### Codex sign-in
+
+`src/pcode/codex_login.py` implements `/login openai-codex` by running the
+`codex` CLI (`codex login` / `codex logout`) with pipes and relaying its output.
+The CLI must be on `PATH`; it owns `$CODEX_HOME/auth.json`, which Pydantic AI
+reads and never writes. Pydantic AI's `OpenAICodexOAuthFlow` is not used: it
+drops the `id_token` the CLI requires in that file, so a pcode-written login
+would be unreadable by the CLI. The `openai-codex` Python SDK was also rejected
+since it pins a `codex` binary wheel just to reach the same login. `codex login`
+prints its URL on stdout and needs no tty (verified with codex-cli 0.154.0);
+recheck the output on CLI upgrades. Codex credentials are read when the model
+is built, so a Codex conversation rebuilds its model after signing in.
+
 ### Anthropic subscription sign-in
 
 `src/pcode/anthropic_oauth.py` owns pcode's own `/login`: PKCE (S256)

@@ -57,7 +57,9 @@ candidate's size so that cost is visible before you pick.
   backgrounds and text, with reverse-video selection highlights. They follow your
   terminal background automatically, independently of `/theme` and `/colors`.
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
-- `/login`: sign in to Anthropic in a browser; `/logout` removes pcode's stored login. Both require an idle conversation.
+- `/login [anthropic|openai-codex]`: sign in in a browser. Anthropic is pcode's own flow;
+  `openai-codex` runs the Codex CLI's `codex login` (the CLI must be on `PATH`).
+  `/logout [anthropic|openai-codex]` removes that stored login. Both require an idle conversation.
 - `/model`: searchable model picker for configured providers (keeps the conversation;
   applies from the next request when chosen mid-run).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
