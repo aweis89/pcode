@@ -4,14 +4,25 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from pydantic_ai.providers import infer_provider_class
 
-from pcode.models import active_providers, model_catalog, model_sort_key
+from pcode.models import (
+    ENV_PROVIDERS,
+    PROVIDERS,
+    active_providers,
+    model_catalog,
+    model_sort_key,
+)
 
 
 @pytest.fixture(autouse=True)
 def isolated_providers(monkeypatch, tmp_path):
     for name in ("PCODE_ANTHROPIC_AUTH", "ANTHROPIC_API_KEY", "PCODE_LLM_PROXY", "CODEX_HOME"):
         monkeypatch.delenv(name, raising=False)
+    for requirements in ENV_PROVIDERS.values():
+        for group in requirements:
+            for name in group:
+                monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("PCODE_MERIDIAN_BASE_URL", raising=False)
     monkeypatch.setattr("pcode.models.shutil.which", lambda _: None)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -60,6 +71,37 @@ def test_proxy_does_not_limit_providers(monkeypatch):
     monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "oauth")
     monkeypatch.setenv("PCODE_MERIDIAN_BASE_URL", "http://localhost:8888")
     assert active_providers("openai-codex:custom") == {"openai-codex", "anthropic", "meridian"}
+
+
+@pytest.mark.parametrize("provider", sorted(PROVIDERS.keys() - {"meridian"}))
+def test_every_listed_provider_is_installed(provider):
+    # A picker entry that raises ImportError on switch is worse than none.
+    infer_provider_class(provider)
+
+
+def test_key_presence_enables_provider(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "synthetic")
+    monkeypatch.setenv("GEMINI_API_KEY", "synthetic")
+    monkeypatch.setenv("AWS_PROFILE", "synthetic")
+    assert active_providers(None) == {"groq", "google", "bedrock"}
+    monkeypatch.setenv("GROQ_API_KEY", "  ")
+    assert "groq" not in active_providers(None)
+
+
+def test_endpoint_providers_need_both_variables(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "synthetic")
+    assert active_providers(None) == set()
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
+    assert active_providers(None) == {"azure"}
+
+
+def test_catalog_per_provider_and_typed_only_providers():
+    models = model_catalog({"google", "xai", "openrouter", "meridian"})
+    assert any(name.startswith("google:gemini") for name in models)
+    assert any(name.startswith("xai:grok") for name in models)
+    assert any(name.startswith("meridian:claude") for name in models)
+    assert not any(name.startswith("openrouter:") for name in models)
+    assert not any(name.startswith("anthropic:") for name in models)
 
 
 def test_catalog_uses_installed_sdk_and_keeps_custom_current():

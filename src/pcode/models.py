@@ -8,7 +8,86 @@ from typing import get_args
 
 from pydantic_ai.models import KnownModelName
 
-PROVIDERS = {"anthropic": "Anthropic", "openai-codex": "OpenAI Codex", "meridian": "Meridian"}
+# Every prefix the picker accepts, with a display label. Each provider's SDK
+# extra must be installed (see pyproject.toml) or infer_model raises on switch.
+PROVIDERS = {
+    "alibaba": "Alibaba",
+    "anthropic": "Anthropic",
+    "azure": "Azure OpenAI",
+    "bedrock": "Bedrock",
+    "bedrock-mantle": "Bedrock Mantle",
+    "cerebras": "Cerebras",
+    "crusoe": "Crusoe",
+    "deepseek": "DeepSeek",
+    "fireworks": "Fireworks",
+    "github-copilot": "GitHub Copilot",
+    "google": "Google",
+    "google-cloud": "Google Cloud",
+    "groq": "Groq",
+    "heroku": "Heroku",
+    "meridian": "Meridian",
+    "moonshotai": "Moonshot",
+    "nebius": "Nebius",
+    "ollama": "Ollama",
+    "openai": "OpenAI",
+    "openai-chat": "OpenAI (chat)",
+    "openai-codex": "OpenAI Codex",
+    "openai-responses": "OpenAI (responses)",
+    "openrouter": "OpenRouter",
+    "ovhcloud": "OVHcloud",
+    "sambanova": "SambaNova",
+    "snowflake": "Snowflake",
+    "together": "Together",
+    "vercel": "Vercel",
+    "vllm": "vLLM",
+    "xai": "xAI",
+    "zai": "Z.ai",
+}
+
+# Providers activated by environment. Each inner tuple is one requirement
+# satisfied by any listed variable; every requirement must hold. Only names
+# are inspected, never values. Providers needing an endpoint as well as a key
+# (azure, github-copilot) list both so a lone key is not a false positive.
+ENV_PROVIDERS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "alibaba": (("ALIBABA_API_KEY", "DASHSCOPE_API_KEY"),),
+    "azure": (("AZURE_OPENAI_API_KEY",), ("AZURE_OPENAI_ENDPOINT",)),
+    "bedrock": (("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_PROFILE"),),
+    "bedrock-mantle": (("AWS_BEARER_TOKEN_BEDROCK",),),
+    "cerebras": (("CEREBRAS_API_KEY",),),
+    "crusoe": (("CRUSOE_API_KEY",),),
+    "deepseek": (("DEEPSEEK_API_KEY",),),
+    "fireworks": (("FIREWORKS_API_KEY",),),
+    "github-copilot": (
+        ("GITHUB_COPILOT_API_KEY", "GITHUB_COPILOT_API_TOKEN", "COPILOT_GITHUB_TOKEN"),
+        ("GITHUB_COPILOT_BASE_URL", "GITHUB_COPILOT_API_BASE", "COPILOT_API_URL"),
+    ),
+    "google": (("GOOGLE_API_KEY", "GEMINI_API_KEY"),),
+    "google-cloud": (("GOOGLE_CLOUD_PROJECT", "GOOGLE_APPLICATION_CREDENTIALS"),),
+    "groq": (("GROQ_API_KEY",),),
+    "heroku": (("HEROKU_INFERENCE_KEY",),),
+    "moonshotai": (("MOONSHOTAI_API_KEY",),),
+    "nebius": (("NEBIUS_API_KEY",),),
+    "ollama": (("OLLAMA_BASE_URL",),),
+    "openai": (("OPENAI_API_KEY",),),
+    "openrouter": (("OPENROUTER_API_KEY",),),
+    "ovhcloud": (("OVHCLOUD_API_KEY",),),
+    "sambanova": (("SAMBANOVA_API_KEY",),),
+    "snowflake": (("SNOWFLAKE_TOKEN",), ("SNOWFLAKE_ACCOUNT",)),
+    "together": (("TOGETHER_API_KEY",),),
+    "vercel": (("VERCEL_AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"),),
+    "vllm": (("VLLM_BASE_URL",),),
+    "xai": (("XAI_API_KEY",),),
+    "zai": (("ZAI_API_KEY",),),
+}
+
+# Catalog prefix -> KnownModelName prefixes whose IDs it accepts. Codex has no
+# separate SDK catalog, so expose every OpenAI model ID and let the provider
+# enforce account access; Meridian fronts Anthropic models.
+CATALOG_SOURCES = {"openai-codex": "openai", "meridian": "anthropic"}
+
+
+def _configured(requirements: tuple[tuple[str, ...], ...]) -> bool:
+    return all(any(os.environ.get(name, "").strip() for name in group) for group in requirements)
 
 
 def active_providers(current: str | None) -> set[str]:
@@ -17,6 +96,7 @@ def active_providers(current: str | None) -> set[str]:
         active.add(current.partition(":")[0])
     if os.environ.get("PCODE_MERIDIAN_BASE_URL", "").strip() or shutil.which("meridian"):
         active.add("meridian")
+    active.update(name for name, needs in ENV_PROVIDERS.items() if _configured(needs))
     from pcode.anthropic_oauth import anthropic_auth_source
 
     # Resolution checks for a stored login file, never its contents.
@@ -39,19 +119,17 @@ def active_providers(current: str | None) -> set[str]:
 def model_catalog(providers: set[str], current: str | None = None) -> list[str]:
     # KnownModelName is a TypeAliasType on supported Pydantic versions.
     known = get_args(getattr(KnownModelName, "__value__", KnownModelName))
-    models = set()
+    by_source: dict[str, set[str]] = {}
     for name in known:
-        if not isinstance(name, str):
-            continue
-        provider, _, model = name.partition(":")
-        if provider == "anthropic" and provider in providers:
-            models.add(name)
-        if provider == "anthropic" and "meridian" in providers:
-            models.add(f"meridian:{model}")
-        # Codex has no separate SDK catalog, so expose every OpenAI model ID and
-        # let the provider enforce account access and model compatibility.
-        if "openai-codex" in providers and provider == "openai":
-            models.add(f"openai-codex:{model}")
+        if isinstance(name, str):
+            source, _, model = name.partition(":")
+            by_source.setdefault(source, set()).add(model)
+    models = set()
+    for provider in providers:
+        source = CATALOG_SOURCES.get(provider, provider)
+        # Providers without a catalog (openrouter, ollama, vllm...) take any
+        # model ID typed into the picker instead.
+        models.update(f"{provider}:{model}" for model in by_source.get(source, ()))
     if current and current.partition(":")[0] in providers:
         models.add(current)
     return sorted(models, key=model_sort_key)

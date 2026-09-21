@@ -440,10 +440,15 @@ def test_auth_source_prefers_the_stored_login_but_environment_wins(store, monkey
 def test_stored_login_enables_the_anthropic_picker_without_reading_it(store, monkeypatch):
     from pathlib import Path
 
-    from pcode.models import active_providers
+    from pcode.models import ENV_PROVIDERS, active_providers
 
     monkeypatch.setattr("pcode.models.shutil.which", lambda _: None)
     monkeypatch.delenv("PCODE_MERIDIAN_BASE_URL", raising=False)
+    # The developer's shell may hold real provider keys (AWS_PROFILE, etc.).
+    for requirements in ENV_PROVIDERS.values():
+        for group in requirements:
+            for name in group:
+                monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("CODEX_HOME", str(store.parent / "absent-codex"))
     assert active_providers(None) == set()
     save(store)
