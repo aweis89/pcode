@@ -4,6 +4,7 @@ import warnings
 from dataclasses import dataclass, field
 
 from pydantic_ai import CapabilityEvent
+from pydantic_ai.messages import NativeToolCallPart
 from pydantic_ai_harness.warn_on_cache_busts import CacheBustWarning, WarnOnCacheBusts
 
 from pcode.cache_diagnostics import CacheDiagnostics
@@ -13,6 +14,16 @@ from pcode.tool_display import command_text
 @dataclass(kw_only=True)
 class CacheBustEvent(CapabilityEvent, namespace="pcode_cache", name="bust"):
     text: str
+
+
+def server_tool_iterations(response) -> int:
+    """Count server-side tool calls (web search, code execution) in a response.
+
+    Each one is an extra sampling pass inside a single API call, and the provider
+    reports one ``usage`` summed over every pass: ``cache_read_tokens`` is then
+    roughly ``passes * prefix``, not a prefix anyone can read back.
+    """
+    return sum(isinstance(part, NativeToolCallPart) for part in response.parts)
 
 
 @dataclass
@@ -36,10 +47,21 @@ class CacheBustReporting(WarnOnCacheBusts):
         # The pinned upstream hook does not suspend: only its synchronous warning
         # emission is captured, never model/tool execution or another task's work.
         # Emit outside this scope; ctx.emit can suspend. No global warning handler.
+        key = (response.provider_name, response.model_name)
+        prior = self._state.keys.get(key)
         with warnings.catch_warnings(record=True) as caught:
             result = await super().after_model_request(
                 ctx, request_context=request_context, response=response
             )
+        if server_tool_iterations(response):
+            # Upstream raises its high-water mark to `read + write` of every
+            # response, but a summed multi-pass usage puts the mark several
+            # times above the real prefix, and the next healthy request then
+            # "collapses" against it (seen: 148k established from a 29k prefix
+            # after three web searches; the next request read exactly 47k).
+            # Keep the previous mark; the next single-pass response sets a real
+            # one from its own usage.
+            self._state.keys[key].prefix = prior.prefix if prior else 0
         # Fingerprint every request, not just collapsing ones: diagnosing a
         # collapse needs the healthy request before it to compare against.
         # Part shapes vary by provider and capability, so a diagnostic that
