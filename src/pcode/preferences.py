@@ -308,9 +308,21 @@ def set_project_root(path: Path | None) -> None:
     _project_root = path.resolve() if path is not None else None
 
 
-def preferences_path() -> Path:
+def config_dir() -> Path:
+    """pcode's user config directory: `$PCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/pcode`.
+
+    Preferences, `mcp.json`, extensions, the worktree setup script, and stored
+    logins all live here.
+    """
+    override = os.environ.get("PCODE_CONFIG_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
     root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return root / "pcode" / "preferences.json"
+    return root / "pcode"
+
+
+def preferences_path() -> Path:
+    return config_dir() / "preferences.json"
 
 
 def project_preferences_path() -> Path | None:

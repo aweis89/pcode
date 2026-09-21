@@ -2,13 +2,15 @@
 
 import httpx2
 from pydantic_ai.models import get_user_agent
-from pydantic_ai.providers.openai_codex import OpenAICodexProvider
+from pydantic_ai.providers.openai_codex import OpenAICodexCredentialSource, OpenAICodexProvider
 
 
 class ProxiedCodexProvider(OpenAICodexProvider):
     """Own a dedicated proxied client, including across repeated agent runs."""
 
-    def __init__(self, proxy: str) -> None:
+    def __init__(
+        self, proxy: str, *, credential_source: OpenAICodexCredentialSource | None = None
+    ) -> None:
         # Validate without echoing a URL that may contain proxy credentials.
         try:
             url = httpx2.URL(proxy)
@@ -20,7 +22,7 @@ class ProxiedCodexProvider(OpenAICodexProvider):
             ) from None
         self._proxy_url = proxy
         client = self._new_http_client()
-        super().__init__(http_client=client)
+        super().__init__(credential_source=credential_source, http_client=client)
         # Pydantic AI 2.43's Provider context manager closes owned clients and
         # recreates them on re-entry. Injected clients are otherwise caller-owned.
         # These private ownership hooks are covered by lifecycle regression tests.

@@ -159,3 +159,9 @@ Writes are atomic and serialized across terminals. Unknown JSON keys are preserv
 invalid setting values fall back to built-in defaults. Normal startup tolerates a
 malformed file, but config commands report it and refuse to overwrite it: use
 `pcode config path` to find and repair it first. Invalid commands exit nonzero.
+
+`PCODE_CONFIG_DIR` overrides the user config directory for preferences, extensions,
+MCP configuration, worktree setup, and stored logins. Otherwise pcode uses
+`$XDG_CONFIG_HOME/pcode`, defaulting to `~/.config/pcode`. Per-file overrides
+(`PCODE_CREDENTIALS_FILE`, `PCODE_CODEX_CREDENTIALS_FILE`, `PCODE_MCP_CONFIG`)
+take precedence.

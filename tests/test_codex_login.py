@@ -1,5 +1,4 @@
 import asyncio
-import sys
 from io import StringIO
 from types import SimpleNamespace
 
@@ -8,55 +7,6 @@ from rich.console import Console
 
 from pcode import codex_login
 from pcode.auth import LoginError
-
-
-def fake_codex(monkeypatch, script: str) -> None:
-    """Stand in for the `codex` binary with a Python script."""
-    monkeypatch.setattr(codex_login, "codex_executable", lambda: sys.executable)
-    original = asyncio.create_subprocess_exec
-
-    async def spawn(executable, *arguments, **kwargs):
-        return await original(executable, "-c", script, *arguments, **kwargs)
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-
-
-def test_missing_cli_is_a_login_error(monkeypatch):
-    monkeypatch.setattr(codex_login.shutil, "which", lambda name: None)
-    with pytest.raises(LoginError, match="`codex` command was not found"):
-        codex_login.codex_executable()
-
-
-def test_login_relays_output_lines(monkeypatch):
-    fake_codex(
-        monkeypatch,
-        "import sys; assert sys.argv[1:] == ['login']; "
-        "print('If your browser did not open, navigate to this URL:'); print(); "
-        "print('https://auth.openai.com/oauth/authorize?state=synthetic')",
-    )
-    lines = []
-    asyncio.run(codex_login.login(notify=lines.append))
-    assert lines == [
-        "If your browser did not open, navigate to this URL:",
-        "https://auth.openai.com/oauth/authorize?state=synthetic",
-    ]
-
-
-def test_failed_login_reports_the_exit_status(monkeypatch):
-    fake_codex(monkeypatch, "import sys; sys.exit(3)")
-    with pytest.raises(LoginError, match="exited with status 3"):
-        asyncio.run(codex_login.login())
-
-
-def test_login_times_out_and_kills_the_cli(monkeypatch):
-    fake_codex(monkeypatch, "import time; time.sleep(30)")
-    with pytest.raises(LoginError, match="timed out"):
-        asyncio.run(codex_login.login(timeout=0.2))
-
-
-def test_logout_runs_the_cli(monkeypatch):
-    fake_codex(monkeypatch, "import sys; assert sys.argv[1:] == ['logout']")
-    asyncio.run(codex_login.logout())
 
 
 def make_app(model: str):
@@ -122,17 +72,146 @@ def test_unknown_login_source_shows_usage():
     assert "Usage: /login [anthropic|openai-codex]" in buffer.getvalue()
 
 
-def test_logout_command_runs_codex_logout(monkeypatch):
+def test_logout_preserves_cli_store(tmp_path, monkeypatch):
+    cli = tmp_path / "cli" / "auth.json"
+    cli.parent.mkdir()
+    cli.write_text("synthetic-cli")
+    monkeypatch.setenv("CODEX_HOME", str(cli.parent))
+    codex_login.write_credentials(codex_login.credentials_path(), tokens())
     app, _, buffer = make_app("openai-codex:test-model")
-    calls = []
-
-    async def fake_logout(**kwargs):
-        calls.append("logout")
-
-    monkeypatch.setattr(codex_login, "logout", fake_logout)
     app.handle("/logout openai-codex")
-    assert app.logout_requested == "openai-codex"
     asyncio.run(app.perform_logout())
-    assert app.logout_requested is None
-    assert calls == ["logout"]
-    assert "Removed the Codex CLI's stored login" in buffer.getvalue()
+    assert not codex_login.have_credentials()
+    assert cli.read_text() == "synthetic-cli"
+    assert "Removed pcode's stored" in buffer.getvalue()
+
+
+def tokens():
+    from pydantic_ai.providers.openai_codex import OpenAICodexCredentials
+
+    return OpenAICodexCredentials(
+        access_token="synthetic-access", refresh_token="synthetic-refresh", account_id="account"
+    )
+
+
+def test_store_roundtrip_and_permissions(tmp_path):
+    path = tmp_path / "private" / "credentials.json"
+    store = codex_login.CredentialStore(path)
+    asyncio.run(store.save(tokens()))
+    assert asyncio.run(store.load()) == tokens()
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert codex_login.credential_source(path) is not None
+    assert codex_login.delete_credentials(path)
+    assert codex_login.credential_source(path) is None
+
+
+@pytest.mark.parametrize("contents", ["invalid", "{}", '{"openai-codex": {"type": "oauth"}}'])
+def test_invalid_store_fails_closed(tmp_path, contents):
+    path = tmp_path / "credentials.json"
+    path.write_text(contents)
+    assert codex_login.credential_source(path) is not None
+    with pytest.raises(LoginError, match="No usable pcode"):
+        codex_login.read_credentials(path)
+
+
+def test_config_directory_precedence(monkeypatch, tmp_path):
+    from pcode.anthropic_oauth import credentials_path as anthropic_path
+    from pcode.preferences import preferences_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert codex_login.credentials_path() == tmp_path / "xdg/pcode/codex-credentials.json"
+    monkeypatch.setenv("PCODE_CONFIG_DIR", str(tmp_path / "override"))
+    for path in (preferences_path(), anthropic_path(), codex_login.credentials_path()):
+        assert path.parent == tmp_path / "override"
+
+
+def test_login_uses_flow_and_persists(tmp_path):
+    class Flow:
+        def authorization_url(self):
+            return "https://example.test/authorize"
+
+        async def exchange_code_from_callback(self):
+            return tokens()
+
+    path = tmp_path / "credentials.json"
+    urls = []
+    result = asyncio.run(
+        codex_login.login(path=path, flow=Flow(), open_browser=False, notify=urls.append)
+    )
+    assert result == codex_login.read_credentials(path) == tokens()
+    assert urls == ["https://example.test/authorize"]
+
+
+def test_login_timeout_preserves_old_store(tmp_path):
+    class Flow:
+        def authorization_url(self):
+            return "https://example.test/authorize"
+
+        async def exchange_code_from_callback(self):
+            await asyncio.sleep(10)
+
+    path = tmp_path / "credentials.json"
+    codex_login.write_credentials(path, tokens())
+    with pytest.raises(LoginError, match="timed out"):
+        asyncio.run(codex_login.login(path=path, flow=Flow(), open_browser=False, timeout=0.01))
+    assert codex_login.read_credentials(path) == tokens()
+
+
+@pytest.mark.parametrize("proxy", [False, True])
+def test_model_prefers_pcode_store_without_cli(monkeypatch, tmp_path, proxy):
+    from pcode.agent import codex_model
+    from pcode.models import active_providers
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-cli"))
+    if proxy:
+        monkeypatch.setenv("PCODE_LLM_PROXY", "http://localhost:9999")
+    else:
+        monkeypatch.delenv("PCODE_LLM_PROXY", raising=False)
+    codex_login.write_credentials(codex_login.credentials_path(), tokens())
+    model = codex_model("openai-codex:test-model")
+    assert isinstance(model.provider._credential_source, codex_login.CredentialStore)
+    assert "openai-codex" in active_providers(None)
+
+
+def test_provider_refresh_is_saved_for_next_launch(monkeypatch):
+    from pydantic_ai.providers import openai_codex
+
+    store = codex_login.CredentialStore()
+    refreshed = openai_codex.OpenAICodexCredentials(
+        access_token="rotated-access", refresh_token="rotated-refresh", account_id="account"
+    )
+
+    async def refresh(credentials, **kwargs):
+        assert credentials == tokens()
+        return refreshed
+
+    monkeypatch.setattr(openai_codex, "_refresh_credentials", refresh)
+
+    async def run():
+        await store.save(tokens())
+        provider = openai_codex.OpenAICodexProvider(credential_source=store)
+        async with provider:
+            await provider._load_if_needed()
+            async with provider._refresh_lock:
+                await provider._refresh_locked()
+        next_provider = openai_codex.OpenAICodexProvider(credential_source=store)
+        async with next_provider:
+            await next_provider._load_if_needed()
+            assert next_provider.credentials == refreshed
+
+    asyncio.run(run())
+
+
+def test_cancelled_login_does_not_replace_credentials(tmp_path):
+    class Flow:
+        def authorization_url(self):
+            return "https://example.test/authorize"
+
+        async def exchange_code_from_callback(self):
+            raise asyncio.CancelledError
+
+    path = tmp_path / "credentials.json"
+    codex_login.write_credentials(path, tokens())
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(codex_login.login(path=path, flow=Flow(), open_browser=False))
+    assert codex_login.read_credentials(path) == tokens()

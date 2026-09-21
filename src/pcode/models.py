@@ -105,11 +105,13 @@ def active_providers(current: str | None) -> set[str]:
         source == "api-key" and os.environ.get("ANTHROPIC_API_KEY", "").strip()
     ):
         active.add("anthropic")
+    from pcode.codex_login import have_credentials
+
     # Only check existence, never read a credential to populate the picker.
     codex_home = os.environ.get("CODEX_HOME", "").strip()
     directory = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
     try:
-        if (directory / "auth.json").is_file():
+        if have_credentials() or (directory / "auth.json").is_file():
             active.add("openai-codex")
     except OSError:
         pass
