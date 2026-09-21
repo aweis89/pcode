@@ -63,6 +63,7 @@ def test_bundled_extension_is_discovered_last_and_shadowed_by_user_files(tmp_pat
     assert extension.summary() == "2 tools"
     assert load_extensions(tmp_path).report(tmp_path) == [
         "browser (bundled): /browser",
+        "session_history (bundled): 2 tools",
         "web_research (bundled): 2 tools",
     ]
 
