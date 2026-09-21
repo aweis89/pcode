@@ -362,6 +362,7 @@ def test_native_loopback_callback_closes_listener(cancel):
     async def run():
         auth = mcp_transport(build_toolset("remote", {"url": URL, "auth": "oauth"})).auth
         callback_url = f"http://localhost:{auth.redirect_port}/callback"
+        auth._expected_state = "test-state"
         task = asyncio.create_task(auth.callback_handler())
         try:
             async with httpx2.AsyncClient(trust_env=False, timeout=1) as client:
@@ -376,6 +377,11 @@ def test_native_loopback_callback_closes_listener(cancel):
                         except httpx2.ConnectError:
                             pass
                         await asyncio.sleep(0.01)
+                stale = await client.get(
+                    callback_url, params={"code": "old-code", "state": "previous-attempt"}
+                )
+                assert stale.status_code == 400
+                assert not task.done()
                 if cancel:
                     task.cancel()
                     with pytest.raises(asyncio.CancelledError):
@@ -395,6 +401,83 @@ def test_native_loopback_callback_closes_listener(cancel):
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ["success", "denied"])
+def test_stale_callbacks_do_not_end_current_sign_in(monkeypatch, tmp_path, outcome):
+    """Real loopback callbacks and SDK PKCE with an isolated configuration directory."""
+    default_credentials = credentials_path()
+    config_dir = tmp_path / "separate-config"
+    monkeypatch.setenv("PCODE_CONFIG_DIR", str(config_dir))
+    assert credentials_path() == config_dir / "mcp-credentials.json"
+    assert config_path() == config_dir / "mcp.json"
+
+    async def run():
+        auth = mcp_transport(build_toolset("remote", {"url": URL, "auth": "oauth"})).auth
+        provider = FakeOAuthProvider()
+        browser_task = None
+
+        async def browser_callback():
+            url = provider.authorization["redirect_uri"][0]
+            state = provider.authorization["state"][0]
+            async with httpx2.AsyncClient(trust_env=False, timeout=5) as client:
+                for params in (
+                    {"code": "old-code", "state": "previous-attempt"},
+                    {"error": "access_denied", "state": "previous-attempt"},
+                    {"code": "old-code"},
+                    {"code": "old-code", "state": ""},
+                    {"code": "old-code", "state": "non-ascii-\u2603"},
+                    [("code", "old-code"), ("state", state), ("state", state)],
+                ):
+                    response = await client.get(url, params=params)
+                    assert response.status_code == 400
+                    assert "newest sign-in tab" in response.text
+                    assert state not in response.text
+                    assert response.headers["cache-control"] == "no-store"
+                    assert provider.grants == []
+                    assert await auth.token_storage_adapter.get_tokens() is None
+                params = {"state": state}
+                params.update(
+                    {"code": "fake-authorization-code"}
+                    if outcome == "success"
+                    else {"error": "access_denied"}
+                )
+                response = await client.get(url, params=params)
+                assert response.status_code == (200 if outcome == "success" else 400)
+
+        async def redirect(self, url):
+            nonlocal browser_task
+            await provider.redirect(url)
+            browser_task = asyncio.create_task(browser_callback())
+
+        # Keep pcode's redirect handler and the native callback server; replace
+        # only FastMCP's external browser/preflight I/O.
+        monkeypatch.setattr(OAuth, "redirect_handler", redirect)
+        try:
+            async with asyncio.timeout(10):
+                async with httpx2.AsyncClient(
+                    auth=auth, transport=httpx2.MockTransport(provider.http)
+                ) as client:
+                    if outcome == "success":
+                        assert (await client.get(URL)).status_code == 200
+                    else:
+                        from pcode.diagnostics import error_details
+
+                        with pytest.raises(Exception) as error:
+                            await client.get(URL)
+                        assert "Access was denied" in str(error_details(error.value))
+                await browser_task
+            assert provider.grants == (["authorization_code"] if outcome == "success" else [])
+            assert auth._callback_socket is None
+            assert auth._expected_state is None
+            assert credentials_path().exists()
+            assert not default_credentials.exists()
+        finally:
+            if browser_task is not None and not browser_task.done():
+                browser_task.cancel()
+                await asyncio.gather(browser_task, return_exceptions=True)
 
     asyncio.run(run())
 
@@ -438,6 +521,7 @@ def test_callback_port_collision_is_replaced_before_registration():
 
         async def redirect(url):
             nonlocal browser_task
+            auth._expected_state = parse_qs(urlsplit(url).query)["state"][0]
             await provider.redirect(url)
             browser_task = asyncio.create_task(browser_callback())
 
@@ -659,6 +743,32 @@ class FakeMCPOAuthProvider(FakeOAuthProvider):
         transport.httpx_client_factory = lambda **kwargs: httpx2.AsyncClient(
             transport=httpx2.MockTransport(self.http), **kwargs
         )
+
+
+def test_enable_allows_browser_sign_in_longer_than_default_init_timeout(monkeypatch):
+    """The ordinary five-second initialize deadline must not cancel browser sign-in."""
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mcpServers": {"remote": {"url": URL, "auth": "oauth"}}}))
+
+    async def run():
+        state = MCPState()
+        toolset = build_toolset("remote", {"url": URL, "auth": "oauth"})
+        provider = FakeMCPOAuthProvider()
+        provider.install_toolset(toolset)
+
+        async def slow_browser():
+            await asyncio.sleep(5.1)
+            return await provider.callback()
+
+        mcp_transport(toolset).auth.context.callback_handler = slow_browser
+        monkeypatch.setattr("pcode.mcp.build_toolset", lambda name, raw, **kw: toolset)
+        async with asyncio.timeout(10):
+            await state.enable("remote")
+        assert state.toolsets() == [toolset]
+        assert provider.grants == ["authorization_code"]
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("mode", ["denied", "bad-state", "wait"])

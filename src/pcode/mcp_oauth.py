@@ -13,10 +13,12 @@ after upgrades, and other tools sharing the item have wiped MCP sign-ins.
 import asyncio
 import json
 import os
+import secrets
 import socket
 import tempfile
 from contextlib import aclosing, nullcontext
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import anyio
 from fastmcp.client.auth import OAuth
@@ -25,6 +27,8 @@ from filelock import FileLock
 from key_value.aio.stores.base import BaseStore
 from mcp.shared.auth import AuthorizationCodeResult
 from pydantic import AnyHttpUrl
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
 from uvicorn import Server
 
 from pcode.preferences import preferences_path
@@ -137,6 +141,7 @@ class LoopbackOAuth(OAuth):
         self.interactive = interactive
         self._callback_socket: socket.socket | None = None
         self._flow_lock = asyncio.Lock()
+        self._expected_state: str | None = None
 
     def _adopt_registered_port(self, registered) -> int:
         """A registration from an earlier process names its own callback port; the
@@ -190,6 +195,7 @@ class LoopbackOAuth(OAuth):
             raise
 
     def _close_callback(self) -> None:
+        self._expected_state = None
         if self._callback_socket is not None:
             self._callback_socket.close()
             self._callback_socket = None
@@ -218,6 +224,10 @@ class LoopbackOAuth(OAuth):
         # Refresh can fail and require a new login even when the flow began with
         # tokens. Verify socket ownership before opening a browser in that case.
         await self._reserve_callback()
+        states = parse_qs(urlsplit(authorization_url).query).get("state", [])
+        if len(states) != 1 or not states[0]:
+            raise RuntimeError("MCP authorization URL has no unique state parameter.")
+        self._expected_state = states[0]
         await super().redirect_handler(authorization_url)
 
     async def callback_handler(self) -> AuthorizationCodeResult:
@@ -235,6 +245,31 @@ class LoopbackOAuth(OAuth):
                     result_ready=ready,
                 ).config
             )
+            callback_app = server.config.app
+            expected_state = self._expected_state
+
+            async def checked_callback(scope, receive, send):
+                if scope["type"] == "http" and scope["path"] == "/callback":
+                    states = Request(scope).query_params.getlist("state")
+                    if (
+                        expected_state is None
+                        or len(states) != 1
+                        or not secrets.compare_digest(states[0].encode(), expected_state.encode())
+                    ):
+                        # A late redirect from an earlier attempt must not claim
+                        # this listener or cancel the current sign-in. The SDK
+                        # still validates state, issuer, and PKCE after this gate.
+                        response = PlainTextResponse(
+                            "This callback does not match the current sign-in. "
+                            "Close this tab and use the newest sign-in tab.",
+                            status_code=400,
+                            headers={"Cache-Control": "no-store"},
+                        )
+                        await response(scope, receive, send)
+                        return
+                await callback_app(scope, receive, send)
+
+            server.config.app = checked_callback
             server.config.timeout_graceful_shutdown = 1
 
             async def serve():
