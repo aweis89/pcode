@@ -88,6 +88,36 @@ def test_continue_rejects_different_workspace(monkeypatch, tmp_path, capsys):
     assert "cross-repo resume" in capsys.readouterr().err
 
 
+def test_continue_from_a_sibling_worktree_returns_to_the_sessions_own(monkeypatch, tmp_path):
+    import subprocess
+
+    from pcode import worktree
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (("init", "-q", "-b", "main"), ("commit", "-q", "--allow-empty", "-m", "init")):
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.email=t@x", "-c", "user.name=t", *args],
+            check=True,
+        )
+    own = worktree.create(repo, "pcode-own")
+    sibling = worktree.create(repo, "pcode-sibling")
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", own.path, root)
+    identity = saved.info.id
+    saved.close()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["pcode", "--continue", identity, "--session-dir", str(root), "-C", str(sibling.path)],
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with patch("pcode.app.PreviewApp") as app:
+        main()
+    assert app.call_args.kwargs["workspace"] == own.path
+
+
 def test_continue_without_session_picks_this_workspaces_latest(monkeypatch, tmp_path, capsys):
     root = tmp_path / "sessions"
     here = tmp_path / "here"
