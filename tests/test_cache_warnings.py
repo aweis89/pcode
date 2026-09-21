@@ -101,8 +101,8 @@ def test_streamed_detector_preserves_threshold_and_latch(usages, count):
     assert len(busts) == count
     assert Message("Done") in events
     for bust in busts:
-        assert "read " in bust.text and "request established ~8" in bust.text
-        assert "prefix moved" in bust.text and "cache expired" in bust.text
+        assert "cached " in bust.text and "vs ~8" in bust.text
+        assert "cache expired" not in bust.text and "TTL" not in bust.text
         assert "To silence" not in bust.text
         assert "test/test:" in bust.text
 
@@ -159,7 +159,7 @@ def test_server_tool_usage_does_not_establish_a_prefix(last, count):
     busts = [call.args[0] for call in ctx.emit.await_args_list]
     assert len(busts) == count
     for bust in busts:
-        assert "established ~8200" in bust.text
+        assert "~8,200 established tokens" in bust.text
 
 
 def test_turns_and_parallel_runs_have_independent_detectors():
@@ -203,15 +203,15 @@ def test_model_switch_starts_own_mark_and_switch_back_keeps_original():
     assert "request 3" in busts[0].text
 
 
-def test_expiry_hint_is_preserved(monkeypatch):
+def test_expiry_speculation_is_omitted_even_after_a_long_gap(monkeypatch):
     times = iter([0, 301])
     monkeypatch.setattr(
         "pydantic_ai_harness.warn_on_cache_busts._capability._now", lambda: next(times)
     )
     events = asyncio.run(collect(runtime_for([(8000, 0), (0, 0)])))
     bust = next(event for event in events if isinstance(event, CacheBust))
-    assert "~301s earlier" in bust.text
-    assert "~300s cache TTL" in bust.text
+    assert "cache TTL" not in bust.text
+    assert "cause unknown" in bust.text
 
 
 @pytest.mark.parametrize("action", ["ignore", "error"])
@@ -238,11 +238,17 @@ def test_unrelated_warnings_are_not_swallowed(monkeypatch):
         asyncio.run(collect(runtime_for([(0, 0)])))
 
 
-def test_coder_enables_parent_and_shared_child_monitoring(tmp_path):
+@pytest.mark.parametrize(
+    "preferences, count", [({}, 0), ({"debug": "off"}, 0), ({"debug": "on"}, 1)]
+)
+def test_debug_controls_parent_and_shared_child_monitoring(
+    tmp_path, monkeypatch, preferences, count
+):
+    monkeypatch.setattr("pcode.agent.load_preferences", lambda: preferences)
     coder = create_coder(tmp_path)
-    assert sum(isinstance(c, CacheBustReporting) for c in coder.capabilities) == 1
+    assert sum(isinstance(c, CacheBustReporting) for c in coder.capabilities) == count
     children = next(c for c in coder.capabilities if isinstance(c, SubAgents))
-    assert sum(isinstance(c, CacheBustReporting) for c in children.shared_capabilities) == 1
+    assert sum(isinstance(c, CacheBustReporting) for c in children.shared_capabilities) == count
 
 
 def test_delegated_warning_reaches_parent_without_child_prose():
@@ -313,7 +319,7 @@ def test_warning_survives_saved_session_reopen_and_redraw(tmp_path):
         for _ in range(2):
             text = replay_text(app.transcript)
             assert text.count("! Prompt cache miss") == 1
-            assert "8000" in text
+            assert "8,000" in text
     finally:
         reopened.close()
 
