@@ -100,7 +100,7 @@ def delegating_parent(finish: str = "Done"):
         yield {
             0: DeltaToolCall(
                 name="delegate_task",
-                json_args=json.dumps({"agent_name": "explorer", "task": "Look"}),
+                json_args=json.dumps({"agent_name": "worker", "task": "Look"}),
             )
         }
 

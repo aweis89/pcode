@@ -17,18 +17,27 @@ workspace-relative paths, including `../` paths for external results. Protected
 patterns such as `.git/*`, `.env`, `.env.*`, `*.pem`,
 `*.key`, and `**/secrets*` remain read-only through file tools at any depth.
 
-The explorer subagent has read-only file tools plus the same unrestricted shell
-capability as the parent, for inspection, Git queries, and safe tests. Its no-edit
-rule is an instruction, not an enforced permission boundary. Shell commands can
-read or modify anything the OS allows, including files protected by file tools.
-Repository instruction discovery remains scoped to the selected workspace and
-its configured ancestors, not every external path the tools can access.
+The built-in `worker` sub-agent is general-purpose: it can inspect, edit files,
+run commands and tests, and use the same extension tools, native/local web tools,
+and currently enabled MCP servers as the main agent. It inherits the repository
+instructions, file protections, and extension guardrails, not a separate read-only
+policy. Shell commands can read or modify anything the OS allows, including files
+protected by file tools. Repository instruction discovery remains scoped to the
+selected workspace and its configured ancestors, not every external path the
+tools can access.
+
+Use `delegate_task` with `agent_name="worker"` and a self-contained task. Workers
+share workspace files, so give concurrent workers non-overlapping edits. Each has
+fresh conversation context and its own shell and plan; the parent's conversation
+is not copied. Recursive delegation is disabled. Each task retains a separate
+120-request budget and a 15-minute timeout. Specialized extension delegates keep
+their own tool configuration rather than automatically gaining the worker's tools.
 
 Harness is pinned to upstream commit
 [`12bce878da99bca61a5d8d798bff0a3bc93bd153`](https://github.com/pydantic/pydantic-ai-harness/commit/12bce878da99bca61a5d8d798bff0a3bc93bd153),
 which is newer than the 0.31.0 release. The pin is a direct dependency, so both
 `uv sync` and `make install` use it. Coder supplies `read_file`, `write_file`,
-`edit_file`, `list_files`, `grep`, and `shell`; pcode adds planning, the explorer,
+`edit_file`, `list_files`, `grep`, and `shell`; pcode adds planning, the worker,
 and optional web search. `list_files` and `grep` use the bundled ripgrep and
 respect ignore rules. Edits support either one replacement pair or a
 `replacements` array, validated before a single write.
@@ -60,7 +69,7 @@ Native tools are billed by the provider per search; the Exa key is read by the
 Exa client and never passed to the model. Search returns up to five results;
 page retrieval returns up to 10,000 characters. Queries, URLs, and returned
 content go to whichever backend is in use, reach the model, and can be saved in
-session history. The explorer sub-agent receives no web tools.
+session history. The worker inherits the same web policy and tools.
 
 ```sh
 pcode config set web_search local   # Never advertise native tools to the model

@@ -199,7 +199,7 @@ class ExtensionAPI:
         self._capabilities.append(capability)
 
     def subagent(self, agent, **options) -> None:
-        """Offer `agent` to the model through `delegate_task`, beside the explorer.
+        """Offer `agent` to the model through `delegate_task`, beside the worker.
 
         `agent` is a Pydantic AI `Agent` with a `name` and `description`; leave
         its model unset to run on the session's model. `options` are the
@@ -208,7 +208,7 @@ class ExtensionAPI:
         A delegate without `usage_limits` shares the parent run's usage counter
         under the library's default 50-request cap, so a long session trips it
         mid-delegation and `UsageLimitExceeded` aborts the whole turn instead of
-        steering the parent. Default to the explorer's own budget; pass
+        steering the parent. Default to the worker's own budget; pass
         `usage_limits` explicitly to override.
         """
         from pydantic_ai.usage import UsageLimits

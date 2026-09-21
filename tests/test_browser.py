@@ -425,7 +425,7 @@ def test_extension_closers_run_on_exit():
 
 
 def test_subagent_reaches_delegate_task(tmp_path, monkeypatch):
-    """The generic plumbing: any extension can add a delegate beside the explorer."""
+    """The generic plumbing: any extension can add a delegate beside the worker."""
     from pydantic_ai import Agent
 
     from pcode.ext import ExtensionAPI

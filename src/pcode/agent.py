@@ -4,6 +4,9 @@ import os
 import shutil
 import sys
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from copy import copy
 from dataclasses import fields, replace
 from pathlib import Path
 
@@ -12,6 +15,7 @@ from pydantic_ai.capabilities import CombinedCapability
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai_codex import OpenAICodexProvider
+from pydantic_ai.toolsets import CombinedToolset
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
@@ -35,7 +39,6 @@ from pcode.planning import IdentifiedPlanning
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.repo_context import create_repo_context
 from pcode.tool_output_limits import create_tool_output_limits
-from pcode.workspace_filesystem import WorkspaceFileSystem
 
 # Generous enough for a real investigation, small enough that a child stuck in a
 # loop is stopped within a turn rather than after a session's worth of requests.
@@ -44,7 +47,45 @@ from pcode.workspace_filesystem import WorkspaceFileSystem
 # silently gets the library's 50-request default, which a busy session has
 # already spent. `pcode.ext.subagent` applies this to extension delegates too.
 SUBAGENT_REQUEST_LIMIT = 120
-EXPLORER_TIMEOUT_SECONDS = 900
+SUBAGENT_TIMEOUT_SECONDS = 900
+
+AGENT_INSTRUCTIONS = (
+    "Responses are displayed in a terminal with Markdown rendering "
+    "and syntax highlighting. "
+    "Use fenced code blocks with a language tag for multiline code or shell examples, "
+    "and inline backticks for identifiers and short commands. Close all code fences. "
+    "Write ordinary prose outside code blocks. "
+    # GPT-6 tends to edit through shell commands, bypassing captured edit diffs.
+    "Prefer edit_file and write_file for file changes over shell tools. "
+    # The model is the intended extension author, so it needs to know the
+    # mechanism exists without the reference text sitting in every prompt.
+    "pcode itself is extensible with small Python files (new slash commands, "
+    "tools, guardrails on tool calls, extra instructions). When asked to change "
+    f"how pcode behaves, first read {EXTENSION_GUIDE} and follow it."
+)
+
+
+_worker_toolsets: ContextVar[Sequence] = ContextVar("worker_toolsets", default=())
+
+
+def worker_runtime_tools(ctx):
+    return CombinedToolset(list(_worker_toolsets.get()))
+
+
+@asynccontextmanager
+async def worker_toolsets(toolsets: Sequence):
+    """Give the built-in worker the same enabled runtime toolsets as its parent.
+
+    Harness's inherit_tools covers constructor toolsets, not per-run MCP tools,
+    and would also broaden specialized extension delegates. Context-local agent
+    bindings keep this scoped to the worker and to this turn, including errors
+    and cancellation; no stale MCP connection is retained after disable/reload.
+    """
+    token = _worker_toolsets.set(tuple(toolsets))
+    try:
+        yield
+    finally:
+        _worker_toolsets.reset(token)
 
 
 def tool_retries() -> dict[str, int]:
@@ -61,11 +102,13 @@ def tool_retries() -> dict[str, int]:
     return {"tools": int(configured)}
 
 
-def create_coder(workspace: Path, subagents: Sequence = ()) -> CombinedCapability:
+def create_coder(
+    workspace: Path, subagents: Sequence = (), extensions: Sequence = ()
+) -> CombinedCapability:
     """Compose Harness's Coder with pcode's repository context and planning.
 
     `subagents` are extension-contributed Harness `SubAgent` entries, listed
-    beside the explorer under the one `delegate_task` tool.
+    beside the worker under the one `delegate_task` tool.
     """
     workspace = workspace.resolve()
     # uv tool entry points do not activate their environment's bin directory.
@@ -114,42 +157,55 @@ def create_coder(workspace: Path, subagents: Sequence = ()) -> CombinedCapabilit
             # managed directory, which pollutes command output the agent parses
             # (e.g. `... | jq`). An empty log format silences it.
             capability.env = {**(capability.env or os.environ), "DIRENV_LOG_FORMAT": ""}
-    parent_shell = next(c for c in coder.capabilities if isinstance(c, Shell))
-    parent_files = next(c for c in coder.capabilities if isinstance(c, FileSystem))
-    explorer = Agent(
-        name="explorer",
+    # Compose the worker from the same capabilities rather than maintaining a
+    # second tool/policy list. Per-run capability state is still managed upstream.
+    # These are supplied by SubAgents.shared_capabilities instead (also for
+    # extension delegates); delegation itself is intentionally parent-only.
+    shared_types = (
+        ToolOutputLimits,
+        MeridianSessionIdentity,
+        ModelOutputLimits,
+        CacheBustReporting,
+    )
+    worker_capabilities = [
+        copy(capability)
+        for capability in coder.capabilities
+        if not isinstance(capability, (*shared_types, ClearToolResults, DelegationReporting))
+    ]
+    if code_mode := create_code_mode():
+        coder.capabilities.append(code_mode)
+        worker_capabilities.append(copy(code_mode))
+    worker = Agent(
+        name="worker",
         retries=tool_retries(),
         description=(
-            "Explore files anywhere on the host and use shell commands for inspection "
-            "and tests, without modifying the user's files or repository state"
+            "Complete a self-contained task using the main agent's tools and permissions, "
+            "including file edits, shell commands, tests, web research, and enabled MCP tools"
         ),
-        instructions=(
-            "You are an explorer. Do not edit the user's files or modify repository state. "
-            "You have read-only file tools and shell tools for inspection, Git queries, "
-            "and safe tests. Do not use shell commands, scripts, redirects, or background "
-            "processes to bypass the no-edit instruction. Avoid commands with destructive "
-            "or persistent side effects; tests may create disposable test artifacts. "
-            "Shell access is not sandboxed: this no-edit rule is an instruction, not an "
-            "enforced permission boundary. Stop any background commands you start."
+        instructions=AGENT_INSTRUCTIONS
+        + (
+            " You are a general-purpose worker. Complete only the delegated task and report "
+            "your changes, verification, and remaining limitations. You inherit the main "
+            "agent's instructions, tools, and permission checks, but not its conversation. "
+            "You share its workspace: coordinate edits with the parent. Your shell and "
+            "plan are independent. You cannot delegate further. Stop background "
+            "commands you no longer need."
         ),
-        capabilities=[
-            replace(WorkspaceFileSystem.from_filesystem(parent_files), read_only=True),
-            replace(parent_shell),
-            create_repo_context(workspace),
-        ],
+        capabilities=[*worker_capabilities, *extensions],
+        toolsets=[worker_runtime_tools],
     )
     coder.capabilities.append(
         SubAgents(
             agents=[
                 SubAgent(
-                    explorer,
+                    worker,
                     # An unattended child is the runaway worth bounding: its budget
                     # is its own, so exhausting it steers the parent with an
                     # observation instead of aborting the turn. Child usage is
                     # then isolated too, and rejoins session totals through
                     # `DelegationEndEvent.usage`.
                     usage_limits=UsageLimits(request_limit=SUBAGENT_REQUEST_LIMIT),
-                    timeout_seconds=EXPLORER_TIMEOUT_SECONDS,
+                    timeout_seconds=SUBAGENT_TIMEOUT_SECONDS,
                 ),
                 *subagents,
             ],
@@ -164,10 +220,6 @@ def create_coder(workspace: Path, subagents: Sequence = ()) -> CombinedCapabilit
             ],
         )
     )
-    # Sandboxed batching is opt-in; CodeMode orders itself outermost, so it wraps
-    # whatever toolset the capabilities above compose.
-    if code_mode := create_code_mode():
-        coder.capabilities.append(code_mode)
     # Web search and fetch come from the bundled `web_research` extension, so a
     # user file of the same name can replace them.
     # Recompose so instruction sources track replaced/added capabilities too.
@@ -238,19 +290,6 @@ def create_agent(
         model_settings=model_settings(model),
         name="pcode",
         retries=tool_retries(),
-        instructions=(
-            "Responses are displayed in a terminal with Markdown rendering "
-            "and syntax highlighting. "
-            "Use fenced code blocks with a language tag for multiline code or shell examples, "
-            "and inline backticks for identifiers and short commands. Close all code fences. "
-            "Write ordinary prose outside code blocks. "
-            # GPT-6 tends to edit through shell commands, bypassing captured edit diffs.
-            "Prefer edit_file and write_file for file changes over shell tools. "
-            # The model is the intended extension author, so it needs to know the
-            # mechanism exists without the reference text sitting in every prompt.
-            "pcode itself is extensible with small Python files (new slash commands, "
-            "tools, guardrails on tool calls, extra instructions). When asked to change "
-            f"how pcode behaves, first read {EXTENSION_GUIDE} and follow it."
-        ),
-        capabilities=[create_coder(workspace, subagents), *extensions],
+        instructions=AGENT_INSTRUCTIONS,
+        capabilities=[create_coder(workspace, subagents, extensions), *extensions],
     )
