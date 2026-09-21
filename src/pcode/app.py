@@ -155,6 +155,10 @@ class PreviewApp:
         # A skill command is a prompt in disguise; it leaves the command path too.
         self.skill_requested: str | None = None
         self.mcp_enable_requested: str | None = None
+        # Servers marked enabled in mcp.json, enabled without a browser after a
+        # conversation starts (startup, /new, resume).
+        self.mcp_defaults_requested = False
+        self.mcp_logout_requested: str | None = None
         self.mcp_enabling: str | None = None
         # A slow command (git work, for example) handed off so the terminal can
         # show a labelled system row while it runs off the event loop.
@@ -226,7 +230,7 @@ class PreviewApp:
             ),
             Command(
                 "/mcp",
-                "Manage MCP servers: list / enable NAME / disable NAME",
+                "Manage MCP servers: list / enable NAME / disable NAME / logout NAME",
                 self.mcp,
                 ("list", "enable", "disable"),
                 free_arguments=True,
@@ -1331,10 +1335,16 @@ class PreviewApp:
             names = configured_servers()
         except ValueError:
             names = {}
+        oauth = [
+            name
+            for name, raw in sorted(names.items())
+            if isinstance(raw, dict) and raw.get("auth") == "oauth"
+        ]
         return (
             "list",
             *(f"enable {name}" for name in sorted(names)),
             *(f"disable {name}" for name in sorted(enabled)),
+            *(f"logout {name}" for name in oauth),
         )
 
     def mcp(self, argument: str) -> None:
@@ -1352,13 +1362,21 @@ class PreviewApp:
                 names = {}
             for name in sorted(names.keys() | enabled.keys()):
                 status = "enabled" if name in enabled else "off"
+                raw = names.get(name)
+                if isinstance(raw, dict) and raw.get("enabled") is True:
+                    status += " (default on)"
                 self.transcript.note(f"{name}: {status}")
             if not names and not enabled:
                 self.transcript.note("No MCP servers configured. Add an mcpServers object here.")
-            self.transcript.note("MCP defaults to off. Use /mcp enable NAME or /mcp disable NAME.")
+            self.transcript.note(
+                'MCP defaults to off unless a server sets "enabled": true. '
+                "Use /mcp enable NAME, /mcp disable NAME, or /mcp logout NAME."
+            )
             return
-        if len(parts) != 2 or parts[0] not in {"enable", "disable"}:
-            raise ValueError("Usage: /mcp list | /mcp enable NAME | /mcp disable NAME")
+        if len(parts) != 2 or parts[0] not in {"enable", "disable", "logout"}:
+            raise ValueError(
+                "Usage: /mcp list | /mcp enable NAME | /mcp disable NAME | /mcp logout NAME"
+            )
         # Slash commands precede queued (not yet running) prompts. In particular,
         # an enable + prompt submitted in one input batch must authenticate first.
         if self.mcp_enabling or (
@@ -1374,6 +1392,8 @@ class PreviewApp:
                 self.transcript.note(f"MCP '{name}' is already enabled.")
             else:
                 self.mcp_enable_requested = name
+        elif action == "logout":
+            self.mcp_logout_requested = name
         else:
             state.disable(name)
             self.transcript.note(f"MCP '{name}' disabled. Earlier results remain in history.")
@@ -1384,7 +1404,31 @@ class PreviewApp:
         self.transcript.note(
             f"MCP '{name}' enabled for this conversation. "
             "Its tools can perform actions with the server's permissions. "
-            "OAuth tokens are kept in memory only."
+            "OAuth sign-ins are saved for future sessions; /mcp logout NAME forgets one."
+        )
+
+    async def enable_mcp_defaults(self, names: list[str]) -> None:
+        """Enable `"enabled": true` servers, using saved sign-ins but never a browser."""
+        from pcode.live import error_message
+        from pcode.mcp_oauth import SignInRequired
+
+        for name in names:
+            try:
+                await self.runtime.mcp.enable(name, interactive=False)
+            except SignInRequired:
+                self.transcript.warning(
+                    f"MCP '{name}' needs a browser sign-in; run /mcp enable {name}."
+                )
+            except Exception as error:
+                self.transcript.error(f"MCP '{name}' remains off: {error_message(error)}")
+            else:
+                self.transcript.note(f"MCP '{name}' enabled (default on).")
+
+    async def logout_mcp(self, name: str) -> None:
+        await self.runtime.mcp.forget(name)
+        self.transcript.note(
+            f"MCP '{name}' signed out and disabled. The next /mcp enable {name} opens a "
+            "browser. This does not revoke the server-side grant."
         )
 
     def new(self, argument: str) -> None:
@@ -1394,10 +1438,12 @@ class PreviewApp:
         self.transcript.clear()
         self.transcript.print(Rule("New conversation", style="pcode.muted"))
         self.transcript.note(
-            "Context reset; MCP servers are off. Screen cleared; input history is unchanged."
+            "Context reset; MCP servers are off unless marked enabled. Screen cleared; "
+            "input history is unchanged."
         )
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")
+        self.mcp_defaults_requested = True
 
     def select_session(self, argument: str) -> None:
         self.session_requested = True
@@ -1437,6 +1483,7 @@ class PreviewApp:
         self.activity.prompt_kind = "user"
         self.activity.prompt_detail = ""
         self.replay()
+        self.mcp_defaults_requested = True
 
     def select_tree(self, argument: str) -> None:
         if self.activity.busy or self.activity.queued:
@@ -1954,6 +2001,7 @@ class PreviewApp:
                 self.activity.busy = False
             else:
                 session.app.create_background_task(refresh_metadata())
+                start_mcp_defaults()
             finally:
                 self._startup_pending = False
                 ready.set()
@@ -2073,16 +2121,13 @@ class PreviewApp:
                 # the pending request rather than clearing the user's draft.
                 self.activity.busy = True
 
-        def start_mcp_enable(name):
+        def start_mcp_task(name, coroutine, *, status, cancelled):
+            """Run MCP work outside the model loop; queued prompts wait for it."""
             nonlocal mcp_task
             mcp_idle.clear()
             self.mcp_enabling = name
             self.activity.busy = True
-            self.activity.status = f"Enabling MCP '{name}' — complete browser sign-in if prompted…"
-            self.transcript.note(
-                f"Enabling MCP '{name}'. OAuth sign-in happens now if needed; "
-                "Ctrl+C cancels. No model request is made."
-            )
+            self.activity.status = status
 
             def finished(task):
                 nonlocal mcp_task
@@ -2091,7 +2136,7 @@ class PreviewApp:
                     task.result()
                     success = True
                 except asyncio.CancelledError:
-                    self.transcript.warning(f"MCP '{name}' sign-in cancelled; server remains off.")
+                    self.transcript.warning(cancelled)
                 except Exception as error:
                     from pcode.live import error_message
 
@@ -2110,9 +2155,49 @@ class PreviewApp:
                     mcp_idle.set()
                     session.app.invalidate()
 
-            mcp_task = asyncio.create_task(self.enable_mcp(name))
+            mcp_task = asyncio.create_task(coroutine)
             # A done callback also handles cancellation before the coroutine starts.
             mcp_task.add_done_callback(finished)
+
+        def start_mcp_enable(name):
+            self.transcript.note(
+                f"Enabling MCP '{name}'. OAuth sign-in happens now if needed; "
+                "Ctrl+C cancels. No model request is made."
+            )
+            start_mcp_task(
+                name,
+                self.enable_mcp(name),
+                status=f"Enabling MCP '{name}' — complete browser sign-in if prompted…",
+                cancelled=f"MCP '{name}' sign-in cancelled; server remains off.",
+            )
+
+        def start_mcp_defaults():
+            from pcode.mcp import default_servers
+
+            self.mcp_defaults_requested = False
+            if getattr(self.runtime, "mcp", None) is None:
+                return
+            try:
+                names = default_servers()
+            except ValueError as error:
+                self.transcript.error(str(error))
+                return
+            if not names:
+                return
+            start_mcp_task(
+                "defaults",
+                self.enable_mcp_defaults(names),
+                status="Enabling default MCP servers…",
+                cancelled="Default MCP enable cancelled; remaining servers stay off.",
+            )
+
+        def start_mcp_logout(name):
+            start_mcp_task(
+                name,
+                self.logout_mcp(name),
+                status=f"Signing out of MCP '{name}'…",
+                cancelled=f"MCP '{name}' sign-out cancelled.",
+            )
 
         def start_compact(focus):
             nonlocal compact_task
@@ -2279,6 +2364,12 @@ class PreviewApp:
                             name = self.mcp_enable_requested
                             self.mcp_enable_requested = None
                             start_mcp_enable(name)
+                        if self.mcp_logout_requested is not None:
+                            name = self.mcp_logout_requested
+                            self.mcp_logout_requested = None
+                            start_mcp_logout(name)
+                        if self.mcp_defaults_requested:
+                            start_mcp_defaults()
                         if not self.running:
                             cancel()
                             active = [

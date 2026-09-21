@@ -456,6 +456,33 @@ def native_result_detail(name: str, args: dict, content: object, outcome: str) -
     return where, False
 
 
+def native_result_projection(content: object) -> object:
+    """What `/tools` shows for a provider-executed search: the hits, minus the ciphertext.
+
+    Anthropic's native web search returns each hit with an `encrypted_content`
+    blob that only Anthropic can decrypt (it is replayed to the model on later
+    requests, never readable client-side). Listing title, URL and age is the
+    whole readable payload; the blob would otherwise bury it in base64.
+    """
+    if not isinstance(content, list) or not all(
+        isinstance(item, dict) and item.get("type") == "web_search_result" for item in content
+    ):
+        return content
+    if not content:
+        return "No results."
+    lines = [
+        f"{len(content)} result{'s' if len(content) != 1 else ''} "
+        "(page text is encrypted for the provider; only the model can read it)"
+    ]
+    for item in content:
+        lines.append("")
+        lines.append(str(item.get("title") or "(untitled)"))
+        lines.append(str(item.get("url") or "(no url)"))
+        if item.get("page_age"):
+            lines.append(f"Age: {item['page_age']}")
+    return "\n".join(lines)
+
+
 # Shell-facing tools whose captured output can be mirrored into scrollback.
 COMMAND_TOOLS = frozenset(
     {"shell", "run_command", "start_command", "check_command", "stop_command"}
