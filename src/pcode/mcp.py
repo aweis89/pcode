@@ -177,6 +177,25 @@ def _find_cause(error: BaseException, kind: type[BaseException]) -> BaseExceptio
     return None
 
 
+def error_message(error: BaseException) -> str:
+    """Show redacted MCP causes, not model/provider troubleshooting advice."""
+    from pcode.diagnostics import error_details
+
+    detail = error_details(error)
+    messages = []
+    while detail:
+        message = " ".join(str(detail.get("message", "")).split())
+        summary = detail["type"] + (f": {message}" if message else "")
+        if summary not in messages:
+            messages.append(summary)
+        detail = detail.get("cause", detail.get("context", {}))
+    return (
+        "MCP connection or sign-in failed. "
+        + " Caused by: ".join(messages)[:2000]
+        + " Check the MCP server configuration, authentication, and connectivity."
+    )
+
+
 class MCPState:
     """Never persisted. Disabled servers have no toolsets, connections, or prompt cost."""
 
