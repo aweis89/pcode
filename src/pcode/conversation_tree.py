@@ -3,6 +3,8 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
 
+from pcode.links import Link, extract_links
+
 
 @dataclass
 class TurnNode:
@@ -17,6 +19,7 @@ class TurnNode:
     kind: str = "turn"
     # Unsaved turns and durable compaction checkpoints carry message history.
     history: list | None = None
+    tool_links: dict[str, Link] = field(default_factory=dict)
 
 
 class ConversationTree:
@@ -73,6 +76,15 @@ class ConversationTree:
             node = self.nodes[self.recording]
             if kind == "Message":
                 node.response = record["markdown"]
+            elif kind in {"ToolStarted", "ToolSummary"}:
+                # Keep only URLs, not another copy of potentially large payloads.
+                # The same journal events rebuild these on session resume.
+                source = record.get("name") or "tool"
+                for key in ("arguments", "result", "command", "detail", "error"):
+                    text = record.get(key)
+                    if isinstance(text, str):
+                        for link in extract_links(text, source):
+                            node.tool_links.setdefault(link.url, link)
             elif kind == "PlanUpdated":
                 node.plan = deepcopy(record["items"])
             elif kind in {"turn_completed", "turn_failed", "turn_cancelled"}:

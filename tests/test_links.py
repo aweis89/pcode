@@ -44,6 +44,56 @@ def test_conversation_links_follow_active_path_and_dedupe():
     ]
 
 
+def test_conversation_links_include_tool_payloads_on_active_path():
+    records = [
+        {"kind": "turn_started", "run_id": "a", "prompt": "https://prompt.test"},
+        {
+            "kind": "ToolStarted",
+            "name": "get_page",
+            "arguments": '{"url": "https://args.test/page?a=1&b=2"}',
+        },
+        {
+            "kind": "ToolSummary",
+            "name": "get_page",
+            "result": "[Docs](https://result.test) and https://prompt.test",
+        },
+        {"kind": "Message", "markdown": "https://result.test and https://reply.test"},
+        {"kind": "turn_completed"},
+        {"kind": "turn_started", "run_id": "b", "prompt": "fork"},
+        {"kind": "ToolStarted", "name": "shell", "arguments": None},
+        {
+            "kind": "ToolSummary",
+            "name": "shell",
+            "result": None,
+            "detail": "https://legacy.test",
+            "error": "failed: https://error.test",
+        },
+        {"kind": "turn_failed"},
+    ]
+    tree = ConversationTree()
+    for record in records:
+        tree.consume(record)
+    assert conversation_links(tree) == [
+        Link("https://prompt.test", "", "user"),
+        Link("https://args.test/page?a=1&b=2", "", "get_page"),
+        Link("https://result.test", "Docs", "get_page"),
+        Link("https://reply.test", "", "assistant"),
+        Link("https://legacy.test", "", "shell"),
+        Link("https://error.test", "", "shell"),
+    ]
+    tree.consume({"kind": "tree_selected", "node_id": "a"})
+    assert len(conversation_links(tree)) == 4
+    tree.consume({"kind": "tree_selected", "node_id": None})
+    assert conversation_links(tree) == []
+
+
+def test_tool_argument_links_are_available_before_result():
+    tree = ConversationTree()
+    tree.consume({"kind": "turn_started", "run_id": "a", "prompt": "fetch"})
+    tree.consume({"kind": "ToolStarted", "name": "shell", "command": "curl https://running.test"})
+    assert conversation_links(tree) == [Link("https://running.test", "", "shell")]
+
+
 def test_link_rows_show_source_and_label():
     rows = link_rows([Link("https://a.test", "A", "user"), Link("https://b.test")])
     assert rows == [

@@ -18,7 +18,7 @@ _TRAILING = ".,;:!?'\""
 class Link:
     url: str
     label: str = ""
-    source: str = ""  # "user" or "assistant"
+    source: str = ""  # "user", "assistant", or a tool name
 
 
 def _strip(url: str) -> str:
@@ -43,14 +43,18 @@ def extract_links(text: str, source: str = "") -> list[Link]:
 
 
 def conversation_links(tree) -> list[Link]:
-    """Links from every prompt and response on the active path, oldest first."""
+    """Links from prompts, tools, and responses on the active path, oldest first."""
     found: dict[str, Link] = {}
     for identity in tree.path(tree.active):
         node = tree.nodes[identity]
         if node.kind != "turn":
             continue
-        for text, source in ((node.prompt, "user"), (node.response, "assistant")):
-            for link in extract_links(text, source):
+        for links in (
+            extract_links(node.prompt, "user"),
+            node.tool_links.values(),
+            extract_links(node.response, "assistant"),
+        ):
+            for link in links:
                 found.setdefault(link.url, link)
     return list(found.values())
 
