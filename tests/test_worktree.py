@@ -45,6 +45,54 @@ def commit(path: Path, name: str, text: str = "x\n") -> None:
     git(path, "commit", "-q", "-m", f"add {name}")
 
 
+@pytest.mark.parametrize("location", ["main", "linked", "external", "subdir"])
+def test_session_browser_groups_repository_worktrees(repo, tmp_path, location):
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from pcode.session_ui import SessionBrowser
+    from pcode.sessions import list_sessions
+
+    linked = worktree.create(repo, "feature").path
+    external = tmp_path / "external"
+    git(repo, "worktree", "add", "-b", "external", str(external))
+    subdir = linked / "nested"
+    subdir.mkdir()
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    git(unrelated, "init", "-q")
+    missing = tmp_path / "missing"
+    paths = {"main": repo, "linked": linked, "external": external, "subdir": subdir}
+    root = tmp_path / "sessions"
+    ids = set()
+    for path in [*paths.values(), unrelated, missing]:
+        saved = SavedSession.create("test:local", path, root)
+        saved.append("turn_started", prompt="Shared search term")
+        saved.close()
+        if path in paths.values():
+            ids.add(saved.info.id)
+    records = list_sessions(root)
+    with (
+        create_pipe_input() as pipe,
+        patch("pcode.worktree.main_checkout", wraps=worktree.main_checkout) as resolve,
+    ):
+        browser = SessionBrowser(
+            records, root=root, workspace=paths[location], input=pipe, output=DummyOutput()
+        )
+        assert browser.workspace == repo
+        assert [info.id for info in browser.visible] == [r.id for r in records if r.id in ids]
+        calls = resolve.call_count
+        browser.query.text = "shared"
+        assert {info.id for info in browser.visible} == ids
+        browser.everywhere = True
+        browser.refresh()
+        assert browser.visible == records
+        browser.everywhere = False
+        browser.refresh()
+        assert {info.id for info in browser.visible} == ids
+        assert resolve.call_count == calls  # No git processes on search or redraw.
+
+
 def test_create_describes_and_lists(repo):
     created = worktree.create(repo, "feature")
     assert created.path == repo / ".worktrees" / "feature"

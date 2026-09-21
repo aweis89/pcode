@@ -54,6 +54,21 @@ def main_checkout(path: Path) -> Path | None:
     return Path(first.removeprefix("worktree ")).resolve()
 
 
+def repo_scope(path: Path) -> Path:
+    """The identity to group a workspace by: its main checkout, or itself.
+
+    Linked worktrees and the mainline checkout share a main checkout, so
+    comparing this value (rather than the raw workspace) groups sessions from
+    the same repository regardless of which worktree created them.
+    """
+    path = path.resolve()
+    try:
+        main = main_checkout(path)
+    except OSError:
+        main = None  # Git may not be installed; non-Git use still works.
+    return main or path
+
+
 def is_linked(path: Path) -> bool:
     """True inside a secondary worktree (created by `git worktree add`)."""
     main = main_checkout(path)

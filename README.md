@@ -872,11 +872,14 @@ the newest session overall. It prints recent transcript blocks and waits for you
 next message; it does not automatically re-run tools.
 A different explicit `-m` or `-C` is rejected on resume. Only one process may open
 a session for writing. `/resume` opens a full-screen browser of saved conversations
-in the current workspace (newest first, labeled by their first prompt) with every
+in the current repository, including its linked worktrees (newest first, labeled
+by their first prompt), or the exact workspace outside Git, with every
 prompt and a truncated, rendered response for the selected session alongside. `/`
 searches prompts across sessions (space-separated words are all required) and ↑/↓
 move the selection while you type; `r` includes responses, `w` includes every
-workspace. Enter resumes the selected session in place, Esc cancels. Resuming restores the saved model, history, and plan.
+workspace. Tab focuses the content pane, where arrows scroll by line,
+PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page. Enter resumes the selected
+session in place, Esc cancels. Resuming restores the saved model, history, and plan.
 
 The bundled `session_history` extension lets the model answer questions such as
 “What did we decide about editor flicker?” without resuming another session.
@@ -1277,10 +1280,12 @@ terminal output is buffered until it closes. Inspection never reruns a tool.
 - In the call list, **f** toggles failures, **t** cycles tool-name filters, and
   **/** focuses search. Search matches tool names/statuses and command/summary
   previews, not the complete output payload. Ctrl+F focuses search from any pane.
-- In details, use arrows, PageUp/PageDown, or Ctrl+Home/Ctrl+End to scroll.
+- In details, use arrows to scroll by line, PageUp/PageDown by page, or Ctrl+U/Ctrl+D
+  by half a page. The session browser shares these content-pane controls.
 - Mouse clicks and wheel scrolling work in the popups. In tmux, enable mouse
   forwarding with `tmux set -g mouse on` (or `set -g mouse on` in `~/.tmux.conf`).
-- Escape, Ctrl+C, or Ctrl+D closes only the inspector and restores the editor draft.
+- Escape or Ctrl+C closes only the inspector and restores the editor draft.
+  Ctrl+D also closes it when the call list or search field has focus.
 - Wide terminals show calls and details side by side; narrow terminals stack them.
 
 Details include the call/run IDs, timestamp and duration when captured, structured
