@@ -2,24 +2,6 @@
 
 ## Workflow
 
-Several agents edit this repo concurrently. Work in a worktree, never the
-mainline checkout, where another session's `git checkout`/`stash`/`reset` can
-eat your uncommitted edits. pcode sessions started with `--worktree` (or
-`worktree on`) already are one: the workspace *is* `.worktrees/pcode-<name>`, so
-just edit, `make test`, and commit. Merging back happens when the session
-exits (or the user runs `/worktree finish`); the model does not merge. From
-another agent, or by hand:
-
-```bash
-make worktree NAME=fix-thing          # .worktrees/fix-thing, branch fix-thing, own .venv
-cd .worktrees/fix-thing               # edit, make test, commit here
-make worktree-merge NAME=fix-thing    # merge mainline into the branch, then ff mainline
-make worktree-remove NAME=fix-thing   # drop the worktree (branch is kept)
-```
-
-- The only failure needing coordination is the final `--ff-only` refusing because someone's uncommitted mainline edits touch your files: have them commit or stash, then re-run.
-- Two branches that are each green can merge without a conflict and still leave mainline broken: one renamed `--demo`'s dest to `theme_preview` while the other added a read of `args.demo`, and every interactive launch died on startup. Git cannot see that; run `make test` on the merged tree (in the worktree, after `worktree-merge` folds mainline in) before trusting the merge.
-- `.pcode/worktree-setup` is what gives each worktree its own `.venv`. Never share one: the editable install records an absolute `src/` path, so a shared env silently imports the *other* checkout's source.
 - Always commit after changes. The global `pcode` is an editable install pointing at the mainline `src/`, so a merged change is live on the next start with no reinstall. Only `pyproject.toml`/`uv.lock` changes need `make install`, and the `.githooks/post-merge` hook runs it on the mainline when a merge touches them (needs `git config core.hooksPath .githooks`). Never run `make install` from a worktree: it repoints the global `pcode` at that branch.
 - Before touching terminal or agent integrations, read [docs/dependencies.md](docs/dependencies.md).
 - User-facing behavior is documented under `docs/` (one page per topic, listed in `zensical.toml`), not the README, which is only a landing page. `make docs` fails on a broken page or anchor link, so run it after moving or renaming a heading.
