@@ -29,6 +29,8 @@ class SessionInfo(BaseModel):
     id: str
     model: str
     workspace: str
+    # Preserve project scope even after a linked worktree has been removed.
+    project: str | None = None
     created: str
     updated: str
     status: str = "new"
@@ -124,7 +126,21 @@ _TURN_KINDS = (
 )
 
 
-def _turn_records(info: SessionInfo, root: Path | None):
+@dataclass
+class SessionReadBudget:
+    """A shared byte budget for readers that can report partial coverage."""
+
+    remaining: int
+    exhausted: bool = False
+
+
+def session_records(
+    info: SessionInfo,
+    root: Path | None = None,
+    *,
+    kinds: tuple[str, ...] = _TURN_KINDS,
+    budget: SessionReadBudget | None = None,
+):
     """Yield turn-level records without opening or locking the session.
 
     Raises ``OSError`` when the transcript cannot be read. Transcripts are
@@ -134,16 +150,21 @@ def _turn_records(info: SessionInfo, root: Path | None):
     path = directory / "transcript.jsonl"
     if directory.is_symlink() or path.is_symlink():
         raise OSError("symlinked session")
-    markers = tuple(f'"{kind}"' for kind in _TURN_KINDS)
-    with path.open(encoding="utf-8", errors="replace") as stream:
-        for line in stream:
+    markers = tuple(f'"{kind}"'.encode() for kind in kinds)
+    with path.open("rb") as stream:
+        while line := stream.readline(budget.remaining + 1 if budget else -1):
+            if budget:
+                if len(line) > budget.remaining:
+                    budget.exhausted = True
+                    return
+                budget.remaining -= len(line)
             if not any(marker in line for marker in markers):
                 continue
             try:
-                record = json.loads(line)
+                record = json.loads(line.decode("utf-8", errors="replace"))
             except ValueError:
                 continue
-            if isinstance(record, dict) and record.get("kind") in _TURN_KINDS:
+            if isinstance(record, dict) and record.get("kind") in kinds:
                 yield record
 
 
@@ -156,7 +177,7 @@ def session_turns(info: SessionInfo, root: Path | None = None) -> list[Turn] | N
     """
     turns: list[Turn] = []
     try:
-        for record in _turn_records(info, root):
+        for record in session_records(info, root):
             kind = record["kind"]
             if kind == "turn_started":
                 prompt = record.get("prompt")
@@ -199,7 +220,7 @@ def session_turns(info: SessionInfo, root: Path | None = None) -> list[Turn] | N
 def first_prompt(info: SessionInfo, root: Path | None = None) -> str:
     """The first submitted prompt, stopping at the first record so listing stays cheap."""
     try:
-        for record in _turn_records(info, root):
+        for record in session_records(info, root):
             if record["kind"] == "turn_started" and isinstance(record.get("prompt"), str):
                 return record["prompt"]
     except OSError:
@@ -280,8 +301,12 @@ class SavedSession:
         identity = identity or str(uuid4())
         directory = root / identity
         directory.mkdir(mode=0o700)
+        from pcode.worktree import project_checkout
+
+        project = project_checkout(workspace)
         info = SessionInfo(
             id=identity,
+            project=str(project) if project else None,
             model=model,
             workspace=str(workspace.resolve()),
             created=now(),

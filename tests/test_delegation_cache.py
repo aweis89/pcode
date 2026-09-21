@@ -17,7 +17,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.subagents import SubAgents
 
-from pcode.agent import EXPLORER_REQUEST_LIMIT, create_coder
+from pcode.agent import SUBAGENT_REQUEST_LIMIT, create_coder
 from pcode.cache_settings import ANTHROPIC_CACHE_SETTINGS, ProviderCacheSettings
 
 CHILD_INPUT_TOKENS = 100
@@ -176,7 +176,7 @@ def test_runaway_child_is_stopped_without_aborting_the_turn(tmp_path):
     )
     # The parent continues from the child's evidence instead of crashing.
     assert result.output == "Done"
-    assert child_requests == EXPLORER_REQUEST_LIMIT
+    assert child_requests == SUBAGENT_REQUEST_LIMIT
     # An isolated budget keeps child requests out of the parent's usage, which is
     # why the runtime adds child tokens back from the delegation event.
     assert result.usage.requests < child_requests
