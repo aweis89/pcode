@@ -144,6 +144,10 @@ unset to run on the session's model; keyword options are Harness `SubAgent`
 fields (`usage_limits`, `timeout_seconds`, `max_calls`). Give it capabilities
 of its own; the parent's tools are not inherited.
 
+Without an explicit `usage_limits` the delegate gets its own request budget, so
+a long delegation cannot exhaust the turn. Overriding it with `None` shares the
+parent's counter, where the library's 50-request default aborts the run.
+
 ### Notices and lifecycle
 
 `pcode.ui.notify(text, level="info" | "warning" | "error")` prints a transient
