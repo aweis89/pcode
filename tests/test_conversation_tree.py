@@ -228,6 +228,43 @@ def test_tree_keyboard_and_active_default(keys, expected):
     asyncio.run(run())
 
 
+def test_tree_browser_shows_selected_branch_and_anchors_selection():
+    from pcode.tree_ui import TreeBrowser
+
+    tree = ConversationTree()
+    for identity, parent in [("a", None), ("b", "a"), ("c", "a")]:
+        tree.consume(
+            {
+                "kind": "turn_started",
+                "run_id": identity,
+                "parent_id": parent,
+                "prompt": "ask " + identity,
+            }
+        )
+        tree.consume({"kind": "Message", "markdown": "Answer " + identity})
+        tree.consume({"kind": "turn_completed"})
+    with create_pipe_input() as pipe:
+        browser = TreeBrowser(tree, input=pipe, output=DummyOutput())
+        # Opens on the active row with the active branch (a → c) shown.
+        assert browser.selected == ("c", False)
+        assert browser.list.document.cursor_position_row == 6
+        text = browser.detail.text()
+        assert "ask a" in text and "Answer c" in text and "ask b" not in text
+        # Selecting a's prompt keeps the active branch below it and scrolls to the prompt.
+        browser.list.buffer.cursor_position = browser.list.document.translate_row_col_to_index(1, 0)
+        assert browser.selected == ("a", True)
+        assert browser._branch == ("a", "c")
+        assert browser.detail._anchor == browser._anchors[("a", True)]
+        assert browser.detail.line_offset(browser.detail._anchor, 80) == 2
+        # Selecting b's response switches to the b branch.
+        browser.list.buffer.cursor_position = browser.list.document.translate_row_col_to_index(4, 0)
+        assert browser.selected == ("b", False)
+        assert browser._branch == ("a", "b")
+        assert "Answer b" in browser.detail.text() and "Answer c" not in browser.detail.text()
+        lines = browser.detail.text().splitlines()
+        assert "Answer b" in lines[browser.detail.line_offset(browser.detail._anchor, 80)]
+
+
 def test_app_navigation_and_busy_guard():
     async def run():
         runtime = AgentRuntime(Agent("test"))
