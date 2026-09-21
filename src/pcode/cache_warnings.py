@@ -72,9 +72,12 @@ class CacheBustReporting(WarnOnCacheBusts):
             self.diagnostics.records.clear()
         for warning in caught:
             if issubclass(warning.category, CacheBustWarning):
-                # Omit the Python suppression tutorial, keeping the full diagnosis
-                # (including the TTL hint). The event contains no prompt contents.
-                detail = str(warning.message).split("\n\n", 1)[0]
+                # Report measured reuse, not upstream's speculative expiry cause
+                # or an inferred number of tokens billed uncached.
+                detail = (
+                    f"request {self._state.step}: cached {response.usage.cache_read_tokens:,}"
+                    f" vs ~{prior.prefix if prior else 0:,} established tokens."
+                )
                 model = "/".join(
                     part for part in (response.provider_name, response.model_name) if part
                 )
