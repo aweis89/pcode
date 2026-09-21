@@ -173,34 +173,55 @@ def test_browser_open_fronts_the_current_page(tmp_path, fresh_state, monkeypatch
 
 
 def test_browser_tabs_lists_the_users_tabs_and_marks_ours(tmp_path, fresh_state, monkeypatch):
+    """Tabs come from Chrome's target list, never from the pages, so a hung tab cannot stall it."""
     fresh_state.enabled = True
     _, extension = browser_extension(tmp_path)
     tabs = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_tabs"]
-
-    def page(url, title):
-        async def get_title():
-            if title is None:
-                raise RuntimeError("closing")
-            return title
-
-        return SimpleNamespace(url=url, title=get_title)
-
-    mail = page("https://mail.example.com/inbox", "Inbox")
-    ours = page("about:blank", "")
-    fresh_state.session._context = SimpleNamespace(pages=[mail, page("https://x/", None), ours])
-    fresh_state.session.pages = [ours]
+    fresh_state.session.pages = [SimpleNamespace(url="about:blank")]
 
     async def nothing():
         return ""
 
+    async def list_tabs():
+        return [
+            ("Inbox", "https://mail.example.com/inbox"),
+            ("", "https://x/"),
+            ("", "about:blank"),
+        ]
+
     monkeypatch.setattr(fresh_state, "arm", nothing)
     monkeypatch.setattr(fresh_state, "ensure_chrome", nothing)
-    monkeypatch.setattr(fresh_state.session, "ensure_page", nothing)
+    monkeypatch.setattr(fresh_state, "list_tabs", list_tabs)
     assert asyncio.run(tabs.function()).splitlines() == [
         "- Inbox: https://mail.example.com/inbox",
         "- (untitled): https://x/",
         "- (untitled) (yours): about:blank",
     ]
+
+
+def test_list_tabs_asks_chromes_target_endpoint(fresh_state, monkeypatch):
+    import httpx
+
+    fresh_state.cdp_url = "ws://127.0.0.1:9333/devtools/browser/abc"
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(
+            200,
+            json=[
+                {"type": "page", "title": "Inbox", "url": "https://mail.example.com/"},
+                {"type": "service_worker", "title": "sw", "url": "https://mail.example.com/sw.js"},
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
+    assert asyncio.run(fresh_state.list_tabs()) == [("Inbox", "https://mail.example.com/")]
+    assert seen == ["http://127.0.0.1:9333/json/list"]
+    fresh_state.cdp_url = None
+    assert asyncio.run(fresh_state.list_tabs()) == []
 
 
 def test_guidance_says_logins_persist_per_mode(tmp_path, fresh_state, monkeypatch):

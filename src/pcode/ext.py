@@ -174,9 +174,19 @@ class ExtensionAPI:
         `agent` is a Pydantic AI `Agent` with a `name` and `description`; leave
         its model unset to run on the session's model. `options` are the
         Harness `SubAgent` fields (`usage_limits`, `timeout_seconds`, ...).
+
+        A delegate without `usage_limits` shares the parent run's usage counter
+        under the library's default 50-request cap, so a long session trips it
+        mid-delegation and `UsageLimitExceeded` aborts the whole turn instead of
+        steering the parent. Default to the explorer's own budget; pass
+        `usage_limits` explicitly to override.
         """
+        from pydantic_ai.usage import UsageLimits
         from pydantic_ai_harness.subagents import SubAgent
 
+        from pcode.agent import SUBAGENT_REQUEST_LIMIT
+
+        options.setdefault("usage_limits", UsageLimits(request_limit=SUBAGENT_REQUEST_LIMIT))
         self.subagents.append(SubAgent(agent, **options))
 
     def on_close(self, function: Callable[[], Awaitable[None]]):

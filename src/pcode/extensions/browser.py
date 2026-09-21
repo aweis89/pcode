@@ -89,15 +89,11 @@ def _capability(pcode, toolset):
         right URL in your own tab. Read only: act through `navigate`.
         """
         await _start(pcode)
-        await STATE.session.ensure_page()
+        mine = {page.url for page in STATE.session.pages}
         lines = []
-        for page in STATE.all_pages():
-            try:
-                title = await page.title()
-            except Exception:  # noqa: BLE001 - a tab mid-navigation or closing has no title.
-                title = ""
-            ours = " (yours)" if page in STATE.session.pages else ""
-            lines.append(f"- {title or '(untitled)'}{ours}: {page.url}")
+        for title, url in await STATE.list_tabs():
+            ours = " (yours)" if url in mine else ""
+            lines.append(f"- {title or '(untitled)'}{ours}: {url}")
         return "\n".join(lines) or "No tabs are open."
 
     async def browser_open() -> str:

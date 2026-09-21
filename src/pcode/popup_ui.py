@@ -6,15 +6,9 @@ from io import StringIO
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
-from prompt_toolkit.formatted_text.utils import fragment_list_to_text
-from prompt_toolkit.key_binding.bindings.scroll import (
-    scroll_one_line_down,
-    scroll_one_line_up,
-    scroll_page_down,
-    scroll_page_up,
-)
+from prompt_toolkit.formatted_text.utils import fragment_list_to_text, split_lines
 from prompt_toolkit.layout import HSplit, Window
-from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.controls import UIContent, UIControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.styles import Style, merge_styles
@@ -95,9 +89,9 @@ def steer_list_from_query(keys, query, listing) -> None:
 class RichPane:
     """A read-only, scrollable pane showing Rich renderables (Markdown, Text).
 
-    ``TextArea`` holds plain text only, so Rich output is rendered to ANSI at
-    the pane's real width on each layout pass and cached until the content or
-    width changes.
+    Rich output and prepared lines are cached until the content or width changes.
+    Scrolling only creates a lightweight UIContent with the current cursor row;
+    it must not rescan the entire transcript on every frame.
     """
 
     def __init__(
@@ -108,24 +102,33 @@ class RichPane:
         self.renderables: list = []
         self._version = 0
         self._cache: tuple[int, int, list] | None = None
+        self._line_cache: tuple[int, int, list] | None = None
         pane = self
 
-        class Control(FormattedTextControl):
+        class Control(UIControl):
+            def is_focusable(self):
+                return True
+
+            def preferred_width(self, max_available_width):
+                # Rich wraps to the allocated width; measuring the entire text
+                # here is both unnecessary and expensive for long transcripts.
+                return max_available_width
+
+            def preferred_height(self, width, max_available_height, wrap_lines, get_line_prefix):
+                return len(pane.lines(width))
+
             def create_content(self, width, height):
-                self.text = pane.fragments(width)
-                # preferred_width already cached the previous frame's text for
-                # this render pass; without clearing, every frame lags by one.
-                self._fragment_cache.clear()
-                return super().create_content(width, height)
+                lines = pane.lines(width)
+                return UIContent(
+                    get_line=lines.__getitem__,
+                    line_count=len(lines),
+                    show_cursor=False,
+                    cursor_position=Point(0, pane.window.vertical_scroll),
+                )
 
         # The window scrolls to keep the reported cursor visible on every render,
         # so a fixed row 0 would snap keyboard scrolling straight back to the top.
-        self.control = Control(
-            "",
-            focusable=True,
-            show_cursor=False,
-            get_cursor_position=lambda: Point(0, self.window.vertical_scroll),
-        )
+        self.control = Control()
         self.window = Window(
             self.control, wrap_lines=False, right_margins=[ScrollbarMargin(display_arrows=True)]
         )
@@ -152,6 +155,12 @@ class RichPane:
             self._cache = (*key, to_formatted_text(ANSI(rendered)))
         return self._cache[2]
 
+    def lines(self, width: int) -> list:
+        key = (self._version, width)
+        if self._line_cache is None or self._line_cache[:2] != key:
+            self._line_cache = (*key, list(split_lines(self.fragments(width))))
+        return self._line_cache[2]
+
     def text(self, width: int = 80) -> str:
         """Unstyled rendering without Rich's line padding, for tests and logs."""
         lines = fragment_list_to_text(self.fragments(width)).splitlines()
@@ -162,10 +171,30 @@ class RichPane:
 
     def bind_scrolling(self, keys) -> None:
         focused = has_focus(self.window)
-        keys.add("up", filter=focused)(scroll_one_line_up)
-        keys.add("down", filter=focused)(scroll_one_line_down)
-        keys.add("pageup", filter=focused)(scroll_page_up)
-        keys.add("pagedown", filter=focused)(scroll_page_down)
+
+        def scroll(direction: int, page: bool = False, half: bool = False):
+            def handler(event):
+                info = self.window.render_info
+                if info is None:
+                    return
+                rows = (
+                    max(1, info.window_height // 2)
+                    if half
+                    else (max(1, info.window_height - 1) if page else 1)
+                )
+                bottom = max(0, info.content_height - info.window_height)
+                self.window.vertical_scroll = max(
+                    0, min(bottom, self.window.vertical_scroll + direction * rows)
+                )
+
+            return handler
+
+        keys.add("up", filter=focused)(scroll(-1))
+        keys.add("down", filter=focused)(scroll(1))
+        keys.add("pageup", filter=focused)(scroll(-1, page=True))
+        keys.add("pagedown", filter=focused)(scroll(1, page=True))
+        keys.add("c-u", filter=focused)(scroll(-1, half=True))
+        keys.add("c-d", filter=focused)(scroll(1, half=True))
 
 
 def list_pane_height(rows: int = LIST_ROWS_MAX) -> Dimension:

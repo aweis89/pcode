@@ -154,7 +154,9 @@ Three things about delegation are easy to get backwards, and each has a test:
   `DelegationEndEvent.usage` to session totals double-counts every delegated
   token. The budget exists so an unattended child is stopped with a steering
   message instead of aborting the turn -- without it, a child hitting a shared
-  limit raises through the parent.
+  limit raises through the parent. `SubAgent(usage_limits=None)` is not "no
+  limit": the child shares the parent's counter *and* gets the library's
+  50-request default, so `pcode.ext.subagent` fills one in.
 
 ## Counting what was actually spent
 

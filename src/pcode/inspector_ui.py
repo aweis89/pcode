@@ -111,7 +111,7 @@ class ToolInspector:
 
         @keys.add("escape", eager=True)
         @keys.add("c-c")
-        @keys.add("c-d")
+        @keys.add("c-d", filter=~has_focus(self.detail.window))
         def close(event):
             event.app.exit()
 
@@ -165,6 +165,7 @@ class ToolInspector:
                 self.query,
                 body,
                 Label("↑↓ Select/scroll · PgUp/PgDn Page · Tab Focus · Esc Close"),
+                Label("In Details: Ctrl+U/D Half page"),
                 Label("In Calls: f Failures · t Tool filter · / Search (↑↓ select while typing)"),
             ]
         )
