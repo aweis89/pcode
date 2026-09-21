@@ -14,7 +14,13 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode.conversation_tree import ConversationTree, TurnNode
-from pcode.popup_ui import RichPane, list_pane_height, popup_container, popup_style
+from pcode.popup_ui import (
+    RichPane,
+    bind_list_paging,
+    list_pane_height,
+    popup_container,
+    popup_style,
+)
 from pcode.session_ui import literal
 from pcode.task_prompt import TaskPrompt
 
@@ -55,9 +61,10 @@ class TreeBrowser:
 
         @keys.add("escape", eager=True)
         @keys.add("c-c")
-        @keys.add("c-d", filter=~has_focus(self.detail.window))
         def cancel(event):
             event.app.exit(result=None)
+
+        bind_list_paging(keys, self.list, has_focus(self.list))
 
         @keys.add("enter")
         def accept(event):
@@ -91,8 +98,8 @@ class TreeBrowser:
             [
                 header,
                 body,
-                Label("↑↓ Select/scroll · Enter Navigate · Tab Focus · Esc Cancel"),
-                Label("In Conversation: PgUp/PgDn Page · Ctrl+U/D Half page"),
+                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
+                Label("Enter Navigate · Tab Focus · Esc Cancel"),
                 Label("Switching context does not undo file changes or tool effects."),
             ]
         )

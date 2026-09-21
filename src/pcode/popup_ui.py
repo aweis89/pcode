@@ -55,6 +55,30 @@ def popup_style(base=None):
     return merge_styles([base, POPUP_STYLE] if base is not None else [POPUP_STYLE])
 
 
+def _list_page(listing) -> int:
+    info = listing.window.render_info
+    return max(1, info.window_height - 1) if info else 10
+
+
+def bind_list_paging(keys, listing, filter) -> None:
+    """Ctrl+U/Ctrl+D move a TextArea list's selection by half a page.
+
+    The same keys half-page the detail pane, so a browser with both feels the
+    same whichever split has focus.
+    """
+
+    def half() -> int:
+        return max(1, (_list_page(listing) + 1) // 2)
+
+    @keys.add("c-u", filter=filter)
+    def previous_half(event):
+        listing.buffer.cursor_up(half())
+
+    @keys.add("c-d", filter=filter)
+    def following_half(event):
+        listing.buffer.cursor_down(half())
+
+
 def steer_list_from_query(keys, query, listing) -> None:
     """Keep typing in the query while ↑/↓ move the selection in a TextArea list.
 
@@ -64,8 +88,7 @@ def steer_list_from_query(keys, query, listing) -> None:
     typing = has_focus(query)
 
     def page() -> int:
-        info = listing.window.render_info
-        return max(1, info.window_height - 1) if info else 10
+        return _list_page(listing)
 
     @keys.add("up", filter=typing)
     @keys.add("c-p", filter=typing)

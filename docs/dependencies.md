@@ -291,7 +291,7 @@ endpoint, or read the developer's credential file; `tests/conftest.py` redirects
    normal source tree and record its revision. Do not clone or install
    dependencies merely to read an API already available locally.
 4. Validate changes with this repository's relevant regression tests (see
-   `README.md`, "Validate"). Documentation alone cannot establish terminal behavior.
+   [development.md](development.md#validate)). Documentation alone cannot establish terminal behavior.
 
 Specific traps already encountered here:
 
