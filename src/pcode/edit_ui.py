@@ -4,17 +4,27 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Always, has_focus
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.widgets import Frame, Label, TextArea
 
 from pcode.edit_transcript import DiffLexer
 from pcode.edits import edit_text
-from pcode.popup_ui import list_pane_height, popup_container, popup_style
+from pcode.popup_ui import (
+    fuzzy_match,
+    list_pane_height,
+    popup_container,
+    popup_style,
+    steer_list_from_query,
+)
 from pcode.runtime import EditCompleted
 
 EMPTY = "No file edits in this conversation."
-KEYS = "↑↓ File · PgUp/PgDn Scroll diff · Tab Focus · Ctrl+Home/End First/last · Esc Close"
+NO_MATCH = "No matching edits."
+KEYS = (
+    "↑↓ File · PgUp/PgDn Scroll diff · Tab Focus · Ctrl+Home/End First/last · "
+    "/ Search paths (in Files) or diff lines (in Diff) · n/N Next/previous match · Esc Close"
+)
+PROMPTS = {"paths": "Search paths: ", "diffs": "Search diff lines: "}
 
 
 def change_title(change: EditCompleted) -> str:
@@ -39,14 +49,33 @@ def change_diff(change: EditCompleted) -> str:
     return "\n".join(lines)
 
 
+def matching_rows(text: str, terms: list[str]) -> list[int]:
+    """Rows where every query word fuzzy-matches the line, in document order."""
+    if not terms:
+        return []
+    return [
+        row
+        for row, line in enumerate(text.casefold().splitlines())
+        if all(fuzzy_match(term, line) for term in terms)
+    ]
+
+
 class EditBrowser:
-    """Most of the screen is the diff; the file selector stays a small bottom pane."""
+    """Most of the screen is the diff; the file selector stays a small bottom pane.
+
+    One search line serves both panes. Pressing ``/`` in the file list searches
+    paths and filters the list; pressing it in the diff searches diff lines,
+    filters the list to changes with a match, and jumps the diff to the first.
+    """
 
     def __init__(self, changes, *, code_theme: str = "monokai", **app_options) -> None:
         # Newest first, matching the tool inspector's ordering.
         self.changes = list(reversed(list(changes)))
+        self.visible: list[EditCompleted] = []
         self.selected: EditCompleted | None = None
+        self.scope = "paths"
         self._refreshing = False
+        self.query = TextArea(height=1, prompt=lambda: PROMPTS[self.scope], multiline=False)
         self.files = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
         self.files.window.cursorline = Always()
         self.diff = TextArea(
@@ -55,6 +84,7 @@ class EditBrowser:
             scrollbar=True,
             lexer=DiffLexer(code_theme),
         )
+        self.query.buffer.on_text_changed += lambda _: self.refresh()
         self.files.buffer.on_cursor_position_changed += lambda _: self.select()
         keys = KeyBindings()
 
@@ -64,8 +94,14 @@ class EditBrowser:
         def close(event):
             event.app.exit()
 
-        keys.add("tab")(focus_next)
-        keys.add("s-tab")(focus_previous)
+        # Tab only toggles the panes; the query line is entered with / and left with Enter.
+        @keys.add("tab")
+        @keys.add("s-tab")
+        def toggle(event):
+            focused = event.app.layout.has_focus(self.diff)
+            event.app.layout.focus(self.files if focused else self.diff)
+
+        steer_list_from_query(keys, self.query, self.files)
 
         # Scroll the diff from either pane: the file list keeps ↑↓ for selection.
         @keys.add("pagedown", filter=has_focus(self.files))
@@ -76,9 +112,31 @@ class EditBrowser:
         def page_up(event):
             self.scroll(-self.page())
 
+        @keys.add("/", filter=has_focus(self.files))
+        @keys.add("c-f", filter=has_focus(self.files))
+        def search_paths(event):
+            self.search("paths")
+
+        @keys.add("/", filter=has_focus(self.diff))
+        @keys.add("c-f", filter=has_focus(self.diff))
+        def search_diffs(event):
+            self.search("diffs")
+
+        @keys.add("enter", filter=has_focus(self.query))
+        def search_done(event):
+            event.app.layout.focus(self.files if self.scope == "paths" else self.diff)
+
+        @keys.add("n", filter=has_focus(self.files) | has_focus(self.diff))
+        def next_match(event):
+            self.jump(1)
+
+        @keys.add("N", filter=has_focus(self.files) | has_focus(self.diff))
+        def previous_match(event):
+            self.jump(-1)
+
         header = Label(
             lambda: (
-                f"Edit diffs · {self.position()}/{len(self.changes)} changes · "
+                f"Edit diffs · {self.position()}/{len(self.visible)} changes · "
                 f"{edit_text(self.selected.path) if self.selected else 'none'}"
             )
         )
@@ -86,6 +144,7 @@ class EditBrowser:
             [
                 header,
                 Label(KEYS),
+                self.query,
                 Frame(self.diff, title="Diff"),
                 Frame(self.files, title="Files", height=list_pane_height(len(self.changes))),
             ]
@@ -101,7 +160,7 @@ class EditBrowser:
         self.refresh()
 
     def position(self) -> int:
-        return self.files.document.cursor_position_row + 1 if self.changes else 0
+        return self.files.document.cursor_position_row + 1 if self.visible else 0
 
     def page(self) -> int:
         """Page by what is actually visible, falling back before the first render."""
@@ -112,26 +171,74 @@ class EditBrowser:
         """Move the cursor, not vertical_scroll: an unfocused window re-centers it."""
         document = self.diff.document
         row = max(0, min(document.line_count - 1, document.cursor_position_row + rows))
-        self.diff.buffer.cursor_position = document.translate_row_col_to_index(row, 0)
+        self.go_to(row)
+
+    def go_to(self, row: int) -> None:
+        self.diff.buffer.cursor_position = self.diff.document.translate_row_col_to_index(row, 0)
+
+    def terms(self) -> list[str]:
+        return self.query.text.casefold().split()
+
+    def search(self, scope: str) -> None:
+        """Retarget the query line; a query typed for the other scope is dropped."""
+        if scope != self.scope:
+            self.scope = scope
+            self.query.text = ""
+        self.app.layout.focus(self.query)
+
+    def matches(self, change: EditCompleted) -> bool:
+        terms = self.terms()
+        if self.scope == "paths":
+            return all(fuzzy_match(term, change.path.casefold()) for term in terms)
+        # Match the rendered text so redaction cannot hide the row a query matched.
+        return not terms or bool(matching_rows(change_diff(change), terms))
+
+    def diff_rows(self) -> list[int]:
+        """Diff-pane rows matching a diff search; the path search never highlights rows."""
+        if self.scope != "paths":
+            return matching_rows(self.diff.text, self.terms())
+        return []
+
+    def jump(self, direction: int) -> None:
+        """n/N move the diff cursor to the next or previous matching row, wrapping."""
+        rows = self.diff_rows()
+        if not rows:
+            return
+        current = self.diff.document.cursor_position_row
+        if direction > 0:
+            self.go_to(next((row for row in rows if row > current), rows[0]))
+        else:
+            self.go_to(next((row for row in reversed(rows) if row < current), rows[-1]))
 
     def refresh(self) -> None:
-        text = "\n".join(change_title(change) for change in self.changes) or EMPTY
+        previous = self.selected
+        self.visible = [change for change in self.changes if self.matches(change)]
+        selected = next((i for i, c in enumerate(self.visible) if c is previous), 0)
+        lines = [change_title(change) for change in self.visible]
+        text = "\n".join(lines) or (NO_MATCH if self.changes else EMPTY)
+        position = sum(len(line) + 1 for line in lines[:selected])
         self._refreshing = True
-        self.files.buffer.set_document(Document(text, 0), bypass_readonly=True)
+        self.files.buffer.set_document(Document(text, position), bypass_readonly=True)
         self._refreshing = False
-        self.select()
+        self.select(force=True)
 
-    def select(self) -> None:
+    def select(self, force: bool = False) -> None:
         if self._refreshing:
             return
         row = self.files.document.cursor_position_row
-        change = self.changes[row] if row < len(self.changes) else None
-        if change is self.selected and change is not None:
+        change = self.visible[row] if row < len(self.visible) else None
+        if change is self.selected and change is not None and not force:
             return
         self.selected = change
-        text = change_diff(change) if change else EMPTY
+        if change:
+            text = change_diff(change)
+        else:
+            text = NO_MATCH if self.changes else EMPTY
         self.diff.buffer.set_document(Document(text, 0), bypass_readonly=True)
         self.diff.window.vertical_scroll = 0
+        rows = self.diff_rows()
+        if rows:
+            self.go_to(rows[0])
 
     async def run(self) -> None:
         await self.app.run_async()

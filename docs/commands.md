@@ -308,6 +308,14 @@ screen; a small file selector sits at the bottom. Keys are listed in the header:
 - Up/Down in the file list selects a file, newest change first.
 - PageUp/PageDown scroll the diff without leaving the file list.
 - Tab/Shift+Tab move focus; arrows and Ctrl+Home/Ctrl+End scroll the focused diff.
+- `/` (or Ctrl+F) opens a search for whichever pane has focus. In the file list
+  it filters files by path; in the diff it filters to changes whose diff has a
+  matching line and jumps the diff to the first one. Matching is fuzzy: a plain
+  substring, or joined word prefixes such as `ed_ui` for `edit_ui.py` or
+  `sel_row` for `selected_row`. Every word of the query must match. Up/Down
+  still move the file selection while typing; Enter returns to the pane.
+  Switching panes and pressing `/` again starts a fresh query for that scope.
+- `n`/`N` in either pane jump to the next/previous matching diff line.
 - Escape, Ctrl+C, or Ctrl+D closes the popup and restores the editor draft.
 
 Saved sessions read their changes back from the journal on the active branch, so
