@@ -178,6 +178,8 @@ def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
                         await wait_for(lambda: "remains off" in " ".join(output.getvalue().split()))
                         if outcome == "failure":
                             assert "OAuth rejected" in output.getvalue()
+                            assert "in enable" in output.getvalue()
+                            assert "Traceback" in output.getvalue()
                             assert "model string" not in output.getvalue()
                     pipe.send_text("\x03\x04")
                     await asyncio.wait_for(task, 5)

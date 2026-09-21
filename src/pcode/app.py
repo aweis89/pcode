@@ -1474,9 +1474,23 @@ class PreviewApp:
             "OAuth sign-ins are saved for future sessions; /mcp logout NAME forgets one."
         )
 
+    def report_mcp_error(self, name: str, error: Exception) -> None:
+        """Keep MCP setup tracebacks even though no model turn was started."""
+        from pcode.diagnostics import error_report
+        from pcode.mcp import error_message
+
+        self.transcript.error(f"MCP '{name}' remains off: {error_message(error)}")
+        saved = getattr(self.runtime, "session", None)
+        path = saved.record_error(error, run_id=f"mcp:{name}") if saved else None
+        if path is not None:
+            self.transcript.note(f"MCP diagnostics: {path}")
+        else:
+            # --no-save and failed writes still need actionable frames, but must
+            # not create a session or silently persist a separate diagnostics file.
+            self.transcript.note(error_report(error))
+
     async def enable_mcp_defaults(self, names: list[str]) -> None:
         """Enable `"enabled": true` servers, using saved sign-ins but never a browser."""
-        from pcode.mcp import error_message
         from pcode.mcp_oauth import SignInRequired
 
         for name in names:
@@ -1487,7 +1501,7 @@ class PreviewApp:
                     f"MCP '{name}' needs a browser sign-in; run /mcp enable {name}."
                 )
             except Exception as error:
-                self.transcript.error(f"MCP '{name}' remains off: {error_message(error)}")
+                self.report_mcp_error(name, error)
             else:
                 self.transcript.note(f"MCP '{name}' enabled (default on).")
 
@@ -2250,9 +2264,7 @@ class PreviewApp:
                 except asyncio.CancelledError:
                     self.transcript.warning(cancelled)
                 except Exception as error:
-                    from pcode.mcp import error_message
-
-                    self.transcript.error(f"MCP '{name}' remains off: {error_message(error)}")
+                    self.report_mcp_error(name, error)
                 finally:
                     if not success:
                         clear_queue()

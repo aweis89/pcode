@@ -365,7 +365,7 @@ class SavedSession:
         *,
         run_id: str,
         provider_context: dict[str, str] | None = None,
-    ) -> None:
+    ) -> Path | None:
         """Append the traceback the transcript's bounded `error` summary cannot carry.
 
         A type and a message name the symptom; only frames name the line. This
@@ -387,7 +387,8 @@ class SavedSession:
                     )
                 file.write(f"{error_report(error)}\n")
         except OSError:
-            pass
+            return None
+        return path
 
     def event(self, event) -> None:
         self.append(type(event).__name__, **asdict(event))
