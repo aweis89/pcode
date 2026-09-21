@@ -529,6 +529,13 @@ class AgentRuntime:
             self.totals.add(self._compaction_usage)
             self.context_history = None
 
+    def _consume_steering(self, run_id: str) -> list[str]:
+        messages = self.take_steering()
+        if self.session:
+            for text in messages:
+                self.session.append("steering", run_id=run_id, prompt=text)
+        return messages
+
     async def _stream(self, prompt: str | None, run_id: str) -> AsyncIterator[Event]:
         await self.refresh_context()
         self._persist_child_runs()
@@ -583,7 +590,7 @@ class AgentRuntime:
                 capabilities=(
                     ([StepPersistence(store=self.session.store)] if self.session else [])
                     + [
-                        Steering(self.take_steering),
+                        Steering(lambda: self._consume_steering(run_id)),
                         self._request_checkpoint,
                         TokenAccounting(record=self.totals.add),
                     ]

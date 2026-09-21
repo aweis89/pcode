@@ -145,7 +145,12 @@ class ExtensionUI:
 class ExtensionAPI:
     """The object handed to `setup`. Collects contributions; `capabilities()` builds them."""
 
-    def __init__(self, name: str, workspace: Path, ui: ExtensionUI) -> None:
+    def __init__(
+        self, name: str, workspace: Path, ui: ExtensionUI, *, session_dir: Path | None = None
+    ) -> None:
+        from pcode.sessions import session_root
+
+        self.session_dir = (session_dir or session_root()).resolve()
         self.name = name
         self.workspace = workspace
         self.ui = ui
@@ -199,9 +204,19 @@ class ExtensionAPI:
         `agent` is a Pydantic AI `Agent` with a `name` and `description`; leave
         its model unset to run on the session's model. `options` are the
         Harness `SubAgent` fields (`usage_limits`, `timeout_seconds`, ...).
+
+        A delegate without `usage_limits` shares the parent run's usage counter
+        under the library's default 50-request cap, so a long session trips it
+        mid-delegation and `UsageLimitExceeded` aborts the whole turn instead of
+        steering the parent. Default to the explorer's own budget; pass
+        `usage_limits` explicitly to override.
         """
+        from pydantic_ai.usage import UsageLimits
         from pydantic_ai_harness.subagents import SubAgent
 
+        from pcode.agent import SUBAGENT_REQUEST_LIMIT
+
+        options.setdefault("usage_limits", UsageLimits(request_limit=SUBAGENT_REQUEST_LIMIT))
         self.subagents.append(SubAgent(agent, **options))
 
     def on_close(self, function: Callable[[], Awaitable[None]]):
@@ -336,6 +351,8 @@ def load_extension(
     ui: ExtensionUI,
     off: set[str] | None = None,
     on: set[str] | None = None,
+    *,
+    session_dir: Path | None = None,
 ) -> Extension:
     """Import the module, run `setup`, and validate what it contributed.
 
@@ -374,7 +391,7 @@ def load_extension(
         setup = getattr(module, "setup", None)
         if not callable(setup):
             raise AttributeError("extension defines no setup(pcode) function")
-        api = ExtensionAPI(extension.name, workspace, ui)
+        api = ExtensionAPI(extension.name, workspace, ui, session_dir=session_dir)
         setup(api)
         capabilities = api.capabilities()
         for capability in capabilities:
@@ -447,14 +464,16 @@ class LoadedExtensions:
         return lines
 
 
-def load_extensions(workspace: Path, ui: ExtensionUI | None = None) -> LoadedExtensions:
+def load_extensions(
+    workspace: Path, ui: ExtensionUI | None = None, *, session_dir: Path | None = None
+) -> LoadedExtensions:
     """Discover and load every extension; failures are recorded, not raised."""
     workspace = workspace.resolve()
     ui = ui or ExtensionUI()
     off, on = name_list("extensions_off"), name_list("extensions_on")
     return LoadedExtensions(
         [
-            load_extension(extension, workspace, ui, off, on)
+            load_extension(extension, workspace, ui, off, on, session_dir=session_dir)
             for extension in discover_extensions(workspace)
         ]
     )

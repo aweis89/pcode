@@ -510,7 +510,9 @@ class PreviewApp:
         from pcode.ext import ExtensionUI, load_extensions
 
         return load_extensions(
-            self.workspace, ExtensionUI(self._extension_notice, lambda: self.reload(""))
+            self.workspace,
+            ExtensionUI(self._extension_notice, lambda: self.reload("")),
+            session_dir=self.session_dir,
         )
 
     def _create_runtime(self):

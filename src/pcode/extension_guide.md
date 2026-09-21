@@ -53,6 +53,8 @@ def setup(pcode: ExtensionAPI) -> None: ...
 ```
 
 `pcode.name` is the file stem, `pcode.workspace` the resolved workspace path.
+`pcode.session_dir` is the resolved session-storage root, honoring `--session-dir`,
+`PCODE_SESSION_DIR`, and the default state directory.
 
 ### Tools the model can call
 
@@ -159,6 +161,10 @@ The agent is listed beside the explorer under `delegate_task`. Leave its model
 unset to run on the session's model; keyword options are Harness `SubAgent`
 fields (`usage_limits`, `timeout_seconds`, `max_calls`). Give it capabilities
 of its own; the parent's tools are not inherited.
+
+Without an explicit `usage_limits` the delegate gets its own request budget, so
+a long delegation cannot exhaust the turn. Overriding it with `None` shares the
+parent's counter, where the library's 50-request default aborts the run.
 
 ### Notices and lifecycle
 
