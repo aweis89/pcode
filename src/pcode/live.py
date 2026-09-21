@@ -47,7 +47,7 @@ from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEve
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.cache_warnings import CacheBustEvent
-from pcode.compaction import AutoCompaction, summarize
+from pcode.compaction import AutoCompaction, ContextTracking, summarize
 from pcode.conversation_tree import ConversationTree
 from pcode.delegation import ChildActivity
 from pcode.diagnostics import error_details, transient, transport_types
@@ -593,6 +593,7 @@ class AgentRuntime:
                         Steering(lambda: self._consume_steering(run_id)),
                         self._request_checkpoint,
                         TokenAccounting(record=self.totals.add),
+                        ContextTracking(self),
                     ]
                     + ([AutoCompaction(self, run_id)] if self.auto_compact else [])
                 ),

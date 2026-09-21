@@ -220,6 +220,41 @@ async def summarize(messages, *, model, focus=None, usage=None, window=None, par
     return CompactionResult(candidate, before, after, True)
 
 
+class ContextTracking(AbstractCapability):
+    """Publish what each request carries, for the footer, /status and /compact.
+
+    Installed on every run, independent of the autocompact setting. Before it
+    lived here, the footer only refreshed at turn boundaries: `runtime.history`
+    is empty until the first turn completes, so a long first turn showed
+    `ctx: 0` throughout, and /status never measured prompt overhead.
+    """
+
+    def __init__(self, runtime):
+        super().__init__()
+        self.runtime = runtime
+
+    def get_ordering(self):
+        # Inside compaction, so a compacted request is what gets displayed.
+        return CapabilityOrdering(wrapped_by=[AutoCompaction])
+
+    async def before_model_request(self, ctx, request_context):
+        self.runtime.context_history = list(request_context.messages)
+        # Instructions and tool schemas as resolved for a real request: the only
+        # place /status can read them without re-deriving the system prompt.
+        self.runtime.request_parameters = request_context.model_request_parameters
+        return request_context
+
+    async def after_model_request(self, ctx, *, request_context, response):
+        response.metadata = {
+            **(response.metadata or {}),
+            SCHEMAS: schema_tokens(request_context.model_request_parameters),
+        }
+        # Display completed request usage immediately, even while tools run.
+        # Keep this separate from replay history: tool calls aren't settled yet.
+        self.runtime.context_history = [*request_context.messages, response]
+        return response
+
+
 class AutoCompaction(AbstractCapability):
     """Check every request, including requests following a settled tool batch."""
 
@@ -232,25 +267,11 @@ class AutoCompaction(AbstractCapability):
         # Reserve the actual resolved output ceiling, not the adapter's fallback.
         return CapabilityOrdering(wrapped_by=[ModelOutputLimits])
 
-    async def after_model_request(self, ctx, *, request_context, response):
-        response.metadata = {
-            **(response.metadata or {}),
-            SCHEMAS: schema_tokens(request_context.model_request_parameters),
-        }
-        # Display completed request usage immediately, even while tools run.
-        # Keep this separate from replay history: tool calls aren't settled yet.
-        self.runtime.context_history = [*request_context.messages, response]
-        return response
-
     async def before_model_request(self, ctx, request_context):
         # Preserve the settled boundary even if summarization fails/cancels. In
         # --no-save mode there is no StepPersistence recovery to do this for us.
         if not self.runtime.session and is_provider_valid(request_context.messages):
             self.runtime.history = deepcopy(request_context.messages)
-        self.runtime.context_history = list(request_context.messages)
-        # Instructions and tool schemas as resolved for a real request: the only
-        # place /status can read them without re-deriving the system prompt.
-        self.runtime.request_parameters = request_context.model_request_parameters
         from pcode.model_metadata import refresh_context
 
         await refresh_context(request_context.model)
