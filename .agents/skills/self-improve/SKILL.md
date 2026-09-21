@@ -11,25 +11,16 @@ that moved. Read the pinned docs first; they are on disk or one fetch away.
 
 ## Extensions
 
-Read `src/pcode/extension_guide.md` first; it is the whole pcode-side API
-(`tool`, `instructions`, `hooks`, `add_capability`, `subagent`,
-`register_command`). The bundled files in `src/pcode/extensions/` are working
-examples. Use the Pydantic AI docs below for what the guide only names: hook
-signatures, `RunContext`, `ModelRetry`, capability classes, sub-agent `Agent`
-construction.
+Read `src/pcode/extension_guide.md` first; it is the whole pcode-side API and
+its "Pydantic AI reference" section says where to read the pinned Pydantic AI
+docs for what the guide only names. The bundled files in `src/pcode/extensions/`
+are working examples.
 
-After editing an extension, check it imports, then `/reload`:
+## Pinned Harness docs
 
-```sh
-uv run python -c "import runpy; runpy.run_path('path/to/ext.py')"
-```
-
-## Pinned docs
-
-The website and `main` describe APIs this checkout may not have. Read the
-version we actually run.
-
-Harness (source, docs, and tests at the pinned SHA):
+The website and `main` describe APIs this checkout may not have. For Coder,
+FileSystem, Shell, SubAgents, Planning, compaction, or step persistence, read
+the pinned checkout, not the site:
 
 ```sh
 make harness-src        # prints "tmp/pydantic-ai-harness @ <sha>"
@@ -37,24 +28,8 @@ make harness-src        # prints "tmp/pydantic-ai-harness @ <sha>"
 
 | Need | Read |
 | --- | --- |
-| Coder, FileSystem, Shell, SubAgents, Planning, compaction, step persistence | `tmp/pydantic-ai-harness/docs/<name>.md` |
-| Exact behaviour of a capability | `tmp/pydantic-ai-harness/pydantic_ai_harness/<name>/` and `tests/` beside it |
-
-Pydantic AI: docs are not installed with the package. Fetch them at the tag
-pinned in `uv.lock` (the `pydantic-ai-slim` version, prefixed with `v`):
-
-```sh
-grep -A1 '^name = "pydantic-ai-slim"' uv.lock | tail -1
-```
-
-| Topic | URL (replace `vX.Y.Z`) |
-| --- | --- |
-| hooks | `https://raw.githubusercontent.com/pydantic/pydantic-ai/vX.Y.Z/docs/hooks.md` |
-| tools, tools-advanced, toolsets, agent | `.../docs/<topic>.md` |
-| capabilities | `.../docs/capabilities/overview.md` and `capabilities/custom.md` (there is no `capabilities.md`) |
-
-Source is installed: `.venv/lib/python*/site-packages/pydantic_ai/`. When a
-doc and the source disagree, the source wins.
+| How a capability is meant to be used | `tmp/pydantic-ai-harness/docs/<name>.md` |
+| What it actually does | `tmp/pydantic-ai-harness/pydantic_ai_harness/<name>/` and `tests/` beside it |
 
 ## Working on pcode
 
