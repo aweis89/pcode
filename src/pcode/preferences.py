@@ -26,7 +26,7 @@ class Setting:
     whole_number: bool = False
     # An os.pathsep-separated list of directories; empty means "none".
     path_list: bool = False
-    # A comma-separated list of extension names; empty means "none".
+    # A comma-separated list of names; empty meaning depends on the setting.
     name_list: bool = False
     # One line shown beside the key in /config completions.
     description: str = ""
@@ -41,6 +41,14 @@ class Setting:
                 for entry in value.split(",")
             ):
                 raise ValueError(f"{key} must be comma-separated names without whitespace.")
+            if key == "model_providers":
+                from pcode.models import PROVIDERS
+
+                unknown = {
+                    entry.strip() for entry in value.split(",") if entry.strip()
+                } - PROVIDERS.keys()
+                if unknown:
+                    raise ValueError(f"Unknown model providers: {', '.join(sorted(unknown))}")
         elif self.positive_integer or self.whole_number:
             floor = 0 if self.whole_number else 1
             if not value.isascii() or not value.isdecimal() or int(value) < floor:
@@ -66,6 +74,11 @@ DEFAULT_SKILL_DIRS = os.pathsep.join(("~/.agents/skills", ".agents/skills"))
 
 
 SETTINGS = {
+    "model_providers": Setting(
+        "",
+        name_list=True,
+        description="Limit /model to comma-separated providers; empty shows all active providers",
+    ),
     "send_mode": Setting(
         "steering",
         SEND_MODES,
@@ -209,7 +222,7 @@ SETTINGS = {
         "emacs", ("emacs", "vi"), description="Key bindings for the prompt editor"
     ),
     "theme": Setting(
-        "dark",
+        "auto",
         ("dark", "light", "auto"),
         description="Palette for the terminal background; auto detects it",
     ),
