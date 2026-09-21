@@ -359,7 +359,13 @@ class SavedSession:
 
         self.tree.consume(record)
 
-    def record_error(self, error: BaseException, *, run_id: str) -> None:
+    def record_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: str,
+        provider_context: dict[str, str] | None = None,
+    ) -> None:
         """Append the traceback the transcript's bounded `error` summary cannot carry.
 
         A type and a message name the symptom; only frames name the line. This
@@ -374,7 +380,12 @@ class SavedSession:
         try:
             private_file(path)
             with path.open("a", encoding="utf-8") as file:
-                file.write(f"--- {now()} run {run_id} ---\n{error_report(error)}\n")
+                file.write(f"--- {now()} run {run_id} ---\n")
+                if provider_context:
+                    file.write(
+                        "Configured provider: " + redact(json.dumps(provider_context)) + "\n"
+                    )
+                file.write(f"{error_report(error)}\n")
         except OSError:
             pass
 
