@@ -3,7 +3,6 @@
 import json
 import os
 import re
-import warnings
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -50,6 +49,15 @@ def configured_servers() -> dict[str, Any]:
     return servers
 
 
+def default_servers() -> list[str]:
+    """Names marked `"enabled": true`, without validating or expanding the rest."""
+    return sorted(
+        name
+        for name, raw in configured_servers().items()
+        if isinstance(raw, dict) and raw.get("enabled") is True
+    )
+
+
 def _expand(value: Any) -> Any:
     if isinstance(value, str):
 
@@ -79,6 +87,8 @@ class ServerConfig(BaseModel):
     url: str | None = None
     headers: dict[str, str] | None = None
     auth: Literal["oauth"] | None = None
+    # Enable at startup, /new, and resume instead of waiting for /mcp enable.
+    enabled: bool = False
     # Off by default: a server's schemas otherwise sit in every request of the
     # conversation, while tool search costs one call for the tools actually used.
     direct: bool = False
@@ -101,16 +111,25 @@ class ServerConfig(BaseModel):
         return self
 
 
-def build_toolset(name: str, raw: Any):
-    """Construct only the selected server. Connections are owned by each agent run."""
+def _config(name: str, raw: Any) -> ServerConfig:
     try:
-        config = ServerConfig.model_validate(_expand(raw))
+        return ServerConfig.model_validate(_expand(raw))
     except ValidationError:
         # Pydantic errors include input values: never print credentials from config.
         raise ValueError(
             f"Invalid MCP server '{name}'. Use command/args/env/cwd for stdio or url/headers "
-            'for HTTP (optional auth: "oauth", direct: true); other fields are not supported.'
+            'for HTTP (optional auth: "oauth", enabled: true, direct: true); other fields '
+            "are not supported."
         ) from None
+
+
+def build_toolset(name: str, raw: Any, *, interactive: bool = True):
+    """Construct only the selected server. Connections are owned by each agent run.
+
+    A non-interactive OAuth server may use stored tokens and refresh them, but
+    fails with SignInRequired rather than opening a browser.
+    """
+    config = _config(name, raw)
     from fastmcp.client.transports import StdioTransport
     from pydantic_ai.mcp import MCPToolset
 
@@ -126,19 +145,12 @@ def build_toolset(name: str, raw: Any):
             )
             toolset = MCPToolset(transport, id=name)
         else:
-            # FastMCP owns PKCE, browser sign-in, refresh, and an in-memory
-            # token store. Surface its storage lifetime in our UI/docs, not a raw
-            # warning that would interrupt the prompt. Do not suppress other warnings.
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message="Using in-memory token storage -- tokens will be lost.*",
-                    category=UserWarning,
-                )
-                from pcode.mcp_oauth import LoopbackOAuth
+            # FastMCP owns PKCE, browser sign-in, and refresh; pcode owns the socket
+            # and the credential file (see mcp_oauth).
+            from pcode.mcp_oauth import LoopbackOAuth
 
-                auth = LoopbackOAuth() if config.auth == "oauth" else None
-                toolset = MCPToolset(config.url, id=name, headers=config.headers, auth=auth)
+            auth = LoopbackOAuth(interactive=interactive) if config.auth == "oauth" else None
+            toolset = MCPToolset(config.url, id=name, headers=config.headers, auth=auth)
         # Hidden until Pydantic AI's auto-injected ToolSearch reveals them, so a
         # server's schemas cost one `search_tools` call instead of every request.
         if not config.direct:
@@ -150,27 +162,66 @@ def build_toolset(name: str, raw: Any):
         ) from None
 
 
+def _find_cause(error: BaseException, kind: type[BaseException]) -> BaseException | None:
+    seen: set[int] = set()
+    pending = [error]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, kind):
+            return current
+        pending.extend([current.__cause__, current.__context__])
+        pending.extend(getattr(current, "exceptions", ()))
+    return None
+
+
 class MCPState:
     """Never persisted. Disabled servers have no toolsets, connections, or prompt cost."""
 
     def __init__(self) -> None:
         self.enabled: dict[str, Any] = {}
 
-    async def enable(self, name: str) -> None:
+    async def enable(self, name: str, *, interactive: bool = True) -> None:
         if name in self.enabled:
             return
         servers = configured_servers()
         if name not in servers:
             raise ValueError(f"Unknown MCP server '{name}'. Use /mcp list.")
-        toolset = build_toolset(name, servers[name])
+        toolset = build_toolset(name, servers[name], interactive=interactive)
         # Only OAuth needs an enable-time connection. Entering the MCP toolset
         # initializes the server and completes native auth without a model call.
         # Publish it only after successful login AND connection cleanup, retaining
-        # the same OAuth object (and in-memory tokens) for subsequent turns.
+        # the same OAuth object (and its loaded tokens) for subsequent turns.
         if getattr(mcp_transport(toolset), "auth", None) is not None:
-            async with toolset:
-                pass
+            try:
+                async with toolset:
+                    pass
+            except Exception as error:
+                # FastMCP wraps connection failures; callers need the sign-in
+                # verdict itself to tell "run /mcp enable" from a real failure.
+                from pcode.mcp_oauth import SignInRequired
+
+                if (sign_in := _find_cause(error, SignInRequired)) is not None:
+                    raise sign_in from error
+                raise
         self.enabled[name] = toolset
+
+    async def forget(self, name: str) -> None:
+        """Drop stored OAuth credentials for a server, and its toolset if enabled."""
+        self.enabled.pop(name, None)
+        servers = configured_servers()
+        if name not in servers:
+            raise ValueError(f"Unknown MCP server '{name}'. Use /mcp list.")
+        config = _config(name, servers[name])
+        if config.auth != "oauth":
+            raise ValueError(f"MCP server '{name}' does not use OAuth.")
+        from fastmcp.client.auth.oauth import TokenStorageAdapter
+
+        from pcode.mcp_oauth import CredentialStore
+
+        await TokenStorageAdapter(CredentialStore(), config.url.rstrip("/")).clear()
 
     def disable(self, name: str) -> None:
         # No config read: disabling must work even if the config was removed or broken.

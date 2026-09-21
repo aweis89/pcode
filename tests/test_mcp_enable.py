@@ -185,3 +185,120 @@ def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
         assert "No model request is made" in " ".join(output.getvalue().split())
 
     asyncio.run(run())
+
+
+def test_default_servers_enable_at_startup_and_new_without_a_browser():
+    from pcode.mcp_oauth import SignInRequired
+
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "local": {"command": "echo", "enabled": True},
+                    "remote": {
+                        "url": "https://example.invalid/mcp",
+                        "auth": "oauth",
+                        "enabled": True,
+                    },
+                    "manual": {"command": "echo"},
+                }
+            }
+        )
+    )
+
+    async def run():
+        calls = []
+        output = StringIO()
+        saved = {"remote": False}  # The credential file, surviving /new like the real one.
+
+        class State:
+            def __init__(self):
+                self.enabled = {}
+
+            async def enable(self, name, *, interactive=True):
+                calls.append((name, interactive))
+                if name == "remote" and not interactive and not saved["remote"]:
+                    raise SignInRequired("needs browser")
+                self.enabled[name] = object()
+
+            async def forget(self, name):
+                calls.append(("forget", name))
+                self.enabled.pop(name, None)
+                saved[name] = False
+
+        class Runtime:
+            session = None
+            recovery_blocked = ""
+
+            def __init__(self):
+                self.mcp = State()
+
+            def reset(self):
+                self.mcp = State()
+
+            async def stream(self, text):
+                calls.append(("prompt", sorted(self.mcp.enabled)))
+                yield Message("response")
+
+        runtime = Runtime()
+        app = PreviewApp(
+            model="test:local",
+            runtime=runtime,
+            console=Console(file=output, color_system=None, width=140),
+        )
+        with create_pipe_input() as pipe:
+            session = None
+
+            def prompt(*args, **kwargs):
+                nonlocal session
+                session = create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+                return session
+
+            async def wait_for(predicate):
+                async with asyncio.timeout(5):
+                    while not predicate():
+                        await asyncio.sleep(0.01)
+
+            with patch("pcode.app.create_prompt", prompt):
+                task = asyncio.create_task(app.run_async())
+                try:
+                    await wait_for(lambda: session is not None and session.app.is_running)
+                    # A prompt typed immediately still sees the startup-enabled server.
+                    pipe.send_text("first question\r")
+                    await wait_for(lambda: ("prompt", ["local"]) in calls)
+                    text = " ".join(output.getvalue().split())
+                    assert "MCP 'local' enabled (default on)" in text
+                    assert "MCP 'remote' needs a browser sign-in; run /mcp enable remote" in text
+                    assert calls[:2] == [("local", False), ("remote", False)]
+                    pipe.send_text("/mcp list\r")
+                    await wait_for(lambda: "manual: off" in output.getvalue())
+                    text = " ".join(output.getvalue().split())
+                    assert "local: enabled (default on)" in text
+                    assert "remote: off (default on)" in text
+                    # Interactive enable may browse; /new re-applies the defaults silently.
+                    saved["remote"] = True
+                    pipe.send_text("/mcp enable remote\r")
+                    await wait_for(lambda: ("remote", True) in calls)
+                    await wait_for(lambda: not app.activity.busy)
+                    assert sorted(runtime.mcp.enabled) == ["local", "remote"]
+                    pipe.send_text("/new\r")
+                    await wait_for(lambda: calls.count(("remote", False)) == 2)
+                    await wait_for(lambda: not app.activity.busy)
+                    assert sorted(runtime.mcp.enabled) == ["local", "remote"]
+                    pipe.send_text("/mcp logout remote\r")
+                    await wait_for(
+                        lambda: "signed out and disabled" in " ".join(output.getvalue().split())
+                    )
+                    await wait_for(lambda: not app.activity.busy)
+                    assert ("forget", "remote") in calls
+                    assert sorted(runtime.mcp.enabled) == ["local"]
+                    pipe.send_text("/quit\r")
+                    await asyncio.wait_for(task, 5)
+                finally:
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())

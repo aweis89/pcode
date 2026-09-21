@@ -7,11 +7,14 @@ not start it or add its tool definitions to model requests. Use:
 /mcp list
 /mcp enable fetch
 /mcp disable fetch
+/mcp logout my-service
 ```
 
 `/mcp` also lists servers and the configuration path. Tab completion includes
-configured server names for `enable` and active names for `disable`. These are
-local commands; they do not make a model request. Enable servers individually.
+configured server names for `enable`, active names for `disable`, and OAuth
+servers for `logout`. These are local commands; they do not make a model request.
+Enable servers individually, or mark the ones you always want with
+`"enabled": true` (see [default-on servers](#default-on-servers)).
 
 Create `~/.config/pcode/mcp.json` (or `$XDG_CONFIG_HOME/pcode/mcp.json`):
 
@@ -46,7 +49,8 @@ Repository MCP files are **not** loaded automatically. The JSON uses an
 - **Remote HTTP/SSE:** `url` and optional `headers` (string map). Transport is
   inferred from the URL by the MCP client. Add `"auth": "oauth"` for browser sign-in.
 
-Either transport also accepts `"direct": true`; see tool search below.
+Either transport also accepts `"enabled": true` (on for every conversation) and
+`"direct": true` (see tool search below).
 
 Server names start with a letter and contain letters, digits, `_`, or `-` (up to
 32 characters). Unsupported server fields are rejected on enable rather than
@@ -88,16 +92,48 @@ no headless/device-code login command.
   callback/state validation, token refresh, and authenticated requests to FastMCP
   and the MCP SDK. Servers must support that client flow; pre-registered client IDs,
   custom scopes, and fixed callback ports are not exposed in pcode's config yet.
-- **Credentials are in memory only.** They are reused across turns while the server
-  stays enabled. Disable/re-enable, `/new`, session resume, or process restart
-  creates a fresh OAuth client and may require browser sign-in again. Closing a
-  turn's connection does not discard the enabled client's tokens. No OAuth tokens
-  are written to pcode's configuration, session files, or a persistent token store.
+- **Sign-ins are saved.** Tokens and the client registration are written to
+  `~/.config/pcode/mcp-credentials.json` (owner-readable only, next to the
+  Anthropic sign-in), keyed by server URL. Disable/re-enable, `/new`, resume, and
+  restart reuse them, refreshing the access token silently; the browser opens
+  again only when the refresh token is rejected or after `/mcp logout NAME`.
+  Nothing is written to `mcp.json` or session files. There is no keychain
+  integration: pcode is often run over SSH, where a keychain is locked, and the
+  file mirrors how pcode already stores its own login.
+- Two pcode processes that refresh the same server at once can invalidate each
+  other's refresh token if the service rotates them; the loser is asked to sign
+  in again on its next enable.
 - Do not combine OAuth with an `Authorization` header. Non-auth headers may be used
   alongside OAuth. For a static bearer token, continue using `headers` with an
   environment variable reference instead of `auth`.
-- Disabling a server drops pcode's reference to its OAuth client; it does not revoke
-  the server-side grant. Revoke access through the service if needed.
+- `/mcp logout NAME` deletes the saved credentials for that server and disables
+  it. Neither that nor `/mcp disable` revokes the server-side grant; revoke access
+  through the service if needed.
+
+## Default-on servers
+
+Set `"enabled": true` on a server to have it enabled when a conversation starts,
+i.e. at launch, after `/new`, and on resume:
+
+```json
+{
+  "mcpServers": {
+    "my-service": {
+      "url": "https://mcp.example.com/mcp",
+      "auth": "oauth",
+      "enabled": true
+    }
+  }
+}
+```
+
+This is the ordinary `/mcp enable` with one difference: it **never opens a
+browser**. An OAuth server uses its saved sign-in (refreshing if needed); with no
+saved sign-in, or one the service rejects, it stays off and pcode prints
+`run /mcp enable NAME`. That one interactive sign-in is then saved, so later
+starts are silent. Queued prompts wait for the default servers, Ctrl+C cancels,
+and `/mcp disable NAME` still turns one off for the current conversation. `/mcp
+list` marks these servers `(default on)`.
 
 ## Tool search (`direct`)
 
@@ -136,15 +172,16 @@ exchange is appended to history, so the prompt cache prefix stays intact.
   the **current conversation**, including all tool/model steps within a turn.
   Switching models keeps the selection. Repeating `enable` is a no-op.
 - OAuth servers connect during `/mcp enable`, then disconnect while retaining
-  their in-memory tokens. Non-OAuth servers still connect only on the next turn.
+  their tokens. Non-OAuth servers still connect only on the next turn.
   All enabled servers reconnect for each turn and close afterward, including on
   failure or cancellation; local subprocesses do not stay running between turns.
 - `/mcp disable NAME` removes those tools from subsequent model requests. MCP
   selection cannot change during an active turn. To reload a server after editing
   its configuration or environment, disable and enable it again.
 - New conversations (`/new`), resumed conversations, and application restarts
-  start with **all servers off**. Activation is never saved in session files or
-  user defaults. `/mcp list` shows the current state.
+  start with **all servers off** except those marked `"enabled": true` in
+  `mcp.json`. Activation is never saved in session files or user defaults.
+  `/mcp list` shows the current state.
 - Off servers contribute **no MCP tool schemas or server instructions**. Enabled
   tools are namespaced as `mcp_NAME_TOOL`; their results consume context normally,
   and their schemas do too once they are direct or discovered. Disabling does not
