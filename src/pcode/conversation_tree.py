@@ -3,7 +3,7 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
 
-from pcode.links import Link, extract_links
+from pcode.links import Link, extract_links, remember_link
 
 
 @dataclass
@@ -19,7 +19,19 @@ class TurnNode:
     kind: str = "turn"
     # Unsaved turns and durable compaction checkpoints carry message history.
     history: list | None = None
-    tool_links: dict[str, Link] = field(default_factory=dict)
+    links: dict[str, Link] = field(default_factory=dict)
+    message_links: dict[str, Link] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.add_links(self.prompt, "user")
+        self.add_links(self.response, "assistant")
+
+    def add_links(self, text: str, source: str, *, tool: bool = False) -> None:
+        # Keep URL recency in event order, including assistant text before tools.
+        for link in extract_links(text, source):
+            remember_link(self.links, link)
+            if not tool:
+                remember_link(self.message_links, link)
 
 
 class ConversationTree:
@@ -76,6 +88,7 @@ class ConversationTree:
             node = self.nodes[self.recording]
             if kind == "Message":
                 node.response = record["markdown"]
+                node.add_links(node.response, "assistant")
             elif kind in {"ToolStarted", "ToolSummary"}:
                 # Keep only URLs, not another copy of potentially large payloads.
                 # The same journal events rebuild these on session resume.
@@ -83,8 +96,7 @@ class ConversationTree:
                 for key in ("arguments", "result", "command", "detail", "error"):
                     text = record.get(key)
                     if isinstance(text, str):
-                        for link in extract_links(text, source):
-                            node.tool_links.setdefault(link.url, link)
+                        node.add_links(text, source, tool=True)
             elif kind == "PlanUpdated":
                 node.plan = deepcopy(record["items"])
             elif kind in {"turn_completed", "turn_failed", "turn_cancelled"}:
