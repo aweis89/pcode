@@ -187,6 +187,28 @@ shortcuts to it. The capability gets `id="ext.<name>"` if it has none, so
 - Test the file imports cleanly before `/reload`: `python -c "import runpy;
   runpy.run_path('path/to/ext.py')"` catches syntax errors early.
 
+## Pydantic AI reference
+
+The helpers above wrap Pydantic AI directly, so for anything this guide only
+names (hook signatures, `RunContext`, `ModelRetry`, capability classes, building
+an `Agent` for a sub-agent) read Pydantic AI's docs rather than working from
+memory. Read them at the installed version, not `main`; the website tracks
+unreleased APIs:
+
+```sh
+python -c "from importlib.metadata import version; print(version('pydantic-ai-slim'))"
+```
+
+With that version as `vX.Y.Z`, fetch
+`https://raw.githubusercontent.com/pydantic/pydantic-ai/vX.Y.Z/docs/<topic>.md`
+for `hooks`, `tools`, `tools-advanced`, `toolsets`, or `agent`, and
+`docs/capabilities/overview.md` or `docs/capabilities/custom.md` for
+capabilities (there is no `capabilities.md`). The installed source is beside
+this file's package (`import pydantic_ai; pydantic_ai.__file__`) and wins when
+a doc disagrees. Harness capabilities (`pydantic_ai_harness`) have their docs in
+the same repository as their source: `https://github.com/pydantic/pydantic-ai-harness`,
+under `docs/<name>.md`.
+
 ## Complete example
 
 `~/.config/pcode/extensions/protect_env.py`:
