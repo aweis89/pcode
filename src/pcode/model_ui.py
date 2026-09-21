@@ -114,8 +114,10 @@ class ModelPicker:
         terms = query.casefold().split()
         self.matches = [name for name in self.models if all(matches_model(t, name) for t in terms)]
         provider, _, name = query.partition(":")
+        # Any supported provider, not only configured ones: the key may be
+        # exported after launch, and infer_model reports a missing key clearly.
         if (
-            provider in self.providers
+            provider in PROVIDERS
             and name
             and re.fullmatch(r"[A-Za-z0-9_.:/-]+", name)
             and query not in self.matches

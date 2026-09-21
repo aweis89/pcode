@@ -127,6 +127,17 @@ def test_rich_pane_keyboard_scrolling_survives_a_render():
                 pipe.send_text("\x1b[6~")
                 await asyncio.sleep(0.03)
             assert pane.window.vertical_scroll == 90  # Clamped at the last page.
+            # An anchor lands the renderable's first line on the top row.
+            tail = Text("\n".join(f"tail {i}" for i in range(30)))
+            pane.set([Text("one\ntwo"), Text("x " * 100), tail], anchor=2)
+            app.invalidate()
+            await asyncio.sleep(0.05)
+            assert pane.line_offset(2, 80) == 5  # Two lines, then three wrapped at 80.
+            assert pane.window.vertical_scroll == 5
+            pane.scroll_to(1)
+            app.invalidate()
+            await asyncio.sleep(0.05)
+            assert pane.window.vertical_scroll == 2
             pipe.send_text("\x1b")
             await asyncio.wait_for(task, 2)
 

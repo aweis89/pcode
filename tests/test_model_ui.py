@@ -63,7 +63,10 @@ def test_filter_empty_matches_custom_validation_and_current_marker():
         assert "current" in str(picker.fragments())
         picker.search.text = "no matches"
         assert picker.matches == []
+        # Supported but unconfigured providers still take a typed ID.
         picker.search.text = "google:not-active"
+        assert picker.matches == ["google:not-active"]
+        picker.search.text = "unknown:provider"
         assert picker.matches == []
         picker.search.text = "anthropic:invalid model"
         assert picker.matches == []

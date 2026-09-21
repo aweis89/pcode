@@ -2,8 +2,8 @@
 
 Keyword search is local and always available. PCODE_HISTORY_EMBEDDING_MODEL
 explicitly opts into embedding redacted history with that provider (which may
-send it off-machine). No model is selected implicitly. Override with a user
-extension named session_history.py whose setup does nothing to disable recall.
+send it off-machine). No model is selected implicitly. `/extensions off
+session_history` disables recall entirely.
 """
 
 import asyncio

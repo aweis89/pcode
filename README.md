@@ -172,7 +172,8 @@ repository's file is what starts each of its sessions in a worktree.
 #### Trusting a repository's own code
 
 A repository can ship code that runs at launch with your permissions:
-`.pcode/extensions/*.py` (see `/extensions`) and `.pcode/worktree-setup`. Neither
+`.pcode/extensions/*.py` (see `/extensions`, which lists every extension and its
+state, and turns one on or off) and `.pcode/worktree-setup`. Neither
 runs until you trust that repository. The first interactive launch inside one
 that ships either asks:
 
@@ -210,6 +211,9 @@ is only sensible on a machine where you wrote all of them.
 | `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `project_extensions` | `off` | `on`, `off` (`on` trusts every repository's `.pcode/extensions` and `worktree-setup`) |
 | `trusted_projects` | `` | `:`-separated repository paths whose shipped code may run; the launch prompt appends here |
+| `extension_dirs` | `` | `:`-separated extra directories searched for extensions, after the user one |
+| `extensions_off` | `` | `,`-separated extension names that never load (`/extensions off NAME`) |
+| `extensions_on` | `` | `,`-separated opt-in extension names to load (`/extensions on NAME`) |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian); fallback for models `/effort` has not set |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
 
@@ -338,10 +342,56 @@ For ordinary OpenAI API models, use an `openai:...` string and supply
 `OPENAI_API_KEY` through your environment. For Anthropic API models, use
 `anthropic:<model-id>` and supply `ANTHROPIC_API_KEY` through your environment.
 Use the exact API model ID available to your account; pcode does not remap aliases.
-Both the OpenAI and Anthropic provider extras are installed by default, including
-with `make install`. Run `make install` again to refresh an existing editable
-installation after dependency changes. Other Pydantic model strings require their
-provider extras and corresponding authentication.
+The provider extras below are installed by default, including with `make install`.
+Run `make install` again to refresh an existing editable installation after
+dependency changes.
+
+### Supported providers
+
+Any `provider:model-id` string accepted by Pydantic AI works with `--model` and
+`/model`. The environment variables below are what the provider's own client
+reads; the picker checks that the variable is *set* (never its value) to decide
+which providers to offer. Catalog: whether the picker suggests model IDs from the
+Pydantic AI catalog, or only accepts IDs you type.
+
+| Prefix | Enabled by | Catalog |
+| --- | --- | --- |
+| `anthropic` | `/login` credential or `ANTHROPIC_API_KEY` | yes |
+| `openai-codex` | `codex login` credential file (`CODEX_HOME` honored) | yes (all OpenAI IDs) |
+| `openai`, `openai-chat`, `openai-responses` | `OPENAI_API_KEY` | yes |
+| `meridian` | `meridian` on `PATH` or `PCODE_MERIDIAN_BASE_URL` | yes (Anthropic IDs) |
+| `google` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | yes |
+| `google-cloud` | `GOOGLE_CLOUD_PROJECT` or `GOOGLE_APPLICATION_CREDENTIALS` | yes |
+| `bedrock` | `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID`, or `AWS_PROFILE` | yes |
+| `bedrock-mantle` | `AWS_BEARER_TOKEN_BEDROCK` | yes |
+| `groq` | `GROQ_API_KEY` | yes |
+| `xai` | `XAI_API_KEY` | yes |
+| `deepseek` | `DEEPSEEK_API_KEY` | yes |
+| `cerebras` | `CEREBRAS_API_KEY` | yes |
+| `crusoe` | `CRUSOE_API_KEY` | yes |
+| `moonshotai` | `MOONSHOTAI_API_KEY` | yes |
+| `heroku` | `HEROKU_INFERENCE_KEY` | yes |
+| `snowflake` | `SNOWFLAKE_TOKEN` and `SNOWFLAKE_ACCOUNT` | yes |
+| `zai` | `ZAI_API_KEY` | yes |
+| `azure` | `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT` | typed IDs |
+| `github-copilot` | `GITHUB_COPILOT_API_KEY` (or `_TOKEN`/`COPILOT_GITHUB_TOKEN`) and `GITHUB_COPILOT_BASE_URL` (or `_API_BASE`/`COPILOT_API_URL`) | typed IDs |
+| `openrouter` | `OPENROUTER_API_KEY` | typed IDs |
+| `vercel` | `VERCEL_AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN` | typed IDs |
+| `fireworks` | `FIREWORKS_API_KEY` | typed IDs |
+| `together` | `TOGETHER_API_KEY` | typed IDs |
+| `nebius` | `NEBIUS_API_KEY` | typed IDs |
+| `ovhcloud` | `OVHCLOUD_API_KEY` | typed IDs |
+| `alibaba` | `ALIBABA_API_KEY` or `DASHSCOPE_API_KEY` | typed IDs |
+| `sambanova` | `SAMBANOVA_API_KEY` | typed IDs |
+| `ollama` | `OLLAMA_BASE_URL` | typed IDs |
+| `vllm` | `VLLM_BASE_URL` | typed IDs |
+
+Providers with a catalog use the Pydantic AI known-model list, which is a static
+snapshot, not an account entitlement list. Providers not in this table (for
+example `mistral`, `cohere`, `huggingface`, `litellm`) still work from `--model`
+if you install their Pydantic AI extra; the picker does not offer them.
+Everything besides Anthropic OAuth and Codex is plain API-key access with no
+login flow in pcode: set the variable in your shell before launching.
 
 ### Sign in with your Anthropic account
 
@@ -395,7 +445,8 @@ model names, including joined word prefixes: `anthopus` finds Anthropic Opus,
 picker without changing the model or editor draft. For a model not in the catalog,
 type its full `provider:model-id` (for example `anthropic:claude-opus-5`).
 
-The picker currently supports configured **Anthropic** and **OpenAI Codex** providers:
+The picker offers every provider from the [supported providers](#supported-providers)
+table whose credentials are configured:
 
 - The current provider is included even when using a custom model ID.
 - Anthropic is enabled by a stored `/login` credential or `ANTHROPIC_API_KEY`.
@@ -403,6 +454,8 @@ The picker currently supports configured **Anthropic** and **OpenAI Codex** prov
   reads pcode's credentials.
 - Codex is enabled when its CLI credential file exists (`CODEX_HOME` is honored).
   Opening the picker checks file presence only, not its contents or validity.
+- Every other provider is enabled when its environment variable is set; only
+  the variable name is checked, never the value.
 - `PCODE_LLM_PROXY` applies only to Codex and does not restrict model selection.
 
 Models are grouped by provider and family, with numeric versions sorted newest
@@ -411,12 +464,13 @@ The current model is marked, not pinned above newer versions; undated aliases
 precede dated snapshots of the same version. This uses model IDs, not release-date
 metadata across different families.
 
-Suggestions come from the installed Pydantic AI catalog (Anthropic models and
-all OpenAI model IDs for Codex). Opening the picker makes **no network requests**.
-This is not an account-entitlement list: the provider checks model
-availability and credentials when you use the model. Custom IDs are accepted only
-for providers enabled in the picker. If none are configured, use `/login`, set
-`ANTHROPIC_API_KEY`, or run `codex login` first.
+Suggestions come from the installed Pydantic AI catalog (for Codex, all OpenAI
+model IDs; for Meridian, Anthropic IDs). Opening the picker makes **no network
+requests**. This is not an account-entitlement list: the provider checks model
+availability and credentials when you use the model. A typed `provider:model-id`
+is accepted for any supported provider, configured or not, so you can point at a
+provider whose key you export after launch. If no provider is configured, use
+`/login`, set `ANTHROPIC_API_KEY`, or run `codex login` first.
 
 **Changing models continues the current conversation.** Message history, session ID,
 plan, tool panel, usage totals, transcript, and editor draft are preserved. The
