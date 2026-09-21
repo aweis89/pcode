@@ -158,11 +158,10 @@ def test_overhead_reports_instructions_and_schemas_from_a_real_request():
 def test_the_request_hook_publishes_parameters_for_the_overview():
     """/context reads the last request, so the hook has to record it before returning."""
     from types import SimpleNamespace
-    from unittest.mock import patch
 
     from pydantic_ai.models import ModelRequestParameters
 
-    from pcode.compaction import AutoCompaction
+    from pcode.compaction import ContextTracking
 
     parameters = ModelRequestParameters(instruction_parts=[part("planning " * 10, "planning")])
     runtime = SimpleNamespace(
@@ -171,11 +170,8 @@ def test_the_request_hook_publishes_parameters_for_the_overview():
     request = SimpleNamespace(
         messages=[], model="unknown-provider:example", model_request_parameters=parameters
     )
-    with (
-        patch("pcode.model_metadata.refresh_context"),
-        patch("pcode.compaction.effective_window", return_value=None),
-    ):
-        asyncio.run(AutoCompaction(runtime, "run").before_model_request(None, request))
+    # Measured on every run, not only when autocompact is on.
+    asyncio.run(ContextTracking(runtime).before_model_request(None, request))
     assert runtime.request_parameters is parameters
     assert overhead_rows(parameters)[0][0] == "Prompt overhead"
 
