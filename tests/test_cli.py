@@ -251,7 +251,8 @@ def test_missing_login_has_actionable_message_without_dumping_auth(monkeypatch, 
     with pytest.raises(UserError) as raised:
         create_agent("openai-codex:gpt-5.6-luna", tmp_path)
     assert error_message(raised.value) == (
-        "Provider login missing or invalid. Run `codex login`, then restart pcode."
+        "Provider login missing or invalid. "
+        "Run `/login openai-codex` (or `codex login`, then restart pcode)."
     )
 
 
