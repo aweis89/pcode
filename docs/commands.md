@@ -326,11 +326,11 @@ terminal output is buffered until it closes. Inspection never reruns a tool.
   **/** focuses search. Search matches tool names/statuses and command/summary
   previews, not the complete output payload. Ctrl+F focuses search from any pane.
 - In details, use arrows to scroll by line, PageUp/PageDown by page, or Ctrl+U/Ctrl+D
-  by half a page. The session browser shares these content-pane controls.
+  by half a page. Ctrl+U/Ctrl+D also half-page the call list, including while
+  typing a search. The session browser shares these controls.
 - Mouse clicks and wheel scrolling work in the popups. In tmux, enable mouse
   forwarding with `tmux set -g mouse on` (or `set -g mouse on` in `~/.tmux.conf`).
 - Escape or Ctrl+C closes only the inspector and restores the editor draft.
-  Ctrl+D also closes it when the call list or search field has focus.
 - Wide terminals show calls and details side by side; narrow terminals stack them.
 
 Details include the call/run IDs, timestamp and duration when captured, structured

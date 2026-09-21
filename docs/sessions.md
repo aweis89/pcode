@@ -23,9 +23,9 @@ in the current repository, including its linked worktrees (newest first, labeled
 by their first prompt), or the exact workspace outside Git, with every
 prompt and a truncated, rendered response for the selected session alongside. `/`
 searches prompts across sessions (space-separated words are all required) and ↑/↓
-move the selection while you type; `r` includes responses, `w` includes every
-workspace. Tab focuses the content pane, where arrows scroll by line,
-PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page. Enter resumes the selected
+move the selection while you type (Ctrl+U/Ctrl+D by half a page); `r` includes
+responses, `w` includes every workspace. Tab focuses the content pane, where arrows
+scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page. Enter resumes the selected
 session in place, Esc cancels. Resuming restores the saved model, history, and plan.
 
 ## Recalling earlier sessions

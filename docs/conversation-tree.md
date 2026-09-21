@@ -10,7 +10,8 @@ leaf. Moving the selection scrolls that pane so the selected prompt or response
 sits at the top, with what led to it above and what followed below. Below a
 selected row the pane follows the active branch where the tree forks.
 
-- **↑ / ↓:** move through the tree. PageUp / PageDown scroll through longer trees.
+- **↑ / ↓:** move through the tree. PageUp / PageDown and Ctrl+U / Ctrl+D scroll
+  through longer trees.
 - **Tab:** focus the Conversation pane; ↑ / ↓, PageUp / PageDown, and Ctrl+U /
   Ctrl+D scroll it. Tab again returns to the tree.
 - **Enter on a user prompt:** restore the context **before** that turn and place
@@ -18,7 +19,7 @@ selected row the pane follows the active branch where the tree forks.
 - **Enter on an assistant response:** restore the context **after** that turn.
   Send a new message to continue from there.
 - **Enter on Conversation start:** select empty context within the same session.
-- **Escape / Ctrl+C / Ctrl+D:** close the picker without changing context or the draft.
+- **Escape / Ctrl+C:** close the picker without changing context or the draft.
 
 The picker starts on the active position, marked `← active`. It shows every branch
 in depth-first order. Messages on the same path stay aligned; indentation increases
