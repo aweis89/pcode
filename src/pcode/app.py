@@ -1454,6 +1454,9 @@ class PreviewApp:
                 try:
                     dialog = tree_dialog(
                         tree,
+                        rich_theme=self.transcript.rich_theme,
+                        code_theme=self.transcript.code_theme,
+                        color_system=self.transcript.console.color_system,
                         input=modal_input,
                         output=session.app.output,
                         style=session.app.style,
