@@ -868,6 +868,9 @@ def retry_ceiling(error: Exception) -> str | None:
     )
 
 
+CODEX_LOGIN_HINT = "Run `/login openai-codex` (or `codex login`, then restart pcode)."
+
+
 def error_message(error: Exception) -> str:
     """Don't print raw provider bodies/validation inputs; they can contain secrets."""
     if isinstance(error, BaseExceptionGroup) and error.exceptions:
@@ -884,7 +887,7 @@ def error_message(error: Exception) -> str:
         # LoginError contains only fixed, sanitized setup/refresh guidance.
         return str(error)
     if name == "UserError" and "Codex CLI credentials" in str(error):
-        return "Provider login missing or invalid. Run `codex login`, then restart pcode."
+        return f"Provider login missing or invalid. {CODEX_LOGIN_HINT}"
     if name == "UserError" and "ANTHROPIC_API_KEY" in str(error):
         # pcode defers the model check so /login stays reachable without a
         # credential; the failure then surfaces here, on the first prompt.
@@ -898,11 +901,8 @@ def error_message(error: Exception) -> str:
             "invalid_grant",
         ):
             if code in str(error):
-                return (
-                    f"Provider login is no longer valid ({code}). "
-                    "Run `codex login`, then restart pcode."
-                )
-        return "Provider token refresh failed. Run `codex login`, then restart pcode."
+                return f"Provider login is no longer valid ({code}). {CODEX_LOGIN_HINT}"
+        return f"Provider token refresh failed. {CODEX_LOGIN_HINT}"
     if "Credential" in name or "Authentication" in name:
         return f"Authentication failed ({name}). Refresh your provider login and restart."
     status = getattr(error, "status_code", None)

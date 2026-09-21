@@ -175,23 +175,24 @@ def create_coder(workspace: Path, subagents: Sequence = ()) -> CombinedCapabilit
     )
 
 
-def create_agent(
-    model: str, workspace: Path, extensions: Sequence = (), subagents: Sequence = ()
-) -> Agent:
-    """Build the terminal's agent; `extensions` and `subagents` come from `pcode.ext`."""
+def codex_model(model: str) -> OpenAICodexModel:
+    """Build a Codex model; reads the CLI's `auth.json` at construction time."""
     proxy = os.environ.get("PCODE_LLM_PROXY", "").strip()
     # Subscription endpoints reject the explicit cache markers that Harness
     # Planning adds after write_plan. Keep the native provider/auth/model name;
     # override only this advertised capability (verified against AI 2.43.0).
-    resolved = (
-        OpenAICodexModel(
-            model.removeprefix("openai-codex:"),
-            profile=OpenAIModelProfile(openai_supports_prompt_cache_breakpoints=False),
-            **({"provider": ProxiedCodexProvider(proxy)} if proxy else {}),
-        )
-        if model.startswith("openai-codex:")
-        else model
+    return OpenAICodexModel(
+        model.removeprefix("openai-codex:"),
+        profile=OpenAIModelProfile(openai_supports_prompt_cache_breakpoints=False),
+        **({"provider": ProxiedCodexProvider(proxy)} if proxy else {}),
     )
+
+
+def create_agent(
+    model: str, workspace: Path, extensions: Sequence = (), subagents: Sequence = ()
+) -> Agent:
+    """Build the terminal's agent; `extensions` and `subagents` come from `pcode.ext`."""
+    resolved = codex_model(model) if model.startswith("openai-codex:") else model
     if model.startswith("meridian:"):
         from pcode.meridian import meridian_model
 

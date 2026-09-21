@@ -149,6 +149,7 @@ class PreviewApp:
         self.session_info_requested = False
         self.tree_requested = False
         self.login_requested: str | None = None
+        self.logout_requested: str | None = None
         self.compact_requested: str | None = None
         # /resend produces a model request, so it leaves the command path here.
         self.resend_requested = False
@@ -239,12 +240,18 @@ class PreviewApp:
             ),
             Command(
                 "/login",
-                "Sign in to Anthropic in a browser",
+                "Sign in to Anthropic or OpenAI Codex in a browser",
                 self.login,
-                ("anthropic",),
+                ("anthropic", "openai-codex"),
                 group="Model",
             ),
-            Command("/logout", "Remove the stored Anthropic login", self.logout, group="Model"),
+            Command(
+                "/logout",
+                "Remove a stored login (anthropic or openai-codex)",
+                self.logout,
+                ("anthropic", "openai-codex"),
+                group="Model",
+            ),
             Command(
                 "/extensions",
                 "Extensions: list / on NAME / off NAME",
@@ -836,12 +843,22 @@ class PreviewApp:
         # Signing in stores a credential; it does not require the conversation to
         # already be on Anthropic. A non-Anthropic session keeps its own model.
         source = argument.strip() or "anthropic"
-        if source != "anthropic":
-            self.transcript.note("Usage: /login [anthropic]")
+        if source not in {"anthropic", "openai-codex"}:
+            self.transcript.note("Usage: /login [anthropic|openai-codex]")
             return
         self.login_requested = source
 
     def logout(self, argument: str) -> None:
+        source = argument.strip() or "anthropic"
+        if source == "openai-codex":
+            self.logout_requested = source
+            return
+        if source != "anthropic":
+            self.transcript.note("Usage: /logout [anthropic|openai-codex]")
+            return
+        self.logout_anthropic()
+
+    def logout_anthropic(self) -> None:
         from pcode.anthropic_oauth import credentials_path, delete_tokens
         from pcode.auth import LoginError
 
@@ -865,8 +882,53 @@ class PreviewApp:
         )
 
     async def perform_login(self) -> None:
+        source = self.login_requested
         self.login_requested = None
-        await self.login_anthropic()
+        if source == "openai-codex":
+            await self.login_codex()
+        else:
+            await self.login_anthropic()
+
+    async def login_codex(self) -> None:
+        from pcode.agent import codex_model
+        from pcode.auth import LoginError
+        from pcode.codex_login import login
+
+        self.transcript.note(
+            "Running `codex login`. Sign in with your ChatGPT account (Ctrl+C cancels):"
+        )
+        try:
+            await login(notify=self.transcript.note)
+            # Codex credentials are read when the model is built, so a Codex
+            # conversation must rebuild its model to adopt the new sign-in.
+            if self.model and self.model.startswith("openai-codex:"):
+                self.runtime.agent.model = await asyncio.to_thread(codex_model, self.model)
+            self.transcript.note(
+                "Signed in to OpenAI Codex. The Codex CLI stores the credential "
+                "(CODEX_HOME is honored); /logout openai-codex removes it."
+            )
+        except asyncio.CancelledError:
+            self.transcript.note("OpenAI Codex sign-in cancelled.")
+            raise
+        except LoginError as error:
+            self.transcript.error(str(error))
+        except Exception:
+            self.transcript.error("OpenAI Codex sign-in failed. No credential details were logged.")
+
+    async def perform_logout(self) -> None:
+        from pcode.auth import LoginError
+        from pcode.codex_login import logout
+
+        self.logout_requested = None
+        try:
+            await logout()
+        except LoginError as error:
+            self.transcript.error(str(error))
+            return
+        self.transcript.note(
+            "Removed the Codex CLI's stored login. This conversation keeps its current "
+            "model until the token expires; use /login openai-codex to sign in again."
+        )
 
     async def login_anthropic(self) -> None:
         from pcode.anthropic_oauth import AnthropicOAuthModel, credentials_path, login
@@ -2430,6 +2492,8 @@ class PreviewApp:
                             await self.reload_extensions()
                         if self.login_requested:
                             await self.perform_login()
+                        if self.logout_requested:
+                            await self.perform_logout()
                         if self.tree_requested:
                             await self.choose_tree(output, session)
                         if self.session_requested:
