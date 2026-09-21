@@ -290,6 +290,86 @@ def test_reload_rebuilds_the_agent_and_commands(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
+def test_disabled_extension_is_listed_but_not_imported(tmp_path):
+    write_extension(user_extension_dir(), "greeter", GREETER)
+    write_extension(
+        user_extension_dir(), "explodes", "raise RuntimeError('imported')\n\ndef setup(pcode): ..."
+    )
+    save_preferences(extensions_off="explodes")
+
+    loaded = load_extensions(tmp_path)
+    off = {e.name: e for e in loaded.extensions}["explodes"]
+    # Off means never imported, so a module that fails at import is not a failure.
+    assert not off.enabled and off.error is None
+    assert loaded.failed == []
+    assert loaded.disabled == [off]
+    assert [c.name for c in loaded.commands] == ["/hello"]
+    assert "explodes (config/pcode/extensions/explodes.py): off (/extensions on explodes)" in (
+        loaded.report(tmp_path)
+    )
+
+
+def test_opt_in_extension_loads_only_once_enabled(tmp_path):
+    write_extension(user_extension_dir(), "optional", "    DEFAULT_ENABLED = False\n" + GREETER)
+    (extension,) = load_extensions(tmp_path).extensions
+    assert extension.disabled == "off by default"
+    assert extension.capabilities == [] and extension.commands == []
+
+    save_preferences(extensions_on="optional")
+    (extension,) = load_extensions(tmp_path).extensions
+    assert extension.loaded, extension.error
+    assert [c.name for c in extension.commands] == ["/hello"]
+
+
+def test_extensions_command_toggles_and_reloads(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    from pcode.ext import name_list
+
+    write_extension(user_extension_dir(), "greeter", GREETER)
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output), workspace=tmp_path, model="test")
+
+    async def scenario():
+        await app._initialize_runtime()
+        app.handle("/extensions")
+        assert "greeter" in output.getvalue()
+        assert "on greeter" not in app.extension_arguments()
+        assert "off greeter" in app.extension_arguments()
+
+        app.handle("/extensions off greeter")
+        assert app.reload_requested
+        assert name_list("extensions_off") == {"greeter"}
+        await app.reload_extensions()
+        assert app.registry.find("/hello") is None
+        assert "Reloaded 0 extensions, 1 off" in output.getvalue()
+        assert app.extension_arguments() == ("list", "on greeter")
+
+        app.handle("/extensions on greeter")
+        assert name_list("extensions_off") == set()
+        await app.reload_extensions()
+        assert app.registry.find("/hello") is not None
+        app.runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_extensions_command_rejects_bad_usage(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output), workspace=tmp_path, model="test")
+
+    async def scenario():
+        await app._initialize_runtime()
+        app.handle("/extensions enable greeter")
+        app.handle("/extensions off greeter")
+        app.runtime.close()
+
+    asyncio.run(scenario())
+    text = output.getvalue()
+    assert "Usage: /extensions" in text
+    assert "Unknown extension 'greeter'" in text
+
+
 def test_commands_require_a_live_session(tmp_path):
     output = StringIO()
     app = PreviewApp(console=Console(file=output), workspace=tmp_path)

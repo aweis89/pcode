@@ -243,8 +243,11 @@ class PreviewApp:
             Command("/logout", "Remove the stored Anthropic login", self.logout, group="Model"),
             Command(
                 "/extensions",
-                "List loaded extensions and where they come from",
-                self.list_extensions,
+                "Extensions: list / on NAME / off NAME",
+                self.manage_extensions,
+                ("list", "on", "off"),
+                free_arguments=True,
+                argument_provider=self.extension_arguments,
                 group="Model",
             ),
             Command(
@@ -407,19 +410,40 @@ class PreviewApp:
                 self.registry.register(command)
                 self.extension_command_names.append(command.name)
 
-    def list_extensions(self, argument: str) -> None:
-        from pcode.ext import PROJECT_DIR, user_extension_dir
+    def extension_arguments(self) -> tuple[str, ...]:
+        """Complete `on`/`off` against the extensions this workspace discovered."""
+        found = self.extensions.extensions if self.extensions else ()
+        return (
+            "list",
+            *(f"on {e.name}" for e in found if not e.enabled),
+            *(f"off {e.name}" for e in found if e.enabled),
+        )
 
-        if argument:
-            raise ValueError("/extensions takes no arguments.")
-        if not self.model:
-            raise ValueError("/extensions requires a live model session.")
-        lines = self.extensions.report(self.workspace) if self.extensions else []
-        if not lines:
-            lines = ["No extensions loaded."]
-        lines.append(f"User extensions: {user_extension_dir()}")
+    def manage_extensions(self, argument: str) -> None:
+        """`/extensions` lists what loaded; `on NAME` / `off NAME` change it and reload."""
+        from pcode.ext import PROJECT_DIR, set_enabled, user_extension_dir
         from pcode.project_trust import is_trusted
 
+        if not self.model:
+            raise ValueError("/extensions requires a live model session.")
+        parts = argument.split()
+        if parts and parts != ["list"]:
+            if len(parts) != 2 or parts[0] not in {"on", "off"}:
+                raise ValueError("Usage: /extensions [list] | /extensions on|off NAME")
+            action, name = parts
+            known = {e.name for e in self.extensions.extensions} if self.extensions else set()
+            if name not in known:
+                listing = f" Known: {', '.join(sorted(known))}" if known else ""
+                raise ValueError(f"Unknown extension '{name}'.{listing}")
+            # Refuse before writing, so the preference cannot drift from the session.
+            self.reload("")
+            set_enabled(name, action == "on")
+            self.transcript.note(f"Extension '{name}' turned {action}; reloading.")
+            return
+        lines = self.extensions.report(self.workspace) if self.extensions else []
+        if not lines:
+            lines = ["No extensions found."]
+        lines.append(f"User extensions: {user_extension_dir()}")
         lines.append(
             f"Project extensions ({PROJECT_DIR}): "
             + (
@@ -428,7 +452,7 @@ class PreviewApp:
                 else "off; answer the launch prompt or /config set project_extensions on"
             )
         )
-        lines.append("Ask pcode to write one, then /reload.")
+        lines.append("Turn one on or off with /extensions on|off NAME. Ask pcode to write one.")
         self.transcript.note("\n".join(lines))
 
     def reload(self, argument: str) -> None:
@@ -456,8 +480,10 @@ class PreviewApp:
         self.runtime.replace_agent(agent)
         await self.runtime.refresh_context()
         self.register_extension_commands()
-        count = len(loaded.extensions) - len(loaded.failed)
+        count = len(loaded.extensions) - len(loaded.failed) - len(loaded.disabled)
         summary = f"Reloaded {count} extension{'s' if count != 1 else ''}"
+        if loaded.disabled:
+            summary += f", {len(loaded.disabled)} off"
         if loaded.failed:
             summary += f", {len(loaded.failed)} failed"
         # A changed tool list or instruction invalidates the cached prompt prefix.
@@ -1840,8 +1866,9 @@ class PreviewApp:
             for extension, line in zip(
                 self.extensions.extensions, self.extensions.report(self.workspace), strict=True
             ):
-                # Shipped defaults are not news at every launch; /extensions lists them.
-                if extension.loaded and extension.scope == "bundled":
+                # Shipped defaults, and extensions the user turned off, are not news
+                # at every launch; /extensions lists them.
+                if not extension.enabled or (extension.loaded and extension.scope == "bundled"):
                     continue
                 (lines if extension.loaded else warnings).append("Extension " + line)
         for line in lines + warnings:
