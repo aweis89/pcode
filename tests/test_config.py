@@ -26,6 +26,7 @@ from pcode.preferences import (
 def test_defaults_and_path_do_not_create_files():
     assert configure(["path"]) == str(preferences_path())
     assert json.loads(configure([])) == {
+        "model_providers": "",
         "send_mode": "steering",
         # No Anthropic credential has been chosen until /login stores one.
         "anthropic_auth": None,

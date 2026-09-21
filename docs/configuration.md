@@ -27,6 +27,27 @@ an active setting and save its default immediately, use `/theme`, `/effort`,
 `/model`, or `/autocompact` instead. CLI overrides such as `--theme` and `--model`
 do not rewrite global defaults, and resumed sessions retain their own model.
 
+## Model provider filter
+
+Limit the `/model` selector to specific providers:
+
+```sh
+pcode config set model_providers openai-codex,anthropic
+pcode config unset model_providers # Restore automatic detection of all active providers
+```
+
+Or run `/config set model_providers openai-codex,anthropic` inside pcode.
+This setting is read each time the selector opens, without a restart. In
+`preferences.json` it is a string: `"model_providers": "openai-codex,anthropic"`.
+Names match exactly: `openai-codex` does not include `openai`, `openai-chat`, or
+`openai-responses`. Unknown provider names are rejected.
+
+An unset or empty value shows all automatically detected active providers.
+A nonempty list filters those providers; it does not configure credentials or
+force inactive providers to appear. The current provider is also hidden if it
+is excluded. This only filters the selector, not explicit `/model PROVIDER:MODEL`
+commands, CLI model overrides, or resumed sessions.
+
 ## Independent instances
 
 `PCODE_CONFIG_DIR` points pcode at a different config directory without moving

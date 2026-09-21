@@ -113,6 +113,11 @@ def active_providers(current: str | None) -> set[str]:
             active.add("openai-codex")
     except OSError:
         pass
+    from pcode.preferences import load_preferences
+
+    allowed = load_preferences().get("model_providers", "")
+    if allowed:
+        active.intersection_update(name.strip() for name in allowed.split(","))
     return active
 
 
