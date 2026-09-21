@@ -18,9 +18,10 @@ import socket
 import tempfile
 from contextlib import aclosing, nullcontext
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit
 
 import anyio
+import httpx2
 from fastmcp.client.auth import OAuth
 from fastmcp.client.oauth_callback import OAuthCallbackResult, create_oauth_callback_server
 from filelock import FileLock
@@ -131,6 +132,30 @@ class _CallbackServer(Server):
                 await listener.wait_closed()
 
 
+def _single_token_auth(request: httpx2.Request) -> httpx2.Request:
+    """Keep Basic credentials exclusively in the header of native token requests.
+
+    The SDK removes client_secret for Basic auth but leaves client_id in the
+    form, which strict servers reject as a second authentication method. Limit
+    this workaround to token builders; resource requests remain untouched.
+    """
+    if request.headers.get("Authorization", "").partition(" ")[0].lower() != "basic":
+        return request
+    form = parse_qsl(request.content.decode(), keep_blank_values=True)
+    filtered = [(key, value) for key, value in form if key not in {"client_id", "client_secret"}]
+    if filtered == form:
+        return request
+    headers = request.headers.copy()
+    del headers["Content-Length"]
+    return httpx2.Request(
+        request.method,
+        request.url,
+        content=urlencode(filtered).encode(),
+        headers=headers,
+        extensions=request.extensions,
+    )
+
+
 class LoopbackOAuth(OAuth):
     """FastMCP handles protocol/security; this adapter owns callback I/O lifetime."""
 
@@ -142,6 +167,16 @@ class LoopbackOAuth(OAuth):
         self._callback_socket: socket.socket | None = None
         self._flow_lock = asyncio.Lock()
         self._expected_state: str | None = None
+
+    async def _exchange_token_authorization_code(
+        self, auth_code: str, code_verifier: str
+    ) -> httpx2.Request:
+        return _single_token_auth(
+            await super()._exchange_token_authorization_code(auth_code, code_verifier)
+        )
+
+    async def _refresh_token(self) -> httpx2.Request:
+        return _single_token_auth(await super()._refresh_token())
 
     def _adopt_registered_port(self, registered) -> int:
         """A registration from an earlier process names its own callback port; the
