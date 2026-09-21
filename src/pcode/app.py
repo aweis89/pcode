@@ -1049,6 +1049,7 @@ class PreviewApp:
                 try:
                     dialog = links_dialog(
                         links,
+                        message_links=conversation_links(tree, include_tools=False),
                         input=modal_input,
                         output=session.app.output,
                         style=session.app.style,
