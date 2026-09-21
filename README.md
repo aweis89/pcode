@@ -172,7 +172,8 @@ repository's file is what starts each of its sessions in a worktree.
 #### Trusting a repository's own code
 
 A repository can ship code that runs at launch with your permissions:
-`.pcode/extensions/*.py` (see `/extensions`) and `.pcode/worktree-setup`. Neither
+`.pcode/extensions/*.py` (see `/extensions`, which lists every extension and its
+state, and turns one on or off) and `.pcode/worktree-setup`. Neither
 runs until you trust that repository. The first interactive launch inside one
 that ships either asks:
 
@@ -210,6 +211,9 @@ is only sensible on a machine where you wrote all of them.
 | `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `project_extensions` | `off` | `on`, `off` (`on` trusts every repository's `.pcode/extensions` and `worktree-setup`) |
 | `trusted_projects` | `` | `:`-separated repository paths whose shipped code may run; the launch prompt appends here |
+| `extension_dirs` | `` | `:`-separated extra directories searched for extensions, after the user one |
+| `extensions_off` | `` | `,`-separated extension names that never load (`/extensions off NAME`) |
+| `extensions_on` | `` | `,`-separated opt-in extension names to load (`/extensions on NAME`) |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian); fallback for models `/effort` has not set |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
 

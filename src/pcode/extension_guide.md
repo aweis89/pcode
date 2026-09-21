@@ -25,6 +25,24 @@ rebuilds the agent around the current conversation and prints each extension's
 status; a broken one is reported with its error and line and contributes
 nothing, and the session keeps working. `/extensions` lists the current state.
 
+## Turning one on and off
+
+`/extensions` lists every extension found, where it came from, and what it
+contributed (or why it did not). `/extensions off NAME` stops it loading at all
+and `/extensions on NAME` brings it back; either reloads the session and is
+remembered in the `extensions_off` / `extensions_on` preferences. This works for
+bundled extensions too, so `/extensions off web_research` removes the shipped web
+tools without writing a replacement file.
+
+An extension that should ship opt-in says so at module level:
+
+```python
+DEFAULT_ENABLED = False  # Discovered and listed, but loads only after /extensions on <name>
+```
+
+pcode still imports the module to read that flag, so keep import-time work
+cheap; `setup` does not run until the user turns it on.
+
 ## The API
 
 ```python
