@@ -47,7 +47,7 @@ from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEve
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.cache_warnings import CacheBustEvent
-from pcode.compaction import AutoCompaction, summarize
+from pcode.compaction import AutoCompaction, ContextTracking, summarize
 from pcode.conversation_tree import ConversationTree
 from pcode.delegation import ChildActivity
 from pcode.diagnostics import error_details, transient, transport_types
@@ -85,6 +85,7 @@ from pcode.tool_display import (
     delegation_detail,
     label,
     native_result_detail,
+    native_result_projection,
     result_detail,
     shell_result_status,
     shell_status,
@@ -593,6 +594,7 @@ class AgentRuntime:
                         Steering(lambda: self._consume_steering(run_id)),
                         self._request_checkpoint,
                         TokenAccounting(record=self.totals.add),
+                        ContextTracking(self),
                     ]
                     + ([AutoCompaction(self, run_id)] if self.auto_compact else [])
                 ),
@@ -674,7 +676,7 @@ class AgentRuntime:
                             detail,
                             failed=failed,
                             call_id=event.part.tool_call_id,
-                            result=capture(event.part.content),
+                            result=capture(native_result_projection(event.part.content)),
                             run_id=run_id,
                             outcome=event.part.outcome if not failed else "error",
                             elapsed_seconds=max(0, monotonic() - started),

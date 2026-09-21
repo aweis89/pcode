@@ -226,9 +226,11 @@ identifier, reasoning effort, and activity. Live models also show context, for
 example `ctx: 12.5k/200k` (tokens used / effective working window).
 
 Used context is the **latest completed request's input tokens**, including cached
-input, not cumulative session usage. It updates after a turn and follows the
-selected conversation history when resuming or navigating branches. It does not
-include unsent drafts, subsequent tool results, or a response still streaming.
+input, not cumulative session usage. It updates as each request completes, so it
+moves during a long tool loop rather than only at the end of the turn, and it
+follows the selected conversation history when resuming or navigating branches.
+It does not include unsent drafts, subsequent tool results, or a response still
+streaming.
 The working window is shared with compaction. Pcode first uses metadata from the
 actual serving provider: Codex's authenticated models endpoint or Anthropic's
 Models API. Otherwise it uses an exact provider/model match from
@@ -339,6 +341,13 @@ timeouts, and tool retries are failures; interruption and unknown results remain
 distinct. Background launch/check/stop calls show their process ID and related
 calls when available. A successful launch is not proof that the process finished
 successfully.
+
+Provider-executed web searches (Anthropic's native `web_search`, used when the
+`web_search` preference is `auto`) list each hit's title, URL, and age. The page
+text itself arrives encrypted for the provider and is replayed to the model on
+later requests; there is no client-side key, so the inspector cannot show it.
+Local searches (Exa or DuckDuckGo) and `get_page` return plain text and show in
+full.
 
 Saved inspection data is a redacted display projection in `transcript.jsonl`, not
 an execution or recovery log. It survives resume and failures in later model
