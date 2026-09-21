@@ -18,6 +18,7 @@ from rich.theme import Theme
 from pcode.diagnostics import redact
 from pcode.popup_ui import (
     RichPane,
+    bind_list_paging,
     list_pane_height,
     popup_container,
     popup_style,
@@ -88,13 +89,13 @@ class SessionBrowser:
 
         @keys.add("escape", eager=True)
         @keys.add("c-c")
-        @keys.add("c-d", filter=~has_focus(self.detail.window))
         def close(event):
             event.app.exit(result=None)
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
         steer_list_from_query(keys, self.query, self.list)
+        bind_list_paging(keys, self.list, has_focus(self.list) | has_focus(self.query))
 
         @keys.add("enter")
         def resume(event):
@@ -148,8 +149,8 @@ class SessionBrowser:
                 header,
                 self.query,
                 body,
-                Label("↑↓ Select/scroll · Enter Resume · Tab Focus · Esc Cancel"),
-                Label("In Turns: PgUp/PgDn Page · Ctrl+U/D Half page"),
+                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
+                Label("Enter Resume · Tab Focus · Esc Cancel"),
                 Label("In Sessions: / Search (↑↓ select while typing) · r Responses too · w All"),
             ]
         )
