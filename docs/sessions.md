@@ -103,6 +103,11 @@ Default location: `$XDG_STATE_HOME/pcode/sessions`, or
   (including tool arguments/results and provider reasoning metadata), and a tool-effect ledger.
 - `transcript.jsonl`: submitted prompts, streamed text, completed blocks/tool summaries,
   bounded redacted tool-inspection arguments/results, and structured failure diagnostics (HTTP status, provider code/parameter/message).
+  Failed turns also record the configured parent model's provider and base URL
+  when available, both in the transcript and `errors.log`. URL userinfo, query,
+  and fragment are omitted. This is the configured route, not proof of which
+  endpoint failed inside a delegated run. Quota/credit exhaustion and rate limits
+  get specific guidance rather than the generic login/connectivity hint.
 
 Session directories are mode 0700 and data files are 0600. **These files contain
 conversation and repository content in plaintext.** They stay outside the repo by
