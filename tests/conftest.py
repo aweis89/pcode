@@ -108,6 +108,7 @@ def isolated_preferences(monkeypatch, tmp_path):
     # A developer's real Anthropic sign-in must never be read, refreshed, or
     # removed by the suite; XDG_CONFIG_HOME above already redirects the default.
     monkeypatch.delenv("PCODE_CREDENTIALS_FILE", raising=False)
+    monkeypatch.delenv("PCODE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("PCODE_OAUTH_CALLBACK_PORT", raising=False)
     # skill_dirs defaults to ~/.agents/skills, so a developer's own skills would
     # otherwise register as commands in every app the suite builds.

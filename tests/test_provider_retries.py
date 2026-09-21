@@ -46,7 +46,10 @@ def test_http_errors_surface_without_sdk_backoff(source, status, tmp_path):
                             pass
                 message = error_message(caught.value)
                 assert f"HTTP {status}" in message
-                assert "Synthetic provider failure" in message
+                if status == 429:
+                    assert "rate limit reached" in message
+                else:
+                    assert "Synthetic provider failure" in message
             finally:
                 runtime.close()
 

@@ -312,7 +312,9 @@ def config_dir() -> Path:
     """pcode's user config directory: `$PCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/pcode`.
 
     Preferences, `mcp.json`, extensions, the worktree setup script, and stored
-    logins all live here.
+    logins all live here. `PCODE_CONFIG_DIR` names the directory directly so
+    independent instances can have their own login and settings without moving
+    every other XDG-aware program along with them.
     """
     override = os.environ.get("PCODE_CONFIG_DIR", "").strip()
     if override:

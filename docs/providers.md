@@ -99,8 +99,8 @@ pcode -m anthropic:<model-id>   # then: /login
   SSH, forward it with `ssh -L 54545:localhost:54545`). The callback accepts only
   a code whose `state` matches this sign-in; anything else gets an error page and
   the sign-in keeps waiting. Sign-in times out after five minutes.
-- Tokens are stored in `~/.config/pcode/credentials.json` (`XDG_CONFIG_HOME` and
-  `PCODE_CREDENTIALS_FILE` are honored), written atomically with owner-only (0600)
+- Tokens are stored in `~/.config/pcode/credentials.json` (`XDG_CONFIG_HOME`,
+  `PCODE_CONFIG_DIR`, and `PCODE_CREDENTIALS_FILE` are honored), written atomically with owner-only (0600)
   permissions. pcode owns this refresh token: expiry is renewed automatically, five
   minutes early, serialized across pcode processes, and again on a 401. Refreshing
   never blocks the terminal and failures never print bodies or token values.

@@ -27,6 +27,22 @@ an active setting and save its default immediately, use `/theme`, `/effort`,
 `/model`, or `/autocompact` instead. CLI overrides such as `--theme` and `--model`
 do not rewrite global defaults, and resumed sessions retain their own model.
 
+## Independent instances
+
+`PCODE_CONFIG_DIR` points pcode at a different config directory without moving
+the rest of your `XDG_CONFIG_HOME`. Everything pcode keeps there follows it:
+`preferences.json`, `credentials.json` and `mcp-credentials.json` (so each
+instance has its own `/login`), `mcp.json`, `extensions/`, and `worktree-setup`.
+Sessions and other state still live under `XDG_STATE_HOME`; set
+`PCODE_SESSION_DIR` too if those should be separate.
+
+```sh
+PCODE_CONFIG_DIR=~/.config/pcode-work pcode      # separate login and settings
+```
+
+`PCODE_CREDENTIALS_FILE` and `PCODE_MCP_CONFIG` still win over the directory
+for their single file.
+
 ## Per-repository overrides
 
 A workspace's `.pcode/preferences.json` is layered over the user file at launch,
