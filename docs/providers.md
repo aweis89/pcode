@@ -2,21 +2,26 @@
 
 ## Authentication
 
-For `openai-codex:`, use an existing subscription login. If missing or expired,
-run `/login openai-codex` inside pcode or, equivalently, in a shell:
+For `openai-codex:`, use `/login openai-codex` to sign in with your ChatGPT
+account through Pydantic AI's browser OAuth flow. No Codex CLI is required.
+Pcode stores credentials in `codex-credentials.json` under `$PCODE_CONFIG_DIR`,
+otherwise `$XDG_CONFIG_HOME/pcode` (default `~/.config/pcode`).
+`PCODE_CODEX_CREDENTIALS_FILE` overrides the full path. The file is owner-only,
+replaced atomically, and refreshed credentials are saved for future launches.
 
-```sh
-codex login
-```
+Pcode's stored login takes precedence. When absent, the existing Codex CLI
+`auth.json` remains a read-only fallback (`CODEX_HOME` is honored). A malformed
+pcode login reports an error rather than silently switching accounts.
+`/logout openai-codex` removes only pcode's login, never the CLI's; new models
+then use the CLI fallback if available. The active model retains its cached token.
+CLI-fallback token refreshes remain in memory only.
 
-Both need the [Codex CLI](https://github.com/openai/codex) on `PATH`: `/login
-openai-codex` runs `codex login` and relays the sign-in URL into the transcript
-(Ctrl+C cancels; on a headless machine use `codex login --device-auth` in a
-shell instead). `/logout openai-codex` runs `codex logout`. Pydantic reads the
-CLI's credential store (`CODEX_HOME` is honored); pcode never prints, copies, or
-writes it. This provider does not fall back to `OPENAI_API_KEY`.
-Refreshed credentials live only in the provider's memory with the default loader,
-so you may need to sign in again after restarting. Model availability still
+The browser callback uses fixed port 1455; close other login flows using that
+port before signing in. On headless machines, the separately installed Codex CLI's
+`codex login --device-auth` is an alternative. This provider never falls back to
+`OPENAI_API_KEY`.
+
+Model availability still
 depends on your account. Authentication failures are displayed without raw
 provider bodies or credential values.
 
@@ -39,7 +44,7 @@ Pydantic AI catalog, or only accepts IDs you type.
 | Prefix | Enabled by | Catalog |
 | --- | --- | --- |
 | `anthropic` | `/login` credential or `ANTHROPIC_API_KEY` | yes |
-| `openai-codex` | `codex login` credential file (`CODEX_HOME` honored) | yes (all OpenAI IDs) |
+| `openai-codex` | pcode login, then CLI credential file (`CODEX_HOME` honored) | yes (all OpenAI IDs) |
 | `openai`, `openai-chat`, `openai-responses` | `OPENAI_API_KEY` | yes |
 | `meridian` | `meridian` on `PATH` or `PCODE_MERIDIAN_BASE_URL` | yes (Anthropic IDs) |
 | `google` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | yes |
@@ -112,8 +117,8 @@ pcode -m anthropic:<model-id>   # then: /login
   supported path remains `ANTHROPIC_API_KEY`.
 - No API key is minted, and nothing is written to another tool's credential store.
 
-For OpenAI Codex, `/login openai-codex` delegates to `codex login`; the CLI owns
-that credential store.
+For OpenAI Codex, `/login openai-codex` uses Pydantic AI OAuth and a separate
+pcode-owned credential file; the CLI store is only a fallback.
 
 There is no API-key entry UI; pcode's own credential storage holds only its own
 `/login` tokens. For ordinary API-key access, set `ANTHROPIC_API_KEY` in your
@@ -135,7 +140,7 @@ table whose credentials are configured:
 - Anthropic is enabled by a stored `/login` credential or `ANTHROPIC_API_KEY`.
   Detection checks for the stored file's presence only: opening the picker never
   reads pcode's credentials.
-- Codex is enabled when its CLI credential file exists (`CODEX_HOME` is honored).
+- Codex is enabled when its pcode or CLI credential file exists (`CODEX_HOME` is honored).
   Opening the picker checks file presence only, not its contents or validity.
 - Every other provider is enabled when its environment variable is set; only
   the variable name is checked, never the value.

@@ -236,16 +236,14 @@ disabled servers must not enter the agent's toolset collection at all.
 
 ### Codex sign-in
 
-`src/pcode/codex_login.py` implements `/login openai-codex` by running the
-`codex` CLI (`codex login` / `codex logout`) with pipes and relaying its output.
-The CLI must be on `PATH`; it owns `$CODEX_HOME/auth.json`, which Pydantic AI
-reads and never writes. Pydantic AI's `OpenAICodexOAuthFlow` is not used: it
-drops the `id_token` the CLI requires in that file, so a pcode-written login
-would be unreadable by the CLI. The `openai-codex` Python SDK was also rejected
-since it pins a `codex` binary wheel just to reach the same login. `codex login`
-prints its URL on stdout and needs no tty (verified with codex-cli 0.154.0);
-recheck the output on CLI upgrades. Codex credentials are read when the model
-is built, so a Codex conversation rebuilds its model after signing in.
+`src/pcode/codex_login.py` uses the installed Pydantic AI public
+`OpenAICodexOAuthFlow` and `OpenAICodexCredentialSource` APIs. Pydantic owns PKCE,
+token exchange, the localhost:1455 callback, and refresh; pcode owns browser
+opening and an atomic owner-only credential store. No Codex CLI or Python Codex
+SDK is required for this flow. Provider `load()` / `save()` callbacks persist
+rotated tokens. The CLI credential loader remains the fallback when pcode's
+file is absent, including when `PCODE_LLM_PROXY` is configured. The stores stay
+separate and pcode never writes or deletes the CLI's file.
 
 ### Anthropic subscription sign-in
 
