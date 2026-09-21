@@ -4,7 +4,6 @@ import json
 import os
 import re
 import tempfile
-from collections import deque
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -471,43 +470,61 @@ class SavedSession:
             }:
                 yield record
 
-    def recent_transcript(self, limit: int = 40) -> list[dict]:
-        """UI replay, distinct from the complete model history stored by Harness."""
-        records = deque(maxlen=limit)
+    def transcript_records(self):
+        """Stream active-path display records; Transcript owns the retention budget.
+
+        Only unfinished text is buffered. Flush thinking before interleaved display
+        records, as live output does, and don't repeat it at the completion marker.
+        """
         partial = ""
-        thinking = None
+        thinking = ""
+        thinking_streamed = False
         for record in self.active_records():
             kind = record.get("kind")
             if kind == "ThinkingDelta":
-                if thinking is None:
-                    thinking = {"kind": "thinking_partial", "text": ""}
-                    records.append(thinking)
-                thinking["text"] += record["text"]
-            elif kind == "Thinking":
-                if thinking is None:
-                    records.append(record)
-                else:
-                    # Update in place: unrelated tool/status records may have
-                    # arrived while the block was streaming. Never duplicate it.
-                    thinking.update(record)
-                thinking = None
+                thinking += record["text"]
+                thinking_streamed = True
+                continue
+            if kind not in {
+                "Thinking",
+                "TextDelta",
+                "Message",
+                "ToolSummary",
+                "EditCompleted",
+                "CacheBust",
+                "steering",
+                "turn_started",
+                "turn_completed",
+                "turn_failed",
+                "turn_cancelled",
+            }:
+                continue
+            if thinking:
+                yield {"kind": "thinking_partial", "text": thinking}
+                thinking = ""
+            if kind == "Thinking":
+                if not thinking_streamed:
+                    yield record
+                thinking_streamed = False
             elif kind == "TextDelta":
-                thinking = None
+                thinking_streamed = False
                 partial += record["text"]
             elif kind == "Message":
+                thinking_streamed = False
                 partial = ""
-                records.append(record)
-            elif kind in ("turn_failed", "turn_cancelled", "turn_started"):
-                thinking = None
+                yield record
+            elif kind.startswith("turn_"):
+                thinking_streamed = False
                 if partial:
-                    records.append({"kind": "partial", "markdown": partial})
+                    yield {"kind": "partial", "markdown": partial}
                     partial = ""
-                records.append(record)
-            elif kind in ("ToolSummary", "EditCompleted", "CacheBust"):
-                records.append(record)
+                yield record
+            else:
+                yield record
+        if thinking:
+            yield {"kind": "thinking_partial", "text": thinking}
         if partial:
-            records.append({"kind": "partial", "markdown": partial})
-        return list(records)
+            yield {"kind": "partial", "markdown": partial}
 
     def close(self) -> None:
         self.lock.release()

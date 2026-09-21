@@ -172,7 +172,7 @@ def test_coder_and_real_delegated_run_both_receive_limits(metadata, tmp_path, mo
                     "type": "tool_use",
                     "id": "delegate-1",
                     "name": "delegate_task",
-                    "input": {"agent_name": "explorer", "task": "Inspect the repository"},
+                    "input": {"agent_name": "worker", "task": "Inspect the repository"},
                 }
             ]
         return wire_response(body, blocks)

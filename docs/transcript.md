@@ -68,7 +68,7 @@ pcode config set show_thinking on   # Default is off
 ```
 
 **Privacy and persistence:** readable thinking is recorded in saved sessions even
-when hidden. Resuming a session restores thinking alongside its recent transcript;
+when hidden. Resuming a session restores thinking alongside its retained transcript;
 the complete text remains in the session journal. Interrupted blocks are retained
 too. Display redaction is not redaction of session files. Provider signatures and
 redacted/opaque thinking blocks are not printed or added to the readable-thinking
@@ -231,11 +231,24 @@ and scrollback, including shell output from before pcode started. It then rebuil
 only the transcript retained by this pcode process. This uses the normal-screen
 ANSI erase-scrollback sequence (verified in tmux); terminals that ignore that
 sequence may leave older copies in history. Redirected/non-terminal output is not
-cleared or replayed.
+cleared or redrawn; resume prints the retained slice once without terminal escapes.
 
-The in-memory replay log retains the latest **2,000 presentation entries**,
-including hidden command results. An entry can be a Markdown block, a completed
-tool result, a notice, or a separator. If older entries have been evicted, replay
-shows an omission notice. Saved sessions and diagnostics are unaffected. Session
-resume still loads its existing bounded transcript preview; replay does not load
-missing command payloads or reconstruct the complete on-disk session archive.
+Resume (`--continue` or `/resume`) loads the selected conversation path from disk
+into the same retention log, then performs a redraw. Switching branches with
+`/tree` also replaces the displayed history rather than appending another preview.
+Thinking, edits, and saved command results are retained even when hidden, so later
+visibility toggles work on resumed history too. Tools are never re-executed.
+
+One setting controls the text budget for both live redraw and resume:
+
+```sh
+pcode config set transcript_max_chars 2000000  # Default; applies on next launch
+```
+
+The budget counts estimated retained text characters, not rendered lines, bytes,
+or model tokens. Oldest entries are evicted first; the newest entry is kept even
+if it alone exceeds the budget. A tiny-write guard scales with the same setting
+(one entry per 100 budget characters, at least one entry; **20,000 entries** at the
+default). If history was evicted, redraw shows an omission notice. Saved sessions,
+model context, and diagnostics are unaffected. Ordinary redraw does not reread
+the archive; resume rebuilds the retained slice from it.

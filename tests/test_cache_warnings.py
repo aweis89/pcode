@@ -307,7 +307,7 @@ def test_warning_survives_saved_session_reopen_and_redraw(tmp_path):
         runtime.close()
     reopened = SavedSession.open(saved.info.id, saved.directory.parent)
     try:
-        assert [r["text"] for r in reopened.recent_transcript() if r["kind"] == "CacheBust"] == [
+        assert [r["text"] for r in reopened.transcript_records() if r["kind"] == "CacheBust"] == [
             bust.text
         ]
         app = PreviewApp(

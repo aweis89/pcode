@@ -9,6 +9,8 @@ from pathlib import Path
 from filelock import FileLock
 from pygments.styles import get_all_styles
 
+from pcode.transcript_log import CHAR_BUDGET
+
 # Every Pygments style installed here, including any added by a plugin package.
 # The scan costs a few milliseconds once; Rich imports Pygments regardless.
 SYNTAX_THEMES = tuple(sorted(get_all_styles()))
@@ -176,6 +178,11 @@ SETTINGS = {
         "off",
         ("on", "off"),
         description="Enable prompt-cache warnings and diagnostic fingerprints",
+    ),
+    "transcript_max_chars": Setting(
+        str(CHAR_BUDGET),
+        positive_integer=True,
+        description="Retained transcript text budget for resume and redraw (characters)",
     ),
     "error_scrollback_lines": Setting(
         "20",

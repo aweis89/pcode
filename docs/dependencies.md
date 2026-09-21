@@ -85,7 +85,7 @@ pinned by SHA.
   the installed `pydantic_ai_harness` implementation for the capabilities used.
   Verify Coder's actual tool composition, planning, and step-persistence APIs.
 
-### File access and explorer shell
+### File access and worker shell
 
 `src/pcode/workspace_filesystem.py` retains pcode's path/protection policy around
 Harness's `FileSystem` and `FileSystemToolset`: relative paths keep the workspace base, but absolute paths,
@@ -111,11 +111,18 @@ ripgrep, but an installed `pcode` entry point does not activate its environment'
 `bin` on PATH. `create_coder` appends that bin directory when `rg` is absent,
 without changing existing executable precedence. Test outside `uv run` too.
 
-Explorer receives the parent's file selection as read-only and a distinct stock
-`Shell` with the same settings and environment filtering. The no-edit rule is
-behavioral guidance, not confinement. Preserve `tests/test_explorer_shell.py`
-and `tests/test_coder_integration.py`. Persistent shell refers to process lifetime,
-not sticky `cd`: each call still starts at the workspace.
+The built-in worker is composed from the parent's core capabilities and extension
+capabilities, including write tools and guardrails. It has a distinct stock `Shell`
+with the same settings and environment filtering. Delegation is excluded to avoid
+recursion; the child retains independent run state, a plan, and request/time limits.
+Shared accounting/cache/output capabilities still come from Harness `SubAgents`.
+Runtime MCP toolsets are bound per turn through a context-local dynamic toolset:
+Harness's `inherit_tools` does not include per-run toolsets, while
+`Agent.override(toolsets=...)` would replace capability tools as well. Specialized
+extension delegates do not receive this binding. Preserve `tests/test_worker.py`,
+`tests/test_worker_shell.py`, `tests/test_mcp.py`, and `tests/test_coder_integration.py`.
+Persistent shell refers to process lifetime, not sticky `cd`: each call still
+starts at the workspace.
 
 `AutomaticRepoContext` bridges `FilesSearchedEvent` into upstream's traversal
 handler because `list_files` and `grep` no longer emit `DirectoryListedEvent`.
@@ -130,7 +137,7 @@ Verified in `repo_context/_loader.py`: the bound is inclusive; when it is not an
 ancestor of the resolved workspace, the loader falls back to workspace-only.
 `src/pcode/repo_context.py:create_repo_context` therefore supplies the resolved home
 for workspaces beneath it, or the filesystem root elsewhere, for both the main
-agent and explorer. Harness handles ancestor-first ordering, both instruction
+agent and worker. Harness handles ancestor-first ordering, both instruction
 filenames, real-path/content deduplication, and per-run cache isolation. No custom
 instruction scanner is needed. `repo_context_walk_up=off` instead supplies no
 bound, retaining workspace-local instructions. `repo_context_nested` independently
@@ -148,7 +155,7 @@ workspace, not intervening parents; it can also surface workspace instructions
 already loaded at startup. Its per-run seen-directory set is separate from the
 startup loader's deduplication. Keep `tests/test_repo_context.py` covering the
 boundary, symlink, deduplication, refresh, and all discovery-setting combinations
-with real filesystem tools on both main and explorer agents when upgrading.
+with real filesystem tools on both main and worker agents when upgrading.
 
 ### Delegation activity
 
@@ -417,7 +424,7 @@ PID/log/status footer intact even for head truncation and small budgets. It mark
 changed bodies so `shell.result_projection` omits previews whose clipping removed
 redaction context. Length-based detection alone stops working after reduction,
 especially for delegated calls that have no `CommandFinishedEvent` in the parent.
-Keep the real-shell parent/explorer tests, long-line recovery, serialized-history
+Keep the real-shell parent/worker tests, long-line recovery, serialized-history
 readback, and spill-failure fallback tests in `tests/test_tool_output_limits.py`.
 
 ### Reasoning effort
@@ -609,8 +616,11 @@ and [adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/ad
 `live.py` maps readable `ThinkingPart`/`ThinkingPartDelta` content into
 `ThinkingDelta` and emits a `Thinking` completion at `PartEndEvent`. These events
 are journaled independently of visibility. Never put signatures or redacted
-thinking data in them. `SavedSession.recent_transcript` collapses complete deltas
-into one block and preserves incomplete blocks on cancellation/failure/reopen.
+thinking data in them. `SavedSession.transcript_records` coalesces thinking deltas,
+flushes them before interleaved display records, skips duplicate completion text,
+and preserves incomplete blocks on cancellation/failure/reopen. Resume captures
+these writes into `TranscriptLog` under the same `transcript_max_chars` budget as
+live output, then requests the ordinary redraw; it has no separate record limit.
 Native model history remains separate from this readable presentation history.
 
 `TerminalOutput.thinking_delta` commits complete plain-text lines through
@@ -621,9 +631,11 @@ Define compound styles in the theme: a string such as `pcode.muted dim` is not a
 valid composite of a theme alias and an attribute in Rich's style parser.
 Consecutive thinking writes coalesce in `TranscriptLog`, without the old 8-KB
 preview truncation. Retention is bounded by the text a replay would emit, not by
-entry count: one committed Markdown block costs two entries, so an entry-only cap
-silently dropped visible history from long sessions on every resize. The loose
-entry cap remains only so a flood of tiny writes cannot grow the deque forever.
+entry count. An entry-only cap previously dropped visible history from long
+sessions on every resize. Live Markdown blocks and user prompts are now recorded
+atomically with their separators, so a trailing blank cannot evict an oversized
+newest message. The loose entry cap scales with the character budget and remains
+only so a flood of tiny writes cannot grow the deque forever.
 Markdown is retained as its source (`RetainedMarkdown`), because `Transcript.print`
 rebuilds the renderable with the current theme anyway and a parsed token tree
 costs tens of times its source.

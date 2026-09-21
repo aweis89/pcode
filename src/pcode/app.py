@@ -48,7 +48,6 @@ from pcode.runtime import (
     TextDelta,
     Thinking,
     ThinkingDelta,
-    ToolStarted,
     ToolSummary,
 )
 from pcode.shell_mode import execute, shell_command
@@ -1605,23 +1604,23 @@ class PreviewApp:
             raise ValueError("/tree is unavailable while working or messages are queued.")
         draft = await self.runtime.navigate(identity, edit=edit)
         self.activity.reset()
-        self.transcript.print(Rule("Conversation branch", style="pcode.muted"))
-        self.transcript.note(
-            "Context switched; previous branches are kept. File changes and tool effects "
-            "are not undone. Earlier scrollback is unchanged."
-        )
         if self.runtime.session:
             self.replay()
         else:
             from pcode.diagnostics import redact
 
             tree = self.runtime.tree
-            for node_id in tree.path(tree.active):
-                node = tree.nodes[node_id]
-                self.transcript.user(redact(node.prompt))
-                if node.response:
-                    self.transcript.events((Message(redact(node.response)),))
+            with self.transcript.restore():
+                for node_id in tree.path(tree.active):
+                    node = tree.nodes[node_id]
+                    self.transcript.user(redact(node.prompt))
+                    if node.response:
+                        self.transcript.events((Message(redact(node.response)),))
             self.activity.plan = tree.nodes[tree.active].plan if tree.active else []
+        self.transcript.note(
+            "Context switched; previous branches are kept. File changes and tool effects "
+            "are not undone."
+        )
         return draft
 
     async def choose_tree(self, output: TerminalOutput, session) -> None:
@@ -1699,56 +1698,42 @@ class PreviewApp:
 
         saved = self.runtime.session
         self.activity.plan = saved.latest_plan()
-        self.transcript.note(f"Resumed {saved.info.id}; showing recent transcript.")
-        for record in saved.recent_transcript():
-            kind = record["kind"]
-            if kind == "turn_started":
-                self.transcript.user(redact(record["prompt"]))
-            elif kind in ("Thinking", "thinking_partial"):
-                self.transcript.thinking(redact(record["text"]).rstrip("\n") + "\n\n")
-            elif kind == "CacheBust":
-                self.transcript.events((CacheBust(record["text"]),))
-            elif kind == "EditCompleted":
-                from pcode.edits import change_from_record
-
-                self.transcript.edit(change_from_record(record))
-            elif kind in ("Message", "partial"):
-                self.transcript.events((Message(redact(record["markdown"])),))
-                if kind == "partial":
-                    self.transcript.warning("[Partial output from an interrupted run]")
-
-        # Tool history is independent of the bounded conversation replay. Replay
-        # lifecycle events so concurrency order and interrupted starts survive.
+        # Reopening never leaves tools running. Settled results belong to the
+        # transcript, including hidden command payloads needed by later toggles.
         self.activity.tools.clear()
-        for record in saved.tool_events():
-            kind = record["kind"]
-            if kind.startswith("turn_"):
-                self.activity.tools.clear()
-            elif kind == "ToolStarted":
-                self.activity.tools.record(
-                    ToolStarted(
-                        record["name"],
-                        redact(record["detail"]),
-                        record["call_id"],
-                        redact(record.get("command", "")),
-                        parent_call_id=record.get("parent_call_id", ""),
-                        activity=redact(record.get("activity", "")),
+        with self.transcript.restore():
+            self.transcript.retained_note(f"Resumed {saved.info.id}")
+            for record in saved.transcript_records():
+                kind = record["kind"]
+                if kind in ("turn_started", "steering"):
+                    self.transcript.user(redact(record["prompt"]))
+                elif kind in ("Thinking", "thinking_partial"):
+                    self.transcript.thinking(redact(record["text"]).rstrip("\n") + "\n\n")
+                elif kind == "CacheBust":
+                    self.transcript.events((CacheBust(redact(record["text"])),))
+                elif kind == "EditCompleted":
+                    from pcode.edits import change_from_record
+
+                    self.transcript.edit(change_from_record(record))
+                elif kind == "ToolSummary":
+                    result = record.get("result")
+                    self.transcript.tool_result(
+                        ToolSummary(
+                            record["name"],
+                            redact(record["detail"]),
+                            record.get("failed", False),
+                            record.get("call_id", ""),
+                            record.get("elapsed_seconds"),
+                            redact(record.get("error", "")),
+                            redact(record.get("command", "")),
+                            result=redact(result) if isinstance(result, str) else None,
+                            parent_call_id=record.get("parent_call_id", ""),
+                        )
                     )
-                )
-            else:
-                self.activity.tools.record(
-                    ToolSummary(
-                        record["name"],
-                        redact(record["detail"]),
-                        record.get("failed", False),
-                        record.get("call_id", ""),
-                        record.get("elapsed_seconds"),
-                        redact(record.get("error", "")),
-                        redact(record.get("command", "")),
-                        parent_call_id=record.get("parent_call_id", ""),
-                    )
-                )
-        self.activity.tools.clear()
+                elif kind in ("Message", "partial"):
+                    self.transcript.events((Message(redact(record["markdown"])),))
+                    if kind == "partial":
+                        self.transcript.warning("[Partial output from an interrupted run]")
 
     def quit(self, argument: str) -> None:
         self.running = False

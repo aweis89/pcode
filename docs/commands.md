@@ -53,7 +53,7 @@ candidate's size so that cost is visible before you pick.
   This affects Rich output, not the input/completion palette. You can also start
   with `--color-style terminal` (default: `--color-style palette`). Run
   `/theme-preview` after switching to compare headings, links, quotes, tables, Python, and diffs.
-  Existing scrollback is not repainted.
+  Retained scrollback is rebuilt with the selected colors, just like `/redraw`.
 - Session, conversation-tree, model, and tool popups share terminal-default
   backgrounds and text, with reverse-video selection highlights. They follow your
   terminal background automatically, independently of `/theme` and `/colors`.

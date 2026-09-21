@@ -23,7 +23,7 @@ def test_child_runs_past_the_parents_near_exhausted_request_budget(tmp_path):
             yield {
                 0: DeltaToolCall(
                     name="delegate_task",
-                    json_args=json.dumps({"agent_name": "explorer", "task": "Read"}),
+                    json_args=json.dumps({"agent_name": "worker", "task": "Read"}),
                 )
             }
             return
