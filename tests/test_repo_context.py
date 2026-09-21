@@ -67,20 +67,20 @@ def test_main_agent_receives_inventory_without_tool_call(tmp_path, monkeypatch):
     assert len(seen) == 1
 
 
-def test_explorer_uses_automatic_context(tmp_path, monkeypatch):
+def test_worker_uses_automatic_context(tmp_path, monkeypatch):
     monkeypatch.delenv("EXA_API_KEY", raising=False)
-    # Capture construction to check the actual explorer configuration.
+    # Capture construction to check the actual worker configuration.
     from pydantic_ai import Agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
-    (tmp_path / "AGENTS.md").write_text("Inherited explorer guidance")
+    (tmp_path / "AGENTS.md").write_text("Inherited worker guidance")
     with patch("pcode.agent.Agent", wraps=Agent) as constructor:
         create_coder(workspace)
     capabilities = constructor.call_args.kwargs["capabilities"]
     context = next(cap for cap in capabilities if isinstance(cap, AutomaticRepoContext))
     assert context.home_dir == tmp_path.resolve()
-    assert "Inherited explorer guidance" in context.get_instructions()
+    assert "Inherited worker guidance" in context.get_instructions()
     assert context.get_toolset() is None
     assert "inventory_agent_context" not in context.get_instructions()
 
@@ -291,10 +291,10 @@ def test_ancestor_instructions_refresh_between_runs_not_within_run(tmp_path):
 
 @pytest.mark.parametrize("walk_up", ["on", "off"])
 @pytest.mark.parametrize("nested", ["off", "pointer", "contents"])
-@pytest.mark.parametrize("explorer", [False, True], ids=["main", "explorer"])
+@pytest.mark.parametrize("worker", [False, True], ids=["main", "worker"])
 @pytest.mark.parametrize("tool", ["read_file", "list_files"])
 def test_discovery_settings_work_together_in_real_agents(
-    tmp_path, monkeypatch, walk_up, nested, explorer, tool
+    tmp_path, monkeypatch, walk_up, nested, worker, tool
 ):
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     workspace = tmp_path / "project"
@@ -306,7 +306,7 @@ def test_discovery_settings_work_together_in_real_agents(
     (child / "api.py").write_text("pass")
     save_preferences(repo_context_walk_up=walk_up, repo_context_nested=nested)
 
-    if explorer:
+    if worker:
         with patch("pcode.agent.Agent", wraps=Agent) as constructor:
             create_coder(workspace)
         agent = Agent("test", capabilities=constructor.call_args.kwargs["capabilities"])
@@ -386,10 +386,10 @@ def test_invalid_discovery_preferences_fall_back_to_defaults(tmp_path, value):
     assert not context.nested_traversal
 
 
-@pytest.mark.parametrize("explorer", [False, True])
+@pytest.mark.parametrize("worker", [False, True])
 @pytest.mark.parametrize("tool", ["read_file", "list_files"])
 def test_external_traversal_does_not_load_external_instructions(
-    tmp_path, monkeypatch, explorer, tool
+    tmp_path, monkeypatch, worker, tool
 ):
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     workspace = tmp_path / "workspace"
@@ -402,7 +402,7 @@ def test_external_traversal_does_not_load_external_instructions(
     (internal / "sample.txt").write_text("inside")
     (external / "sample.txt").write_text("outside")
     save_preferences(repo_context_nested="contents")
-    if explorer:
+    if worker:
         with patch("pcode.agent.Agent", wraps=Agent) as constructor:
             create_coder(workspace)
         agent = Agent("test", **constructor.call_args.kwargs)

@@ -124,7 +124,7 @@ to reduce large results **once, before they enter model history**. By default, a
 result of 10,000 characters or more is stored on disk; the model receives a handle
 and a 1,000-character head/tail preview, plus a small retrieval header. Smaller
 results pass through unchanged. This replaces Coder's 64,000-character truncation
-and applies to the main agent and explorer, including web/MCP tools and delegation
+and applies to the main agent and worker, including web/MCP tools and delegation
 results. It makes no extra LLM calls and does not require automatic compaction.
 
 ```sh

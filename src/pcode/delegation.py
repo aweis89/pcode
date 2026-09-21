@@ -7,7 +7,7 @@ or mutable per-agent handler is needed, and cancellation resets the binding.
 """
 
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from time import monotonic
 
@@ -23,6 +23,7 @@ from pydantic_ai.messages import (
 )
 
 from pcode.cache_warnings import CacheBustEvent
+from pcode.filesystem import FileChangeEvent
 from pcode.inspection import capture
 from pcode.runtime import ToolStarted, ToolSummary
 from pcode.shell import result_projection
@@ -55,6 +56,16 @@ async def stream_child_activity(_ctx, events):
     phase = ""
     async for event in events:
         if parent is None:
+            continue
+        if isinstance(event, FileChangeEvent):
+            await parent.emit(
+                FileChangeEvent(
+                    change=replace(
+                        event.change,
+                        call_id=f"{parent.tool_call_id or ''}:{event.change.call_id}",
+                    )
+                )
+            )
             continue
         if isinstance(event, CacheBustEvent):
             await parent.emit(CacheBustEvent(text=f"Sub-agent: {event.text}"))

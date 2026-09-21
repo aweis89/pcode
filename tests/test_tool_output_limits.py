@@ -229,7 +229,7 @@ def test_structured_results_and_content_spill_separately_and_preserve_metadata()
     assert content not in result.all_messages_json().decode()
 
 
-def test_real_explorer_and_parent_share_retrievable_spills(tmp_path):
+def test_real_worker_and_parent_share_retrievable_spills(tmp_path):
     (tmp_path / "large.txt").write_text("line of evidence\n" * 2000)
     child_handle = None
 
@@ -241,7 +241,7 @@ def test_real_explorer_and_parent_share_retrievable_spills(tmp_path):
         if not parts:
             name = "delegate_task" if parent else "read_file"
             args = (
-                {"agent_name": "explorer", "task": "Read large.txt"}
+                {"agent_name": "worker", "task": "Read large.txt"}
                 if parent
                 else {"path": "large.txt"}
             )
@@ -250,7 +250,7 @@ def test_real_explorer_and_parent_share_retrievable_spills(tmp_path):
             part = parts[-1]
             assert len(part.content) < 1600
             child_handle = part.metadata["overflow_handle"]
-            yield "Explorer answer " * 1000
+            yield "Worker answer " * 1000
         elif parts[-1].tool_name == "delegate_task":
             assert len(parts[-1].content) < 1600  # Parent also reduces the child answer.
             assert child_handle
@@ -300,7 +300,7 @@ def test_reduced_shell_keeps_handles_status_and_safe_inspection(tmp_path, delega
         if not parts:
             name = "delegate_task" if parent and delegated else "shell"
             args = (
-                {"agent_name": "explorer", "task": "Run the test command"}
+                {"agent_name": "worker", "task": "Run the test command"}
                 if name == "delegate_task"
                 else {"command": command}
             )
