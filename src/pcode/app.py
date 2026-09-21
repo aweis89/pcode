@@ -803,7 +803,7 @@ class PreviewApp:
             self.transcript.note(
                 "No active model providers. Use /login to sign in to Anthropic, "
                 "set ANTHROPIC_API_KEY, run codex login, or export another "
-                "provider's API key (see README: Supported providers)."
+                "provider's API key (see docs/providers.md)."
             )
             return
         values = model_catalog(providers, self.model)

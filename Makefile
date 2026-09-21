@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test test-tmux test-all lint fmt cache-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees brew-install brew-update brew-uninstall
+.PHONY: help install update uninstall run test test-tmux test-all lint fmt docs docs-serve cache-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees brew-install brew-update brew-uninstall
 
 HARNESS_DIR := tmp/pydantic-ai-harness
 HARNESS_URL := https://github.com/pydantic/pydantic-ai-harness.git
@@ -35,6 +35,12 @@ lint: ## Check formatting and lint rules
 fmt: ## Apply formatting and autofixes
 	uv run ruff check --fix .
 	uv run ruff format .
+
+docs: ## Build the docs site into site/ (fails on broken links)
+	uv run --group docs zensical build --strict
+
+docs-serve: ## Preview the docs site with live reload at http://localhost:8000
+	uv run --group docs zensical serve
 
 cache-report: ## Report prompt-cache behavior from saved sessions (SESSION=latest|all|<id>)
 	uv run python scripts/cache_report.py $(or $(SESSION),latest) $(ARGS)
