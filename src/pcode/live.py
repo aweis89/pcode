@@ -50,7 +50,13 @@ from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, ContextTracking, summarize
 from pcode.conversation_tree import ConversationTree
 from pcode.delegation import ChildActivity
-from pcode.diagnostics import error_details, transient, transport_types
+from pcode.diagnostics import (
+    error_details,
+    provider_context,
+    quota_message,
+    transient,
+    transport_types,
+)
 from pcode.edit_preview import StreamingEditPreview
 from pcode.filesystem import FileChangeEvent
 from pcode.inspection import ToolArchive, capture
@@ -465,6 +471,7 @@ class AgentRuntime:
                     "turn_cancelled" if cancelled else "turn_failed",
                     run_id=run_id,
                     error=error_details(error),
+                    provider_context=provider_context(self.agent.model),
                     resend_blocked=resend_blocked,
                     sync=True,
                 )
@@ -472,7 +479,11 @@ class AgentRuntime:
                     # A bug reaches the user as a type and a message; the frames
                     # that name the responsible line live only in this process.
                     # Stopping on purpose is not a defect worth a traceback.
-                    saved.record_error(error, run_id=run_id)
+                    saved.record_error(
+                        error,
+                        run_id=run_id,
+                        provider_context=provider_context(self.agent.model),
+                    )
                 saved.info.status = "cancelled" if cancelled else "failed"
                 saved.save_info()
                 try:
@@ -905,6 +916,8 @@ def error_message(error: Exception) -> str:
         return "Provider token refresh failed. Run `codex login`, then restart pcode."
     if "Credential" in name or "Authentication" in name:
         return f"Authentication failed ({name}). Refresh your provider login and restart."
+    if (quota := quota_message(error)) is not None:
+        return quota
     status = getattr(error, "status_code", None)
     if status is not None:
         details = error_details(error)
