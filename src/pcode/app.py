@@ -135,7 +135,7 @@ class PreviewApp:
             apply_thinking(agent, model, self.activity.show_thinking)
         self.transcript = Transcript(
             console or Console(),
-            theme or load_preferences().get("theme", "dark"),
+            theme or load_preferences().get("theme", SETTINGS["theme"].default),
             activity=self.activity,
             color_style=color_style,
         )
@@ -2705,7 +2705,7 @@ def main() -> None:
     parser.add_argument(
         "--theme",
         choices=THEMES,
-        default=load_preferences().get("theme", "dark"),
+        default=load_preferences().get("theme", SETTINGS["theme"].default),
         help="Color theme (default: saved preference)",
     )
     parser.add_argument(

@@ -130,14 +130,23 @@ def test_theme_startup_default_and_explicit_override(monkeypatch, arguments, exp
     assert load_preferences()["theme"] == "light"
 
 
+def test_theme_defaults_to_auto(monkeypatch):
+    assert PreviewApp(console=Console(file=StringIO())).transcript.theme == "auto"
+    monkeypatch.setattr(sys, "argv", ["pcode", "--demo"])
+    with patch("pcode.app.PreviewApp") as app:
+        main()
+    assert app.call_args.kwargs["theme"] == "auto"
+    assert "theme" not in load_preferences()
+
+
 @pytest.mark.parametrize("value", ["invalid", None, [], 42])
-def test_invalid_saved_theme_falls_back_to_dark(value):
+def test_invalid_saved_theme_falls_back_to_auto(value):
     import json
 
     path = preferences_path()
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"theme": value}))
-    assert PreviewApp(console=Console(file=StringIO())).transcript.theme == "dark"
+    assert PreviewApp(console=Console(file=StringIO())).transcript.theme == "auto"
 
 
 def test_theme_save_failure_keeps_current_selection():
