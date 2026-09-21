@@ -11,6 +11,7 @@ from pydantic_ai import Agent
 from pydantic_ai.capabilities import CombinedCapability
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
+from pydantic_ai.providers.openai_codex import OpenAICodexProvider
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
@@ -176,15 +177,28 @@ def create_coder(workspace: Path, subagents: Sequence = ()) -> CombinedCapabilit
 
 
 def codex_model(model: str) -> OpenAICodexModel:
-    """Build a Codex model; reads the CLI's `auth.json` at construction time."""
+    """Build a Codex model on pcode's stored login, else the CLI's `auth.json`.
+
+    Without a pcode store the provider reads the CLI file at construction time
+    and keeps refreshed tokens in memory only.
+    """
+    from pcode.codex_login import credential_source
+
     proxy = os.environ.get("PCODE_LLM_PROXY", "").strip()
+    source = credential_source()
+    if proxy:
+        provider = ProxiedCodexProvider(proxy, credential_source=source)
+    elif source is not None:
+        provider = OpenAICodexProvider(credential_source=source)
+    else:
+        provider = None
     # Subscription endpoints reject the explicit cache markers that Harness
     # Planning adds after write_plan. Keep the native provider/auth/model name;
     # override only this advertised capability (verified against AI 2.43.0).
     return OpenAICodexModel(
         model.removeprefix("openai-codex:"),
         profile=OpenAIModelProfile(openai_supports_prompt_cache_breakpoints=False),
-        **({"provider": ProxiedCodexProvider(proxy)} if proxy else {}),
+        **({"provider": provider} if provider is not None else {}),
     )
 
 

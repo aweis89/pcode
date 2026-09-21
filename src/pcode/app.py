@@ -892,10 +892,11 @@ class PreviewApp:
     async def login_codex(self) -> None:
         from pcode.agent import codex_model
         from pcode.auth import LoginError
-        from pcode.codex_login import login
+        from pcode.codex_login import credentials_path, login
 
         self.transcript.note(
-            "Running `codex login`. Sign in with your ChatGPT account (Ctrl+C cancels):"
+            "Sign in with your ChatGPT account in the browser. "
+            "If no browser opens, visit this URL (Ctrl+C cancels):"
         )
         try:
             await login(notify=self.transcript.note)
@@ -904,8 +905,8 @@ class PreviewApp:
             if self.model and self.model.startswith("openai-codex:"):
                 self.runtime.agent.model = await asyncio.to_thread(codex_model, self.model)
             self.transcript.note(
-                "Signed in to OpenAI Codex. The Codex CLI stores the credential "
-                "(CODEX_HOME is honored); /logout openai-codex removes it."
+                f"Signed in to OpenAI Codex. Credentials are stored in {credentials_path()} "
+                "(owner-only) and refreshed automatically; /logout openai-codex removes them."
             )
         except asyncio.CancelledError:
             self.transcript.note("OpenAI Codex sign-in cancelled.")
@@ -917,17 +918,20 @@ class PreviewApp:
 
     async def perform_logout(self) -> None:
         from pcode.auth import LoginError
-        from pcode.codex_login import logout
+        from pcode.codex_login import credentials_path, delete_credentials
 
         self.logout_requested = None
         try:
-            await logout()
+            removed = await asyncio.to_thread(delete_credentials, credentials_path())
         except LoginError as error:
             self.transcript.error(str(error))
             return
         self.transcript.note(
-            "Removed the Codex CLI's stored login. This conversation keeps its current "
-            "model until the token expires; use /login openai-codex to sign in again."
+            "Removed pcode's stored OpenAI Codex login. "
+            "New models fall back to the CLI login, if present; that login was not removed. "
+            "The current model retains its in-memory token until it expires."
+            if removed
+            else "No stored pcode OpenAI Codex login to remove. CLI login is unchanged."
         )
 
     async def login_anthropic(self) -> None:

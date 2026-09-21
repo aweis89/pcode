@@ -58,8 +58,8 @@ candidate's size so that cost is visible before you pick.
   terminal background automatically, independently of `/theme` and `/colors`.
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
 - `/login [anthropic|openai-codex]`: sign in in a browser. Anthropic is pcode's own flow;
-  `openai-codex` runs the Codex CLI's `codex login` (the CLI must be on `PATH`).
-  `/logout [anthropic|openai-codex]` removes that stored login. Both require an idle conversation.
+  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required).
+  `/logout [anthropic|openai-codex]` removes pcode's stored login, leaving CLI credentials untouched. Both require an idle conversation.
 - `/model`: searchable model picker for configured providers (keeps the conversation;
   applies from the next request when chosen mid-run).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
