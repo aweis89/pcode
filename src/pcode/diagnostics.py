@@ -4,6 +4,7 @@ import os
 import re
 import traceback
 from importlib.metadata import version
+from urllib.parse import urlsplit, urlunsplit
 
 _TOKEN = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|"
@@ -113,6 +114,77 @@ def transient(error: BaseException) -> bool:
             return False
         detail = detail.get("cause", detail.get("context", {}))
     return bool(transport_types(error) & TRANSIENT_TRANSPORT)
+
+
+def provider_context(model) -> dict[str, str]:
+    """Best-effort configured route, never requests, headers, or proxy credentials.
+
+    This names the parent model, not necessarily a failing delegated request.
+    Unresolved model strings must not trigger credential loading during failure.
+    """
+    result = {}
+    try:
+        if isinstance(model, str):
+            result["model"] = redact(model)
+            return result
+        result["model"] = redact(model.model_name)
+        provider = model.provider
+        if provider is not None:
+            result["provider"] = redact(provider.name)
+            url = urlsplit(str(provider.client.base_url))
+            if url.scheme in {"http", "https"} and url.hostname:
+                host = url.hostname
+                if ":" in host:
+                    host = f"[{host}]"
+                if url.port is not None:
+                    host += f":{url.port}"
+                # Drop userinfo, query, and fragment even for unfamiliar secrets.
+                result["base_url"] = redact(urlunsplit((url.scheme, host, url.path, "", "")))
+    except Exception:
+        # Diagnostics must never replace the original failure.
+        pass
+    return result
+
+
+def quota_message(error: BaseException) -> str | None:
+    """Classify bounded provider causes; never echo arbitrary response text."""
+    detail = error_details(error)
+    rate_limited = False
+    http_status = None
+    while detail:
+        if http_status is None:
+            http_status = detail.get("status")
+        text = " ".join(
+            str(detail.get(key, ""))
+            for key in ("provider_code", "provider_type", "provider_message", "message")
+        ).lower()
+        if any(
+            marker in text
+            for marker in (
+                "insufficient_quota",
+                "no credits remaining",
+                "credit balance is too low",
+                "billing_hard_limit_reached",
+                "exceeded your current quota",
+            )
+        ):
+            return (
+                "Provider quota or credits exhausted. Check usage and billing for the "
+                "selected provider account; a new login may not help. "
+                "See the saved session diagnostics."
+            )
+        rate_limited |= detail.get("status") == 429 or (
+            "status" not in detail
+            and any(marker in text for marker in ("rate_limit_error", "rate_limit_exceeded"))
+        )
+        detail = detail.get("cause", detail.get("context", {}))
+    if rate_limited:
+        return (
+            f"Provider rate limit reached{f' (HTTP {http_status})' if http_status else ''}. "
+            "Wait before retrying and check "
+            "the selected account's usage limits. See the saved session diagnostics."
+        )
+    return None
 
 
 def versions() -> dict[str, str]:
