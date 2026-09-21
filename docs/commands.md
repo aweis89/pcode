@@ -342,6 +342,13 @@ distinct. Background launch/check/stop calls show their process ID and related
 calls when available. A successful launch is not proof that the process finished
 successfully.
 
+Provider-executed web searches (Anthropic's native `web_search`, used when the
+`web_search` preference is `auto`) list each hit's title, URL, and age. The page
+text itself arrives encrypted for the provider and is replayed to the model on
+later requests; there is no client-side key, so the inspector cannot show it.
+Local searches (Exa or DuckDuckGo) and `get_page` return plain text and show in
+full.
+
 Saved inspection data is a redacted display projection in `transcript.jsonl`, not
 an execution or recovery log. It survives resume and failures in later model
 requests. Metadata is indexed incrementally; result payloads are read on selection.
