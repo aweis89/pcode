@@ -40,7 +40,11 @@ which is newer than the 0.31.0 release. The pin is a direct dependency, so both
 `edit_file`, `list_files`, `grep`, and `shell`; pcode adds planning, the worker,
 and optional web search. `list_files` and `grep` use the bundled ripgrep and
 respect ignore rules. Edits support either one replacement pair or a
-`replacements` array, validated before a single write.
+`replacements` array, validated before a single write. Models mangle that nested
+array often enough to matter — roughly one call in ten arrives as a JSON string
+and is rejected with `Input should be a valid array` — so pcode's file-tool
+instructions reserve it for two or more edits to one file and steer single edits
+to the flat `old_text`/`new_text` pair, which has no such failure mode.
 
 `shell` accepts unrestricted commands: treat it as arbitrary code execution as
 the invoking user. Files and code returned by tools are sent to the selected
