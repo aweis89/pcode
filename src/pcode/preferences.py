@@ -175,8 +175,9 @@ SETTINGS = {
         whole_number=True,
         description="Corrections offered to the model per turn when a tool call fails validation",
     ),
-    # Anthropic rejects a malformed `replacements` array roughly one call in
-    # eight; strict mode makes the wrong shape unsamplable instead. Models that
+    # Anthropic mangles the `replacements` array roughly one call in ten. Strict
+    # mode was meant to make that unsamplable but measurably does not (see
+    # `pcode.strict_tools`); it stays on because nothing got worse. Models that
     # cannot honor it, and schemas outside the subset it accepts, decline it on
     # their own, so "on" costs nothing where it does not apply.
     "strict_tools": Setting(
