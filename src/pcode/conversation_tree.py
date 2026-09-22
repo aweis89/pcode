@@ -38,6 +38,8 @@ class ConversationTree:
     def __init__(self) -> None:
         self.nodes: dict[str, TurnNode] = {}
         self.active: str | None = None
+        # Which turn a record belongs to when it does not say. Older journals
+        # rely on this entirely; they could never have two turns open at once.
         self.recording: str | None = None
 
     def path(self, identity: str | None) -> list[str]:
@@ -84,8 +86,7 @@ class ConversationTree:
         elif kind == "tree_selected":
             self.path(record["node_id"])
             self.active = record["node_id"]
-        elif self.recording is not None:
-            node = self.nodes[self.recording]
+        elif (node := self.nodes.get(record.get("run_id") or self.recording)) is not None:
             if kind == "Message":
                 node.response = record["markdown"]
                 node.add_links(node.response, "assistant")

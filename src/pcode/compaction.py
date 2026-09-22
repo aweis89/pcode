@@ -229,16 +229,19 @@ class ContextTracking(AbstractCapability):
     `ctx: 0` throughout, and /status never measured prompt overhead.
     """
 
-    def __init__(self, runtime):
+    def __init__(self, runtime, context=None):
         super().__init__()
         self.runtime = runtime
+        # What a request carries belongs to the turn that sent it; the prompt
+        # overhead it resolves describes the agent and outlives every turn.
+        self.context = context if context is not None else runtime
 
     def get_ordering(self):
         # Inside compaction, so a compacted request is what gets displayed.
         return CapabilityOrdering(wrapped_by=[AutoCompaction])
 
     async def before_model_request(self, ctx, request_context):
-        self.runtime.context_history = list(request_context.messages)
+        self.context.context_history = list(request_context.messages)
         # Instructions and tool schemas as resolved for a real request: the only
         # place /status can read them without re-deriving the system prompt.
         self.runtime.request_parameters = request_context.model_request_parameters
@@ -251,7 +254,7 @@ class ContextTracking(AbstractCapability):
         }
         # Display completed request usage immediately, even while tools run.
         # Keep this separate from replay history: tool calls aren't settled yet.
-        self.runtime.context_history = [*request_context.messages, response]
+        self.context.context_history = [*request_context.messages, response]
         return response
 
 
@@ -272,10 +275,16 @@ def auto_compaction_threshold(context_window: int, max_output_tokens: int) -> in
 class AutoCompaction(AbstractCapability):
     """Check every request, including requests following a settled tool batch."""
 
-    def __init__(self, runtime, run_id):
+    def __init__(self, runtime, context):
         super().__init__()
         self.runtime = runtime
-        self.run_id = run_id
+        # The turn being compacted: its history is what gets rewritten, and its
+        # snapshot is what the next request continues from.
+        self.context = context
+
+    @property
+    def run_id(self) -> str:
+        return self.context.run_id
 
     def get_ordering(self):
         # Reserve the actual resolved output ceiling, not the adapter's fallback.
@@ -285,7 +294,7 @@ class AutoCompaction(AbstractCapability):
         # Preserve the settled boundary even if summarization fails/cancels. In
         # --no-save mode there is no StepPersistence recovery to do this for us.
         if not self.runtime.session and is_provider_valid(request_context.messages):
-            self.runtime.history = deepcopy(request_context.messages)
+            self.context.history = deepcopy(request_context.messages)
         from pcode.model_metadata import refresh_context
 
         await refresh_context(request_context.model)
@@ -314,7 +323,7 @@ class AutoCompaction(AbstractCapability):
             )
         finally:
             ctx.usage.incr(usage)
-            self.runtime._compaction_usage.incr(usage)
+            self.context.compaction_usage.incr(usage)
 
         if not result.changed or result.after >= threshold:
             raise CompactionError(
@@ -332,7 +341,7 @@ class AutoCompaction(AbstractCapability):
                     messages=result.messages,
                 )
             )
-        self.runtime.history = deepcopy(result.messages)
+        self.context.history = deepcopy(result.messages)
         request_context.messages = result.messages
         self.runtime.compaction_notice(result.description())
         return request_context

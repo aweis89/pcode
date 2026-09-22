@@ -51,6 +51,10 @@ cleaned up rather than abandoned.
   independent of the terminal.
 - `src/pcode/live.py`: `run_stream_events()` adapter, history, and usage. It runs the
   whole tool loop, including when the model emits text before tool calls.
+- `src/pcode/turn.py`: the state one turn owns (history, queued shell exchanges,
+  plan store, request checkpoint, in-flight context). The runtime holds the active
+  branch's and exposes its fields under their original names; per-run capabilities
+  bind to the context they were created for, not to the runtime.
 - `src/pcode/runtime.py`: plain application events and offline fixtures.
 - `src/pcode/sessions.py`: private manifests/journals, session locking, and the
   official Harness SQLite step store; recovery uses its settled snapshots.
