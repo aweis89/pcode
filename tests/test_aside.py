@@ -428,6 +428,36 @@ def test_aside_browser_streams_the_answer_and_marks_it_read():
     assert "(answered" in browser.list.text
 
 
+def test_aside_browser_copies_the_selected_answer(monkeypatch):
+    from pcode import aside_ui
+    from pcode.aside_ui import AsideBrowser
+
+    copies: list[str] = []
+
+    def fake_copy(text, output=None):
+        copies.append(text)
+        return True, False
+
+    monkeypatch.setattr(aside_ui, "copy_to_clipboard", fake_copy)
+    asides = Asides()
+    browser = AsideBrowser(asides, output=None, input=None)
+    browser.copy()
+    assert browser.notice == "No answer to copy"
+    assert copies == []
+
+    aside = Aside(question="why?", answer="Because **it** works.")
+    aside.settle("answered")
+    asides.items.append(aside)
+    browser.refresh()
+    browser.copy()
+    assert copies == ["Because **it** works."]
+    assert browser.notice == "Copied answer"
+
+    monkeypatch.setattr(aside_ui, "copy_to_clipboard", lambda text, output=None: (False, False))
+    browser.copy()
+    assert browser.notice == "Could not copy answer"
+
+
 def test_tree_browser_is_read_only_while_a_turn_runs():
     from pcode.conversation_tree import ConversationTree
     from pcode.tree_ui import TreeBrowser
