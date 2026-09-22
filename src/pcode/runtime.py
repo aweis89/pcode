@@ -24,6 +24,9 @@ class ToolStarted:
     # into it: `command` is rendered as a shell invocation, so it has to stay
     # literal enough to copy and run.
     purpose: str = ""
+    # "background" or "foreground" for command tools, "" for everything else:
+    # whether the model asked for a job handle or waited on the command.
+    execution: str = ""
 
 
 @dataclass(frozen=True)
