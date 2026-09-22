@@ -409,6 +409,20 @@ def test_results_and_commands_share_the_same_block_rendering():
     assert isinstance(structured[0], Syntax) and structured[0].lexer.name == "JSON"
 
 
+def test_details_break_commands_at_separators_but_copy_stays_verbatim():
+    from pcode.inspector_ui import arguments_renderables, format_command
+
+    chain = format_command("cd src && make test; echo done")
+    assert chain == "cd src && \\\n  make test\necho done"
+    assert format_command("a && b || c") == "a && \\\n  b || \\\n  c"
+    assert format_command('echo "x; y && z"; ls') == 'echo "x; y && z"\nls'
+    assert format_command("x=$(a; b) && c") == "x=$(a; b) && \\\n  c"
+    assert format_command("case $x in a) ;; esac") == "case $x in a) ;; esac"
+    assert format_command("already\nmulti; line") == "already\nmulti; line"
+    blocks = arguments_renderables('{"command": "cd src && make test"}', "ansi_dark")
+    assert blocks[-1].code == "cd src && \\\n  make test"
+
+
 def test_copy_shortcuts_take_the_command_and_the_output(monkeypatch):
     from prompt_toolkit.input import create_pipe_input
 
