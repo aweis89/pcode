@@ -166,6 +166,22 @@ pcode config set tool_retries 5   # More corrections before a turn is abandoned
 pcode config set tool_retries 0   # Fail on the first rejected tool call
 ```
 
+Anthropic models can be made to avoid the mistake instead of correcting it.
+`strict_tools` turns on [strict tool use][strict], which constrains sampling to
+the tool's schema, so an argument of the wrong shape is unsamplable rather than
+rejected after the fact. It applies to `edit_file` only, the one tool whose
+arguments nest, and it is off by default because constrained decoding changes
+how the model samples.
+
+```sh
+pcode config set strict_tools on    # Constrain edit_file arguments
+```
+
+Other providers ignore the setting. OpenAI models already infer strict mode
+for schemas that support it, which is why they do not show this failure.
+
+[strict]: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
+
 Use `/resend` while idle to try again manually without adding another user
 message. The original prompt appears above the task bar with the normal running
 spinner. Completed tool results stay in context; if the last answer completed,
