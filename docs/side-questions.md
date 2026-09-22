@@ -10,16 +10,29 @@ never enters the conversation.
   ⠋ Running shell · uv run pytest
 ❯ /btw why did you pick a recursive descent parser?
   ◈ Side question asked beside the conversation…
-  ◈ Side answer ready (why did you pick a recursive descent parser?). /btw opens it.
+  ◈ Side answer ready (why did you pick a recursive descent parser?). Opening it.
 ```
 
-A bare `/btw` opens the answers in a popup, visually separate from the
-transcript. While an answer is still arriving, the popup streams it.
+The viewer opens by itself as soon as an answer is ready, since the point of a
+side question is reading the answer while the turn is still running. A bare
+`/btw` opens it at any other time. While an answer is still arriving, the popup
+streams it.
 
 - **↑ / ↓:** move through the questions, or scroll the answer when it has focus.
 - **Tab:** switch between the question list and the answer pane.
 - **Ctrl+K:** stop every running side question, keeping the records.
 - **Enter / Escape / Ctrl+C:** close the popup and restore the editor draft.
+
+To keep the answers out of the way until you ask for them, turn auto-open off:
+
+```
+pcode config set btw_auto_open off   # Default on; applies immediately
+```
+
+With it off, a ready answer only prints its transcript notice and waits for a
+bare `/btw`. Auto-open never interrupts a popup or command already using the
+terminal — it queues behind it — and it does nothing when the viewer is already
+open, because an open viewer follows new answers on its own.
 
 The footer counts side questions that are `running` and answers that are
 `ready` (settled but not yet opened). Ctrl+C at the prompt stops running side
