@@ -20,6 +20,12 @@ run unless asked for. Sampling runs once per second in a worker thread, plus at
 startup and shutdown. It writes directly to disk rather than keeping the sample
 history in memory.
 
+Every sample measures pcode and the descendants it already knows about, but the
+process tree is only re-walked every five seconds: finding descendants means
+reading every process on the machine, which costs roughly a hundred times more
+than measuring the known ones and would otherwise make an always-on capture the
+largest thing in its own report.
+
 ## Capture every session
 
 Anecdotal slowness usually happens in an ordinary session nobody thought to
@@ -64,7 +70,7 @@ thresholds enforced by this feature.
 
 | File | Contents |
 | --- | --- |
-| `summary.json` | Wall duration, process CPU seconds and average utilization, sampled peak RSS for pcode and its observed descendants, sample/error counts, tracing modes, activity totals, Python version/platform |
+| `summary.json` | Wall duration, process CPU seconds and average utilization, sampled peak RSS for pcode and its observed descendants, sample/error/interval counts, tracing modes, activity totals, Python version/platform |
 | `resources.jsonl` | Elapsed time, the current activity, and per-PID CPU seconds, CPU percentage, RSS bytes, parent PID, and thread count at each sample |
 | `cpu.txt` | With `--profile-cpu`: top 50 functions by cumulative and self time |
 | `cpu.pstats` | With `--profile-cpu`: full Yappi CPU profile exported in standard `pstats` format for caller/callee analysis |
@@ -129,7 +135,9 @@ python -m pstats /tmp/pcode-functions/cpu.pstats
   contains surviving allocations, not objects already freed at the peak. RSS may
   stay high after objects are freed because allocators retain memory.
 - Child processes are sampled, not function-profiled. Fast-exiting or reparented
-  children may be missed. Shared pages can be double-counted when summing RSS.
+  children may be missed, including any that both starts and exits between two
+  tree walks (`descendant_scan_seconds` in the summary).
+  Shared pages can be double-counted when summing RSS.
   An independently running proxy/server is outside the process tree and needs its
   own profiling. `sampling_errors` includes disappeared/access-denied processes
   and monitor write failures; treat nonzero counts as incomplete coverage.
