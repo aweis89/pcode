@@ -42,6 +42,7 @@ from pcode.repo_context import create_repo_context
 from pcode.shell_tools import JobShell
 from pcode.strict_tools import create_strict_tools
 from pcode.tool_output_limits import create_tool_output_limits
+from pcode.workspace import WorkspaceGuard
 
 # Generous enough for a real investigation, small enough that a child stuck in a
 # loop is stopped within a turn rather than after a session's worth of requests.
@@ -147,6 +148,9 @@ def create_coder(
         else capability
         for capability in coder.capabilities
     ]
+    # Ahead of the other capabilities in the list, so a tool call in a deleted
+    # workspace stops before anything tries to read or write in it.
+    coder.capabilities.insert(0, WorkspaceGuard(workspace))
     coder.capabilities.append(IdentifiedPlanning())
     coder.capabilities.append(DelegationReporting())
     coder.capabilities.append(MeridianSessionIdentity())

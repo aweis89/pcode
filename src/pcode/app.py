@@ -1738,7 +1738,7 @@ class PreviewApp:
             return
         saved = SavedSession.open(identity, self.session_dir)
         try:
-            target = self._resume_workspace(saved.info.workspace)
+            target = self._resume_workspace(saved.info)
             # A session from another worktree gets that worktree's extensions
             # and skills; the same workspace keeps what is already loaded.
             extensions = self.extensions
@@ -1774,21 +1774,33 @@ class PreviewApp:
         self.replay()
         self.mcp_defaults_requested = True
 
-    def _resume_workspace(self, recorded: str) -> Path:
+    def _resume_workspace(self, info) -> Path:
         """Where a resumed session works: its own directory, if this repository's.
 
         Another worktree of the same repository is fine (the session browser
         lists them), another repository is not: the conversation's paths,
         instructions, and extensions would all be wrong there.
+
+        A worktree removed from outside the session that owned it leaves no
+        directory to go back to. The conversation is still worth resuming, so
+        continue it here when this is the same repository.
         """
         from pcode.sessions import SessionError
         from pcode.worktree import repo_scope
 
-        target = Path(recorded).resolve()
+        target = Path(info.workspace).resolve()
         if target == self.workspace:
             return target
         if not target.is_dir():
-            raise SessionError(f"Session workspace no longer exists: {target}")
+            if _session_scope(info) != repo_scope(self.workspace):
+                raise SessionError(
+                    f"Session workspace no longer exists: {target}. It belonged to another "
+                    "repository, so this one cannot continue it."
+                )
+            self.transcript.note(
+                f"Session workspace {target} no longer exists; continuing in {self.workspace}."
+            )
+            return self.workspace
         if repo_scope(target) != repo_scope(self.workspace):
             raise SessionError("Workspace differs; refusing cross-repo resume.")
         return target
@@ -3411,6 +3423,48 @@ def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
     return False
 
 
+def _session_scope(info) -> Path:
+    """The repository a saved session belongs to, even once its worktree is gone.
+
+    `repo_scope` asks git inside the directory, which can answer nothing at all
+    after the directory is deleted; the recorded project checkout outlives it.
+    """
+    from pcode.worktree import repo_scope
+
+    workspace = Path(info.workspace)
+    if workspace.is_dir():
+        return repo_scope(workspace)
+    return Path(info.project) if info.project else workspace
+
+
+def _resume_workspace(info, requested: Path | None) -> Path:
+    """Where to continue a session whose own workspace may have been deleted.
+
+    A session worktree is removed from outside the session that owns it -- a
+    merge from a sibling session, `/worktree clean`, `git worktree prune` --
+    and the conversation is still worth resuming afterwards. Prefer an explicit
+    `-C DIR`, already checked to be the same repository, then the checkout the
+    worktree was made from. Refusing outright would strand the session on a
+    path nothing can recreate.
+    """
+    from pcode.sessions import SessionError
+
+    workspace = Path(info.workspace)
+    if workspace.is_dir():
+        return workspace
+    for candidate in (requested, Path(info.project) if info.project else None):
+        if candidate is not None and candidate.is_dir():
+            print(
+                f"workspace: {workspace} no longer exists; continuing in {candidate}",
+                file=sys.stderr,
+            )
+            return candidate
+    raise SessionError(
+        f"The session's workspace {workspace} no longer exists, and neither does its "
+        f"project checkout. Continue it elsewhere with `pcode -C DIR --continue {info.id}`."
+    )
+
+
 def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.command == "config":
         try:
@@ -3465,17 +3519,19 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 # goes back to its own directory. Another repository is not.
                 from pcode.worktree import repo_scope
 
-                if repo_scope(args.workspace) != repo_scope(Path(saved.info.workspace)):
+                if repo_scope(args.workspace) != _session_scope(saved.info):
                     raise SessionError(
                         "Workspace differs from the saved session; refusing cross-repo resume."
                     )
             args.model = saved.info.model
-            args.workspace = Path(saved.info.workspace)
+            args.workspace = _resume_workspace(saved.info, args.workspace)
         if not args.resume and not args.model:
             args.model = load_preferences().get("model")
         workspace = args.workspace or Path.cwd()
         if not workspace.is_dir():
-            raise ValueError("Workspace must be an existing directory.")
+            from pcode.sessions import SessionError
+
+            raise SessionError(f"Workspace {workspace} is not an existing directory.")
         from pcode.preferences import rejected_project_keys, set_project_root
 
         set_project_root(workspace)
