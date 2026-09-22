@@ -151,13 +151,24 @@ class ResourceProfile:
     """
 
     def __init__(
-        self, directory: Path, *, cpu: bool = False, memory: bool = False, interval: float = 1.0
+        self,
+        directory: Path,
+        *,
+        cpu: bool = False,
+        memory: bool = False,
+        interval: float = 1.0,
+        discovery_interval: float = 5.0,
     ):
         self.directory = directory
         self.memory = memory
         self.cpu = cpu
         self.interval = interval
+        # Finding descendants costs far more than measuring known ones, so it
+        # runs on its own slower clock; never faster than sampling itself.
+        self.discovery_interval = max(interval, discovery_interval)
         self._stop = threading.Event()
+        self._tracked: dict[int, object] = {}
+        self._discovered = float("-inf")
         self._previous: dict[tuple[int, float], tuple[float, float]] = {}
         self._peak_rss = 0
         self._peak_children_rss = 0
@@ -230,18 +241,38 @@ class ResourceProfile:
                 self._clear_cpu()
             raise
 
+    def _descendants(self, psutil, now: float) -> list:
+        """Known descendants, rediscovering the process tree only occasionally.
+
+        `children(recursive=True)` has to read every process on the machine to
+        build a parent map, which dominates a sample: about 11 ms of 12 ms on a
+        machine with a thousand processes, or a percent of a core at one sample
+        per second. Re-measuring processes already known is thousands of times
+        cheaper, so discovery runs every `discovery_interval` instead. A
+        descendant is therefore picked up within that window, and one that both
+        starts and exits inside a window is missed entirely -- as anything
+        shorter than `interval` always was.
+        """
+        if now - self._discovered < self.discovery_interval:
+            return list(self._tracked.values())
+        self._discovered = now
+        try:
+            found = self._process.children(recursive=True)
+        except psutil.Error:
+            self._sampling_errors += 1
+            return list(self._tracked.values())
+        # Keep the object already held for a surviving PID: psutil caches its
+        # creation time there, which is what detects a recycled PID later.
+        self._tracked = {process.pid: self._tracked.get(process.pid, process) for process in found}
+        return list(self._tracked.values())
+
     def _sample(self) -> None:
         import psutil
 
         now = time.monotonic()
         processes = []
         previous = {}
-        try:
-            descendants = self._process.children(recursive=True)
-        except psutil.Error:
-            descendants = []
-            self._sampling_errors += 1
-        for process in [self._process, *descendants]:
+        for process in [self._process, *self._descendants(psutil, now)]:
             try:
                 with process.oneshot():
                     identity = (process.pid, process.create_time())
@@ -267,6 +298,9 @@ class ResourceProfile:
                     )
                 )
             except psutil.Error:
+                # Gone, or a PID psutil no longer recognizes as the same process.
+                # Either way it is not a descendant to measure next time.
+                self._tracked.pop(process.pid, None)
                 self._sampling_errors += 1
         self._previous = previous
         own_rss = next((p["rss_bytes"] for p in processes if p["role"] == "pcode"), 0)
@@ -337,7 +371,7 @@ class ResourceProfile:
         busy = sum(entry["wall_seconds"] for entry in attributed.values())
         busy_cpu = sum(entry["cpu_seconds"] for entry in attributed.values())
         return dict(
-            schema_version=2,
+            schema_version=3,
             # A capture that was killed still has every field except this one.
             complete=complete,
             python=platform.python_version(),
@@ -350,6 +384,7 @@ class ResourceProfile:
             samples=self._samples,
             sampling_errors=self._sampling_errors,
             interval_seconds=self.interval,
+            descendant_scan_seconds=self.discovery_interval,
             memory_tracing=self.memory,
             function_clock="cpu" if self._cpu is not None else None,
             function_scope="python_threads" if self._cpu is not None else None,
@@ -371,6 +406,9 @@ class ResourceProfile:
         self._stop.set()
         self._thread.join()
         try:
+            # One last full walk: the closing sample should describe the tree as
+            # it is now, not as the previous discovery left it.
+            self._discovered = float("-inf")
             self._sample()
             self._stream.close()
             memory_usage = None

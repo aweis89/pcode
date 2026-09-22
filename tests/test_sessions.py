@@ -512,3 +512,49 @@ def test_thinking_completion_does_not_repeat_deltas_across_interleaved_tool_reco
         {"kind": "thinking_partial", "text": "interrupted"},
         {"kind": "turn_cancelled"},
     ]
+
+
+def test_resumed_history_draws_without_a_runtime(tmp_path):
+    """The journal is a millisecond read; the provider stack behind the runtime is seconds."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from pcode.app import PreviewApp
+
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    identity = saved.info.id
+
+    async def model(messages, info):
+        yield "SAVED_ANSWER"
+
+    async def run():
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)), saved)
+        try:
+            _ = [event async for event in runtime.stream("SAVED_QUESTION")]
+        finally:
+            runtime.close()
+
+    asyncio.run(run())
+    reopened = SavedSession.open(identity, root)
+    try:
+        # No runtime at all: the offline preview stands in until the real one
+        # finishes importing, exactly as it does during startup.
+        app = PreviewApp(
+            model="test:local",
+            saved_session=reopened,
+            resume=True,
+            console=Console(file=StringIO(), width=80, color_system=None),
+        )
+        assert getattr(app.runtime, "session", None) is None
+        app.replay(reopened)
+        stream = StringIO()
+        console = Console(file=stream, width=80, color_system=None)
+        for objects, end, soft_wrap in app.transcript.replay():
+            console.print(*objects, end=end, soft_wrap=soft_wrap)
+        shown = stream.getvalue()
+        assert "SAVED_QUESTION" in shown
+        assert "SAVED_ANSWER" in shown
+    finally:
+        reopened.close()
