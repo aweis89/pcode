@@ -132,7 +132,10 @@ documentation needs the fetch either way. Each picks the best backend available:
 | Otherwise | DuckDuckGo `web_search` | HTTP fetch `get_page`, converted to Markdown |
 
 Native tools are billed by the provider per search; the Exa key is read by the
-Exa client and never passed to the model. Search returns up to five results;
+Exa client and never passed to the model. Anthropic encrypts each native result
+to the account that ran the search, so resuming a session under a different
+login cannot replay them; see [Retries](sessions.md#retries-and-resend) for what
+pcode does about it. Search returns up to five results;
 page retrieval returns up to 10,000 characters. Queries, URLs, and returned
 content go to whichever backend is in use, reach the model, and can be saved in
 session history. The worker inherits the same web policy and tools.
