@@ -138,8 +138,10 @@ def test_branch_refresh_handles_switches_detached_and_non_repo(tmp_path, monkeyp
 
     git("init", "-b", "main")
     app, _ = make_app(tmp_path, monkeypatch)
-    app.refresh_branch()
+    # The footer only repaints when the answer moved, so the caller is told.
+    assert app.refresh_branch() is True
     assert app.branch == "main"  # Even an unborn branch has a useful name.
+    assert app.refresh_branch() is False
     git(
         "-c",
         "user.name=Test",
@@ -151,7 +153,7 @@ def test_branch_refresh_handles_switches_detached_and_non_repo(tmp_path, monkeyp
         "Test",
     )
     git("checkout", "-b", "feature")
-    app.refresh_branch()
+    assert app.refresh_branch() is True
     assert app.branch == "feature"
     git("checkout", "--detach")
     app.refresh_branch()
