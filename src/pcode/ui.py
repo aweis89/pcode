@@ -1300,6 +1300,13 @@ def create_prompt(
     # System rows (compaction, worktree git work) spin differently from a
     # model turn, so a wait on pcode itself is never mistaken for one on the model.
     system_spinner = Spinner("line")
+    # Every frame is a full layout pass (~2-3ms), so the animation loop alone
+    # costs a few percent of a core for the length of a turn. Rich's built-in
+    # intervals (80/100/130ms) are tuned for a dedicated terminal spinner, not
+    # for driving pcode's whole bottom block; slow them ~1.6x, which still
+    # reads as motion but noticeably cuts render frequency.
+    for spinner in (plan_spinner, prompt_spinner, system_spinner):
+        spinner.interval = round(spinner.interval * 1.6)
     fastest_interval = min(plan_spinner.interval, prompt_spinner.interval, system_spinner.interval)
 
     def refresh_interval() -> float:
