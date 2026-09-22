@@ -132,6 +132,11 @@ def scrollback(pane):
     return pane("capture-pane", "-p", "-S", "-", "-E", "-1", "-t", "preview:0.0")
 
 
+# The status row is indented one column so the spinner lines up with the task
+# rows inside the frame below it instead of hugging the terminal edge.
+SPINNER_ROW = tuple(" " + frame for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+
 def input_rows(screen):
     lines = screen.splitlines()
     assert "Enter:" in lines[-1], screen
@@ -231,10 +236,9 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     assert input_rows(streaming) == 1
     assert "COMMITTED LINE" in streaming
     # The spinner row reports live work; the prompt itself is already in scrollback.
-    assert any(line.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")) for line in streaming.splitlines())
+    assert any(line.startswith(SPINNER_ROW) for line in streaming.splitlines())
     assert not any(
-        line.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")) and line.endswith(" hello")
-        for line in streaming.splitlines()
+        line.startswith(SPINNER_ROW) and line.endswith(" hello") for line in streaming.splitlines()
     )
     assert "▌ hello" in streaming
     assert "FIRST STREAM CHUNK" not in streaming
@@ -615,7 +619,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     assert "Tasks ·" not in screen and "Tools" not in screen
     lines = screen.splitlines()
     first_task = next(i for i, line in enumerate(lines) if "Task 6" in line)
-    assert lines[first_task - 2].startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+    assert lines[first_task - 2].startswith(SPINNER_ROW)
     assert not lines[first_task - 2].startswith("│")
     assert lines[first_task - 1].startswith("┌")
     assert lines[first_task - 1].startswith("┌─ Tasks 0/12 ─")
@@ -724,7 +728,7 @@ def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
     task = next(i for i, line in enumerate(lines) if "A task" in line)
     # The running command owns the status row; the widget holds tasks alone.
     status = lines[task - 2]
-    assert status.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")) and "Run" in status
+    assert status.startswith(SPINNER_ROW) and "Run" in status
     assert not status.startswith("│")
     assert lines[task - 1].startswith("┌─ Tasks 0/1 ─")
     assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
@@ -807,7 +811,7 @@ def test_failure_is_reported_in_scrollback_and_clears_the_status_row(pane):
     assert input_rows(failed) == 1
     assert "Run failed" in failed
     # The turn is over, so no spinner row survives above the editor.
-    assert not any(line.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")) for line in failed.splitlines())
+    assert not any(line.startswith(SPINNER_ROW) for line in failed.splitlines())
     assert "▌ hello" in failed
 
 
@@ -825,7 +829,7 @@ def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
         header = lines[editor_top - 1]
         # One status row, never the echoed prompt, and never wider than the pane.
         assert not header.startswith("│")
-        assert header.startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+        assert header.startswith(SPINNER_ROW)
         assert "LONG PROMPT" not in header
         assert len(header) <= columns
         assert screen.count("┌") == screen.count("└") == 1
@@ -854,7 +858,7 @@ def test_queued_messages_stay_directly_above_editor(pane, mode):
         assert lines[editor_top - 2].startswith(f"{label}: first")
         assert lines[editor_top - 2].endswith("…")
         assert lines[editor_top - 1].startswith(f"{label}: second")
-        assert lines[editor_top - 3].startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+        assert lines[editor_top - 3].startswith(SPINNER_ROW)
         assert "active prompt" not in lines[editor_top - 3]
         assert "│❯ keep draft" in screen
         assert input_rows(screen) == 1
@@ -882,7 +886,7 @@ def test_single_running_tool_needs_no_box_above_the_editor(pane):
     top = next(i for i, line in enumerate(lines) if line.startswith("┌"))
     # Only the editor is boxed: the lone running call lives on the status row.
     assert screen.count("┌") == screen.count("└") == 1
-    assert lines[top - 1].startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+    assert lines[top - 1].startswith(SPINNER_ROW)
     assert "Run · " in lines[top - 1]
     assert "Tasks" not in screen and "Tools" not in screen
     assert "✓ Read" in pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
@@ -915,7 +919,7 @@ def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
     screen = capture(pane, "SLOW_FILE", running=True)
     lines = screen.splitlines()
     status = next(i for i, line in enumerate(lines) if "SLOW_FILE" in line)
-    assert lines[status].startswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"))
+    assert lines[status].startswith(SPINNER_ROW)
     assert lines[status - 1].strip() == ""
     assert "✓ Read  file_30.py" in lines[status - 2]
 

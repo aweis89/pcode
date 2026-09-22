@@ -4,7 +4,7 @@ import shutil
 import time
 
 import pytest
-from test_tmux import capture, input_rows
+from test_tmux import SPINNER_ROW, capture, input_rows
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -40,7 +40,7 @@ def test_compaction_keeps_editor_height_and_cancels_after_clearing_draft(pane):
     first = prompt_row(screen)
     assert "/compact" not in first
     assert "▸ keep test failures" in first
-    assert first[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    assert first.startswith(SPINNER_ROW)
     lines = screen.splitlines()
     assert lines[lines.index(first) + 1].startswith("┌─ Tasks")
     deadline = time.monotonic() + 3
@@ -53,13 +53,13 @@ def test_compaction_keeps_editor_height_and_cancels_after_clearing_draft(pane):
         pane("resize-window", "-t", "preview:0", "-x", str(columns))
         screen = capture(pane, "keep this draft", running=True, columns=columns)
         assert input_rows(screen) == 1
-        assert prompt_row(screen)[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        assert prompt_row(screen).startswith(SPINNER_ROW)
     # A draft absorbs the first Ctrl+C: only an empty prompt cancels the work.
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "Input discarded", running=True)
     assert "keep this draft" not in screen
     assert "Compaction cancelled" not in screen
-    assert prompt_row(screen)[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    assert prompt_row(screen).startswith(SPINNER_ROW)
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "Compaction cancelled")

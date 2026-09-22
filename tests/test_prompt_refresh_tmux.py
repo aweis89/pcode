@@ -34,7 +34,9 @@ def test_animation_elapsed_resize_and_cancel_after_idle(pane):
     pane("send-keys", "-t", "preview:0.0", "ANIMATING_PROMPT", "Enter")
 
     def status_icon(screen):
-        return next(line[0] for line in screen.splitlines() if "WAITING_TOOL" in line)
+        # The status row is indented one column, so the spinner is the first
+        # non-blank character rather than column zero.
+        return next(line.lstrip()[0] for line in screen.splitlines() if "WAITING_TOOL" in line)
 
     first = capture(pane, "WAITING_TOOL", running=True)
     first_time = float(re.search(r"· ([0-9.]+)s", first)[1])
