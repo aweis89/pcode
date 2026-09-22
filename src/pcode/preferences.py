@@ -174,6 +174,13 @@ SETTINGS = {
         whole_number=True,
         description="Corrections offered to the model per turn when a tool call fails validation",
     ),
+    # Anthropic rejects a malformed `replacements` array roughly one call in
+    # eight; strict mode makes the wrong shape unsamplable instead.
+    "strict_tools": Setting(
+        "off",
+        ("on", "off"),
+        description="Constrain edit_file arguments with Anthropic strict tool use",
+    ),
     "debug": Setting(
         "off",
         ("on", "off"),
