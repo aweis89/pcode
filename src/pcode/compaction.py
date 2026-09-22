@@ -341,6 +341,12 @@ class AutoCompaction(AbstractCapability):
                     messages=result.messages,
                 )
             )
+            # Unlike /compact this leaves no checkpoint node, so the journal is
+            # otherwise silent about a turn losing its own early context. Recall
+            # needs the marker to know the turn is still worth searching.
+            self.runtime.session.append(
+                "auto_compacted", run_id=self.run_id, before=before, after=result.after
+            )
         self.context.history = deepcopy(result.messages)
         request_context.messages = result.messages
         self.runtime.compaction_notice(result.description())
