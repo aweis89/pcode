@@ -137,7 +137,25 @@ the environment; this is best-effort, not a guarantee that arbitrary sensitive
 text can be recognized. Model snapshots retain their content faithfully for replay,
 so sensitive material pasted by you or returned by a tool can still be stored.
 Use `--no-save` when that is inappropriate. Delete a closed session's directory
-to remove it; there is no automatic retention policy yet.
+to remove it; conversations are never deleted for you.
+
+### Disk use
+
+`steps.sqlite3` holds all of it. Harness saves the whole message history again
+at every settled step, so a turn with hundreds of tool calls would store
+hundreds of copies of itself. Each turn keeps its newest two checkpoints
+instead, which is what resume and `/tree` read; sessions written before that
+bound existed keep every step and can reach gigabytes.
+
+```sh
+pcode --sessions --compact   # Drop superseded checkpoints, report space freed.
+```
+
+That rewrites each closed session's store in place, skipping any session open
+in another process, and reports what it reclaimed. It removes no conversation:
+every turn still restores from the step it settled at. On the largest session
+observed (1.3 GB, 338 checkpoints across 10 turns) it took under a second and
+left 67 MB.
 
 ## Checkpoints
 
@@ -150,6 +168,10 @@ Pending tool calls are not automatically replayed, and their unknown outcomes
 remain in the diagnostic ledger. Interrupted tools may already have changed the
 workspace; resuming does not undo those effects. Checkpoints do not restore files,
 running processes, or capability-local state such as the in-memory planner.
+
+Only a turn's newest checkpoint is read, so that is what is kept (plus its
+newest settled one, when the newest is interrupted). Rewinding to an earlier
+step *within* a turn is not offered; `/tree` moves between turns.
 
 ## Retries and `/resend`
 
