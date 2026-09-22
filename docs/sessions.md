@@ -38,6 +38,22 @@ there, and the worktree being left is tidied as on exit (an untouched `pcode-`
 worktree is removed; unmerged work is kept with a note). Sessions from another
 repository are refused.
 
+### When the workspace was deleted
+
+A session worktree can be removed by something other than the session that owns
+it: a sibling session merging and removing it, `/worktree clean`, or `git
+worktree prune`. The conversation is still resumable. `--continue` then
+continues in an explicit `-C DIR` of the same repository, or else in the
+checkout the worktree was made from, and says on stderr which directory it
+switched to; `/resume` continues in the workspace you are already in. Only a
+session whose repository is also gone is refused, and the message names the
+directory it was looking for.
+
+A workspace that disappears *during* a session is not recoverable in place: the
+shell and file tools resolve every path against it, so the next tool call stops
+the turn with a message naming the deleted directory, rather than retrying a
+command that cannot succeed. Quit and continue the session elsewhere.
+
 ## Recalling earlier sessions
 
 The bundled `session_history` extension lets the model answer questions such as
