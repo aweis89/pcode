@@ -105,6 +105,9 @@ def isolated_preferences(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("PCODE_MCP_CONFIG", raising=False)
+    # An always-on profile default plus a real PCODE_PROFILE_DIR would otherwise
+    # have the suite writing captures into the developer's own directory.
+    monkeypatch.delenv("PCODE_PROFILE_DIR", raising=False)
     # A developer's real Anthropic sign-in must never be read, refreshed, or
     # removed by the suite; XDG_CONFIG_HOME above already redirects the default.
     monkeypatch.delenv("PCODE_CREDENTIALS_FILE", raising=False)

@@ -46,6 +46,7 @@ def test_defaults_and_path_do_not_create_files():
         "tool_retries": "3",
         "strict_tools": "off",
         "debug": "off",
+        "profile": "off",
         "show_thinking": "off",
         "show_tasks": "on",
         "autohide_tasks": "on",

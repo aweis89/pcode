@@ -101,10 +101,16 @@ request-count limits are explicitly disabled; there is no monetary budget guard.
 
 ## Resource profiling
 
-Use `pcode --profile /tmp/pcode-resources` to sample pcode and its child processes'
-CPU, resident memory, and thread counts while reproducing a resource problem.
-Quit normally to write `summary.json`; `resources.jsonl` is flushed as it runs.
-The destination must be a new directory. Nothing is collected by default.
+Use `pcode --profile` to sample pcode and its child processes' CPU, resident
+memory, and thread counts while reproducing a resource problem, then
+`python -m pcode.profiling DIR` to read the capture. Samples record whether a
+turn was running, so the report separates working cost from idle cost. Bare
+`--profile` writes a timestamped directory under `~/.local/state/pcode/profiles`
+and prunes old ones; `--profile DIR` names its own, which must be new.
+`summary.json` is republished after every sample, so a session that is killed
+still leaves its totals. Nothing is collected by default;
+`pcode config set profile resources` captures every session and `--no-profile`
+opts one run out.
 
 For a short detailed capture, add `--profile-cpu` (function CPU time across Python
 threads) or `--profile-memory` (Python allocation locations and traced memory peaks).
