@@ -397,6 +397,16 @@ class Activity:
         return f"Tasks {completed}/{len(items)}"
 
     @property
+    def uses_system_spinner(self) -> bool:
+        """Tool calls animate like pcode's own work, not like model thinking.
+
+        The dots spinner means "the model is producing"; once a tool runs, the
+        wait is on the tool, so the row switches to the system glyph the way a
+        compaction or worktree row already does.
+        """
+        return self.prompt_kind != "user" or self.tools.active is not None
+
+    @property
     def status_shown(self) -> bool:
         """The live row exists only while a turn runs; the prompt is in scrollback."""
         return self.prompt_state == "running"
@@ -1319,7 +1329,7 @@ def create_prompt(
         """
         if not activity.status_shown:
             return fastest_interval / 1000
-        spinner = prompt_spinner if activity.prompt_kind == "user" else system_spinner
+        spinner = system_spinner if activity.uses_system_spinner else prompt_spinner
         interval = spinner.interval
         if activity.tasks_shown:
             interval = min(interval, plan_spinner.interval)
@@ -1470,7 +1480,7 @@ def create_prompt(
         Window(
             FormattedTextControl(
                 lambda: activity.status_fragments(
-                    (prompt_spinner if activity.prompt_kind == "user" else system_spinner)
+                    (system_spinner if activity.uses_system_spinner else prompt_spinner)
                     .render(monotonic())
                     .plain,
                     session.app.output.get_size().columns,
