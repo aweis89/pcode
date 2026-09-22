@@ -169,6 +169,12 @@ reason it was kept, so the command cannot lose work. It runs from the mainline
 checkout too (`make worktree-clean`), which is usually where the pile is
 visible. A worktree someone locked with `git worktree lock` is skipped.
 
+Branches outlive their worktrees, so a checkout that has been cleaned up by
+hand leaves a merged branch behind, and `git branch -d` refuses any branch a
+worktree still holds. `make clean-merged` runs the sweep above and then deletes
+whatever the default branch already contains, locally and on origin; pass
+`ARGS=--dry-run` to see the list first. Nothing unmerged is touched either way.
+
 When a merge stops on conflicts it says which files, and `/worktree resolve`
 hands them to the model: it gets the branch names and the conflicted paths and
 is asked to resolve each so both sides survive, run the tests, and commit the
