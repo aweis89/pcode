@@ -20,6 +20,7 @@ from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
 from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
@@ -227,6 +228,55 @@ def create_coder(
     # tool results at 70%, which otherwise runs before pcode compaction.
     return CombinedCapability(
         [c for c in coder.capabilities if not isinstance(c, ClearToolResults)]
+    )
+
+
+ASIDE_INSTRUCTIONS = (
+    "You are answering a side question about a conversation that is still in progress. "
+    "The message history is the main agent's context and may stop mid-task; the final "
+    "user message is the side question. Answer that question and nothing else, briefly, "
+    "preferring what the conversation already shows over fresh investigation. "
+    "You are read-only: you cannot write files, run commands, delegate, or change the "
+    "plan. Your answer is shown in a popup beside the conversation and is not added to "
+    "it, so do not address the main agent, propose next steps it should take, or promise "
+    "work. If the question needs changes made, say so and let the user send it as a "
+    "normal message."
+)
+
+
+def create_aside_agent(agent: Agent, workspace: Path) -> Agent:
+    """A read-only twin of `agent` for questions asked beside a running turn.
+
+    Side questions run concurrently with the conversation's own turn, so they
+    cannot share the live agent's capability instances: one persistent shell,
+    one plan store and one set of sub-agents between two runs would interleave
+    commands, clobber the plan and bill delegated work to the wrong turn. This
+    builds its own `Coder` instead, keeps only the read-only file tools, and
+    drops the shell, planning, and delegation entirely, so the worst a side
+    question can do to a working conversation is spend tokens.
+
+    The resolved model object is shared: it is stateless per request, and a
+    second one would mean a second HTTP client and provider handshake.
+    """
+    capabilities = []
+    for capability in create_coder(workspace).capabilities:
+        if isinstance(capability, (Shell, SubAgents, Planning, DelegationReporting)):
+            continue
+        if isinstance(capability, FileSystem):
+            capability = replace(capability, read_only=True)
+        capabilities.append(capability)
+    return Agent(
+        agent.model,
+        # A model string that never resolved (missing credentials) must not turn
+        # a side question into a startup error at construction time.
+        defer_model_check=True,
+        # Model settings are passed per run instead: /effort and /show-thinking
+        # change them in place on the live agent, and a copy taken here would
+        # pin a side question to whatever they were when it was first asked.
+        name="pcode-aside",
+        retries=tool_retries(),
+        instructions=AGENT_INSTRUCTIONS + " " + ASIDE_INSTRUCTIONS,
+        capabilities=capabilities,
     )
 
 

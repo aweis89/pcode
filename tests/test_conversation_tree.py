@@ -294,11 +294,13 @@ def test_app_navigation_and_busy_guard():
         app = PreviewApp(runtime=runtime, console=Console(file=output))
         a = await turn(runtime, "original prompt")
         app.activity.queued = 1
-        with pytest.raises(ValueError, match="queued"):
-            app.select_tree("")
+        # Browsing is always allowed; only the checkout waits for the turn.
+        app.select_tree("")
+        assert app.tree_requested
         with pytest.raises(ValueError, match="queued"):
             await app.navigate_tree(a, edit=True)
         app.activity.queued = 0
+        app.tree_requested = False
         assert app.registry.dispatch("/tree")
         assert app.tree_requested
         assert await app.navigate_tree(a, edit=True) == "original prompt"

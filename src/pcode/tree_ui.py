@@ -40,12 +40,14 @@ class TreeBrowser:
         self,
         tree: ConversationTree,
         *,
+        navigable: bool = True,
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
         color_system: str | None = "truecolor",
         **app_options,
     ) -> None:
         self.tree = tree
+        self.navigable = navigable
         self.code_theme = code_theme
         self.rows = tree.rows()
         self.selected: Selection = (tree.active, False)
@@ -73,7 +75,10 @@ class TreeBrowser:
 
         @keys.add("enter")
         def accept(event):
-            event.app.exit(result=self.selected)
+            # A running turn will overwrite the history a checkout installs, so
+            # the picker reads instead of navigating until the turn ends.
+            if self.navigable:
+                event.app.exit(result=self.selected)
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
@@ -81,7 +86,11 @@ class TreeBrowser:
         header = Label(
             lambda: (
                 f"Conversation tree · {len(tree.nodes)} turns · "
-                "User: edit & fork · Assistant: continue · Start: empty context"
+                + (
+                    "User: edit & fork · Assistant: continue · Start: empty context"
+                    if navigable
+                    else "read-only while working"
+                )
             )
         )
         wide = VSplit(
@@ -104,8 +113,16 @@ class TreeBrowser:
                 header,
                 body,
                 Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label("Enter Navigate · Tab Focus · Esc Cancel"),
-                Label("Switching context does not undo file changes or tool effects."),
+                Label(
+                    "Enter Navigate · Tab Focus · Esc Cancel"
+                    if navigable
+                    else "Tab Focus · Esc Close"
+                ),
+                Label(
+                    "Switching context does not undo file changes or tool effects."
+                    if navigable
+                    else "Forking waits for the running turn; /btw asks a question meanwhile."
+                ),
             ]
         )
         self.app = Application(
