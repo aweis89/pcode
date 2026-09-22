@@ -693,11 +693,11 @@ class PreviewApp:
         if registry is None:
             return False
         registry.refresh()
-        rows = []
+        running, finished = [], []
         for job in sorted(registry.jobs.values(), key=lambda job: job.started_at):
             elapsed = format_duration(job.elapsed)
             if job.running and not job.waiting:
-                rows.append(
+                running.append(
                     ("class:activity.job", f"\u27f3 {job.id} \u00b7 {job.label()} \u00b7 {elapsed}")
                 )
             elif not job.running and "ui" not in job.announced and registry.announceable(job):
@@ -705,7 +705,11 @@ class PreviewApp:
                 text = (
                     f"{icon} {job.id} \u00b7 {job.label()} \u00b7 {job.outcome()} \u00b7 {elapsed}"
                 )
-                rows.append(("class:activity.job.finished", text))
+                finished.append(("class:activity.job.finished", text))
+        # Running jobs lead, so the few rows the widget gets go to work still in
+        # flight when there are more jobs than rows. An exit is not lost by being
+        # folded away: scrollback reports it once the turn ends.
+        rows = running + finished
         changed = rows != self.activity.jobs
         self.activity.jobs = rows
         return self._refresh_watched(registry) or changed

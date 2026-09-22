@@ -91,7 +91,9 @@ turns it off; the model then hears at your next message instead.
 While a job runs with nothing waiting on it, a row under the spinner (or under
 the editor, while idle) shows it: `⟳ j3 · running the e2e suite · 1m42s`. A
 job that ended mid-turn shows there as `✓`/`✗` until the turn ends and
-scrollback gets its line. `/jobs watch j3` pins the job's output tail into the
+scrollback gets its line. Only three rows fit: running jobs come first and
+exits are folded into a `… N more jobs (/jobs)` line, since scrollback reports
+an exit anyway. `/jobs watch j3` pins the job's output tail into the
 command preview, whatever `show_commands` says; `/jobs unwatch` releases it,
 and it clears itself when the job ends.
 

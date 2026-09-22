@@ -99,6 +99,21 @@ from pcode.ui import Transcript
             False,
         ),
         ("inventory_agent_context", {}, {}, "Assistant configuration inspected", False),
+        (
+            "wait_for_job",
+            {"job_id": "j4"},
+            "output\n[j4 · exit 2 · 3.0s]",
+            "j4 · exit 2",
+            True,
+        ),
+        (
+            "job_output",
+            {"job_id": "j4"},
+            "output\n[j4 · running · 3.0s]",
+            "j4 · still running",
+            False,
+        ),
+        ("stop_job", {}, "", "job unavailable", False),
         ("unknown_tool", {"secret": "private text"}, "private text", "", False),
     ],
 )

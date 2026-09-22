@@ -109,6 +109,20 @@ def test_jobs_rows_show_background_work_and_unreported_exits(tmp_path):
     jobs.stop(live)
 
 
+def test_jobs_rows_put_running_work_ahead_of_older_exits(tmp_path):
+    app, jobs = app_with_jobs()
+    done = jobs.launch(command("import sys; sys.exit(3)"), cwd=tmp_path, background=True)
+    until_finished(jobs, done)
+    live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path, purpose="serving")
+    app.refresh_jobs()
+    # The exit is older, but the folded rows must not spend themselves on it.
+    assert [text.split(" \u00b7 ")[0] for _, text in app.activity.jobs] == [
+        f"\u27f3 {live.id}",
+        f"\u2717 {done.id}",
+    ]
+    jobs.stop(live)
+
+
 def test_wake_prompt_is_the_notice_for_jobs_the_model_launched(tmp_path, monkeypatch):
     app, jobs = app_with_jobs()
     background = jobs.launch(
