@@ -779,6 +779,11 @@ reduction can never spill the handles a running job is reached through. Apply it
 to delegated shell results too. The model result and raw log are not redacted by
 this display adapter. `--no-save` does not disable job logs.
 
+A live preview and the settled block it becomes are framed alike: `pcode.block`
+owns the rule character, the two-space body indent and the heading text, Rich
+draws it in scrollback (`CommandTranscript`, `EditTranscript`) and prompt_toolkit
+windows draw it in the panel. Change the framing there, not in one surface.
+
 Wait for complete lines, sanitize before clipping, and redact unfinished quoted
 credentials and private-key blocks before displaying a preview. `CommandOutput`
 bypasses session/tree journals. Remove per-call previews when tool results arrive,
