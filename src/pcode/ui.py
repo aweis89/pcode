@@ -36,6 +36,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+from pcode.block import INDENT, RULE, RUNNING, block_heading
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
@@ -133,6 +134,10 @@ class Palette:
                 # an exit nobody has been told about yet earns the accent.
                 "activity.job": self.muted,
                 "activity.job.finished": f"{self.accent} bold",
+                # The live preview block, drawn the way scrollback draws a
+                # settled one: a heading on the opening line, rules around it.
+                "block.rule": self.muted,
+                "block.heading": self.accent,
                 "frame.border": self.muted,
                 "editor.mode": "noreverse nodim bg:#b8b8b8 fg:#ffffff",
                 # Keep foreground and background paired with the terminal theme:
@@ -455,6 +460,25 @@ class Activity:
             state = "pending" if "steering" in self.queued_modes else "queued"
             rows.append(("class:plan", f"… {remaining} more {state}"))
         return rows
+
+
+def command_heading(activity: Activity, event: CommandOutput) -> str:
+    """Name a running command the way scrollback will name it once it settles.
+
+    Same marker, title and elapsed layout as `CommandTranscript`; only the
+    marker differs, because nothing has finished yet. A watched job and a
+    `!command` typed at the prompt have no live tool call to name them.
+    """
+    call = next((c for c in activity.tools.visible if c.event.call_id == event.call_id), None)
+    if call is not None:
+        purpose = plain(call.event.purpose, limit=60) if call.event.purpose else ""
+        name = label(call.event.name)
+        return block_heading(
+            RUNNING, f"{name} · {purpose}" if purpose else name, monotonic() - call.started
+        )
+    if event.call_id.startswith(WATCHED_PREFIX):
+        return block_heading(RUNNING, f"Job {event.call_id[len(WATCHED_PREFIX) :]}")
+    return block_heading(RUNNING, "Shell")
 
 
 @Output.register
@@ -1202,7 +1226,7 @@ def create_prompt(
     def frame_height() -> int:
         live = preview_layout()
         if live is not None:
-            return live[2]
+            return live[3]
         size = session.app.output.get_size()
         available = max(1, size.rows - 4 - activity_height() - len(queue_rows()))
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
@@ -1286,9 +1310,25 @@ def create_prompt(
             + search.preferred_height(size.columns, size.rows).preferred
         )
         room = max(0, size.rows - fixed)
+        # Parallel calls share the preview; show the most recently updated call.
+        event = next(reversed((activity.edit_previews if edits else commands).values()))
+        # A sandboxed snippet is pending arguments like an edit, but it is code
+        # rather than a diff: no +/- coloring, and nothing has run yet.
+        code = bool(edits) and event.kind == "code"
+        heading = (
+            block_heading(
+                RUNNING,
+                "Preparing code · not yet run"
+                if code
+                else f"Preparing edit · {event.path} · not applied",
+            )
+            if edits
+            else command_heading(activity, event)
+        )
         plans = base_plan_rows()
-        # Editor: two borders and at least one text row. Preview: two borders,
-        # the command, and at least one output row. Keep one task when possible.
+        # Editor: two borders and at least one text row. Preview: two rule
+        # lines, the command, and at least one output row. Keep one task when
+        # possible.
         task_floor = 3 if plans else 0
         editor_room = max(1, room - 2 - 4 - task_floor)
         editor_rows = min(editor_room, editor.preferred_height(width, editor_room).preferred)
@@ -1297,33 +1337,31 @@ def create_prompt(
         if len(plans) > plan_budget:
             plans = base_plan_rows(plan_budget)
         plan_height = len(plans) + 2 if plans else 0
-        budget = min(transcript.command_preview_lines, room - editor_height - plan_height - 3)
+        # Chrome: the two rule lines, plus the indented `$ command` a shell
+        # preview repeats below its heading, exactly as scrollback does.
+        chrome = 2 if edits else 3
+        budget = min(transcript.command_preview_lines, room - editor_height - plan_height - chrome)
         if budget <= 0:
-            return plans, [], editor_height
-        # Parallel calls share the preview; show the most recently updated call.
-        event = next(reversed((activity.edit_previews if edits else commands).values()))
-        # A sandboxed snippet is pending arguments like an edit, but it is code
-        # rather than a diff: no +/- coloring, and nothing has run yet.
-        code = bool(edits) and event.kind == "code"
-        title = (
-            "Preparing code · not yet run"
-            if code
-            else f"Preparing edit · {event.path} · not applied"
-            if edits
-            else "$ " + command_preview(event.command)
-        )
+            return plans, "", [], editor_height
         body = event.text if edits else event.output
         rows = preview_body(bool(edits) and not code, body, width, transcript.code_theme)
-        commands = [("class:plan", title), *rows[-budget:]]
-        return plans, commands, editor_height
+        if edits:
+            # A diff keeps its +/- gutter flush left, as the settled block does.
+            return plans, heading, rows[-budget:], editor_height
+        block = [("class:plan", "$ " + command_preview(event.command)), *rows[-budget:]]
+        return plans, heading, [(style, INDENT + text) for style, text in block], editor_height
 
     def plan_rows():
         live = preview_layout()
         return live[0] if live is not None else base_plan_rows()
 
+    def preview_heading():
+        live = preview_layout()
+        return live[1] if live is not None else ""
+
     def command_rows():
         live = preview_layout()
-        return live[1] if live is not None else []
+        return live[2] if live is not None else []
 
     @per_render
     def notice_rows():
@@ -1413,19 +1451,39 @@ def create_prompt(
     plan = ConditionalContainer(plan_frame, filter=Condition(lambda: bool(plan_rows())))
     # Keep the turn and its activity adjacent even when the root layout justifies
     # the transcript and editor across the remaining terminal height.
+    # Framed the way scrollback frames the same run once it settles: the
+    # heading rides the opening rule, the body is indented, a rule closes it.
     commands = ConditionalContainer(
-        Frame(
-            Window(
-                FormattedTextControl(
-                    lambda: panel_fragments(
-                        command_rows(), session.app.output.get_size().columns - 2
-                    ),
-                    show_cursor=False,
+        HSplit(
+            [
+                VSplit(
+                    [
+                        Label(
+                            lambda: panel_fragments(
+                                [("class:block.heading", preview_heading())],
+                                session.app.output.get_size().columns - 4,
+                            ),
+                            style="class:block.heading",
+                            dont_extend_width=True,
+                        ),
+                        Window(FormattedTextControl(" "), width=1, style="class:block.rule"),
+                        Window(char=RULE, style="class:block.rule"),
+                    ],
+                    height=1,
                 ),
-                height=lambda: len(command_rows()),
-                dont_extend_height=True,
-                wrap_lines=False,
-            ),
+                Window(
+                    FormattedTextControl(
+                        lambda: panel_fragments(
+                            command_rows(), session.app.output.get_size().columns
+                        ),
+                        show_cursor=False,
+                    ),
+                    height=lambda: len(command_rows()),
+                    dont_extend_height=True,
+                    wrap_lines=False,
+                ),
+                Window(char=RULE, height=1, style="class:block.rule"),
+            ],
             height=lambda: len(command_rows()) + 2,
         ),
         filter=Condition(lambda: bool(command_rows())),

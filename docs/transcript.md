@@ -143,11 +143,14 @@ time, and a shell-highlighted invocation on a `$` line. Captured output stays
 literal, with its indentation preserved and no Markdown parsing or extra block
 padding. Process polling details without a command are shown without a `$` prefix:
 
+The heading sits on the block's opening line, and a plain line closes it:
+
 ```text
-✓ Run · 0.4s
+✓ Run · 0.4s ──────────────────────────────────────────────
   $ pytest -q
   2 passed in 0.31s
   {"pid": 124, "exit_code": 0}
+────────────────────────────────────────────────────────────
 ```
 
 Details:
@@ -159,14 +162,17 @@ Details:
   complete lines arrive from the combined stdout/stderr log. Harness emits at most
   the first 16,000 bytes; a capped preview is marked, and further output stays in
   the command log. Ctrl+G controls both preview and scrollback.
+  The live block is drawn like the settled one: the same heading on an opening
+  line (with `⟳` and the elapsed time, since nothing has finished yet), the same
+  indented `$` line, and a closing line instead of a box.
   `command_preview_lines` caps the live output at 10 wrapped rows by default
-  (positive integer, excluding the command and frame borders). The preview uses
+  (positive integer, excluding the command and block lines). The preview uses
   space left after the editor, queued prompts, and Tasks/Tools panel. Under tight
   height pressure, task rows yield only enough to retain a one-line output tail.
   For parallel calls,
   the most recently updated command is shown; all calls remain in the tool panel.
   Programs that buffer their own output must flush it (for example, `python -u`).
-- On completion the transient preview disappears and one bordered result is
+- On completion the transient preview disappears and one settled block is
   written to scrollback, without duplicate streamed lines. Preview updates are
   not saved in session history. Background `shell` calls return PID/log/status
   handles rather than streaming output after the call ends.

@@ -87,8 +87,7 @@ def test_command_diagnostic_survives_event_round_trip_and_uses_output_fallback()
     transcript.tool_error_scrollback = True
     transcript.events((ToolSummary(**asdict(event)),))
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
-        "─" * 100,
-        "✗ Run · 0.5s",
+        "✗ Run · 0.5s " + "─" * 87,
         "  pytest -q → exit 1",
         "  [stderr] missing module",
         "    traceback context",
