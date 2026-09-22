@@ -20,6 +20,8 @@ streams it.
 
 - **↑ / ↓:** move through the questions, or scroll the answer when it has focus.
 - **Tab:** switch between the question list and the answer pane.
+- **c:** copy the selected answer to the clipboard as raw markdown (also
+  works mid-stream, taking what has arrived so far).
 - **Ctrl+K:** stop every running side question, keeping the records.
 - **Enter / Escape / Ctrl+C:** close the popup and restore the editor draft.
 
