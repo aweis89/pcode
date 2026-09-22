@@ -83,8 +83,12 @@ paginates long text, and includes bounded ancestor context (not sibling branches
 - Excerpts are centred on the densest match in prose where there is one, so a
   conclusion outranks the shell command that led to it, and each hit carries the
   turn's closing assistant text as `conclusion` when the excerpt misses it.
-- Results report `sessions_searched` against `sessions_in_scope`, and a warning
-  names how many of the oldest sessions the scan budget left unsearched.
+- Results report `sessions_searched` against `sessions_in_scope`. Sessions are
+  scanned newest first up to a journal byte budget, so anything left out is the
+  older end; the reply then carries a `next_cursor` and a warning naming how many
+  sessions it did not reach. Pass that value back as `after` to scan them. A
+  session the budget cut off mid-way stays behind the cursor and is re-read whole
+  on the next page, so paging never skips records.
 - New sessions record their project path so deleted worktrees remain discoverable.
   Older sessions use Git discovery or the conventional `.worktrees/` layout;
   a deleted legacy worktree elsewhere may need `scope="all"`.
@@ -166,7 +170,8 @@ pcode --sessions --compact   # Drop superseded checkpoints, report space freed.
 
 That rewrites each closed session's store in place, skipping any session open
 in another process, and reports what it reclaimed. It removes no conversation:
-every turn still restores from the step it settled at. On the largest session
+every turn still restores from the step it settled at, and recall is unaffected
+because search reads `transcript.jsonl`, which `--compact` never touches. On the largest session
 observed (1.3 GB, 338 checkpoints across 10 turns) it took under a second and
 left 67 MB.
 
