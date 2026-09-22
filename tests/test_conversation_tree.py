@@ -83,7 +83,7 @@ def test_branch_history_tools_plans_and_reopen(tmp_path, save):
             assert await runtime.plan_store.get_items() == plan
             if saved:
                 assert [
-                    r["prompt"] for r in saved.recent_transcript() if r["kind"] == "turn_started"
+                    r["prompt"] for r in saved.transcript_records() if r["kind"] == "turn_started"
                 ] == ["A", "B"]
                 assert {
                     r["run_id"] for r in saved.tool_events() if r["kind"] == "turn_started"

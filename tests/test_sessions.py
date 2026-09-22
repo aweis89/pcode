@@ -52,7 +52,7 @@ def test_round_trip_session_keeps_model_messages_and_transcript(tmp_path):
             _ = [event async for event in restored.stream("follow up")]
             assert len(requests[-1]) > len(requests[0])
             assert restored.turns == 2
-            records = reopened.recent_transcript()
+            records = list(reopened.transcript_records())
             assert sum(r["kind"] == "Message" for r in records) == 2
             assert [r["prompt"] for r in records if r["kind"] == "turn_started"] == [
                 "first question",
@@ -130,7 +130,7 @@ def test_http_failure_after_tool_keeps_tool_result_and_diagnostics(tmp_path, mon
         assert marker not in error_message(raised.value)
         assert runtime.history
         assert saved.info.status == "failed"
-        records = saved.recent_transcript()
+        records = list(saved.transcript_records())
         failure = next(r for r in records if r["kind"] == "turn_failed")
         assert failure["error"]["provider_param"] == "prompt_cache_breakpoint"
         assert marker not in json.dumps(failure)
@@ -223,7 +223,7 @@ def test_torn_journal_does_not_hide_future_events(tmp_path, tail):
         with (saved.directory / "transcript.jsonl").open("ab") as file:
             file.write(tail)
         saved.event(Message("after restart"))
-        assert [r["markdown"] for r in saved.recent_transcript()] == [
+        assert [r["markdown"] for r in saved.transcript_records()] == [
             "before crash",
             "after restart",
         ]
@@ -470,7 +470,7 @@ def test_thinking_persists_and_replays_after_reopen_even_when_hidden(tmp_path, o
         reopened = SavedSession.open(identity, root)
         runtime = AgentRuntime(agent, reopened)
         try:
-            records = reopened.recent_transcript()
+            records = list(reopened.transcript_records())
             thinking = [r for r in records if r["kind"] in ("Thinking", "thinking_partial")]
             assert len(thinking) == 1
             assert thinking[0]["text"] == thought
@@ -491,7 +491,7 @@ def test_thinking_persists_and_replays_after_reopen_even_when_hidden(tmp_path, o
     asyncio.run(run())
 
 
-def test_thinking_completion_replaces_deltas_across_interleaved_tool_records():
+def test_thinking_completion_does_not_repeat_deltas_across_interleaved_tool_records():
     from types import SimpleNamespace
 
     records = [
@@ -504,9 +504,10 @@ def test_thinking_completion_replaces_deltas_across_interleaved_tool_records():
         {"kind": "turn_cancelled"},
     ]
     saved = SimpleNamespace(active_records=lambda: iter(records))
-    assert SavedSession.recent_transcript(saved) == [
-        {"kind": "Thinking", "text": "first second"},
+    assert list(SavedSession.transcript_records(saved)) == [
+        {"kind": "thinking_partial", "text": "first"},
         {"kind": "ToolSummary", "name": "read_file"},
+        {"kind": "thinking_partial", "text": " second"},
         {"kind": "Message", "markdown": "Answer"},
         {"kind": "thinking_partial", "text": "interrupted"},
         {"kind": "turn_cancelled"},

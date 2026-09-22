@@ -751,7 +751,8 @@ class TerminalOutput:
         self.transient_pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
-        self.commit_print = self.print
+        self.commit_user = self.user
+        self.commit_message = self.message
         self.commit_thinking = lambda text: self.print(
             ThinkingMarkdown(text, code_theme=self.code_theme(), style="dim"), end=""
         )
@@ -776,9 +777,16 @@ class TerminalOutput:
     def begin_turn(self, prompt: str) -> None:
         # The live row shows the running tool, not the prompt, so the quote goes
         # to scrollback as soon as the turn starts rather than waiting for output.
-        self.commit_print()
-        self.commit_print(TaskPrompt(prompt))
-        self.commit_print()
+        self.commit_user(prompt)
+
+    def user(self, prompt: str) -> None:
+        self.print()
+        self.print(TaskPrompt(prompt))
+        self.print()
+
+    def message(self, source: str) -> None:
+        self.print(Markdown(source, code_theme=self.code_theme()))
+        self.print()
 
     def end_turn(self) -> None:
         self.finish_thinking()
@@ -786,8 +794,7 @@ class TerminalOutput:
 
     def _commit(self, source: str) -> None:
         if source.strip():
-            self.commit_print(Markdown(source, code_theme=self.code_theme()))
-            self.commit_print()
+            self.commit_message(source)
 
     def _commit_thinking(self, source: str) -> None:
         if source.strip():
@@ -1573,7 +1580,11 @@ class Transcript:
         self.syntax_themes = syntax_themes(preferences)
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
-        self.log = TranscriptLog()
+        self.log = TranscriptLog(
+            max_chars=int(
+                preferences.get("transcript_max_chars", SETTINGS["transcript_max_chars"].default)
+            )
+        )
         self._replay_sink: list | None = None
         self._block: str | None = None
 
@@ -1590,7 +1601,8 @@ class Transcript:
     def output(self, output: TerminalOutput | None) -> None:
         self._output = output
         if output is not None:
-            output.commit_print = self.print
+            output.commit_user = self.user
+            output.commit_message = self.message
             output.commit_thinking = self.thinking
             if self.replays_on_resize:
                 output.resize_replay = self.replay
@@ -1643,6 +1655,12 @@ class Transcript:
                 self.console.print(*objects, end=end)
 
     @recorded
+    def message(self, text: str) -> None:
+        """Retain a Markdown block and its separator atomically, even at tiny budgets."""
+        self.print(Markdown(text, code_theme=self.code_theme))
+        self.print()
+
+    @recorded
     def thinking(self, text: str) -> None:
         """Retain readable provider text, choosing visibility again on every redraw."""
         if self.activity is not None and self.activity.show_thinking:
@@ -1674,6 +1692,30 @@ class Transcript:
             self.log.recording = True
             self._replay_sink = None
         return sink
+
+    @contextmanager
+    def restore(self):
+        """Replace history without rendering discarded entries, then redraw once.
+
+        Saved history goes through the same recorded methods and retention budget
+        as live output. Redirected output receives the retained slice once, without
+        terminal escapes; subsequent redraw requests remain a no-op there.
+        """
+        previous = self.log
+        self.log = TranscriptLog(limit=previous.limit, max_chars=previous.max_chars)
+        self.log.capture_only = True
+        try:
+            yield
+        except BaseException:
+            self.log = previous
+            raise
+        finally:
+            self.log.capture_only = False
+        if self.output is not None and self.console.is_terminal:
+            self.regenerate()
+        else:
+            for objects, end, _ in self.replay():
+                self._write(objects, end)
 
     def regenerate(self) -> None:
         """Request an atomic rebuild; never emit terminal escapes into redirected output."""
@@ -1898,6 +1940,7 @@ class Transcript:
             TranscriptNotice("Completed tool effects are not undone.", "cancelled", "Run cancelled")
         )
 
+    @recorded
     def user(self, text: str) -> None:
         self.print()
         self.print(TaskPrompt(text))
@@ -1932,8 +1975,7 @@ class Transcript:
             elif isinstance(event, Thinking):
                 self.thinking(event.text.rstrip("\n") + "\n\n")
             elif isinstance(event, Message):
-                self.print(Markdown(event.markdown, code_theme=self.code_theme))
-                self.print()
+                self.message(event.markdown)
             elif isinstance(event, ToolSummary):
                 if event.name in COMMAND_TOOLS:
                     # Mirroring owns command completions. A failure whose

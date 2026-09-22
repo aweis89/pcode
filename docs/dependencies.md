@@ -609,8 +609,11 @@ and [adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/ad
 `live.py` maps readable `ThinkingPart`/`ThinkingPartDelta` content into
 `ThinkingDelta` and emits a `Thinking` completion at `PartEndEvent`. These events
 are journaled independently of visibility. Never put signatures or redacted
-thinking data in them. `SavedSession.recent_transcript` collapses complete deltas
-into one block and preserves incomplete blocks on cancellation/failure/reopen.
+thinking data in them. `SavedSession.transcript_records` coalesces thinking deltas,
+flushes them before interleaved display records, skips duplicate completion text,
+and preserves incomplete blocks on cancellation/failure/reopen. Resume captures
+these writes into `TranscriptLog` under the same `transcript_max_chars` budget as
+live output, then requests the ordinary redraw; it has no separate record limit.
 Native model history remains separate from this readable presentation history.
 
 `TerminalOutput.thinking_delta` commits complete plain-text lines through
@@ -621,9 +624,11 @@ Define compound styles in the theme: a string such as `pcode.muted dim` is not a
 valid composite of a theme alias and an attribute in Rich's style parser.
 Consecutive thinking writes coalesce in `TranscriptLog`, without the old 8-KB
 preview truncation. Retention is bounded by the text a replay would emit, not by
-entry count: one committed Markdown block costs two entries, so an entry-only cap
-silently dropped visible history from long sessions on every resize. The loose
-entry cap remains only so a flood of tiny writes cannot grow the deque forever.
+entry count. An entry-only cap previously dropped visible history from long
+sessions on every resize. Live Markdown blocks and user prompts are now recorded
+atomically with their separators, so a trailing blank cannot evict an oversized
+newest message. The loose entry cap scales with the character budget and remains
+only so a flood of tiny writes cannot grow the deque forever.
 Markdown is retained as its source (`RetainedMarkdown`), because `Transcript.print`
 rebuilds the renderable with the current theme anyway and a parsed token tree
 costs tens of times its source.
