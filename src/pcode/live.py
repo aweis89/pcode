@@ -99,6 +99,7 @@ from pcode.tool_display import (
     shell_status,
     target,
 )
+from pcode.turn import TurnContext
 
 
 class AgentRuntime:
@@ -146,7 +147,9 @@ class AgentRuntime:
         # against the new agent rather than left on the previous provider.
         self._aside_agent = None
         # Coder's public root capability is flattened by Pydantic AI. A resolver
-        # keeps the store conversation-scoped, including after /new.
+        # keeps the store conversation-scoped, including after /new. It resolves
+        # per request, so this is also where a second turn would be handed its
+        # own store: `ctx` names the run the tools are being called for.
         for capability in self.agent.root_capability.capabilities:
             if isinstance(capability, Planning):
                 capability.store_resolver = lambda ctx: self.plan_store
@@ -207,10 +210,9 @@ class AgentRuntime:
         info = self.session.info if self.session else None
         self.tree = self.session.tree if self.session else ConversationTree()
         self.inspections = ToolArchive()
-        self.history: list[ModelMessage] = []
-        # Shell-mode exchanges the next request carries; see `record_shell`.
-        self.pending_shell: list[ModelMessage] = []
-        self.context_history: list[ModelMessage] | None = None
+        # The active branch's turn state. Everything a turn reads and writes
+        # back lives here rather than on the runtime; see `TurnContext`.
+        self.context = TurnContext()
         self.conversation_id = info.id if info else str(uuid4())
         self.turns = info.turns if info else 0
         self.totals = TokenTotals(
@@ -220,9 +222,40 @@ class AgentRuntime:
             cache_write=info.cache_write_tokens if info else 0,
         )
         self.recovery_blocked = ""
-        self._request_checkpoint = RequestCheckpoint()
-        self.plan_store = InMemoryPlanStore()
         self.mcp = MCPState()
+
+    # The active branch's turn state, under the names callers already use.
+    @property
+    def history(self) -> list[ModelMessage]:
+        return self.context.history
+
+    @history.setter
+    def history(self, messages: list[ModelMessage]) -> None:
+        self.context.history = messages
+
+    @property
+    def pending_shell(self) -> list[ModelMessage]:
+        return self.context.pending_shell
+
+    @pending_shell.setter
+    def pending_shell(self, messages: list[ModelMessage]) -> None:
+        self.context.pending_shell = messages
+
+    @property
+    def plan_store(self) -> InMemoryPlanStore:
+        return self.context.plan_store
+
+    @plan_store.setter
+    def plan_store(self, store: InMemoryPlanStore) -> None:
+        self.context.plan_store = store
+
+    @property
+    def context_history(self) -> list[ModelMessage] | None:
+        return self.context.context_history
+
+    @context_history.setter
+    def context_history(self, messages: list[ModelMessage] | None) -> None:
+        self.context.context_history = messages
 
     @property
     def input_tokens(self) -> int:
@@ -487,7 +520,7 @@ class AgentRuntime:
                 if (
                     attempt == self.retry_attempts
                     or self.recovery_blocked
-                    or self._request_checkpoint.messages is None
+                    or self.context.checkpoint.messages is None
                     or not transient(error)
                 ):
                     raise
@@ -505,7 +538,11 @@ class AgentRuntime:
     async def _turn(self, send: str | None) -> AsyncIterator[Event]:
         """Run one attempt. A `None` prompt continues from history without adding to it."""
         prompt = send or ""
-        self._request_checkpoint = RequestCheckpoint()
+        # This turn's state, read and written through one object rather than
+        # through the runtime. One turn runs at a time, so it is still the
+        # active branch's context; a second turn would be given its own.
+        context = self.context
+        context.checkpoint = RequestCheckpoint()
         if self.session is None and self.session_factory is not None:
             self.session = self.session_factory()
             self.conversation_id = self.session.info.id
@@ -534,10 +571,11 @@ class AgentRuntime:
                 }
             )
         self.inspections.run_id = run_id
-        self._compaction_usage = RunUsage()
+        context.run_id = run_id
+        context.compaction_usage = RunUsage()
         tools_started = False
         try:
-            async with aclosing(self._stream(send, run_id)) as stream:
+            async with aclosing(self._stream(send, context)) as stream:
                 async for event in stream:
                     if isinstance(event, ToolStarted):
                         tools_started = True
@@ -556,7 +594,7 @@ class AgentRuntime:
                         self.inspections.event(event)
                     yield event
         except BaseException as error:
-            resend_blocked = tools_started and self._request_checkpoint.messages is None
+            resend_blocked = tools_started and context.checkpoint.messages is None
             if saved:
                 self._save_totals(saved.info)
             self.inspections.settle(
@@ -590,11 +628,11 @@ class AgentRuntime:
                 try:
                     # Keep completed tool results even if the *following* request
                     # failed. Never silently re-run a side effect on retry.
-                    checkpoint = self._request_checkpoint
+                    checkpoint = context.checkpoint
                     if checkpoint.messages is not None:
                         # The failed request already carried any shell-mode
                         # exchange; recovering it below must not queue it twice.
-                        self.pending_shell = []
+                        context.pending_shell = []
                         # Override any partial response saved during unwind. This
                         # also persists a bare first prompt, which Harness omits.
                         await saved.store.save_snapshot(
@@ -605,16 +643,16 @@ class AgentRuntime:
                                 conversation_id=self.conversation_id,
                             )
                         )
-                    self.history = await saved.recover()
+                    context.history = await saved.recover()
                 except SessionError as recovery_error:
                     self.recovery_blocked = str(recovery_error)
             else:
                 cancelled = isinstance(
                     error, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit)
                 )
-                if self._request_checkpoint.messages is not None:
-                    self.pending_shell = []
-                    self.history = self._request_checkpoint.messages
+                if context.checkpoint.messages is not None:
+                    context.pending_shell = []
+                    context.history = context.checkpoint.messages
                 self.tree.consume(
                     {
                         "kind": "turn_cancelled" if cancelled else "turn_failed",
@@ -622,7 +660,7 @@ class AgentRuntime:
                         "resend_blocked": resend_blocked,
                     }
                 )
-                self.tree.nodes[run_id].history = deepcopy(self.history)
+                self.tree.nodes[run_id].history = deepcopy(context.history)
             raise
         else:
             self.inspections.settle("unknown")
@@ -634,14 +672,14 @@ class AgentRuntime:
                 saved.save_info()
             else:
                 self.tree.consume({"kind": "turn_completed", "run_id": run_id})
-                self.tree.nodes[run_id].history = deepcopy(self.history)
+                self.tree.nodes[run_id].history = deepcopy(context.history)
 
         finally:
             # The auto-compaction summarizer is its own agent run: its usage
             # reaches neither `after_model_request` nor this run's result. It is
             # reset per attempt, so a retry loop cannot double-count it.
-            self.totals.add(self._compaction_usage)
-            self.context_history = None
+            self.totals.add(context.compaction_usage)
+            context.context_history = None
 
     def _consume_steering(self, run_id: str) -> list[str]:
         messages = self.take_steering()
@@ -650,10 +688,11 @@ class AgentRuntime:
                 self.session.append("steering", run_id=run_id, prompt=text)
         return messages
 
-    async def _stream(self, prompt: str | None, run_id: str) -> AsyncIterator[Event]:
+    async def _stream(self, prompt: str | None, context: TurnContext) -> AsyncIterator[Event]:
+        run_id = context.run_id
         await self.refresh_context()
         self._persist_child_runs()
-        plan_items = [item.model_dump(mode="json") for item in await self.plan_store.get_items()]
+        plan_items = [item.model_dump(mode="json") for item in await context.plan_store.get_items()]
         preview = (
             StreamingPlanPreview()
             if any(isinstance(c, Planning) for c in self.agent.root_capability.capabilities)
@@ -698,19 +737,21 @@ class AgentRuntime:
             worker_toolsets(self.mcp.toolsets()),
             self.agent.run_stream_events(
                 prompt,
-                message_history=self.history + self.pending_shell,
+                message_history=context.messages(),
                 toolsets=self.mcp.toolsets(),
                 conversation_id=self.conversation_id,
                 run_id=run_id,
+                # Per-run capabilities bind to this turn's context, not to the
+                # runtime: what they publish and rewrite belongs to this turn.
                 capabilities=(
                     ([StepPersistence(store=self.session.store)] if self.session else [])
                     + [
                         Steering(lambda: self._consume_steering(run_id)),
-                        self._request_checkpoint,
+                        context.checkpoint,
                         TokenAccounting(record=self.totals.add),
-                        ContextTracking(self),
+                        ContextTracking(self, context),
                     ]
-                    + ([AutoCompaction(self, run_id)] if self.auto_compact else [])
+                    + ([AutoCompaction(self, context)] if self.auto_compact else [])
                 ),
                 # Explicitly disable the cap; omitting this restores the library default.
                 usage_limits=UsageLimits(request_limit=None),
@@ -882,7 +923,8 @@ class AgentRuntime:
                     # Read the store after every settled tool: covers granular,
                     # batched, and future plan mutations without parsing results.
                     items = [
-                        item.model_dump(mode="json") for item in await self.plan_store.get_items()
+                        item.model_dump(mode="json")
+                        for item in await context.plan_store.get_items()
                     ]
                     if items != plan_items:
                         plan_items = items
@@ -927,8 +969,8 @@ class AgentRuntime:
                         yield Message(str(result.output))
                     # Full successful history. The outer persistence wrapper also
                     # recovers settled tool-boundary snapshots after failures.
-                    self.history = result.all_messages()
-                    self.pending_shell = []
+                    context.history = result.all_messages()
+                    context.pending_shell = []
                     self.turns += 1
                 if preview is not None:
                     if (update := preview.update(event, plan_items)) is not None:

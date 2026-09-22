@@ -21,6 +21,7 @@ from pcode.agent import create_coder
 from pcode.compaction import AutoCompaction
 from pcode.model_metadata import ModelLimits
 from pcode.output_limits import FALLBACK_OUTPUT_TOKENS, ModelOutputLimits
+from pcode.turn import TurnContext
 
 
 @pytest.fixture
@@ -198,15 +199,14 @@ def test_compaction_sees_resolved_limit_and_small_windows_remain_usable(
 ):
     selected = model()
     metadata[0][id(selected)] = ModelLimits(output=128_000)
-    runtime = SimpleNamespace(
-        session=None, compaction_notice=lambda _: None, _compaction_usage=RunUsage()
-    )
+    runtime = SimpleNamespace(session=None, compaction_notice=lambda _: None)
+    turn = TurnContext(run_id="test")
     monkeypatch.setattr("pcode.compaction.effective_window", lambda _: window)
     monkeypatch.setattr("pcode.compaction.context_estimate", lambda *args: used)
     summarize = AsyncMock(side_effect=RuntimeError("reached summarizer"))
     monkeypatch.setattr("pcode.compaction.summarize", summarize)
     # Reverse order deliberately: compaction must still run after limit resolution.
-    combined = CombinedCapability([AutoCompaction(runtime, "test"), ModelOutputLimits()])
+    combined = CombinedCapability([AutoCompaction(runtime, turn), ModelOutputLimits()])
     assert isinstance(combined.capabilities[0], ModelOutputLimits)
 
     async def run():

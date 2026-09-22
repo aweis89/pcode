@@ -9,7 +9,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import CombinedCapability
-from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
+from pydantic_ai.messages import RetryPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness import Coder
 from rich.console import Console
@@ -174,6 +174,42 @@ def test_coder_allows_all_commands_by_default(tmp_path):
         toolset = shell.get_toolset()
         assert "allowed" in await toolset.run_command("printf allowed")
         assert "allowed" in await toolset.run_command("python3 -c 'print(\"allowed\")'")
+
+    asyncio.run(run())
+
+
+def test_a_run_writes_into_the_turn_context_it_was_given():
+    """Turn state reaches the turn, not the runtime.
+
+    One turn runs at a time today, so the runtime hands `_stream` its active
+    context. What this pins is that nothing inside the run reaches around that
+    argument: given another context, the run fills that one and leaves the
+    active branch alone.
+    """
+    from pcode.turn import TurnContext
+
+    async def model(messages, info):
+        yield "An answer for the branch."
+
+    runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+    runtime.auto_compact = True  # Also binds AutoCompaction to the given context.
+    branch = TurnContext(run_id="branch")
+
+    async def run():
+        events = [event async for event in runtime._stream("question", branch)]
+        assert Message("An answer for the branch.") in events
+        # The run's history, its request snapshot and what the footer reads.
+        assert [
+            part.content
+            for message in branch.history
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+        ] == ["question"]
+        assert branch.context_history is not None
+        assert branch.checkpoint.step > 0
+        assert runtime.context is not branch
+        assert runtime.history == []
+        assert runtime.context_history is None
 
     asyncio.run(run())
 
