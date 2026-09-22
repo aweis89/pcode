@@ -1977,10 +1977,11 @@ class PreviewApp:
             )
             await dialog.run_async()
 
-    def replay(self) -> None:
+    def replay(self, saved=None) -> None:
+        """Redraw a saved conversation. `saved` names one the runtime does not hold yet."""
         from pcode.diagnostics import redact
 
-        saved = self.runtime.session
+        saved = saved or self.runtime.session
         self.activity.plan = saved.latest_plan()
         # Reopening never leaves tools running. Settled results belong to the
         # transcript, including hidden command payloads needed by later toggles.
@@ -2370,6 +2371,13 @@ class PreviewApp:
                     session.app.invalidate()
 
         async def initialize():
+            # Replaying is a journal read of a few milliseconds, while the
+            # provider stack below takes a second or two to import. Draw the
+            # conversation first: waiting for a backend you have not used yet
+            # to see what was already said is a wait for nothing.
+            replayed = self.resuming and self._saved_session is not None
+            if replayed:
+                self.replay(self._saved_session)
             try:
                 await self._initialize_runtime()
                 self.show_startup_context()
@@ -2377,7 +2385,7 @@ class PreviewApp:
                 saved = getattr(self.runtime, "session", None)
                 if self.model and saved:
                     self.transcript.retained_note(f"Saving session: {saved.info.id}")
-                if self.resuming:
+                if self.resuming and not replayed:
                     self.replay()
             except Exception as error:
                 self._startup_error = error
