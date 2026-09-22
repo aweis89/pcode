@@ -378,7 +378,9 @@ terminal output is buffered until it closes. Inspection never reruns a tool.
 Details include the call/run IDs, timestamp and duration when captured, structured
 arguments, framework outcome, and returned output/error. Commands and results are
 both shown as blocks, highlighted when the payload is code or JSON and verbatim
-otherwise. Nonzero command exits,
+otherwise. A one-line shell command is broken at its top-level `;` (a new line)
+and `&&`/`||` (a `\` continuation with the next command indented) so long
+chains are readable; **c** still copies it exactly as run. Nonzero command exits,
 timeouts, and tool retries are failures; interruption and unknown results remain
 distinct. Command tools show an **Execution** row saying whether the model asked
 to wait (`foreground`) or to be handed a job handle (`background`); background
