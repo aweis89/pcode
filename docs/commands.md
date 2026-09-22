@@ -91,7 +91,7 @@ candidate's size so that cost is visible before you pick.
   them, and pinning one's output tail into the command preview. Jobs outlive the turn that
   started them — see [Shell jobs](tools.md#shell-jobs).
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
-- `/autocompact on|off`: opt into automatic LLM compaction (saved user preference; default off).
+- `/autocompact on|off`: toggle automatic LLM compaction (saved user preference; default on).
 - `/new`: start a new saved conversation; clears the screen and retained scrollback, keeps input history.
 - `/resume`: browse and search saved conversations by their prompts; resume one in place.
 - `/tree`: [browse and fork the conversation](conversation-tree.md); select a user prompt to
