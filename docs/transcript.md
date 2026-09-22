@@ -138,18 +138,20 @@ pcode config set command_preview_lines 10     # Live output height cap; default 
 pcode config set show_commands off            # Hide all commands, including failures
 ```
 
-Each mirrored block shows a success/failure indicator, the tool label, elapsed
-time, and a shell-highlighted invocation on a `$` line. Captured output stays
+Each mirrored block shows a success/failure indicator, the tool label, the job
+id, elapsed time, and a shell-highlighted invocation on a `$` line. A finished
+job's `[jN · exit C · elapsed]` line is dropped from the mirrored output, since
+the heading already carries all three; an unfinished job's marker, which also
+names its pid and how to get back to it, stays put. Captured output stays
 literal, with its indentation preserved and no Markdown parsing or extra block
 padding. Process polling details without a command are shown without a `$` prefix:
 
 The heading sits on the block's opening line, and a plain line closes it:
 
 ```text
-✓ Run · 0.4s ──────────────────────────────────────────────
+✓ Run · j7 · 0.4s ─────────────────────────────────────────
   $ pytest -q
   2 passed in 0.31s
-  {"pid": 124, "exit_code": 0}
 ────────────────────────────────────────────────────────────
 ```
 
