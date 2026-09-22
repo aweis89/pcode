@@ -627,6 +627,17 @@ class PreviewApp:
         if registry is not None:
             registry.cancel_policy = policy
 
+    def release_shell_waits(self) -> None:
+        """Hand any foreground shell wait back to the model as a job handle.
+
+        Steering is delivered at the next model request, and a wait on a slow
+        command is what stands between now and that request. Ending the wait
+        gets the message there promptly; the command itself is untouched.
+        """
+        registry = getattr(self.runtime, "jobs", None)
+        if registry is not None:
+            registry.release_waits()
+
     def report_finished_jobs(self) -> list:
         """Announce job exits in scrollback, each one once. Returns those announced."""
         registry = getattr(self.runtime, "jobs", None)
@@ -2470,6 +2481,10 @@ class PreviewApp:
                 # Set immediately so Enter + Ctrl+C in one input batch cancels
                 # the pending request rather than clearing the user's draft.
                 self.activity.busy = True
+                if self.send_mode == "steering" and live_task and not live_task.done():
+                    # Queued above, released here: the wait returns its handle
+                    # and the next model request carries this message.
+                    self.release_shell_waits()
 
         def start_mcp_task(name, coroutine, *, status, cancelled):
             """Run MCP work outside the model loop; queued prompts wait for it."""
