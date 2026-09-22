@@ -42,16 +42,46 @@ and optional web search. `list_files` and `grep` use the bundled ripgrep and
 respect ignore rules. Edits support either one replacement pair or a
 `replacements` array, validated before a single write.
 
-The default upstream `shell` accepts unrestricted commands: treat it as arbitrary
-code execution as the invoking user. Foreground calls wait up to 270 seconds
-(or a shorter requested timeout), then return the PID and output/status paths
-without killing a still-running command. Background mode returns those handles
-immediately. Read the returned files to inspect progress and use the returned
-process-group stop command to terminate it. Processes and raw output logs can
-outlive the turn and pcode itself; `--no-save` does not disable these logs.
-Cancelling a call while it is waiting terminates its process group, but cancelling
-a later turn does not stop a command whose handles were already returned.
-Files and code returned by tools are sent to the selected model.
+`shell` accepts unrestricted commands: treat it as arbitrary code execution as
+the invoking user. Files and code returned by tools are sent to the selected
+model.
+
+### Shell jobs
+
+Every command runs the same way: detached, under its own supervisor, writing a
+combined stdout/stderr log. What varies is only whether the model waits for it.
+A command that is still running is a **job** with an id (`j1`, `j2`, …), which
+is what makes the rest of the behaviour describable.
+
+- `shell(command)` waits and returns the output with an `[j1 · exit 0 · 1.4s]`
+  status line. A command that finished carries no handles: there is nothing
+  left to come back to.
+- `shell(command, background=True)` returns a job handle immediately, for when
+  the model has independent work to do.
+- A wait that ends before the command does — it exceeded `timeout` (270 seconds
+  maximum), or you interrupted it — returns a job handle instead. **The command
+  is not killed.**
+- `wait_for_job("j1")` blocks on a job without re-running it.
+  `until_output="listening on"` waits for readiness instead of exit, which is
+  what a server that never exits needs.
+- `job_output("j1")` reads progress, `stop_job("j1")` stops the job and
+  everything it started, `list_jobs()` lists them.
+
+Job exits are **delivered**, not polled for: a finished job is reported to the
+model before its next request, and printed to the terminal while you are idle.
+The model is instructed never to `sleep` waiting for a command.
+
+Interrupting the model with a follow-up (send mode `interrupt`) stops the wait,
+not the command; the job keeps running under its id. Ctrl+C means stop working,
+so it also stops the command the turn was waiting on. A job the model
+explicitly backgrounded survives both, because nothing was waiting on it.
+
+Jobs outlive the turn, the conversation, and pcode itself. Use
+[`/jobs`](commands.md#offline-preview-and-commands) to see what is still running, and
+`/jobs stop ID` or `/jobs stop all` to stop it. Logs of finished jobs are
+dropped on exit and the oldest are evicted after 50; a running job keeps its
+log, because the command is still writing to it. `--no-save` does not disable
+these logs.
 
 ## Web search
 

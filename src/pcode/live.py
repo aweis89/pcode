@@ -61,6 +61,8 @@ from pcode.diagnostics import (
 from pcode.edit_preview import StreamingEditPreview
 from pcode.filesystem import FileChangeEvent
 from pcode.inspection import ToolArchive, capture
+from pcode.job_notices import JobNotices
+from pcode.jobs import registry as job_registry
 from pcode.mcp import MCPState
 from pcode.plan_preview import StreamingPlanPreview
 from pcode.preferences import SETTINGS, load_preferences
@@ -90,12 +92,11 @@ from pcode.tool_display import (
     command_error,
     command_text,
     delegation_detail,
+    job_status,
     label,
     native_result_detail,
     native_result_projection,
     result_detail,
-    shell_result_status,
-    shell_status,
     target,
 )
 
@@ -129,6 +130,9 @@ class AgentRuntime:
         )
         self.compaction_notice = lambda text: None
         self.retry_notice = lambda text: None
+        # Shell jobs outlive both the run and the conversation, so the registry
+        # is not reset by `_clear`, `/new`, or conversation checkout.
+        self.jobs = job_registry()
         self.take_steering = lambda: []
         # Prompt overhead describes the agent's configuration, not one
         # conversation, so it outlives /new and conversation checkout.
@@ -313,6 +317,9 @@ class AgentRuntime:
     def close(self) -> None:
         if self.session:
             self.session.close()
+        # Drops the logs of finished jobs only. A still-running job is the
+        # whole point of the design and is left alone, still writing its log.
+        self.jobs.shutdown()
 
     def shell_environment(self) -> tuple[Path, dict[str, str] | None]:
         """Where and with what environment `!command` runs: the agent's own shell settings."""
@@ -605,6 +612,9 @@ class AgentRuntime:
                     ([StepPersistence(store=self.session.store)] if self.session else [])
                     + [
                         Steering(lambda: self._consume_steering(run_id)),
+                        # Finished jobs reach the model here rather than by
+                        # being polled for; see `pcode.job_notices`.
+                        JobNotices(self.jobs),
                         self._request_checkpoint,
                         TokenAccounting(record=self.totals.add),
                         ContextTracking(self),
@@ -757,13 +767,10 @@ class AgentRuntime:
                     detail, failed = result_detail(name, args, event.part.content, outcome)
                     shell_end = shell_ends.pop(event.tool_call_id, None)
                     if name == "shell" and shell_end is not None and outcome == "success":
-                        exit_code = shell_end.exit_code
-                        # The supervisor can finish between the event snapshot and
-                        # the final result. Do not replace a later exit with "running".
-                        terminal = shell_result_status(event.part.content)
-                        if exit_code is None and terminal is not None:
-                            exit_code = terminal["exit_code"]
-                        status, failed = shell_status(exit_code)
+                        # The result's own job marker is authoritative: it is
+                        # written after the wait ends, while the event is a
+                        # snapshot the command can finish just after.
+                        status, failed = job_status(event.part.content)
                         detail = target(name, args) + (f" → {status}" if status else "")
                         if shell_end.truncated:
                             detail += " · preview capped"

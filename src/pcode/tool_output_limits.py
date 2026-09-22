@@ -17,7 +17,7 @@ from pydantic_ai_harness.tool_output_limits import (
 )
 
 from pcode.preferences import SETTINGS, load_preferences
-from pcode.shell import REDUCED_SHELL_OUTPUT
+from pcode.shell import REDUCED_SHELL_OUTPUT, split_envelope
 
 
 def tool_results_path() -> Path:
@@ -27,7 +27,11 @@ def tool_results_path() -> Path:
 
 
 class CodingToolOutputLimits(ToolOutputLimits):
-    """Keep the persistent shell's control envelope outside the reduction budget."""
+    """Keep a job's control envelope outside the reduction budget.
+
+    The envelope is how the model reaches a command that is still running. It
+    is a few short lines and must never be the part that gets spilled to a file.
+    """
 
     def get_instructions(self):
         # Harness pages by line and caps reads at 50k chars, so one very long line
@@ -39,15 +43,16 @@ class CodingToolOutputLimits(ToolOutputLimits):
         )
 
     async def after_tool_execute(self, ctx, *, call, tool_def, args, result):
-        if call.tool_name != "shell" or not isinstance(result, str):
+        split = (
+            split_envelope(result)
+            if isinstance(result, str) and call.tool_name in {"shell", "wait_for_job", "job_output"}
+            else None
+        )
+        if split is None:
             return await super().after_tool_execute(
                 ctx, call=call, tool_def=tool_def, args=args, result=result
             )
-        output, separator, handles = result.rpartition("\nPID: ")
-        if not separator:
-            return await super().after_tool_execute(
-                ctx, call=call, tool_def=tool_def, args=args, result=result
-            )
+        output, envelope = split
         reduced = await super().after_tool_execute(
             ctx, call=call, tool_def=tool_def, args=args, result=output
         )
@@ -56,7 +61,7 @@ class CodingToolOutputLimits(ToolOutputLimits):
         value = reduced.return_value if isinstance(reduced, ToolReturn) else reduced
         # The marker also tells display projection that clipping lost redaction
         # context, including for delegated calls without CommandFinishedEvent.
-        value = f"{REDUCED_SHELL_OUTPUT}\n{value}{separator}{handles}"
+        value = f"{REDUCED_SHELL_OUTPUT}\n{value}\n{envelope}"
         return replace(reduced, return_value=value) if isinstance(reduced, ToolReturn) else value
 
 
