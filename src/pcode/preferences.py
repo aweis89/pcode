@@ -175,9 +175,11 @@ SETTINGS = {
         description="Corrections offered to the model per turn when a tool call fails validation",
     ),
     # Anthropic rejects a malformed `replacements` array roughly one call in
-    # eight; strict mode makes the wrong shape unsamplable instead.
+    # eight; strict mode makes the wrong shape unsamplable instead. Models that
+    # cannot honor it, and schemas outside the subset it accepts, decline it on
+    # their own, so "on" costs nothing where it does not apply.
     "strict_tools": Setting(
-        "off",
+        "on",
         ("on", "off"),
         description="Constrain edit_file arguments with Anthropic strict tool use",
     ),
