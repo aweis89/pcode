@@ -218,6 +218,11 @@ def target(name: str, args: dict) -> str:
         # keep saying what actually ran, not only what it was meant to do.
         purpose = stated_purpose(args)
         return f"{purpose} · {shown}" if purpose else shown
+    if name in {"wait_for_job", "job_output", "stop_job"}:
+        # The id is the whole subject of these calls: without it the status line
+        # says a job is being waited on but not which one.
+        job_id = args.get("job_id")
+        return argument(job_id) if isinstance(job_id, str) else "job unavailable"
     if name == "read_tool_result":
         handle = args.get("handle")
         return argument(handle) if isinstance(handle, str) else "handle unavailable"
@@ -414,6 +419,9 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
         # Job tools close with a `[jN · outcome · elapsed]` marker. Live `shell`
         # calls use CommandFinishedEvent as the authoritative status instead.
         result, failed = job_status(text)
+        # The summary opens with the job id, so the target would only repeat it.
+        if result.startswith(f"{where} "):
+            where = ""
     elif name in {"run_command", "start_command", "check_command", "stop_command"}:
         # Foreground nonzero exits and completed background processes carry this marker.
         match = re.search(r"\[exit code: (-?\d+)\]\s*$", text)
