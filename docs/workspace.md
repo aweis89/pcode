@@ -48,6 +48,32 @@ It goes to the model rather than the startup banner, which already lists the
 skill commands. Discovered instructions are sent to the selected model, so review
 inherited and nested files when working in a shared directory tree.
 
+## Ponytail (opt-in)
+
+The bundled `ponytail` extension adds the ruleset from
+[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) to the
+instruction prefix: climb a ladder before writing code (does this need to exist,
+does the codebase already have it, does the stdlib, does a native feature, can it
+be one line) and never simplify away validation, error handling, security, or
+accessibility. It ships off; `/extensions on ponytail` turns it on.
+
+`/ponytail lite|full|ultra|off` sets the intensity, `/ponytail status` reports
+it. `lite` names the lazier alternative and lets you pick, `full` (the default)
+enforces the ladder, `ultra` challenges the requirement itself, and `off` keeps
+the command but injects nothing. The ruleset is static prompt text, so a change
+applies on the reload the command asks for, not mid-turn.
+
+The level is not per session: it is read from `PONYTAIL_DEFAULT_MODE`, then
+`defaultMode` in `$XDG_CONFIG_HOME/ponytail/config.json` (or
+`~/.config/ponytail/config.json`), which is the same file ponytail's plugins for
+other agents use, so one level covers all of them. The command writes that file,
+and says so when the environment variable overrides what it just saved.
+
+The ruleset reaches this conversation only. A `delegate_task` sub-agent has its
+own prompt and does not inherit it, and the review, audit, and debt skills the
+upstream plugins ship are not included; copy them under `.agents/skills/` if you
+want them as [skill commands](#skills-as-slash-commands).
+
 ## Skills as slash commands
 
 Every `SKILL.md` found under those asset roots becomes a command, so a skill can
