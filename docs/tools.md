@@ -41,8 +41,8 @@ which is newer than the 0.31.0 release. The pin is a direct dependency, so both
 and optional web search. `list_files` and `grep` use the bundled ripgrep and
 respect ignore rules. Edits support either one replacement pair or a
 `replacements` array, validated before a single write. Anthropic models mangle
-that nested array often enough to matter, so pcode constrains it: see
-[strict tool use](sessions.md#retries-and-resend).
+that nested array often enough to matter, and the tool retry budget is what
+absorbs it: see [retries](sessions.md#retries-and-resend).
 
 `shell` accepts unrestricted commands: treat it as arbitrary code execution as
 the invoking user. Files and code returned by tools are sent to the selected

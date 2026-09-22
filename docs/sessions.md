@@ -232,11 +232,13 @@ pcode config set tool_retries 5   # More corrections before a turn is abandoned
 pcode config set tool_retries 0   # Fail on the first rejected tool call
 ```
 
-Anthropic models avoid the mistake rather than correcting it. `strict_tools` is
-on by default and turns on [strict tool use][strict], which constrains sampling
-to the tool's schema, so an argument of the wrong shape cannot be produced in
-the first place. It applies to `edit_file` alone, the one tool whose arguments
-nest.
+`strict_tools`, on by default, also sends `edit_file` with Anthropic's
+[strict tool use][strict] flag, which is documented to constrain sampling to
+the tool's schema. In practice it does not stop this particular mistake: with
+the flag confirmed on the wire, Anthropic still returns `replacements` as a
+truncated string often enough that the measured failure rate barely moved
+(11.5% to 9.6% of calls that use the array). The retry budget above is what
+recovers the edit; the flag stays on only because nothing got worse.
 
 ```sh
 pcode config set strict_tools off   # Leave edit_file arguments unconstrained
