@@ -1,7 +1,9 @@
-"""Sanitized UI projections of Harness's persistent shell events.
+"""Sanitized UI projections of the shell tool's output events.
 
-Execution, polling, cancellation and process ownership stay in Harness. This
-module only accumulates its bounded output events for the transient preview.
+Execution, polling and process ownership live in `pcode.jobs`; this module only
+accumulates the bounded output events for the transient preview, and decides
+how much of a job result is safe to show once upstream clipping has already
+removed the context redaction depends on.
 """
 
 import re
@@ -35,27 +37,51 @@ def preview_text(text, *, final=False):
     return command_text(text).rstrip()[-131072:]
 
 
+# Every job result ends with a `[jN · outcome · elapsed]` marker and, while the
+# command runs, the lines telling the model how to get back to it. That block
+# is control information, never command output, so it survives both reduction
+# and redaction while the body above it may not.
+_JOB_MARKER = re.compile(r"^\[j\d+ · (?:running|stopped|exit -?\d+) · [^]]*\]", re.MULTILINE)
+
+
+def split_envelope(content):
+    """Split a job result into its command output and its control envelope.
+
+    Returns `None` when there is no marker, which means the text is not a job
+    result and must be left exactly as it is.
+    """
+    marker = None
+    for marker in _JOB_MARKER.finditer(content):
+        pass  # The last marker belongs to this call.
+    if marker is None:
+        return None
+    return content[: marker.start()], content[marker.start() :]
+
+
 def result_projection(content, finished=None):
     """Omit already-truncated tails that have lost their redaction context.
 
-    Harness returns the last 16 KB, which can start inside a quoted credential
-    or private-key block. Do not read the raw log to reconstruct it. Keep only
-    the supervisor's trailing handles/status in the UI and inspection journal.
-    Model tool results and upstream's log files are unaffected. The tool-output
-    limiter marks reduced bodies explicitly, since their length no longer proves
-    whether upstream truncation removed the opening credential marker.
+    A result carries the last 16 KB of the log, which can start inside a quoted
+    credential or private-key block. Do not read the raw log to reconstruct it.
+    Keep only the control envelope in the UI and inspection journal. Model tool
+    results and the log files themselves are unaffected. The tool-output limiter
+    marks reduced bodies explicitly, since their length no longer proves whether
+    clipping removed the opening credential marker.
     """
     if not isinstance(content, str):
         return content
-    output, separator, handles = content.rpartition("\nPID: ")
-    if separator and (
+    split = split_envelope(content)
+    if split is None:
+        return content
+    output, envelope = split
+    if (
         content.startswith(REDUCED_SHELL_OUTPUT)
         or (finished is not None and finished.truncated)
-        or len((output + "\n").encode("utf-8")) >= 16000
+        or len(output.encode("utf-8")) >= 16000
     ):
         return (
-            "[Output tail omitted: upstream truncation removed redaction context. "
-            "Raw output remains in the command log.]\nPID: " + handles
+            "[Output tail omitted: clipping removed redaction context. "
+            "Raw output remains in the command log.]\n" + envelope
         )
     return content
 

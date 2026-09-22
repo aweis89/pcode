@@ -20,6 +20,10 @@ class ToolStarted:
     process_id: str = ""
     parent_call_id: str = ""
     activity: str = ""
+    # What the model said it is for. Kept beside `command` rather than folded
+    # into it: `command` is rendered as a shell invocation, so it has to stay
+    # literal enough to copy and run.
+    purpose: str = ""
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,7 @@ class ToolSummary:
     outcome: str = ""
     process_id: str = ""
     parent_call_id: str = ""
+    purpose: str = ""
 
 
 @dataclass(frozen=True)

@@ -25,7 +25,7 @@ from pcode.config import configure
 from pcode.live import AgentRuntime
 from pcode.preferences import SETTINGS, load_preferences, preferences_path, save_preferences
 from pcode.runtime import ToolSummary
-from pcode.tool_display import result_detail, shell_result_status
+from pcode.tool_display import job_status, result_detail
 from pcode.tool_output_limits import create_tool_output_limits, tool_results_path
 
 
@@ -310,8 +310,8 @@ def test_reduced_shell_keeps_handles_status_and_safe_inspection(tmp_path, delega
                 observed_shell = True
                 text = parts[-1].content
                 assert len(text) < 2000
-                assert "\nPID: " in text and "\nOutput: " in text and "\nStatus: " in text
-                assert shell_result_status(text)["exit_code"] == 7
+                # The job marker is control information, never reduced away.
+                assert job_status(text) == ("j1 · exit 7", True)
             yield "Done"
 
     runtime = AgentRuntime(

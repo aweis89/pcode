@@ -156,14 +156,22 @@ def test_coder_allows_all_commands_by_default(tmp_path):
     from pydantic_ai_harness.shell import Shell
     from pydantic_ai_harness.shell._capability import LLM_API_KEY_ENV_PATTERNS
 
+    from pcode.shell_tools import JobShell
+
     coder = create_coder(tmp_path)
     shell = next(c for c in coder.capabilities if isinstance(c, Shell))
     assert not shell.allowed_commands
     assert not shell.denied_commands
     assert not shell.denied_operators
     assert shell.allow_interactive
-    assert type(shell) is Shell
-    assert list(shell.get_toolset().tools) == ["shell"]
+    assert type(shell) is JobShell
+    assert list(shell.get_toolset().tools) == [
+        "shell",
+        "wait_for_job",
+        "job_output",
+        "stop_job",
+        "list_jobs",
+    ]
     assert shell.denied_env_patterns == LLM_API_KEY_ENV_PATTERNS
     # direnv's banner would otherwise corrupt piped command output.
     assert shell.env["DIRENV_LOG_FORMAT"] == ""

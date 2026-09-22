@@ -303,6 +303,13 @@ class PreviewApp:
                 group="Session",
             ),
             Command(
+                "/jobs",
+                "Shell commands still running: list / stop ID / stop all",
+                self.jobs,
+                free_arguments=True,
+                group="Session",
+            ),
+            Command(
                 "/resend",
                 "Ask the model again from the last checkpoint, without a new message",
                 self.resend,
@@ -606,6 +613,61 @@ class PreviewApp:
             raise ValueError("/resend is unavailable while working. Cancel or wait, then retry.")
         self.runtime.resend_prompt()
         self.resend_requested = True
+
+    def set_cancel_policy(self, policy: str) -> None:
+        """Say what an abandoned shell wait should do to its command.
+
+        Set before cancelling, because by the time the tool call sees
+        `CancelledError` there is nothing left to tell it apart from any other
+        cancellation. Reset to the safe default once the turn is over.
+        """
+        registry = getattr(self.runtime, "jobs", None)
+        if registry is not None:
+            registry.cancel_policy = policy
+
+    def report_finished_jobs(self) -> bool:
+        """Announce job exits in scrollback, each one once. Returns whether any."""
+        registry = getattr(self.runtime, "jobs", None)
+        if registry is None:
+            return False
+        finished = registry.take_announcements("ui")
+        for job in finished:
+            self.transcript.note(job.summary())
+        return bool(finished)
+
+    def jobs(self, argument: str) -> None:
+        """Show or stop the shell jobs this session started.
+
+        Jobs outlive the turn that started them and, deliberately, the session
+        itself, so the only way to know what is still running is to ask.
+        """
+        registry = getattr(self.runtime, "jobs", None)
+        if registry is None:
+            raise ValueError("/jobs requires a live model session.")
+        registry.refresh()
+        action, _, target = argument.partition(" ")
+        if not action or action == "list":
+            listing = sorted(
+                registry.jobs.values(), key=lambda job: (not job.running, job.started_at)
+            )
+            for line in listing or ["No jobs have been started."]:
+                self.transcript.note(line if isinstance(line, str) else line.summary())
+            return
+        if action != "stop":
+            raise ValueError("/jobs takes list, stop ID, or stop all.")
+        target = target.strip()
+        if target == "all":
+            stopped = registry.stop_all()
+        elif job := registry.get(target):
+            stopped = registry.stop_all([job])
+        else:
+            raise ValueError(f"No job {target!r}. Run /jobs to list them.")
+        for job in stopped:
+            # Printed here, so the idle watcher does not repeat it.
+            job.announced.add("ui")
+            self.transcript.note(f"Stopped [{job.id}] {job.label()}")
+        if not stopped:
+            self.transcript.note("Nothing was running.")
 
     def autocompact(self, argument: str) -> None:
         if not self.model or not hasattr(self.runtime, "auto_compact"):
@@ -1955,10 +2017,24 @@ class PreviewApp:
             output.end_turn()
             self.activity.tools.clear()
             self.activity.status = ""
+        # Abandoning a wait is the exception, not the rule: restore the safe
+        # default so the next Ctrl+C-free cancellation cannot kill a command.
+        self.set_cancel_policy("detach")
         self.activity.finish_prompt("cancelled" if cancelled else "failed" if failure else "done")
+        self.report_finished_jobs()
         output.app.invalidate()
         if cancelled:
             self.transcript.cancelled()
+            # A cancelled turn used to take its commands with it. Say plainly
+            # what survived, so "still running" is never a surprise.
+            registry = getattr(self.runtime, "jobs", None)
+            running = registry.running() if registry is not None else []
+            if running:
+                self.transcript.note(
+                    f"{len(running)} command(s) still running: "
+                    + ", ".join(f"[{job.id}] {job.label()}" for job in running[:3])
+                    + ". Use /jobs to list or stop them."
+                )
         elif failure:
             self.transcript.error(error_message(failure), title="Agent failed")
         if (cancelled or failure) and self.runtime.session:
@@ -2176,6 +2252,11 @@ class PreviewApp:
             active = [
                 task for task in (live_task, mcp_task, compact_task) if task and not task.done()
             ]
+            # Ctrl+C means "stop working", so a command the turn is waiting on
+            # is stopped with it. A typed follow-up takes the other branch and
+            # only abandons the wait. Either way a job the model explicitly
+            # backgrounded keeps running: nothing is waiting on it to abandon.
+            self.set_cancel_policy("stop")
             if active:
                 # Repeated interrupts must not interrupt persistence/auth cleanup.
                 # Side questions are deliberately parallel: an interrupt aimed at
@@ -2253,6 +2334,10 @@ class PreviewApp:
                 if self.send_mode == "interrupt" and live_task and not live_task.done():
                     clear_queue()
                     interrupt_pending = True
+                    # The user is redirecting the model, not cancelling its
+                    # work: an in-flight shell wait is abandoned, and its
+                    # command keeps running under its job id.
+                    self.set_cancel_policy("detach")
                     if not live_task.cancelling():
                         live_task.cancel()
                 queue.put_nowait((queue_generation, text, self.send_mode))
@@ -2661,6 +2746,18 @@ class PreviewApp:
         self.transcript.output = output
         session.app.style = DynamicStyle(lambda: self.transcript.prompt_style())
 
+        async def watch_jobs():
+            """Report job exits while idle, so a finished job is never a surprise.
+
+            The model is told separately, at its next request; this is the
+            terminal's copy. Polling here costs one small file read per running
+            job and replaces the model doing the same thing with `sleep`.
+            """
+            while True:
+                if not self.activity.busy and self.report_finished_jobs():
+                    session.app.invalidate()
+                await asyncio.sleep(1)
+
         async def watch_branch():
             while True:
                 await asyncio.to_thread(self.refresh_branch)
@@ -2686,6 +2783,7 @@ class PreviewApp:
         def start():
             session.app.create_background_task(initialize())
             session.app.create_background_task(watch_branch())
+            session.app.create_background_task(watch_jobs())
             session.app.create_background_task(output.run())
             session.app.create_background_task(consume())
             session.app.create_background_task(consume_commands())
@@ -2813,6 +2911,26 @@ class PreviewApp:
         return asyncio.run(self.run_print_async(prompt))
 
 
+def _profile_capture(args) -> tuple[Path, bool, bool] | None:
+    """The capture this run should write: (directory, cpu tracing, memory tracing).
+
+    Flags win over the saved `profile` default, which exists so the everyday
+    session that feels slow is captured without remembering to ask for it.
+    """
+    from pcode.profiling import PROFILE_MODES, new_capture
+
+    if args.no_profile:
+        return None
+    if args.profile is None:
+        mode = load_preferences().get("profile", SETTINGS["profile"].default)
+        if mode == "off" or mode not in PROFILE_MODES:
+            return None
+        return new_capture(), mode == "cpu", mode == "memory"
+    # `--profile` without DIR names its own directory under the state directory.
+    directory = new_capture() if args.profile is True else args.profile
+    return directory, args.profile_cpu, args.profile_memory
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Streaming terminal with a Coder agent",
@@ -2901,8 +3019,15 @@ def main() -> None:
     parser.add_argument(
         "--profile",
         type=Path,
+        nargs="?",
+        const=True,
         metavar="DIR",
-        help="Sample process-tree CPU/RSS to a new private DIR",
+        help="Sample process-tree CPU/RSS to a new private DIR (default: the state directory)",
+    )
+    parser.add_argument(
+        "--no-profile",
+        action="store_true",
+        help="Skip the capture this run even when the profile default is on",
     )
     parser.add_argument(
         "--profile-cpu",
@@ -2935,21 +3060,27 @@ def main() -> None:
         args.arguments = args.prompt[1:]
     args.prompt = " ".join(args.prompt).strip() or None
     if (args.profile_cpu or args.profile_memory) and args.profile is None:
-        parser.error("--profile-cpu and --profile-memory require --profile DIR")
+        parser.error("--profile-cpu and --profile-memory require --profile")
+    if args.profile is not None and args.no_profile:
+        parser.error("--profile and --no-profile are mutually exclusive")
     if args.worktree and args.no_worktree:
         parser.error("--worktree and --no-worktree are mutually exclusive")
     with ExitStack() as stack:
-        if args.profile is not None:
-            from pcode.profiling import profile_session
+        capture = _profile_capture(args)
+        if capture is not None:
+            from pcode.profiling import profile_session, prune_captures
 
+            directory, cpu, memory = capture
             try:
-                stack.enter_context(
-                    profile_session(args.profile, cpu=args.profile_cpu, memory=args.profile_memory)
-                )
+                stack.enter_context(profile_session(directory, cpu=cpu, memory=memory))
             except (OSError, ValueError) as error:
                 parser.error(
                     f"Cannot start profile ({type(error).__name__}); use a new writable DIR"
                 )
+            # Only automatic captures are pruned, and only once this one exists,
+            # so retention counts the directory the session is writing to.
+            if not isinstance(args.profile, Path):
+                prune_captures()
         _run_cli(args, parser)
 
 

@@ -692,36 +692,73 @@ override, so `make install` also receives the pin. Hatch requires
 `allow-direct-references = true` for editable and wheel builds with this dependency.
 The verified revision is `12bce878da99bca61a5d8d798bff0a3bc93bd153`.
 
-Coder now selects `Shell(tools=['shell'], default_timeout=270)`. Pcode uses that
-class unchanged; `src/pcode/shell.py` only projects its `CommandStartedEvent`,
-`CommandOutputEvent`, and `CommandFinishedEvent` into transient UI output. Events
-carry `tool_call_id`; keep buffers local to a run and keyed by that identity.
-They do not add model calls. Planning and SubAgents are no longer in Coder and
-must be composed explicitly. `ClearToolResults` remains removed so pcode can
-summarize before discarding evidence.
+Coder selects `Shell(tools=['shell'], default_timeout=270)`. Pcode replaces that
+capability with `pcode.shell_tools.JobShell`, which keeps upstream's command
+policy, environment handling and output cap (it subclasses `Shell` and
+`ShellToolset`) but drops upstream's persistent `shell` tool from the registered
+set and supplies its own, plus `wait_for_job`, `job_output`, `stop_job` and
+`list_jobs`. Execution moved to `pcode.jobs`: the supervisor is
+`src/pcode/_job_supervisor.py`, not `pydantic_ai_harness.shell._persistent`.
+Upstream's `CommandStartedEvent`, `CommandOutputEvent` and `CommandFinishedEvent`
+are still the UI contract and are emitted unchanged, so `src/pcode/shell.py` and
+`live.py` keep working. Events carry `tool_call_id`; keep buffers local to a run
+and keyed by that identity. They do not add model calls. Planning and SubAgents
+are no longer in Coder and must be composed explicitly. `ClearToolResults` remains
+removed so pcode can summarize before discarding evidence.
 
-The persistent executor polls the combined stdout/stderr log every 50 ms, emitting
-at most the first 16,000 bytes in chunks up to 4,096 bytes. Its final result is the
-last 16,000 bytes plus PID/log/status handles. `CommandFinishedEvent` means the
-foreground wait ended, not necessarily that the process exited: `exit_code=None`
-means running. The final result can carry a later terminal status than the event;
-do not overwrite that exit with an earlier running snapshot. The event's PID is
-the supervisor/session leader; the status JSON's PID is its child command, so
-comparing those PIDs to validate a status discards genuine completions. Foreground timeout
-returns handles without killing the process. Cancellation while waiting kills the
-session; processes whose handles were already returned outlive the run.
+Why the replacement rather than the upstream tool: a command that outlives its
+call needs a name. Without one, a still-running command can only be handed back
+as a PID and two paths, so the model's only way to learn it finished is to poll
+with `sleep`, an interrupted wait kills the command, nothing can list what a
+session left running, and every trivial `ls` carries a handle block it will never
+use. Upstream also leaks its temp directory on every successful call.
+
+`purpose` is optional and scoped to `background=True`, not to expected duration:
+"is this slow?" is a prediction the model is bad at, while "am I backgrounding
+this?" is a decision it has already made, so it is a rule it can follow. The
+schema cost sits in the cached prefix, and the per-call cost is paid only by
+background calls. `Job.label()` falls back to the command, so nothing depends on
+the model supplying one; `Job.summary()` and `tool_display.target` keep the
+command alongside it, because a stated intention is not evidence of what is
+running.
+
+`pcode.jobs.registry()` is process-wide and deliberately not per-run: a run is
+exactly the scope a job escapes, and the worker sub-agent shares it. Tests must
+call `registry().reset()` (the `isolated_jobs` autouse fixture does).
+
+The executor polls the status file and log every 50 ms and emits at most 16,000
+bytes of events per wait; `until_output` keeps reading to 1 MiB after the event
+budget is spent, because a chatty server would otherwise print its readiness
+banner past the end of the stream. A finished result is the log tail plus one
+`[jN · exit N · elapsed]` marker and nothing else; only a running job gets
+handles. `CommandFinishedEvent` still means the wait ended, not that the process
+exited, so the marker in the result — written after the wait — is authoritative:
+`tool_display.job_status` parses the last marker rather than trusting the event.
+The event's PID is the supervisor/session leader; the status JSON's PID is its
+child command, so comparing those PIDs to validate a status discards genuine
+completions, and `killpg` needs the supervisor's pid, not the command's.
+
+Cancellation consults `registry().cancel_policy`, which the app sets before
+cancelling: `detach` for a typed follow-up (abandon the wait, keep the command),
+`stop` for Ctrl+C. The tool call cannot tell these apart by the time it sees
+`CancelledError`, which is why the policy lives on the registry. `run_live`
+resets it to `detach` after every turn. A job the model backgrounded is never
+caught by either, because nothing was waiting on it.
 
 An already-truncated result can begin inside a secret whose opening marker was
 dropped. `result_projection` conservatively omits that raw tail from UI/inspection
-payloads, keeping supervisor handles/status; it does not reread the log. Apply it
-to delegated shell results too. The model result and raw upstream log are not
-redacted by this display adapter. `--no-save` does not disable upstream logs.
+payloads, keeping the job envelope; it does not reread the log. `shell.split_envelope`
+is the single parser for that boundary, shared with `CodingToolOutputLimits` so
+reduction can never spill the handles a running job is reached through. Apply it
+to delegated shell results too. The model result and raw log are not redacted by
+this display adapter. `--no-save` does not disable job logs.
 
 Wait for complete lines, sanitize before clipping, and redact unfinished quoted
 credentials and private-key blocks before displaying a preview. `CommandOutput`
 bypasses session/tree journals. Remove per-call previews when tool results arrive,
-and clear them on cancellation/failure/reset. Preserve `tests/test_shell_streaming.py`
-and the real-tmux command-height tests; no-CPR PTYs cannot prove compact height.
+and clear them on cancellation/failure/reset. Preserve `tests/test_shell_streaming.py`,
+`tests/test_jobs.py`, and the real-tmux command-height tests; no-CPR PTYs cannot
+prove compact height.
 
 ### Managed Meridian isolation (verified installed 1.71.1)
 
