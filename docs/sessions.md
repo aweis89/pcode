@@ -58,20 +58,37 @@ command that cannot succeed. Quit and continue the session elsewhere.
 
 The bundled `session_history` extension lets the model answer questions such as
 “What did we decide about editor flicker?” without resuming another session.
-`search_sessions` returns ranked excerpts with session/turn IDs, dates, outcomes,
-and active/inactive branch labels. `read_session` retrieves a referenced turn,
+`search_sessions` returns ranked excerpts grouped by session, with session/turn
+IDs, dates, outcomes, and active/inactive branch labels. `read_session` retrieves a referenced turn,
 paginates long text, and includes bounded ancestor context (not sibling branches).
 
 - Default `scope="project"` includes linked worktrees. `workspace` restricts to
   the exact directory; `all` is for explicitly cross-project questions.
 - `scope="session"` searches the current conversation, including original turns
-  dropped from model context by compaction. It reads the journal without taking
-  the live session's lock. This is not a replacement for model checkpoints.
+  dropped from model context by compaction — `/compact` between turns, and
+  automatic compaction inside a long turn, which journals an `auto_compacted`
+  marker so recall knows the running turn is no longer fully in context. It reads
+  the journal without taking the live session's lock. This is not a replacement
+  for model checkpoints.
 - Search covers saved prompts, consumed steering messages, assistant text, and
   tool summaries/commands, not full tool results, reasoning, or unsaved conversations.
   Steering messages from older versions were not journaled and are not recalled.
   Historical claims and
   failed or abandoned attempts are evidence, not proof that a change shipped.
+- Hits are grouped by session so one long session cannot take every slot: each
+  session gets at most three turns until the limit would otherwise go unused.
+  The current conversation is flagged `current`, and the turn running the search
+  is never returned as evidence — except after automatic compaction has dropped
+  part of that turn from context, when it comes back marked `current_turn`.
+- Excerpts are centred on the densest match in prose where there is one, so a
+  conclusion outranks the shell command that led to it, and each hit carries the
+  turn's closing assistant text as `conclusion` when the excerpt misses it.
+- Results report `sessions_searched` against `sessions_in_scope`. Sessions are
+  scanned newest first up to a journal byte budget, so anything left out is the
+  older end; the reply then carries a `next_cursor` and a warning naming how many
+  sessions it did not reach. Pass that value back as `after` to scan them. A
+  session the budget cut off mid-way stays behind the cursor and is re-read whole
+  on the next page, so paging never skips records.
 - New sessions record their project path so deleted worktrees remain discoverable.
   Older sessions use Git discovery or the conventional `.worktrees/` layout;
   a deleted legacy worktree elsewhere may need `scope="all"`.
@@ -153,7 +170,9 @@ pcode --sessions --compact   # Drop superseded checkpoints, report space freed.
 
 That rewrites each closed session's store in place, skipping any session open
 in another process, and reports what it reclaimed. It removes no conversation:
-every turn still restores from the step it settled at. On the largest session
+every turn still restores from the step it settled at, so `--continue`, `/resume`
+and `/tree` navigation to an earlier turn all work afterwards. Recall is
+unaffected too: search reads `transcript.jsonl`, which `--compact` never touches. On the largest session
 observed (1.3 GB, 338 checkpoints across 10 turns) it took under a second and
 left 67 MB.
 
