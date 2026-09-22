@@ -19,9 +19,12 @@ replaces `@…` with the workspace-relative path, `./src/pcode/ui.py`, which is
 the form the model's file tools take, so it can read or search the file without
 guessing where it lives (a name containing spaces is quoted). References are
 underlined in the editor. The candidate list comes from `git ls-files` (tracked
-plus untracked, honoring `.gitignore`), or a directory walk that skips hidden
-and build directories outside a Git checkout, and is refreshed at most every ten
-seconds.
+plus untracked, honoring `.gitignore`). Outside a Git checkout it comes from
+ripgrep, which skips hidden entries and honors `.ignore` files, with build
+directories such as `node_modules` excluded on top; a pure-Python directory walk
+covers a machine with no ripgrep. The listing is refreshed at most every ten
+seconds, and completion blocks the editor while it runs, which is why the fast
+path matters on a large tree.
 
 The path is all that is sent: pcode never reads a referenced file for you, so
 the model decides whether reading it is worth a call. The menu shows each

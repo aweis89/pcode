@@ -19,6 +19,7 @@ from prompt_toolkit.lexers import Lexer
 
 # Directories that never hold source worth referencing, used only when the
 # workspace is not a Git checkout (Git supplies its own ignore rules).
+# Ripgrep skips the hidden ones on its own; the rest it would happily list.
 IGNORED_DIRECTORIES = frozenset(
     {
         ".git",
@@ -37,6 +38,8 @@ IGNORED_DIRECTORIES = frozenset(
     }
 )
 MAX_FILES = 20000
+# Paths read from a listing before the menu's own cap applies; see _ripgrep_files.
+LISTING_CEILING = MAX_FILES * 10
 MAX_COMPLETIONS = 50
 CACHE_SECONDS = 10.0
 
@@ -63,7 +66,49 @@ def _git_files(root: Path) -> list[str] | None:
     return list(dict.fromkeys(result.stdout.splitlines()))
 
 
+def _ripgrep_files(root: Path) -> list[str] | None:
+    """Files below root via ripgrep, or None when `rg` cannot be run.
+
+    Used where there is no Git listing to borrow. Ripgrep walks in parallel and
+    skips hidden entries itself, which beats `os.walk` several times over on a
+    large tree; completion runs on the UI event loop, so that time is a visible
+    stall between keystrokes.
+
+    Ripgrep's default `.gitignore` handling is left alone: outside a checkout it
+    reads those files only under `--no-require-git`, and tool-managed trees such
+    as a uv cache or a virtualenv carry a `.gitignore` of `*` that would leave
+    the menu empty. `.ignore` files still apply, as they do everywhere.
+
+    Output is read as it arrives and the process is stopped at LISTING_CEILING,
+    which bounds an unreasonable tree without truncating a merely large one:
+    ripgrep's parallel walk emits in a different order each run, so a cut below
+    the caller's own cap would reshuffle the menu between refreshes.
+    """
+    excluded = ",".join(sorted(IGNORED_DIRECTORIES))
+    arguments = ["rg", "--files", "--glob", f"!{{{excluded}}}"]
+    paths: list[str] = []
+    try:
+        with subprocess.Popen(
+            arguments, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        ) as process:
+            for line in process.stdout:
+                paths.append(line.rstrip("\n"))
+                if len(paths) >= LISTING_CEILING:
+                    process.terminate()
+                    break
+            # A stopped run is killed mid-write, so only judge a complete one.
+            if process.wait() not in (0, 1) and len(paths) < LISTING_CEILING:
+                return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # Ripgrep's parallel walk emits in thread completion order; sorting restores
+    # the stable menu `os.walk` gave, and costs far less than `--sort path`,
+    # which would make ripgrep search serially.
+    return sorted(paths)
+
+
 def _walked_files(root: Path) -> list[str]:
+    """Files below root in pure Python, for a machine without ripgrep."""
     paths: list[str] = []
     for directory, subdirectories, names in os.walk(root):
         subdirectories[:] = sorted(
@@ -105,7 +150,11 @@ class WorkspaceFiles:
     def paths(self) -> list[str]:
         now = monotonic()
         if self._loaded_at is None or now - self._loaded_at >= self.cache_seconds:
-            self._paths = (_git_files(self.root) or _walked_files(self.root))[:MAX_FILES]
+            # An empty listing falls through as a missing one: a workspace that
+            # Git or ripgrep ignores wholesale (a gitignored directory, say) is
+            # still worth walking rather than offering nothing.
+            listed = _git_files(self.root) or _ripgrep_files(self.root)
+            self._paths = (listed or _walked_files(self.root))[:MAX_FILES]
             self._loaded_at = now
         return self._paths
 
