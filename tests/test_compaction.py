@@ -25,6 +25,7 @@ from pcode.agent import create_coder
 from pcode.compaction import (
     MARKER,
     CompactionError,
+    auto_compaction_threshold,
     context_estimate,
     effective_window,
     summarize,
@@ -34,6 +35,39 @@ from pcode.live import AgentRuntime
 from pcode.sessions import SavedSession
 
 SUMMARY = "## Goal and constraints\nFix auth.\n## Verification\nTests failed; not yet fixed."
+
+
+@pytest.mark.parametrize(
+    "window,max_output,expected",
+    [
+        # 16_384 reserve is >10% of a 128k window, so it (not 90%) binds:
+        # 128_000 - 16_384 = 111_616, below the ~115.2k that 90% would allow.
+        (128_000, 4_096, 111_616),
+        # For larger windows the 16_384 floor reserve is under 10%, so 90%
+        # of the window becomes the binding constraint.
+        (200_000, 4_096, 180_000),
+        (256_000, 4_096, 230_400),
+        # 1M windows must use ~90% (900k), not the old ~80% (800k).
+        (1_000_000, 4_096, 900_000),
+        # A large resolved output budget pushes the reserve above the 16_384
+        # floor, so the output ceiling becomes the binding constraint.
+        (128_000, 32_000, 96_000),
+    ],
+)
+def test_auto_compaction_threshold_uses_ninety_percent_unless_reserve_binds(
+    window, max_output, expected
+):
+    assert auto_compaction_threshold(window, max_output) == expected
+
+
+def test_auto_compaction_threshold_small_window_reserve_stays_proportional():
+    # window // 5 caps the reserve well below window // 2 for small windows,
+    # so a tiny window still leaves most of itself usable, and the reserve
+    # can never consume more than half the window.
+    window = 16_000
+    threshold = auto_compaction_threshold(window, max_output_tokens=0)
+    assert threshold == min(int(window * 0.9), window - window // 5)
+    assert window - threshold <= window // 2
 
 
 def history():

@@ -255,6 +255,20 @@ class ContextTracking(AbstractCapability):
         return response
 
 
+def auto_compaction_threshold(context_window: int, max_output_tokens: int) -> int:
+    # Use most of the context window before lossy compaction, while reserving
+    # enough capacity for the model's maximum possible response.
+    #
+    # A model's output ceiling can exceed a user-selected working window. It
+    # is not a promise to generate that many tokens: leave useful input space
+    # instead of making the compaction threshold zero or negative.
+    reserve = min(
+        context_window // 2,
+        max(min(16_384, context_window // 5), max_output_tokens),
+    )
+    return min(int(context_window * 0.9), context_window - reserve)
+
+
 class AutoCompaction(AbstractCapability):
     """Check every request, including requests following a settled tool batch."""
 
@@ -279,14 +293,10 @@ class AutoCompaction(AbstractCapability):
         if window is None:
             return request_context
         settings = request_context.model_settings or {}
-        # A model's output ceiling can exceed a user-selected working window.
-        # It is not a promise to generate that many tokens: leave useful input
-        # space instead of making the compaction threshold zero or negative.
-        reserve = min(
-            window // 2,
-            max(min(16_384, window // 5), settings.get("max_tokens") or 0),
-        )
-        threshold = min(int(window * 0.8), window - reserve)
+        # settings["max_tokens"] is the fully resolved output ceiling by this
+        # point: ModelOutputLimits wraps AutoCompaction (see get_ordering
+        # above) and always sets it before this capability runs.
+        threshold = auto_compaction_threshold(window, settings.get("max_tokens") or 0)
         before = context_estimate(
             request_context.messages, request_context.model_request_parameters
         )
