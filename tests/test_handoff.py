@@ -120,6 +120,31 @@ def test_invalidation_while_awaiting_the_report_does_not_paint_early():
     assert app.renderer.log[-2:] == ["report", "paint"]
 
 
+@pytest.mark.parametrize("atomic", [False, True])
+def test_only_a_non_atomic_handoff_puts_the_terminal_in_cooked_mode(atomic):
+    """Cooked mode echoes typing and turns Return into the editor's Ctrl+J.
+
+    Only an external program needs it, and paced scrollback makes atomic
+    handoffs frequent while the user may be typing.
+    """
+    app = fake_app(cpr_replies=True)
+    entered = []
+
+    @contextmanager
+    def cooked_mode():
+        entered.append("cooked")
+        yield
+
+    app.input = SimpleNamespace(detach=noop, cooked_mode=cooked_mode)
+
+    async def run():
+        async with suspended_editor(app, atomic=atomic) as handoff:
+            handoff.rows_written = 1
+
+    asyncio.run(run())
+    assert entered == ([] if atomic else ["cooked"])
+
+
 def test_failure_inside_the_handoff_still_restores_the_editor():
     app = fake_app(cpr_replies=True)
 

@@ -293,7 +293,7 @@ def _live(args, parser):
                     return render(*a, **kw)
 
                 async def counted_flush():
-                    if output.pending or output._regenerate is not None:
+                    if output.pending or output.rows or output._regenerate is not None:
                         stats["flushes"] += 1
                     await flush()
 

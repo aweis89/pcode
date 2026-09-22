@@ -216,6 +216,11 @@ SETTINGS = {
         ("on", "off"),
         description="Rebuild scrollback at the new width when the terminal resizes",
     ),
+    "paced_scrollback": Setting(
+        "on",
+        ("on", "off"),
+        description="Roll settled blocks into scrollback a few rows per frame instead of at once",
+    ),
     "show_edits": Setting(
         "on",
         ("on", "off"),

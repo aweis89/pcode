@@ -208,6 +208,21 @@ reaches the application instead of pausing terminal output.
 
 These settings also work through `/config` and apply on the next launch.
 
+## Paced scrollback
+
+Model text reaches scrollback one settled Markdown block at a time, and a long
+code block or list would otherwise land in a single frame. By default each
+settled block is rendered once and then written a few rows per frame, so it
+rolls out instead of appearing all at once. Small blocks reveal one row per
+frame; large ones go faster, so a block is fully written within about a second
+of settling however big it is. Rendering, ordering, and the transcript retained
+for resume or redraw are unchanged; a redraw or resize rebuild always lands
+whole. To write every block in one frame:
+
+```sh
+pcode config set paced_scrollback off  # Default on; applies on next launch
+```
+
 ## Regenerating the terminal transcript
 
 `/redraw` rebuilds the retained transcript at the current terminal width and with

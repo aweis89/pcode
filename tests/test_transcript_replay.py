@@ -200,6 +200,101 @@ def test_flush_reports_the_rows_written_at_the_terminal_width(monkeypatch):
     asyncio.run(run())
 
 
+def paced_output(monkeypatch, handoffs):
+    transcript = view()
+    terminal = DummyOutput()
+    terminal.get_size = lambda: Size(rows=40, columns=80)
+    app = SimpleNamespace(output=CursorSafeOutput(terminal))
+    output = TerminalOutput(transcript.console, app)
+    transcript.output = output
+    output.paced = True
+
+    async def handoff(app, **kwargs):
+        handoffs.append(Handoff(11))
+        yield handoffs[-1]
+
+    monkeypatch.setattr("pcode.ui.suspended_editor", asynccontextmanager(handoff))
+    return transcript, output
+
+
+def test_paced_flush_writes_one_row_per_frame_and_keeps_ticking(monkeypatch):
+    async def run():
+        handoffs = []
+        transcript, output = paced_output(monkeypatch, handoffs)
+        for index in range(3):
+            output.print(f"ROW_{index}")
+        await output.flush()
+        written = transcript.console.file.getvalue()
+        assert written == "ROW_0\n"
+        assert handoffs[0].rows_written == 1
+        # The rest is queued, and the loop is asked for another frame.
+        assert [row.strip() for row in output.rows] == ["ROW_1", "ROW_2"]
+        assert not output.pending
+        assert output.changed.is_set()
+        await output.flush()
+        await output.flush()
+        assert transcript.console.file.getvalue() == "ROW_0\nROW_1\nROW_2\n"
+        assert len(handoffs) == 3
+        assert not output.rows
+        assert not output.changed.is_set()
+
+    asyncio.run(run())
+
+
+def test_paced_flush_keeps_a_big_block_within_the_drain_budget(monkeypatch):
+    async def run():
+        handoffs = []
+        transcript, output = paced_output(monkeypatch, handoffs)
+        output.print("\n".join(f"ROW_{index}" for index in range(300)))
+        frames = 0
+        while output.rows or output.pending:
+            await output.flush()
+            frames += 1
+        assert frames <= 31
+        assert transcript.console.file.getvalue().count("\n") == 300
+        assert sum(handoff.rows_written for handoff in handoffs) == 300
+        # Rows arriving while a backlog drains keep their order behind it.
+        output.print("ROW_A")
+        output.print("ROW_B")
+        await output.flush()
+        assert transcript.console.file.getvalue().endswith("ROW_299\nROW_A\n")
+
+    asyncio.run(run())
+
+
+def test_paced_rows_are_dropped_by_replay_and_written_at_once_when_off(monkeypatch):
+    async def run():
+        handoffs = []
+        transcript, output = paced_output(monkeypatch, handoffs)
+        transcript.print("FIRST")
+        transcript.print("SECOND")
+        await output.flush()
+        assert output.rows
+        output.regenerate(transcript.replay)
+        await output.flush()
+        text = transcript.console.file.getvalue()
+        assert text.count("FIRST") == 2 and text.count("SECOND") == 1
+        assert not output.rows
+        output.paced = False
+        transcript.print("THIRD")
+        transcript.print("FOURTH")
+        await output.flush()
+        assert transcript.console.file.getvalue().endswith("THIRD\nFOURTH\n")
+        assert not output.rows
+
+    asyncio.run(run())
+
+
+def test_split_rows_keeps_newlines_and_a_trailing_partial_row():
+    from pcode.ui import split_rows
+
+    assert split_rows("a\nb\n") == ["a\n", "b\n"]
+    assert split_rows("a\nb") == ["a\n", "b"]
+    assert split_rows("") == []
+    # Only newlines end a row; other control characters stay inside one.
+    assert split_rows("a\x0bb\n") == ["a\x0bb\n"]
+
+
 def test_clear_erases_the_screen_and_keeps_what_is_written_after_it(monkeypatch):
     async def run():
         transcript = Transcript(
