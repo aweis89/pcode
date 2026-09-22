@@ -27,7 +27,7 @@ from pcode.filesystem import FileChangeEvent
 from pcode.inspection import capture
 from pcode.runtime import ToolStarted, ToolSummary
 from pcode.shell import result_projection
-from pcode.tool_display import result_detail, target
+from pcode.tool_display import execution_mode, result_detail, target
 
 _parent: ContextVar[RunContext | None] = ContextVar("delegation_parent", default=None)
 
@@ -88,6 +88,7 @@ async def stream_child_activity(_ctx, events):
                 run_id=parent.run_id or "",
                 started_at=datetime.now(timezone.utc).isoformat(),
                 parent_call_id=parent_id,
+                execution=execution_mode(part.tool_name, args),
             )
             activity = "Working"
         elif isinstance(event, FunctionToolResultEvent):

@@ -355,6 +355,12 @@ terminal output is buffered until it closes. Inspection never reruns a tool.
 
 - Calls are newest first. Use arrows to select and Tab/Shift+Tab to move between
   the call list, detail pane, and search field.
+- In the call list or details, **c** copies the selected call's command (its whole
+  arguments payload when it has no command) and **o** copies the returned output.
+  Copying uses `pbcopy`/`wl-copy`/`xclip` when one is installed and OSC 52
+  otherwise; over ssh it tries OSC 52 first. tmux forwards OSC 52 only with
+  `tmux set -g set-clipboard on`. Payloads are truncated at 64 KiB, and the
+  header says what was copied or that copying failed.
 - In the call list, **f** toggles failures, **t** cycles tool-name filters, and
   **/** focuses search. Search matches tool names/statuses and command/summary
   previews, not the complete output payload. Ctrl+F focuses search from any pane.
@@ -367,9 +373,14 @@ terminal output is buffered until it closes. Inspection never reruns a tool.
 - Wide terminals show calls and details side by side; narrow terminals stack them.
 
 Details include the call/run IDs, timestamp and duration when captured, structured
-arguments, framework outcome, and returned output/error. Nonzero command exits,
+arguments, framework outcome, and returned output/error. Commands and results are
+both shown as blocks, highlighted when the payload is code or JSON and verbatim
+otherwise. Nonzero command exits,
 timeouts, and tool retries are failures; interruption and unknown results remain
-distinct. Background launch/check/stop calls show their process ID and related
+distinct. Command tools show an **Execution** row saying whether the model asked
+to wait (`foreground`) or to be handed a job handle (`background`); background
+calls are also tagged in the call list, so search matches `background`.
+Background launch/check/stop calls show their process ID and related
 calls when available. A successful launch is not proof that the process finished
 successfully.
 

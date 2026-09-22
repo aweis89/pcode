@@ -147,7 +147,11 @@ def test_background_calls_link_without_marking_start_as_process_success():
     assert archive.calls[1].state == "failed"
 
 
-def test_inspector_keyboard_focus_scroll_filter_and_close():
+def test_inspector_keyboard_focus_scroll_filter_and_close(monkeypatch):
+    import pcode.inspector_ui as inspector_ui
+
+    monkeypatch.setattr(inspector_ui, "copy_to_clipboard", lambda text, output=None: (True, False))
+
     async def run():
         archive = ToolArchive()
         call(archive, "failed", failed=True)
@@ -171,6 +175,12 @@ def test_inspector_keyboard_focus_scroll_filter_and_close():
             pipe.send_text("f")
             await asyncio.sleep(0.05)
             assert ui.selected.call_id == "failed"
+            pipe.send_text("c")
+            await asyncio.sleep(0.05)
+            assert ui.notice == "Copied command"
+            pipe.send_text("o")
+            await asyncio.sleep(0.05)
+            assert ui.notice == "Copied output"
             pipe.send_text("\t")
             await asyncio.sleep(0.05)
             assert ui.app.layout.has_focus(ui.detail)
@@ -359,6 +369,109 @@ def test_index_skips_malformed_records_and_incrementally_reads_appends(tmp_path)
     path.write_text("[]\n")
     archive.update(path)
     assert not archive.calls
+
+
+def test_execution_mode_is_recorded_for_command_tools_and_shown_in_both_panes():
+    from pcode.tool_display import execution_mode
+
+    assert execution_mode("shell", {"command": "sleep 5", "background": True}) == "background"
+    assert execution_mode("shell", {"command": "ls"}) == "foreground"
+    assert execution_mode("start_command", {}) == "background"
+    assert execution_mode("run_command", {}) == "foreground"
+    assert execution_mode("read_file", {"background": True}) == ""
+
+    archive = ToolArchive()
+    archive.event(ToolStarted("shell", "sleep 5", "job", command="sleep 5", execution="background"))
+    # The summary carries no mode of its own and must not erase the started one.
+    archive.event(ToolSummary("shell", "started", call_id="job", result="[j1 · running · 0s]"))
+    waited = ToolStarted("shell", "ls", "wait", command="ls", execution="foreground")
+    archive.event(waited)
+    assert archive.calls[0].execution == "background"
+    assert archive.calls[0].title().startswith("succeeded   shell (background) · ")
+    assert "Execution: background" in archive.calls[0].details(archive.calls)
+    # Foreground is the default, so it stays out of the row but is stated in details.
+    assert "(background)" not in archive.calls[1].title()
+    assert "Execution: foreground" in archive.calls[1].details(archive.calls)
+
+
+def test_results_and_commands_share_the_same_block_rendering():
+    from rich.syntax import Syntax
+
+    from pcode.inspector_ui import arguments_renderables, result_renderables
+
+    blocks = arguments_renderables('{"command": "ls -la"}', "ansi_dark")
+    assert any(isinstance(block, Syntax) and block.lexer.name == "Bash" for block in blocks)
+    plain, structured = (
+        result_renderables("total 0\ndrwxr-xr-x", "ansi_dark"),
+        result_renderables('{"ok": true}', "ansi_dark"),
+    )
+    assert isinstance(plain[0], Syntax) and plain[0].lexer.name == "Text only"
+    assert isinstance(structured[0], Syntax) and structured[0].lexer.name == "JSON"
+
+
+def test_copy_shortcuts_take_the_command_and_the_output(monkeypatch):
+    from prompt_toolkit.input import create_pipe_input
+
+    import pcode.inspector_ui as inspector_ui
+
+    copied: list[str] = []
+    monkeypatch.setattr(
+        inspector_ui,
+        "copy_to_clipboard",
+        lambda text, output=None: (copied.append(text), (True, False))[1],
+    )
+    archive = ToolArchive()
+    call(archive, "one")
+    with create_pipe_input() as pipe:
+        ui = ToolInspector(archive, input=pipe, output=DummyOutput())
+        ui.copy("command")
+        assert copied == ["pytest -q"] and ui.notice == "Copied command"
+        ui.copy("output")
+        assert copied[-1].endswith("output 199") and ui.notice == "Copied output"
+        # Selecting another call drops the stale confirmation.
+        archive.event(ToolStarted("read_file", "file", "two", arguments="not json"))
+        ui.refresh()
+        ui.list.buffer.cursor_position = ui.list.document.translate_row_col_to_index(0, 0)
+        assert ui.selected.call_id == "two" and ui.notice == ""
+        ui.copy("command")
+        assert copied[-1] == "not json" and ui.notice == "Copied arguments"
+        ui.selected = None
+        ui.copy("output")
+        assert ui.notice == "Nothing to copy"
+
+
+def test_clipboard_prefers_a_helper_and_falls_back_to_osc52(monkeypatch):
+    import base64
+
+    from pcode import clipboard
+
+    class Output:
+        def __init__(self):
+            self.raw = ""
+
+        def write_raw(self, text):
+            self.raw += text
+
+        def flush(self):
+            pass
+
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_TTY", raising=False)
+    monkeypatch.setattr(clipboard.shutil, "which", lambda name: "/bin/" + name)
+    runs = []
+    monkeypatch.setattr(clipboard.subprocess, "run", lambda *args, **kwargs: runs.append(args))
+    output = Output()
+    assert clipboard.copy("ls -la", output) == (True, False)
+    assert runs and output.raw == ""
+
+    monkeypatch.setattr(clipboard.shutil, "which", lambda name: None)
+    assert clipboard.copy("ls -la", output) == (True, False)
+    assert base64.b64encode(b"ls -la").decode() in output.raw
+    # No helper and no terminal to write to is a reported failure, not a crash.
+    assert clipboard.copy("ls -la") == (False, False)
+    copied, truncated = clipboard.copy("x" * (clipboard.LIMIT + 1), output)
+    assert copied and truncated
+    assert "truncated" in base64.b64decode(output.raw.rsplit(";", 1)[1][:-1]).decode()
 
 
 def test_background_command_failure_classification():

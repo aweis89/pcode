@@ -88,11 +88,15 @@ class InspectedCall:
     elapsed: float | None = None
     outcome: str = ""
     process_id: str = ""
+    execution: str = ""
     arguments: Payload = field(default_factory=Payload)
     result: Payload = field(default_factory=Payload)
 
     def title(self) -> str:
-        return f"{self.state:11} {self.name} · {self.detail}"
+        # Only "background" is worth a row tag: waiting is the default, and the
+        # detail pane names the mode either way.
+        tag = " (background)" if self.execution == "background" else ""
+        return f"{self.state:11} {self.name}{tag} · {self.detail}"
 
     def metadata(self, calls: list["InspectedCall"]) -> list[tuple[str, str]]:
         """Label/value rows describing the call, shared by text and Rich renderings."""
@@ -102,6 +106,7 @@ class InspectedCall:
             ("Run", self.run_id),
             ("Started", self.started_at),
             ("Duration", timing),
+            *([("Execution", self.execution)] if self.execution else []),
             ("Framework outcome", self.outcome or "unavailable"),
             ("Summary", self.summary),
         ]
@@ -172,6 +177,7 @@ class ToolArchive:
             "command",
             "purpose",
             "process_id",
+            "execution",
             "started_at",
             "time",
             "outcome",
@@ -205,6 +211,7 @@ class ToolArchive:
         call.detail = command_text(invocation)[:300]
         call.summary = command_text(record.get("detail", ""))[:1000]
         call.process_id = command_text(record.get("process_id") or call.process_id)
+        call.execution = record.get("execution") or call.execution
         if kind == "ToolStarted":
             call.started_at = record.get("started_at") or record.get("time", "unavailable")
             call.arguments = self._payload(record, "arguments", path, offset)

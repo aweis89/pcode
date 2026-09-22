@@ -94,6 +94,7 @@ from pcode.tool_display import (
     command_error,
     command_text,
     delegation_detail,
+    execution_mode,
     job_status,
     label,
     native_result_detail,
@@ -904,6 +905,7 @@ class AgentRuntime:
                         and isinstance(args.get("command"), str)
                         else "",
                         purpose=stated_purpose(args),
+                        execution=execution_mode(event.part.tool_name, args),
                     )
                     if event.part.tool_name == "delegate_task":
                         delegates[event.part.tool_call_id] = start

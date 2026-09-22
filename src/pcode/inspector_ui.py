@@ -16,6 +16,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+from pcode.clipboard import copy as copy_to_clipboard
 from pcode.inspection import InspectedCall, ToolArchive
 from pcode.popup_ui import (
     RichPane,
@@ -76,10 +77,12 @@ def arguments_renderables(text: str, code_theme: str) -> list:
 
 
 def result_renderables(text: str, code_theme: str) -> list:
-    """JSON results get highlighting; everything else stays verbatim, never Markdown."""
-    if parse_json(text) is not None:
-        return [code_block(text, "json", code_theme)]
-    return [Text(text)]
+    """Results get the block treatment arguments already have, never Markdown.
+
+    JSON is highlighted; anything else is verbatim in a plain block, so command
+    output and the command that produced it read as the same kind of thing.
+    """
+    return [code_block(text, "json" if parse_json(text) is not None else None, code_theme)]
 
 
 class ToolInspector:
@@ -100,6 +103,7 @@ class ToolInspector:
         self.names = ["All", *sorted({call.name for call in archive.calls})]
         self.visible = []
         self.selected = None
+        self.notice = ""
         self._refreshing = False
         self.query = TextArea(height=1, prompt="Search tools/commands: ", multiline=False)
         self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
@@ -139,10 +143,21 @@ class ToolInspector:
         def search_done(event):
             event.app.layout.focus(self.list)
 
+        browsing = has_focus(self.list) | has_focus(self.detail)
+
+        @keys.add("c", filter=browsing)
+        def copy_command(event):
+            self.copy("command", event.app.output)
+
+        @keys.add("o", filter=browsing)
+        def copy_output(event):
+            self.copy("output", event.app.output)
+
         header = Label(
             lambda: (
                 f"Tool inspector · {len(self.visible)}/{len(self.archive.calls)} calls · "
                 f"Status: {'Failed' if self.failed else 'All'} · Tool: {self.tool}"
+                + (f" · {self.notice}" if self.notice else "")
             )
         )
         wide = VSplit(
@@ -168,6 +183,7 @@ class ToolInspector:
                 Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
                 Label("Tab Focus · Esc Close"),
                 Label("In Calls: f Failures · t Tool filter · / Search (↑↓ select while typing)"),
+                Label("In Calls/Details: c Copy command · o Copy output"),
             ]
         )
         self.app = Application(
@@ -207,7 +223,34 @@ class ToolInspector:
         if call is self.selected and call is not None:
             return
         self.selected = call
+        self.notice = ""
         self.detail.set(self.details(call))
+
+    def payload(self, call: InspectedCall, what: str) -> tuple[str, str]:
+        """The text to copy for "command" or "output", and what to call it.
+
+        A call without a command copies its whole arguments payload: the point
+        is to get the call out of the inspector, not to hold out for a shell.
+        """
+        if what == "output":
+            return "output", call.result.read()
+        parsed = parse_json(call.arguments.read())
+        if isinstance(parsed, dict) and isinstance(parsed.get("command"), str):
+            return "command", parsed["command"]
+        return "arguments", call.arguments.read()
+
+    def copy(self, what: str, output=None) -> None:
+        call = self.selected
+        if call is None:
+            self.notice = "Nothing to copy"
+            return
+        name, text = self.payload(call, what)
+        if not text:
+            self.notice = f"No {name} to copy"
+            return
+        copied, truncated = copy_to_clipboard(text, output)
+        limit = " (truncated)" if truncated else ""
+        self.notice = f"Copied {name}{limit}" if copied else f"Could not copy {name}"
 
     def details(self, call: InspectedCall | None) -> list:
         """Rich renderables for the Details pane: metadata grid, then each payload."""
