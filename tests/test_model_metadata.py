@@ -464,6 +464,7 @@ def test_runtime_refreshes_the_current_model_before_streaming(monkeypatch):
 
     from pcode import model_metadata
     from pcode.live import AgentRuntime
+    from pcode.turn import TurnContext
 
     first, second = TestModel(), TestModel()
     runtime = AgentRuntime(Agent(first))
@@ -472,7 +473,7 @@ def test_runtime_refreshes_the_current_model_before_streaming(monkeypatch):
         await runtime.refresh_context()
         model_metadata.catalog.refresh.assert_awaited_with(first)
         runtime.replace_agent(Agent(second))
-        async for _ in runtime._stream("hello", "run"):
+        async for _ in runtime._stream("hello", TurnContext(run_id="run")):
             pass
         model_metadata.catalog.refresh.assert_awaited_with(second)
 

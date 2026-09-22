@@ -81,6 +81,13 @@ tree automatically. Structured histories (including tool calls/results) continue
 to use Harness's native safe checkpoints. Tree links and selection events live in
 the private, append-only session journal.
 
+Every journal record names the turn it belongs to (`run_id`), and the tree, branch
+replay and the history reader use that name rather than the record's position in
+the file. Journals written before that carry no name, so they fall back to "the
+last turn started", which was always true when one turn ran at a time. Records
+from a turn on another branch are therefore skipped on replay rather than
+absorbed into whichever turn happened to start last.
+
 With `--no-save`, the tree exists only in memory and disappears on exit. Browsing
 an empty conversation does not create session files. `/new` starts a separate tree
 and keeps the previous saved session available through `/resume`. The offline
