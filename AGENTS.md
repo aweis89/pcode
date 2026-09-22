@@ -9,7 +9,8 @@
 
 ## Testing and debugging
 
-- `make test` skips the real-tmux regressions (75% of the runtime). Run `make test-all` before commiting anything touching layout, streaming, the editor, or the prompt. Never parallelize the tmux tests.
+- `make test` skips the real-tmux regressions (75% of the runtime). Run `make test-all` before commiting anything touching layout, streaming, the editor, or the prompt. Never parallelize the tmux tests, and treat a burst of tmux failures as a busy machine until proven otherwise: another session running tests in any worktree fails a dozen of them on timing alone. Compare against the same tests at `HEAD~1` (add a throwaway worktree and run it with `PYTHONPATH=<that>/src`, which wins over the editable install) before believing a regression.
+- Never `git stash` here. Dozens of worktrees share one stash ref, so a concurrent session's push or pop can hijack yours: the entry you get back is somebody else's, based on a different commit, and it lands as conflicts. Commit to a scratch branch instead.
 - `make test` is xdist-parallel and needs a stable tree: saving a file mid-run yields bulk failures or `Different tests were collected between gw0 and gwN`. Re-run on a quiet tree (or `uv run pytest -n0`) before believing a mass failure.
 - `make install` is editable, so a running session keeps whatever source was on disk when each module was first imported: a mid-turn fix does not reach it, and a broken intermediate state stays loaded until restart. Before hunting an unreproducible failure, compare its timestamp against file mtimes and check whether another session was editing.
 - Failed turns save their frames to `<session-dir>/errors.log`; the transcript's `turn_failed` record carries only a type and message.
