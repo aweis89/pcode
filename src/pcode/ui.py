@@ -38,6 +38,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode.block import INDENT, RULE, RUNNING, block_heading
+from pcode.clipboard import copy as copy_to_clipboard
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
@@ -1149,6 +1150,20 @@ def create_prompt(
         # then large pastes collapse to a preview until the prompt is sent.
         data = event.data.replace("\r\n", "\n").replace("\r", "\n")
         event.current_buffer.insert_text(pasted.collapse(data))
+
+    @keys.add("c-y", filter=~is_searching)
+    def copy_draft(event: KeyPressEvent) -> None:
+        # Collapsed pastes are a display device, so copy what sending would:
+        # the expanded text, not the `[pasted …]` marker standing in for it.
+        text = pasted.expand(event.current_buffer.text)
+        if transcript is None:
+            return
+        if not text:
+            transcript.flash("Nothing to copy")
+            return
+        copied, truncated = copy_to_clipboard(text, event.app.output)
+        limit = " (truncated)" if truncated else ""
+        transcript.flash(f"Copied prompt{limit}" if copied else "Could not copy prompt")
 
     @keys.add("enter", filter=~is_searching)
     def submit(event: KeyPressEvent) -> None:

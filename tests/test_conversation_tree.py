@@ -265,6 +265,40 @@ def test_tree_browser_shows_selected_branch_and_anchors_selection():
         assert "Answer b" in lines[browser.detail.line_offset(browser.detail._anchor, 80)]
 
 
+def test_tree_browser_copies_the_selected_prompt_or_response(monkeypatch):
+    import pcode.tree_ui as tree_ui
+    from pcode.tree_ui import TreeBrowser
+
+    copied: list[str] = []
+    monkeypatch.setattr(
+        tree_ui,
+        "copy_to_clipboard",
+        lambda text, output=None: (copied.append(text), (True, False))[1],
+    )
+    tree = ConversationTree()
+    tree.consume({"kind": "turn_started", "run_id": "a", "parent_id": None, "prompt": "ask a"})
+    tree.consume({"kind": "Message", "markdown": "Answer a"})
+    tree.consume({"kind": "turn_completed"})
+    with create_pipe_input() as pipe:
+        browser = TreeBrowser(tree, input=pipe, output=DummyOutput())
+        assert browser.selected == ("a", False)
+        browser.copy()
+        assert copied == ["Answer a"] and browser.notice == "Copied response"
+        browser.list.buffer.cursor_position = browser.list.document.translate_row_col_to_index(1, 0)
+        # Moving the selection drops the stale confirmation.
+        assert browser.selected == ("a", True) and browser.notice == ""
+        browser.copy()
+        assert copied[-1] == "ask a" and browser.notice == "Copied prompt"
+        # Conversation start holds neither.
+        browser.list.buffer.cursor_position = browser.list.document.translate_row_col_to_index(0, 0)
+        browser.copy()
+        assert browser.notice == "No response to copy"
+        monkeypatch.setattr(tree_ui, "copy_to_clipboard", lambda text, output=None: (False, False))
+        browser.list.buffer.cursor_position = browser.list.document.translate_row_col_to_index(1, 0)
+        browser.copy()
+        assert browser.notice == "Could not copy prompt"
+
+
 def test_tree_browser_conversation_pane_highlights_the_selected_row():
     """The Conversation pane marks the Tree list's current selection, like the list itself."""
     from prompt_toolkit.filters import Always
