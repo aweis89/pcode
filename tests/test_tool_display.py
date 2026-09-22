@@ -155,6 +155,7 @@ def test_compact_rows_and_old_and_new_event_shapes():
     transcript.events((old, ToolSummary(**asdict(new))))
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
         "✓ Read  a.py · 2 lines",
+        "✗ Run · exit 1 · 0.2s",
     ]
 
 

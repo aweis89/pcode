@@ -48,6 +48,65 @@ def code_block(text: str, lexer: str | None, code_theme: str) -> Syntax:
     return Syntax(text, lexer or "text", theme=code_theme, word_wrap=True)
 
 
+def format_command(command: str) -> str:
+    """A one-line shell command broken at its top-level separators for reading.
+
+    `;` becomes a line break; `&&` and `||` keep the operator, add a backslash
+    continuation, and indent the next command so the chain reads as one
+    statement. Separators inside quotes or parentheses are left alone, and a
+    command the model already spread over lines is shown as written. Only the
+    display changes: copying still takes the command verbatim.
+    """
+    if "\n" in command.strip():
+        return command
+    lines: list[str] = []
+    current: list[str] = []
+    indent = ""
+    quote: str | None = None
+    depth = 0
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if quote:
+            current.append(char)
+            if char == "\\" and quote == '"' and i + 1 < len(command):
+                current.append(command[i + 1])
+                i += 1
+            elif char == quote:
+                quote = None
+        elif char == "\\" and i + 1 < len(command):
+            current.extend(command[i : i + 2])
+            i += 1
+        elif char in "'\"":
+            quote = char
+            current.append(char)
+        elif char == "(":
+            depth += 1
+            current.append(char)
+        elif char == ")":
+            depth = max(depth - 1, 0)
+            current.append(char)
+        elif depth == 0 and command.startswith(("&&", "||"), i) and "".join(current).strip():
+            lines.append(indent + "".join(current).strip() + f" {command[i : i + 2]} \\")
+            current = []
+            indent = "  "
+            i += 1
+        elif char == ";" and command.startswith(";;", i):
+            current.extend(";;")
+            i += 1
+        elif depth == 0 and char == ";":
+            if "".join(current).strip():
+                lines.append(indent + "".join(current).strip())
+            current = []
+            indent = ""
+        else:
+            current.append(char)
+        i += 1
+    if "".join(current).strip():
+        lines.append(indent + "".join(current).strip())
+    return "\n".join(lines) if lines else command
+
+
 def heading(title: str) -> list:
     return [Text(""), Markdown(f"### {title}")]
 
@@ -72,6 +131,8 @@ def arguments_renderables(text: str, code_theme: str) -> list:
         blocks.append(grid)
     for key, value, lexer in later:
         blocks.append(Text(key, style="bold"))
+        if key == "command":
+            value = format_command(value)
         blocks.append(code_block(value, lexer, code_theme))
     return blocks
 

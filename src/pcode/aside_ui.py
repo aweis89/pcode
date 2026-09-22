@@ -15,6 +15,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode.aside import Aside, Asides
+from pcode.clipboard import copy as copy_to_clipboard
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,
@@ -60,6 +61,7 @@ class AsideBrowser:
         self.selected = selected or (self.items[-1].id if self.items else None)
         self._rendered: tuple | None = None
         self._refreshing = False
+        self.notice = ""
         self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
         self.list.window.cursorline = Always()
         self.detail = RichPane(theme=rich_theme, color_system=color_system)
@@ -79,6 +81,10 @@ class AsideBrowser:
             # Same key meaning as elsewhere: stop the work, keep the record.
             self.asides.cancel()
 
+        @keys.add("c")
+        def copy_answer(event):
+            self.copy(event.app.output)
+
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
 
@@ -86,6 +92,7 @@ class AsideBrowser:
             lambda: (
                 f"Side questions · {len(self.items)} asked · "
                 f"{self.asides.running} running · not part of the conversation"
+                + (f" · {self.notice}" if self.notice else "")
             )
         )
         wide = VSplit(
@@ -109,7 +116,10 @@ class AsideBrowser:
             [
                 header,
                 body,
-                Label("↑↓ Select/scroll · Tab Focus · Ctrl+K Stop running · Enter/Esc Close"),
+                Label(
+                    "↑↓ Select/scroll · Tab Focus · C Copy answer · "
+                    "Ctrl+K Stop running · Enter/Esc Close"
+                ),
             ]
         )
         self.app = Application(
@@ -169,6 +179,16 @@ class AsideBrowser:
         self.detail.window.vertical_scroll = (
             max(0, rows - info.window_height) if tailing else offset
         )
+
+    def copy(self, output=None) -> None:
+        """Copy the selected answer as written, even while it is still arriving."""
+        aside = self.current()
+        if aside is None or not aside.answer:
+            self.notice = "No answer to copy"
+            return
+        copied, truncated = copy_to_clipboard(aside.answer, output)
+        limit = " (truncated)" if truncated else ""
+        self.notice = f"Copied answer{limit}" if copied else "Could not copy answer"
 
     def details(self, aside: Aside | None) -> list:
         if aside is None:

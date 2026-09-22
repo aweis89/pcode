@@ -220,10 +220,14 @@ def test_failed_commands_need_mirroring_before_the_failure_option_applies():
     save_preferences(tool_error_scrollback="on")
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=80, color_system=None))
-    event = ToolSummary("run_command", "pytest → exit 1", failed=True, command="pytest")
-    assert not transcript.writes_tool_result(event)
+    event = ToolSummary(
+        "run_command", "pytest → exit 1", failed=True, command="pytest", error="DIAGNOSTIC"
+    )
+    assert transcript.writes_tool_result(event)
     transcript.tool_result(event)
-    assert stream.getvalue() == ""
+    # Without mirroring, a failure keeps its summary line and nothing else.
+    assert "✗ Run" in stream.getvalue()
+    assert "DIAGNOSTIC" not in stream.getvalue()
 
 
 def test_mirrored_command_failures_keep_only_their_summary_line_by_default():

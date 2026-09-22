@@ -27,6 +27,22 @@ def test_command_mirroring_is_off_by_default():
     assert stream.getvalue() == ""
 
 
+def test_disabled_mirroring_still_leaves_a_summary_line():
+    view, stream = transcript()
+    event = ToolSummary(
+        "run_command",
+        "pytest -q → exit 0",
+        elapsed_seconds=0.25,
+        command="pytest -q",
+        result="2 passed",
+    )
+    assert view.writes_tool_result(event)
+    view.tool_result(event)
+    output = stream.getvalue()
+    assert "✓ Run" in output
+    assert "2 passed" not in output
+
+
 def test_enabled_option_mirrors_command_and_output():
     save_preferences(show_commands="on")
     view, stream = transcript()
@@ -136,13 +152,15 @@ def test_mirrored_failure_replaces_the_error_excerpt_block():
     assert app.activity.tools.calls == []
 
 
-def test_disabled_option_keeps_successful_commands_out_of_scrollback():
+def test_disabled_option_keeps_command_output_out_of_scrollback():
     stream = StringIO()
     app = PreviewApp(console=Console(file=stream, width=80, color_system=None))
     app.present_events(
         (ToolSummary("run_command", "pytest -q → exit 0", command="pytest -q", result="2 passed"),)
     )
-    assert stream.getvalue() == ""
+    output = stream.getvalue()
+    assert "✓ Run" in output
+    assert "2 passed" not in output
 
 
 @pytest.mark.parametrize("limit", [1, 3, 20])
@@ -244,7 +262,7 @@ def test_toggled_mirroring_takes_effect_on_the_next_settled_command():
         "run_command", "echo → exit 0", call_id="one", command="echo hi", result="hi"
     )
     app.present_events((event,))
-    assert "✓ Run" not in stream.getvalue()
+    assert "$ echo hi" not in stream.getvalue()
     app.show_commands("")
     app.present_events((event,))
     assert "✓ Run" in stream.getvalue()
@@ -383,7 +401,12 @@ def test_command_visibility_controls_all_completions(name, failed):
     event = ToolSummary(name, "command detail", failed=failed, result="OUTPUT", error="DIAGNOSTIC")
     view.tool_result(event)
     view.events((event,))
-    assert stream.getvalue() == ""
+    # Only the captured output is withheld; the summary line always shows.
+    assert "OUTPUT" not in stream.getvalue()
+    assert "DIAGNOSTIC" not in stream.getvalue()
+    assert stream.getvalue().count("✗" if failed else "✓") == 2
+    stream.truncate(0)
+    stream.seek(0)
     view.command_scrollback = True
     # Mirrored output of a failure is the one part that waits for its own option.
     view.tool_error_scrollback = failed
