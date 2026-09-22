@@ -546,9 +546,12 @@ class AgentRuntime:
                         yield event
                         continue
                     if saved:
-                        saved.event(event)
+                        saved.event(event, run_id=run_id)
                     if saved is None:
-                        self.tree.consume({"kind": type(event).__name__, **asdict(event)})
+                        # Named with its turn, the way the journal records it.
+                        record = {"kind": type(event).__name__, **asdict(event)}
+                        record["run_id"] = record.get("run_id") or run_id
+                        self.tree.consume(record)
                     if saved is None and isinstance(event, (ToolStarted, ToolSummary)):
                         self.inspections.event(event)
                     yield event
@@ -615,6 +618,7 @@ class AgentRuntime:
                 self.tree.consume(
                     {
                         "kind": "turn_cancelled" if cancelled else "turn_failed",
+                        "run_id": run_id,
                         "resend_blocked": resend_blocked,
                     }
                 )
@@ -629,7 +633,7 @@ class AgentRuntime:
                 self._save_totals(saved.info)
                 saved.save_info()
             else:
-                self.tree.consume({"kind": "turn_completed"})
+                self.tree.consume({"kind": "turn_completed", "run_id": run_id})
                 self.tree.nodes[run_id].history = deepcopy(self.history)
 
         finally:

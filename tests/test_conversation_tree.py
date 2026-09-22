@@ -19,7 +19,7 @@ from rich.console import Console
 from pcode.app import PreviewApp
 from pcode.conversation_tree import ConversationTree
 from pcode.live import AgentRuntime
-from pcode.runtime import PlanUpdated
+from pcode.runtime import Message, PlanUpdated
 from pcode.sessions import SavedSession, SessionError
 from pcode.tree_ui import tree_dialog
 
@@ -384,6 +384,79 @@ finally:
         "nodes": 2,
         "prompts": ["selected ancestor"],
     }
+
+
+def test_interleaved_turns_are_attributed_by_run_id(tmp_path):
+    """Two turns open at once keep their own responses, plans and status.
+
+    Nothing runs two turns yet, but every journal record now names its turn, so
+    replay no longer infers membership from the order records happen to land in.
+    """
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    identity = saved.info.id
+    try:
+        saved.append("turn_started", run_id="a", parent_id=None, prompt="question A")
+        saved.append("turn_started", run_id="b", parent_id=None, prompt="question B")
+        saved.event(Message("answer B"), run_id="b")
+        saved.event(PlanUpdated([{"id": "1", "content": "A's task"}]), run_id="a")
+        saved.event(Message("answer A"), run_id="a")
+        saved.append("turn_completed", run_id="a")
+        saved.append("tree_selected", node_id="a")
+
+        def check(tree):
+            assert tree.nodes["a"].response == "answer A"
+            assert tree.nodes["b"].response == "answer B"
+            assert tree.nodes["a"].status == "completed"
+            assert tree.nodes["b"].status == "interrupted"
+            assert [item["content"] for item in tree.nodes["a"].plan] == ["A's task"]
+            assert tree.nodes["b"].plan == []
+
+        check(saved.tree)
+        # Replay of the selected branch skips the other turn's records entirely.
+        assert [record.get("prompt") or record.get("markdown") for record in saved.active_records()]
+        assert [record["kind"] for record in saved.transcript_records()] == [
+            "turn_started",
+            "Message",
+            "turn_completed",
+        ]
+        assert "answer B" not in json.dumps(list(saved.active_records()))
+    finally:
+        saved.close()
+    reopened = SavedSession.open(identity, root)
+    try:
+        check(reopened.tree)
+        assert reopened.tree.active == "a"
+    finally:
+        reopened.close()
+
+
+def test_records_without_a_run_id_still_follow_the_turn_that_started(tmp_path):
+    """Journals written before records named their turn stay readable."""
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    identity = saved.info.id
+    try:
+        saved.append("turn_started", run_id="old", parent_id=None, prompt="legacy question")
+        records = [record for record in saved.records()]
+        records.append({"version": 1, "kind": "Message", "markdown": "legacy answer"})
+        records.append({"version": 1, "kind": "turn_completed"})
+        (saved.directory / "transcript.jsonl").write_text(
+            "".join(json.dumps(record) + "\n" for record in records)
+        )
+    finally:
+        saved.close()
+    reopened = SavedSession.open(identity, root)
+    try:
+        assert reopened.tree.nodes["old"].response == "legacy answer"
+        assert reopened.tree.nodes["old"].status == "completed"
+        assert [record["kind"] for record in reopened.active_records()] == [
+            "turn_started",
+            "Message",
+            "turn_completed",
+        ]
+    finally:
+        reopened.close()
 
 
 def test_long_linear_tree_keeps_messages_aligned():
