@@ -75,7 +75,8 @@ Automatic compaction is **off by default**. `/autocompact on` saves a user prefe
 in `~/.config/pcode/preferences.json` (or `$XDG_CONFIG_HOME/pcode/preferences.json`).
 When enabled, pcode checks before every model request, including inside tool loops,
 using provider usage plus estimated new input/tool results and tool schemas. It
-triggers around 80% of the deployment window, with additional output headroom.
+triggers around 90% of the deployment window, reserved further for the
+resolved output-token ceiling on smaller windows or large max-output settings.
 Automatic summaries are persisted as safe checkpoints of the current run before the
 next request. If compaction cannot make enough room, the run stops with an error;
 it does not loop over summaries, silently drop history, or replay completed tools.
