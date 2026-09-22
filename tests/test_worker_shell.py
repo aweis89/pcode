@@ -10,6 +10,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness.shell import Shell
 
 from pcode.agent import create_coder
+from pcode.shell_tools import JobShell
 
 
 def test_worker_copies_parent_shell_policy(tmp_path):
@@ -18,7 +19,7 @@ def test_worker_copies_parent_shell_policy(tmp_path):
     options = constructor.call_args.kwargs
     parent = next(c for c in coder.capabilities if isinstance(c, Shell))
     child = next(c for c in options["capabilities"] if isinstance(c, Shell))
-    assert type(child) is Shell
+    assert type(child) is JobShell
     assert child is not parent
     for field in fields(Shell):
         if field.init:

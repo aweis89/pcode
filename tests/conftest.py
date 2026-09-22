@@ -122,6 +122,21 @@ def isolated_preferences(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def isolated_jobs():
+    """Shell jobs are process-wide on purpose; tests must not inherit them.
+
+    Resetting gives each test job ids from `j1` and stops anything a previous
+    test leaked, which a registry designed to outlive its run would otherwise
+    keep alive for the whole session.
+    """
+    from pcode.jobs import registry
+
+    registry().reset()
+    yield
+    registry().reset()
+
+
+@pytest.fixture(autouse=True)
 def isolated_context_catalog(monkeypatch, tmp_path):
     """Never fetch real metadata or read user caches in ordinary unit tests.
 

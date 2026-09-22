@@ -38,6 +38,7 @@ from pcode.output_limits import ModelOutputLimits
 from pcode.planning import IdentifiedPlanning
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.repo_context import create_repo_context
+from pcode.shell_tools import JobShell
 from pcode.tool_output_limits import create_tool_output_limits
 
 # Generous enough for a real investigation, small enough that a child stuck in a
@@ -151,12 +152,19 @@ def create_coder(
     debug = load_preferences().get("debug", SETTINGS["debug"].default) == "on"
     if debug:
         coder.capabilities.append(CacheBustReporting())
-    for capability in coder.capabilities:
+    for index, capability in enumerate(coder.capabilities):
         if isinstance(capability, Shell):
             # direnv writes its status banner to stderr on every cd into a
             # managed directory, which pollutes command output the agent parses
             # (e.g. `... | jq`). An empty log format silences it.
             capability.env = {**(capability.env or os.environ), "DIRENV_LOG_FORMAT": ""}
+            # Same execution model, but commands become named jobs the session
+            # can wait on, report and stop. See `pcode.shell_tools`. Copied
+            # field by field (including `id`) because a capability binds its
+            # instructions to its id in `__init__`.
+            coder.capabilities[index] = JobShell(
+                **{f.name: getattr(capability, f.name) for f in fields(capability) if f.init}
+            )
     # Compose the worker from the same capabilities rather than maintaining a
     # second tool/policy list. Per-run capability state is still managed upstream.
     # These are supplied by SubAgents.shared_capabilities instead (also for
@@ -188,8 +196,8 @@ def create_coder(
             "your changes, verification, and remaining limitations. You inherit the main "
             "agent's instructions, tools, and permission checks, but not its conversation. "
             "You share its workspace: coordinate edits with the parent. Your shell and "
-            "plan are independent. You cannot delegate further. Stop background "
-            "commands you no longer need."
+            "plan are independent. You cannot delegate further. Stop jobs you no "
+            "longer need with stop_job."
         ),
         capabilities=[*worker_capabilities, *extensions],
         toolsets=[worker_runtime_tools],
