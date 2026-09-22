@@ -84,6 +84,8 @@ candidate's size so that cost is visible before you pick.
   [Where the fixed prompt goes](context.md#where-the-fixed-prompt-goes). Opens a popup in the
   interactive editor; prints inline when there is no editor.
 - `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
+- `/jobs [list|stop ID|stop all]`: shell commands still running, and how to stop them. Jobs outlive
+  the turn that started them — see [Shell jobs](tools.md#shell-jobs).
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
 - `/autocompact on|off`: opt into automatic LLM compaction (saved user preference; default off).
 - `/new`: start a new saved conversation; clears the screen and retained scrollback, keeps input history.
@@ -279,7 +281,9 @@ keep their submission mode.
   send it as a follow-up turn.
 - **queue**: wait for the current turn to finish, then start a follow-up turn.
 - **interrupt**: cancel the current turn, discard pending messages, and send the
-  new message after cancellation cleanup completes.
+  new message after cancellation cleanup completes. A shell command the turn was
+  waiting on keeps running as a [job](tools.md#shell-jobs); you are redirecting
+  the model, not cancelling its work. Ctrl+C does stop it.
 
 Set the default with `pcode config set send_mode steering` (or `queue` / `interrupt`).
 `/config set send_mode queue` changes the default for the next launch; Ctrl+S
