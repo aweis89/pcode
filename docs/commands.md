@@ -84,8 +84,9 @@ candidate's size so that cost is visible before you pick.
   [Where the fixed prompt goes](context.md#where-the-fixed-prompt-goes). Opens a popup in the
   interactive editor; prints inline when there is no editor.
 - `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
-- `/jobs [list|stop ID|stop all]`: shell commands still running, and how to stop them. Jobs outlive
-  the turn that started them — see [Shell jobs](tools.md#shell-jobs).
+- `/jobs [list|stop ID|stop all|watch ID|unwatch]`: shell commands still running, how to stop
+  them, and pinning one's output tail into the command preview. Jobs outlive the turn that
+  started them — see [Shell jobs](tools.md#shell-jobs).
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
 - `/autocompact on|off`: opt into automatic LLM compaction (saved user preference; default off).
 - `/new`: start a new saved conversation; clears the screen and retained scrollback, keeps input history.

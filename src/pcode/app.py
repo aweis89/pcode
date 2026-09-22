@@ -25,6 +25,7 @@ from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_argument_descriptions, config_arguments, configure
+from pcode.jobs import OUTPUT_TAIL_BYTES, format_duration
 from pcode.preferences import (
     SETTINGS,
     SYNTAX_THEMES,
@@ -57,6 +58,7 @@ from pcode.tool_display import plain
 from pcode.ui import (
     COLOR_STYLES,
     SYSTEM_COMMAND_LABELS,
+    WATCHED_PREFIX,
     Activity,
     TerminalOutput,
     Transcript,
@@ -291,7 +293,7 @@ class PreviewApp:
             ),
             Command(
                 "/jobs",
-                "Shell commands still running: list / stop ID / stop all",
+                "Shell commands still running: list / stop ID / stop all / watch ID / unwatch",
                 self.jobs,
                 free_arguments=True,
                 group="Session",
@@ -612,18 +614,107 @@ class PreviewApp:
         if registry is not None:
             registry.cancel_policy = policy
 
-    def report_finished_jobs(self) -> bool:
-        """Announce job exits in scrollback, each one once. Returns whether any."""
+    def report_finished_jobs(self) -> list:
+        """Announce job exits in scrollback, each one once. Returns those announced."""
         registry = getattr(self.runtime, "jobs", None)
         if registry is None:
-            return False
+            return []
         finished = registry.take_announcements("ui")
         for job in finished:
             self.transcript.note(job.summary())
-        return bool(finished)
+        return finished
+
+    def wake_prompt(self) -> str | None:
+        """The turn a finished job starts on its own, or None when nothing should.
+
+        Only a job the model launched and expects to hear about wakes it: one
+        it backgrounded, or was handed a handle for when a wait ended early.
+        An adopted job belongs to a model that is gone. The text is exactly
+        the notice the model would have received at its next request, so
+        waking costs a request, never a different conversation. Called while
+        idle: a job that ended mid-turn after the last request is included,
+        because nothing else is going to deliver it.
+        """
+        registry = getattr(self.runtime, "jobs", None)
+        if registry is None or not self.model:
+            return None
+        wakeable = [
+            job
+            for job in registry.jobs.values()
+            if not job.running
+            # A stop is the user's or the model's own doing, not news to act on.
+            and not job.stopped
+            and not job.adopted
+            and "model" not in job.announced
+            and registry.announceable(job)
+        ]
+        if not wakeable:
+            return None
+        if load_preferences().get("job_wake", SETTINGS["job_wake"].default) != "on":
+            return None
+        from pcode.job_notices import notice_for
+
+        for job in wakeable:
+            job.announced.add("model")
+        return "\n\n".join(notice_for(registry, job) for job in wakeable)
+
+    def refresh_jobs(self) -> bool:
+        """Recompute the jobs rows and the watched tail. Returns whether they changed.
+
+        Called on the watcher's tick, busy or idle: a job that fails mid-turn
+        shows up here long before the turn ends and scrollback hears of it.
+        """
+        registry = getattr(self.runtime, "jobs", None)
+        if registry is None:
+            return False
+        registry.refresh()
+        rows = []
+        for job in sorted(registry.jobs.values(), key=lambda job: job.started_at):
+            elapsed = format_duration(job.elapsed)
+            if job.running and not job.waiting:
+                rows.append(
+                    ("class:activity.job", f"\u27f3 {job.id} \u00b7 {job.label()} \u00b7 {elapsed}")
+                )
+            elif not job.running and "ui" not in job.announced and registry.announceable(job):
+                icon = "\u2713" if job.exit_code == 0 else "\u2717"
+                text = (
+                    f"{icon} {job.id} \u00b7 {job.label()} \u00b7 {job.outcome()} \u00b7 {elapsed}"
+                )
+                rows.append(("class:activity.job.finished", text))
+        changed = rows != self.activity.jobs
+        self.activity.jobs = rows
+        return self._refresh_watched(registry) or changed
+
+    def _refresh_watched(self, registry) -> bool:
+        from pcode.shell import preview_text
+
+        key = WATCHED_PREFIX + self.activity.watched_job
+        job = registry.get(self.activity.watched_job) if self.activity.watched_job else None
+        if job is None or not job.running:
+            self.activity.watched_job = ""
+            return self.activity.command_outputs.pop(key, None) is not None
+        tail, _ = registry.read_output(job, max_bytes=OUTPUT_TAIL_BYTES // 2)
+        event = CommandOutput(key, job.command, preview_text(tail, final=True))
+        if self.activity.command_outputs.get(key) == event:
+            return False
+        self.activity.command_outputs.pop(key, None)
+        self.activity.command_outputs[key] = event
+        return True
+
+    def adopt_jobs(self) -> None:
+        """Take over what an earlier pcode left running, and say so."""
+        registry = getattr(self.runtime, "jobs", None)
+        adopted = registry.adopt_orphans() if registry is not None else []
+        if adopted:
+            self.transcript.note(
+                f"Adopted {len(adopted)} job{'s' if len(adopted) != 1 else ''} "
+                "still running from an earlier pcode; /jobs lists them."
+            )
+            for job in adopted:
+                self.transcript.note(job.summary())
 
     def jobs(self, argument: str) -> None:
-        """Show or stop the shell jobs this session started.
+        """Show, watch, or stop the shell jobs this session started.
 
         Jobs outlive the turn that started them and, deliberately, the session
         itself, so the only way to know what is still running is to ask.
@@ -640,8 +731,22 @@ class PreviewApp:
             for line in listing or ["No jobs have been started."]:
                 self.transcript.note(line if isinstance(line, str) else line.summary())
             return
+        if action == "unwatch":
+            self.activity.watched_job = ""
+            self.refresh_jobs()
+            return
+        if action == "watch":
+            job = registry.get(target.strip())
+            if job is None:
+                raise ValueError(f"No job {target.strip()!r}. Run /jobs to list them.")
+            if not job.running:
+                raise ValueError(f"[{job.id}] has finished; nothing to watch.")
+            self.activity.watched_job = job.id
+            self.refresh_jobs()
+            self.transcript.note(f"Watching [{job.id}] {job.label()}; /jobs unwatch hides it.")
+            return
         if action != "stop":
-            raise ValueError("/jobs takes list, stop ID, or stop all.")
+            raise ValueError("/jobs takes list, stop ID, stop all, watch ID, or unwatch.")
         target = target.strip()
         if target == "all":
             stopped = registry.stop_all()
@@ -655,6 +760,8 @@ class PreviewApp:
             self.transcript.note(f"Stopped [{job.id}] {job.label()}")
         if not stopped:
             self.transcript.note("Nothing was running.")
+        # Now, not at the watcher's next tick: the rows answer this command.
+        self.refresh_jobs()
 
     def autocompact(self, argument: str) -> None:
         if not self.model or not hasattr(self.runtime, "auto_compact"):
@@ -1897,11 +2004,23 @@ class PreviewApp:
         self.present_events(self.preview.reply(text))
         return False
 
-    async def run_live(self, output: TerminalOutput, text: str, *, resend: bool = False) -> bool:
+    def wake_row(self, text: str) -> tuple[str, str]:
+        """The live row for a turn a finished job started: a badge, not an echo."""
+        return "Job finished", text.partition("\n")[0].partition(" Read ")[0]
+
+    async def run_live(
+        self, output: TerminalOutput, text: str, *, resend: bool = False, wake: bool = False
+    ) -> bool:
         from pcode.live import error_message
 
-        output.begin_turn(text)
-        self.activity.start_prompt(text)
+        if wake:
+            # Scrollback already carries the job's summary line; the prompt is
+            # pcode's, so it is labelled as system work rather than quoted.
+            label, detail = self.wake_row(text)
+            self.activity.start_prompt(label, kind="system", detail=detail)
+        else:
+            output.begin_turn(text)
+            self.activity.start_prompt(text)
         self.activity.status = "Waiting for model…"
 
         def compaction_notice(text):
@@ -1940,7 +2059,11 @@ class PreviewApp:
             failure = error
         finally:
             self.activity.edit_previews.clear()
-            self.activity.command_outputs.clear()
+            # A watched job is not the turn's; its preview stays pinned.
+            for key in [
+                k for k in self.activity.command_outputs if not k.startswith(WATCHED_PREFIX)
+            ]:
+                del self.activity.command_outputs[key]
             self.activity.plan_preview = None
             output.end_turn()
             self.activity.tools.clear()
@@ -2600,12 +2723,15 @@ class PreviewApp:
                                 return
                             success = False
                     elif resend or self.handle(text):
-                        self.activity.start_prompt(text)
+                        wake = _mode == "wake"
+                        if wake:
+                            label, detail = self.wake_row(text)
+                            self.activity.start_prompt(label, kind="system", detail=detail)
+                        else:
+                            self.activity.start_prompt(text)
                         self.runtime.take_steering = take_steering
                         live_task = asyncio.create_task(
-                            self.run_live(output, text, resend=True)
-                            if resend
-                            else self.run_live(output, text)
+                            self.run_live(output, text, resend=resend, wake=wake)
                         )
                         try:
                             success = await live_task
@@ -2667,14 +2793,31 @@ class PreviewApp:
         session.app.style = DynamicStyle(lambda: self.transcript.prompt_style())
 
         async def watch_jobs():
-            """Report job exits while idle, so a finished job is never a surprise.
+            """Keep the jobs rows current, and report exits once the turn is over.
 
-            The model is told separately, at its next request; this is the
-            terminal's copy. Polling here costs one small file read per running
-            job and replaces the model doing the same thing with `sleep`.
+            The rows update busy or idle, so a job that fails mid-turn is seen
+            before the turn ends. Scrollback waits for idle, because a note
+            written mid-turn would land inside the model's streaming text.
+            The model is told separately, at its next request, unless nothing
+            is going to make one: then the job's notice starts the turn itself.
+            Polling here costs one small file read per running job and
+            replaces the model doing the same thing with `sleep`.
             """
+            await ready.wait()
+            self.adopt_jobs()
             while True:
-                if not self.activity.busy and self.report_finished_jobs():
+                changed = False
+                if not self.activity.busy and not self.activity.queued_prompts:
+                    changed = bool(self.report_finished_jobs())
+                    prompt = self.wake_prompt() if live_task is None else None
+                    if prompt is not None:
+                        queue.put_nowait((queue_generation, prompt, "wake"))
+                        self.activity.queued_prompts.append(prompt)
+                        self.activity.queued_modes.append("wake")
+                        self.activity.queued = len(self.activity.queued_prompts)
+                        self.activity.busy = True
+                # After reporting, so a row scrollback just took over goes now.
+                if self.refresh_jobs() or changed:
                     session.app.invalidate()
                 await asyncio.sleep(1)
 

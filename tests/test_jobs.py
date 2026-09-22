@@ -10,7 +10,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from pcode.agent import create_coder
-from pcode.job_notices import notice
+from pcode.job_notices import notice, notice_for
 from pcode.jobs import JobRegistry, format_duration, registry
 from pcode.live import AgentRuntime
 from pcode.runtime import ToolSummary
@@ -65,9 +65,11 @@ def test_finished_job_logs_are_evicted_but_running_ones_are_kept(tmp_path):
     second = jobs.launch(command("pass"), cwd=tmp_path)
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
     until_finished(jobs, first, second)
-    assert not first.directory.exists()
-    assert second.directory.exists()
-    assert "j1" not in jobs.jobs and "j2" in jobs.jobs
+    # Whichever exited first is evicted; under load that is not always j1.
+    older, newer = sorted((first, second), key=lambda job: job.ended_at)
+    assert not older.directory.exists()
+    assert newer.directory.exists()
+    assert older.id not in jobs.jobs and newer.id in jobs.jobs
     # A running job owns its log: the command is still writing to it.
     jobs.shutdown()
     assert live.directory.exists() and live.running
@@ -100,6 +102,93 @@ def test_stop_kills_the_whole_process_group(tmp_path):
         return False
 
     wait_for(gone)
+
+
+def test_stop_is_a_term_first_and_the_exit_is_still_published(tmp_path):
+    jobs = JobRegistry()
+    job = jobs.launch(
+        command(
+            "import signal, sys, time\n"
+            "def bye(*_):\n"
+            "    print('cleaning up', flush=True); sys.exit(7)\n"
+            "signal.signal(signal.SIGTERM, bye)\n"
+            "print('ready', flush=True); time.sleep(60)"
+        ),
+        cwd=tmp_path,
+    )
+    wait_for(lambda: "ready" in jobs.read_output(job)[0])
+    assert jobs.stop(job) and job.outcome() == "stopped"
+    # The command got to run its handler, and the supervisor outlived the
+    # signal to record what it did.
+    wait_for(lambda: "cleaning up" in jobs.read_output(job)[0])
+    wait_for(lambda: (jobs.refresh(), jobs._read_status(job)["exit_code"] is not None)[1])
+
+
+def test_stop_escalates_to_kill_when_term_is_ignored(tmp_path, monkeypatch):
+    from pcode import jobs as module
+
+    monkeypatch.setattr(module, "STOP_GRACE_SECONDS", 0.3)
+    jobs = JobRegistry()
+    job = jobs.launch(
+        command(
+            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "print('ready', flush=True); time.sleep(60)"
+        ),
+        cwd=tmp_path,
+    )
+    wait_for(lambda: "ready" in jobs.read_output(job)[0])
+    assert jobs.stop(job)
+    wait_for(lambda: (jobs.refresh(), not module._alive(job.supervisor_pid))[1])
+
+
+def test_running_jobs_are_adopted_by_the_next_registry(tmp_path):
+    """A pcode that exits leaves its record; the next one takes the jobs over."""
+    root = tmp_path / "jobs"
+    earlier = JobRegistry(state=lambda: root)
+    # Stand in for another process: its directory is named after its pid.
+    earlier._home = root / "99999"
+    finished = earlier.launch(command("pass"), cwd=tmp_path)
+    live = earlier.launch(
+        command("import time; time.sleep(60)"), cwd=tmp_path, purpose="serving the docs"
+    )
+    until_finished(earlier, finished)
+    earlier.shutdown()
+    assert live.directory.is_dir() and not finished.directory.exists()
+    # The dead owner's pid is not ours, so a fresh registry sees an orphan.
+    record = live.directory.parent / "registry.json"
+    data = json.loads(record.read_text())
+    data["owner_pid"] = 2**22 - 1
+    record.write_text(json.dumps(data))
+
+    later = JobRegistry(state=lambda: root)
+    adopted = later.adopt_orphans()
+    assert [job.command for job in adopted] == [live.command]
+    job = adopted[0]
+    assert job.adopted and job.running and job.label() == "serving the docs"
+    assert "adopted from an earlier pcode" in job.summary()
+    assert not record.exists()
+    # Adopting is once: the record is gone and the job is ours now.
+    assert later.adopt_orphans() == []
+    later.stop(job)
+    until_finished(later, job)
+    # A registry whose owner is alive is left alone.
+    other = JobRegistry(state=lambda: root)
+    other.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
+    assert JobRegistry(state=lambda: root).adopt_orphans() == []
+    other.reset()
+
+
+def test_failed_job_notice_carries_its_tail_but_a_success_does_not(tmp_path):
+    jobs = JobRegistry()
+    failed = jobs.launch(
+        command("import sys; print('boom: missing module'); sys.exit(1)"),
+        cwd=tmp_path,
+        background=True,
+    )
+    passed = jobs.launch(command("print('fine')"), cwd=tmp_path, background=True)
+    until_finished(jobs, failed, passed)
+    assert "boom: missing module" in notice_for(jobs, failed)
+    assert "fine" not in notice_for(jobs, passed)
 
 
 def test_format_duration_reads_at_a_glance():

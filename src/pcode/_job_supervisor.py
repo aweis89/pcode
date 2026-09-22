@@ -54,7 +54,12 @@ def main() -> None:  # pragma: no cover -- exercised through a real subprocess.
 
 if __name__ == "__main__":  # pragma: no cover
     # The parent starts a new session for us. Ignore terminal hangups without
-    # changing how the child command itself handles termination.
+    # changing how the child command itself handles termination. A stop is
+    # SIGTERM to the whole group: survive it here so the command's own exit
+    # under it still gets published. A Python handler rather than SIG_IGN,
+    # because an ignored disposition is inherited across exec and would make
+    # the command itself immune to the stop; a handler resets to default.
     if os.name != "nt":
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, lambda *_: None)
     main()

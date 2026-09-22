@@ -272,6 +272,12 @@ SETTINGS = {
         ("on", "off"),
         description="Compact the conversation automatically as the context window fills",
     ),
+    # Read when a job finishes, so `/config set` applies without a restart.
+    "job_wake": Setting(
+        "on",
+        ("on", "off"),
+        description="Start a turn when a job the model backgrounded finishes while idle",
+    ),
     # Edits, plans, shell, and delegation stay native so their transcript display survives.
     "code_mode": Setting(
         "off",
