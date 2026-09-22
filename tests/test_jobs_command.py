@@ -40,6 +40,22 @@ def test_jobs_lists_running_first_then_stops_them(tmp_path):
     assert app.report_finished_jobs() == []
 
 
+def test_jobs_arguments_offer_running_ids_for_stop_and_watch(tmp_path):
+    app, jobs = app_with_jobs()
+    assert app.jobs_arguments() == ("list", "unwatch", "stop all")
+    live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
+    done = jobs.launch(command("pass"), cwd=tmp_path)
+    until_finished(jobs, done)
+    assert app.jobs_arguments() == (
+        "list",
+        "unwatch",
+        "stop all",
+        f"stop {live.id}",
+        f"watch {live.id}",
+    )
+    jobs.stop(live)
+
+
 def test_jobs_rejects_unknown_actions_and_ids(tmp_path):
     app, jobs = app_with_jobs()
     with pytest.raises(ValueError, match="list, stop ID, stop all, watch ID, or unwatch"):
