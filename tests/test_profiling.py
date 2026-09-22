@@ -36,7 +36,7 @@ def test_profile_records_cpu_resources_and_private_files(tmp_path):
     with profile_session(directory, cpu=True):
         cpu_work()
     summary = json.loads((directory / "summary.json").read_text())
-    assert summary["schema_version"] == 2
+    assert summary["schema_version"] == 3
     assert summary["complete"] is True
     assert summary["elapsed_seconds"] > 0
     assert summary["process_cpu_seconds"] > 0
@@ -230,6 +230,44 @@ def test_disappearing_child_does_not_abort_capture(tmp_path, monkeypatch):
     summary = json.loads((profile.directory / "summary.json").read_text())
     assert summary["sampling_errors"] == 1
     assert summary["sampled_peak_rss_bytes"] > 0
+
+
+def test_descendant_scan_is_throttled_while_known_children_stay_sampled(tmp_path, monkeypatch):
+    """Walking the tree reads every process on the machine; measuring known ones is cheap."""
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]) as child:
+        try:
+            profile = ResourceProfile(tmp_path / "scan", interval=0.01, discovery_interval=60)
+            profile.start()
+            walks = []
+            try:
+                children = profile._process.children
+
+                def counted(**kwargs):
+                    walks.append(kwargs)
+                    return children(**kwargs)
+
+                monkeypatch.setattr(profile._process, "children", counted)
+                deadline = time.monotonic() + 5
+                while profile._samples < 5 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            finally:
+                profile.stop()
+        finally:
+            child.terminate()
+            child.wait(timeout=10)
+    samples = load_samples(profile.directory)
+    assert len(samples) >= 5
+    # Only the forced walk that closes the capture: the rest were throttled.
+    assert len(walks) == 1
+    # Every sample still measures the child discovered by the first walk.
+    assert all(any(p["pid"] == child.pid for p in sample["processes"]) for sample in samples)
+    summary = json.loads((profile.directory / "summary.json").read_text())
+    assert summary["descendant_scan_seconds"] == 60
+    assert summary["sampled_peak_children_rss_bytes"] > 0
+
+
+def test_scan_interval_never_outpaces_sampling(tmp_path):
+    assert ResourceProfile(tmp_path / "slow", interval=10).discovery_interval == 10
 
 
 def test_function_clock_remains_valid_with_background_sampling(tmp_path):

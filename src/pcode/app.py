@@ -90,6 +90,10 @@ def location_label(workspace: Path, branch: str) -> str:
     return f"{directory}@{label}"
 
 
+BRANCH_POLL_SECONDS = 30
+"""Safety net for a checkout made outside this session; turns refresh it directly."""
+
+
 class PreviewApp:
     def __init__(
         self,
@@ -2018,8 +2022,12 @@ class PreviewApp:
     def quit(self, argument: str) -> None:
         self.running = False
 
-    def refresh_branch(self) -> None:
-        """Read only Git metadata; called off the UI thread, never during rendering."""
+    def refresh_branch(self) -> bool:
+        """Read only Git metadata; called off the UI thread, never during rendering.
+
+        Reports whether the branch moved, so an unchanged one costs no repaint.
+        """
+        previous = self.branch
         try:
             result = subprocess.run(
                 ["git", "-C", str(self.workspace), "symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -2037,6 +2045,7 @@ class PreviewApp:
             self.branch = plain(result.stdout.strip(), limit=None) if result.returncode == 0 else ""
         except (OSError, subprocess.TimeoutExpired):
             self.branch = ""
+        return self.branch != previous
 
     def toolbar(self):
         width = get_app().output.get_size().columns
@@ -2895,6 +2904,11 @@ class PreviewApp:
                 await output.flush()
                 if not self.running:
                     session.app.exit()
+                # A turn (or a shell command) is the usual reason the branch
+                # moved, so read it here rather than polling fast enough to
+                # catch one.
+                elif await asyncio.to_thread(self.refresh_branch):
+                    session.app.invalidate()
 
         session = create_prompt(
             self.registry,
@@ -2951,10 +2965,18 @@ class PreviewApp:
                 await asyncio.sleep(1)
 
         async def watch_branch():
+            """Keep the footer's branch current without a Git process every 2 s.
+
+            A branch moves because the session moved it, so the turn boundary
+            below is the moment that matters and this loop only has to notice a
+            checkout made in another terminal. Polling faster ran `git` ~1800
+            times an hour and repainted the whole layout each time, for a value
+            that changes once a session.
+            """
             while True:
-                await asyncio.to_thread(self.refresh_branch)
-                session.app.invalidate()
-                await asyncio.sleep(2)
+                if await asyncio.to_thread(self.refresh_branch):
+                    session.app.invalidate()
+                await asyncio.sleep(BRANCH_POLL_SECONDS)
 
         def aside_settled(aside):
             if aside.status == "answered":
