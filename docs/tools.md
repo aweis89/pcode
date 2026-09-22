@@ -61,7 +61,9 @@ is what makes the rest of the behaviour describable.
   `purpose` ("running the end-to-end suite"), because that job is reported back
   later, away from the call that made it. Foreground commands have no purpose:
   you read them next to their own output, so a label would only repeat the
-  command. Displays lead with the purpose but never drop the command.
+  command. The purpose leads the Tasks/Tools row, the `/tools` entry and the
+  command block's header; the command itself is never dropped, and the `$` line
+  stays literal enough to copy and run.
 - A wait that ends before the command does — it exceeded `timeout` (270 seconds
   maximum), or you interrupted it — returns a job handle instead. **The command
   is not killed.**

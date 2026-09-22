@@ -35,8 +35,14 @@ class ToolCall:
     def line(self) -> str:
         """The call without a status icon; each surface supplies its own."""
         event = self.event
+        # A stated purpose is what this row is for: the widget is the one place
+        # that shows a job while it runs, when the command has not paid off yet.
         detail = (
-            command_preview(event.command) if event.command else plain(event.detail, limit=None)
+            f"{event.purpose} · {command_preview(event.command)}"
+            if event.command and event.purpose
+            else command_preview(event.command)
+            if event.command
+            else plain(event.detail, limit=None)
         )
         state = f" · {plain(event.activity)}" if event.activity else ""
         # A settled call keeps the duration it finished with instead of ticking on.

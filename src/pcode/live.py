@@ -97,6 +97,7 @@ from pcode.tool_display import (
     native_result_detail,
     native_result_projection,
     result_detail,
+    stated_purpose,
     target,
 )
 
@@ -751,6 +752,7 @@ class AgentRuntime:
                         if event.part.tool_name in {"shell", "run_command", "start_command"}
                         and isinstance(args.get("command"), str)
                         else "",
+                        purpose=stated_purpose(args),
                     )
                     if event.part.tool_name == "delegate_task":
                         delegates[event.part.tool_call_id] = start
@@ -822,6 +824,7 @@ class AgentRuntime:
                         if name in {"shell", "run_command", "start_command"}
                         and isinstance(args.get("command"), str)
                         else "",
+                        purpose=stated_purpose(args),
                         error=command_error(display_content)
                         if failed and name in COMMAND_TOOLS
                         else "",

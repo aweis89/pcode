@@ -172,6 +172,18 @@ def code_preview(code: str) -> str:
     return plain(f"{' · '.join(calls)} · {size}" if calls else size, limit=100)
 
 
+def stated_purpose(args: dict) -> str:
+    """The model's own short label for a call, sanitized, or "" when absent.
+
+    Only jobs it expects to come back to carry one, so every surface that shows
+    it must also work without it.
+    """
+    purpose = args.get("purpose")
+    if not isinstance(purpose, str) or not purpose.strip():
+        return ""
+    return plain(argument(" ".join(purpose.split())), 60)
+
+
 def target(name: str, args: dict) -> str:
     if name == "run_code":
         code = args.get("code")
@@ -189,10 +201,8 @@ def target(name: str, args: dict) -> str:
         shown = command_preview(command) if isinstance(command, str) else "command unavailable"
         # A stated purpose leads, but never replaces the command: the row has to
         # keep saying what actually ran, not only what it was meant to do.
-        purpose = args.get("purpose")
-        if isinstance(purpose, str) and purpose.strip():
-            return f"{plain(argument(purpose), 60)} · {shown}"
-        return shown
+        purpose = stated_purpose(args)
+        return f"{purpose} · {shown}" if purpose else shown
     if name == "read_tool_result":
         handle = args.get("handle")
         return argument(handle) if isinstance(handle, str) else "handle unavailable"

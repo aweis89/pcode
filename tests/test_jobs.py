@@ -272,6 +272,50 @@ def test_purpose_leads_the_tool_row_but_never_replaces_the_command():
     assert target("shell", {"command": "make test", "purpose": 3}) == "make test"
 
 
+def test_purpose_reaches_the_widget_row_the_inspector_and_the_output_header():
+    """Three surfaces, one rule: purpose leads, the command is never dropped."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from pcode.inspection import ToolArchive
+    from pcode.runtime import ToolStarted
+    from pcode.tool_panel import ToolCall
+    from pcode.ui import Transcript
+
+    started = ToolStarted(
+        "shell", "detail", "1", command="docker compose up", purpose="running the e2e suite"
+    )
+    row = ToolCall(started, started=0.0).line()
+    assert "running the e2e suite · docker compose up" in row
+
+    archive = ToolArchive()
+    archive.event(started)
+    assert archive.calls[0].detail == "running the e2e suite · docker compose up"
+    # Without one, the row is exactly what it was before.
+    plain_archive = ToolArchive()
+    plain_archive.event(ToolStarted("shell", "detail", "2", command="ls"))
+    assert plain_archive.calls[0].detail == "ls"
+
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=100, color_system=None))
+    transcript.command_scrollback = True
+    transcript.command_output(
+        ToolSummary(
+            "shell",
+            "detail",
+            call_id="1",
+            command="docker compose up",
+            result="ok",
+            purpose="running the e2e suite",
+        )
+    )
+    printed = stream.getvalue()
+    # The header carries the purpose; the command line stays runnable.
+    assert "running the e2e suite" in printed
+    assert "docker compose up" in printed
+
+
 def test_notice_prefers_the_purpose_over_the_command(tmp_path):
     jobs = JobRegistry()
     job = jobs.launch("sleep 1", cwd=tmp_path, background=True, purpose="warming the cache")
