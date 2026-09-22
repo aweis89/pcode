@@ -117,6 +117,7 @@ candidate's size so that cost is visible before you pick.
 | Ctrl+L | Choose a model (keeps the conversation; applies from the next request) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
 | Ctrl+R | Search this process's input history |
+| Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first) |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
 | Ctrl+D | Exit on empty idle input; cancel during generation |
@@ -131,6 +132,14 @@ idle prompt compact, and returns on the next turn. Turn that off with
 `/autohide-tasks off` (or `pcode config set autohide_tasks off`); Ctrl+O brings
 the widget back immediately after an auto-hide.
 Ctrl+O replaces the editor’s insert-newline binding; Ctrl+J still inserts a newline.
+
+**Ctrl+Y** copies whatever is in the editor right now, so a draft can be moved
+somewhere else without sending it. A collapsed paste marker is expanded first:
+what lands on the clipboard is what Enter would send. It replaces `yank` in
+Emacs editing mode (`Ctrl+X r y` still pastes from the kill ring) and
+copy-character-from-above in vi insert mode. Copying uses a
+local helper (`pbcopy`, `wl-copy`, `xclip`) or OSC 52 over ssh, the same as the
+popups, and truncates at 64 KiB.
 
 **Setting acknowledgements are transient.** Toggles and display settings
 (`/show-thinking`, `/show-tasks`, `/show-edits`, `/show-commands`,

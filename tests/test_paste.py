@@ -1,13 +1,15 @@
 import asyncio
+from io import StringIO
 
 from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from rich.console import Console
 
 from pcode.commands import CommandRegistry
 from pcode.file_refs import ReferenceLexer
 from pcode.paste import MARKER_PATTERN, PastedText
-from pcode.ui import create_prompt
+from pcode.ui import Transcript, create_prompt
 
 BIG = "line one\n" + "x" * 300
 
@@ -63,3 +65,47 @@ def test_prompt_collapses_paste_and_sends_full_text():
                 task.cancel()
 
     assert asyncio.run(run()) == "explain " + BIG
+
+
+def test_ctrl_y_copies_the_draft_with_pastes_expanded(monkeypatch):
+    import pcode.ui as ui
+
+    copied: list[str] = []
+    monkeypatch.setattr(
+        ui,
+        "copy_to_clipboard",
+        lambda text, output=None: (copied.append(text), (True, False))[1],
+    )
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None))
+
+    async def run():
+        with create_pipe_input() as pipe:
+            prompt = create_prompt(
+                CommandRegistry(),
+                transcript=transcript,
+                on_submit=lambda text: None,
+                input=pipe,
+                output=DummyOutput(),
+            )
+
+            async def feed():
+                pipe.send_text("\x19")  # Nothing typed yet.
+                pipe.send_text("explain \x1b[200~" + BIG + "\x1b[201~")
+                while "chars]" not in prompt.default_buffer.text:
+                    await asyncio.sleep(0.01)
+                pipe.send_text("\x19")
+                while not copied:
+                    await asyncio.sleep(0.01)
+                prompt.app.exit(result="")
+
+            task = asyncio.ensure_future(feed())
+            try:
+                await asyncio.wait_for(prompt.prompt_async(), timeout=5)
+            finally:
+                task.cancel()
+
+    asyncio.run(run())
+    # The placeholder is a display device; the clipboard gets what Enter sends.
+    assert copied == ["explain " + BIG]
+    assert "Nothing to copy" in stream.getvalue() and "Copied prompt" in stream.getvalue()

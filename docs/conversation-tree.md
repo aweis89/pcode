@@ -20,6 +20,9 @@ selected row the pane follows the active branch where the tree forks.
 - **Enter on an assistant response:** restore the context **after** that turn.
   Send a new message to continue from there.
 - **Enter on Conversation start:** select empty context within the same session.
+- **c:** copy the selected prompt or response to the system clipboard, from
+  either pane. It copies the text as the Conversation pane shows it (redacted,
+  truncated at 64 KiB), and the header says what was copied.
 - **Escape / Ctrl+C:** close the picker without changing context or the draft.
 
 The picker starts on the active position, marked `← active`. It shows every branch
