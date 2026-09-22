@@ -184,6 +184,21 @@ def stated_purpose(args: dict) -> str:
     return plain(argument(" ".join(purpose.split())), 60)
 
 
+def execution_mode(name: str, args: dict) -> str:
+    """How the model asked a command to run: "background", "foreground", or "".
+
+    `shell` decides per call; the sandbox tools decide by which tool was picked.
+    Everything else has nothing to say here, and says nothing.
+    """
+    if name == "shell":
+        return "background" if args.get("background") else "foreground"
+    if name == "start_command":
+        return "background"
+    if name == "run_command":
+        return "foreground"
+    return ""
+
+
 def target(name: str, args: dict) -> str:
     if name == "run_code":
         code = args.get("code")
