@@ -13,6 +13,8 @@ from pcode.file_refs import (
     FileReferenceCompleter,
     ReferenceLexer,
     WorkspaceFiles,
+    _ripgrep_files,
+    _walked_files,
     reference_fragment,
 )
 from pcode.ui import PALETTES, create_prompt
@@ -40,22 +42,46 @@ def test_fragment_requires_a_word_boundary():
     assert reference_fragment("") is None
 
 
-def test_walk_skips_hidden_and_ignored_directories(tmp_path):
+def build_noisy_tree(root):
+    build_tree(root)
+    (root / "node_modules" / "pkg").mkdir(parents=True)
+    (root / "node_modules" / "pkg" / "index.js").write_text("x")
+    (root / ".venv").mkdir()
+    (root / ".venv" / "pyvenv.cfg").write_text("x")
+    (root / ".secret").write_text("x")
+    return {"README.md", "src/pcode/ui.py", "src/pcode/app.py", "tests/test_ui.py"}
+
+
+def test_listing_skips_hidden_and_ignored_directories(tmp_path):
+    expected = build_noisy_tree(tmp_path)
+
+    assert set(WorkspaceFiles(tmp_path).paths()) == expected
+
+
+def test_the_walk_fallback_lists_what_ripgrep_would(tmp_path, monkeypatch):
+    """Outside Git the listing comes from ripgrep; a machine without it walks."""
+    expected = build_noisy_tree(tmp_path)
+    monkeypatch.setenv("PATH", "")
+    assert _ripgrep_files(tmp_path) is None
+
+    assert set(WorkspaceFiles(tmp_path).paths()) == expected
+    assert set(_walked_files(tmp_path)) == expected
+
+
+def test_a_gitignore_outside_a_checkout_does_not_empty_the_menu(tmp_path):
+    """A uv cache or virtualenv carries a `.gitignore` of `*`; its files still list."""
     build_tree(tmp_path)
-    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
-    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("x")
-    (tmp_path / ".venv").mkdir()
-    (tmp_path / ".venv" / "pyvenv.cfg").write_text("x")
-    (tmp_path / ".secret").write_text("x")
+    (tmp_path / ".gitignore").write_text("*\n")
 
-    paths = WorkspaceFiles(tmp_path).paths()
+    assert "src/pcode/ui.py" in WorkspaceFiles(tmp_path).paths()
 
-    assert set(paths) == {
-        "README.md",
-        "src/pcode/ui.py",
-        "src/pcode/app.py",
-        "tests/test_ui.py",
-    }
+
+def test_a_workspace_ignored_wholesale_still_lists_its_files(tmp_path):
+    """Opened inside an ignored directory, an empty menu would be useless."""
+    build_tree(tmp_path)
+    (tmp_path / ".ignore").write_text("*\n")
+
+    assert "src/pcode/ui.py" in WorkspaceFiles(tmp_path).paths()
 
 
 def test_git_listing_respects_gitignore(tmp_path):
