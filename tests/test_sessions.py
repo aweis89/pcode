@@ -558,3 +558,100 @@ def test_resumed_history_draws_without_a_runtime(tmp_path):
         assert "SAVED_ANSWER" in shown
     finally:
         reopened.close()
+
+
+def snapshot_rows(saved):
+    with sqlite3.connect(saved.directory / "steps.sqlite3") as connection:
+        return connection.execute("select count(*) from snapshots").fetchone()[0]
+
+
+def test_steps_keep_a_bounded_number_of_checkpoints_per_turn(tmp_path):
+    """Every step stores the whole history again; only the newest is ever read."""
+    from pydantic_ai_harness.step_persistence import ContinuableSnapshot
+
+    from pcode.sessions import SNAPSHOTS_PER_RUN
+
+    saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
+    try:
+
+        async def write():
+            for step in range(12):
+                await saved.store.save_snapshot(
+                    ContinuableSnapshot(
+                        run_id="run-1",
+                        step_index=step,
+                        conversation_id=saved.info.id,
+                        messages=[ModelRequest(parts=[UserPromptPart(content=f"step {step}")])],
+                    )
+                )
+            return await saved.store.latest_snapshot(run_id="run-1")
+
+        latest = asyncio.run(write())
+        assert snapshot_rows(saved) <= SNAPSHOTS_PER_RUN + 1
+        assert latest.messages[0].parts[0].content == "step 11"
+    finally:
+        saved.close()
+
+
+def test_compacting_an_old_session_frees_space_and_keeps_what_resume_reads(tmp_path):
+    from pydantic_ai_harness.step_persistence import ContinuableSnapshot
+
+    from pcode.sessions import compact_snapshots
+
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    directory, identity = saved.directory, saved.info.id
+    # One write through the store creates the schema; the rest go in behind it
+    # to stand in for an unbounded store, as every session predating the bound.
+    asyncio.run(
+        saved.store.save_snapshot(
+            ContinuableSnapshot(run_id="run-0", step_index=0, messages=[], conversation_id=identity)
+        )
+    )
+    bulky = "x" * 20_000
+    with sqlite3.connect(directory / "steps.sqlite3") as connection:
+        for run in ("run-1", "run-2"):
+            for step in range(40):
+                connection.execute(
+                    "insert into snapshots (run_id, step_index, timestamp, state, messages)"
+                    " values (?, ?, '2026-01-01T00:00:00Z', 'complete', ?)",
+                    (run, step, f'{{"step": {step}, "pad": "{bulky}"}}'),
+                )
+    saved.close()
+
+    # A session held open elsewhere is left alone.
+    reopened = SavedSession.open(identity, root)
+    try:
+        held_before, held_after = compact_snapshots(directory)
+        assert held_before == held_after
+    finally:
+        reopened.close()
+
+    before, after = compact_snapshots(directory)
+    assert after < before / 2
+    with sqlite3.connect(directory / "steps.sqlite3") as connection:
+        rows = connection.execute(
+            "select run_id, max(step_index) from snapshots group by run_id"
+        ).fetchall()
+    # Both turns still restore, from the step they actually settled at.
+    assert rows == [("run-0", 0), ("run-1", 39), ("run-2", 39)]
+
+
+def test_sessions_compact_reports_space_and_needs_the_listing(tmp_path, monkeypatch, capsys):
+    import sys
+
+    from pcode.app import main
+
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    saved.close()
+    monkeypatch.setattr(
+        sys, "argv", ["pcode", "--sessions", "--compact", "--session-dir", str(root)]
+    )
+    main()
+    assert "MB freed" in capsys.readouterr().out
+
+    monkeypatch.setattr(sys, "argv", ["pcode", "--compact"])
+    with pytest.raises(SystemExit) as raised:
+        main()
+    assert raised.value.code == 2
