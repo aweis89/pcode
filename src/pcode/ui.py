@@ -4,9 +4,10 @@ import asyncio
 import os
 import re
 from asyncio import Future
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from functools import cache, lru_cache, wraps
+from io import StringIO
 from time import monotonic
 
 from prompt_toolkit import PromptSession
@@ -581,6 +582,12 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
     Popups and external programs must not use ``atomic``: a frame held across
     them would freeze the terminal until its guard timeout.
 
+    An atomic handoff also keeps the terminal in raw mode. Only an external
+    program needs cooked mode, and in cooked mode the tty echoes anything typed
+    during the handoff and turns a Return into a newline, which the editor then
+    reads as Ctrl+J. Paced scrollback makes handoffs frequent while the user
+    may well be typing, so the window has to be harmless.
+
     This mirrors prompt_toolkit's ``in_terminal``, except for when the editor
     is painted again. ``in_terminal`` repaints immediately after the handoff,
     before the cursor position report it has just requested arrives, so that
@@ -624,7 +631,7 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
         # then reads as input. Ignore resizes until the handoff repaints below.
         app._on_resize = lambda: None
         try:
-            with app.input.detach(), app.input.cooked_mode():
+            with app.input.detach(), nullcontext() if atomic else app.input.cooked_mode():
                 yield handoff
         finally:
             del app._on_resize
@@ -756,6 +763,25 @@ def install_reflow_renderer(app: Application) -> None:
     )
 
 
+# Frames a paced backlog takes to drain, so a settled block rolls out row by
+# row when small and lands within about a second however big it is.
+PACED_DRAIN_FRAMES = 30
+
+
+def split_rows(text: str) -> list[str]:
+    """Split rendered output into rows, each keeping its newline.
+
+    Only ``\\n`` ends a row; ``str.splitlines`` would also split on control
+    characters that escape sequences never contain but text could.
+    """
+    rows = text.split("\n")
+    last = rows.pop()
+    result = [row + "\n" for row in rows]
+    if last:
+        result.append(last)
+    return result
+
+
 class RowCounter:
     """Tee for the Rich console's file that counts the rows a batch advances.
 
@@ -810,6 +836,13 @@ class TerminalOutput:
         self._thinking_streamed = False
         self._regenerate = None
         self.resize_replay = None
+        # Rendered rows not yet written. Pacing rolls a settled block out over
+        # successive frames instead of landing it in one; off writes them all.
+        self.rows: list[str] = []
+        self.paced = False
+        # Rows per frame for the current backlog. Fixed when rows arrive rather
+        # than recomputed as they leave, or the tail would slow to a crawl.
+        self._reveal_rate = 0
 
     def regenerate(self, replay) -> None:
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
@@ -932,9 +965,17 @@ class TerminalOutput:
         self.streamed = False
         self.changed.set()
 
-    async def flush(self) -> None:
+    def reveal_count(self, *, drain: bool = False) -> int:
+        """Rows to write this frame: one at a time, but never more than ~1 s behind."""
+        if drain or not self.paced:
+            return len(self.rows)
+        self._reveal_rate = max(self._reveal_rate, -(-len(self.rows) // PACED_DRAIN_FRAMES))
+        return self._reveal_rate
+
+    async def flush(self, *, drain: bool = False) -> None:
+        """Write queued output; ``drain`` writes it all, as before a popup or exit."""
         async with self.lock:
-            if self.pending or self._regenerate is not None:
+            if self.pending or self.rows or self._regenerate is not None:
                 # Renderer.reset() shows the cursor at the transcript position
                 # both when erasing and before repainting. Suppress those shows
                 # until the handoff has restored the editor and its cursor.
@@ -942,10 +983,13 @@ class TerminalOutput:
                     async with suspended_editor(self.app, atomic=True) as handoff:
                         # Snapshot after entering: input/model events can arrive while
                         # the handoff waits for CPR, but not during these sync writes.
-                        if self._regenerate is not None:
+                        replaying = self._regenerate is not None
+                        if replaying:
                             pending = self._regenerate() + self.transient_pending
                             self._regenerate = None
                             self.pending.clear()
+                            # Replay covers the rows still queued; drop them.
+                            self.rows.clear()
                             # The handoff has erased the editor. Clear the
                             # normal-screen history and home before replay; its
                             # exit will request fresh CPR and restore the draft.
@@ -959,9 +1003,13 @@ class TerminalOutput:
                         # Rich's public buffer context coalesces the batch's
                         # prints (including separators) into one output flush.
                         # Keep it synchronous and inside the single-writer handoff.
-                        counter = RowCounter(self.console.file)
+                        # Render into rows first: a row is a self-contained
+                        # unit (Rich closes styles and links per segment), so
+                        # any prefix of them can be written now and the rest
+                        # on later frames without splitting an escape.
+                        rendered = StringIO()
                         previous_file = self.console._file
-                        self.console.file = counter
+                        self.console.file = rendered
                         try:
                             with self.console, self.console.use_theme(self.rich_theme()):
                                 for objects, end, soft_wrap in pending:
@@ -970,9 +1018,21 @@ class TerminalOutput:
                                     )
                         finally:
                             self.console.file = previous_file
+                        self.rows.extend(split_rows(rendered.getvalue()))
+                        # A rebuilt screen lands whole; pacing is for new output.
+                        count = self.reveal_count(drain=drain or replaying)
+                        chunk, self.rows = "".join(self.rows[:count]), self.rows[count:]
+                        counter = RowCounter(self.console.file)
+                        counter.write(chunk)
+                        counter.flush()
                         handoff.rows_written = counter.rows
                 # The handoff already repainted the editor on exit.
             self.changed.clear()
+            if self.rows:
+                # Keep the run loop ticking at its frame rate until drained.
+                self.changed.set()
+            else:
+                self._reveal_rate = 0
 
     async def run(self) -> None:
         size = self.app.output.get_size()
@@ -1684,6 +1744,7 @@ class Transcript:
         self.syntax_themes = syntax_themes(preferences)
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
+        self.paced_scrollback = preferences.get("paced_scrollback", "on") == "on"
         self.log = TranscriptLog(
             max_chars=int(
                 preferences.get("transcript_max_chars", SETTINGS["transcript_max_chars"].default)
@@ -1708,6 +1769,13 @@ class Transcript:
             output.commit_user = self.user
             output.commit_message = self.message
             output.commit_thinking = self.thinking
+            # Pacing spreads handoffs over frames; only a real application has
+            # either, so offline harnesses and stand-ins write at once.
+            output.paced = (
+                self.paced_scrollback
+                and self.console.is_terminal
+                and isinstance(output.app, Application)
+            )
             if self.replays_on_resize:
                 output.resize_replay = self.replay
 

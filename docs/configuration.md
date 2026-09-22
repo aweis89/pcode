@@ -115,6 +115,7 @@ is only sensible on a machine where you wrote all of them.
 | `syntax_dark` | `gruvbox-dark` | A Pygments style for fenced code on the dark palette |
 | `syntax_light` | `gruvbox-light` | A Pygments style for fenced code on the light palette |
 | `autocompact` | `off` | `on`, `off` |
+| `paced_scrollback` | `on` | `on`, `off` (roll settled blocks into scrollback a few rows per frame; see [the transcript](transcript.md#paced-scrollback)) |
 | `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
 | `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |
 | `tool_output_threshold` | `10000` | Positive integer, characters that trigger reduction |
