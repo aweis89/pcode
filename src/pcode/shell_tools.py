@@ -109,8 +109,8 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
 
         Either way the command runs the same way and outlives this call. When a
         wait ends before the command does -- it exceeded `timeout`, or the user
-        interrupted with a follow-up -- you get a job handle rather than a
-        result, and the command keeps running.
+        sent a follow-up -- you get a job handle rather than a result, and the
+        command keeps running.
 
         You are told when a job finishes: its exit status reaches you
         automatically before your next model request. Don't `sleep` in a
@@ -247,6 +247,8 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         """
         stream = _OutputStream(job, ctx, matching=match is not None)
         matched = False
+        released = False
+        generation = self._jobs.release_generation
         job.waiting = True
         try:
             with anyio.move_on_after(timeout):
@@ -257,6 +259,9 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
                     await stream.emit()
                     if match is not None and match.search(stream.matchable):
                         matched = True
+                        break
+                    if self._jobs.release_generation != generation:
+                        released = True
                         break
                     await anyio.sleep(_POLL_INTERVAL)
             await stream.drain()
@@ -275,13 +280,11 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
             return self._handle(job, reason="Matched until_output; the command is still running.")
         if job.running:
             self._jobs.mark_waited(job)
-            return self._handle(
-                job,
-                reason=(
-                    f"The wait ended after {format_duration(timeout)}, not the command. "
-                    "It was not killed."
-                ),
-            )
+            if released:
+                reason = "The user sent a follow-up, so the wait ended; the command did not."
+            else:
+                reason = f"The wait ended after {format_duration(timeout)}, not the command."
+            return self._handle(job, reason=f"{reason} It was not killed.")
         return self._result(job)
 
     async def _emit_finished(

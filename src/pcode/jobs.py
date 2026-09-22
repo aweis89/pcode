@@ -177,6 +177,9 @@ class JobRegistry:
         # waiting, keep working". Only an abandoned wait consults this, so a
         # job the model explicitly backgrounded is never caught by either.
         self.cancel_policy = "detach"
+        # Bumped by `release_waits`. A wait that sees it change hands back a
+        # handle instead of blocking on to its timeout.
+        self.release_generation = 0
 
     def launch(
         self,
@@ -394,6 +397,16 @@ class JobRegistry:
         """Record that a wait returned a handle instead of a result."""
         self._waited.add(job.id)
 
+    def release_waits(self) -> None:
+        """End every in-flight wait now, without touching the commands.
+
+        A steering message is for the next model request, and a foreground
+        wait would otherwise hold that request back until its timeout. The
+        wait returns a handle, the job keeps running, and its exit is still
+        delivered; the model just hears from the user first.
+        """
+        self.release_generation += 1
+
     def read_output(self, job: Job, *, max_bytes: int = OUTPUT_TAIL_BYTES) -> tuple[str, bool]:
         """The tail of the job's log, and whether anything was dropped before it."""
         try:
@@ -453,6 +466,7 @@ class JobRegistry:
         self._terminating.clear()
         self._counter = 0
         self.cancel_policy = "detach"
+        self.release_generation = 0
         if self._home is not None:
             shutil.rmtree(self._home, ignore_errors=True)
             self._home = None

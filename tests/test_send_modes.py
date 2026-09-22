@@ -11,6 +11,7 @@ from pydantic_ai.models.function import FunctionModel
 from rich.console import Console
 
 from pcode.app import PreviewApp
+from pcode.jobs import JobRegistry
 from pcode.preferences import load_preferences
 from pcode.runtime import Message
 from pcode.steering import Steering
@@ -50,6 +51,7 @@ def test_busy_send_modes(mode, editing_mode):
         class Runtime:
             session = None
             recovery_blocked = ""
+            jobs = JobRegistry(state=None)
 
             async def stream(self, text):
                 calls.append(text)
@@ -101,6 +103,10 @@ def test_busy_send_modes(mode, editing_mode):
                         app.send_mode = "interrupt"
                         assert app.activity.queue_rows(3) == rows
                         app.send_mode = mode
+                        # Steering ends a foreground shell wait so the message
+                        # reaches the model now; queue mode leaves it alone.
+                        released = app.runtime.jobs.release_generation
+                        assert released == (1 if mode == "steering" else 0)
                         release.set()
                     await wait(lambda: not app.activity.busy)
                     assert calls == (["first"] if mode == "steering" else ["first", "second"])

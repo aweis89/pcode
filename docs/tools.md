@@ -67,8 +67,8 @@ is what makes the rest of the behaviour describable.
   command block's header; the command itself is never dropped, and the `$` line
   stays literal enough to copy and run.
 - A wait that ends before the command does — it exceeded `timeout` (270 seconds
-  maximum), or you interrupted it — returns a job handle instead. **The command
-  is not killed.**
+  maximum), or you typed a follow-up — returns a job handle instead. **The
+  command is not killed.**
 - `wait_for_job("j1")` blocks on a job without re-running it.
   `until_output="listening on"` waits for readiness instead of exit, which is
   what a server that never exits needs.
@@ -95,10 +95,14 @@ scrollback gets its line. `/jobs watch j3` pins the job's output tail into the
 command preview, whatever `show_commands` says; `/jobs unwatch` releases it,
 and it clears itself when the job ends.
 
-Interrupting the model with a follow-up (send mode `interrupt`) stops the wait,
-not the command; the job keeps running under its id. Ctrl+C means stop working,
+A follow-up you type while the model waits on a command ends the wait, not the
+command; the job keeps running under its id. In send mode `steering` the tool
+returns the handle and your message rides the very next model request, instead
+of sitting in the queue until the wait times out. In `interrupt` mode the turn
+is cancelled and the wait abandoned the same way. Ctrl+C means stop working,
 so it also stops the command the turn was waiting on. A job the model
-explicitly backgrounded survives both, because nothing was waiting on it.
+explicitly backgrounded survives all of these, because nothing was waiting on
+it.
 
 Jobs outlive the turn, the conversation, and pcode itself. Use
 [`/jobs`](commands.md#offline-preview-and-commands) to see what is still running, and

@@ -279,6 +279,39 @@ def test_until_output_returns_at_readiness_for_a_server_that_never_exits(tmp_pat
         runtime.jobs.stop_all()
 
 
+def test_released_wait_hands_back_a_handle_and_leaves_the_command_running(tmp_path):
+    """A follow-up must not sit behind a slow command until the wait times out."""
+    source = "import time; print('slow'); time.sleep(60)"
+    runtime = runtime_with([("shell", {"command": command(source), "timeout": 30})], tmp_path)
+
+    async def run():
+        events = []
+
+        async def collect():
+            async for event in runtime.stream("go"):
+                events.append(event)
+
+        task = asyncio.create_task(collect())
+        async with asyncio.timeout(10):
+            while not (job := runtime.jobs.get("j1")) or not job.waiting:
+                await asyncio.sleep(0.02)
+            runtime.jobs.release_waits()
+            await task
+        return [e for e in events if isinstance(e, ToolSummary)]
+
+    try:
+        (waited,) = asyncio.run(run())
+        assert waited.elapsed_seconds < 5
+        assert "The user sent a follow-up, so the wait ended" in waited.result
+        assert "[j1 · running · pid " in waited.result
+        job = runtime.jobs.get("j1")
+        assert job.running
+        # The model holds a handle now, so the exit is news when it comes.
+        assert runtime.jobs.announceable(job)
+    finally:
+        runtime.jobs.stop_all()
+
+
 def test_completed_job_is_reported_to_the_model_at_the_next_request(tmp_path):
     """The point of the design: no `sleep`, no polling call, no extra turn."""
     prompts = []
