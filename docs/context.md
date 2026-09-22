@@ -71,7 +71,7 @@ retained. Navigating to a compaction checkpoint never runs a model or replays to
 Unsaved sessions keep the same checkpoint in memory. Compaction is not deletion or
 redaction of the saved conversation.
 
-Automatic compaction is **off by default**. `/autocompact on` saves a user preference
+Automatic compaction is **on by default**. `/autocompact off` saves a user preference
 in `~/.config/pcode/preferences.json` (or `$XDG_CONFIG_HOME/pcode/preferences.json`).
 When enabled, pcode checks before every model request, including inside tool loops,
 using provider usage plus estimated new input/tool results and tool schemas. It

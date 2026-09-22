@@ -139,7 +139,7 @@ def test_manual_command_preview_rejection_and_autocompact_preference(monkeypatch
         preview.compact("focus")
     runtime = AgentRuntime(Agent(TestModel()))
     app = PreviewApp(model="test:local", runtime=runtime, console=Console(file=StringIO()))
-    assert not runtime.auto_compact
+    assert runtime.auto_compact
     monkeypatch.delenv("PCODE_CONTEXT_WINDOW", raising=False)
     with pytest.raises(ValueError, match="Unknown context window"):
         app.autocompact("on")
