@@ -544,6 +544,22 @@ def test_current_turn_excluded_and_current_session_flagged(tmp_path, root):
     assert "live" in [t["turn_id"] for t in group["turns"]]
 
 
+def test_in_flight_turn_returns_once_auto_compaction_drops_it_from_context(tmp_path, root):
+    records = [
+        {"kind": "turn_started", "run_id": "live", "prompt": "Long task"},
+        {"kind": "Message", "markdown": "Early finding: the queue must stay bounded."},
+        {"kind": "auto_compacted", "run_id": "live", "before": 100, "after": 10},
+        {"kind": "Message", "markdown": "Continuing."},
+    ]
+    save(root, tmp_path, records=records)
+    search = tools(tmp_path, root)["search_sessions"].function
+    context = SimpleNamespace(conversation_id="session-a", run_id="live")
+    (group,) = asyncio.run(search(context, query="bounded queue", scope="session"))["results"]
+    (hit,) = group["turns"]
+    assert hit["turn_id"] == "live"
+    assert hit["current_turn"]
+
+
 def test_results_group_by_session_and_spread_the_limit(tmp_path, root):
     many = [record for index in range(5) for record in turn("Flicker", "flicker", f"run-{index}")]
     save(root, tmp_path, records=many, identity="wordy")
@@ -563,6 +579,29 @@ def test_excerpt_prefers_prose_over_tool_summaries(tmp_path, root):
     save(root, tmp_path, records=records)
     (group,) = call(tools(tmp_path, root)["search_sessions"], query="strict_tools")["results"]
     assert "Done - strict_tools" in group["turns"][0]["excerpt"]
+
+
+def test_excerpt_anchors_on_the_densest_match_and_carries_the_conclusion(tmp_path, root):
+    body = (
+        "Mentioned strict tools once in passing.\n\n"
+        + "filler " * 300
+        + "\n\nThe strict tools failure was a schema mismatch in tools we send.\n\n"
+        + "filler " * 300
+    )
+    records = [
+        {"kind": "turn_started", "run_id": "run-a", "prompt": "Investigate"},
+        {"kind": "Message", "markdown": body},
+        {"kind": "Message", "markdown": "Shipped: strict tools is the default now."},
+        {"kind": "turn_completed"},
+    ]
+    save(root, tmp_path, records=records)
+    (group,) = call(tools(tmp_path, root)["search_sessions"], query="strict tools failure")[
+        "results"
+    ]
+    hit = group["turns"][0]
+    assert "schema mismatch" in hit["excerpt"]
+    assert "once in passing" not in hit["excerpt"]
+    assert hit["conclusion"] == "Shipped: strict tools is the default now."
 
 
 def test_partial_scan_reports_session_coverage(tmp_path, root, monkeypatch):

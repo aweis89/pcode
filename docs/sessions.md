@@ -65,8 +65,11 @@ paginates long text, and includes bounded ancestor context (not sibling branches
 - Default `scope="project"` includes linked worktrees. `workspace` restricts to
   the exact directory; `all` is for explicitly cross-project questions.
 - `scope="session"` searches the current conversation, including original turns
-  dropped from model context by compaction. It reads the journal without taking
-  the live session's lock. This is not a replacement for model checkpoints.
+  dropped from model context by compaction — `/compact` between turns, and
+  automatic compaction inside a long turn, which journals an `auto_compacted`
+  marker so recall knows the running turn is no longer fully in context. It reads
+  the journal without taking the live session's lock. This is not a replacement
+  for model checkpoints.
 - Search covers saved prompts, consumed steering messages, assistant text, and
   tool summaries/commands, not full tool results, reasoning, or unsaved conversations.
   Steering messages from older versions were not journaled and are not recalled.
@@ -75,9 +78,11 @@ paginates long text, and includes bounded ancestor context (not sibling branches
 - Hits are grouped by session so one long session cannot take every slot: each
   session gets at most three turns until the limit would otherwise go unused.
   The current conversation is flagged `current`, and the turn running the search
-  is never returned as evidence.
-- Excerpts are centred on a match in prose where there is one, so a conclusion
-  outranks the shell command that led to it.
+  is never returned as evidence — except after automatic compaction has dropped
+  part of that turn from context, when it comes back marked `current_turn`.
+- Excerpts are centred on the densest match in prose where there is one, so a
+  conclusion outranks the shell command that led to it, and each hit carries the
+  turn's closing assistant text as `conclusion` when the excerpt misses it.
 - Results report `sessions_searched` against `sessions_in_scope`, and a warning
   names how many of the oldest sessions the scan budget left unsearched.
 - New sessions record their project path so deleted worktrees remain discoverable.

@@ -21,6 +21,7 @@ KINDS = (
     "turn_cancelled",
     "tree_selected",
     "compaction_checkpoint",
+    "auto_compacted",
     "steering",
 )
 CHUNK_CHARS = 4000
@@ -30,6 +31,8 @@ MAX_SCAN_BYTES = 64 * 1024 * 1024
 PER_SESSION_LIMIT = 3
 # Enough occurrences to find prose without scanning a pathological chunk repeatedly.
 MAX_MATCH_POSITIONS = 200
+EXCERPT_CHARS = 800
+CONCLUSION_CHARS = 240
 
 
 @dataclass
@@ -39,6 +42,9 @@ class HistoryTurn:
     time: str
     status: str = "incomplete"
     active: bool | None = False
+    # Auto-compaction dropped part of this turn from the model's own context,
+    # which makes the journal the only copy even while the turn is still running.
+    compacted: bool = False
     blocks: list[str] = field(default_factory=list)
 
     @property
@@ -49,6 +55,14 @@ class HistoryTurn:
     def text(self) -> str:
         return redact("\n\n".join(self.blocks))
 
+    @property
+    def conclusion(self) -> str:
+        """The last assistant text: what the turn decided, not how it got there."""
+        for block in reversed(self.blocks):
+            if block.startswith("Assistant: "):
+                return redact(block.removeprefix("Assistant: ")).strip()
+        return ""
+
 
 @dataclass
 class Chunk:
@@ -58,32 +72,49 @@ class Chunk:
     text: str
 
     def excerpt_start(self, query: str) -> int:
-        """Prefer a match inside prose: tool summaries rarely hold the conclusion."""
+        """Anchor on the densest match in prose: tool lines rarely hold the answer."""
+        words = list(dict.fromkeys(query.casefold().split()))
         folded = self.text.casefold()
         positions = sorted(
             {
                 match.start()
-                for word in dict.fromkeys(query.casefold().split())
+                for word in words
                 for match in list(re.finditer(re.escape(word), folded))[:MAX_MATCH_POSITIONS]
             }
         )
-        prose = [
+        if not positions:
+            return 0
+        candidates = [
             position
             for position in positions
             if not self.text.startswith("Tool: ", self.text.rfind("\n", 0, position) + 1)
         ]
-        return max(0, next(iter(prose or positions), 0) - 150)
+
+        def density(position: int) -> int:
+            window = folded[position : position + EXCERPT_CHARS]
+            return sum(word in window for word in words)
+
+        # Most distinct terms in the window the excerpt would show; ties go earlier.
+        best = max(candidates or positions, key=lambda position: (density(position), -position))
+        return max(0, best - 150)
 
     def result(self, query: str) -> dict:
         start = self.excerpt_start(query)
-        return {
+        excerpt = self.text[start : start + EXCERPT_CHARS]
+        result = {
             "turn_id": self.turn.id,
             "time": self.turn.time,
             "status": self.turn.status,
             "branch": self.turn.branch,
             "offset": self.offset + start,
-            "excerpt": self.text[start : start + 800],
+            "excerpt": excerpt,
         }
+        # "Did we already do X" is answered by the turn's last word on it, which
+        # a match in the middle of a long turn would otherwise bury.
+        conclusion = self.turn.conclusion[:CONCLUSION_CHARS]
+        if conclusion and conclusion not in excerpt:
+            result["conclusion"] = conclusion
+        return result
 
 
 @dataclass
@@ -153,6 +184,8 @@ def read_turns(
                     + " ".join(str(record.get(k) or "") for k in ("name", "detail", "command"))
                     + (" [failed]" if record.get("failed") else "")
                 )
+            elif kind == "auto_compacted":
+                turn.compacted = True
             elif kind in {"turn_completed", "turn_failed", "turn_cancelled"}:
                 turn.status = kind.removeprefix("turn_")
     seen = set()
@@ -238,7 +271,7 @@ class History:
                     "Branch labels in the partial session are unknown."
                 )
             for turn in reversed(list(turns.values())):
-                if turn.id == exclude_turn and info.id == self.session_id:
+                if turn.id == exclude_turn and info.id == self.session_id and not turn.compacted:
                     continue
                 text = turn.text
                 for offset in range(0, len(text), CHUNK_CHARS - 200):
@@ -377,6 +410,7 @@ def group_results(
     query: str,
     limit: int,
     current_session: str | None = None,
+    current_turn: str | None = None,
 ) -> list[dict]:
     """Group hits by session, spreading a small limit across sessions first.
 
@@ -413,7 +447,12 @@ def group_results(
                 "turns": [],
             },
         )
-        group["turns"].append(chunk.result(query))
+        result = chunk.result(query)
+        if chunk.turn.id == current_turn and chunk.session.id == current_session:
+            # Only survives the scan when auto-compaction took it out of context:
+            # this is the turn asking, recovering its own dropped history.
+            result["current_turn"] = True
+        group["turns"].append(result)
     return list(groups.values())
 
 
