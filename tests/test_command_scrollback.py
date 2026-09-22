@@ -40,8 +40,9 @@ def test_enabled_option_mirrors_command_and_output():
     )
     assert view.command_output(event) is True
     lines = [line.rstrip() for line in stream.getvalue().splitlines()]
-    assert lines[0] == lines[-1] == "─" * 80
-    assert lines[1] == "✓ Run · 0.2s"
+    # The heading rides the opening rule; a plain rule closes the block.
+    assert lines[0] == "✓ Run · 0.2s " + "─" * 67
+    assert lines[-1] == "─" * 80
     assert "  $ pytest -q" in lines
     assert "  2 passed" in lines
     assert "  [exit code: 0]" in lines
@@ -123,12 +124,12 @@ def test_command_scrollback_lines_bounds_rows_and_keeps_tail(limit):
         )
     )
     lines = stream.getvalue().splitlines()
-    assert lines[0] == lines[-1] == "─" * 45
-    assert lines[1] == "✓ Run"
-    assert len(lines) == limit + 5  # Borders, heading, command, and omission marker.
-    assert lines[2].strip() == "$ noisy"
-    assert f"{61 - limit} earlier output rows omitted" in lines[3]
-    assert "earlier error output" not in lines[3]
+    assert lines[0] == "✓ Run " + "─" * 39
+    assert lines[-1] == "─" * 45
+    assert len(lines) == limit + 4  # Rules, command, and omission marker.
+    assert lines[1].strip() == "$ noisy"
+    assert f"{61 - limit} earlier output rows omitted" in lines[2]
+    assert "earlier error output" not in lines[2]
     assert lines[-2].strip() == "final line"
 
 
@@ -266,8 +267,7 @@ def test_output_keeps_leading_indentation_and_markdown_literal_without_padding()
         )
     )
     assert stream.getvalue().splitlines() == [
-        "─" * 80,
-        "✓ Run",
+        "✓ Run " + "─" * 74,
         "  $ echo hi",
         "      # heading",
         "  ```",
@@ -309,12 +309,13 @@ def test_command_highlighting_and_failure_title_do_not_style_output_as_code():
     succeeded = CommandTranscript("echo '$HOME'", "out", "Run")
     with view.console.use_theme(view.rich_theme):
         parts = list(block.__rich_console__(view.console, view.console.options))
-        assert isinstance(parts[1], Text)
+        heading = parts[0].title
+        assert isinstance(heading, Text)
         # A failed command reads the same as a successful one; only ✗ differs.
-        assert parts[1].style == "pcode.accent"
-        assert parts[1].plain.startswith("✗ Run") and "failed" not in parts[1].plain
+        assert heading.style == "pcode.accent"
+        assert heading.plain.startswith("✗ Run") and "failed" not in heading.plain
         headings = list(succeeded.__rich_console__(view.console, view.console.options))
-        assert headings[1].style == parts[1].style
+        assert headings[0].title.style == heading.style
         segments = list(view.console.render(block))
     command_segments = [segment for segment in segments if "$HOME" in segment.text]
     assert command_segments and command_segments[0].style.color is not None
@@ -335,8 +336,8 @@ def test_default_budget_retains_last_twenty_output_rows():
     )
     lines = stream.getvalue().splitlines()
     assert view.command_scrollback_lines == 20
-    assert "30 earlier output rows omitted" in lines[3]
-    assert [line.strip() for line in lines[4:-1]] == [f"row {i}" for i in range(30, 50)]
+    assert "30 earlier output rows omitted" in lines[2]
+    assert [line.strip() for line in lines[3:-1]] == [f"row {i}" for i in range(30, 50)]
 
 
 @pytest.mark.parametrize(

@@ -7,12 +7,12 @@ from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.lexers import Lexer
 from pygments.token import Generic, Token
 from rich.console import Console, ConsoleOptions, RenderResult
-from rich.rule import Rule
 from rich.segment import Segment
 from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 
+from pcode.block import DONE, block_heading, block_rule
 from pcode.edits import edit_text
 from pcode.runtime import EditCompleted
 from pcode.syntax import transparent_theme
@@ -27,11 +27,12 @@ class EditTranscript:
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         change = self.change
-        yield Rule(style="pcode.muted")
-        yield Text(
-            f"✓ {change.operation.capitalize()} {edit_text(change.path)}"
-            f" · +{change.added} −{change.removed}",
-            style="pcode.accent",
+        yield block_rule(
+            block_heading(
+                DONE,
+                f"{change.operation.capitalize()} {edit_text(change.path)}"
+                f" · +{change.added} −{change.removed}",
+            )
         )
         if change.patch:
             patch = Syntax(
@@ -48,7 +49,7 @@ class EditTranscript:
                 yield Text("… additional diff rows omitted", style="pcode.muted")
         if change.omitted:
             yield Text(f"Diff unavailable: {edit_text(change.omitted)}", style="pcode.muted")
-        yield Rule(style="pcode.muted")
+        yield block_rule()
 
 
 @cache

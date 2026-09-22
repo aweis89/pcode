@@ -3,11 +3,11 @@
 from dataclasses import dataclass
 
 from rich.console import Console, ConsoleOptions, RenderResult
-from rich.rule import Rule
 from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.text import Text
 
+from pcode.block import DONE, FAILED, INDENT, block_heading, block_rule
 from pcode.syntax import transparent_theme
 
 
@@ -23,14 +23,12 @@ class CommandTranscript:
     shell_command: bool = True
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        yield Rule(style="pcode.muted")
-        elapsed = f" · {self.elapsed_seconds:.1f}s" if self.elapsed_seconds is not None else ""
-        # A non-zero exit is routine here, so the marker alone reports it: a
-        # word or an alarm colour would make every expected failure look like a
-        # crash. The mirrored output carries the detail.
-        status = "✗" if self.failed else "✓"
-        yield Text(f"{status} {self.title}{elapsed}", style="pcode.accent")
-        indent = "  " if options.max_width > 2 else ""
+        # The heading rides the opening line; the mirrored output carries the
+        # detail behind a non-zero exit.
+        yield block_rule(
+            block_heading(FAILED if self.failed else DONE, self.title, self.elapsed_seconds)
+        )
+        indent = INDENT if options.max_width > len(INDENT) else ""
         body_options = options.update(width=max(1, options.max_width - len(indent)))
         if self.shell_command:
             command = Syntax(
@@ -63,4 +61,4 @@ class CommandTranscript:
             yield Segment(indent)
             yield from line
             yield Segment.line()
-        yield Rule(style="pcode.muted")
+        yield block_rule()
