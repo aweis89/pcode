@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test test-tmux test-all lint fmt docs docs-serve cache-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall
+.PHONY: help install update uninstall run test test-tmux test-all lint fmt docs docs-serve cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall
 
 HARNESS_DIR := tmp/pydantic-ai-harness
 HARNESS_URL := https://github.com/pydantic/pydantic-ai-harness.git
@@ -44,6 +44,9 @@ docs-serve: ## Preview the docs site with live reload at http://localhost:8000
 
 cache-report: ## Report prompt-cache behavior from saved sessions (SESSION=latest|all|<id>)
 	uv run python scripts/cache_report.py $(or $(SESSION),latest) $(ARGS)
+
+shell-report: ## Report how the model used the shell tool in saved sessions (SESSION=latest|all|<id>)
+	uv run python scripts/shell_report.py $(or $(SESSION),latest) $(ARGS)
 
 harness-src: ## Check out upstream Harness source at the pinned SHA under tmp/
 	@sha=$$(sed -n 's/.*pydantic-ai-harness\.git@\([0-9a-f]\{40\}\).*/\1/p' pyproject.toml); \
