@@ -3239,6 +3239,11 @@ def main() -> None:
     )
     parser.add_argument("--sessions", action="store_true", help="List saved sessions and exit")
     parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="With --sessions: drop superseded step checkpoints and report the space freed",
+    )
+    parser.add_argument(
         "--completions",
         choices=COMPLETION_SHELLS,
         metavar="SHELL",
@@ -3525,6 +3530,8 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         return
     if args.resume and (args.no_save or args.theme_preview):
         parser.error("--continue cannot be combined with --no-save or --theme-preview")
+    if args.compact and not args.sessions:
+        parser.error("--compact applies to --sessions")
     if args.print:
         if args.theme_preview or args.sessions:
             parser.error("--print cannot be combined with --theme-preview or --sessions")
@@ -3535,14 +3542,23 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         if not args.prompt.strip():
             parser.error("--print needs a non-empty prompt")
     if args.sessions:
-        from pcode.sessions import list_sessions
+        from pcode.sessions import compact_snapshots, list_sessions, session_root
 
         console = Transcript(Console(), args.theme, color_style=args.color_style)
         records = list_sessions(args.session_dir)
         if not records:
             console.note("No saved sessions.")
+        root = args.session_dir or session_root()
+        freed = 0
         for info in records:
-            console.note(f"{info.id}  {info.status}  {info.model}  {info.workspace}")
+            line = f"{info.id}  {info.status}  {info.model}  {info.workspace}"
+            if args.compact:
+                before, after = compact_snapshots(root / info.id)
+                freed += before - after
+                line += f"  {(before - after) / 1_000_000:.0f} MB freed"
+            console.note(line)
+        if args.compact:
+            console.note(f"Reclaimed {freed / 1_000_000_000:.2f} GB. Open sessions were skipped.")
         return
     if args.theme_preview:
         # --theme-preview never constructs a provider, even when -m is also supplied.

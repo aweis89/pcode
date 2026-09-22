@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import sqlite3
 import tempfile
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
@@ -227,6 +228,84 @@ def first_prompt(info: SessionInfo, root: Path | None = None) -> str:
     return "(No prompt yet)"
 
 
+SNAPSHOTS_PER_RUN = 2
+"""How many step checkpoints a turn keeps.
+
+Harness saves the whole message history again at every settled step, so a turn
+with 300 tool calls stores 300 copies of itself and a session reaches gigabytes.
+Nothing here reads them: `history_at` and `recover` both take the newest
+snapshot of a run, and a compaction node restores from the conversation tree
+instead. The bound keeps the newest two, and Harness widens that retain set to
+cover the newest `complete` one when the newest is interrupted, so a crash mid
+turn still continues from its last settled step.
+
+What it gives up is rewinding *inside* a turn, which no command offers, and
+pre-compaction history for a run, which `history_at` takes from the tree.
+"""
+
+
+def _store_bytes(database: Path) -> int:
+    """The store's size including its write-ahead log, where recent writes still live."""
+    names = (database.name, database.name + "-wal", database.name + "-shm")
+    return sum(
+        (database.parent / name).stat().st_size
+        for name in names
+        if (database.parent / name).is_file()
+    )
+
+
+def compact_snapshots(directory: Path, keep: int = SNAPSHOTS_PER_RUN) -> tuple[int, int]:
+    """Apply the retain bound to one existing session, returning its size before and after.
+
+    Sessions written before the bound existed keep every step checkpoint, and
+    deleting rows alone frees pages for reuse without returning them to the
+    filesystem, so this vacuums as well. Both steps are fast because the live
+    data is what remains: about a second for the largest session observed.
+
+    A session open elsewhere is skipped (its size reported unchanged) rather
+    than compacted underneath the process still writing to it.
+    """
+    database = directory / "steps.sqlite3"
+    if not database.is_file():
+        return 0, 0
+    before = _store_bytes(database)
+    lock = FileLock(directory / ".lock", mode=0o600)
+    try:
+        lock.acquire(timeout=0)
+    except Timeout:
+        return before, before
+    try:
+        connection = sqlite3.connect(database)
+        try:
+            # Mirrors Harness's retain set: the newest `keep` of each run, plus
+            # each run's newest settled snapshot, which is the one every read
+            # here takes. A row predating the state column counts as complete.
+            connection.execute(
+                "DELETE FROM snapshots WHERE seq NOT IN ("
+                "  SELECT seq FROM ("
+                "    SELECT seq, row_number() OVER ("
+                "      PARTITION BY run_id ORDER BY seq DESC) AS rank FROM snapshots"
+                "  ) WHERE rank <= ?"
+                "  UNION SELECT max(seq) FROM snapshots"
+                "  WHERE coalesce(state, 'complete') = 'complete' GROUP BY run_id)",
+                (keep,),
+            )
+            connection.commit()
+            connection.execute("VACUUM")
+            connection.commit()
+            # A vacuum in WAL mode rewrites the store into the log; the file on
+            # disk only shrinks once that log is folded back and truncated.
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        # A session whose store cannot be rewritten is left exactly as it was.
+        return before, _store_bytes(database)
+    finally:
+        lock.release()
+    return before, _store_bytes(database)
+
+
 def is_session_selector(value: str) -> bool:
     """Tell an ID/prefix apart from prompt text after an optional-argument flag."""
     return value == "latest" or bool(re.fullmatch(r"[a-f0-9-]{8,36}", value))
@@ -282,7 +361,10 @@ class SavedSession:
         try:
             for name in ("steps.sqlite3", "transcript.jsonl", "session.json"):
                 private_file(directory / name)
-            self.store = PrivateStepStore(database=directory / "steps.sqlite3")
+            self.store = PrivateStepStore(
+                database=directory / "steps.sqlite3",
+                max_snapshots_per_run=SNAPSHOTS_PER_RUN,
+            )
             self.tree = ConversationTree()
             for record in self.records():
                 self.tree.consume(record)
