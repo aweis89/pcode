@@ -87,8 +87,8 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
                 assert app.activity.prompt_kind == "system"
                 assert app.activity.prompt_detail == "keep {tests}"
                 assert app.activity.prompt_state == "running"
-                pipe.send_text("/new\r/tree\r/compact again\r")
-                await wait_for(lambda: "/tree is unavailable" in output.getvalue())
+                pipe.send_text("/new\r/resume\r/compact again\r")
+                await wait_for(lambda: "/resume is unavailable" in output.getvalue())
                 assert calls == [("compact", "keep {tests}")]
                 if outcome == "quit":
                     pipe.send_text("/quit\r")

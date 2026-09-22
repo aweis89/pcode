@@ -21,6 +21,7 @@ from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.text import Text
 
+from pcode.aside import Asides
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.config import USAGE as CONFIG_USAGE
@@ -147,6 +148,11 @@ class PreviewApp:
         self.session_requested = False
         self.session_info_requested = False
         self.tree_requested = False
+        # Side questions run beside the conversation instead of in it, so they
+        # keep their own records and never enter the queue.
+        self.asides = Asides()
+        self.aside_requested: str | None = None
+        self.aside_view_requested = False
         self.login_requested: str | None = None
         self.logout_requested: str | None = None
         self.compact_requested: str | None = None
@@ -213,6 +219,13 @@ class PreviewApp:
                 "/tree",
                 "Browse the conversation tree and fork from any point",
                 self.select_tree,
+                group="Inspect",
+            ),
+            Command(
+                "/btw",
+                "Ask a side question beside the running turn; bare opens the answers",
+                self.aside,
+                free_arguments=True,
                 group="Inspect",
             ),
             Command(
@@ -1595,9 +1608,57 @@ class PreviewApp:
         self.transcript.note(f"Workspace: {workspace}")
 
     def select_tree(self, argument: str) -> None:
-        if self.activity.busy or self.activity.queued:
-            raise ValueError("/tree is unavailable while working or messages are queued.")
         self.tree_requested = True
+
+    def aside(self, argument: str) -> None:
+        """`/btw QUESTION` asks beside the turn; bare `/btw` reads the answers."""
+        question = argument.strip()
+        if not question:
+            if not self.asides.items:
+                raise ValueError(
+                    "No side questions yet. Ask one with /btw QUESTION; "
+                    "it runs beside the conversation without interrupting it."
+                )
+            self.aside_view_requested = True
+            return
+        if not self.model:
+            raise ValueError("/btw needs a model; this is a local UI preview.")
+        if self._startup_pending or self._startup_error is not None:
+            raise ValueError("/btw is unavailable until the agent has started.")
+        self.aside_requested = question
+
+    def start_aside(self, question: str) -> None:
+        """Run a side question in the background, on the context available now."""
+
+        async def work(aside) -> None:
+            def report(answer: str, activity: str) -> None:
+                self.asides.update(aside, answer=answer, activity=activity)
+
+            await self.runtime.aside(question, report=report)
+
+        self.asides.start(question, work)
+        self.transcript.note(
+            "Asking beside the conversation, read-only: the turn keeps running and "
+            "this question does not join it. /btw opens the answer."
+        )
+
+    async def read_asides(self, output: TerminalOutput, session) -> None:
+        from pcode.aside_ui import AsideBrowser
+
+        self.aside_view_requested = False
+        latest = self.asides.latest()
+        async with self.popup(output, session) as modal_input:
+            browser = AsideBrowser(
+                self.asides,
+                selected=latest.id if latest else None,
+                rich_theme=self.transcript.rich_theme,
+                code_theme=self.transcript.code_theme,
+                color_system=self.transcript.console.color_system,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            await browser.run()
 
     async def navigate_tree(self, identity: str | None, *, edit: bool = False) -> str:
         if self.activity.busy or self.activity.queued:
@@ -1631,9 +1692,14 @@ class PreviewApp:
         if tree is None or not tree.nodes:
             self.transcript.note("No conversation turns yet. Send a message to start a tree.")
             return
+        # Reading the tree is safe at any time; switching context is not, because
+        # a running turn owns the history it would be replaced with. Browse now,
+        # fork when the turn ends — or ask the branch a side question with /btw.
+        navigable = not (self.activity.busy or self.activity.queued)
         async with self.popup(output, session) as modal_input:
             dialog = tree_dialog(
                 tree,
+                navigable=navigable,
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
                 color_system=self.transcript.console.color_system,
@@ -1781,6 +1847,12 @@ class PreviewApp:
                     segments.extend([("text", " · "), ("activity", f"{steering} steering pending")])
                 if queued:
                     segments.extend([("text", " · "), ("activity", f"{queued} queued")])
+        # Side questions are not "working": they neither block input nor end the
+        # turn, so they get their own counter rather than the activity label.
+        if running := self.asides.running:
+            segments.extend([("text", " · "), ("activity", f"{running} btw running")])
+        if unread := self.asides.unread:
+            segments.extend([("text", " · "), ("activity", f"{unread} btw ready")])
         segments.extend([("text", " · "), ("model", plain(model, limit=None))])
         context = ""
         if self.model and not self._startup_pending and self._startup_error is None:
@@ -2106,9 +2178,13 @@ class PreviewApp:
             ]
             if active:
                 # Repeated interrupts must not interrupt persistence/auth cleanup.
+                # Side questions are deliberately parallel: an interrupt aimed at
+                # the turn must not also throw away work the turn is not doing.
                 for task in active:
                     if not task.cancelling():
                         task.cancel()
+            elif stopped := self.asides.cancel():
+                self.transcript.note(f"Stopped {stopped} side question(s).")
             else:
                 self.activity.busy = False
                 self.transcript.cancelled()
@@ -2372,7 +2448,6 @@ class PreviewApp:
                             "/resend",
                             "/new",
                             "/resume",
-                            "/tree",
                             "/login",
                             "/logout",
                             "/compact",
@@ -2451,6 +2526,11 @@ class PreviewApp:
                             await self.perform_login()
                         if self.logout_requested:
                             await self.perform_logout()
+                        if self.aside_requested is not None:
+                            question, self.aside_requested = self.aside_requested, None
+                            self.start_aside(question)
+                        if self.aside_view_requested:
+                            await self.read_asides(output, session)
                         if self.tree_requested:
                             await self.choose_tree(output, session)
                         if self.session_requested:
@@ -2587,6 +2667,22 @@ class PreviewApp:
                 session.app.invalidate()
                 await asyncio.sleep(2)
 
+        def aside_settled(aside):
+            if aside.status == "answered":
+                self.transcript.note(
+                    f"Side answer ready ({plain(aside.question, 60)}). /btw opens it."
+                )
+            elif aside.status == "cancelled":
+                self.transcript.note("Side question stopped; nothing was changed.")
+            else:
+                self.transcript.warning(f"Side question {aside.status}. {aside.error}".strip())
+            session.app.invalidate()
+
+        # The footer counts side questions, and an open viewer follows the answer
+        # as it streams, so both only need to know that something moved.
+        self.asides.on_update = lambda aside: session.app.invalidate()
+        self.asides.on_settle = aside_settled
+
         def start():
             session.app.create_background_task(initialize())
             session.app.create_background_task(watch_branch())
@@ -2601,6 +2697,8 @@ class PreviewApp:
         try:
             await session.app.run_async(pre_run=start)
         finally:
+            # Side questions outlive turns, not the terminal.
+            await self.asides.close()
             if compact_task is not None:
                 if not compact_task.done() and not compact_task.cancelling():
                     compact_task.cancel()

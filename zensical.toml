@@ -24,6 +24,7 @@ nav = [
   { "Working in a repository" = "workspace.md" },
   { "Sessions and recovery" = "sessions.md" },
   { "Context, limits and caching" = "context.md" },
+  { "Side questions" = "side-questions.md" },
   { "The transcript" = "transcript.md" },
   { "Internals" = [
     { "Development" = "development.md" },
