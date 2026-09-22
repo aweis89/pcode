@@ -66,13 +66,7 @@ class WorkspaceFileSystem(FileSystem):
             "Shell cd does not change that file-tool base. File tools are not a sandbox. "
             "Search and listing tools default to the workspace. "
             "Returned relative paths use that same workspace base. "
-            "Existing protected-file write rules still apply to file tools, not shell commands. "
-            # Measured over ~2k recorded edit_file calls: the flat form never failed
-            # argument validation, while ~10% of `replacements` calls arrived as a
-            # mangled JSON string ("Input should be a valid array") and cost a retry.
-            # Three quarters of those carried a single edit that needed no array.
-            "For edit_file, pass a single edit as top-level old_text/new_text; "
-            "use the replacements array only for two or more edits to one file."
+            "Existing protected-file write rules still apply to file tools, not shell commands."
         )
 
     def _toolset_type(self):

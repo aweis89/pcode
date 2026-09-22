@@ -44,7 +44,7 @@ def test_defaults_and_path_do_not_create_files():
         "worktree_exit": "ask",
         "retry_attempts": "1",
         "tool_retries": "3",
-        "strict_tools": "off",
+        "strict_tools": "on",
         "debug": "off",
         "profile": "off",
         "show_thinking": "off",

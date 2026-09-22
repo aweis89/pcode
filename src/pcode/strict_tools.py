@@ -52,15 +52,49 @@ def _closed(schema: object) -> object:
     return schema
 
 
-def _free_form(schema: object) -> bool:
-    """Whether any object node accepts undeclared keys, which closing would break."""
-    if isinstance(schema, dict):
-        if schema.get("type") == "object" and not schema.get("properties"):
-            return True
-        return any(_free_form(value) for value in schema.values())
-    if isinstance(schema, list):
-        return any(_free_form(item) for item in schema)
-    return False
+# Anthropic's strict mode accepts a subset of JSON Schema and rejects the whole
+# request on anything outside it, so an upstream schema change could break every
+# edit rather than one. An allow-list fails the safe way: an unrecognized keyword
+# declines strict and leaves the tool exactly as it behaves today.
+SUPPORTED_KEYWORDS = frozenset(
+    {
+        "$defs",
+        "$ref",
+        "additionalProperties",
+        "anyOf",
+        "const",
+        "default",
+        "description",
+        "enum",
+        "items",
+        "properties",
+        "required",
+        "title",
+        "type",
+    }
+)
+
+# Keyed by name rather than by keyword, so their keys are not schema vocabulary.
+_SCHEMA_MAPS = frozenset({"$defs", "properties"})
+
+
+def _constrainable(node: object) -> bool:
+    """Whether `node` is safe to close and send as strict, and faithful once closed."""
+    if isinstance(node, list):
+        return all(_constrainable(item) for item in node)
+    if not isinstance(node, dict):
+        return True
+    # A map-valued object: closing it would forbid the keys it exists to carry.
+    if node.get("type") == "object" and not node.get("properties"):
+        return False
+    if node.keys() - SUPPORTED_KEYWORDS:
+        return False
+    return all(
+        all(_constrainable(child) for child in value.values())
+        if key in _SCHEMA_MAPS and isinstance(value, dict)
+        else _constrainable(value)
+        for key, value in node.items()
+    )
 
 
 def prepare_strict_tools(ctx, tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
@@ -79,7 +113,7 @@ def prepare_strict_tools(ctx, tool_defs: list[ToolDefinition]) -> list[ToolDefin
             parameters_json_schema=_closed(tool_def.parameters_json_schema),
             strict=True,
         )
-        if tool_def.name in STRICT_TOOLS and not _free_form(tool_def.parameters_json_schema)
+        if tool_def.name in STRICT_TOOLS and _constrainable(tool_def.parameters_json_schema)
         else tool_def
         for tool_def in tool_defs
     ]
