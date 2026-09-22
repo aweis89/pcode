@@ -272,6 +272,25 @@ def test_resume_leaves_unmerged_worktree_with_a_note(repo, tmp_path):
         session.close()
 
 
+def test_resume_continues_here_when_the_sessions_worktree_was_removed(repo, tmp_path):
+    root = tmp_path / "sessions"
+    removed = worktree.create(repo, "pcode-removed")
+    identity = saved_session_in(removed.path, root)
+    worktree.remove(removed, force=True)
+    created, session, app = make(repo, tmp_path)
+    app.session_dir = root
+    notes = []
+    app.transcript.note = lambda text, **_: notes.append(text)
+    with patch("pcode.agent.create_agent", return_value=Agent("test")):
+        asyncio.run(app.resume_session(identity))
+    try:
+        assert app.workspace == created.path
+        assert any("no longer exists" in note for note in notes)
+    finally:
+        app.runtime.close()
+        session.close()
+
+
 def test_resume_refuses_another_repository_or_a_missing_directory(repo, tmp_path):
     root = tmp_path / "sessions"
     elsewhere = tmp_path / "elsewhere"
