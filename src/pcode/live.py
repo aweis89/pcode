@@ -66,6 +66,7 @@ from pcode.jobs import registry as job_registry
 from pcode.mcp import MCPState
 from pcode.plan_preview import StreamingPlanPreview
 from pcode.preferences import SETTINGS, load_preferences
+from pcode.profiling import activity as profiled_activity
 from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
     CacheBust,
@@ -371,7 +372,12 @@ class AgentRuntime:
         raise SessionError("There is no earlier prompt to resend; send a message instead.")
 
     async def stream(self, prompt: str | None) -> AsyncIterator[Event]:
-        """Retry only failed provider requests, with one budget per submitted turn."""
+        """Retry only failed provider requests, with one budget per submitted turn.
+
+        The whole generator is one profiled span, including the consumer's
+        rendering of each event, so a capture separates a session's working cost
+        from what it burns sitting at an idle prompt.
+        """
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
         send = prompt
@@ -391,9 +397,10 @@ class AgentRuntime:
                     self.history = self.history[:-1]
         for attempt in range(self.retry_attempts + 1):
             try:
-                async with aclosing(self._turn(send)) as turn:
-                    async for event in turn:
-                        yield event
+                with profiled_activity("turn"):
+                    async with aclosing(self._turn(send)) as turn:
+                        async for event in turn:
+                            yield event
             except Exception as error:
                 if (
                     attempt == self.retry_attempts

@@ -2813,6 +2813,26 @@ class PreviewApp:
         return asyncio.run(self.run_print_async(prompt))
 
 
+def _profile_capture(args) -> tuple[Path, bool, bool] | None:
+    """The capture this run should write: (directory, cpu tracing, memory tracing).
+
+    Flags win over the saved `profile` default, which exists so the everyday
+    session that feels slow is captured without remembering to ask for it.
+    """
+    from pcode.profiling import PROFILE_MODES, new_capture
+
+    if args.no_profile:
+        return None
+    if args.profile is None:
+        mode = load_preferences().get("profile", SETTINGS["profile"].default)
+        if mode == "off" or mode not in PROFILE_MODES:
+            return None
+        return new_capture(), mode == "cpu", mode == "memory"
+    # `--profile` without DIR names its own directory under the state directory.
+    directory = new_capture() if args.profile is True else args.profile
+    return directory, args.profile_cpu, args.profile_memory
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Streaming terminal with a Coder agent",
@@ -2901,8 +2921,15 @@ def main() -> None:
     parser.add_argument(
         "--profile",
         type=Path,
+        nargs="?",
+        const=True,
         metavar="DIR",
-        help="Sample process-tree CPU/RSS to a new private DIR",
+        help="Sample process-tree CPU/RSS to a new private DIR (default: the state directory)",
+    )
+    parser.add_argument(
+        "--no-profile",
+        action="store_true",
+        help="Skip the capture this run even when the profile default is on",
     )
     parser.add_argument(
         "--profile-cpu",
@@ -2935,21 +2962,27 @@ def main() -> None:
         args.arguments = args.prompt[1:]
     args.prompt = " ".join(args.prompt).strip() or None
     if (args.profile_cpu or args.profile_memory) and args.profile is None:
-        parser.error("--profile-cpu and --profile-memory require --profile DIR")
+        parser.error("--profile-cpu and --profile-memory require --profile")
+    if args.profile is not None and args.no_profile:
+        parser.error("--profile and --no-profile are mutually exclusive")
     if args.worktree and args.no_worktree:
         parser.error("--worktree and --no-worktree are mutually exclusive")
     with ExitStack() as stack:
-        if args.profile is not None:
-            from pcode.profiling import profile_session
+        capture = _profile_capture(args)
+        if capture is not None:
+            from pcode.profiling import profile_session, prune_captures
 
+            directory, cpu, memory = capture
             try:
-                stack.enter_context(
-                    profile_session(args.profile, cpu=args.profile_cpu, memory=args.profile_memory)
-                )
+                stack.enter_context(profile_session(directory, cpu=cpu, memory=memory))
             except (OSError, ValueError) as error:
                 parser.error(
                     f"Cannot start profile ({type(error).__name__}); use a new writable DIR"
                 )
+            # Only automatic captures are pruned, and only once this one exists,
+            # so retention counts the directory the session is writing to.
+            if not isinstance(args.profile, Path):
+                prune_captures()
         _run_cli(args, parser)
 
 

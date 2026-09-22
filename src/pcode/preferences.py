@@ -9,6 +9,7 @@ from pathlib import Path
 from filelock import FileLock
 from pygments.styles import get_all_styles
 
+from pcode.profiling import PROFILE_MODES
 from pcode.transcript_log import CHAR_BUDGET
 
 # Every Pygments style installed here, including any added by a plugin package.
@@ -185,6 +186,13 @@ SETTINGS = {
         "off",
         ("on", "off"),
         description="Enable prompt-cache warnings and diagnostic fingerprints",
+    ),
+    # Captures land in the state directory, oldest pruned; `--no-profile` skips
+    # one run and `--profile DIR` still names its own directory.
+    "profile": Setting(
+        "off",
+        PROFILE_MODES,
+        description="Record each session's resource use; cpu/memory add a slow tracer",
     ),
     "transcript_max_chars": Setting(
         str(CHAR_BUDGET),
