@@ -48,6 +48,40 @@ def test_enabled_option_mirrors_command_and_output():
     assert "  [exit code: 0]" in lines
 
 
+def test_job_marker_moves_from_the_footer_into_the_heading():
+    save_preferences(show_commands="on")
+    view, stream = transcript()
+    event = ToolSummary(
+        "shell",
+        "j27 · exit 0",
+        elapsed_seconds=0.25,
+        command="make test",
+        result="2 passed\n[j27 · exit 0 · 159ms]",
+        purpose="running the suite",
+    )
+    assert view.command_output(event) is True
+    lines = [line.rstrip() for line in stream.getvalue().splitlines()]
+    assert lines[0].startswith("✓ Run · j27 · running the suite · 0.2s ")
+    assert "  2 passed" in lines
+    # The marker, the exit status and the elapsed time are all in the heading.
+    assert "[j27" not in stream.getvalue()
+
+
+def test_unfinished_job_marker_stays_in_the_mirrored_output():
+    save_preferences(show_commands="on")
+    view, stream = transcript()
+    event = ToolSummary(
+        "shell",
+        "j3 · still running",
+        command="make serve",
+        result="booting\n[j3 · running · pid 12 · 2.0s] The wait ended.\nCommand: make serve",
+    )
+    assert view.command_output(event) is True
+    printed = stream.getvalue()
+    assert "j3" not in printed.splitlines()[0]
+    assert "[j3 · running · pid 12 · 2.0s]" in printed
+
+
 def test_mirroring_covers_process_tools_and_empty_output():
     save_preferences(show_commands="on")
     view, stream = transcript()
