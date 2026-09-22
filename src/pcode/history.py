@@ -26,7 +26,10 @@ KINDS = (
 )
 CHUNK_CHARS = 4000
 MAX_CHUNKS = 10_000
-MAX_SCAN_BYTES = 64 * 1024 * 1024
+# Journal bytes read, not searchable text: most of a transcript is streaming
+# deltas that the record filter discards. Scanning is ~75 MB/s on a warm cache,
+# so this bounds a search at a few seconds; `after` continues past it.
+MAX_SCAN_BYTES = 256 * 1024 * 1024
 # Ranking is chunk-level, so one long session can otherwise fill the whole limit.
 PER_SESSION_LIMIT = 3
 # Enough occurrences to find prose without scanning a pathological chunk repeatedly.
@@ -126,6 +129,9 @@ class Scan:
     sessions_in_scope: int = 0
     sessions_searched: int = 0
     sessions_unreadable: int = 0
+    sessions_partial: int = 0
+    sessions_before: int = 0
+    next_cursor: str | None = None
 
 
 def _turn_of(record: dict, turns: dict[str, "HistoryTurn"], recording: str | None):
@@ -252,23 +258,49 @@ class History:
                 result.append(info)
         return result
 
-    def chunks(self, scope: Scope, *, exclude_turn: str | None = None) -> "Scan":
-        """Searchable text in scope, with how much of the scope it actually covers."""
+    def chunks(
+        self, scope: Scope, *, exclude_turn: str | None = None, after: str | None = None
+    ) -> "Scan":
+        """Searchable text in scope, with how much of the scope it actually covers.
+
+        Sessions are newest first, so a budget that runs out always cuts off the
+        older end. `after` resumes from the session that cut off, which is how a
+        question about older work reaches history the first scan never read.
+        """
         sessions = self.sessions(scope)
         scan = Scan([], [], sessions_in_scope=len(sessions))
+        if after:
+            identities = [info.id for info in sessions]
+            if after not in identities:
+                raise ValueError("Unknown cursor; use next_cursor from an earlier search.")
+            scan.sessions_before = identities.index(after) + 1
+            sessions = sessions[scan.sessions_before :]
         budget = SessionReadBudget(MAX_SCAN_BYTES)
+        last = after
+        full = False
         for info in sessions:
+            if full or budget.exhausted:
+                break
             try:
                 turns = read_turns(info, self.root, budget=budget)
             except OSError:
                 scan.warnings.append(f"Skipped unreadable session {info.id}.")
                 scan.sessions_unreadable += 1
+                last = info.id
                 continue
-            scan.sessions_searched += 1
-            if budget.exhausted:
+            complete = not budget.exhausted
+            if complete:
+                scan.sessions_searched += 1
+            # A session cut off mid-way stays behind the cursor, so the next page
+            # re-reads it whole. Unless it used up the page by itself: then the
+            # cursor has to pass it or continuing would never move.
+            if complete or not (scan.sessions_searched or scan.sessions_unreadable):
+                last = info.id
+            if not complete:
+                scan.sessions_partial += 1
                 scan.warnings.append(
-                    "Journal scan byte budget reached; later records/sessions were not searched. "
-                    "Branch labels in the partial session are unknown."
+                    f"Journal scan byte budget reached inside session {info.id}; its later "
+                    "records were not searched and its branch labels are unknown."
                 )
             for turn in reversed(list(turns.values())):
                 if turn.id == exclude_turn and info.id == self.session_id and not turn.compacted:
@@ -276,22 +308,22 @@ class History:
                 text = turn.text
                 for offset in range(0, len(text), CHUNK_CHARS - 200):
                     if len(scan.chunks) == MAX_CHUNKS:
-                        scan.warnings = [
-                            *scan.warnings[:10],
-                            f"Search limited to {MAX_CHUNKS} chunks.",
-                        ]
-                        return scan
+                        scan.warnings.append(f"Search limited to {MAX_CHUNKS} chunks.")
+                        full = True
+                        break
                     scan.chunks.append(
                         Chunk(info, turn, offset, text[offset : offset + CHUNK_CHARS])
                     )
-            if budget.exhausted:
-                break
-        skipped = scan.sessions_in_scope - scan.sessions_searched - scan.sessions_unreadable
-        if skipped:
+                if full:
+                    break
+        read = scan.sessions_before + scan.sessions_searched + scan.sessions_unreadable
+        if read < scan.sessions_in_scope:
             # Sessions are ordered newest first, so the gap is always the older ones.
+            scan.next_cursor = last
             scan.warnings.append(
                 f"Searched {scan.sessions_searched} of {scan.sessions_in_scope} sessions in "
-                f"scope; the {skipped} oldest were not searched."
+                f"scope in full; {scan.sessions_in_scope - read} older ones were not "
+                f'searched. Pass after="{last}" to continue there if the answer may be older.'
             )
         scan.warnings = scan.warnings[-10:]
         return scan

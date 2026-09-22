@@ -27,12 +27,12 @@ def root(tmp_path):
 
 
 def save(root, workspace, identity="session-a", records=None, **metadata):
+    metadata.setdefault("created", "2026-01-01T00:00:00Z")
+    metadata.setdefault("updated", metadata["created"])
     info = SessionInfo(
         id=identity,
         model="test",
         workspace=str(workspace),
-        created="2026-01-01T00:00:00Z",
-        updated="2026-01-01T00:00:00Z",
         packages={},
         **metadata,
     )
@@ -609,8 +609,47 @@ def test_partial_scan_reports_session_coverage(tmp_path, root, monkeypatch):
     save(root, tmp_path, "older", records=turn())
     monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 10)
     result = call(tools(tmp_path, root)["search_sessions"], query="flicker")
-    assert (result["sessions_searched"], result["sessions_in_scope"]) == (1, 2)
-    assert "1 oldest were not searched" in result["warnings"][-1]
+    assert (result["sessions_searched"], result["sessions_in_scope"]) == (0, 2)
+    assert "2 older ones were not searched" in result["warnings"][-1]
+    # The cursor still advances past a session that used the whole budget alone.
+    assert result["next_cursor"] in {"session-a", "older"}
+
+
+def test_cursor_continues_into_sessions_the_budget_did_not_reach(tmp_path, root, monkeypatch):
+    save(
+        root,
+        tmp_path,
+        records=turn("Recent", "Recent work on the editor."),
+        updated="2026-02-01T00:00:00Z",
+    )
+    save(root, tmp_path, "older", records=turn("Older", "The editor flicker fix we shipped."))
+    # One session per scan, so reaching the older one requires the cursor.
+    monkeypatch.setattr(
+        "pcode.history.MAX_SCAN_BYTES",
+        sum(len(json.dumps(record)) + 1 for record in turn()) + 20,
+    )
+    registered = tools(tmp_path, root)
+    first = call(registered["search_sessions"], query="flicker fix")
+    assert not [g for g in first["results"] if g["session_id"] == "older"]
+    second = call(registered["search_sessions"], query="flicker fix", after=first["next_cursor"])
+    (group,) = second["results"]
+    assert group["session_id"] == "older"
+    assert second["next_cursor"] is None
+    with pytest.raises(ModelRetry, match="Unknown cursor"):
+        call(registered["search_sessions"], query="flicker", after="no-such-session")
+
+
+def test_snapshot_compaction_leaves_search_intact(tmp_path, root):
+    # `pcode --sessions --compact` prunes the step store, never the transcript.
+    from pcode.sessions import compact_snapshots
+
+    saved = SavedSession.create("test", tmp_path, root=root)
+    saved.append("turn_started", run_id="run-a", prompt="Fix flicker")
+    saved.append("Message", markdown="Suspend the editor during redraws.")
+    saved.close()
+    compact_snapshots(root / saved.info.id)
+    (group,) = call(tools(tmp_path, root)["search_sessions"], query="redraws")["results"]
+    assert group["turns"][0]["turn_id"] == "run-a"
 
 
 def test_user_override_disables_extension(tmp_path, root):
