@@ -26,6 +26,10 @@ KINDS = (
 CHUNK_CHARS = 4000
 MAX_CHUNKS = 10_000
 MAX_SCAN_BYTES = 64 * 1024 * 1024
+# Ranking is chunk-level, so one long session can otherwise fill the whole limit.
+PER_SESSION_LIMIT = 3
+# Enough occurrences to find prose without scanning a pathological chunk repeatedly.
+MAX_MATCH_POSITIONS = 200
 
 
 @dataclass
@@ -53,21 +57,44 @@ class Chunk:
     offset: int
     text: str
 
-    def result(self, query: str) -> dict:
-        words = query.casefold().split()
+    def excerpt_start(self, query: str) -> int:
+        """Prefer a match inside prose: tool summaries rarely hold the conclusion."""
         folded = self.text.casefold()
-        position = min((folded.find(w) for w in words if w in folded), default=0)
-        start = max(0, position - 150)
+        positions = sorted(
+            {
+                match.start()
+                for word in dict.fromkeys(query.casefold().split())
+                for match in list(re.finditer(re.escape(word), folded))[:MAX_MATCH_POSITIONS]
+            }
+        )
+        prose = [
+            position
+            for position in positions
+            if not self.text.startswith("Tool: ", self.text.rfind("\n", 0, position) + 1)
+        ]
+        return max(0, next(iter(prose or positions), 0) - 150)
+
+    def result(self, query: str) -> dict:
+        start = self.excerpt_start(query)
         return {
-            "session_id": self.session.id,
             "turn_id": self.turn.id,
             "time": self.turn.time,
-            "workspace": redact(self.session.workspace),
             "status": self.turn.status,
             "branch": self.turn.branch,
             "offset": self.offset + start,
             "excerpt": self.text[start : start + 800],
         }
+
+
+@dataclass
+class Scan:
+    """Searchable chunks plus the coverage of the scan that produced them."""
+
+    chunks: list[Chunk]
+    warnings: list[str]
+    sessions_in_scope: int = 0
+    sessions_searched: int = 0
+    sessions_unreadable: int = 0
 
 
 def _turn_of(record: dict, turns: dict[str, "HistoryTurn"], recording: str | None):
@@ -192,33 +219,49 @@ class History:
                 result.append(info)
         return result
 
-    def chunks(self, scope: Scope) -> tuple[list[Chunk], list[str]]:
-        chunks = []
-        warnings = []
+    def chunks(self, scope: Scope, *, exclude_turn: str | None = None) -> "Scan":
+        """Searchable text in scope, with how much of the scope it actually covers."""
+        sessions = self.sessions(scope)
+        scan = Scan([], [], sessions_in_scope=len(sessions))
         budget = SessionReadBudget(MAX_SCAN_BYTES)
-        for info in self.sessions(scope):
+        for info in sessions:
             try:
                 turns = read_turns(info, self.root, budget=budget)
             except OSError:
-                warnings.append(f"Skipped unreadable session {info.id}.")
+                scan.warnings.append(f"Skipped unreadable session {info.id}.")
+                scan.sessions_unreadable += 1
                 continue
+            scan.sessions_searched += 1
             if budget.exhausted:
-                warnings.append(
+                scan.warnings.append(
                     "Journal scan byte budget reached; later records/sessions were not searched. "
                     "Branch labels in the partial session are unknown."
                 )
             for turn in reversed(list(turns.values())):
+                if turn.id == exclude_turn and info.id == self.session_id:
+                    continue
                 text = turn.text
                 for offset in range(0, len(text), CHUNK_CHARS - 200):
-                    if len(chunks) == MAX_CHUNKS:
-                        return chunks, [
-                            *warnings[:10],
+                    if len(scan.chunks) == MAX_CHUNKS:
+                        scan.warnings = [
+                            *scan.warnings[:10],
                             f"Search limited to {MAX_CHUNKS} chunks.",
                         ]
-                    chunks.append(Chunk(info, turn, offset, text[offset : offset + CHUNK_CHARS]))
+                        return scan
+                    scan.chunks.append(
+                        Chunk(info, turn, offset, text[offset : offset + CHUNK_CHARS])
+                    )
             if budget.exhausted:
                 break
-        return chunks, warnings[-10:]
+        skipped = scan.sessions_in_scope - scan.sessions_searched - scan.sessions_unreadable
+        if skipped:
+            # Sessions are ordered newest first, so the gap is always the older ones.
+            scan.warnings.append(
+                f"Searched {scan.sessions_searched} of {scan.sessions_in_scope} sessions in "
+                f"scope; the {skipped} oldest were not searched."
+            )
+        scan.warnings = scan.warnings[-10:]
+        return scan
 
     def read(
         self,
@@ -326,6 +369,52 @@ def keyword_ranking(chunks: list[Chunk], query: str) -> list[int]:
         if score > 0:
             scored.append((score, index))
     return [index for _, index in sorted(scored, key=lambda item: (-item[0], item[1]))]
+
+
+def group_results(
+    chunks: list[Chunk],
+    ranking: list[int],
+    query: str,
+    limit: int,
+    current_session: str | None = None,
+) -> list[dict]:
+    """Group hits by session, spreading a small limit across sessions first.
+
+    A long session produces many chunks and can otherwise take every slot, so
+    the first pass caps each session and a second pass spends whatever is left.
+    """
+    ordered: list[Chunk] = []
+    seen: set[tuple[str, str]] = set()
+    for index in ranking:
+        chunk = chunks[index]
+        key = (chunk.session.id, chunk.turn.id)
+        if key not in seen:
+            seen.add(key)
+            ordered.append(chunk)
+    picked: set[int] = set()
+    counts: Counter[str] = Counter()
+    for cap in (PER_SESSION_LIMIT, len(ordered)):
+        for position, chunk in enumerate(ordered):
+            if len(picked) == limit:
+                break
+            if position in picked or counts[chunk.session.id] >= cap:
+                continue
+            picked.add(position)
+            counts[chunk.session.id] += 1
+    groups: dict[str, dict] = {}
+    for position in sorted(picked):
+        chunk = ordered[position]
+        group = groups.setdefault(
+            chunk.session.id,
+            {
+                "session_id": chunk.session.id,
+                "workspace": redact(chunk.session.workspace),
+                "current": chunk.session.id == current_session,
+                "turns": [],
+            },
+        )
+        group["turns"].append(chunk.result(query))
+    return list(groups.values())
 
 
 def merge_rankings(keyword: list[int], semantic: list[int]) -> list[int]:

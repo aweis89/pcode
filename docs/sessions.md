@@ -58,8 +58,8 @@ command that cannot succeed. Quit and continue the session elsewhere.
 
 The bundled `session_history` extension lets the model answer questions such as
 “What did we decide about editor flicker?” without resuming another session.
-`search_sessions` returns ranked excerpts with session/turn IDs, dates, outcomes,
-and active/inactive branch labels. `read_session` retrieves a referenced turn,
+`search_sessions` returns ranked excerpts grouped by session, with session/turn
+IDs, dates, outcomes, and active/inactive branch labels. `read_session` retrieves a referenced turn,
 paginates long text, and includes bounded ancestor context (not sibling branches).
 
 - Default `scope="project"` includes linked worktrees. `workspace` restricts to
@@ -72,6 +72,14 @@ paginates long text, and includes bounded ancestor context (not sibling branches
   Steering messages from older versions were not journaled and are not recalled.
   Historical claims and
   failed or abandoned attempts are evidence, not proof that a change shipped.
+- Hits are grouped by session so one long session cannot take every slot: each
+  session gets at most three turns until the limit would otherwise go unused.
+  The current conversation is flagged `current`, and the turn running the search
+  is never returned as evidence.
+- Excerpts are centred on a match in prose where there is one, so a conclusion
+  outranks the shell command that led to it.
+- Results report `sessions_searched` against `sessions_in_scope`, and a warning
+  names how many of the oldest sessions the scan budget left unsearched.
 - New sessions record their project path so deleted worktrees remain discoverable.
   Older sessions use Git discovery or the conventional `.worktrees/` layout;
   a deleted legacy worktree elsewhere may need `scope="all"`.
