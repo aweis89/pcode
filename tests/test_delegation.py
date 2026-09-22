@@ -21,10 +21,10 @@ def returns(messages):
     return [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
 
 
-def delegate(index=0):
+def delegate(index=0, agent_name="explorer"):
     return DeltaToolCall(
         name="delegate_task",
-        json_args=json.dumps({"agent_name": "explorer", "task": f"Read sample.txt ({index})"}),
+        json_args=json.dumps({"agent_name": agent_name, "task": f"Read sample.txt ({index})"}),
         tool_call_id=f"parent-{index}",
     )
 
@@ -38,11 +38,11 @@ def test_real_parallel_children_are_correlated_streamed_and_inspectable(tmp_path
             if returns(messages):
                 yield "Parent answer"
             else:
-                yield {0: delegate(0), 1: delegate(1)}
+                yield {0: delegate(0, "worker"), 1: delegate(1, "worker")}
         else:
             assert "read_file" in names
             assert "shell" in names
-            assert not {"edit_file", "write_file", "create_directory"} & names
+            assert {"edit_file", "write_file"} <= names
             if returns(messages):
                 yield "PRIVATE CHILD ANSWER"
             else:

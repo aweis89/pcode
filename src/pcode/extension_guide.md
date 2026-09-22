@@ -157,7 +157,7 @@ reviewer = Agent(name="reviewer", description="Review a diff for bugs", instruct
 pcode.subagent(reviewer, timeout_seconds=600)
 ```
 
-The agent is listed beside the explorer under `delegate_task`. Leave its model
+The agent is listed beside the worker under `delegate_task`. Leave its model
 unset to run on the session's model; keyword options are Harness `SubAgent`
 fields (`usage_limits`, `timeout_seconds`, `max_calls`). Give it capabilities
 of its own; the parent's tools are not inherited.

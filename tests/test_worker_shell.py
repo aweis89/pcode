@@ -12,7 +12,7 @@ from pydantic_ai_harness.shell import Shell
 from pcode.agent import create_coder
 
 
-def test_explorer_copies_parent_shell_policy(tmp_path):
+def test_worker_copies_parent_shell_policy(tmp_path):
     with patch("pcode.agent.Agent", wraps=Agent) as constructor:
         coder = create_coder(tmp_path)
     options = constructor.call_args.kwargs
@@ -23,12 +23,12 @@ def test_explorer_copies_parent_shell_policy(tmp_path):
     for field in fields(Shell):
         if field.init:
             assert getattr(child, field.name) == getattr(parent, field.name)
-    assert "Do not edit" in options["instructions"]
-    assert "not an enforced permission boundary" in options["instructions"]
+    assert "Do not edit" not in options["instructions"]
+    assert "permission checks" in options["instructions"]
     assert "shell" in options["description"]
 
 
-def test_delegated_explorer_reads_external_worktree_and_runs_shell(tmp_path):
+def test_delegated_worker_reads_external_worktree_and_runs_shell(tmp_path):
     workspace = tmp_path / "workspace"
     external = tmp_path / "review"
     workspace.mkdir()
@@ -50,7 +50,7 @@ def test_delegated_explorer_reads_external_worktree_and_runs_shell(tmp_path):
                     0: DeltaToolCall(
                         name="delegate_task",
                         json_args=json.dumps(
-                            {"agent_name": "explorer", "task": f"Inspect {external} without edits."}
+                            {"agent_name": "worker", "task": f"Inspect {external} without edits."}
                         ),
                     )
                 }
@@ -65,8 +65,8 @@ def test_delegated_explorer_reads_external_worktree_and_runs_shell(tmp_path):
 
         assert "shell" in names
         assert not {"run_command", "start_command", "check_command", "stop_command"} & names
-        assert not {"write_file", "edit_file", "create_directory"} & names
-        assert "Do not edit" in info.instructions
+        assert {"write_file", "edit_file"} <= names
+        assert "You are a general-purpose worker" in info.instructions
         assert str(workspace) in info.instructions
         child_calls += 1
         calls = [
