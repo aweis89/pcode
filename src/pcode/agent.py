@@ -38,6 +38,7 @@ from pcode.output_limits import ModelOutputLimits
 from pcode.planning import IdentifiedPlanning
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.repo_context import create_repo_context
+from pcode.strict_tools import create_strict_tools
 from pcode.tool_output_limits import create_tool_output_limits
 
 # Generous enough for a real investigation, small enough that a child stuck in a
@@ -148,6 +149,9 @@ def create_coder(
     coder.capabilities.append(DelegationReporting())
     coder.capabilities.append(MeridianSessionIdentity())
     coder.capabilities.append(ModelOutputLimits())
+    # Ahead of the worker copy below, so a delegate edits under the same schema.
+    if strict_tools := create_strict_tools():
+        coder.capabilities.append(strict_tools)
     debug = load_preferences().get("debug", SETTINGS["debug"].default) == "on"
     if debug:
         coder.capabilities.append(CacheBustReporting())
