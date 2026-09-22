@@ -88,11 +88,11 @@ def test_partial_output_attempt_boundaries_and_fallbacks(tmp_path, boundary):
     assert output.index("PARTIAL_FIRST") < output.index("ANSWER_FALLBACK")
 
 
-def test_empty_opposite_delta_and_hidden_failed_command_boundaries(tmp_path):
+def test_empty_opposite_delta_and_hidden_tool_boundaries(tmp_path):
     records = [
         {"kind": "TextDelta", "text": "BEFORE"},
-        {"kind": "ToolStarted", "name": "shell", "detail": "", "call_id": "c"},
-        {"kind": "ToolSummary", "name": "shell", "detail": "", "failed": True, "call_id": "c"},
+        {"kind": "ToolStarted", "name": "write_plan", "detail": "", "call_id": "c"},
+        {"kind": "ToolSummary", "name": "write_plan", "detail": "", "call_id": "c"},
         {"kind": "TextDelta", "text": "AFTER"},
         {"kind": "ThinkingDelta", "text": ""},
         {"kind": "TextDelta", "text": "SEPARATE"},

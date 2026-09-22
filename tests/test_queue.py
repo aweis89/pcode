@@ -154,6 +154,23 @@ def test_status_row_reports_the_newest_running_tool_call():
     assert activity.status_fragments("⠋", 80)[1][1].endswith("example.py")
 
 
+def test_running_tool_call_switches_to_the_system_spinner():
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running", status="Responding…")
+    assert activity.uses_system_spinner is False
+    activity.tools.record(ToolStarted("read_file", "example.py", "one"))
+    assert activity.uses_system_spinner is True
+    # The finished call keeps the row (and the spinner) for its dwell window.
+    activity.tools.record(ToolSummary("read_file", "example.py", call_id="one"))
+    activity.tools.clear()
+    assert activity.uses_system_spinner is False
+    # pcode's own work keeps the system spinner with no tool running.
+    activity.start_prompt("Compacting", kind="system")
+    assert activity.uses_system_spinner is True
+
+
 @pytest.mark.parametrize("width", [0, 1, 2, 3, 12, 40, 100])
 def test_status_row_truncates_to_terminal_width(width):
     from rich.cells import cell_len

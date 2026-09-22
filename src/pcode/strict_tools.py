@@ -1,12 +1,11 @@
-"""Opt-in grammar-constrained tool arguments for Anthropic models.
+"""Grammar-constrained tool arguments for Anthropic models.
 
 Claude sometimes emits a nested tool argument as an escaped JSON *string* rather
 than the array the schema asks for, and botches the escaping while doing it. In
 ~2k recorded `edit_file` calls the Anthropic share of `replacements` arrivals
 failed validation about one time in eight, while the OpenAI share never did --
 Pydantic AI turns OpenAI's strict mode on by itself, and strict mode is
-constrained decoding, so the wrong shape is unsamplable rather than merely
-rejected.
+constrained decoding.
 
 Anthropic exposes the same thing as `tools[].strict`, but two gaps keep it off:
 `ToolDefinition.strict` defaults to `None`, which Pydantic AI reads as "off" for
@@ -15,9 +14,14 @@ Anthropic (only OpenAI infers it), and the Anthropic profile carries no
 `For 'object' type, 'additionalProperties' must be explicitly set to false`.
 This module closes the object nodes and sets the flag.
 
-Off by default. Constrained decoding changes how the model samples, and the
-payoff is a few wasted round trips per session, so it is worth opting into
-deliberately rather than inheriting.
+It does not close the hole. With `strict: true` confirmed on the wire, Anthropic
+still delivers `replacements` as a truncated JSON string a few times in ten when
+the model is nudged toward that shape (claude-opus-5, subscription endpoint,
+pcode's schema and the plainest `{"type": "array"}` alike), while a scalar
+property in the same schema is held to its type. Production moved from 11.5% to
+9.6% of `replacements` arrivals failing. Left on because nothing measured got
+worse, not because it works; the retry budget is what actually recovers the
+edit.
 """
 
 from dataclasses import replace
