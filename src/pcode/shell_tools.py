@@ -100,6 +100,7 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         *,
         background: bool = False,
         timeout: float | None = None,
+        purpose: str = "",
     ) -> str:
         """Run a shell command and wait for its output and exit status.
 
@@ -120,6 +121,12 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
             command: The shell command to run.
             background: True to get a job handle at once instead of waiting.
             timeout: Seconds to wait before handing back a job handle (max 270).
+            purpose: Why you are running this, at most 8 words, present tense
+                (e.g. "running the end-to-end suite"). Give it when
+                `background=True`, since that job is reported back to you and
+                shown to the user later, away from this call. Leave it empty
+                otherwise: a command you are waiting for is read next to its
+                own output, so a label would only repeat it.
         """
         self._check_command(command)
         wait = self._wait_seconds(timeout)
@@ -128,6 +135,7 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
             cwd=self._initial_cwd,
             env=self._resolve_env(),
             background=background,
+            purpose=purpose,
         )
         await ctx.emit(
             CommandStartedEvent(
@@ -204,7 +212,7 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         elapsed = format_duration(job.elapsed)
         if not stopped:
             return f"[{job.id} · {job.outcome()} · {elapsed}] Already finished."
-        return f"[{job.id} · stopped · {elapsed}] {job.command}"
+        return f"[{job.id} · stopped · {elapsed}] {job.label()}"
 
     @recoverable
     async def list_jobs(self) -> str:
