@@ -1,0 +1,76 @@
+# Side questions (`/btw`)
+
+`/btw QUESTION` asks a question about what the model is doing **while it is doing
+it**. The question runs as a second, parallel request against the same context;
+the turn in flight is not interrupted, cancelled, or steered, and the question
+never enters the conversation.
+
+```text
+❯ refactor the parser and make the tests pass
+  ⠋ Running shell · uv run pytest
+❯ /btw why did you pick a recursive descent parser?
+  ◈ Side question asked beside the conversation…
+  ◈ Side answer ready (why did you pick a recursive descent parser?). /btw opens it.
+```
+
+A bare `/btw` opens the answers in a popup, visually separate from the
+transcript. While an answer is still arriving, the popup streams it.
+
+- **↑ / ↓:** move through the questions, or scroll the answer when it has focus.
+- **Tab:** switch between the question list and the answer pane.
+- **Ctrl+K:** stop every running side question, keeping the records.
+- **Enter / Escape / Ctrl+C:** close the popup and restore the editor draft.
+
+The footer counts side questions that are `running` and answers that are
+`ready` (settled but not yet opened). Ctrl+C at the prompt stops running side
+questions only when nothing else is in flight, so an interrupt aimed at the turn
+never throws away the side question as well.
+
+## What a side question can and cannot do
+
+A side question is asked with a **read-only twin** of the conversation's agent:
+the same model and the same workspace, but only the read-only file tools
+(`read_file`, `list_files`, `grep`). It has no shell, cannot write or edit files,
+cannot delegate to sub-agents, and cannot touch the task plan. Two runs sharing
+one persistent shell or one plan store would interleave commands and clobber the
+plan, and a side question is a question — if the answer implies work, send it as
+a normal message.
+
+Nothing about a side question joins the conversation:
+
+- no conversation-tree node, so `/tree`, `/resend` and forking never see it;
+- no session-journal record, so resuming the session does not replay it;
+- no change to the model's history, so the next real turn is unaffected.
+
+What it does share is the context it was asked against and the session's token
+totals: the request really happened, so `/status` counts it.
+
+## Which context it sees
+
+A side question is asked against the newest **settled** prefix of the request in
+flight — what the model is working with right now, not the state before the turn
+started. Providers reject a history whose tool calls have no results, so the
+prefix stops at the last point where the conversation was balanced: a tool call
+that has not returned yet is not included, and neither is the assistant text
+streaming beside it.
+
+Side questions are bounded: 12 model requests and 300 seconds each. They are not
+retried, and they do not survive exiting pcode.
+
+## Parallel work and `/tree`
+
+`/tree` opens while a turn is running, but only to read: the header says
+`read-only while working` and Enter does not switch context. Switching context
+replaces the history the running turn is about to write back, so a checkout
+during a turn would silently lose. Browse the tree now, fork when the turn ends,
+and use `/btw` to ask about a branch in the meantime.
+
+Several side questions can run at once, each with the context available when it
+was asked. What is **not** yet possible is running two conversation turns in
+parallel — from `/tree` or anywhere else. One turn at a time is assumed
+throughout: the conversation tree records events against a single "recording"
+cursor, the runtime keeps one history, plan store, request checkpoint and shell,
+the session journal is a single append-only stream, and the transcript and
+activity widget present one stream of tool and text events. `/btw` is the useful
+slice that fits those constraints, because its answer is read-only and lands in
+its own surface instead of the conversation.

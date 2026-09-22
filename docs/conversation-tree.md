@@ -1,6 +1,7 @@
 # Conversation tree navigation
 
-Use `/tree` while the agent is idle to browse and fork the current conversation.
+Use `/tree` to browse the current conversation, and to fork it while the agent is
+idle.
 This follows the user/assistant selection model of
 [pi-coding-agent's session tree](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md).
 
@@ -64,8 +65,12 @@ other tool effects.** All branches share the current workspace. If you need to
 restore files, use your version-control workflow separately. MCP enablement stays
 as currently configured; navigation does not reconnect disabled servers.
 
-`/tree` is unavailable while a turn is running or prompts are queued. Cancel with
-Ctrl+C or wait for completion before navigating.
+While a turn is running or prompts are queued, `/tree` opens **read-only**: the
+header says `read-only while working` and Enter does not switch context. A
+running turn writes back the history a checkout would install, so the checkout
+would silently lose. Cancel with Ctrl+C or wait for completion to fork — or ask
+the branch a [side question](side-questions.md) with `/btw`, which runs in
+parallel without touching the conversation.
 
 ## Persistence
 
@@ -75,6 +80,13 @@ session; `/tree` navigates within it. Existing saved sessions appear as a linear
 tree automatically. Structured histories (including tool calls/results) continue
 to use Harness's native safe checkpoints. Tree links and selection events live in
 the private, append-only session journal.
+
+Every journal record names the turn it belongs to (`run_id`), and the tree, branch
+replay and the history reader use that name rather than the record's position in
+the file. Journals written before that carry no name, so they fall back to "the
+last turn started", which was always true when one turn ran at a time. Records
+from a turn on another branch are therefore skipped on replay rather than
+absorbed into whichever turn happened to start last.
 
 With `--no-save`, the tree exists only in memory and disappears on exit. Browsing
 an empty conversation does not create session files. `/new` starts a separate tree

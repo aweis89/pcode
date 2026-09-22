@@ -70,6 +70,18 @@ class Chunk:
         }
 
 
+def _turn_of(record: dict, turns: dict[str, "HistoryTurn"], recording: str | None):
+    """The turn a record belongs to: the one it names, else the last one started.
+
+    The fallback is for journals written before records carried a run ID, and
+    for a scan window that began after the turn's own start record.
+    """
+    identity = record.get("run_id")
+    if not isinstance(identity, str) or identity not in turns:
+        identity = recording
+    return turns.get(identity) if identity is not None else None
+
+
 def read_turns(
     info: SessionInfo, root: Path, *, budget: SessionReadBudget | None = None
 ) -> dict[str, HistoryTurn]:
@@ -102,12 +114,9 @@ def read_turns(
             identity = record.get("node_id")
             if identity is None or isinstance(identity, str):
                 active = identity
-        elif recording in turns:
-            turn = turns[recording]
+        elif (turn := _turn_of(record, turns, recording)) is not None:
             if kind == "steering" and isinstance(record.get("prompt"), str):
-                run_id = record.get("run_id")
-                target = turns.get(run_id, turn) if isinstance(run_id, str) else turn
-                target.blocks.append("User (steering): " + record["prompt"])
+                turn.blocks.append("User (steering): " + record["prompt"])
             elif kind == "Message" and isinstance(record.get("markdown"), str):
                 turn.blocks.append("Assistant: " + record["markdown"])
             elif kind == "ToolSummary":
