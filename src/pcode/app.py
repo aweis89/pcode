@@ -309,6 +309,7 @@ class PreviewApp:
                 "Shell commands still running: list / stop ID / stop all / watch ID / unwatch",
                 self.jobs,
                 free_arguments=True,
+                argument_provider=self.jobs_arguments,
                 group="Session",
             ),
             Command(
@@ -725,6 +726,23 @@ class PreviewApp:
             )
             for job in adopted:
                 self.transcript.note(job.summary())
+
+    def jobs_arguments(self) -> tuple[str, ...]:
+        """Complete `stop`/`watch` against jobs still running this session knows about."""
+        registry = getattr(self.runtime, "jobs", None)
+        if registry is None:
+            return ()
+        registry.refresh()
+        running = sorted(
+            (job for job in registry.jobs.values() if job.running), key=lambda job: job.started_at
+        )
+        return (
+            "list",
+            "unwatch",
+            "stop all",
+            *(f"stop {job.id}" for job in running),
+            *(f"watch {job.id}" for job in running),
+        )
 
     def jobs(self, argument: str) -> None:
         """Show, watch, or stop the shell jobs this session started.
