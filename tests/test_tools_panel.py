@@ -117,7 +117,7 @@ def test_tools_do_not_commit_model_tail_but_summaries_reach_scrollback():
     asyncio.run(run())
 
 
-def test_failed_commands_stay_out_of_scrollback_without_command_mirroring():
+def test_failed_commands_keep_only_a_summary_line_without_command_mirroring():
     stream = StringIO()
     app = PreviewApp(console=Console(file=stream))
     event = ToolSummary(
@@ -129,7 +129,8 @@ def test_failed_commands_stay_out_of_scrollback_without_command_mirroring():
         error="FAILED test_example: missing module",
     )
     app.present_events((event,))
-    assert stream.getvalue() == ""
+    assert "✗ Run" in stream.getvalue()
+    assert "FAILED test_example" not in stream.getvalue()
     assert app.activity.tools.calls == []
     assert app.registry.find("/tools") is not None
     with pytest.raises(ValueError, match="Usage: /tools"):
