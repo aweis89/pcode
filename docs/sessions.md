@@ -170,8 +170,9 @@ pcode --sessions --compact   # Drop superseded checkpoints, report space freed.
 
 That rewrites each closed session's store in place, skipping any session open
 in another process, and reports what it reclaimed. It removes no conversation:
-every turn still restores from the step it settled at, and recall is unaffected
-because search reads `transcript.jsonl`, which `--compact` never touches. On the largest session
+every turn still restores from the step it settled at, so `--continue`, `/resume`
+and `/tree` navigation to an earlier turn all work afterwards. Recall is
+unaffected too: search reads `transcript.jsonl`, which `--compact` never touches. On the largest session
 observed (1.3 GB, 338 checkpoints across 10 turns) it took under a second and
 left 67 MB.
 
