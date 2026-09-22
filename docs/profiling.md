@@ -3,14 +3,39 @@
 Start with resource sampling while reproducing the problem:
 
 ```sh
-pcode --profile /tmp/pcode-resources
+pcode --profile
 # Use pcode normally, then /quit to finalize the report.
+python -m pcode.profiling            # List captures, newest last.
+python -m pcode.profiling DIR        # Read one.
 ```
 
-Use a **new directory** for each capture. Profiling is off by default: no monitor,
-profiler hooks, or allocation tracing run without `--profile`. Sampling runs once
-per second in a worker thread, plus at startup and shutdown. It writes directly
-to disk rather than keeping the sample history in memory.
+Bare `--profile` writes to a new timestamped directory under
+`~/.local/state/pcode/profiles` (`PCODE_PROFILE_DIR` or `XDG_STATE_HOME`
+relocate it) and keeps the newest 20 of those, deleting older ones on the next
+launch. `--profile DIR` still names its own directory, which is never pruned and
+must be **new** for each capture.
+
+Profiling is off by default: no monitor, profiler hooks, or allocation tracing
+run unless asked for. Sampling runs once per second in a worker thread, plus at
+startup and shutdown. It writes directly to disk rather than keeping the sample
+history in memory.
+
+## Capture every session
+
+Anecdotal slowness usually happens in an ordinary session nobody thought to
+profile. Turn capture on by default instead:
+
+```sh
+pcode config set profile resources   # Sampling only; off, resources, cpu, memory
+pcode --no-profile                   # Skip the capture for one run.
+```
+
+`cpu` and `memory` apply the matching tracer to **every** session and are much
+slower; leave the default on `resources` and reach for a tracer on a run that
+reproduces the problem. Captures accumulate under the state directory until
+pruning removes them, and they record source filenames and function names, so
+treat an always-on default as local debug output rather than something to leave
+running on a shared machine.
 
 ## Capture a focused trace
 
@@ -39,8 +64,8 @@ thresholds enforced by this feature.
 
 | File | Contents |
 | --- | --- |
-| `summary.json` | Wall duration, process CPU seconds and average utilization, sampled peak RSS for pcode and its observed descendants, sample/error counts, tracing modes, Python version/platform |
-| `resources.jsonl` | Elapsed time and per-PID CPU seconds, CPU percentage, RSS bytes, parent PID, and thread count at each sample |
+| `summary.json` | Wall duration, process CPU seconds and average utilization, sampled peak RSS for pcode and its observed descendants, sample/error counts, tracing modes, activity totals, Python version/platform |
+| `resources.jsonl` | Elapsed time, the current activity, and per-PID CPU seconds, CPU percentage, RSS bytes, parent PID, and thread count at each sample |
 | `cpu.txt` | With `--profile-cpu`: top 50 functions by cumulative and self time |
 | `cpu.pstats` | With `--profile-cpu`: full Yappi CPU profile exported in standard `pstats` format for caller/callee analysis |
 | `allocations.json` | With `--profile-memory`: top 50 **still-live** Python allocation locations at shutdown, counts, and bytes; samples/summary also include traced current/peak bytes |
@@ -61,6 +86,28 @@ Yappi is deliberate: the installed Python 3.14 `cProfile` observes multiple thre
 and supplying a per-thread CPU clock produced negative/corrupt timings. Yappi owns
 separate thread call stacks and CPU clocks. Captures refuse to replace an already
 running Yappi profiler or its existing results.
+
+### Working cost versus idle cost
+
+Each sample names the activity in progress, and `summary.json` carries per-label
+wall/CPU totals plus `idle_seconds` / `idle_cpu_seconds` for everything outside a
+span. Today one span exists, `turn`: it opens when a turn starts streaming and
+closes when the consumer has rendered the last event, so it covers model waiting,
+tool execution, and display work for that turn. Everything else — sitting at the
+prompt, editing a draft, background metadata polling — is unattributed.
+
+That split answers the first question a resource complaint raises: whether the
+CPU goes to work you asked for or to a session doing nothing. CPU here is
+whole-process, not per-task: overlapping spans each see the whole process, so
+their CPU seconds can sum to more than the process spent, and a turn's CPU
+includes any background thread running beside it. `idle_*` is clamped at zero.
+
+### Reading a capture
+
+`python -m pcode.profiling DIR` prints a digest: how the capture ended, duration,
+process CPU and share of one core, peak RSS, the activity/idle split, peak thread
+count, the five child processes with the most CPU, and which tracer artifacts
+exist. It reads only what the capture wrote, so a killed session still reports.
 
 Inspect a trusted capture without extra packages:
 
@@ -88,12 +135,17 @@ python -m pstats /tmp/pcode-functions/cpu.pstats
   and monitor write failures; treat nonzero counts as incomplete coverage.
 - Normal exit, Python exceptions, and handled interrupts finalize the report.
   Forced termination (`SIGKILL`, default `SIGTERM`, process crash) cannot finalize
-  it; already-flushed JSONL samples remain available. No signal handlers are replaced.
+  it, but `summary.json` is rewritten atomically after every sample, so a killed
+  session still leaves the totals up to its last sample, marked `"complete":
+  false` and missing the tracer artifacts. Already-flushed JSONL samples remain
+  available. No signal handlers are replaced.
   Output errors warn without replacing the app's exit status. A failed startup
   can leave a partial directory; choose a fresh path on retry.
 - Output directories are private (0700), files 0600 on POSIX. Existing capture
-  directories are rejected, including symlinks. No uploads or automatic retention:
-  delete old captures yourself. JSONL grows with duration and child count.
+  directories are rejected, including symlinks. Nothing is uploaded. Only
+  automatically named captures are pruned, and only by name and count, never by
+  age or size: a directory you named is yours to delete. JSONL grows with
+  duration and child count.
 - No prompts, tool arguments/results, environment values, process command lines,
   frame locals, source lines, or heap contents are deliberately recorded. **Source
   filenames and function names are recorded** and can disclose local directory or

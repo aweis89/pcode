@@ -47,6 +47,7 @@ def make_app(width=80, workspace=None):
                 "/resume",
                 "/compact",
                 "/autocompact",
+                "/jobs",
                 "/resend",
                 "/worktree",
                 "/show-tasks",

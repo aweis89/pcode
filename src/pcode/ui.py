@@ -1904,7 +1904,11 @@ class Transcript:
             CommandTranscript(
                 command=invocation,
                 output=output,
-                title=label(event.name),
+                # The purpose belongs in the title, not the command line: that
+                # line is syntax-highlighted as shell and should stay runnable.
+                title=f"{label(event.name)} · {event.purpose}"
+                if event.purpose
+                else label(event.name),
                 failed=event.failed,
                 elapsed_seconds=event.elapsed_seconds,
                 max_lines=self.command_scrollback_lines,

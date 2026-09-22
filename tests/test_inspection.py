@@ -257,7 +257,7 @@ def test_real_tool_capture_survives_resume_and_later_model_failure(tmp_path):
             entry = archive.calls[0]
             assert entry.state == "failed"
             assert "printf detail" in entry.arguments.read()
-            assert "detail" in entry.result.read() and '"exit_code": 2' in entry.result.read()
+            assert "detail" in entry.result.read() and "· exit 2 ·" in entry.result.read()
             assert entry.run_id != "unavailable"
             identity, root = saved.info.id, saved.directory.parent
         finally:

@@ -9,6 +9,7 @@ from pathlib import Path
 from filelock import FileLock
 from pygments.styles import get_all_styles
 
+from pcode.profiling import PROFILE_MODES
 from pcode.transcript_log import CHAR_BUDGET
 
 # Every Pygments style installed here, including any added by a plugin package.
@@ -174,10 +175,26 @@ SETTINGS = {
         whole_number=True,
         description="Corrections offered to the model per turn when a tool call fails validation",
     ),
+    # Anthropic rejects a malformed `replacements` array roughly one call in
+    # eight; strict mode makes the wrong shape unsamplable instead. Models that
+    # cannot honor it, and schemas outside the subset it accepts, decline it on
+    # their own, so "on" costs nothing where it does not apply.
+    "strict_tools": Setting(
+        "on",
+        ("on", "off"),
+        description="Constrain edit_file arguments with Anthropic strict tool use",
+    ),
     "debug": Setting(
         "off",
         ("on", "off"),
         description="Enable prompt-cache warnings and diagnostic fingerprints",
+    ),
+    # Captures land in the state directory, oldest pruned; `--no-profile` skips
+    # one run and `--profile DIR` still names its own directory.
+    "profile": Setting(
+        "off",
+        PROFILE_MODES,
+        description="Record each session's resource use; cpu/memory add a slow tracer",
     ),
     "transcript_max_chars": Setting(
         str(CHAR_BUDGET),

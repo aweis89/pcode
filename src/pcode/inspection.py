@@ -170,6 +170,7 @@ class ToolArchive:
             "run_id",
             "detail",
             "command",
+            "purpose",
             "process_id",
             "started_at",
             "time",
@@ -195,7 +196,13 @@ class ToolArchive:
         if call is None:
             call = InspectedCall(call_id, capture(record["name"]), run_id)
             self.calls.append(call)
-        call.detail = command_text(record.get("command") or record.get("detail", ""))[:300]
+        # Purpose leads the row, command follows it: this list is the inventory
+        # of what ran, so it must keep the command a stated intention can't prove.
+        invocation = record.get("command") or record.get("detail", "")
+        purpose = record.get("purpose") or ""
+        if purpose and record.get("command"):
+            invocation = f"{purpose} · {invocation}"
+        call.detail = command_text(invocation)[:300]
         call.summary = command_text(record.get("detail", ""))[:1000]
         call.process_id = command_text(record.get("process_id") or call.process_id)
         if kind == "ToolStarted":

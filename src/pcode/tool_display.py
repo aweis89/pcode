@@ -172,6 +172,18 @@ def code_preview(code: str) -> str:
     return plain(f"{' · '.join(calls)} · {size}" if calls else size, limit=100)
 
 
+def stated_purpose(args: dict) -> str:
+    """The model's own short label for a call, sanitized, or "" when absent.
+
+    Only jobs it expects to come back to carry one, so every surface that shows
+    it must also work without it.
+    """
+    purpose = args.get("purpose")
+    if not isinstance(purpose, str) or not purpose.strip():
+        return ""
+    return plain(argument(" ".join(purpose.split())), 60)
+
+
 def target(name: str, args: dict) -> str:
     if name == "run_code":
         code = args.get("code")
@@ -186,7 +198,11 @@ def target(name: str, args: dict) -> str:
         )
     if name in {"shell", "run_command", "start_command"}:
         command = args.get("command")
-        return command_preview(command) if isinstance(command, str) else "command unavailable"
+        shown = command_preview(command) if isinstance(command, str) else "command unavailable"
+        # A stated purpose leads, but never replaces the command: the row has to
+        # keep saying what actually ran, not only what it was meant to do.
+        purpose = stated_purpose(args)
+        return f"{purpose} · {shown}" if purpose else shown
     if name == "read_tool_result":
         handle = args.get("handle")
         return argument(handle) if isinstance(handle, str) else "handle unavailable"
@@ -379,11 +395,10 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
             if (isinstance(old, str) and isinstance(new, str))
             else "Edit finished"
         )
-    elif name == "shell":
-        # The supervisor appends its own status JSON after the output and handles.
-        # Live calls use CommandFinishedEvent as the authoritative status instead.
-        status = shell_result_status(text)
-        result, failed = shell_status(status["exit_code"]) if status is not None else ("", False)
+    elif name in JOB_TOOLS:
+        # Job tools close with a `[jN · outcome · elapsed]` marker. Live `shell`
+        # calls use CommandFinishedEvent as the authoritative status instead.
+        result, failed = job_status(text)
     elif name in {"run_command", "start_command", "check_command", "stop_command"}:
         # Foreground nonzero exits and completed background processes carry this marker.
         match = re.search(r"\[exit code: (-?\d+)\]\s*$", text)
@@ -483,6 +498,9 @@ def native_result_projection(content: object) -> object:
     return "\n".join(lines)
 
 
+# Tools whose result carries a job marker, not command output of their own.
+JOB_TOOLS = frozenset({"shell", "wait_for_job", "job_output", "stop_job"})
+
 # Shell-facing tools whose captured output can be mirrored into scrollback.
 COMMAND_TOOLS = frozenset(
     {"shell", "run_command", "start_command", "check_command", "stop_command"}
@@ -494,25 +512,31 @@ EDIT_TOOLS = frozenset({"write_file", "edit_file"})
 
 def shell_status(exit_code: int | None) -> tuple[str, bool]:
     if exit_code is None:
-        return "Running in background", False
+        return "Running", False
     if exit_code == 0:
         return "", False
     return f"exit {exit_code}" + (" · Executable not found" if exit_code == 127 else ""), True
 
 
-def shell_result_status(text: str) -> dict | None:
-    try:
-        status = json.loads(text.splitlines()[-1])
-    except (ValueError, IndexError):
-        return None
-    if (
-        isinstance(status, dict)
-        and type(status.get("pid")) is int
-        and "exit_code" in status
-        and (status["exit_code"] is None or type(status["exit_code"]) is int)
-    ):
-        return status
-    return None
+# `pcode.shell_tools` ends every job result with this marker, so one parser
+# covers a finished command, an abandoned wait, and a status lookup alike.
+_JOB_MARKER = re.compile(r"\[(j\d+) · (running|stopped|exit (-?\d+)) · [^]]*\]", re.MULTILINE)
+
+
+def job_status(text: str) -> tuple[str, bool]:
+    """Summarize a job result: its id, and what became of the command."""
+    match = None
+    for match in _JOB_MARKER.finditer(text):
+        pass  # The last marker is this call's own outcome.
+    if match is None:
+        return "", False
+    identity, outcome, code = match[1], match[2], match[3]
+    if outcome == "running":
+        return f"{identity} · still running", False
+    if outcome == "stopped":
+        return f"{identity} · stopped", False
+    detail, failed = shell_status(int(code))
+    return f"{identity} · {detail}" if detail else "", failed
 
 
 # Successful planning calls update the pinned panel; failures remain in scrollback.

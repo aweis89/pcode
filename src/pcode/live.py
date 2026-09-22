@@ -62,9 +62,12 @@ from pcode.diagnostics import (
 from pcode.edit_preview import StreamingEditPreview
 from pcode.filesystem import FileChangeEvent
 from pcode.inspection import ToolArchive, capture
+from pcode.job_notices import JobNotices
+from pcode.jobs import registry as job_registry
 from pcode.mcp import MCPState
 from pcode.plan_preview import StreamingPlanPreview
 from pcode.preferences import SETTINGS, load_preferences
+from pcode.profiling import activity as profiled_activity
 from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
     CacheBust,
@@ -91,12 +94,12 @@ from pcode.tool_display import (
     command_error,
     command_text,
     delegation_detail,
+    job_status,
     label,
     native_result_detail,
     native_result_projection,
     result_detail,
-    shell_result_status,
-    shell_status,
+    stated_purpose,
     target,
 )
 from pcode.turn import TurnContext
@@ -131,6 +134,9 @@ class AgentRuntime:
         )
         self.compaction_notice = lambda text: None
         self.retry_notice = lambda text: None
+        # Shell jobs outlive both the run and the conversation, so the registry
+        # is not reset by `_clear`, `/new`, or conversation checkout.
+        self.jobs = job_registry()
         self.take_steering = lambda: []
         # Prompt overhead describes the agent's configuration, not one
         # conversation, so it outlives /new and conversation checkout.
@@ -443,6 +449,9 @@ class AgentRuntime:
     def close(self) -> None:
         if self.session:
             self.session.close()
+        # Drops the logs of finished jobs only. A still-running job is the
+        # whole point of the design and is left alone, still writing its log.
+        self.jobs.shutdown()
 
     def shell_environment(self) -> tuple[Path, dict[str, str] | None]:
         """Where and with what environment `!command` runs: the agent's own shell settings."""
@@ -493,7 +502,12 @@ class AgentRuntime:
         raise SessionError("There is no earlier prompt to resend; send a message instead.")
 
     async def stream(self, prompt: str | None) -> AsyncIterator[Event]:
-        """Retry only failed provider requests, with one budget per submitted turn."""
+        """Retry only failed provider requests, with one budget per submitted turn.
+
+        The whole generator is one profiled span, including the consumer's
+        rendering of each event, so a capture separates a session's working cost
+        from what it burns sitting at an idle prompt.
+        """
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
         send = prompt
@@ -513,9 +527,10 @@ class AgentRuntime:
                     self.history = self.history[:-1]
         for attempt in range(self.retry_attempts + 1):
             try:
-                async with aclosing(self._turn(send)) as turn:
-                    async for event in turn:
-                        yield event
+                with profiled_activity("turn"):
+                    async with aclosing(self._turn(send)) as turn:
+                        async for event in turn:
+                            yield event
             except Exception as error:
                 if (
                     attempt == self.retry_attempts
@@ -747,6 +762,11 @@ class AgentRuntime:
                     ([StepPersistence(store=self.session.store)] if self.session else [])
                     + [
                         Steering(lambda: self._consume_steering(run_id)),
+                        # Finished jobs reach the model here rather than by
+                        # being polled for; see `pcode.job_notices`. Ahead of the
+                        # checkpoint, so a saved request carries the notices it
+                        # was really sent with, as steering and compaction do.
+                        JobNotices(self.jobs),
                         context.checkpoint,
                         TokenAccounting(record=self.totals.add),
                         ContextTracking(self, context),
@@ -883,6 +903,7 @@ class AgentRuntime:
                         if event.part.tool_name in {"shell", "run_command", "start_command"}
                         and isinstance(args.get("command"), str)
                         else "",
+                        purpose=stated_purpose(args),
                     )
                     if event.part.tool_name == "delegate_task":
                         delegates[event.part.tool_call_id] = start
@@ -899,13 +920,10 @@ class AgentRuntime:
                     detail, failed = result_detail(name, args, event.part.content, outcome)
                     shell_end = shell_ends.pop(event.tool_call_id, None)
                     if name == "shell" and shell_end is not None and outcome == "success":
-                        exit_code = shell_end.exit_code
-                        # The supervisor can finish between the event snapshot and
-                        # the final result. Do not replace a later exit with "running".
-                        terminal = shell_result_status(event.part.content)
-                        if exit_code is None and terminal is not None:
-                            exit_code = terminal["exit_code"]
-                        status, failed = shell_status(exit_code)
+                        # The result's own job marker is authoritative: it is
+                        # written after the wait ends, while the event is a
+                        # snapshot the command can finish just after.
+                        status, failed = job_status(event.part.content)
                         detail = target(name, args) + (f" → {status}" if status else "")
                         if shell_end.truncated:
                             detail += " · preview capped"
@@ -958,6 +976,7 @@ class AgentRuntime:
                         if name in {"shell", "run_command", "start_command"}
                         and isinstance(args.get("command"), str)
                         else "",
+                        purpose=stated_purpose(args),
                         error=command_error(display_content)
                         if failed and name in COMMAND_TOOLS
                         else "",
