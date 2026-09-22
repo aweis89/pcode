@@ -65,6 +65,7 @@ from pcode.inspection import ToolArchive, capture
 from pcode.job_notices import JobNotices
 from pcode.jobs import registry as job_registry
 from pcode.mcp import MCPState
+from pcode.native_results import drop_unreadable_results, unreadable_native_results
 from pcode.plan_preview import StreamingPlanPreview
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.profiling import activity as profiled_activity
@@ -505,6 +506,12 @@ class AgentRuntime:
     async def stream(self, prompt: str | None) -> AsyncIterator[Event]:
         """Retry only failed provider requests, with one budget per submitted turn.
 
+        A history the current credential cannot replay is the exception: the
+        same request would be rejected every time, so it is repaired once and
+        resent outside that budget. Provider errors arrive here rather than at a
+        capability because the model request is streamed, and its failure
+        surfaces while the event stream is consumed.
+
         The whole generator is one profiled span, including the consumer's
         rendering of each event, so a capture separates a session's working cost
         from what it burns sitting at an idle prompt.
@@ -526,26 +533,40 @@ class AgentRuntime:
                     send = original
                 else:
                     self.history = self.history[:-1]
-        for attempt in range(self.retry_attempts + 1):
+        attempt = 0
+        repaired = False
+        while True:
             try:
                 with profiled_activity("turn"):
                     async with aclosing(self._turn(send)) as turn:
                         async for event in turn:
                             yield event
             except Exception as error:
-                if (
-                    attempt == self.retry_attempts
-                    or self.recovery_blocked
-                    or self.context.checkpoint.messages is None
-                    or not transient(error)
-                ):
+                if self.recovery_blocked or self.context.checkpoint.messages is None:
+                    raise
+                # Results the current login cannot decrypt fail identically on
+                # every attempt, so repair the history once rather than spend
+                # the retry budget on a request that cannot succeed.
+                if not repaired and unreadable_native_results(error):
+                    dropped = drop_unreadable_results(self.context.history)
+                    if dropped:
+                        repaired = True
+                        send = None
+                        self.retry_notice(
+                            f"Dropped {dropped} unreadable web search "
+                            f"{'result' if dropped == 1 else 'results'} from an earlier "
+                            "sign-in, and retrying…"
+                        )
+                        continue
+                if attempt == self.retry_attempts or not transient(error):
                     raise
                 # _turn saved the exact failed request, including steering and
                 # compaction. Never infer progress from the length of history.
+                attempt += 1
                 send = None
                 self.retry_notice(
                     f"{error_message(error)} Retrying provider request "
-                    f"{attempt + 1}/{self.retry_attempts}…"
+                    f"{attempt}/{self.retry_attempts}…"
                 )
                 await asyncio.sleep(1)
             else:

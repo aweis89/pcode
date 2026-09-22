@@ -538,6 +538,24 @@ def shell_status(exit_code: int | None) -> tuple[str, bool]:
 _JOB_MARKER = re.compile(r"\[(j\d+) · (running|stopped|exit (-?\d+)) · [^]]*\]", re.MULTILINE)
 
 
+# A finished job's marker, alone on the last line. Anything after the bracket
+# (a stopped job's label, a still-running job's instructions) means the line
+# carries more than a block heading can show, so it is left in place.
+_FINISHED_MARKER = re.compile(r"(?:\A|\n)\[(j\d+) · exit -?\d+ · [^]\n]*\]\Z")
+
+
+def split_outcome(output: str) -> tuple[str, str]:
+    """Split off a trailing `[jN · exit C · elapsed]` line, returning the job id.
+
+    A block heading already carries the outcome marker and the elapsed time, so
+    the job's name is all that footer adds in the UI.
+    """
+    marker = _FINISHED_MARKER.search(output)
+    if marker is None:
+        return output, ""
+    return output[: marker.start()], marker[1]
+
+
 def job_status(text: str) -> tuple[str, bool]:
     """Summarize a job result: its id, and what became of the command."""
     match = None

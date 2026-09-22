@@ -59,6 +59,7 @@ from pcode.tool_display import (
     command_text,
     label,
     plain,
+    split_outcome,
     tool_summary_lines,
 )
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
@@ -2001,17 +2002,20 @@ class Transcript:
         # Live results arrive redacted and length-bounded from the capture step;
         # sanitize again so replayed or synthesized events cannot emit controls.
         output = command_text(event.result or event.error or "").rstrip("\n")
+        # The job's closing marker repeats the heading's marker and elapsed
+        # time; only its id is new, so the heading takes that and drops the rest.
+        output, job = split_outcome(output)
+        output = output.rstrip("\n")
         if not output.strip():
             output = "(no output)"
+        title = label(event.name) + (f" · {job}" if job else "")
         self.print(
             CommandTranscript(
                 command=invocation,
                 output=output,
                 # The purpose belongs in the title, not the command line: that
                 # line is syntax-highlighted as shell and should stay runnable.
-                title=f"{label(event.name)} · {event.purpose}"
-                if event.purpose
-                else label(event.name),
+                title=f"{title} · {event.purpose}" if event.purpose else title,
                 failed=event.failed,
                 elapsed_seconds=event.elapsed_seconds,
                 max_lines=self.command_scrollback_lines,
