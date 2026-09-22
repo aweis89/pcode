@@ -326,15 +326,12 @@ def test_commands_run_while_model_waits(inspector_command):
                     pipe.send_text("first\r")
                     await asyncio.wait_for(started.wait(), 5)
                     user.reset_mock()
-                    pipe.send_text(
-                        "/theme light\r/help\r/new\r/resume\r/tree\r/nope\r/theme invalid\r"
-                    )
+                    pipe.send_text("/theme light\r/help\r/new\r/resume\r/nope\r/theme invalid\r")
                     await wait_for(lambda: "Usage: /theme" in printed.getvalue())
                     assert app.transcript.theme == "light"
                     assert "Unknown command" in printed.getvalue()
                     assert "/new is unavailable while working" in printed.getvalue()
                     assert "/resume is unavailable while working" in printed.getvalue()
-                    assert "/tree is unavailable while working" in printed.getvalue()
                     user.assert_not_called()
                     assert app.activity.busy
                     assert app.activity.queued_prompts == []

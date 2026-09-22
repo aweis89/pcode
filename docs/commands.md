@@ -93,6 +93,10 @@ candidate's size so that cost is visible before you pick.
 - `/resume`: browse and search saved conversations by their prompts; resume one in place.
 - `/tree`: [browse and fork the conversation](conversation-tree.md); select a user prompt to
   edit it, or an assistant response to continue from there. Existing branches are kept.
+  Readable at any time; forking waits for the running turn.
+- `/btw QUESTION`: [ask a side question](side-questions.md) against the context the model is
+  working with right now, without interrupting or queueing it. A bare `/btw` opens the
+  answers in a popup.
 - `/skill:NAME [text]`: run a discovered skill; see
   [Skills as slash commands](workspace.md#skills-as-slash-commands) for naming and configuration.
 - `/quit` (alias `/exit`): exit.
