@@ -324,7 +324,7 @@ session or switching providers in the model picker.
 An unset or blank value preserves the normal provider behavior.
 
 The dedicated model client ignores global proxy settings, including `NO_PROXY`,
-when this option is set. Codex token refresh and the explorer's inherited model
+when this option is set. Codex token refresh and the worker's inherited model
 calls also use that client. Exa requests and shell subprocesses retain their normal
 HTTP configuration: pcode does not set or modify `HTTP_PROXY`, `HTTPS_PROXY`, or
 `ALL_PROXY`. If those variables are already set, tools may still use those proxies.

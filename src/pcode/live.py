@@ -46,6 +46,7 @@ from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersis
 from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent, SubAgents
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
+from pcode.agent import worker_toolsets
 from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, ContextTracking, summarize
 from pcode.conversation_tree import ConversationTree
@@ -593,6 +594,7 @@ class AgentRuntime:
         # model's HTTP client. Exit closes it on success, failure, or cancellation.
         async with (
             self.agent,
+            worker_toolsets(self.mcp.toolsets()),
             self.agent.run_stream_events(
                 prompt,
                 message_history=self.history + self.pending_shell,

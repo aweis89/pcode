@@ -2,7 +2,7 @@
 
 ## Repository instructions (`AGENTS.md` / `CLAUDE.md`)
 
-Both the main agent and explorer load workspace-local `CLAUDE.md` and `AGENTS.md`.
+Both the main agent and worker load workspace-local `CLAUDE.md` and `AGENTS.md`.
 Two independent settings control additional discovery:
 
 ```sh

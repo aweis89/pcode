@@ -18,7 +18,7 @@ decoding, not just header-building helpers:
 - Tool-result rounds keep the parent conversation header.
 - A reconstructed agent using prior model-message history keeps that identity.
 - A new conversation gets a new identity.
-- Parallel Harness explorer runs inherit the model but use independent identities,
+- Parallel Harness worker runs inherit the model but use independent identities,
   stable across their own tool rounds.
 - Request-local headers do not mutate shared settings; other providers are untouched.
 - Forwarded thinking blocks reach the transient runtime sink and `Thinking…`

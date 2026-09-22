@@ -361,6 +361,61 @@ def test_tools_are_deferred_until_searched(stdio_server):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("direct", [False, True])
+def test_worker_inherits_real_stdio_tools_and_discovery(tmp_path, stdio_server, direct):
+    from pcode.agent import create_agent
+
+    servers = configured_servers()
+    servers["local"]["direct"] = direct
+    write_config(servers)
+    child_calls = 0
+
+    async def model(messages, info):
+        nonlocal child_calls
+        names = {tool.name for tool in info.function_tools}
+        results = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if "delegate_task" in names:
+            if not results:
+                yield {
+                    0: DeltaToolCall(
+                        name="delegate_task",
+                        json_args='{"agent_name":"worker","task":"Use the enabled MCP server"}',
+                    )
+                }
+            else:
+                assert "REMOTE_RESULT" in str(results[-1].content)
+                yield "Done"
+            return
+        child_calls += 1
+        if not direct and child_calls == 1:
+            assert "mcp_local_echo" not in names
+            yield {0: DeltaToolCall(name="search_tools", json_args='{"queries":["echo"]}')}
+        elif not results or results[-1].tool_name == "search_tools":
+            assert "mcp_local_echo" in names
+            yield {0: DeltaToolCall(name="mcp_local_echo", json_args='{"value":"REMOTE_RESULT"}')}
+        else:
+            assert "REMOTE_RESULT" in str(results[-1].content)
+            yield "REMOTE_RESULT"
+
+    agent = create_agent("test", tmp_path)
+    runtime = AgentRuntime(agent)
+
+    async def run():
+        await runtime.mcp.enable("local")
+        with agent.override(model=local_search_model(model)):
+            async for _ in runtime.stream("Delegate"):
+                pass
+        assert_processes_closed(stdio_server)
+
+    asyncio.run(run())
+    assert child_calls == (2 if direct else 3)
+
+
 def test_direct_server_tools_skip_search(stdio_server):
     """`direct: true` trades prompt tokens for immediate availability."""
 

@@ -210,7 +210,7 @@ def test_session_identity_survives_tool_rounds_resume_and_parallel_delegation(
         if len(requests[identity]) == 1:
             calls = (
                 [
-                    ("delegate_task", {"agent_name": "explorer", "task": f"Read sample.txt {i}"})
+                    ("delegate_task", {"agent_name": "worker", "task": f"Read sample.txt {i}"})
                     for i in range(2)
                 ]
                 if parent
