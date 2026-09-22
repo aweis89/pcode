@@ -1477,19 +1477,25 @@ def create_prompt(
         return panel_fragments(plan_rows(), session.app.output.get_size().columns - 2)
 
     current_status = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: activity.status_fragments(
-                    (system_spinner if activity.uses_system_spinner else prompt_spinner)
-                    .render(monotonic())
-                    .plain,
-                    session.app.output.get_size().columns,
+        # One column of left padding so the spinner lines up with the task rows
+        # inside the frame below instead of sitting against the terminal edge.
+        VSplit(
+            [
+                Window(width=1),
+                Window(
+                    FormattedTextControl(
+                        lambda: activity.status_fragments(
+                            (system_spinner if activity.uses_system_spinner else prompt_spinner)
+                            .render(monotonic())
+                            .plain,
+                            session.app.output.get_size().columns - 1,
+                        ),
+                        show_cursor=False,
+                    ),
+                    wrap_lines=False,
                 ),
-                show_cursor=False,
-            ),
+            ],
             height=1,
-            wrap_lines=False,
-            dont_extend_height=True,
         ),
         filter=Condition(lambda: activity.status_shown),
     )
