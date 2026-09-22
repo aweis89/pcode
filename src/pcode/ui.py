@@ -129,6 +129,10 @@ class Palette:
                 # Short-lived answers to a keystroke live above the spinner
                 # rather than in scrollback; italics mark them as chrome.
                 "activity.notice": f"italic {self.muted}",
+                # Background jobs: running ones are chrome like the spinner row;
+                # an exit nobody has been told about yet earns the accent.
+                "activity.job": self.muted,
+                "activity.job.finished": f"{self.accent} bold",
                 "frame.border": self.muted,
                 "editor.mode": "noreverse nodim bg:#b8b8b8 fg:#ffffff",
                 # Keep foreground and background paired with the terminal theme:
@@ -245,6 +249,11 @@ def system_command(text: str) -> tuple[str, str] | None:
 # A notice answers a keystroke, so it only has to outlast reading it once.
 NOTICE_SECONDS = 5.0
 NOTICE_ROWS = 6
+# Background jobs get a few rows, never the screen; `/jobs` has the full list.
+JOB_ROWS = 3
+# Command-preview keys for a watched job, so the preview can be shown for it
+# even when the model's own commands are hidden.
+WATCHED_PREFIX = "job:"
 
 
 @dataclass
@@ -275,6 +284,22 @@ class Activity:
     edit_previews: dict = field(default_factory=dict)
     notice: str = ""
     notice_expires: float = 0.0
+    # Shell jobs nothing on screen accounts for: running with no tool call
+    # waiting on them, or finished before the terminal could say so. Rows are
+    # rendered once a second by the app's job watcher, not per frame.
+    jobs: list[tuple[str, str]] = field(default_factory=list)
+    # A job whose output tail is pinned into the command preview by `/jobs watch`.
+    watched_job: str = ""
+
+    def job_rows(self, budget: int) -> list[tuple[str, str]]:
+        """The jobs row block, folded to the budget so it never crowds the editor."""
+        if budget <= 0 or not self.jobs:
+            return []
+        if len(self.jobs) <= budget:
+            return list(self.jobs)
+        shown = self.jobs[: max(0, budget - 1)]
+        remaining = len(self.jobs) - len(shown)
+        return shown + [("class:activity.job", f"\u2026 {remaining} more jobs (/jobs)")]
 
     def flash(self, text: str, seconds: float = NOTICE_SECONDS) -> None:
         """Replace the transient notice shown above the spinner.
@@ -1240,10 +1265,13 @@ def create_prompt(
             return None
         edits = transcript.show_edits and activity.edit_previews
         # A `!command` the user typed is shown while it runs whatever the
-        # scrollback setting for the model's commands says.
-        commands = (
-            transcript.command_scrollback or activity.user_command
-        ) and activity.command_outputs
+        # scrollback setting for the model's commands says, and so is a job
+        # the user asked to watch; the model's own commands follow the setting.
+        commands = activity.command_outputs
+        if not (transcript.command_scrollback or activity.user_command):
+            commands = {
+                key: event for key, event in commands.items() if key.startswith(WATCHED_PREFIX)
+            }
         if not edits and not commands:
             return None
         size = session.app.output.get_size()
@@ -1273,9 +1301,7 @@ def create_prompt(
         if budget <= 0:
             return plans, [], editor_height
         # Parallel calls share the preview; show the most recently updated call.
-        event = next(
-            reversed((activity.edit_previews if edits else activity.command_outputs).values())
-        )
+        event = next(reversed((activity.edit_previews if edits else commands).values()))
         # A sandboxed snippet is pending arguments like an edit, but it is code
         # rather than a diff: no +/- coloring, and nothing has run yet.
         code = bool(edits) and event.kind == "code"
@@ -1304,6 +1330,10 @@ def create_prompt(
         """Freeze the expiring notice for this render so height matches content."""
         return activity.notice_rows(session.app.output.get_size().columns)
 
+    @per_render
+    def job_rows():
+        return activity.job_rows(JOB_ROWS)
+
     def status_gap() -> bool:
         """Whether the live panel needs its own blank row above it.
 
@@ -1312,11 +1342,11 @@ def create_prompt(
         line. Depend only on state preview_layout already reads, so asking for
         the gap cannot re-enter the layout calculation.
         """
-        shown = activity.status_shown or bool(notice_rows())
+        shown = activity.status_shown or bool(notice_rows()) or bool(job_rows())
         return shown and transcript is not None and not transcript.ends_blank
 
     def status_height() -> int:
-        return activity.status_shown + len(notice_rows()) + status_gap()
+        return activity.status_shown + len(notice_rows()) + len(job_rows()) + status_gap()
 
     def activity_height() -> int:
         rows = plan_rows()
@@ -1415,7 +1445,21 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(notice_rows())),
     )
-    activity_panel = HSplit([status_spacer, commands, notice, current_status, plan])
+    # Below the spinner: what is running that the spinner does not cover.
+    # Shown while idle too, which is when "is the suite still going?" is asked.
+    jobs = ConditionalContainer(
+        Window(
+            FormattedTextControl(
+                lambda: panel_fragments(job_rows(), session.app.output.get_size().columns),
+                show_cursor=False,
+            ),
+            height=lambda: len(job_rows()),
+            wrap_lines=False,
+            dont_extend_height=True,
+        ),
+        filter=Condition(lambda: bool(job_rows())),
+    )
+    activity_panel = HSplit([status_spacer, commands, notice, current_status, jobs, plan])
 
     @per_render
     def queue_rows():
@@ -1523,6 +1567,7 @@ def create_prompt(
         if transcript is None or not (
             (transcript.show_edits and activity.edit_previews)
             or (transcript.command_scrollback and activity.command_outputs)
+            or any(key.startswith(WATCHED_PREFIX) for key in activity.command_outputs)
         ):
             preview_body.cache_clear()
 

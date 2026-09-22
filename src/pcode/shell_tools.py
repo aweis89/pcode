@@ -243,6 +243,7 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         """
         stream = _OutputStream(job, ctx, matching=match is not None)
         matched = False
+        job.waiting = True
         try:
             with anyio.move_on_after(timeout):
                 while True:
@@ -262,6 +263,8 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
                 job.detached = True
                 self._jobs.mark_waited(job)
             raise
+        finally:
+            job.waiting = False
         await self._emit_finished(ctx, job, truncated=stream.truncated)
         if matched:
             self._jobs.mark_waited(job)
