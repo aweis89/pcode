@@ -32,6 +32,7 @@ from pcode.agent import create_aside_agent, create_coder
 from pcode.app import PreviewApp
 from pcode.aside import Aside, Asides, settled_context
 from pcode.live import AgentRuntime
+from pcode.preferences import save_preferences
 from pcode.runtime import Message
 from pcode.ui import create_prompt
 
@@ -330,6 +331,76 @@ def test_btw_asks_and_reads_while_a_turn_is_running():
             ):
                 await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=15)
         assert [aside.answer for aside in app.asides.items] == ["side answer"]
+
+    asyncio.run(run())
+
+
+def test_a_ready_side_answer_opens_the_viewer_unless_auto_open_is_off():
+    """The answer arrives where the reader is looking, without a second /btw."""
+
+    async def run():
+        printed = StringIO()
+        answered = asyncio.Event()
+
+        class Runtime:
+            session = None
+            tree = None
+
+            async def aside(self, question, report):
+                await answered.wait()
+                report(f"answer to {question}", "")
+                return f"answer to {question}"
+
+        app = PreviewApp(
+            model="test:local",
+            runtime=Runtime(),
+            console=Console(file=printed, color_system=None, width=140),
+        )
+        browsers = []
+
+        class Browser:
+            def __init__(self, asides, **options):
+                browsers.append(self)
+
+            async def run(self):
+                await asyncio.sleep(0)
+
+        with create_pipe_input() as pipe:
+            session = None
+
+            def prompt(*args, **kwargs):
+                nonlocal session
+                session = create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+                return session
+
+            async def wait_for(predicate):
+                async with asyncio.timeout(5):
+                    while not predicate():
+                        await asyncio.sleep(0.01)
+
+            async def drive():
+                await wait_for(lambda: session is not None and session.app.is_running)
+                pipe.send_text("/btw why this file?\r")
+                await wait_for(lambda: app.asides.running == 1)
+                answered.set()
+                # Nobody typed a bare /btw: the settled answer opened the viewer.
+                await wait_for(lambda: len(browsers) == 1)
+                await wait_for(lambda: "Opening it." in printed.getvalue())
+                save_preferences(btw_auto_open="off")
+                answered.clear()
+                pipe.send_text("/btw and this one?\r")
+                await wait_for(lambda: app.asides.running == 1)
+                answered.set()
+                await wait_for(lambda: "/btw opens it." in printed.getvalue())
+                await asyncio.sleep(0.05)
+                assert len(browsers) == 1
+                pipe.send_text("/quit\r")
+
+            with (
+                patch("pcode.app.create_prompt", prompt),
+                patch("pcode.aside_ui.AsideBrowser", Browser),
+            ):
+                await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=15)
 
     asyncio.run(run())
 

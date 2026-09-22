@@ -159,6 +159,9 @@ class PreviewApp:
         self.asides = Asides()
         self.aside_requested: str | None = None
         self.aside_view_requested = False
+        # The viewer follows answers that settle while it is open, so auto-open
+        # has nothing to do then.
+        self.aside_view_open = False
         self.login_requested: str | None = None
         self.logout_requested: str | None = None
         self.compact_requested: str | None = None
@@ -1860,23 +1863,34 @@ class PreviewApp:
             "this question does not join it. /btw opens the answer."
         )
 
+    def auto_open_asides(self) -> bool:
+        """Whether a settled side answer should open the viewer by itself."""
+        if self.aside_view_open:
+            return False
+        default = SETTINGS["btw_auto_open"].default
+        return load_preferences().get("btw_auto_open", default) == "on"
+
     async def read_asides(self, output: TerminalOutput, session) -> None:
         from pcode.aside_ui import AsideBrowser
 
         self.aside_view_requested = False
         latest = self.asides.latest()
-        async with self.popup(output, session) as modal_input:
-            browser = AsideBrowser(
-                self.asides,
-                selected=latest.id if latest else None,
-                rich_theme=self.transcript.rich_theme,
-                code_theme=self.transcript.code_theme,
-                color_system=self.transcript.console.color_system,
-                input=modal_input,
-                output=session.app.output,
-                style=session.app.style,
-            )
-            await browser.run()
+        self.aside_view_open = True
+        try:
+            async with self.popup(output, session) as modal_input:
+                browser = AsideBrowser(
+                    self.asides,
+                    selected=latest.id if latest else None,
+                    rich_theme=self.transcript.rich_theme,
+                    code_theme=self.transcript.code_theme,
+                    color_system=self.transcript.console.color_system,
+                    input=modal_input,
+                    output=session.app.output,
+                    style=session.app.style,
+                )
+                await browser.run()
+        finally:
+            self.aside_view_open = False
 
     async def navigate_tree(self, identity: str | None, *, edit: bool = False) -> str:
         if self.activity.busy or self.activity.queued:
@@ -2988,8 +3002,15 @@ class PreviewApp:
 
         def aside_settled(aside):
             if aside.status == "answered":
+                # Queued as a command rather than opened here: the command
+                # consumer owns the terminal, so the viewer waits for whatever
+                # popup or command is already using it instead of racing it.
+                opening = self.auto_open_asides()
+                if opening:
+                    commands.put_nowait((queue_generation, "/btw", False))
                 self.transcript.note(
-                    f"Side answer ready ({plain(aside.question, 60)}). /btw opens it."
+                    f"Side answer ready ({plain(aside.question, 60)}). "
+                    + ("Opening it." if opening else "/btw opens it.")
                 )
             elif aside.status == "cancelled":
                 self.transcript.note("Side question stopped; nothing was changed.")
