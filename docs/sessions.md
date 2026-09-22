@@ -154,6 +154,15 @@ pcode config set retry_attempts 3   # Three extra attempts per turn, next launch
 pcode config set retry_attempts 0   # Disable automatic retries
 ```
 
+One HTTP status error is retried, because repeating it unchanged cannot help.
+Anthropic encrypts each server-side `web_search` result to the account that ran
+the search, so a session resumed under a different login is rejected with
+`Invalid encrypted_content in search_result block` — and the results are in the
+history, so every later request fails the same way. pcode drops them, keeping
+each page's title and URL and the model's own reading of the search, says how
+many went, and sends the turn again. This costs nothing from the retry budget
+above and happens once per turn; a rejection that survives it is reported.
+
 A tool call whose arguments fail the tool's schema is a separate budget. The
 model is told what was wrong and gets three corrections by default; past that
 the turn ends, naming the tool and the rejected field rather than blaming the
