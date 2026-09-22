@@ -47,9 +47,10 @@ tools; it does not generate summaries of the branch you leave.
 
 The model's history, task plan, and saved-session transcript/tool replay follow the
 selected path, not the most recently written branch. `/tools` also shows calls on
-the selected path. Earlier terminal scrollback remains visible; a branch separator
-and recent selected-path messages clarify which context is now active. Usage and
-completed-turn counters remain **session totals**, including other branches.
+the selected path. The terminal transcript is rebuilt for that path using the
+same `transcript_max_chars` budget as resume and `/redraw`; abandoned-branch output
+is no longer mixed into the displayed conversation. Usage and completed-turn
+counters remain **session totals**, including other branches.
 
 Navigation operates at **turn boundaries**, not individual tool calls. A turn
 includes the user prompt and the entire assistant/tool loop. Failed or interrupted

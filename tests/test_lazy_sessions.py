@@ -51,7 +51,7 @@ def test_first_prompt_creates_session_once(tmp_path, save):
             assert len(list_sessions(root)) == 1
             assert saved.info.turns == 2
             assert [
-                r["prompt"] for r in saved.recent_transcript() if r["kind"] == "turn_started"
+                r["prompt"] for r in saved.transcript_records() if r["kind"] == "turn_started"
             ] == [
                 "first question",
                 "follow up",

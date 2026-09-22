@@ -6,13 +6,14 @@ from dataclasses import dataclass, field
 from functools import wraps
 
 # A regenerated view replaces the terminal's scrollback, so the budget has to
-# cover what a terminal keeps. Counting entries alone is misleading: one
-# committed Markdown block costs two entries, so an entry cap evicts visible
-# history long before memory is a concern. Bound retained text instead, well
+# cover what a terminal keeps. Counting entries alone is misleading: tiny writes
+# and large Markdown blocks have very different costs, so an entry cap can evict
+# visible history long before memory is a concern. Bound retained text instead, well
 # past any terminal's scrollback, and keep a loose entry cap so a flood of tiny
 # writes cannot grow the deque without limit.
-ENTRY_LIMIT = 20_000
 CHAR_BUDGET = 2_000_000
+# Scale the tiny-write guard with the one configurable text budget (20K by default).
+CHARS_PER_ENTRY = 100
 
 
 @dataclass(frozen=True)
@@ -72,13 +73,14 @@ class Entry:
 class TranscriptLog:
     """Keep recent semantic writes, including writes hidden by display settings."""
 
-    def __init__(self, limit: int = ENTRY_LIMIT, max_chars: int = CHAR_BUDGET):
+    def __init__(self, limit: int | None = None, max_chars: int = CHAR_BUDGET):
         self.entries: deque[Entry] = deque()
-        self.limit = limit
+        self.limit = max(1, max_chars // CHARS_PER_ENTRY) if limit is None else limit
         self.max_chars = max_chars
         self.chars = 0
         self.dropped = False
         self.recording = True
+        self.capture_only = False
 
     def append(self, method, args, kwargs):
         if method == "thinking" and self.entries and self.entries[-1].method == method:
@@ -114,6 +116,8 @@ def recorded(method):
         if not log.recording:
             return method(self, *args, **kwargs)
         log.append(method.__name__, args, kwargs)
+        if log.capture_only:
+            return None
         log.recording = False
         try:
             return method(self, *args, **kwargs)

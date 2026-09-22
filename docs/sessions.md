@@ -15,8 +15,11 @@ uv run pcode -m openai-codex:gpt-5.6-sol --no-save  # opt out for a sensitive se
 `-c` / `--continue` accepts an unambiguous ID prefix (at least 8 characters) and
 restores the saved model, workspace, and structured message history. Without an ID
 it picks the newest session whose workspace is the current directory (or `-C`), not
-the newest session overall. It prints recent transcript blocks and waits for your
-next message; it does not automatically re-run tools.
+the newest session overall. It rebuilds the retained transcript using the same
+redraw path and `transcript_max_chars` budget as live scrollback (default 2,000,000
+characters), then waits for your next message; it never re-runs tools. This replaces
+the terminal's screen and scrollback, just like `/redraw`. See
+[transcript regeneration](transcript.md#regenerating-the-terminal-transcript).
 A different explicit `-m` is rejected on resume, as is a `-C` in another
 repository; `-C` pointing at another worktree of the same repository is fine and
 the session goes back to its own directory. Only one process may open

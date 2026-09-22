@@ -111,6 +111,7 @@ is only sensible on a machine where you wrote all of them.
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `theme` | `auto` | `dark`, `light`, `auto` |
+| `transcript_max_chars` | `2000000` | Positive integer, retained text budget shared by resume and redraw; applies on next launch |
 | `syntax_dark` | `gruvbox-dark` | A Pygments style for fenced code on the dark palette |
 | `syntax_light` | `gruvbox-light` | A Pygments style for fenced code on the light palette |
 | `autocompact` | `off` | `on`, `off` |

@@ -181,7 +181,7 @@ def test_resume_leaves_no_stale_running_tools(tmp_path):
         saved.append("turn_cancelled")
         for _ in range(50):
             saved.append("Message", markdown="later conversation")
-        assert not any(record["kind"] == "ToolSummary" for record in saved.recent_transcript())
+        assert any(record["kind"] == "ToolSummary" for record in saved.transcript_records())
         app = PreviewApp(
             model="test:local",
             runtime=SimpleNamespace(session=saved),

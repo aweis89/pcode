@@ -134,7 +134,7 @@ def test_command_errors_reach_live_events_and_saved_transcript(tmp_path, mode):
                 "success": "",
             }[mode]
             assert event.error == expected
-            record = next(r for r in saved.recent_transcript() if r["kind"] == "ToolSummary")
+            record = next(r for r in saved.transcript_records() if r["kind"] == "ToolSummary")
             assert record["error"] == expected
         finally:
             runtime.close()
