@@ -397,6 +397,16 @@ class Activity:
         return f"Tasks {completed}/{len(items)}"
 
     @property
+    def uses_system_spinner(self) -> bool:
+        """Tool calls animate like pcode's own work, not like model thinking.
+
+        The dots spinner means "the model is producing"; once a tool runs, the
+        wait is on the tool, so the row switches to the system glyph the way a
+        compaction or worktree row already does.
+        """
+        return self.prompt_kind != "user" or self.tools.active is not None
+
+    @property
     def status_shown(self) -> bool:
         """The live row exists only while a turn runs; the prompt is in scrollback."""
         return self.prompt_state == "running"
@@ -1319,7 +1329,7 @@ def create_prompt(
         """
         if not activity.status_shown:
             return fastest_interval / 1000
-        spinner = prompt_spinner if activity.prompt_kind == "user" else system_spinner
+        spinner = system_spinner if activity.uses_system_spinner else prompt_spinner
         interval = spinner.interval
         if activity.tasks_shown:
             interval = min(interval, plan_spinner.interval)
@@ -1470,7 +1480,7 @@ def create_prompt(
         Window(
             FormattedTextControl(
                 lambda: activity.status_fragments(
-                    (prompt_spinner if activity.prompt_kind == "user" else system_spinner)
+                    (system_spinner if activity.uses_system_spinner else prompt_spinner)
                     .render(monotonic())
                     .plain,
                     session.app.output.get_size().columns,
@@ -2059,9 +2069,10 @@ class Transcript:
         """
         if not isinstance(event, ToolSummary):
             return False
-        # One option governs every command completion, success or failure.
+        # A command always leaves at least the summary line every other tool
+        # leaves; `show_commands` governs only its mirrored output.
         if event.name in COMMAND_TOOLS:
-            return self.command_scrollback
+            return True
         if event.failed:
             return True
         return event.name not in PLAN_TOOLS and not (event.name in EDIT_TOOLS and self.show_edits)
@@ -2164,9 +2175,9 @@ class Transcript:
                 self.message(event.markdown)
             elif isinstance(event, ToolSummary):
                 if event.name in COMMAND_TOOLS:
-                    # Mirroring owns command completions. A failure whose
-                    # captured output is withheld still reports the call.
-                    if self.command_scrollback and not self.command_output(event):
+                    # Mirroring owns command completions. A call whose
+                    # captured output is withheld still reports itself.
+                    if not self.command_output(event):
                         self.command_summary(event)
                     continue
                 if event.failed and self.tool_error_scrollback:
