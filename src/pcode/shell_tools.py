@@ -113,9 +113,13 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         result, and the command keeps running.
 
         You are told when a job finishes: its exit status reaches you
-        automatically before your next model request. Never poll with `sleep`,
-        and never re-run a command to find out how the first one went. To block
-        on a job deliberately, call `wait_for_job`.
+        automatically before your next model request. Don't `sleep` in a
+        separate call to pass time, and don't re-run a command to learn how the
+        first one went. To watch a long job, call `wait_for_job` with
+        `until_output` matching the line you care about (an early failure, a
+        readiness message). When the source only gives snapshots, a
+        `while ...; do ...; sleep N; done` loop inside one background command
+        is fine; the rule is about your own turns, not the script.
 
         Args:
             command: The shell command to run.
