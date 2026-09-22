@@ -57,7 +57,11 @@ is what makes the rest of the behaviour describable.
   status line. A command that finished carries no handles: there is nothing
   left to come back to.
 - `shell(command, background=True)` returns a job handle immediately, for when
-  the model has independent work to do.
+  the model has independent work to do. A background call also carries a short
+  `purpose` ("running the end-to-end suite"), because that job is reported back
+  later, away from the call that made it. Foreground commands have no purpose:
+  you read them next to their own output, so a label would only repeat the
+  command. Displays lead with the purpose but never drop the command.
 - A wait that ends before the command does — it exceeded `timeout` (270 seconds
   maximum), or you interrupted it — returns a job handle instead. **The command
   is not killed.**

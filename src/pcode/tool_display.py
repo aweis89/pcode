@@ -186,7 +186,13 @@ def target(name: str, args: dict) -> str:
         )
     if name in {"shell", "run_command", "start_command"}:
         command = args.get("command")
-        return command_preview(command) if isinstance(command, str) else "command unavailable"
+        shown = command_preview(command) if isinstance(command, str) else "command unavailable"
+        # A stated purpose leads, but never replaces the command: the row has to
+        # keep saying what actually ran, not only what it was meant to do.
+        purpose = args.get("purpose")
+        if isinstance(purpose, str) and purpose.strip():
+            return f"{plain(argument(purpose), 60)} · {shown}"
+        return shown
     if name == "read_tool_result":
         handle = args.get("handle")
         return argument(handle) if isinstance(handle, str) else "handle unavailable"

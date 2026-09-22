@@ -713,6 +713,15 @@ with `sleep`, an interrupted wait kills the command, nothing can list what a
 session left running, and every trivial `ls` carries a handle block it will never
 use. Upstream also leaks its temp directory on every successful call.
 
+`purpose` is optional and scoped to `background=True`, not to expected duration:
+"is this slow?" is a prediction the model is bad at, while "am I backgrounding
+this?" is a decision it has already made, so it is a rule it can follow. The
+schema cost sits in the cached prefix, and the per-call cost is paid only by
+background calls. `Job.label()` falls back to the command, so nothing depends on
+the model supplying one; `Job.summary()` and `tool_display.target` keep the
+command alongside it, because a stated intention is not evidence of what is
+running.
+
 `pcode.jobs.registry()` is process-wide and deliberately not per-run: a run is
 exactly the scope a job escapes, and the worker sub-agent shares it. Tests must
 call `registry().reset()` (the `isolated_jobs` autouse fixture does).

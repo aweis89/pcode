@@ -14,7 +14,10 @@ from pcode.jobs import JobRegistry, format_duration
 
 
 def notice(job) -> str:
-    text = f"[{job.id}] {job.command} → {job.outcome()} after {format_duration(job.elapsed)}."
+    # `label` rather than `summary`: a notice arrives turns later and has to be
+    # read at a glance, so what the job was for beats how it was spelled. The
+    # command is still one `job_output` away.
+    text = f"[{job.id}] {job.label()} → {job.outcome()} after {format_duration(job.elapsed)}."
     if job.stopped:
         return text + " It was stopped, so its output may be incomplete."
     return text + f' Read its output with job_output("{job.id}").'

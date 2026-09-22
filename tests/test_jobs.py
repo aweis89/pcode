@@ -153,6 +153,25 @@ def test_background_then_wait_returns_the_result_without_rerunning(tmp_path):
     assert len(runtime.jobs.jobs) == 1
 
 
+def test_purpose_from_the_model_reaches_the_row_and_the_registry(tmp_path):
+    runtime = runtime_with(
+        [
+            (
+                "shell",
+                {
+                    "command": command("print('done')"),
+                    "background": True,
+                    "purpose": "checking the build",
+                },
+            )
+        ],
+        tmp_path,
+    )
+    (started,) = [e for e in results_of(runtime) if e.name == "shell"]
+    assert started.detail.startswith("checking the build · ")
+    assert runtime.jobs.get("j1").purpose == "checking the build"
+
+
 def test_until_output_returns_at_readiness_for_a_server_that_never_exits(tmp_path):
     source = "import time; print('listening on 8080'); time.sleep(60)"
     runtime = runtime_with(
@@ -216,6 +235,49 @@ def test_unknown_job_is_a_retry_not_a_crash(tmp_path):
     events = asyncio.run(run())
     summaries = [e for e in events if isinstance(e, ToolSummary)]
     assert summaries and summaries[0].outcome == "retry"
+
+
+def test_purpose_labels_a_job_without_hiding_what_runs(tmp_path):
+    jobs = JobRegistry()
+    plain = jobs.launch("sleep 60", cwd=tmp_path)
+    labelled = jobs.launch(
+        "docker compose -f ops/ci/e2e.yml up --abort-on-container-exit",
+        cwd=tmp_path,
+        background=True,
+        purpose="running   the end-to-end\nsuite",
+    )
+    try:
+        # Without a purpose nothing changes: the command is the label.
+        assert plain.label() == "sleep 60"
+        assert plain.summary().startswith("[j1] sleep 60 → running · ")
+        # Whitespace is normalized so a multi-line value cannot break a row.
+        assert labelled.label() == "running the end-to-end suite"
+        # The inventory keeps the command: a stated intention is not evidence
+        # of what is actually running, and this is where you decide to stop it.
+        assert "running the end-to-end suite · docker compose -f ops/ci/e2e.yml" in (
+            labelled.summary()
+        )
+    finally:
+        jobs.reset()
+
+
+def test_purpose_leads_the_tool_row_but_never_replaces_the_command():
+    from pcode.tool_display import target
+
+    args = {"command": "make test", "purpose": "running the test suite"}
+    assert target("shell", args) == "running the test suite · make test"
+    assert target("shell", {"command": "make test"}) == "make test"
+    # A non-string or blank purpose is ignored rather than rendered.
+    assert target("shell", {"command": "make test", "purpose": "  "}) == "make test"
+    assert target("shell", {"command": "make test", "purpose": 3}) == "make test"
+
+
+def test_notice_prefers_the_purpose_over_the_command(tmp_path):
+    jobs = JobRegistry()
+    job = jobs.launch("sleep 1", cwd=tmp_path, background=True, purpose="warming the cache")
+    job.exit_code, job.ended_at = 0, job.started_at + 1
+    assert notice(job).startswith("[j1] warming the cache → exit 0 after 1.0s.")
+    jobs.reset()
 
 
 def test_notice_text_names_the_job_and_how_to_read_it():
