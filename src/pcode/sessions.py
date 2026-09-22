@@ -389,8 +389,16 @@ class SavedSession:
             return None
         return path
 
-    def event(self, event) -> None:
-        self.append(type(event).__name__, **asdict(event))
+    def event(self, event, *, run_id: str = "") -> None:
+        """Record a display event, named with the turn that produced it.
+
+        Turn membership used to be inferred from file order, which only holds
+        while one turn runs at a time. An event that names its own run (tool
+        events already do) keeps that name; everything else takes the caller's.
+        """
+        data = asdict(event)
+        data["run_id"] = data.get("run_id") or run_id
+        self.append(type(event).__name__, **data)
 
     def records(self):
         """Read intact records; a hard kill may leave a torn final append."""
@@ -404,12 +412,18 @@ class SavedSession:
                     yield record
 
     def active_records(self):
+        """Records on the selected branch, by the turn each one names.
+
+        `recording` is the pre-run-id fallback: in an older journal a record
+        belongs to the last turn started before it, which is only true because
+        those sessions could never have two turns open at once.
+        """
         selected = set(self.tree.path(self.tree.active))
-        run_id = None
+        recording = None
         for record in self.records():
             if record.get("kind") == "turn_started":
-                run_id = record.get("run_id")
-            if not self.tree.nodes or run_id in selected:
+                recording = record.get("run_id")
+            if not self.tree.nodes or (record.get("run_id") or recording) in selected:
                 yield record
 
     async def history_at(self, identity: str | None):
