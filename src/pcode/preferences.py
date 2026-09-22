@@ -277,6 +277,12 @@ SETTINGS = {
         ("on", "off"),
         description="Compact the conversation automatically as the context window fills",
     ),
+    # Read when a side answer settles, so `/config set` applies without a restart.
+    "btw_auto_open": Setting(
+        "on",
+        ("on", "off"),
+        description="Open the side-answer viewer as soon as a /btw answer is ready",
+    ),
     # Read when a job finishes, so `/config set` applies without a restart.
     "job_wake": Setting(
         "on",

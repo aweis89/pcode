@@ -64,6 +64,7 @@ def test_defaults_and_path_do_not_create_files():
         "syntax_light": "gruvbox-light",
         "editing_mode": "emacs",
         "autocompact": "off",
+        "btw_auto_open": "on",
         "job_wake": "on",
         "code_mode": "off",
         "web_search": "auto",
