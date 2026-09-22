@@ -177,10 +177,13 @@ def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
                         assert runtime.mcp.enabled == {}
                         await wait_for(lambda: "remains off" in " ".join(output.getvalue().split()))
                         if outcome == "failure":
-                            assert "OAuth rejected" in output.getvalue()
-                            assert "in enable" in output.getvalue()
-                            assert "Traceback" in output.getvalue()
-                            assert "model string" not in output.getvalue()
+                            # Frames wrap at the rendered width, so a deep enough
+                            # checkout path splits "in enable" across two lines.
+                            report = " ".join(output.getvalue().split())
+                            assert "OAuth rejected" in report
+                            assert "in enable" in report
+                            assert "Traceback" in report
+                            assert "model string" not in report
                     pipe.send_text("\x03\x04")
                     await asyncio.wait_for(task, 5)
                 finally:
