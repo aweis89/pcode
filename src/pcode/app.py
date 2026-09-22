@@ -652,7 +652,7 @@ class PreviewApp:
         for job in stopped:
             # Printed here, so the idle watcher does not repeat it.
             job.announced.add("ui")
-            self.transcript.note(f"Stopped [{job.id}] {job.command}")
+            self.transcript.note(f"Stopped [{job.id}] {job.label()}")
         if not stopped:
             self.transcript.note("Nothing was running.")
 
@@ -1960,7 +1960,7 @@ class PreviewApp:
             if running:
                 self.transcript.note(
                     f"{len(running)} command(s) still running: "
-                    + ", ".join(f"[{job.id}] {job.command}" for job in running[:3])
+                    + ", ".join(f"[{job.id}] {job.label()}" for job in running[:3])
                     + ". Use /jobs to list or stop them."
                 )
         elif failure:

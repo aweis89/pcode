@@ -53,6 +53,11 @@ def format_duration(seconds: float) -> str:
     return f"{hours}h{minutes:02d}m"
 
 
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 @dataclass
 class Job:
     """One launched command and everything known about it without re-reading disk."""
@@ -63,6 +68,10 @@ class Job:
     supervisor_pid: int
     started_at: float
     background: bool
+    # Why the model ran it, in its own words, for jobs it expects to come back
+    # to. Empty for ordinary foreground commands, where the command is read
+    # next to its own result and a label would only repeat it.
+    purpose: str = ""
     pid: int | None = None
     exit_code: int | None = None
     ended_at: float | None = None
@@ -95,9 +104,20 @@ class Job:
             return "running"
         return f"exit {self.exit_code}"
 
+    def label(self) -> str:
+        """The shortest honest name for this job: its purpose, else its command."""
+        return _clip(self.purpose or self.command, 80)
+
     def summary(self) -> str:
-        """One line naming the job, its command, and where it got to."""
-        return f"[{self.id}] {self.command} → {self.outcome()} · {format_duration(self.elapsed)}"
+        """One line for the inventory view, where you decide what to stop.
+
+        Unlike `label`, this keeps the command even when a purpose exists: a
+        stated intention is not evidence of what is actually running.
+        """
+        detail = self.label()
+        if self.purpose:
+            detail += f" · {_clip(self.command, 60)}"
+        return f"[{self.id}] {detail} → {self.outcome()} · {format_duration(self.elapsed)}"
 
 
 class JobRegistry:
@@ -120,6 +140,7 @@ class JobRegistry:
         cwd: Path,
         env: Mapping[str, str] | None = None,
         background: bool = False,
+        purpose: str = "",
     ) -> Job:
         directory = Path(tempfile.mkdtemp(prefix="pcode-job-"))
         try:
@@ -146,6 +167,7 @@ class JobRegistry:
             supervisor_pid=process.pid,
             started_at=time.time(),
             background=background,
+            purpose=" ".join(purpose.split()),
         )
         self.jobs[job.id] = job
         return job
