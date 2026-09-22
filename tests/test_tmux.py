@@ -53,9 +53,11 @@ def pane(request):
     config = pathlib.Path(env["XDG_CONFIG_HOME"]) / "pcode"
     config.mkdir(parents=True, exist_ok=True)
     # The pane runs from this checkout, which ships .pcode/worktree-setup; trust
-    # it up front or the launch prompt blocks the pane.
+    # it up front or the launch prompt blocks the pane. Panes capture the screen
+    # the moment a marker shows and expect scrollback to be complete at that
+    # instant, so paced scrollback is off; its own test turns it on.
     config.joinpath("preferences.json").write_text(
-        json.dumps({"autohide_tasks": "off", "project_extensions": "on"})
+        json.dumps({"autohide_tasks": "off", "project_extensions": "on", "paced_scrollback": "off"})
     )
     reaper = tmux_reaper(server, os.getpid())
 
@@ -488,6 +490,54 @@ def test_markdown_code_stays_hidden_until_committed_once(pane):
     assert history.count("PREVIEW_MARKER") == 1
     assert "```" not in history
     assert "❯ draft survives" in history
+
+
+PACED_SCRIPT = """
+from pcode.app import PreviewApp
+from pcode.preferences import save_preferences
+from pcode.runtime import Message, TextDelta
+
+save_preferences(paced_scrollback="on")
+
+class Runtime:
+    session = None
+    turns = 0
+
+    async def stream(self, prompt):
+        self.turns += 1
+        if self.turns == 1:
+            block = "\\n".join(f"PACED_ROW_{i:03d}" for i in range(200))
+            yield TextDelta("```text\\n" + block + "\\n```\\n\\nBLOCK_SETTLED\\n\\n")
+            yield Message("")
+        else:
+            yield Message("SECOND_TURN_DONE")
+
+PreviewApp(model="test:local", runtime=Runtime()).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [PACED_SCRIPT], indirect=True)
+def test_paced_scrollback_rolls_a_block_out_and_keeps_taking_input(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    deadline = time.monotonic() + 3
+    while "PACED_ROW_000" not in scrollback(pane):
+        assert time.monotonic() < deadline, "The block never started to appear"
+        time.sleep(0.02)
+    # The block is written a few rows per frame, so the first row shows while
+    # the last is still queued.
+    assert "PACED_ROW_199" not in scrollback(pane)
+    # Typing during the roll-out reaches the editor unchanged: the handoffs stay
+    # in raw mode, so Return submits rather than landing as a newline.
+    pane("send-keys", "-t", "preview:0.0", "-l", "next")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    capture(pane, "SECOND_TURN_DONE")
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    positions = [history.index(f"PACED_ROW_{i:03d}") for i in range(200)]
+    assert positions == sorted(positions)
+    assert history.count("PACED_ROW_199") == 1
+    assert positions[-1] < history.index("BLOCK_SETTLED") < history.index("▌ next")
+    assert history.index("▌ next") < history.index("SECOND_TURN_DONE")
 
 
 def single_editor_history(pane, marker, *, frames=1):

@@ -1021,7 +1021,7 @@ class PreviewApp:
     @asynccontextmanager
     async def popup(self, output: TerminalOutput, session):
         """Give a modal exclusive terminal ownership, then restore the transcript."""
-        await output.flush()
+        await output.flush(drain=True)
         try:
             async with output.lock:
                 async with suspended_editor(session.app):
@@ -2999,7 +2999,7 @@ class PreviewApp:
                 await asyncio.gather(mcp_task, return_exceptions=True)
             if self.extensions is not None:
                 await self.extensions.close()
-            await output.flush()
+            await output.flush(drain=True)
             self.transcript.output = None
         self.print_resume_hint()
 

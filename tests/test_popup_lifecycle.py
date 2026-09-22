@@ -27,7 +27,7 @@ def test_popup_restores_transcript_after_terminal_release(monkeypatch, outcome, 
     async def run():
         lock = asyncio.Lock()
 
-        async def flush():
+        async def flush(*, drain=False):
             assert not lock.locked()
             events.append("flush")
 
