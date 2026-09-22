@@ -8,7 +8,7 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.tools import ToolDefinition
 
 from pcode.agent import create_coder
-from pcode.strict_tools import _closed, _free_form, prepare_strict_tools
+from pcode.strict_tools import _closed, _constrainable, prepare_strict_tools
 
 
 @pytest.fixture
@@ -107,12 +107,30 @@ def test_skips_schemas_with_a_free_form_object():
     }
     original = definition(schema=schema)
 
-    assert _free_form(schema) is True
+    assert _constrainable(schema) is False
     assert prepare_strict_tools(context(), [original]) == [original]
 
 
-def test_free_form_detection_ignores_closed_objects(tmp_path):
-    assert _free_form(edit_file_schema(tmp_path)) is False
+def test_skips_schemas_using_keywords_anthropic_rejects():
+    """An upstream schema change must cost the constraint, not every edit.
+
+    Anthropic 400s the whole request for an unsupported keyword, so declining is
+    the only safe answer to one we have not verified.
+    """
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string", "minLength": 1}},
+        "required": ["path"],
+    }
+    original = definition(schema=schema)
+
+    assert _constrainable(schema) is False
+    assert prepare_strict_tools(context(), [original]) == [original]
+
+
+def test_property_and_definition_names_are_not_read_as_keywords(tmp_path):
+    """`properties` and `$defs` are name -> schema maps, so their keys are free."""
+    assert _constrainable(edit_file_schema(tmp_path)) is True
 
 
 def test_reaches_the_anthropic_wire_format(tmp_path):
@@ -147,16 +165,16 @@ def installed(workspace) -> bool:
     )
 
 
-def test_not_installed_by_default(preferences, tmp_path):
+def test_installed_by_default(preferences, tmp_path):
     preferences()
 
-    assert not installed(tmp_path)
-
-
-def test_installed_when_enabled(preferences, tmp_path):
-    preferences(strict_tools="on")
-
     assert installed(tmp_path)
+
+
+def test_not_installed_when_disabled(preferences, tmp_path):
+    preferences(strict_tools="off")
+
+    assert not installed(tmp_path)
 
 
 def strict_tool_names(workspace) -> set[str]:
@@ -172,7 +190,7 @@ def strict_tool_names(workspace) -> set[str]:
     return seen
 
 
-def test_enabling_leaves_other_providers_unstrict(preferences, tmp_path):
+def test_leaves_other_providers_unstrict(preferences, tmp_path):
     """The model is the gate, not the preference: FunctionModel is not Anthropic."""
     preferences(strict_tools="on")
 
