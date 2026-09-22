@@ -12,15 +12,34 @@ from pydantic_ai.messages import UserPromptPart
 
 from pcode.jobs import JobRegistry, format_duration
 
+# A failed job's tail rides along with its notice: the model fetches it nearly
+# every time, and a request saved is worth more than the bytes. A success is
+# usually acted on without reading, so it stays a handle.
+FAILURE_TAIL_BYTES = 2_048
 
-def notice(job) -> str:
+
+def notice(job, tail: str = "") -> str:
     # `label` rather than `summary`: a notice arrives turns later and has to be
     # read at a glance, so what the job was for beats how it was spelled. The
     # command is still one `job_output` away.
     text = f"[{job.id}] {job.label()} → {job.outcome()} after {format_duration(job.elapsed)}."
     if job.stopped:
         return text + " It was stopped, so its output may be incomplete."
+    if tail.strip():
+        return (
+            text
+            + f' Read all of its output with job_output("{job.id}"). Last output:\n'
+            + tail.rstrip("\n")
+        )
     return text + f' Read its output with job_output("{job.id}").'
+
+
+def notice_for(jobs: JobRegistry, job) -> str:
+    """The notice with a failed job's output tail attached."""
+    tail = ""
+    if not job.stopped and job.exit_code not in (None, 0):
+        tail, _ = jobs.read_output(job, max_bytes=FAILURE_TAIL_BYTES)
+    return notice(job, tail)
 
 
 class JobNotices(AbstractCapability):
@@ -31,5 +50,5 @@ class JobNotices(AbstractCapability):
         # Appended to the framework's own request, so tool results stay ahead
         # of the notice and the notice is persisted with the conversation.
         for job in self.jobs.take_announcements("model"):
-            request_context.messages[-1].parts.append(UserPromptPart(notice(job)))
+            request_context.messages[-1].parts.append(UserPromptPart(notice_for(self.jobs, job)))
         return request_context

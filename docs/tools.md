@@ -77,7 +77,23 @@ is what makes the rest of the behaviour describable.
 
 Job exits are **delivered**, not polled for: a finished job is reported to the
 model before its next request, and printed to the terminal while you are idle.
-The model is instructed never to `sleep` waiting for a command.
+A failed job's notice carries the last 2 KB of its output, so the model can
+usually act without a `job_output` round trip. The model is instructed never
+to `sleep` waiting for a command.
+
+If the model ends its turn with a background job still running, nothing would
+make the next request, so the job's exit **wakes it**: the notice starts a
+turn on its own, shown as a `◈ Job finished` row rather than a quoted prompt.
+Only jobs the model launched and holds a handle for do this, never one you
+stopped or one adopted from an earlier pcode. `pcode config set job_wake off`
+turns it off; the model then hears at your next message instead.
+
+While a job runs with nothing waiting on it, a row under the spinner (or under
+the editor, while idle) shows it: `⟳ j3 · running the e2e suite · 1m42s`. A
+job that ended mid-turn shows there as `✓`/`✗` until the turn ends and
+scrollback gets its line. `/jobs watch j3` pins the job's output tail into the
+command preview, whatever `show_commands` says; `/jobs unwatch` releases it,
+and it clears itself when the job ends.
 
 Interrupting the model with a follow-up (send mode `interrupt`) stops the wait,
 not the command; the job keeps running under its id. Ctrl+C means stop working,
@@ -86,10 +102,18 @@ explicitly backgrounded survives both, because nothing was waiting on it.
 
 Jobs outlive the turn, the conversation, and pcode itself. Use
 [`/jobs`](commands.md#offline-preview-and-commands) to see what is still running, and
-`/jobs stop ID` or `/jobs stop all` to stop it. Logs of finished jobs are
-dropped on exit and the oldest are evicted after 50; a running job keeps its
-log, because the command is still writing to it. `--no-save` does not disable
-these logs.
+`/jobs stop ID` or `/jobs stop all` to stop it. A stop is `SIGTERM` to the
+job's whole process group, so a server can release its port; whatever is still
+there two seconds later gets `SIGKILL`. Logs of finished jobs are dropped on
+exit and the oldest are evicted after 50; a running job keeps its log, because
+the command is still writing to it. `--no-save` does not disable these logs.
+
+Job logs and a registry record live under `$XDG_STATE_HOME/pcode/jobs/<pid>/`
+(default `~/.local/state/pcode/jobs`). When pcode exits with jobs running, the
+record stays, and the next pcode to start **adopts** them: they appear in
+`/jobs` with fresh ids and `adopted from an earlier pcode`, and can be read,
+watched, and stopped like any other. Finished orphans are only logs nobody
+will read; they are removed with the dead record.
 
 ## Web search
 

@@ -1,0 +1,78 @@
+"""Background jobs in the live panel: the rows, the watched tail, and the wake."""
+
+import shutil
+
+import pytest
+from test_tmux import capture, input_rows
+from test_tmux import pane as pane
+
+pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+
+SCRIPT = r"""
+import os, shlex, sys, tempfile
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
+from pcode.app import PreviewApp
+from pcode.jobs import JobRegistry
+from pcode.runtime import Message
+
+class Runtime:
+    session = None
+    history = []
+    prompts = []
+
+    def __init__(self):
+        self.jobs = JobRegistry()
+
+    async def stream(self, prompt):
+        self.prompts.append(prompt)
+        yield Message("WOKEN: " + prompt.splitlines()[0])
+
+    def reset(self):
+        pass
+
+def command(source):
+    return f"{shlex.quote(sys.executable)} -u -c {shlex.quote(source)}"
+
+app = PreviewApp(model="test:local", runtime=Runtime())
+jobs = app.runtime.jobs
+jobs.launch(
+    command("import time; print('serving on 8000', flush=True); time.sleep(2.5); print('bye')"),
+    cwd=os.getcwd(), background=True, purpose="serving the docs",
+)
+jobs.launch(command("import time; time.sleep(600)"), cwd=os.getcwd())
+app.run()
+"""
+
+
+@pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
+def test_jobs_row_watch_and_wake_keep_the_prompt_compact(pane):
+    # Both jobs are in the background: nothing is waiting on either.
+    screen = capture(pane, "⟳ j2")
+    assert "⟳ j1 · serving the docs · " in screen
+    assert input_rows(screen) == 1
+
+    pane("send-keys", "-t", "preview:0.0", "/jobs watch j1", "Enter")
+    screen = capture(pane, "serving on 8000")
+    assert "$ " in screen and "Watching [j1]" in screen
+    assert input_rows(screen) == 1
+
+    # The backgrounded job ends while idle, so its notice starts a turn on its
+    # own: the model hears without the user typing, and the watch clears.
+    screen = capture(pane, "WOKEN: [j1] serving the docs → exit 0")
+    panel = screen.rsplit("WOKEN", 1)[-1]
+    assert "serving on 8000" not in panel
+    assert "⟳ j2" in screen and "⟳ j1" not in panel
+    # Scrollback has the exit line, so the ✓ row has nothing left to say.
+    assert "→ exit 0 · " in screen.split("WOKEN")[0]
+    assert "✓ j1" not in capture(pane, "⟳ j2")
+    assert input_rows(screen) == 1
+
+    for columns in (40, 100):
+        pane("resize-window", "-t", "preview:0", "-x", str(columns))
+        screen = capture(pane, "⟳ j2", columns=columns)
+        assert input_rows(screen) == 1
+
+    pane("send-keys", "-t", "preview:0.0", "/jobs stop all", "Enter")
+    screen = capture(pane, "Stopped [j2]")
+    assert "⟳ j2" not in screen
+    assert input_rows(screen) == 1

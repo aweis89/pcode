@@ -724,7 +724,20 @@ running.
 
 `pcode.jobs.registry()` is process-wide and deliberately not per-run: a run is
 exactly the scope a job escapes, and the worker sub-agent shares it. Tests must
-call `registry().reset()` (the `isolated_jobs` autouse fixture does).
+call `registry().reset()` (the `isolated_jobs` autouse fixture does). The
+process-wide registry persists under `jobs_root()/<pid>/` (job dirs plus
+`registry.json`, resolved lazily so the test env's `XDG_STATE_HOME` applies);
+`JobRegistry()` with no `state` is ephemeral and uses temp dirs. `adopt_orphans`
+treats a record whose `owner_pid` is dead as up for grabs and skips its own
+pid, so a test standing in for another process must set `_home` to a
+differently named directory and rewrite `owner_pid`.
+
+`stop` is `SIGTERM` to the group, and `refresh` escalates to `SIGKILL` after
+`STOP_GRACE_SECONDS`; nothing blocks, because the caller can be a cancellation
+handler. The supervisor survives the `SIGTERM` with a Python-level handler so it
+can still publish the command's exit. It must not use `SIG_IGN`: an ignored
+disposition is inherited across `exec`, which made the command itself immune to
+the stop the first time round.
 
 The executor polls the status file and log every 50 ms and emits at most 16,000
 bytes of events per wait; `until_output` keeps reading to 1 MiB after the event
@@ -737,6 +750,19 @@ exited, so the marker in the result — written after the wait — is authoritat
 The event's PID is the supervisor/session leader; the status JSON's PID is its
 child command, so comparing those PIDs to validate a status discards genuine
 completions, and `killpg` needs the supervisor's pid, not the command's.
+
+`JobNotices` delivers exits at the next request only. `PreviewApp.wake_prompt`
+covers the case where no request is coming: while idle, a finished job the
+model launched (`announceable`, not stopped, not adopted, not yet announced to
+`model`) is queued as a `"wake"` prompt whose text is the same notice, and
+marked announced so the capability does not repeat it. `run_live(wake=True)`
+labels the row as system work and skips the scrollback quote. The jobs rows
+(`Activity.jobs`) are computed by `refresh_jobs` on the watcher's one-second
+tick, busy or idle, never per frame; `Job.waiting` keeps a job a tool call is
+blocking on out of them, since the spinner row already names it. A watched job
+(`/jobs watch`) is a `CommandOutput` keyed `job:<id>`, which `preview_layout`
+shows even when `show_commands` is off and `run_live` leaves in place at the
+end of a turn.
 
 Cancellation consults `registry().cancel_policy`, which the app sets before
 cancelling: `detach` for a typed follow-up (abandon the wait, keep the command),
