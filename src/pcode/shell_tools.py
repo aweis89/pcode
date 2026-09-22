@@ -121,16 +121,17 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         `while ...; do ...; sleep N; done` loop inside one background command
         is fine; the rule is about your own turns, not the script.
 
+        The reported exit status is the pipeline's last command, so
+        `make test | tail` exits 0 even when make fails; read the output.
+
         Args:
             command: The shell command to run.
             background: True to get a job handle at once instead of waiting.
             timeout: Seconds to wait before handing back a job handle (max 270).
             purpose: Why you are running this, at most 8 words, present tense
-                (e.g. "running the end-to-end suite"). Give it when
-                `background=True`, since that job is reported back to you and
-                shown to the user later, away from this call. Leave it empty
-                otherwise: a command you are waiting for is read next to its
-                own output, so a label would only repeat it.
+                (e.g. "running the end-to-end suite"). Give it for background
+                or long-running commands, which are shown away from this
+                call; leave it empty for quick ones.
         """
         self._check_command(command)
         wait = self._wait_seconds(timeout)

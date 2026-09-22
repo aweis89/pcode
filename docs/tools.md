@@ -57,15 +57,18 @@ is what makes the rest of the behaviour describable.
 
 - `shell(command)` waits and returns the output with an `[j1 · exit 0 · 1.4s]`
   status line. A command that finished carries no handles: there is nothing
-  left to come back to.
+  left to come back to. The exit code is the shell's, so `make test | tail`
+  reports `exit 0` when make fails; the model is told to read the output rather
+  than trust the code for a piped command.
 - `shell(command, background=True)` returns a job handle immediately, for when
-  the model has independent work to do. A background call also carries a short
-  `purpose` ("running the end-to-end suite"), because that job is reported back
-  later, away from the call that made it. Foreground commands have no purpose:
-  you read them next to their own output, so a label would only repeat the
-  command. The purpose leads the Tasks/Tools row, the `/tools` entry and the
-  command block's header; the command itself is never dropped, and the `$` line
-  stays literal enough to copy and run.
+  the model has independent work to do. A background or long-running call also
+  carries a short `purpose` ("running the end-to-end suite"), because that job
+  is shown away from the call that made it: in a later notice, or in the jobs
+  row for minutes. Quick foreground commands have no purpose: you read them
+  next to their own output, so a label would only repeat the command. The
+  purpose leads the Tasks/Tools row, the `/tools` entry and the command block's
+  header; the command itself is never dropped, and the `$` line stays literal
+  enough to copy and run.
 - A wait that ends before the command does — it exceeded `timeout` (270 seconds
   maximum), or you typed a follow-up — returns a job handle instead. **The
   command is not killed.**
@@ -120,6 +123,18 @@ record stays, and the next pcode to start **adopts** them: they appear in
 `/jobs` with fresh ids and `adopted from an earlier pcode`, and can be read,
 watched, and stopped like any other. Finished orphans are only logs nobody
 will read; they are removed with the dead record.
+
+### Reviewing how the shell was used
+
+`make shell-report` (or `uv run python scripts/shell_report.py <id> -v`) reads
+a saved session's step store, which holds the shell results the model actually
+saw; the transcript keeps only a display projection of large ones. It counts
+calls per tool, background jobs, handles and notices, and flags the patterns
+the job model exists to remove: a `sleep` between turns, an `exit 0` over
+failure text because a pipe hid the status, a foreground wait that ran to the
+ceiling, and `cd <workspace> &&` prefixes or `cat`/`sed`/`grep` reads the file
+tools would serve. The default output is counts only; `-v` lists each call with
+a clipped, redacted command line.
 
 ## Web search
 
