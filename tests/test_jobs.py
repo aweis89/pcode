@@ -180,12 +180,15 @@ def test_running_jobs_are_adopted_by_the_next_registry(tmp_path):
 
 def test_failed_job_notice_carries_its_tail_but_a_success_does_not(tmp_path):
     jobs = JobRegistry()
+    # A purpose keeps the command text (which also contains the output) out of
+    # the label, so the asserts see only what the tail contributes.
     failed = jobs.launch(
         command("import sys; print('boom: missing module'); sys.exit(1)"),
         cwd=tmp_path,
         background=True,
+        purpose="failing",
     )
-    passed = jobs.launch(command("print('fine')"), cwd=tmp_path, background=True)
+    passed = jobs.launch(command("print('fine')"), cwd=tmp_path, background=True, purpose="passing")
     until_finished(jobs, failed, passed)
     assert "boom: missing module" in notice_for(jobs, failed)
     assert "fine" not in notice_for(jobs, passed)
