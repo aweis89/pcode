@@ -25,6 +25,7 @@ from pcode.popup_ui import (
     bind_list_paging,
     list_pane_height,
     popup_container,
+    popup_mouse,
     popup_style,
     steer_list_from_query,
 )
@@ -275,7 +276,7 @@ class ToolInspector:
             layout=Layout(popup_container(root), focused_element=self.list),
             key_bindings=keys,
             full_screen=True,
-            mouse_support=True,
+            mouse_support=popup_mouse(),
             style=popup_style(app_options.pop("style", None)),
             **app_options,
         )

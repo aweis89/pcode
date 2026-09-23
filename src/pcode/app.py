@@ -40,6 +40,7 @@ from pcode.preferences import (
 )
 from pcode.runtime import (
     CacheBust,
+    ChildPlan,
     CommandOutput,
     EditCompleted,
     JobFinished,
@@ -58,7 +59,6 @@ from pcode.stream_display import present_events, present_stream_event
 from pcode.theme import THEMES
 from pcode.tool_display import command_text, plain
 from pcode.ui import (
-    COLOR_STYLES,
     SYSTEM_COMMAND_LABELS,
     WATCHED_PREFIX,
     Activity,
@@ -117,7 +117,6 @@ class PreviewApp:
         theme: str | None = None,
         console: Console | None = None,
         *,
-        color_style: str = "palette",
         model: str | None = None,
         workspace: Path | None = None,
         runtime=None,
@@ -129,6 +128,8 @@ class PreviewApp:
         session_id: str | None = None,
     ) -> None:
         self.send_mode = load_preferences().get("send_mode", "steering")
+        # Ctrl+S picks a mode for the next prompt only; the saved default stands.
+        self.send_mode_once: str | None = None
         self.model = model
         self.initial_prompt = initial_prompt
         # Consumed by the first saved session so it shares its ID with the
@@ -160,7 +161,6 @@ class PreviewApp:
             console or Console(),
             theme or load_preferences().get("theme", SETTINGS["theme"].default),
             activity=self.activity,
-            color_style=color_style,
         )
         self.running = True
         self.inspector_requested: str | None = None
@@ -395,13 +395,6 @@ class PreviewApp:
                 "Set the palette: dark / light / auto; bare toggles dark/light",
                 self.theme,
                 THEMES,
-                group="Display",
-            ),
-            Command(
-                "/colors",
-                "Set Rich colors: palette / terminal",
-                self.colors,
-                COLOR_STYLES,
                 group="Display",
             ),
             Command(
@@ -962,11 +955,17 @@ class PreviewApp:
             self._meridian_thinking_warned = True
             self.transcript.warning(meridian_thinking_note(base, passthrough))
 
+    @property
+    def next_send_mode(self) -> str:
+        """The mode the next prompt sends with: a Ctrl+S pick, else the default."""
+        return self.send_mode_once or self.send_mode
+
     def cycle_send_mode(self) -> None:
+        """Cycle the mode for the next send only; the saved default is untouched."""
         from pcode.preferences import SEND_MODES
 
-        self.send_mode = SEND_MODES[(SEND_MODES.index(self.send_mode) + 1) % len(SEND_MODES)]
-        self.persist_defaults(send_mode=self.send_mode)
+        mode = SEND_MODES[(SEND_MODES.index(self.next_send_mode) + 1) % len(SEND_MODES)]
+        self.send_mode_once = None if mode == self.send_mode else mode
 
     def set_show_commands(self, shown: bool) -> None:
         # Reproject retained results as well as future completions.
@@ -1407,12 +1406,6 @@ class PreviewApp:
         self.transcript.flash(f"Theme: {selected}.")
         self.transcript.regenerate()
 
-    def colors(self, argument: str) -> None:
-        if argument:
-            self.transcript.color_style = argument
-        self.transcript.flash(f"Colors: {self.transcript.color_style}.")
-        self.transcript.regenerate()
-
     def syntax(self, argument: str) -> None:
         """Choose the Pygments style for code, the completion menu and the prompt.
 
@@ -1424,13 +1417,7 @@ class PreviewApp:
             SETTINGS[f"syntax_{palette}"].validate(f"syntax_{palette}", argument)
             self.transcript.syntax_themes[palette] = argument
             self.persist_defaults(**{f"syntax_{palette}": argument})
-        selected = self.transcript.syntax_themes[palette]
-        if self.transcript.color_style == "terminal":
-            self.transcript.flash(
-                f"Syntax ({palette}): {selected}, unused while /colors is terminal."
-            )
-        else:
-            self.transcript.flash(f"Syntax ({palette}): {selected}.")
+        self.transcript.flash(f"Syntax ({palette}): {self.transcript.syntax_themes[palette]}.")
         self.transcript.regenerate()
 
     def current_effort(self) -> str:
@@ -1568,7 +1555,8 @@ class PreviewApp:
         terminal the work is picked up by the command loop, which paints a
         `◈ label ▸ detail` row (distinct from a model turn) and runs the job
         in a thread. The job returns lines for the transcript; a ValueError
-        becomes the usual command error.
+        becomes the usual command error. A job started mid-turn leaves the
+        turn's live row alone and says what it is doing in a notice instead.
         """
         if self.transcript.output is None:
             for line in job():
@@ -1581,6 +1569,9 @@ class PreviewApp:
         label, detail, job = self.job_requested
         self.job_requested = None
         output = self.transcript.output
+        if self.activity.prompt_state == "running":
+            await self._perform_job_alongside(label, detail, job)
+            return
         self.activity.busy = True
         self.activity.start_prompt(label, kind="system", detail=detail)
         if output is not None:
@@ -1599,6 +1590,23 @@ class PreviewApp:
             self.activity.busy = bool(self.activity.queued_prompts)
             if output is not None:
                 output.app.invalidate()
+
+    async def _perform_job_alongside(
+        self, label: str, detail: str, job: Callable[[], list[str]]
+    ) -> None:
+        """Run a job beside a live turn without taking over or ending its row."""
+        self.activity.flash(f"{label} \u25b8 {detail}\u2026" if detail else f"{label}\u2026")
+        try:
+            lines = await asyncio.to_thread(job)
+        except ValueError as error:
+            self.transcript.error(str(error))
+        else:
+            for line in lines:
+                self.transcript.note(line)
+        finally:
+            self.activity.notice = ""
+            if self.transcript.output is not None:
+                self.transcript.output.app.invalidate()
 
     def worktree(self, argument: str) -> None:
         from pcode import worktree
@@ -1629,6 +1637,11 @@ class PreviewApp:
                 + (", uncommitted changes" if dirty else "")
             )
             return
+        if action == "merge":
+            # Allowed mid-turn: merge refuses a dirty tree, so it never runs
+            # over uncommitted edits the model has in flight.
+            self.defer("Merging worktree", linked.branch, lambda: [worktree.merge(linked)])
+            return
         if self.activity.busy:
             raise ValueError("Wait for the current turn to finish before changing the worktree.")
         if action == "resolve":
@@ -1639,8 +1652,6 @@ class PreviewApp:
                 raise ValueError("No merge conflicts to resolve; run /worktree merge first.")
             # A prompt in command clothing, dispatched like a skill.
             self.skill_requested = worktree.resolve_prompt(linked, files)
-        elif action == "merge":
-            self.defer("Merging worktree", linked.branch, lambda: [worktree.merge(linked)])
         elif action == "remove":
             if worktree.unmerged_commits(linked):
                 raise ValueError("Branch has unmerged commits; /worktree merge first.")
@@ -2150,25 +2161,26 @@ class PreviewApp:
             model += f" ({self.current_effort()})"
         # Put send mode and activity ahead of model/path metadata so they are
         # never pushed off the footer by long provider names or narrow panes.
-        segments = [("text", f"Enter: {self.send_mode}")]
+        once = " (once)" if self.send_mode_once else ""
+        segments = [("mode", f"Enter: {self.next_send_mode}{once}")]
         if self._startup_pending:
-            segments.extend([("text", " · "), ("activity", "starting")])
+            segments.extend([("sep", " · "), ("activity", "starting")])
+        # No "working" label: the spinner row above the editor already says so.
         if self.activity.busy:
-            segments.extend([("text", " · "), ("activity", "working")])
             if self.activity.queued:
                 steering = self.activity.queued_modes.count("steering")
                 queued = self.activity.queued - steering
                 if steering:
-                    segments.extend([("text", " · "), ("activity", f"{steering} steering pending")])
+                    segments.extend([("sep", " · "), ("activity", f"{steering} steering pending")])
                 if queued:
-                    segments.extend([("text", " · "), ("activity", f"{queued} queued")])
+                    segments.extend([("sep", " · "), ("activity", f"{queued} queued")])
         # Side questions are not "working": they neither block input nor end the
         # turn, so they get their own counter rather than the activity label.
         if running := self.asides.running:
-            segments.extend([("text", " · "), ("activity", f"{running} btw running")])
+            segments.extend([("sep", " · "), ("activity", f"{running} btw running")])
         if unread := self.asides.unread:
-            segments.extend([("text", " · "), ("activity", f"{unread} btw ready")])
-        segments.extend([("text", " · "), ("model", plain(model, limit=None))])
+            segments.extend([("sep", " · "), ("activity", f"{unread} btw ready")])
+        segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
         context = ""
         if self.model and not self._startup_pending and self._startup_error is None:
             from pcode.context_usage import context_label
@@ -2178,7 +2190,7 @@ class PreviewApp:
             if history is None:
                 history = getattr(self.runtime, "history", ())
             context = context_label(resolved or self.model, history)
-        segments.append(("text", context))
+        segments.append(("context", context))
         details = "".join(value for _, value in segments)
         # Only spend spare width on the path; preserve the send mode first.
         path_width = max(0, width - cell_len(details) - 4)
@@ -2189,7 +2201,7 @@ class PreviewApp:
         text.truncate(width, overflow="ellipsis")
         prefix = [("text", " ")]
         if path.plain:
-            prefix.extend([("location", path.plain), ("text", " · ")])
+            prefix.extend([("location", path.plain), ("sep", " · ")])
         segments = prefix + segments
         # Slice the already cell-truncated text, preserving its ellipsis and the
         # same narrow-terminal priorities without splitting wide characters.
@@ -2221,6 +2233,18 @@ class PreviewApp:
         self.transcript.user(text)
         self.present_events(self.preview.reply(text))
         return False
+
+    def command_failed(self, name: str, error: Exception) -> None:
+        """Report a slash command that raised, with frames saved for diagnosis."""
+        from pcode.diagnostics import stale_install
+        from pcode.live import error_message
+
+        self.transcript.error(error_message(error, unexpected=f"{name} failed"))
+        if hint := stale_install():
+            self.transcript.warning(hint)
+        saved = getattr(self.runtime, "session", None)
+        if saved is not None and (path := saved.record_error(error, run_id=name)):
+            self.transcript.note(f"Session and diagnostics: {path}")
 
     def wake_row(self, text: str) -> tuple[str, str]:
         """The live row for a turn a finished job started: a badge, not an echo."""
@@ -2305,7 +2329,11 @@ class PreviewApp:
                     + ". Use /jobs to list or stop them."
                 )
         elif failure:
+            from pcode.diagnostics import stale_install
+
             self.transcript.error(error_message(failure), title="Agent failed")
+            if hint := stale_install():
+                self.transcript.warning(hint)
         if (cancelled or failure) and self.runtime.session:
             directory = self.runtime.session.directory
             # Name the traceback file rather than the directory it sits in: the
@@ -2608,7 +2636,10 @@ class PreviewApp:
                 self.activity.queued = len(self.activity.queued_prompts)
                 self.activity.busy = True
             elif text:
-                if self.send_mode == "interrupt" and live_task and not live_task.done():
+                # One send consumes a Ctrl+S pick; the saved default returns.
+                mode = self.next_send_mode
+                self.send_mode_once = None
+                if mode == "interrupt" and live_task and not live_task.done():
                     clear_queue()
                     interrupt_pending = True
                     # The user is redirecting the model, not cancelling its
@@ -2617,14 +2648,14 @@ class PreviewApp:
                     self.set_cancel_policy("detach")
                     if not live_task.cancelling():
                         live_task.cancel()
-                queue.put_nowait((queue_generation, text, self.send_mode))
+                queue.put_nowait((queue_generation, text, mode))
                 self.activity.queued_prompts.append(text)
-                self.activity.queued_modes.append(self.send_mode)
+                self.activity.queued_modes.append(mode)
                 self.activity.queued = len(self.activity.queued_prompts)
                 # Set immediately so Enter + Ctrl+C in one input batch cancels
                 # the pending request rather than clearing the user's draft.
                 self.activity.busy = True
-                if self.send_mode == "steering" and live_task and not live_task.done():
+                if mode == "steering" and live_task and not live_task.done():
                     # Queued above, released here: the wait returns its handle
                     # and the next model request carries this message.
                     self.release_shell_waits()
@@ -2761,7 +2792,6 @@ class PreviewApp:
                         "/commands",
                         "/theme",
                         "/theme-preview",
-                        "/colors",
                         "/syntax",
                         "/show-tasks",
                         "/autohide-tasks",
@@ -2910,9 +2940,7 @@ class PreviewApp:
                         if self.links_requested:
                             await self.choose_link(output, session)
                 except Exception as error:
-                    from pcode.live import error_message
-
-                    self.transcript.error(error_message(error))
+                    self.command_failed(text.split(maxsplit=1)[0], error)
                 finally:
                     if pending_mcp or pending_model_command:
                         self.activity.busy = True
@@ -3211,7 +3239,9 @@ class PreviewApp:
                         block = ""
                     elif isinstance(event, Thinking):
                         self.transcript.events((event,))
-                    elif isinstance(event, (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated)):
+                    elif isinstance(
+                        event, (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated, ChildPlan)
+                    ):
                         continue
                     else:
                         self.present_events((event,))
@@ -3267,12 +3297,6 @@ def main() -> None:
         choices=THEMES,
         default=load_preferences().get("theme", SETTINGS["theme"].default),
         help="Color theme (default: saved preference)",
-    )
-    parser.add_argument(
-        "--color-style",
-        choices=COLOR_STYLES,
-        default="palette",
-        help="Rich output colors (default: palette; terminal uses ANSI colors)",
     )
     parser.add_argument(
         "-m",
@@ -3633,7 +3657,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.sessions:
         from pcode.sessions import compact_snapshots, list_sessions, session_root
 
-        console = Transcript(Console(), args.theme, color_style=args.color_style)
+        console = Transcript(Console(), args.theme)
         records = list_sessions(args.session_dir)
         if not records:
             console.note("No saved sessions.")
@@ -3651,7 +3675,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         return
     if args.theme_preview:
         # --theme-preview never constructs a provider, even when -m is also supplied.
-        app = PreviewApp(theme=args.theme, color_style=args.color_style)
+        app = PreviewApp(theme=args.theme)
         app.transcript.welcome()
         # There is no mutable panel in the non-interactive sample.
         app.transcript.events(app.preview.demo(), show_tools=True)
@@ -3707,7 +3731,6 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             workspace, session_id = _enter_worktree(workspace, args.worktree)
         app = PreviewApp(
             theme=args.theme,
-            color_style=args.color_style,
             model=args.model,
             workspace=workspace,
             saved_session=saved,

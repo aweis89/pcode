@@ -31,7 +31,9 @@ searches prompts across sessions (space-separated words are all required) and â†
 move the selection while you type (Ctrl+U/Ctrl+D by half a page); `r` includes
 responses, `w` includes every workspace. Tab focuses the content pane, where arrows
 scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page. Enter resumes the selected
-session in place, Esc cancels. Resuming restores the saved model, history, and plan.
+session in place, Esc cancels. `d` (or Delete) in the session list, pressed twice,
+permanently removes the selected session's directory; the active session and one
+open in another process are refused. Resuming restores the saved model, history, and plan.
 A session from another worktree of the same repository switches the workspace to
 that worktree: file tools, the shell, extensions, and skill commands are rebuilt
 there, and the worktree being left is tidied as on exit (an untouched `pcode-`
