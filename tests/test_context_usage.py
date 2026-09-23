@@ -20,18 +20,18 @@ def test_last_request_includes_cache_without_double_counting():
         ModelRequest(parts=[UserPromptPart("next draft")]),
     ]
     with patch("pcode.context_usage.context_window", return_value=200_000):
-        assert context_label("anthropic:example", history) == " · ctx: 12.5k/200k"
+        assert context_label("anthropic:example", history) == " · 12.5k/200k"
         # Checkout/resume uses the selected history; clearing doesn't retain usage.
-        assert context_label("anthropic:example", history[:1]) == " · ctx: 10k/200k"
-        assert context_label("anthropic:example", []) == " · ctx: 0/200k"
-        assert context_label("anthropic:example", [response(0)]) == " · ctx: 0/200k"
+        assert context_label("anthropic:example", history[:1]) == " · 10k/200k"
+        assert context_label("anthropic:example", []) == " · 0/200k"
+        assert context_label("anthropic:example", [response(0)]) == " · 0/200k"
 
 
 def test_unknown_model_does_not_guess_capacity():
     assert context_window("unknown-provider:gpt-5") is None
     assert context_window("openai:nonexistent-model-for-test") is None
     assert context_window("unqualified-model") is None
-    assert context_label("unknown-provider:gpt-5", [response(100)]) == " · ctx: 100/?"
+    assert context_label("unknown-provider:gpt-5", [response(100)]) == " · 100/?"
 
 
 def test_codex_never_borrows_openai_limits(monkeypatch):
@@ -48,14 +48,14 @@ def test_display_and_compaction_share_override(monkeypatch):
     monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "272000")
     assert context_window("unknown-provider:example") == 272_000
     assert effective_window("unknown-provider:example") == 272_000
-    assert context_label("unknown-provider:example", []) == " · ctx: 0/272k"
+    assert context_label("unknown-provider:example", []) == " · 0/272k"
 
 
 def test_invalid_override_does_not_crash_rendering(monkeypatch):
     from pcode.compaction import CompactionError, effective_window
 
     monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "invalid")
-    assert context_label("unknown-provider:example", []) == " · ctx: 0/?"
+    assert context_label("unknown-provider:example", []) == " · 0/?"
     with pytest.raises(CompactionError, match="positive token count"):
         effective_window("unknown-provider:example")
 
@@ -85,7 +85,7 @@ def test_zero_usage_after_compaction_keeps_the_checkpoint_estimate():
     history = [checkpoint, response(0)]
     with patch("pcode.context_usage.context_window", return_value=100_000):
         estimate = compact_tokens(context_estimate(history))
-        assert context_label("test:example", history) == f" · ctx: ~{estimate}/100k"
+        assert context_label("test:example", history) == f" · ~{estimate}/100k"
 
 
 def test_completed_request_updates_live_context_without_changing_replay_history():
@@ -103,7 +103,7 @@ def test_completed_request_updates_live_context_without_changing_replay_history(
     completed = response(12_500, cache_read_tokens=8_000)
     asyncio.run(hook.after_model_request(None, request_context=request, response=completed))
     with patch("pcode.context_usage.context_window", return_value=272_000):
-        assert context_label("test:model", runtime.context_history) == " · ctx: 12.5k/272k"
+        assert context_label("test:model", runtime.context_history) == " · 12.5k/272k"
     assert runtime.history == []
     assert len(history) == 1
 
@@ -120,9 +120,9 @@ def test_context_without_reported_usage_shows_estimate(include_response):
         history.append(ModelResponse(parts=[TextPart("Here is the explanation.")]))
     estimate = compact_tokens(context_estimate(history))
     with patch("pcode.context_usage.context_window", return_value=100_000):
-        assert context_label("test:model", history) == f" · ctx: ~{estimate}/100k"
+        assert context_label("test:model", history) == f" · ~{estimate}/100k"
         history.append(response(2_000))
-        assert context_label("test:model", history) == " · ctx: 2k/100k"
+        assert context_label("test:model", history) == " · 2k/100k"
 
 
 def test_pending_first_request_exposes_estimate_before_response():
@@ -143,7 +143,7 @@ def test_pending_first_request_exposes_estimate_before_response():
     asyncio.run(ContextTracking(runtime).before_model_request(None, request))
     with patch("pcode.context_usage.context_window", return_value=100_000):
         estimate = compact_tokens(context_estimate(history))
-        assert context_label("test:model", runtime.context_history) == f" · ctx: ~{estimate}/100k"
+        assert context_label("test:model", runtime.context_history) == f" · ~{estimate}/100k"
     assert runtime.history == []
 
 

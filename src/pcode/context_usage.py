@@ -33,7 +33,7 @@ def context_label(model: str | Model, history: Sequence[ModelMessage]) -> str:
     used = 0
     for message in reversed(history):
         if (message.metadata or {}).get(MARKER):
-            return f" · ctx: ~{compact_tokens(context_estimate(history))}/{compact_tokens(window)}"
+            return f" · ~{compact_tokens(context_estimate(history))}/{compact_tokens(window)}"
         if isinstance(message, ModelResponse) and message.usage.input_tokens:
             used = message.usage.input_tokens
             break
@@ -42,5 +42,5 @@ def context_label(model: str | Model, history: Sequence[ModelMessage]) -> str:
         # Missing usage is not an empty context (also common in resumed history).
         estimate = context_estimate(history)
         if estimate:
-            return f" · ctx: ~{compact_tokens(estimate)}/{compact_tokens(window)}"
-    return f" · ctx: {compact_tokens(used)}/{compact_tokens(window)}"
+            return f" · ~{compact_tokens(estimate)}/{compact_tokens(window)}"
+    return f" · {compact_tokens(used)}/{compact_tokens(window)}"

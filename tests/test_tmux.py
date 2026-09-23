@@ -101,6 +101,9 @@ def pane(request):
 # The spinner row leads with a `dots` frame, or a `line` frame for system work.
 BUSY_FRAMES = tuple(" " + frame + " " for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏-\\|/")
 
+# The footer always names the mode the next Enter sends with.
+SEND_MODES = ("steering", "queue", "interrupt")
+
 
 def busy(lines):
     """Whether the spinner row sits in the block directly above the editor."""
@@ -124,7 +127,7 @@ def capture(pane, expected, *, running=False, columns=None):
             and len(lines) >= 2
             and lines[-2].startswith("└")
             and (columns is None or len(lines[-2]) == columns)
-            and "Enter:" in lines[-1]
+            and any(mode in lines[-1] for mode in SEND_MODES)
             and busy(lines) == running
         ):
             return screen
@@ -153,7 +156,7 @@ SPINNER_ROW = tuple(" " + frame for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 def input_rows(screen):
     lines = screen.splitlines()
-    assert "Enter:" in lines[-1], screen
+    assert any(mode in lines[-1] for mode in SEND_MODES), screen
     assert lines[-2].startswith("└"), screen
     cursor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
     top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("┌"))
@@ -460,7 +463,11 @@ def test_cursor_is_hidden_while_committing_stream_and_returns_to_draft(pane):
         if "CURSOR_LINE_" in screen and not any(line.startswith("│❯") for line in lines):
             samples += 1
             assert not visible, snapshot
-        if "CURSOR_STREAM_DONE" in screen and "Enter:" in lines[-1] and not busy(lines):
+        if (
+            "CURSOR_STREAM_DONE" in screen
+            and any(mode in lines[-1] for mode in SEND_MODES)
+            and not busy(lines)
+        ):
             assert visible, snapshot
             assert lines[y].startswith("│❯ draft text"), snapshot
             assert x == 9, snapshot  # Three-cell prompt plus 'draft '.

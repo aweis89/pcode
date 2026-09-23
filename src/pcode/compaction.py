@@ -226,8 +226,8 @@ class ContextTracking(AbstractCapability):
 
     Installed on every run, independent of the autocompact setting. Before it
     lived here, the footer only refreshed at turn boundaries: `runtime.history`
-    is empty until the first turn completes, so a long first turn showed
-    `ctx: 0` throughout, and /status never measured prompt overhead.
+    is empty until the first turn completes, so a long first turn showed `0`
+    throughout, and /status never measured prompt overhead.
     """
 
     def __init__(self, runtime, context=None):

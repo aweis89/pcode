@@ -157,6 +157,7 @@ class Palette:
                 "bottom-toolbar.mode": self.task_heading,
                 "bottom-toolbar.model": self.accent,
                 "bottom-toolbar.context": self.muted,
+                "bottom-toolbar.context-value": self.accent,
                 "bottom-toolbar.activity": f"{self.task_heading} bold",
                 "completion-menu": f"bg:{menu.surface} {menu.foreground}",
                 "completion-menu.completion": f"bg:{menu.surface} {menu.foreground}",
