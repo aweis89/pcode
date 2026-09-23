@@ -455,6 +455,11 @@ def test_auto_success_survives_restart_and_does_not_recompact_stale_usage(tmp_pa
                 pass
         assert len(summaries) == 1
         assert len(main) == 2
+        # The journal is the only record that a turn lost its own early context.
+        started = [r for r in saved.records() if r["kind"] == "turn_started"]
+        (marker,) = [r for r in saved.records() if r["kind"] == "auto_compacted"]
+        assert marker["run_id"] in {r["run_id"] for r in started}
+        assert marker["before"] > marker["after"]
         assert "Tests failed; not yet fixed." in str(runtime.history)
         assert runtime.input_tokens > 0
         compacted = deepcopy(runtime.history)
