@@ -157,6 +157,9 @@ class PreviewApp:
         # Side questions run beside the conversation instead of in it, so they
         # keep their own records and never enter the queue.
         self.asides = Asides()
+        # The live panel spins a row per running question; share the list so
+        # it needs no refresh hook of its own.
+        self.activity.asides = self.asides.items
         self.aside_requested: str | None = None
         self.aside_view_requested = False
         # The viewer follows answers that settle while it is open, so auto-open
