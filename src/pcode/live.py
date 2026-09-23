@@ -64,7 +64,7 @@ from pcode.filesystem import FileChangeEvent
 from pcode.inspection import ToolArchive, capture
 from pcode.job_notices import JobNotices
 from pcode.jobs import registry as job_registry
-from pcode.mcp import MCPState
+from pcode.mcp import MCPState, deferred_schemas_rejected
 from pcode.native_results import drop_unreadable_results, unreadable_native_results
 from pcode.plan_preview import StreamingPlanPreview
 from pcode.preferences import SETTINGS, load_preferences
@@ -535,6 +535,7 @@ class AgentRuntime:
                     self.history = self.history[:-1]
         attempt = 0
         repaired = False
+        undeferred = False
         while True:
             try:
                 with profiled_activity("turn"):
@@ -542,6 +543,27 @@ class AgentRuntime:
                         async for event in turn:
                             yield event
             except Exception as error:
+                # Deferred MCP schemas are this request's shape, not its history:
+                # a provider that rejects them rejects the next turn too, and the
+                # session is stuck until they are sent in full. Repairing before
+                # the checkpoint guard is what keeps a failed *first* request
+                # recoverable, since there is no history to continue from yet.
+                if (
+                    not undeferred
+                    and not self.recovery_blocked
+                    and deferred_schemas_rejected(error)
+                ):
+                    if servers := self.mcp.undefer():
+                        undeferred = True
+                        if self.context.checkpoint.messages is not None:
+                            send = None
+                        listed = ", ".join(servers)
+                        self.retry_notice(
+                            "This model rejected hidden MCP tool schemas, so "
+                            f"{listed} now {'sends' if len(servers) == 1 else 'send'} "
+                            "every tool up front. Retrying…"
+                        )
+                        continue
                 if self.recovery_blocked or self.context.checkpoint.messages is None:
                     raise
                 # Results the current login cannot decrypt fail identically on

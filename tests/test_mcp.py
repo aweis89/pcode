@@ -361,6 +361,62 @@ def test_tools_are_deferred_until_searched(stdio_server):
     asyncio.run(run())
 
 
+def test_a_provider_that_rejects_hidden_schemas_keeps_the_session_working(stdio_server):
+    """A deferral the provider refuses is a request shape, so every later turn fails too."""
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    servers = configured_servers()
+    del servers["local"]["direct"]
+    write_config(servers)
+    requests = []
+    notices = []
+
+    async def model(messages, info):
+        names = {tool.name for tool in info.function_tools}
+        requests.append(names)
+        if len(requests) == 1:
+            raise ModelHTTPError(
+                400,
+                "test",
+                body={
+                    "message": "Invalid Value: 'tools.tool_search'. tools.tool_search "
+                    "requires at least one deferred tool.",
+                    "param": "tools.tool_search",
+                },
+            )
+        if "mcp_local_echo" in names and not isinstance(messages[-1].parts[0], ToolReturnPart):
+            yield {
+                0: DeltaToolCall(
+                    name="mcp_local_echo", json_args='{"value":"mcp-result"}', tool_call_id="echo-1"
+                )
+            }
+        else:
+            yield "done"
+
+    runtime = AgentRuntime(Agent(local_search_model(model)))
+    runtime.retry_notice = notices.append
+    # Nothing to gain from resending the identical request: the repair must stand alone.
+    runtime.retry_attempts = 0
+
+    async def run():
+        await runtime.mcp.enable("local")
+        async for _ in runtime.stream("hello"):
+            pass
+        # The rejected request hid the tool behind search; the retry declares it.
+        assert requests[0] == {"search_tools"}
+        assert "mcp_local_echo" in requests[1]
+        assert "mcp-result" in str(runtime.history)
+        assert notices and "local" in notices[0]
+        # And the next turn keeps the server, without deferring again.
+        async for _ in runtime.stream("again"):
+            pass
+        assert "mcp_local_echo" in requests[-1]
+        assert len(notices) == 1
+        assert_processes_closed(stdio_server)
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("direct", [False, True])
 def test_worker_inherits_real_stdio_tools_and_discovery(tmp_path, stdio_server, direct):
     from pcode.agent import create_agent

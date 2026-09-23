@@ -3,6 +3,7 @@
 import json
 import os
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -20,6 +21,24 @@ def mcp_transport(toolset: Any) -> Any:
     while (wrapped := getattr(toolset, "wrapped", None)) is not None:
         toolset = wrapped
     return getattr(getattr(toolset, "client", None), "transport", None)
+
+
+def _without_deferred_loading(toolset: Any) -> Any | None:
+    """Rebuild a toolset without its deferred-loading layer, or `None` if it has none.
+
+    Only the wrappers are rebuilt: the `MCPToolset` itself (with its client, its
+    OAuth object and whatever tokens it already holds) is the same instance, so
+    dropping deferral costs neither a reconnection nor a second sign-in.
+    """
+    from pydantic_ai.toolsets.deferred_loading import DeferredLoadingToolset
+
+    if isinstance(toolset, DeferredLoadingToolset):
+        return toolset.wrapped
+    wrapped = getattr(toolset, "wrapped", None)
+    if wrapped is None:
+        return None
+    inner = _without_deferred_loading(wrapped)
+    return None if inner is None else replace(toolset, wrapped=inner)
 
 
 def config_path() -> Path:
@@ -170,6 +189,24 @@ def build_toolset(name: str, raw: Any, *, interactive: bool = True):
         ) from None
 
 
+def deferred_schemas_rejected(error: BaseException) -> bool:
+    """Whether the provider rejected this request's hidden tool schemas.
+
+    Deferred loading is a request-shape choice, not history: a provider that
+    will not pair withheld schemas with its tool search rejects every request
+    the same way, so the session is stuck until the tools are sent in full.
+    Narrow on purpose -- a 400 naming the search surface is the provider saying
+    this pairing is impossible; any other 400 is a request pcode built wrong.
+    """
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    return (
+        isinstance(error, ModelHTTPError)
+        and error.status_code == 400
+        and ("tool_search" in str(error.body) or "defer_loading" in str(error.body))
+    )
+
+
 def _find_cause(error: BaseException, kind: type[BaseException]) -> BaseException | None:
     seen: set[int] = set()
     pending = [error]
@@ -258,3 +295,17 @@ class MCPState:
 
     def toolsets(self) -> list:
         return list(self.enabled.values())
+
+    def undefer(self) -> list[str]:
+        """Send every enabled server's schemas up front, for the rest of the session.
+
+        The recovery for a provider that rejects withheld schemas: the tools stay
+        available (at their full prompt cost) instead of the session failing every
+        request. Returns the servers that were still deferring.
+        """
+        undeferred = []
+        for name, toolset in list(self.enabled.items()):
+            if (direct := _without_deferred_loading(toolset)) is not None:
+                self.enabled[name] = direct
+                undeferred.append(name)
+        return undeferred

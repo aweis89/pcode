@@ -241,6 +241,20 @@ to `False` so turn cleanup closes subprocesses. Keep the real-stdio tests in
 schemas alone is insufficient to prevent disabled servers from connecting;
 disabled servers must not enter the agent's toolset collection at all.
 
+Deferral is only half a contract: a model whose profile claims `ToolSearchTool`
+but no `tool_deferral_mode` sends `tool_search` on the wire and withholds the
+deferred schemas instead of declaring them, which OpenAI Responses rejects with
+`400 tools.tool_search requires at least one deferred tool` — for every request
+of that session, not just the one. `openai_codex_model_profile` inherits the
+first from `openai_model_profile` and the second only from
+`OpenAIProvider.model_profile`, so `agent.codex_model` supplies the deferral and
+addition modes itself; keep them if that profile is revisited on an upgrade.
+`AgentRuntime.stream` also treats such a 400 as a request shape rather than a
+history: `MCPState.undefer()` rebuilds the wrappers around the *same*
+`MCPToolset` (keeping its connection and OAuth tokens) without the
+`DeferredLoadingToolset` layer and the turn is sent again. Both are pinned by
+`tests/test_codex_profile.py` and `tests/test_mcp.py`.
+
 ### Codex sign-in
 
 `src/pcode/codex_login.py` uses the installed Pydantic AI public
