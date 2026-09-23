@@ -586,6 +586,7 @@ class SavedSession:
                 "TextDelta",
                 "Message",
                 "ToolSummary",
+                "JobFinished",
                 "EditCompleted",
                 "CacheBust",
                 "steering",

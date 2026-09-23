@@ -3,11 +3,14 @@
 import shlex
 import sys
 import time
+from io import StringIO
 
 import pytest
+from rich.console import Console
 
 from pcode.app import PreviewApp
-from pcode.jobs import JobRegistry
+from pcode.jobs import Job, JobRegistry
+from pcode.preferences import save_preferences
 
 
 class Runtime:
@@ -87,7 +90,7 @@ def until_finished(jobs, *watched):
     raise AssertionError("jobs did not finish")
 
 
-def test_jobs_rows_show_background_work_and_unreported_exits(tmp_path):
+def test_jobs_rows_show_only_running_background_work(tmp_path):
     app, jobs = app_with_jobs()
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path, purpose="serving")
     assert app.refresh_jobs() is True
@@ -100,27 +103,91 @@ def test_jobs_rows_show_background_work_and_unreported_exits(tmp_path):
     failed = jobs.launch(command("import sys; sys.exit(2)"), cwd=tmp_path, background=True)
     until_finished(jobs, failed)
     app.refresh_jobs()
-    texts = [text for _, text in app.activity.jobs]
-    assert any(text.startswith("\u2717 j2 ") and "exit 2" in text for text in texts), texts
-    # Once scrollback has it, the row is gone: the exit is no longer news.
+    assert [text[:17] for _, text in app.activity.jobs] == ["\u27f3 j1 \u00b7 serving \u00b7 "]
+    # Hiding the completed job must not consume its deferred completion notice.
+    assert "ui" not in failed.announced
     assert [job.id for job in app.report_finished_jobs()] == ["j2"]
     app.refresh_jobs()
     assert [text[:17] for _, text in app.activity.jobs] == ["\u27f3 j1 \u00b7 serving \u00b7 "]
     jobs.stop(live)
 
 
-def test_jobs_rows_put_running_work_ahead_of_older_exits(tmp_path):
+def test_jobs_rows_exclude_older_exits(tmp_path):
     app, jobs = app_with_jobs()
     done = jobs.launch(command("import sys; sys.exit(3)"), cwd=tmp_path, background=True)
     until_finished(jobs, done)
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path, purpose="serving")
     app.refresh_jobs()
-    # The exit is older, but the folded rows must not spend themselves on it.
-    assert [text.split(" \u00b7 ")[0] for _, text in app.activity.jobs] == [
-        f"\u27f3 {live.id}",
-        f"\u2717 {done.id}",
-    ]
+    # Finished jobs must not occupy even an overflow row.
+    assert [text.split(" \u00b7 ")[0] for _, text in app.activity.jobs] == [f"\u27f3 {live.id}"]
+    assert app.activity.job_rows(1) == app.activity.jobs
     jobs.stop(live)
+
+
+@pytest.mark.parametrize("busy", [False, True])
+@pytest.mark.parametrize("show_commands", ["off", "on"])
+@pytest.mark.parametrize("outcome", ["success", "failure", "stopped"])
+def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
+    tmp_path, busy, show_commands, outcome
+):
+    save_preferences(show_commands=show_commands, tool_error_scrollback="on")
+    stream = StringIO()
+    app = PreviewApp(
+        model="test:local",
+        runtime=Runtime(),
+        console=Console(file=stream, width=100, color_system=None),
+    )
+    app.activity.busy = busy
+    jobs = app.runtime.jobs
+    job = Job(
+        id="j12",
+        command="make test",
+        directory=tmp_path,
+        supervisor_pid=0,
+        started_at=time.time(),
+        background=True,
+        purpose="running the suite",
+    )
+    jobs.jobs[job.id] = job
+    job.output_path.write_text("test output\n")
+    assert app.refresh_jobs() is True
+    assert len(app.activity.jobs) == 1
+
+    job.ended_at = job.started_at + 8.8
+    job.stopped = outcome == "stopped"
+    job.exit_code = None if job.stopped else 0 if outcome == "success" else 2
+    assert app.refresh_jobs() is True
+    assert app.activity.jobs == []
+    assert app.activity.job_rows(3) == []
+    assert job.announced == set()
+    assert stream.getvalue() == ""
+    assert app.refresh_jobs() is False
+
+    # The turn-end/idle reporter, not the live-row refresh, owns the completion.
+    app.activity.busy = False
+    assert app.report_finished_jobs() == [job]
+    printed = stream.getvalue()
+    marker = "✓" if outcome == "success" else "✗"
+    assert f"{marker} Run · background" in printed
+    assert "j12" in printed and "8.8s" in printed
+    assert "make test" in printed
+    assert job.outcome() in printed
+    if show_commands == "on":
+        assert "$ make test" in printed
+        assert "running the suite" in printed
+        assert "test output" in printed
+    else:
+        assert "test output" not in printed
+    assert app.report_finished_jobs() == []
+    assert stream.getvalue() == printed
+    # Completion uses the retained command renderer, so redraws keep it too.
+    stream.seek(0)
+    stream.truncate()
+    for objects, end, soft_wrap in app.transcript.replay():
+        app.transcript.console.print(*objects, end=end, soft_wrap=soft_wrap)
+    assert stream.getvalue() == printed
+    # Terminal delivery does not consume the model's independent notification.
+    assert jobs.take_announcements("model") == [job]
 
 
 def test_wake_prompt_is_the_notice_for_jobs_the_model_launched(tmp_path, monkeypatch):

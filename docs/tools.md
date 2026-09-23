@@ -92,13 +92,20 @@ stopped or one adopted from an earlier pcode. `pcode config set job_wake off`
 turns it off; the model then hears at your next message instead.
 
 While a job runs with nothing waiting on it, a row under the spinner (or under
-the editor, while idle) shows it: `⟳ j3 · running the e2e suite · 1m42s`. A
-job that ended mid-turn shows there as `✓`/`✗` until the turn ends and
-scrollback gets its line. Only three rows fit: running jobs come first and
-exits are folded into a `… N more jobs (/jobs)` line, since scrollback reports
-an exit anyway. `/jobs watch j3` pins the job's output tail into the
-command preview, whatever `show_commands` says; `/jobs unwatch` releases it,
-and it clears itself when the job ends.
+the editor, while idle) shows it: `⟳ j3 · running the e2e suite · 1m42s`. The
+row disappears when the job finishes, including failures. Its completion goes
+to scrollback at the end of the turn, or immediately while idle, using the
+normal `Run` presentation with a `background` label, job id, and elapsed time.
+The same `show_commands` and `tool_error_scrollback` settings control captured
+output as for foreground commands. Only three live rows fit; additional running
+jobs fold into a `… N more jobs (/jobs)` line. `/jobs watch j3` pins the job's
+output tail into the command preview, whatever `show_commands` says;
+`/jobs unwatch` releases it, and it clears itself when the job ends.
+
+Routine `wait_for_job` and `job_output` results stay in `/tools`, not scrollback:
+they inspect an existing job rather than run another command. This includes a
+wait that returns early and a read that reports a nonzero command exit. Errors
+in the helper itself, such as an unknown job id, still appear in scrollback.
 
 A follow-up you type while the model waits on a command ends the wait, not the
 command; the job keeps running under its id. In send mode `steering` the tool
