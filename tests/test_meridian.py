@@ -355,3 +355,36 @@ def test_identity_is_request_local_and_meridian_only():
         assert await capability.before_model_request(SimpleNamespace(), request) is request
 
     asyncio.run(run())
+
+
+def test_identity_moves_to_a_new_session_after_compaction():
+    """Meridian resumes the uncompacted transcript unless the session changes."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
+    from pcode.compaction import SUMMARY_PREFIX
+    from pcode.meridian import session_identity
+
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="Explore the repo")]),
+        ModelResponse(parts=[TextPart(content="Done")]),
+    ]
+    assert session_identity("conversation", history) == "conversation"
+    assert session_identity("conversation", []) == "conversation"
+
+    def compacted(summary):
+        return [
+            ModelRequest(parts=[UserPromptPart(content=SUMMARY_PREFIX + summary)]),
+            *history[1:],
+        ]
+
+    first = session_identity("conversation", compacted("Goals: explore."))
+    assert first.startswith("conversation.") and first != "conversation"
+    # Stable across the tool rounds and resumes that follow one compaction...
+    assert session_identity("conversation", compacted("Goals: explore.")) == first
+    # ...and new again when a later compaction rewrites the summary.
+    assert session_identity("conversation", compacted("Goals: explore; tests pass.")) != first
+    # A prompt that merely mentions the prefix later on is not a summary.
+    quoted = [
+        ModelRequest(parts=[UserPromptPart(content="What does " + SUMMARY_PREFIX + " mean?")])
+    ]
+    assert session_identity("conversation", quoted) == "conversation"
