@@ -315,9 +315,22 @@ def codex_model(model: str) -> OpenAICodexModel:
     # Subscription endpoints reject the explicit cache markers that Harness
     # Planning adds after write_plan. Keep the native provider/auth/model name;
     # override only this advertised capability (verified against AI 2.43.0).
+    #
+    # The Codex profile inherits `ToolSearchTool` from the OpenAI profile but not
+    # the deferral/addition modes, which `OpenAIProvider.model_profile` adds and
+    # `OpenAICodexProvider` does not. Without them every hidden tool is withheld
+    # rather than declared as deferred, and the wire carries `tool_search` with
+    # nothing to search: the endpoint answers `400 tools.tool_search requires at
+    # least one deferred tool` for the whole session. Deferred MCP tools are
+    # searched, revealed and called normally with these set (live-verified
+    # against gpt-6-astra on the subscription endpoint).
     return OpenAICodexModel(
         model.removeprefix("openai-codex:"),
-        profile=OpenAIModelProfile(openai_supports_prompt_cache_breakpoints=False),
+        profile=OpenAIModelProfile(
+            openai_supports_prompt_cache_breakpoints=False,
+            tool_deferral_mode="with_tool_search",
+            tool_addition_mode="with_definitions",
+        ),
         **({"provider": provider} if provider is not None else {}),
     )
 

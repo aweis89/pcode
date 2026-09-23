@@ -166,6 +166,12 @@ otherwise by a local `search_tools` tool that pcode shows as **Find tools**.
 Either way the revealed tools keep their `mcp_NAME_TOOL` names, and the search
 exchange is appended to history, so the prompt cache prefix stays intact.
 
+If a provider rejects a request that hides schemas behind its own tool search,
+pcode stops deferring for the rest of the session, says so, and sends the turn
+again with every tool declared up front, as `"direct": true` would. The tools
+stay usable at their full prompt cost rather than the session failing every
+request.
+
 ## Activation and token usage
 
 - `/mcp enable NAME` makes that server's tools available on subsequent turns in
@@ -173,6 +179,10 @@ exchange is appended to history, so the prompt cache prefix stays intact.
   Switching models keeps the selection. Repeating `enable` is a no-op.
 - OAuth servers connect during `/mcp enable`, then disconnect while retaining
   their tokens. Non-OAuth servers still connect only on the next turn.
+  Sign-in is challenge-driven: a server that answers `initialize` and
+  `tools/list` without credentials and only rejects the tool calls themselves
+  never triggers the browser flow at enable time, so `/mcp enable` succeeds
+  silently and the first authentication error arrives mid-turn.
   All enabled servers reconnect for each turn and close afterward, including on
   failure or cancellation; local subprocesses do not stay running between turns.
 - `/mcp disable NAME` removes those tools from subsequent model requests. MCP
