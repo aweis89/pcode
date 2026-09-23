@@ -95,6 +95,22 @@ BRANCH_POLL_SECONDS = 30
 """Safety net for a checkout made outside this session; turns refresh it directly."""
 
 
+def meridian_thinking_note(base: str | None, passthrough: bool | None) -> str:
+    if passthrough:
+        return "Meridian forwards readable thinking, so it appears in scrollback."
+    if passthrough is False:
+        return (
+            f"The Meridian proxy at {base} is not forwarding thinking, so none will appear. "
+            f"Turn on passthrough → Thinking Passthrough at {base}/settings "
+            "(this changes it for every client of that proxy)."
+        )
+    return (
+        "Meridian must forward readable thinking for scrollback. Managed Meridian does; "
+        "for an external proxy, check passthrough → Thinking Passthrough in its /settings "
+        "page. This toggle only changes pcode's display."
+    )
+
+
 class PreviewApp:
     def __init__(
         self,
@@ -167,6 +183,7 @@ class PreviewApp:
         # has nothing to do then.
         self.aside_view_open = False
         self.login_requested: str | None = None
+        self._meridian_thinking_warned = False
         self.logout_requested: str | None = None
         self.compact_requested: str | None = None
         # /resend produces a model request, so it leaves the command path here.
@@ -921,13 +938,29 @@ class PreviewApp:
                 + " (next turn). Enabling thinking can increase latency and token usage."
             )
         if self.activity.show_thinking and (self.model or "").startswith("meridian:"):
-            lines.append(
-                "Meridian must forward readable thinking for scrollback. "
-                "Managed Meridian enables Thinking Passthrough in its private instance. "
-                "For an external proxy, check passthrough → Thinking Passthrough in "
-                "Meridian's /settings page; this toggle only changes pcode's display."
-            )
+            lines.append(meridian_thinking_note(*self.meridian_thinking_state()))
         self.transcript.flash("\n".join(lines))
+
+    def meridian_thinking_state(self) -> tuple[str | None, bool | None]:
+        """(proxy URL, whether it forwards thinking) for the current Meridian model."""
+        model = getattr(getattr(self.runtime, "agent", None), "model", None)
+        if getattr(model, "system", None) != "meridian":
+            return None, None
+        from pcode.meridian import thinking_passthrough
+
+        base = str(model.base_url).rstrip("/")
+        return base, thinking_passthrough(base, getattr(model.client, "api_key", None))
+
+    async def warn_meridian_thinking(self) -> None:
+        """Say once when thinking display is on but the proxy drops thinking."""
+        if self._meridian_thinking_warned or not self.activity.show_thinking:
+            return
+        if not (self.model or "").startswith("meridian:"):
+            return
+        base, passthrough = await asyncio.to_thread(self.meridian_thinking_state)
+        if passthrough is False:
+            self._meridian_thinking_warned = True
+            self.transcript.warning(meridian_thinking_note(base, passthrough))
 
     def cycle_send_mode(self) -> None:
         from pcode.preferences import SEND_MODES
@@ -1036,6 +1069,7 @@ class PreviewApp:
         self.transcript.note(f"Model: {model}. Continuing the current conversation.")
         self.show_startup_context()
         self.warn_without_credentials()
+        await self.warn_meridian_thinking()
 
     @asynccontextmanager
     async def popup(self, output: TerminalOutput, session):
@@ -2411,6 +2445,7 @@ class PreviewApp:
                 await self._initialize_runtime()
                 self.show_startup_context()
                 self.warn_without_credentials()
+                await self.warn_meridian_thinking()
                 saved = getattr(self.runtime, "session", None)
                 if self.model and saved:
                     self.transcript.retained_note(f"Saving session: {saved.info.id}")

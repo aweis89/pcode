@@ -23,7 +23,6 @@ def environment(monkeypatch, tmp_path):
         "PCODE_LLM_PROXY",
         "PCODE_MERIDIAN_BASE_URL",
         "PCODE_MERIDIAN_API_KEY",
-        "PCODE_MERIDIAN_MANAGED",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-upstream-key")
@@ -388,3 +387,118 @@ def test_identity_moves_to_a_new_session_after_compaction():
         ModelRequest(parts=[UserPromptPart(content="What does " + SUMMARY_PREFIX + " mean?")])
     ]
     assert session_identity("conversation", quoted) == "conversation"
+
+
+def failed_run(monkeypatch, handle, model="meridian:claude-opus-5"):
+    """Run one real Anthropic-SDK request against `handle` and return its error."""
+    from pydantic_ai import Agent
+
+    from pcode.meridian import meridian_model
+
+    original = httpx2.AsyncClient
+
+    class Client(original):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs, transport=httpx2.MockTransport(handle))
+
+    monkeypatch.setattr("pcode.meridian.httpx2.AsyncClient", Client)
+
+    async def run():
+        agent = Agent(meridian_model(model))
+        with pytest.raises(Exception) as error:
+            await agent.run("hi")
+        return error.value
+
+    return asyncio.run(run())
+
+
+def test_unreachable_proxy_names_the_proxy(monkeypatch):
+    from pcode.live import error_message
+
+    def refuse(request):
+        raise httpx2.ConnectError("refused", request=request)
+
+    message = error_message(failed_run(monkeypatch, refuse))
+    assert "Meridian is not answering at http://127.0.0.1:3456" in message
+    assert "meridian_managed" in message
+
+
+@pytest.mark.parametrize(
+    "provider_message,expected",
+    [
+        ("Claude authentication expired or invalid. Run 'claude login'.", "/login meridian"),
+        ("Invalid or missing API key", "PCODE_MERIDIAN_API_KEY"),
+    ],
+)
+def test_rejected_login_points_at_the_right_fix(monkeypatch, provider_message, expected):
+    from pcode.live import error_message
+
+    def reject(request):
+        body = {
+            "type": "error",
+            "error": {"type": "authentication_error", "message": provider_message},
+        }
+        return httpx2.Response(401, json=body)
+
+    assert expected in error_message(failed_run(monkeypatch, reject))
+
+
+def test_other_providers_keep_their_messages(monkeypatch):
+    """A failure on a non-Meridian URL never gets Meridian advice."""
+    from pcode.meridian import failure_hint
+
+    monkeypatch.setenv("PCODE_MERIDIAN_BASE_URL", "http://127.0.0.1:4567")
+
+    def refuse(request):
+        raise httpx2.ConnectError("refused", request=request)
+
+    error = failed_run(monkeypatch, refuse)
+    assert failure_hint(error) is not None
+    monkeypatch.setenv("PCODE_MERIDIAN_BASE_URL", "http://127.0.0.1:9999")
+    assert failure_hint(error) is None
+    assert failure_hint(ValueError("no request")) is None
+
+
+@pytest.mark.parametrize(
+    "response,expected",
+    [
+        (httpx2.Response(200, json={"passthrough": {"thinkingPassthrough": True}}), True),
+        (httpx2.Response(200, json={"passthrough": {"thinkingPassthrough": False}}), False),
+        (httpx2.Response(200, json={"passthrough": {}}), None),
+        (httpx2.Response(200, text="not json"), None),
+        (httpx2.ConnectError("refused"), None),
+    ],
+)
+def test_thinking_passthrough_lookup(monkeypatch, response, expected):
+    from pcode.meridian import thinking_passthrough
+
+    def get(url, **kwargs):
+        assert url == "http://127.0.0.1:3456/settings/api/features"
+        assert kwargs["headers"] == {"x-api-key": "key"}
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr("pcode.meridian.httpx2.get", get)
+    assert thinking_passthrough("http://127.0.0.1:3456/", "key") is expected
+
+
+def test_thinking_warning_is_shown_once_and_only_when_dropped(monkeypatch, tmp_path):
+    from pcode.app import meridian_thinking_note
+
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output))
+    app.model = "meridian:claude-opus-5"
+    app.activity.show_thinking = True
+    state = ["http://127.0.0.1:3456", False]
+    monkeypatch.setattr(app, "meridian_thinking_state", lambda: tuple(state))
+
+    async def run():
+        await app.warn_meridian_thinking()
+        await app.warn_meridian_thinking()
+
+    asyncio.run(run())
+    assert output.getvalue().count("not forwarding thinking") == 1
+    assert "http://127.0.0.1:3456/settings" in output.getvalue()
+    assert "appears in scrollback" in meridian_thinking_note("x", True)
+    assert "Managed Meridian does" in meridian_thinking_note(None, None)
