@@ -168,7 +168,7 @@ def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
     assert app.report_finished_jobs() == [job]
     printed = stream.getvalue()
     marker = "✓" if outcome == "success" else "✗"
-    assert f"{marker} Run · background" in printed
+    assert f"{marker} Run(bg j12)" in printed
     assert "j12" in printed and "8.8s" in printed
     assert "make test" in printed
     assert job.outcome() in printed
