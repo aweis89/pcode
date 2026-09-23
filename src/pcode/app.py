@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -2162,7 +2163,7 @@ class PreviewApp:
         # Put send mode and activity ahead of model/path metadata so they are
         # never pushed off the footer by long provider names or narrow panes.
         once = " (once)" if self.send_mode_once else ""
-        segments = [("mode", f"Enter: {self.next_send_mode}{once}")]
+        segments = [("mode", f"{self.next_send_mode}{once}")]
         if self._startup_pending:
             segments.extend([("sep", " · "), ("activity", "starting")])
         # No "working" label: the spinner row above the editor already says so.
@@ -2190,7 +2191,13 @@ class PreviewApp:
             if history is None:
                 history = getattr(self.runtime, "history", ())
             context = context_label(resolved or self.model, history)
-        segments.append(("context", context))
+        # Colorize the token counts distinctly from the " · " and "/" around them.
+        parts = re.split(r"(~?\d[\d.]*[a-z]?)", context)
+        segments.extend(
+            ("context-value", part) if re.fullmatch(r"~?\d[\d.]*[a-z]?", part) else ("context", part)
+            for part in parts
+            if part
+        )
         details = "".join(value for _, value in segments)
         # Only spend spare width on the path; preserve the send mode first.
         path_width = max(0, width - cell_len(details) - 4)
