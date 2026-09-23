@@ -32,6 +32,7 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame, Label
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
@@ -258,6 +259,8 @@ def system_command(text: str) -> tuple[str, str] | None:
 
 # A notice answers a keystroke, so it only has to outlast reading it once.
 NOTICE_SECONDS = 5.0
+# Scrollback columns a sub-agent's calls sit in from their delegate's row.
+CHILD_INDENT = 4
 NOTICE_ROWS = 6
 # Background jobs get a few rows, never the screen; `/jobs` has the full list.
 JOB_ROWS = 3
@@ -1853,6 +1856,9 @@ class Transcript:
         )
         self._replay_sink: list | None = None
         self._block: str | None = None
+        # A sub-agent's calls settle before its delegate does. They wait here,
+        # keyed by the delegate's call id, to be written beneath it.
+        self._children: dict[str, list[ToolSummary]] = {}
 
     @property
     def replays_on_resize(self) -> bool:
@@ -1942,8 +1948,27 @@ class Transcript:
     @recorded
     def tool_result(self, event: ToolSummary) -> None:
         """Retain hidden results too; choose one representation on each replay."""
+        if event.parent_call_id:
+            if self.summarizes(event):
+                self._children.setdefault(event.parent_call_id, []).append(event)
+            return
         if self.writes_tool_result(event):
             self.events((event,))
+        for child in self._children.pop(event.call_id, []):
+            for line in self.summary_lines(child, indent=CHILD_INDENT):
+                self.print(Padding(line, (0, 0, 0, CHILD_INDENT), expand=False), tool_line=True)
+
+    def settle_orphans(self) -> None:
+        """Write sub-agent calls whose delegate never settled, e.g. a cancelled turn.
+
+        Without a delegate row to sit under they are written flush, so the
+        steps a sub-agent did take are not silently lost.
+        """
+        orphans, self._children = self._children, {}
+        for children in orphans.values():
+            for child in children:
+                for line in self.summary_lines(child):
+                    self.print(line, tool_line=True)
 
     @recorded
     def edit(self, event) -> None:
@@ -1955,6 +1980,8 @@ class Transcript:
         sink = []
         self._replay_sink = sink
         self._block = None
+        # Replaying the log's own tool results rebuilds whatever is pending.
+        self._children = {}
         self.log.recording = False
         try:
             if self.log.dropped:
@@ -2143,6 +2170,15 @@ class Transcript:
         return self.command_scrollback and (self.tool_error_scrollback or not event.failed)
 
     def writes_tool_result(self, event: Event) -> bool:
+        """Report whether this settled tool is written to scrollback as it arrives.
+
+        A sub-agent's call is not: it waits to be written beneath its delegate.
+        """
+        return (
+            isinstance(event, ToolSummary) and not event.parent_call_id and self.summarizes(event)
+        )
+
+    def summarizes(self, event: Event) -> bool:
         """Report whether this settled tool reaches scrollback at all.
 
         Omit calls whose results already have a home: planning in the task
@@ -2230,18 +2266,35 @@ class Transcript:
     def warning(self, text: str) -> None:
         self.print(TranscriptNotice(text, "warning", "Warning"))
 
+    @recorded
     def cancelled(self) -> None:
+        self.settle_orphans()
         self.print(
             TranscriptNotice("Completed tool effects are not undone.", "cancelled", "Run cancelled")
         )
 
     @recorded
     def user(self, text: str) -> None:
+        self.settle_orphans()
         self.print()
         self.print(TaskPrompt(text))
         self.print()
 
-    def command_summary(self, event: ToolSummary) -> None:
+    def summary_lines(self, event: ToolSummary, *, indent: int = 0) -> list[Text]:
+        """The compact rows a settled call leaves in scrollback."""
+        if event.name not in COMMAND_TOOLS and not event.command:
+            return [
+                Text.assemble(
+                    (f"{'✗' if event.failed else '✓'} {label(event.name)}  ", "pcode.thinking"),
+                    (plain(event.detail, limit=None), "pcode.thinking"),
+                    (
+                        f"  {event.elapsed_seconds:.1f}s"
+                        if event.elapsed_seconds is not None
+                        else "",
+                        "pcode.thinking",
+                    ),
+                )
+            ]
         # Scrollback shows the outcome only: the live panel already named the
         # target while the call ran. The session browser, which has no such
         # panel, passes the whole detail to the same renderer.
@@ -2250,15 +2303,18 @@ class Transcript:
             if event.failed or (event.name != "run_command" and " → " in event.detail)
             else ""
         )
-        for line in tool_summary_lines(
+        return tool_summary_lines(
             event.name,
             result,
             failed=event.failed,
             elapsed_seconds=event.elapsed_seconds,
             command=event.command,
-            width=self.console.width,
+            width=max(1, self.console.width - indent),
             background=event.execution == "background",
-        ):
+        )
+
+    def command_summary(self, event: ToolSummary) -> None:
+        for line in self.summary_lines(event):
             self.print(line, tool_line=True)
 
     @recorded
@@ -2298,19 +2354,8 @@ class Transcript:
                     else:
                         self.command_summary(event)
                     continue
-                self.print(
-                    Text.assemble(
-                        (f"{'✗' if event.failed else '✓'} {label(event.name)}  ", "pcode.thinking"),
-                        (plain(event.detail, limit=None), "pcode.thinking"),
-                        (
-                            f"  {event.elapsed_seconds:.1f}s"
-                            if event.elapsed_seconds is not None
-                            else "",
-                            "pcode.thinking",
-                        ),
-                    ),
-                    tool_line=True,
-                )
+                for line in self.summary_lines(event):
+                    self.print(line, tool_line=True)
 
     def help(self, registry: CommandRegistry) -> None:
         table = Table(box=None, padding=(0, 2), show_header=False)
