@@ -152,7 +152,7 @@ def test_background_completion_survives_reopening_without_retaining_unsafe_tails
         )
         restored.replay()
         text = rendered(restored.transcript)
-        assert text.count("✗ Run · background · j14 · exit 2") == 1
+        assert text.count("✗ Run(bg j14) · exit 2") == 1
         assert "running the suite" in text and "$ make test" in text
         assert "26.4s" in text
         assert "wait_for_job" not in text
