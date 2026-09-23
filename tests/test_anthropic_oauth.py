@@ -96,6 +96,7 @@ def token_endpoint(responses, recorded):
     ],
 )
 def test_advertised_version_never_falls_below_the_pin(monkeypatch, installed, expected):
+    monkeypatch.delenv("PCODE_CLAUDE_VERSION", raising=False)
     found = None if installed is None else "/bin/claude"
     monkeypatch.setattr(auth.shutil, "which", lambda _: found)
     monkeypatch.setattr(
@@ -110,7 +111,42 @@ def test_advertised_version_never_falls_below_the_pin(monkeypatch, installed, ex
         auth.oauth_user_agent.cache_clear()
 
 
+@pytest.mark.parametrize(
+    ("override", "installed", "expected"),
+    [
+        # The override raises the floor without a release...
+        ("2.4.0", None, "claude-cli/2.4.0"),
+        ("2.4.0", "2.1.280 (Claude Code)", "claude-cli/2.4.0"),
+        # ...and can also be outrun by a newer local install.
+        ("2.4.0", "2.9.1 (Claude Code)", "claude-cli/2.9.1"),
+        ("  ", None, f"claude-cli/{auth.OAUTH_VERSION}"),
+    ],
+)
+def test_the_fallback_version_is_configurable(monkeypatch, override, installed, expected):
+    monkeypatch.setenv("PCODE_CLAUDE_VERSION", override)
+    found = None if installed is None else "/bin/claude"
+    monkeypatch.setattr(auth.shutil, "which", lambda _: found)
+    monkeypatch.setattr(
+        auth.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=installed or ""),
+    )
+    auth.oauth_user_agent.cache_clear()
+    try:
+        assert auth.oauth_user_agent() == expected
+    finally:
+        auth.oauth_user_agent.cache_clear()
+
+
+@pytest.mark.parametrize("value", ["2", "v2.1.280", "latest", "2.1.280-beta"])
+def test_an_unusable_version_override_is_reported(monkeypatch, value):
+    monkeypatch.setenv("PCODE_CLAUDE_VERSION", value)
+    with pytest.raises(LoginError, match="PCODE_CLAUDE_VERSION"):
+        auth.oauth_version()
+
+
 def test_a_broken_claude_executable_falls_back_to_the_pin(monkeypatch):
+    monkeypatch.delenv("PCODE_CLAUDE_VERSION", raising=False)
     monkeypatch.setattr(auth.shutil, "which", lambda _: "/bin/claude")
 
     def explode(*args, **kwargs):

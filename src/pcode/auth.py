@@ -5,6 +5,7 @@ API-key access uses ordinary Pydantic AI construction. Subscription access
 requires the wire markers defined here.
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -19,21 +20,32 @@ OAUTH_PREAMBLE = "You are Claude Code, Anthropic's official CLI for Claude."
 # installed Claude Code and keep this as the fallback for hosts without one.
 OAUTH_VERSION = "2.1.280"
 VERSION_TIMEOUT_SECONDS = 5.0
+VERSION_PATTERN = re.compile(r"\d+(?:\.\d+)+")
 
 
 def _parse_version(text: str) -> tuple[int, ...] | None:
-    match = re.search(r"\d+(?:\.\d+)+", text)
+    match = VERSION_PATTERN.search(text)
     return tuple(int(part) for part in match.group().split(".")) if match else None
+
+
+def oauth_version() -> str:
+    """Fallback Claude Code version, overridable without a release."""
+    value = os.environ.get("PCODE_CLAUDE_VERSION", "").strip()
+    if not value:
+        return OAUTH_VERSION
+    if not VERSION_PATTERN.fullmatch(value):
+        raise LoginError("PCODE_CLAUDE_VERSION must be a dotted version such as 2.1.280.")
+    return value
 
 
 @cache
 def oauth_user_agent() -> str:
-    """Claude Code identity to advertise, never older than `OAUTH_VERSION`.
+    """Claude Code identity to advertise, never older than `oauth_version()`.
 
     Spoofing a version that was never released risks rejection, so the local
-    install is the only source of anything newer than the pin.
+    install is the only source of anything newer than the fallback.
     """
-    version = OAUTH_VERSION
+    version = oauth_version()
     executable = shutil.which("claude")
     if executable:
         try:
@@ -48,7 +60,7 @@ def oauth_user_agent() -> str:
             pass
         else:
             local = _parse_version(result.stdout)
-            if local and local > (_parse_version(OAUTH_VERSION) or ()):
+            if local and local > (_parse_version(version) or ()):
                 version = ".".join(str(part) for part in local)
     return f"claude-cli/{version}"
 
