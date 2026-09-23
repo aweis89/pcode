@@ -35,17 +35,41 @@ class ModelPicker:
         rows = FormattedTextControl(
             self.fragments, get_cursor_position=lambda: Point(x=0, y=self.selected)
         )
+        self.rows = Window(
+            rows,
+            height=Dimension(min=3, max=14),
+            dont_extend_height=True,
+            wrap_lines=False,
+            always_hide_cursor=True,
+        )
         keys = KeyBindings()
 
         @keys.add("up", eager=True)
         @keys.add("c-p", eager=True)
         def previous(event):
-            self.selected = max(0, self.selected - 1)
+            self.move(-1)
 
         @keys.add("down", eager=True)
         @keys.add("c-n", eager=True)
         def next_model(event):
-            self.selected = min(max(0, len(self.matches) - 1), self.selected + 1)
+            self.move(1)
+
+        # The same paging keys as every other popup, moving the selection.
+        @keys.add("pageup", eager=True)
+        def previous_page(event):
+            self.move(-self.page())
+
+        @keys.add("pagedown", eager=True)
+        def next_page(event):
+            self.move(self.page())
+
+        @keys.add("c-u", eager=True)
+        def previous_half(event):
+            self.move(-max(1, (self.page() + 1) // 2))
+
+        @keys.add("c-d", eager=True)
+        def next_half(event):
+            self.move(max(1, (self.page() + 1) // 2))
 
         @keys.add("enter", eager=True)
         def accept(event):
@@ -54,7 +78,6 @@ class ModelPicker:
 
         @keys.add("escape", eager=True)
         @keys.add("c-c")
-        @keys.add("c-d")
         @keys.add("c-l")
         def cancel(event):
             event.app.exit(result=None)
@@ -63,15 +86,13 @@ class ModelPicker:
             title="Choose model",
             body=HSplit(
                 [
-                    Label("↑/↓ select · Enter apply · Esc cancel", dont_extend_height=True),
-                    self.search,
-                    Window(
-                        rows,
-                        height=Dimension(min=3, max=14),
+                    Label(
+                        "↑↓ Select · PgUp/PgDn Page · Ctrl+U/D Half page · "
+                        "Enter apply · Esc cancel",
                         dont_extend_height=True,
-                        wrap_lines=False,
-                        always_hide_cursor=True,
                     ),
+                    self.search,
+                    self.rows,
                     Label(
                         "Local suggestions; access depends on your account.\n"
                         "Type provider:model-id for a custom model.\n"
@@ -91,6 +112,14 @@ class ModelPicker:
             output=output,
             style=popup_style(style),
         )
+
+    def move(self, rows: int) -> None:
+        self.selected = max(0, min(len(self.matches) - 1, self.selected + rows))
+
+    def page(self) -> int:
+        """Rows actually visible, falling back before the first render."""
+        info = self.rows.render_info
+        return max(1, info.window_height - 1) if info is not None else 10
 
     def filter(self, buffer):
         query = buffer.text.strip()

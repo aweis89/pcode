@@ -1,8 +1,23 @@
 """Make Harness's stable plan IDs visible when a plan is created."""
 
+from dataclasses import dataclass
+
+from pydantic_ai import CapabilityEvent
 from pydantic_ai_harness.planning import Planning, render_plan
 
 from pcode.meridian_reminders import PLAN_TAG, append_reminder, last_reminder
+from pcode.tool_display import PLAN_TOOLS
+
+
+@dataclass(kw_only=True)
+class PlanSnapshot(CapabilityEvent, namespace="pcode_planning", name="snapshot"):
+    """The whole plan after a planning call, announced on the run's own event stream.
+
+    A sub-agent's plan lives in a store private to its run. Announcing it lets
+    the parent's display show it without reaching into, or replacing, that store.
+    """
+
+    items: list[dict]
 
 
 class IdentifiedPlanning(Planning):
@@ -40,6 +55,9 @@ class IdentifiedPlanning(Planning):
         result = await super().after_tool_execute(
             ctx, call=call, tool_def=tool_def, args=args, result=result
         )
+        if call.tool_name in PLAN_TOOLS:
+            items = await self.resolve_store(ctx).get_items()
+            await ctx.emit(PlanSnapshot(items=[item.model_dump(mode="json") for item in items]))
         if (
             call.tool_name == "write_plan"
             and isinstance(result, str)

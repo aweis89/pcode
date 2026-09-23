@@ -68,9 +68,20 @@ def test_menu_updates_when_the_syntax_style_changes():
         assert style.get_attrs_for_style_str("class:completion-menu").bgcolor == background
 
 
-def test_menu_keeps_the_palette_for_terminal_colors():
-    console = transcript(color_style="terminal")
-    assert menu_attrs(console).bgcolor == PALETTES["dark"].surface.lstrip("#")
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_menu_uses_the_terminal_colors_for_terminal_syntax(theme):
+    console = transcript(theme)
+    assert console.syntax_themes[theme] == "terminal"
+    for suffix in ("", ".completion", ".meta.completion"):
+        attrs = menu_attrs(console, suffix)
+        # No RGB, including the toolkit's own defaults, may show through.
+        assert (attrs.bgcolor, attrs.color, attrs.reverse) == ("default", "default", False)
+    assert menu_attrs(console, ".meta.completion").dim
+    current = menu_attrs(console, ".completion.current")
+    assert (current.color, current.bgcolor, current.reverse) == ("ansicyan", "default", True)
+    assert menu_attrs(console, ".meta.completion.current").reverse
+    scrollbar = menu_attrs(console, " class:scrollbar.button")
+    assert scrollbar.reverse
 
 
 def test_menu_keeps_the_palette_for_an_uninstalled_style():

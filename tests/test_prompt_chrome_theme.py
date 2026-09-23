@@ -54,9 +54,17 @@ def test_chrome_drops_colors_lost_against_the_terminal(theme):
     assert menu.get_attrs_for_style_str("class:completion-menu").bgcolor == "ffffff"
 
 
-def test_chrome_keeps_the_palette_for_terminal_colors():
-    console = transcript("dark", "dracula", color_style="terminal")
-    assert color_of(console, "prompt") == PALETTES["dark"].accent.lstrip("#")
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_chrome_uses_ansi_names_for_terminal_syntax(theme):
+    console = transcript(theme, "terminal")
+    assert color_of(console, "prompt") == "ansicyan"
+    assert color_of(console, "plan.heading") == "ansimagenta"
+    assert color_of(console, "plan.active") == "ansicyan"
+    for class_name in ("plan", "frame.border", "auto-suggestion"):
+        assert color_of(console, class_name) == "default", class_name
+    # Switching to a Pygments style brings the derived colors back.
+    console.syntax_themes[theme] = "dracula" if theme == "dark" else "solarized-light"
+    assert color_of(console, "prompt") in ("50fa7b", "268bd2")
 
 
 def test_chrome_updates_when_the_syntax_style_changes():

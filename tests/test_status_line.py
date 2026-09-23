@@ -13,7 +13,7 @@ from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.runtime import PreviewRuntime
-from pcode.ui import PALETTES
+from pcode.ui import PALETTES, TERMINAL_PALETTE
 
 
 def make_app(workspace, monkeypatch, *, model=None, width=100):
@@ -85,7 +85,7 @@ def test_preview_home_and_help(tmp_path, monkeypatch):
         "Enter send",
         "Ctrl+J newline",
         "Ctrl+D exit",
-        "Ctrl+S cycles",
+        "Ctrl+S picks",
         "cancel",
     ):
         assert hint in help_text
@@ -99,7 +99,7 @@ def test_footer_outside_home_and_busy(tmp_path, monkeypatch):
     app.activity.queued = 2
     text = fragment_list_to_text(app.toolbar())
     assert str(tmp_path) in text
-    assert text.endswith("Enter: steering · working · 2 queued · preview")
+    assert text.endswith("Enter: steering · 2 queued · preview")
     assert "Ctrl" not in text
 
 
@@ -127,7 +127,7 @@ def test_narrow_busy_footer_keeps_send_mode_and_activity(tmp_path, monkeypatch):
     app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=40)
     app.activity.busy = True
     text = fragment_list_to_text(app.toolbar())
-    assert text.startswith(" Enter: steering · working · test:local")
+    assert text.startswith(" Enter: steering · test:local")
     assert text.endswith("…")
     assert cell_len(text) <= 40
 
@@ -181,20 +181,33 @@ def test_git_unavailable_does_not_break_footer(tmp_path, monkeypatch, error):
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
-def test_footer_styles_use_terminal_foreground_and_background(theme):
-    # A light terminal can use the default dark app palette (and vice versa).
-    # Keep both colors terminal-native rather than assuming they match.
+def test_footer_keeps_the_terminal_background(theme):
+    # A light terminal can use the default dark app palette (and vice versa),
+    # so the footer never paints a background of its own.
     palette = PALETTES[theme]
     style = merge_styles([default_ui_style(), palette.prompt_style()])
-    for role in ("text", "location", "model", "activity"):
+    for role in ("text", "sep", "location", "mode", "model", "context", "activity"):
         attrs = style.get_attrs_for_style_str(
             f"class:bottom-toolbar class:bottom-toolbar.text class:bottom-toolbar.{role}"
         )
         assert attrs.bgcolor == "default"
-        assert attrs.color == "default"
         assert not attrs.reverse
-        assert not attrs.dim
         assert attrs.bold == (role in ("location", "activity"))
+
+
+def test_footer_uses_ansi_colors_for_terminal_syntax():
+    style = merge_styles([default_ui_style(), TERMINAL_PALETTE.prompt_style()])
+
+    def attrs(role):
+        return style.get_attrs_for_style_str(
+            f"class:bottom-toolbar class:bottom-toolbar.text class:bottom-toolbar.{role}"
+        )
+
+    assert attrs("location").color == "ansicyan"
+    assert attrs("model").color == "ansicyan"
+    assert attrs("mode").color == "ansimagenta"
+    assert attrs("sep").dim and attrs("context").dim
+    assert attrs("text").color == "default" and not attrs("text").dim
 
 
 def test_footer_segments_highlight_context_and_activity(tmp_path, monkeypatch):
@@ -205,7 +218,7 @@ def test_footer_segments_highlight_context_and_activity(tmp_path, monkeypatch):
     fragments = app.toolbar()
     assert ("class:bottom-toolbar.location", str(tmp_path)) in fragments
     assert ("class:bottom-toolbar.model", "test:local (default)") in fragments
-    assert ("class:bottom-toolbar.activity", "working") in fragments
+    assert "working" not in fragment_list_to_text(fragments)
     assert ("class:bottom-toolbar.activity", "2 queued") in fragments
 
 

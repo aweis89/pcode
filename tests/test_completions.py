@@ -21,11 +21,11 @@ def render(shell: str, monkeypatch, capsys) -> str:
 @pytest.mark.parametrize("shell", SHELLS)
 def test_completion_script_covers_every_flag(shell, monkeypatch, capsys):
     script = render(shell, monkeypatch, capsys)
-    for flag in ("theme", "color-style", "worktree", "continue", "profile-memory"):
+    for flag in ("theme", "theme-preview", "worktree", "continue", "profile-memory"):
         # fish spells long options without the leading dashes (`-l theme`).
         assert flag in script
     # Choices come from the parser, so they cannot drift from the real options.
-    assert "palette" in script and "terminal" in script
+    assert "dark" in script and "light" in script
     assert "# Install:" in script
 
 
@@ -69,9 +69,9 @@ def test_fish_script_completes_a_flag(monkeypatch, capsys, tmp_path):
     path = tmp_path / "pcode.fish"
     path.write_text(render("fish", monkeypatch, capsys))
     result = subprocess.run(
-        ["fish", "--no-config", "-c", f'source {path}; complete -C "pcode --color-"'],
+        ["fish", "--no-config", "-c", f'source {path}; complete -C "pcode --theme-"'],
         check=True,
         capture_output=True,
         text=True,
     )
-    assert "--color-style" in result.stdout
+    assert "--theme-preview" in result.stdout

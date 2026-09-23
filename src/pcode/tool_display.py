@@ -211,6 +211,18 @@ def execution_mode(name: str, args: dict) -> str:
     return ""
 
 
+def invocation(name: str, args: dict) -> str:
+    """The sanitized command a command tool ran, or "" for every other tool.
+
+    Scrollback previews a settled command from this, so an event built without
+    it settles as a bare "Run" row that never says what ran.
+    """
+    command = args.get("command")
+    if name in {"shell", "run_command", "start_command"} and isinstance(command, str):
+        return command_text(command)
+    return ""
+
+
 def target(name: str, args: dict) -> str:
     if name == "run_code":
         code = args.get("code")

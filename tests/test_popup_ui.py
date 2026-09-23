@@ -132,3 +132,140 @@ def test_popup_content_half_pages_and_full_pages(tmp_path, kind):
                     await task
 
     asyncio.run(run())
+
+
+def _popups(tmp_path, options):
+    """Every alternate-screen popup, with each keyboard-scrollable TextArea it shows."""
+    from pcode.aside import Asides
+    from pcode.aside_ui import AsideBrowser
+    from pcode.conversation_tree import ConversationTree
+    from pcode.edit_ui import EditBrowser
+    from pcode.inspection import ToolArchive
+    from pcode.inspector_ui import ToolInspector
+    from pcode.links_ui import links_dialog
+    from pcode.runtime import EditCompleted
+    from pcode.session_ui import SessionBrowser, session_info_dialog
+    from pcode.tree_ui import TreeBrowser
+
+    links = links_dialog([], **options)
+    info = session_info_dialog([("Model", "test:local")], **options)
+    edits = EditBrowser([EditCompleted("1", "a.py", "edited", "+x", added=1)], **options)
+    tree = TreeBrowser(ConversationTree(), **options)
+    asides = AsideBrowser(Asides(), **options)
+    sessions = SessionBrowser([], root=tmp_path, workspace=tmp_path, **options)
+    tools = ToolInspector(ToolArchive(), **options)
+    return {
+        "links": (links, [links.layout.current_window]),
+        "session info": (info, [info.layout.current_window]),
+        "edits": (edits.app, [edits.files.window, edits.diff.window]),
+        "tree": (tree.app, [tree.list.window]),
+        "asides": (asides.app, [asides.list.window]),
+        "sessions": (sessions.app, [sessions.list.window]),
+        "tools": (tools.app, [tools.list.window]),
+    }
+
+
+POPUPS = ["links", "session info", "edits", "tree", "asides", "sessions", "tools"]
+
+
+@pytest.mark.parametrize("name", POPUPS)
+def test_every_popup_pane_pages_with_the_same_keys(tmp_path, name):
+    """↑↓, PgUp/PgDn and Ctrl+U/D move every TextArea pane and never close the popup."""
+
+    async def run():
+        with create_pipe_input() as pipe:
+            app, windows = _popups(tmp_path, {"input": pipe, "output": DummyOutput()})[name]
+            task = asyncio.create_task(app.run_async())
+            try:
+                await asyncio.sleep(0.05)
+
+                async def press(keys):
+                    pipe.send_text(keys)
+                    await asyncio.sleep(0.05)
+                    assert not task.done(), f"{keys!r} must not close the popup"
+
+                for window in windows:
+                    buffer = window.content.buffer
+                    text = "\n".join(f"Row {i}" for i in range(300))
+                    buffer.set_document(Document(text, 0), bypass_readonly=True)
+                    app.layout.focus(window)
+                    await asyncio.sleep(0.05)
+
+                    def row():
+                        return buffer.document.cursor_position_row
+
+                    await press("\x1b[B")  # Down.
+                    assert row() == 1
+                    await press("\x1b[A")  # Up.
+                    assert row() == 0
+                    await press("\x04")  # Ctrl+D, half a page.
+                    half = row()
+                    assert half > 1
+                    await press("\x1b[6~")  # PageDown, a whole page.
+                    paged = row()
+                    assert paged > half * 2 - 2
+                    await press("\x1b[5~")  # PageUp.
+                    assert row() < paged
+                    before = row()
+                    await press("\x15")  # Ctrl+U, half a page back.
+                    assert row() == max(0, before - half)
+                pipe.send_text("\x1b")
+                await asyncio.wait_for(task, 2)
+            finally:
+                if not task.done():
+                    app.exit()
+                    await task
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("name", POPUPS)
+def test_popup_mouse_capture_is_default(tmp_path, name):
+    """On by default so the wheel scrolls; `popup_mouse off` restores native selection."""
+    from pcode.preferences import update_preferences
+
+    with create_pipe_input() as pipe:
+        options = {"input": pipe, "output": DummyOutput()}
+        app, _ = _popups(tmp_path, options)[name]
+        assert app.mouse_support()
+        update_preferences({"popup_mouse": "off"})
+        app, _ = _popups(tmp_path, options)[name]
+        assert not app.mouse_support()
+
+
+def test_model_picker_pages_its_selection():
+    from pcode.model_ui import ModelPicker
+
+    models = [f"test:model-{i:02}" for i in range(40)]
+
+    async def run():
+        with create_pipe_input() as pipe:
+            picker = ModelPicker(models, {"test"}, input=pipe, output=DummyOutput())
+            task = asyncio.create_task(picker.run())
+            try:
+                await asyncio.sleep(0.05)
+
+                async def press(keys):
+                    pipe.send_text(keys)
+                    await asyncio.sleep(0.05)
+                    assert not task.done(), f"{keys!r} must not close the picker"
+
+                await press("\x04")  # Ctrl+D.
+                half = picker.selected
+                assert half > 1
+                await press("\x1b[6~")
+                assert picker.selected > half * 2 - 2
+                await press("\x1b[5~")
+                assert picker.selected == half
+                await press("\x15")
+                assert picker.selected == 0
+                await press("\x1b[6~" * 20)
+                assert picker.selected == len(models) - 1
+                pipe.send_text("\r")
+                assert await asyncio.wait_for(task, 2) == models[-1]
+            finally:
+                if not task.done():
+                    picker.app.exit()
+                    await task
+
+    asyncio.run(run())
