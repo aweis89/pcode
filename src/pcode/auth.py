@@ -8,7 +8,9 @@ requires the wire markers defined here.
 # Compatibility markers used by Claude subscription OAuth traffic, not API keys.
 OAUTH_BETAS = {"claude-code-20250219", "oauth-2025-04-20"}
 OAUTH_PREAMBLE = "You are Claude Code, Anthropic's official CLI for Claude."
-OAUTH_USER_AGENT = "claude-cli/2.1.251"
+# The endpoint gates newer models on this version: anything below the model's
+# floor is rejected with `claude_code_version_too_old`, not a model-not-found.
+OAUTH_USER_AGENT = "claude-cli/2.1.280"
 
 
 class LoginError(ValueError):
