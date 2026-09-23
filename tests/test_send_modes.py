@@ -40,6 +40,7 @@ def test_busy_send_modes(mode, editing_mode):
     from pcode.preferences import save_preferences
 
     save_preferences(editing_mode=editing_mode)
+    saved_send_mode = load_preferences().get("send_mode")
 
     async def run():
         started = asyncio.Event()
@@ -118,9 +119,70 @@ def test_busy_send_modes(mode, editing_mode):
                     expected = {"steering": "queue", "queue": "interrupt", "interrupt": "steering"}[
                         mode
                     ]
-                    await wait(lambda: app.send_mode == expected)
-                    assert load_preferences()["send_mode"] == expected
+                    await wait(lambda: app.next_send_mode == expected)
+                    # The pick applies to the next send only and is not saved.
+                    assert app.send_mode == mode
+                    assert load_preferences().get("send_mode") == saved_send_mode
                     assert session.default_buffer.text == "draft"
+                    pipe.send_text("\x03\x04")
+                    await asyncio.wait_for(task, 5)
+                finally:
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_ctrl_s_mode_applies_to_one_send_only():
+    """A Ctrl+S pick drives the next prompt, then the saved default returns."""
+
+    async def run():
+        started = asyncio.Event()
+        cancelled = []
+
+        class Runtime:
+            session = None
+            recovery_blocked = ""
+            jobs = JobRegistry(state=None)
+
+            async def stream(self, text):
+                if text == "first":
+                    started.set()
+                    try:
+                        await asyncio.sleep(30)
+                    except asyncio.CancelledError:
+                        cancelled.append(text)
+                        raise
+                yield Message("done")
+
+        app = PreviewApp(model="test:local", runtime=Runtime(), console=Console(file=StringIO()))
+        app.send_mode = "steering"
+        with create_pipe_input() as pipe:
+            session = None
+
+            def prompt(*args, **kwargs):
+                nonlocal session
+                session = create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+                return session
+
+            async def wait(predicate):
+                async with asyncio.timeout(5):
+                    while not predicate():
+                        await asyncio.sleep(0.01)
+
+            with patch("pcode.app.create_prompt", prompt):
+                task = asyncio.create_task(app.run_async())
+                try:
+                    await wait(lambda: session is not None and session.app.is_running)
+                    pipe.send_text("first\r")
+                    await asyncio.wait_for(started.wait(), 5)
+                    pipe.send_text("\x13\x13")
+                    await wait(lambda: app.next_send_mode == "interrupt")
+                    pipe.send_text("second\r")
+                    await wait(lambda: cancelled == ["first"])
+                    assert app.next_send_mode == "steering"
+                    assert app.send_mode_once is None
                     pipe.send_text("\x03\x04")
                     await asyncio.wait_for(task, 5)
                 finally:
