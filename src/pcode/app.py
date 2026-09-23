@@ -2100,25 +2100,25 @@ class PreviewApp:
         # Put send mode and activity ahead of model/path metadata so they are
         # never pushed off the footer by long provider names or narrow panes.
         once = " (once)" if self.send_mode_once else ""
-        segments = [("text", f"Enter: {self.next_send_mode}{once}")]
+        segments = [("mode", f"Enter: {self.next_send_mode}{once}")]
         if self._startup_pending:
-            segments.extend([("text", " · "), ("activity", "starting")])
+            segments.extend([("sep", " · "), ("activity", "starting")])
+        # No "working" label: the spinner row above the editor already says so.
         if self.activity.busy:
-            segments.extend([("text", " · "), ("activity", "working")])
             if self.activity.queued:
                 steering = self.activity.queued_modes.count("steering")
                 queued = self.activity.queued - steering
                 if steering:
-                    segments.extend([("text", " · "), ("activity", f"{steering} steering pending")])
+                    segments.extend([("sep", " · "), ("activity", f"{steering} steering pending")])
                 if queued:
-                    segments.extend([("text", " · "), ("activity", f"{queued} queued")])
+                    segments.extend([("sep", " · "), ("activity", f"{queued} queued")])
         # Side questions are not "working": they neither block input nor end the
         # turn, so they get their own counter rather than the activity label.
         if running := self.asides.running:
-            segments.extend([("text", " · "), ("activity", f"{running} btw running")])
+            segments.extend([("sep", " · "), ("activity", f"{running} btw running")])
         if unread := self.asides.unread:
-            segments.extend([("text", " · "), ("activity", f"{unread} btw ready")])
-        segments.extend([("text", " · "), ("model", plain(model, limit=None))])
+            segments.extend([("sep", " · "), ("activity", f"{unread} btw ready")])
+        segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
         context = ""
         if self.model and not self._startup_pending and self._startup_error is None:
             from pcode.context_usage import context_label
@@ -2128,7 +2128,7 @@ class PreviewApp:
             if history is None:
                 history = getattr(self.runtime, "history", ())
             context = context_label(resolved or self.model, history)
-        segments.append(("text", context))
+        segments.append(("context", context))
         details = "".join(value for _, value in segments)
         # Only spend spare width on the path; preserve the send mode first.
         path_width = max(0, width - cell_len(details) - 4)
@@ -2139,7 +2139,7 @@ class PreviewApp:
         text.truncate(width, overflow="ellipsis")
         prefix = [("text", " ")]
         if path.plain:
-            prefix.extend([("location", path.plain), ("text", " · ")])
+            prefix.extend([("location", path.plain), ("sep", " · ")])
         segments = prefix + segments
         # Slice the already cell-truncated text, preserving its ellipsis and the
         # same narrow-terminal priorities without splitting wide characters.
