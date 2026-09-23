@@ -11,6 +11,7 @@ from pydantic_ai.models.function import FunctionModel
 from rich.console import Console
 
 from pcode.app import PreviewApp
+from pcode.jobs import Job, JobRegistry
 from pcode.live import AgentRuntime
 from pcode.preferences import SETTINGS, save_preferences
 from pcode.runtime import Message, ToolSummary
@@ -74,6 +75,94 @@ def test_resume_redraws_more_than_40_records_and_restores_hidden_payloads(saved)
     assert rendered(app.transcript) == shown
     assert len(app.transcript.log.entries) == count
     assert app.activity.tools.calls == []
+
+
+@pytest.mark.parametrize("name", ["wait_for_job", "job_output"])
+def test_resume_keeps_routine_job_inspection_hidden_but_preserves_helper_errors(saved, name):
+    saved.event(
+        ToolSummary(name, "j14 · exit 2", failed=True, outcome="success", result="JOB_OUTPUT")
+    )
+    saved.event(ToolSummary(name, "No job 'j99'", failed=True, outcome="retry"))
+    app = PreviewApp(
+        model="test:local",
+        runtime=SimpleNamespace(session=saved),
+        console=Console(file=StringIO()),
+    )
+    app.replay()
+    text = rendered(app.transcript)
+    assert "j14" not in text and "JOB_OUTPUT" not in text
+    assert "No job 'j99'" in text
+    # Both original calls remain in saved tool history.
+    assert len([r for r in saved.transcript_records() if r["kind"] == "ToolSummary"]) == 2
+
+
+@pytest.mark.parametrize("truncated", [False, True])
+def test_background_completion_survives_reopening_without_retaining_unsafe_tails(
+    tmp_path, truncated
+):
+    save_preferences(show_commands="on", tool_error_scrollback="on")
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    identity = saved.info.id
+    jobs = JobRegistry()
+    job = Job(
+        id="j14",
+        command="make test",
+        directory=tmp_path,
+        supervisor_pid=0,
+        started_at=1.0,
+        ended_at=27.4,
+        exit_code=2,
+        background=True,
+        purpose="running the suite",
+    )
+    jobs.jobs[job.id] = job
+    output = 'token="' + "SYNTHETIC_PRIVATE_VALUE\n" * 1000 + '"' if truncated else "2 failed\n"
+    job.output_path.write_text(output)
+    try:
+        saved.append("turn_started", run_id="test-turn", prompt="run")
+        saved.event(
+            ToolSummary("wait_for_job", "j14 · exit 2", failed=True, outcome="success"),
+            run_id="test-turn",
+        )
+        saved.append("turn_completed", run_id="test-turn")
+        app = PreviewApp(
+            model="test:local",
+            runtime=SimpleNamespace(session=saved, jobs=jobs),
+            console=Console(file=StringIO()),
+        )
+        assert app.report_finished_jobs() == [job]
+        assert app.report_finished_jobs() == []
+        records = list(saved.transcript_records())
+        completions = [r for r in records if r["kind"] == "JobFinished"]
+        assert len(completions) == 1
+        assert completions[0]["run_id"] == "test-turn"
+        assert "SYNTHETIC_PRIVATE_VALUE" not in repr(records)
+        # A job's eventual exit is not another invocation in the tools browser.
+        assert len([r for r in saved.tool_events() if r["kind"] == "ToolSummary"]) == 1
+    finally:
+        saved.close()
+
+    reopened = SavedSession.open(identity, root)
+    try:
+        restored = PreviewApp(
+            model="test:local",
+            runtime=SimpleNamespace(session=reopened),
+            console=Console(file=StringIO()),
+        )
+        restored.replay()
+        text = rendered(restored.transcript)
+        assert text.count("✗ Run · background · j14 · exit 2") == 1
+        assert "running the suite" in text and "$ make test" in text
+        assert "26.4s" in text
+        assert "wait_for_job" not in text
+        if truncated:
+            assert "Output tail omitted" in text
+            assert "SYNTHETIC_PRIVATE_VALUE" not in text
+        else:
+            assert "2 failed" in text
+    finally:
+        reopened.close()
 
 
 def test_configured_budget_matches_live_retention_and_resume(saved):

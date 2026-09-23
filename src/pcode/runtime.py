@@ -44,6 +44,15 @@ class ToolSummary:
     process_id: str = ""
     parent_call_id: str = ""
     purpose: str = ""
+    # Background completion notices share the normal command-result rendering.
+    execution: str = ""
+
+
+@dataclass(frozen=True)
+class JobFinished(ToolSummary):
+    """A delayed command completion, not another tool invocation."""
+
+    execution: str = "background"
 
 
 @dataclass(frozen=True)

@@ -133,10 +133,8 @@ class Palette:
                 # Short-lived answers to a keystroke live above the spinner
                 # rather than in scrollback; italics mark them as chrome.
                 "activity.notice": f"italic {self.muted}",
-                # Background jobs: running ones are chrome like the spinner row;
-                # an exit nobody has been told about yet earns the accent.
+                # Running background jobs are chrome like the spinner row.
                 "activity.job": self.muted,
-                "activity.job.finished": f"{self.accent} bold",
                 # A side question runs beside the turn, not as part of it, so its
                 # row spins in the muted shade rather than the prompt's.
                 "activity.aside": self.muted,
@@ -2146,13 +2144,17 @@ class Transcript:
     def writes_tool_result(self, event: Event) -> bool:
         """Report whether this settled tool reaches scrollback at all.
 
-        Every call the live panel drops is written here instead, except where
-        something else already tells the story: the task panel owns successful
-        planning calls, and a shown diff owns successful edits. Neither tells
-        the story of a failure, so a failed call is always written; only how
-        much of it, its summary line or its diagnostic, is configurable.
+        Omit calls whose results already have a home: planning in the task
+        panel, shown edits in their diff, and job inspection in the job's own
+        completion notice. Actual tool errors still get their own entry; only
+        how much of them, a summary or diagnostic, is configurable.
         """
         if not isinstance(event, ToolSummary):
+            return False
+        # Inspecting/waiting on a job is not another command completion. A
+        # nonzero job exit sets `failed`, but the helper call itself succeeded;
+        # only actual helper errors/retries need their own scrollback entry.
+        if event.name in {"wait_for_job", "job_output"} and event.outcome == "success":
             return False
         # A command always leaves at least the summary line every other tool
         # leaves; `show_commands` governs only its mirrored output.
@@ -2179,7 +2181,13 @@ class Transcript:
         output = output.rstrip("\n")
         if not output.strip():
             output = "(no output)"
-        title = label(event.name) + (f" · {job}" if job else "")
+        title = label(event.name)
+        if event.execution == "background":
+            # This is the delayed exit notice, not just a tool result: keep the
+            # exact outcome even when the footer is absorbed into the heading.
+            title += " · background · " + plain(event.detail.rsplit(" → ", 1)[-1], limit=None)
+        elif job:
+            title += f" · {job}"
         self.print(
             CommandTranscript(
                 command=invocation,
@@ -2237,6 +2245,8 @@ class Transcript:
             if event.failed or (event.name != "run_command" and " → " in event.detail)
             else ""
         )
+        if event.execution == "background":
+            result = " · background" + result
         for line in tool_summary_lines(
             event.name,
             result,
