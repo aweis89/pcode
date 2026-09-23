@@ -2,9 +2,37 @@
 
 import os
 import re
+import sysconfig
 import traceback
 from importlib.metadata import version
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+
+RESTART = "Restart pcode to load it; /resume picks this conversation back up."
+
+
+def stale_install() -> str | None:
+    """Why this process's code may no longer match what is on disk.
+
+    pcode imports much of itself lazily, and the global install is editable, so
+    a long-lived session that outlives a merge mixes old modules with new ones
+    (a new module reading a setting the old one never defined), and one that
+    outlives a reinstall on another Python finds its site-packages deleted.
+    Both surface as unrelated-looking errors far from the cause.
+    """
+    import pcode
+
+    if not Path(sysconfig.get_paths()["purelib"]).is_dir():
+        return f"pcode was reinstalled since this session started. {RESTART}"
+    try:
+        changed = any(
+            path.stat().st_mtime > pcode.STARTED
+            for path in Path(pcode.__file__).parent.rglob("*.py")
+        )
+    except OSError:
+        changed = True  # A file vanished mid-scan: the source is changing.
+    return f"pcode's source changed since this session started. {RESTART}" if changed else None
+
 
 _TOKEN = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|"
