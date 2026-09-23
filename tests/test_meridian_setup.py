@@ -85,17 +85,24 @@ def test_proxy_without_profiles_uses_claude_codes_default(monkeypatch):
     assert ms.login_target().config_dir == "/custom"
 
 
-def test_managed_instance_ignores_profiles(monkeypatch):
+def test_managed_instance_logs_in_the_profile_it_is_started_with(monkeypatch, tmp_path):
     lookup = Mock()
     monkeypatch.setattr(ms, "active_profile", lookup)
     monkeypatch.setenv("PCODE_MERIDIAN_MANAGED", "1")
-    assert ms.login_target().label == "Claude Code's login"
+    assert ms.login_target().label == "Claude Code's login"  # No profiles at all.
+    write_profiles(
+        tmp_path,
+        [{"id": "first", "claudeConfigDir": "/p/first"}, {"id": "b", "claudeConfigDir": "/p/b"}],
+    )
+    assert ms.login_target() == ms.LoginTarget("/p/first", "Meridian profile first")
+    (tmp_path / "meridian" / "settings.json").write_text(json.dumps({"activeProfile": "b"}))
+    assert ms.login_target().config_dir == "/p/b"
     # auto with no proxy answering starts a managed instance, so the same applies.
     monkeypatch.setenv("PCODE_MERIDIAN_MANAGED", "")
     monkeypatch.setattr(mp, "external_proxy_running", lambda _: False)
-    assert ms.login_target().label == "Claude Code's login"
+    assert ms.login_target().config_dir == "/p/b"
     monkeypatch.setattr(mp, "_instance", Mock(base_url="http://127.0.0.1:9"))
-    assert ms.login_target().label == "Claude Code's login"
+    assert ms.login_target().config_dir == "/p/b"
     lookup.assert_not_called()
 
 

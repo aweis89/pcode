@@ -40,6 +40,41 @@ def supported(version: str | None) -> bool:
     return found is not None and found >= version_tuple(MINIMUM_VERSION)
 
 
+def meridian_config_dir() -> Path:
+    """The user's own Meridian configuration (profiles, settings)."""
+    return Path(os.environ.get("MERIDIAN_CONFIG_DIR") or Path.home() / ".config" / "meridian")
+
+
+def meridian_profiles() -> list[dict]:
+    """Account profiles from the user's `profiles.json`; tokens are never read out."""
+    try:
+        data = json.loads((meridian_config_dir() / "profiles.json").read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [p for p in data if isinstance(p, dict) and isinstance(p.get("id"), str)]
+
+
+def profile_dir(profile: dict) -> str:
+    """The Claude config directory whose login a profile uses."""
+    configured = profile.get("claudeConfigDir")
+    if isinstance(configured, str) and configured:
+        return configured
+    return str(meridian_config_dir() / "profiles" / profile["id"])
+
+
+def default_profile() -> dict | None:
+    """The profile a managed instance uses: the saved active one, else the first."""
+    profiles = meridian_profiles()
+    try:
+        settings = json.loads((meridian_config_dir() / "settings.json").read_text())
+        saved = settings.get("activeProfile") if isinstance(settings, dict) else None
+    except (OSError, ValueError):
+        saved = None
+    return next((p for p in profiles if p["id"] == saved), profiles[0] if profiles else None)
+
+
 def session_store_dir() -> Path:
     """Meridian's session store, kept across pcode runs so resumes stay warm.
 
@@ -59,6 +94,7 @@ class ManagedMeridian:
         self.port = None
         self.base_url = ""
         self.api_key = secrets.token_urlsafe(32)
+        self.profile: str | None = None
         self.restarts: list[float] = []
         self.failure: str | None = None
         self._lock = threading.RLock()
@@ -88,6 +124,17 @@ class ManagedMeridian:
         )
         (root / "plugins").mkdir()
         (root / "plugins.json").write_text("[]")
+        profile = default_profile()
+        if profile is not None:
+            # 1.72 reads profiles from ~/.config/meridian whatever MERIDIAN_CONFIG_DIR
+            # says, while 1.76 reads them from the config directory. Link them in
+            # (never copy: a profile can hold a token) so every release sees the
+            # same ones, and name the profile so /login meridian targets its login.
+            for name in ("profiles.json", "profiles"):
+                source = meridian_config_dir() / name
+                if source.exists():
+                    (root / name).symlink_to(source)
+            self.profile = profile["id"]
         session_store_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -128,6 +175,8 @@ class ManagedMeridian:
                 "MERIDIAN_PASSTHROUGH": "1",
             }
         )
+        if self.profile:
+            env["MERIDIAN_DEFAULT_PROFILE"] = self.profile
         # Never let server output corrupt the terminal or expose credentials.
         self.process = subprocess.Popen(
             [self.executable],

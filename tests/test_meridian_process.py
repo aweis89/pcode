@@ -146,6 +146,44 @@ def test_start_isolates_config_persists_sessions_and_cleans_up(monkeypatch, tmp_
     instance.close()
 
 
+def test_start_shares_the_users_profiles_and_names_the_one_to_use(monkeypatch, tmp_path):
+    user = tmp_path / "user-meridian"
+    (user / "profiles" / "work").mkdir(parents=True)
+    (user / "profiles.json").write_text(json.dumps([{"id": "personal"}, {"id": "work"}]))
+    (user / "settings.json").write_text(json.dumps({"activeProfile": "work"}))
+    monkeypatch.setenv("MERIDIAN_CONFIG_DIR", str(user))
+    monkeypatch.setattr(mp.shutil, "which", lambda _: "/bin/meridian")
+    monkeypatch.setattr(mp.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout="1.76.1"))
+    spawn = Mock(return_value=Mock(poll=Mock(return_value=None)))
+    monkeypatch.setattr(mp.subprocess, "Popen", spawn)
+    monkeypatch.setattr(mp.ManagedMeridian, "wait_ready", lambda _: None)
+    instance = mp.ManagedMeridian().start()
+    try:
+        root = mp.Path(instance.directory.name)
+        env = spawn.call_args.kwargs["env"]
+        assert env["MERIDIAN_CONFIG_DIR"] == str(root)  # Still private...
+        assert env["MERIDIAN_DEFAULT_PROFILE"] == "work"
+        # ...but profiles are linked, never copied, so tokens stay where they were.
+        assert (root / "profiles.json").is_symlink()
+        assert (root / "profiles.json").resolve() == (user / "profiles.json").resolve()
+        assert (root / "profiles").resolve() == (user / "profiles").resolve()
+        assert not (root / "settings.json").exists()
+    finally:
+        instance.close()
+    assert (user / "profiles.json").exists()  # Cleanup removes links, not targets.
+
+
+def test_default_profile_falls_back_to_the_first(monkeypatch, tmp_path):
+    monkeypatch.setenv("MERIDIAN_CONFIG_DIR", str(tmp_path))
+    assert mp.default_profile() is None
+    (tmp_path / "profiles.json").write_text(json.dumps([{"id": "a"}, {"id": "b"}, "junk"]))
+    assert mp.default_profile() == {"id": "a"}
+    (tmp_path / "settings.json").write_text(json.dumps({"activeProfile": "gone"}))
+    assert mp.default_profile() == {"id": "a"}
+    assert mp.profile_dir({"id": "a"}) == str(tmp_path / "profiles" / "a")
+    assert mp.profile_dir({"id": "a", "claudeConfigDir": "/x"}) == "/x"
+
+
 def test_old_version_does_not_spawn(monkeypatch):
     monkeypatch.setattr(mp.shutil, "which", lambda _: "/bin/meridian")
     monkeypatch.setattr(mp.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout="1.70.9"))
