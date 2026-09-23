@@ -582,3 +582,50 @@ def test_a_short_panel_keeps_the_delegate_before_its_plan():
     history.record_plan("parent", [{"content": f"step {i}", "status": "pending"} for i in range(5)])
     rows = task_panel_rows([{"content": "Parent task", "status": "in_progress"}], history, 3, "*")
     assert [text.strip()[:10] for _, text in rows] == ["* Parent t", "⟳ Delegate", "○ step 0"]
+
+
+def test_an_extension_delegate_opts_in_to_showing_its_plan():
+    from pcode.planning import IdentifiedPlanning
+
+    async def child_model(messages, info):
+        if returns(messages):
+            yield "Reviewed"
+        else:
+            yield {
+                0: DeltaToolCall(
+                    name="write_plan",
+                    json_args=json.dumps({"items": [{"content": "Read the diff"}]}),
+                    tool_call_id="child-plan",
+                )
+            }
+
+    async def parent_model(messages, info):
+        yield "Done" if returns(messages) else {0: delegate(0, "reviewer")}
+
+    reviewer = Agent(
+        FunctionModel(stream_function=child_model),
+        name="reviewer",
+        capabilities=[IdentifiedPlanning()],
+    )
+    runtime = AgentRuntime(
+        Agent(
+            FunctionModel(stream_function=parent_model),
+            capabilities=[
+                SubAgents(
+                    agents=[SubAgent(reviewer)],
+                    agent_folders=None,
+                    event_stream_handler=stream_child_activity,
+                ),
+                DelegationReporting(),
+            ],
+        )
+    )
+
+    async def run():
+        events = [e async for e in runtime.stream("Review")]
+        plans = [e for e in events if isinstance(e, ChildPlan)]
+        assert [(p.call_id, [i["content"] for i in p.items]) for p in plans] == [
+            ("parent-0", ["Read the diff"])
+        ]
+
+    asyncio.run(run())
