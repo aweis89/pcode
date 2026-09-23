@@ -150,9 +150,14 @@ class Palette:
                 # the app palette may still be dark on a light terminal.
                 "bottom-toolbar": "noreverse nodim bg:default fg:default",
                 "bottom-toolbar.text": "fg:default",
-                "bottom-toolbar.location": "fg:default bold",
-                "bottom-toolbar.model": "fg:default",
-                "bottom-toolbar.activity": "fg:default bold",
+                # Same roles as the prompt chrome: what matters (where, what is
+                # running) in the accent, labels muted so the row stays quiet.
+                "bottom-toolbar.sep": self.muted,
+                "bottom-toolbar.location": f"{self.accent} bold",
+                "bottom-toolbar.mode": self.task_heading,
+                "bottom-toolbar.model": self.accent,
+                "bottom-toolbar.context": self.muted,
+                "bottom-toolbar.activity": f"{self.task_heading} bold",
                 "completion-menu": f"bg:{menu.surface} {menu.foreground}",
                 "completion-menu.completion": f"bg:{menu.surface} {menu.foreground}",
                 # The toolkit's selected-row default uses reverse; explicitly
