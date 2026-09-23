@@ -324,6 +324,10 @@ def codex_model(model: str) -> OpenAICodexModel:
     # least one deferred tool` for the whole session. Deferred MCP tools are
     # searched, revealed and called normally with these set (live-verified
     # against gpt-6-astra on the subscription endpoint).
+    # TODO: drop `tool_deferral_mode` once a pinned Pydantic AI release includes
+    # https://github.com/pydantic/pydantic-ai/pull/8693 (it sets the mode in
+    # `openai_codex_model_profile`). That PR omits `tool_addition_mode`, so check
+    # whether upstream has it before removing that one too.
     return OpenAICodexModel(
         model.removeprefix("openai-codex:"),
         profile=OpenAIModelProfile(
