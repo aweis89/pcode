@@ -404,11 +404,11 @@ class ContextCatalog:
                     else:
                         headers = {}
                         if getattr(model, "_subscription_oauth", False):
-                            from pcode.auth import OAUTH_BETAS, OAUTH_USER_AGENT
+                            from pcode.auth import OAUTH_BETAS, oauth_user_agent
 
                             headers = {
                                 "anthropic-beta": ",".join(sorted(OAUTH_BETAS)),
-                                "User-Agent": OAUTH_USER_AGENT,
+                                "User-Agent": oauth_user_agent(),
                                 "x-app": "cli",
                             }
                         # Raw JSON works with installed SDKs predating these fields.
