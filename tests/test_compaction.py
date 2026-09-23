@@ -113,7 +113,7 @@ def test_summarizer_is_tool_free_focused_incremental_and_pair_safe(monkeypatch):
         assert "Do not commit secrets." in str(result.messages)
         assert "Still working" in str(result.messages)
         assert context_estimate(result.messages) == result.after
-        assert "ctx: ~" in context_label("test:local", result.messages)
+        assert "~" in context_label("test:local", result.messages)
         # Recompaction anchors the previous summary instead of erasing it.
         second_source = result.messages + history()[1:]
         second = await summarize(second_source, model=summary_model(calls))
@@ -124,7 +124,7 @@ def test_summarizer_is_tool_free_focused_incremental_and_pair_safe(monkeypatch):
         second.messages.append(
             ModelResponse(parts=[TextPart("ok")], usage=RequestUsage(input_tokens=99))
         )
-        assert context_label("test:local", second.messages) == " · ctx: 99/100k"
+        assert context_label("test:local", second.messages) == " · 99/100k"
 
     asyncio.run(run())
 
@@ -500,7 +500,7 @@ def test_override_display_and_safe_compaction_errors(monkeypatch):
     from pcode.live import error_message
 
     monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "32000")
-    assert context_label("proxy:unknown", []) == " · ctx: 0/32k"
-    assert context_label("anthropic:claude-sonnet-4-6", []) == " · ctx: 0/32k"
+    assert context_label("proxy:unknown", []) == " · 0/32k"
+    assert context_label("anthropic:claude-sonnet-4-6", []) == " · 0/32k"
     error = CompactionError("Not enough room. Use /compact with a focus or /new.")
     assert error_message(error) == str(error)
