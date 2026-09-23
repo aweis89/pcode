@@ -178,3 +178,49 @@ def test_transport_classification_respects_suppressed_context_and_cycles():
     assert "Run failed (ModelAPIError)" in error_message(error)
     error.__cause__ = error
     assert "Run failed (ModelAPIError)" in error_message(error)
+
+
+def test_stale_install_names_a_merge_or_reinstall_since_startup(tmp_path, monkeypatch):
+    import sysconfig
+
+    import pcode
+    from pcode.diagnostics import stale_install
+
+    monkeypatch.setattr(pcode, "STARTED", float("inf"))
+    assert stale_install() is None
+    monkeypatch.setattr(pcode, "STARTED", 0.0)
+    assert "source changed" in stale_install()
+    # A reinstall on another Python deletes this interpreter's site-packages.
+    monkeypatch.setattr(sysconfig, "get_paths", lambda: {"purelib": str(tmp_path / "gone")})
+    assert "reinstalled" in stale_install()
+
+
+def test_failed_slash_command_blames_the_command_not_the_provider(tmp_path, monkeypatch):
+    from io import StringIO
+
+    from rich.console import Console
+
+    import pcode
+    from pcode.app import PreviewApp
+
+    monkeypatch.setattr(pcode, "STARTED", 0.0)
+    saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
+    try:
+        runtime = AgentRuntime(Agent(FunctionModel(lambda *_: None)), session=saved)
+        output = StringIO()
+        console = Console(file=output, width=500)
+        app = PreviewApp(model="test:local", runtime=runtime, console=console)
+        app.command_failed("/diffs", KeyError("popup_mouse"))
+        rendered = StringIO()
+        console = Console(file=rendered, width=200, theme=app.transcript.rich_theme)
+        for objects, end, _ in app.transcript.replay():
+            console.print(*objects, end=end)
+        shown = rendered.getvalue()
+        assert "popup_mouse" in (saved.directory / "errors.log").read_text()
+    finally:
+        saved.close()
+    assert "/diffs failed (KeyError)." in shown
+    assert "Check the model string" not in shown
+    assert "source changed since this session started" in shown
+    # Notes print once rather than replaying.
+    assert "errors.log" in output.getvalue()

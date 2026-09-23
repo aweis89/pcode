@@ -109,7 +109,7 @@ candidate's size so that cost is visible before you pick.
 | Key | Action |
 | --- | --- |
 | Enter | Send using the active send mode, or accept a selected completion |
-| Ctrl+S | Cycle steering → queue → interrupt (saves the default) |
+| Ctrl+S | Cycle steering → queue → interrupt for the next send only |
 | ↓ | Newline when on the last line with nothing to complete or recall (works in vi insert mode) |
 | Ctrl+J / Shift+Enter | Newline; see [Newlines in tmux](#newlines-in-tmux) if neither reaches pcode |
 | Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
@@ -229,6 +229,23 @@ historical task ownership. When there is no active task (including no plan),
 tools appear as unparented rows in the same widget instead of beneath a completed
 or pending task. There is no separate Tools panel or Tasks heading.
 
+A running `delegate_task` keeps its own row, and a sub-agent that plans shows up
+to three of its tasks indented beneath it, centred on its active task, with its
+current tool calls nested under that task the same way. The sub-agent's plan is
+separate from yours: it is never saved, never merged into your plan, and leaves
+the widget when the delegate finishes. The built-in worker always plans this way;
+an extension's delegate opts in by giving its agent `IdentifiedPlanning()` from
+`pcode.planning` (see "Sub-agents" in `src/pcode/extension_guide.md`).
+
+```text
+* Fix the flaky login test
+    ⟳ Delegate · Working · 12.4s · worker · Investigate the retry path
+        ✓ Read the retry code
+        * Reproduce the failure
+            ⟳ Run · 1.2s · pytest -q tests/test_login.py
+        ○ Report back
+```
+
 The shared height budget shrinks in small panes, preserving the active task and
 the newest tool calls. Empty tool slots are not reserved, and an empty widget is
 hidden. Each call updates in place from running to success/failure; cancellation
@@ -287,8 +304,9 @@ Long paths shrink first; narrow terminals may truncate trailing context details.
 ## Sending while the agent is working
 
 Enter uses the saved `send_mode` (default: `steering`). **Ctrl+S** cycles
-`steering` → `queue` → `interrupt` and saves the selection; the status bar shows
-which mode is active directly under the editor. Mode and working status take
+`steering` → `queue` → `interrupt` for the *next* send only: the status bar
+shows the picked mode with `(once)` next to it, and the saved default comes back
+as soon as a prompt is sent. Mode and working status take
 priority over model and path metadata in narrow panes. Existing queued messages
 keep their submission mode.
 
@@ -306,7 +324,7 @@ keep their submission mode.
 
 Set the default with `pcode config set send_mode steering` (or `queue` / `interrupt`).
 `/config set send_mode queue` changes the default for the next launch; Ctrl+S
-changes it immediately. Idle input starts a normal turn in every mode. Slash
+overrides it for one send without changing it. Idle input starts a normal turn in every mode. Slash
 commands retain their existing behavior, and Ctrl+D (or Ctrl+C on an empty
 prompt) still cancels and clears pending messages.
 
@@ -351,21 +369,18 @@ acting on whichever pane has focus:
 Ctrl+D never closes a popup; it always half-pages. A list with a search line
 keeps these keys working while you type, so the query stays where it is.
 
-Popups leave the mouse to the terminal by default, so dragging selects text and
-your terminal's own copy works (including copy-on-select). The cost is that
-clicks and the scroll wheel do not reach the popup. Terminals that support
-alternate scroll mode turn the wheel into ↑/↓ in full-screen apps, so there it
-still moves the selection or the pane a line at a time. To have popups capture
-the mouse instead:
+Popups capture the mouse by default: clicks select rows and the wheel scrolls
+whichever pane is under the pointer, but a plain drag no longer selects text. Most terminals still
+select with a modifier held while dragging (usually Shift; Option in iTerm2). In tmux, mouse events reach pcode only with
+`tmux set -g mouse on`. To leave the mouse to the terminal instead, so a plain
+drag selects text and copy-on-select works:
 
 ```sh
-pcode config set popup_mouse on
+pcode config set popup_mouse off
 ```
 
-With it on, clicks select rows and the wheel scrolls whichever pane is under
-the pointer, but a plain drag no longer selects text. Most terminals still
-select with a modifier held while dragging (usually Shift; Option in iTerm2). In tmux, mouse events reach pcode only with
-`tmux set -g mouse on`. The setting is read as each popup opens, so no restart
+Terminals that support alternate scroll mode still turn the wheel into ↑/↓
+then, moving the selection or the pane a line at a time. The setting is read as each popup opens, so no restart
 is needed.
 
 ## Edit diff browser
@@ -414,7 +429,7 @@ terminal output is buffered until it closes. Inspection never reruns a tool.
 - In details, use arrows to scroll by line, PageUp/PageDown by page, or Ctrl+U/Ctrl+D
   by half a page. Ctrl+U/Ctrl+D also half-page the call list, including while
   typing a search. The session browser shares these controls.
-- Mouse clicks and wheel scrolling reach the popup only with `popup_mouse on`;
+- Mouse clicks and wheel scrolling reach the popup unless `popup_mouse` is `off`;
   see [popup keys](#popup-keys) for the text-selection tradeoff.
 - Escape or Ctrl+C closes only the inspector and restores the editor draft.
 - Wide terminals show calls and details side by side; narrow terminals stack them.
@@ -478,7 +493,7 @@ The editor remains usable throughout generation, including multiline input,
 history, slash completion, and `@` file references. Enter sends using the active mode (steering by
 default) and clears the editor for another draft; the toolbar shows the mode and
 pending message count. Steering messages join the next model request; queue-mode
-messages run in order after the current turn finishes. Ctrl+S cycles send modes. Slash commands use a separate async
+messages run in order after the current turn finishes. Ctrl+S cycles the mode for the next send. Slash commands use a separate async
 handler, so help, inspection, theme, context, and effort controls remain available
 while the model works. `/model` also opens while working and applies from the next
 request. `/new`, `/resume`, `/login`, and `/logout` require an idle conversation: cancel

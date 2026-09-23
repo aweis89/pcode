@@ -220,17 +220,17 @@ def test_every_popup_pane_pages_with_the_same_keys(tmp_path, name):
 
 
 @pytest.mark.parametrize("name", POPUPS)
-def test_popup_mouse_capture_is_opt_in(tmp_path, name):
-    """Off by default so a drag selects text natively; `popup_mouse on` hands it to the popup."""
+def test_popup_mouse_capture_is_default(tmp_path, name):
+    """On by default so the wheel scrolls; `popup_mouse off` restores native selection."""
     from pcode.preferences import update_preferences
 
     with create_pipe_input() as pipe:
         options = {"input": pipe, "output": DummyOutput()}
         app, _ = _popups(tmp_path, options)[name]
-        assert not app.mouse_support()
-        update_preferences({"popup_mouse": "on"})
-        app, _ = _popups(tmp_path, options)[name]
         assert app.mouse_support()
+        update_preferences({"popup_mouse": "off"})
+        app, _ = _popups(tmp_path, options)[name]
+        assert not app.mouse_support()
 
 
 def test_model_picker_pages_its_selection():

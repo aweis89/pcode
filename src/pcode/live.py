@@ -72,6 +72,7 @@ from pcode.profiling import activity as profiled_activity
 from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
     CacheBust,
+    ChildPlan,
     CommandOutput,
     EditPreview,
     Event,
@@ -93,9 +94,9 @@ from pcode.token_accounting import TokenAccounting, TokenTotals
 from pcode.tool_display import (
     COMMAND_TOOLS,
     command_error,
-    command_text,
     delegation_detail,
     execution_mode,
+    invocation,
     job_status,
     label,
     native_result_detail,
@@ -638,8 +639,9 @@ class AgentRuntime:
                 async for event in stream:
                     if isinstance(event, ToolStarted):
                         tools_started = True
-                    if isinstance(event, (PlanPreview, CommandOutput, EditPreview)):
-                        # Unexecuted arguments must never enter replay/tree history.
+                    if isinstance(event, (PlanPreview, ChildPlan, CommandOutput, EditPreview)):
+                        # Unexecuted arguments and a sub-agent's transient plan
+                        # must never enter replay/tree history.
                         yield event
                         continue
                     if saved:
@@ -861,6 +863,8 @@ class AgentRuntime:
                             start = replace(start, activity=event.activity)
                             delegates[event.tool_call_id] = start
                             yield start
+                        if event.plan is not None:
+                            yield ChildPlan(event.tool_call_id, event.plan)
                         if event.child is not None:
                             if isinstance(event.child, ToolStarted):
                                 child_tools[event.child.call_id] = event.child
@@ -943,10 +947,7 @@ class AgentRuntime:
                         run_id=run_id,
                         started_at=datetime.now(timezone.utc).isoformat(),
                         process_id=capture(args.get("command_id", "")),
-                        command=command_text(args["command"])
-                        if event.part.tool_name in {"shell", "run_command", "start_command"}
-                        and isinstance(args.get("command"), str)
-                        else "",
+                        command=invocation(event.part.tool_name, args),
                         purpose=stated_purpose(args),
                         execution=execution_mode(event.part.tool_name, args),
                     )
@@ -1017,10 +1018,7 @@ class AgentRuntime:
                             else capture(args.get("command_id", ""))
                         ),
                         elapsed_seconds=max(0, monotonic() - started),
-                        command=command_text(args["command"])
-                        if name in {"shell", "run_command", "start_command"}
-                        and isinstance(args.get("command"), str)
-                        else "",
+                        command=invocation(name, args),
                         purpose=stated_purpose(args),
                         error=command_error(display_content)
                         if failed and name in COMMAND_TOOLS
@@ -1091,10 +1089,15 @@ def retry_ceiling(error: Exception) -> str | None:
 CODEX_LOGIN_HINT = "Run `/login openai-codex` (or `codex login`, then restart pcode)."
 
 
-def error_message(error: Exception) -> str:
-    """Don't print raw provider bodies/validation inputs; they can contain secrets."""
+def error_message(error: Exception, *, unexpected: str | None = None) -> str:
+    """Don't print raw provider bodies/validation inputs; they can contain secrets.
+
+    `unexpected` replaces the closing guess for an unrecognized error, which
+    otherwise blames the model or provider: right for a turn, wrong for a
+    slash command that never reached one.
+    """
     if isinstance(error, BaseExceptionGroup) and error.exceptions:
-        return error_message(error.exceptions[0])
+        return error_message(error.exceptions[0], unexpected=unexpected)
     from pcode.auth import LoginError
     from pcode.compaction import CompactionError
     from pcode.workspace import WorkspaceGoneError
@@ -1158,4 +1161,6 @@ def error_message(error: Exception) -> str:
             "Check network/proxy settings and provider availability, then retry when ready. "
             "See the saved session diagnostics."
         )
+    if unexpected is not None:
+        return f"{unexpected} ({name})."
     return f"Run failed ({name}). Check the model string, provider credentials, and connectivity."
