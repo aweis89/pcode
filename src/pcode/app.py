@@ -282,9 +282,9 @@ class PreviewApp:
             ),
             Command(
                 "/login",
-                "Sign in to Anthropic or OpenAI Codex in a browser",
+                "Sign in to Anthropic, OpenAI Codex, or Claude for Meridian in a browser",
                 self.login,
-                ("anthropic", "openai-codex"),
+                ("anthropic", "openai-codex", "meridian"),
                 group="Model",
             ),
             Command(
@@ -1128,8 +1128,8 @@ class PreviewApp:
         # Signing in stores a credential; it does not require the conversation to
         # already be on Anthropic. A non-Anthropic session keeps its own model.
         source = argument.strip() or "anthropic"
-        if source not in {"anthropic", "openai-codex"}:
-            self.transcript.note("Usage: /login [anthropic|openai-codex]")
+        if source not in {"anthropic", "openai-codex", "meridian"}:
+            self.transcript.note("Usage: /login [anthropic|openai-codex|meridian]")
             return
         self.login_requested = source
 
@@ -1171,8 +1171,36 @@ class PreviewApp:
         self.login_requested = None
         if source == "openai-codex":
             await self.login_codex()
+        elif source == "meridian":
+            await self.login_meridian()
         else:
             await self.login_anthropic()
+
+    async def login_meridian(self) -> None:
+        """Run Claude Code's own sign-in for the Meridian this session uses."""
+        from pcode.auth import LoginError
+        from pcode.meridian_setup import claude_login, login_target
+
+        try:
+            target = await asyncio.to_thread(login_target)
+            self.transcript.note(
+                f"Signing in to Claude for Meridian ({target.label}) with `claude auth login`. "
+                "Finish in the browser (Ctrl+C cancels)."
+            )
+            status = await claude_login(self.transcript.note, target)
+            plan = status.get("subscriptionType")
+            self.transcript.note(
+                f"Signed in to Claude ({target.label}"
+                + (f", {plan} plan" if plan else "")
+                + "). Meridian uses it from its next request; pcode stores nothing."
+            )
+        except asyncio.CancelledError:
+            self.transcript.note("Claude sign-in cancelled.")
+            raise
+        except LoginError as error:
+            self.transcript.error(str(error))
+        except Exception:
+            self.transcript.error("Claude sign-in failed. No credential details were logged.")
 
     async def login_codex(self) -> None:
         from pcode.agent import codex_model
@@ -3291,6 +3319,11 @@ def main() -> None:
     )
     parser.add_argument("--sessions", action="store_true", help="List saved sessions and exit")
     parser.add_argument(
+        "--upgrade-meridian",
+        action="store_true",
+        help="Install or upgrade the Meridian proxy with npm, then exit",
+    )
+    parser.add_argument(
         "--compact",
         action="store_true",
         help="With --sessions: drop superseded step checkpoints and report the space freed",
@@ -3346,6 +3379,10 @@ def main() -> None:
         print(render(parser, args.completions), end="")
         print(f"# Install: {install_hint(args.completions)}")
         return
+    if args.upgrade_meridian:
+        from pcode.meridian_setup import upgrade_meridian
+
+        sys.exit(upgrade_meridian())
     args.command = None
     if args.resume is not None:
         from pcode.sessions import is_session_selector
