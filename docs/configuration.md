@@ -112,8 +112,8 @@ is only sensible on a machine where you wrote all of them.
 | --- | --- | --- |
 | `theme` | `auto` | `dark`, `light`, `auto` |
 | `transcript_max_chars` | `2000000` | Positive integer, retained text budget shared by resume and redraw; applies on next launch |
-| `syntax_dark` | `gruvbox-dark` | A Pygments style for fenced code on the dark palette |
-| `syntax_light` | `gruvbox-light` | A Pygments style for fenced code on the light palette |
+| `syntax_dark` | `terminal` | `terminal` or a Pygments style, for the dark palette |
+| `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
 | `autocompact` | `on` | `on`, `off` |
 | `paced_scrollback` | `on` | `on`, `off` (roll settled blocks into scrollback a few rows per frame; see [the transcript](transcript.md#paced-scrollback)) |
 | `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
@@ -143,23 +143,31 @@ is only sensible on a machine where you wrote all of them.
 
 ## Code highlighting styles
 
-Fenced code keeps its own background, so each palette gets its own Pygments
-style: `syntax_dark` applies whenever the resolved theme is dark, `syntax_light`
-whenever it is light. `/syntax NAME` changes the style for the palette in use and
-saves it as that palette's default; `/syntax` alone reports the current one. Tab
-completion lists the styles, and an unknown name is rejected with the full list.
-`/theme-preview` renders each of them on one line, marks the one in use, and
-repeats the commands below, so a style can be chosen by eye rather than by name.
+Each palette gets its own setting: `syntax_dark` applies whenever the resolved
+theme is dark, `syntax_light` whenever it is light. `/syntax NAME` changes the
+setting for the palette in use and saves it as that palette's default; `/syntax`
+alone reports the current one. Tab completion lists the choices, and an unknown
+name is rejected with the full list.
 
-The completion menu and the prompt chrome (the chevron, plan rows, the frame,
-`@file` references) are painted from the same style, so the screen matches the
+Both default to `terminal`, which is not a Pygments style: it hands every color
+to the terminal's own ANSI palette. Scrollback uses named colors, fenced code
+uses `ansi_dark` / `ansi_light` with no painted background, and the prompt, task
+rows and completion popup use ANSI names too (the selected popup row is
+reversed). pcode then looks right in whatever scheme the terminal runs.
+
+`/theme-preview` draws a sample of every style on one line, marks the one in
+use, and repeats the commands below, so a style can be chosen by eye rather than
+by name. The `terminal` row is drawn with the palette's ANSI style.
+
+Any other value is a Pygments style. The completion menu and the prompt chrome
+(the chevron, plan rows, the frame, `@file` references) are painted from it, so the screen matches the
 code on it. A Pygments style only colors code, though, so any color it leaves
 out or that would be unreadable falls back to the palette's own. The two are
 judged against different backgrounds: the menu brings the style's own surface
 with it, while chrome lands on the terminal's background, so a light style
 chosen while the dark palette is active keeps its popup but leaves the chrome
-on the palette. All of this applies under `/colors palette`; the default
-`/colors terminal` drops the style entirely and both return to the palette.
+on the palette. Picking any Pygments style also switches scrollback headings,
+links, quotes and tables from ANSI names to the palette's own colors.
 
 These are the styles Pygments installs here; a Pygments style plugin package adds
 to the list automatically.
@@ -180,11 +188,6 @@ punctuation at the default foreground, so a snippet that is mostly names can loo
 unhighlighted even though the lexer ran. Compare a few against your own terminal
 background before settling on one.
 
-`/colors terminal` ignores both settings and uses `ansi_dark` / `ansi_light`
-instead, which follow the terminal's own sixteen colors. In that mode
-`/theme-preview` lists the style names without samples: drawing them would need
-the RGB colors that mode exists to avoid.
-
 Outside the editor, `pcode config set syntax_dark NAME` and
 `pcode config set syntax_light NAME` save the same two settings.
 
@@ -193,9 +196,8 @@ Outside the editor, `pcode config set syntax_dark NAME` and
 Automatic compaction still requires a known context window; setting its global
 preference does not validate a particular model or trigger a compaction. For custom
 deployments, use `PCODE_CONTEXT_WINDOW` as described in
-[context compaction](context.md#context-compaction). `/colors` / `--color-style`
-remain session-only; MCP configuration and credentials are separate from these
-non-secret defaults.
+[context compaction](context.md#context-compaction). MCP configuration and
+credentials are separate from these non-secret defaults.
 
 Writes are atomic and serialized across terminals. Unknown JSON keys are preserved;
 invalid setting values fall back to built-in defaults. Normal startup tolerates a

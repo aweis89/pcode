@@ -47,7 +47,7 @@ from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fr
 from pcode.input_keys import configure_newline_keys
 from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN, PastedText
-from pcode.preferences import SETTINGS, SYNTAX_THEMES, load_preferences
+from pcode.preferences import SETTINGS, SYNTAX_THEMES, TERMINAL_SYNTAX, load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.syntax_colors import derive_colors
 from pcode.task_prompt import TaskPrompt
@@ -123,8 +123,8 @@ class Palette:
         return Style.from_dict(
             {
                 "plan": self.muted,
-                "plan.heading": f"{self.task_heading} bold",
-                "plan.active": f"{self.accent} bold",
+                "plan.heading": f"nodim {self.task_heading} bold",
+                "plan.active": f"nodim {self.accent} bold",
                 "prompt": f"{self.accent} bold",
                 "activity.prompt": self.muted,
                 # System work is pcode's own, so it gets the accent colour and
@@ -158,12 +158,20 @@ class Palette:
                 # The toolkit's selected-row default uses reverse; explicitly
                 # disable it so light themes keep dark text on a light surface.
                 "completion-menu.completion.current": (
-                    f"noreverse bg:{menu.selected} {menu.accent} bold"
+                    f"reverse bg:default {menu.accent} bold"
+                    if menu.selected == "reverse"
+                    else f"noreverse bg:{menu.selected} {menu.accent} bold"
                 ),
                 "completion-menu scrollbar.background": f"bg:{menu.surface}",
-                "completion-menu scrollbar.button": f"bg:{menu.selected}",
+                "completion-menu scrollbar.button": (
+                    "reverse bg:default" if menu.selected == "reverse" else f"bg:{menu.selected}"
+                ),
                 "completion-menu.meta.completion": f"bg:{menu.surface} {menu.muted}",
-                "completion-menu.meta.completion.current": f"bg:{menu.selected} {menu.foreground}",
+                "completion-menu.meta.completion.current": (
+                    "reverse bg:default fg:default"
+                    if menu.selected == "reverse"
+                    else f"bg:{menu.selected} {menu.foreground}"
+                ),
                 # A file reference is neither prose nor a command: underlining
                 # it marks the token without competing with the prompt chevron.
                 "reference": f"{self.task_heading} underline",
@@ -179,6 +187,16 @@ PALETTES = {
     "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "#c4b5fd"),
     "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "#7c3aed"),
 }
+
+# `/syntax terminal`: named ANSI colors, so the prompt, plan rows and popup
+# follow the terminal's own scheme. Muted text is `dim` rather than bright
+# black, which several schemes (Solarized) paint as the background itself, and
+# the selected row is reversed for the same reason. `fg:default` keeps the
+# toolkit's own RGB defaults (black popup metadata, grey suggestions) from
+# showing through.
+TERMINAL_PALETTE = Palette(
+    "ansicyan", "fg:default dim", "default", "default", "reverse", "ansimagenta"
+)
 
 
 @cache
@@ -207,9 +225,6 @@ def syntax_themes(preferences: dict[str, str] | None = None) -> dict[str, str]:
         name: preferences.get(f"syntax_{name}", SETTINGS[f"syntax_{name}"].default)
         for name in PALETTES
     }
-
-
-COLOR_STYLES = ("palette", "terminal")
 
 
 # Rich owns scrollback, not the prompt palette. Use terminal-defined ANSI colors
@@ -865,7 +880,7 @@ class TerminalOutput:
         self.app = app
         self.tail = ""
         self.streamed = False
-        self.code_theme = code_theme or (lambda: SETTINGS["syntax_dark"].default)
+        self.code_theme = code_theme or (lambda: "ansi_dark")
         self.rich_theme = rich_theme or PALETTES["dark"].rich_theme
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.transient_pending: list[tuple[tuple[object, ...], str, bool]] = []
@@ -1829,7 +1844,6 @@ class Transcript:
         theme: str = "dark",
         *,
         activity: Activity | None = None,
-        color_style: str = "palette",
         preferences: dict[str, str] | None = None,
         detected_theme: str | None = None,
     ) -> None:
@@ -1844,7 +1858,6 @@ class Transcript:
         self.console = console
         self.theme = theme
         self.detected_theme = detect_theme() if detected_theme is None else detected_theme
-        self.color_style = color_style
         self.syntax_themes = syntax_themes(preferences)
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
@@ -2040,14 +2053,15 @@ class Transcript:
         return PALETTES[self.resolved_theme]
 
     @property
-    def menu_palette(self) -> Palette:
-        """The palette implied by the syntax style in use, for the popup.
+    def terminal_colors(self) -> bool:
+        """Whether `/syntax terminal` hands every color to the terminal's ANSI palette."""
+        return self.syntax_themes[self.resolved_theme] == TERMINAL_SYNTAX
 
-        `/colors terminal` has no Pygments style to read -- code falls back to
-        the ANSI pseudo-styles -- so the hardcoded palette stands in.
-        """
-        if self.color_style == "terminal":
-            return self.palette
+    @property
+    def menu_palette(self) -> Palette:
+        """The palette implied by the syntax style in use, for the popup."""
+        if self.terminal_colors:
+            return TERMINAL_PALETTE
         return syntax_palette(self.syntax_themes[self.resolved_theme], self.palette)
 
     @property
@@ -2058,8 +2072,8 @@ class Transcript:
         frame do not, so the palette's surface stands in for the terminal's
         background and any color that would be lost against it is dropped.
         """
-        if self.color_style == "terminal":
-            return self.palette
+        if self.terminal_colors:
+            return TERMINAL_PALETTE
         style = self.syntax_themes[self.resolved_theme]
         return syntax_palette(style, self.palette, self.palette.surface)
 
@@ -2069,13 +2083,13 @@ class Transcript:
 
     @property
     def rich_theme(self) -> Theme:
-        return TERMINAL_THEME if self.color_style == "terminal" else self.palette.rich_theme()
+        return TERMINAL_THEME if self.terminal_colors else self.palette.rich_theme()
 
     @property
     def code_theme(self) -> str:
         return (
             f"ansi_{self.resolved_theme}"
-            if self.color_style == "terminal"
+            if self.terminal_colors
             else self.syntax_themes[self.resolved_theme]
         )
 
@@ -2111,7 +2125,6 @@ class Transcript:
                 palette=self.resolved_theme,
                 dark=self.syntax_themes["dark"],
                 light=self.syntax_themes["light"],
-                terminal_colors=self.color_style == "terminal",
             )
         )
 

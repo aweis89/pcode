@@ -249,7 +249,7 @@ pcode config set paced_scrollback off  # Default on; applies on next launch
 
 `/redraw` rebuilds the retained transcript at the current terminal width and with
 current display settings. Ctrl+G, `/show-commands`, `/show-edits`,
-`/theme`, `/colors`, and `/syntax`
+`/theme`, and `/syntax`
 use the same replay mechanism. The draft, active tool panel, and unfinished model
 text are preserved; replay neither calls tools nor changes model history.
 

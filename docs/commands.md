@@ -41,26 +41,23 @@ candidate's size so that cost is visible before you pick.
   output). Auto is the built-in default; saved theme choices still take precedence.
   Restart pcode after changing your terminal background. Restore auto mode
   with `/theme auto` or `pcode config set theme auto`.
-  `/theme` alone toggles. By default, Rich headings, links, quotes, inline code,
-  and tables follow this palette; fenced code uses the palette's own Pygments
-  style, `gruvbox-dark` or `gruvbox-light`. Normal body text and the overall
-  background remain terminal-native.
-- `/syntax NAME`: change the Pygments style for fenced code, the completion menu
-  and the prompt chrome on the active palette and save it as that palette's
-  default; `/syntax` alone reports the current
-  style. See [Code highlighting styles](configuration.md#code-highlighting-styles) for the list;
-  `/theme-preview` renders every style, marking the one in use.
-- `/colors terminal` (the default): terminal-defined ANSI colors with unpainted
-  code backgrounds and `ansi_dark` / `ansi_light` syntax, so output follows
-  whatever color scheme the terminal uses. `/colors palette` switches to pcode's
-  own coordinated palette and the `/syntax` style; `/colors` shows the current
-  selection. This affects Rich output, not the input/completion palette. Start
-  with `--color-style palette` to use the palette from launch. Run
-  `/theme-preview` after switching to compare headings, links, quotes, tables, Python, and diffs.
-  Retained scrollback is rebuilt with the selected colors, just like `/redraw`.
+  `/theme` alone toggles. The palette decides which `/syntax` setting applies
+  (`syntax_dark` or `syntax_light`); normal body text and the overall background
+  stay terminal-native either way.
+- `/syntax NAME`: choose the colors for the active palette and save them as that
+  palette's default; `/syntax` alone reports the current choice.
+  `/syntax terminal` is the default: scrollback, fenced code (`ansi_dark` /
+  `ansi_light`), the prompt, task rows and the completion popup all use the
+  terminal's own ANSI colors, so pcode follows whatever scheme the terminal runs.
+  Any Pygments style (`/syntax gruvbox-dark`, `/syntax monokai`) switches to
+  pcode's own colors instead: headings, links, quotes and tables use the palette,
+  and code, popup and prompt are derived from that style. See
+  [Code highlighting styles](configuration.md#code-highlighting-styles) for the
+  list; `/theme-preview` renders every style, marking the one in use. Retained
+  scrollback is rebuilt with the new colors, just like `/redraw`.
 - Session, conversation-tree, model, and tool popups share terminal-default
   backgrounds and text, with reverse-video selection highlights. They follow your
-  terminal background automatically, independently of `/theme` and `/colors`.
+  terminal background automatically, independently of `/theme` and `/syntax`.
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
 - `/login [anthropic|openai-codex]`: sign in in a browser. Anthropic is pcode's own flow;
   `openai-codex` uses Pydantic AI's OAuth flow (no CLI required).
@@ -144,7 +141,7 @@ popups, and truncates at 64 KiB.
 
 **Setting acknowledgements are transient.** Toggles and display settings
 (`/show-thinking`, `/show-tasks`, `/show-edits`, `/show-commands`,
-`/autohide-tasks`, `/autocompact`, `/theme`, `/colors`, `/syntax`, `/effort`)
+`/autohide-tasks`, `/autocompact`, `/theme`, `/syntax`, `/effort`)
 answer on a line directly above the spinner, just over the editor, and clear
 themselves after five seconds. They never enter terminal scrollback, so
 flipping a display option repeatedly does not litter the transcript, and a

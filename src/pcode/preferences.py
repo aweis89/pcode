@@ -14,7 +14,10 @@ from pcode.transcript_log import CHAR_BUDGET
 
 # Every Pygments style installed here, including any added by a plugin package.
 # The scan costs a few milliseconds once; Rich imports Pygments regardless.
-SYNTAX_THEMES = tuple(sorted(get_all_styles()))
+# `terminal` is not a Pygments style: it hands every color, code included, to
+# the terminal's own ANSI palette, so pcode matches whatever scheme it runs in.
+TERMINAL_SYNTAX = "terminal"
+SYNTAX_THEMES = (TERMINAL_SYNTAX, *sorted(get_all_styles()))
 
 EFFORTS = ("low", "medium", "high", "xhigh", "default")
 OPENAI_PROVIDERS = ("openai", "openai-chat", "openai-responses", "openai-codex")
@@ -262,16 +265,16 @@ SETTINGS = {
         description="Palette for the terminal background; auto detects it",
     ),
     # Chosen per palette so `theme auto` keeps highlighting legible on either
-    # background. `/colors terminal` overrides both with the ANSI styles.
+    # background. `terminal` uses the terminal's ANSI colors for everything.
     "syntax_dark": Setting(
-        "gruvbox-dark",
+        TERMINAL_SYNTAX,
         SYNTAX_THEMES,
-        description="Pygments style for fenced code on the dark palette (/theme previews)",
+        description="terminal (ANSI colors) or a Pygments style, for the dark palette",
     ),
     "syntax_light": Setting(
-        "gruvbox-light",
+        TERMINAL_SYNTAX,
         SYNTAX_THEMES,
-        description="Pygments style for fenced code on the light palette (/theme previews)",
+        description="terminal (ANSI colors) or a Pygments style, for the light palette",
     ),
     "autocompact": Setting(
         "on",
