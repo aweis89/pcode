@@ -151,7 +151,7 @@ documentation needs the fetch either way. Each picks the best backend available:
 
 | | Search | Fetch a URL |
 | --- | --- | --- |
-| Model has a native tool (Anthropic, OpenAI) | provider runs it server-side | Anthropic runs it server-side |
+| Model has a native tool (Anthropic, OpenAI; not Meridian) | provider runs it server-side | Anthropic runs it server-side |
 | `EXA_API_KEY` set | Exa `web_search` | Exa `get_page` |
 | Otherwise | DuckDuckGo `web_search` | HTTP fetch `get_page`, converted to Markdown |
 

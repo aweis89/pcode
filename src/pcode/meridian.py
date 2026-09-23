@@ -3,6 +3,7 @@
 import hashlib
 import os
 from dataclasses import replace
+from functools import cached_property
 
 import httpx2
 from anthropic import AsyncAnthropic
@@ -142,11 +143,29 @@ class MeridianProvider(AnthropicProvider):
         self._http_client_factory = make_client
 
 
+class MeridianModel(AnthropicModel):
+    @cached_property
+    def profile(self):
+        # Meridian answers any Anthropic server tool (`web_search_*`, `web_fetch_*`)
+        # with a 400: the Claude Max path cannot emit server_tool_use blocks. Drop
+        # them from the profile so the web capabilities fall back to local tools.
+        from pydantic_ai.native_tools import WebFetchTool, WebSearchTool
+        from pydantic_ai.profiles import SUPPORTED_NATIVE_TOOLS, merge_profile
+        from pydantic_ai.profiles.anthropic import AnthropicModelProfile
+
+        profile = super().profile
+        native = profile.get("supported_native_tools", SUPPORTED_NATIVE_TOOLS)
+        return merge_profile(
+            profile,
+            AnthropicModelProfile(supported_native_tools=native - {WebSearchTool, WebFetchTool}),
+        )
+
+
 def meridian_model(model: str) -> AnthropicModel:
     name = model.removeprefix("meridian:")
     if not name.strip():
         raise ValueError("Meridian requires a model ID: meridian:<model-id>")
-    return AnthropicModel(name, provider=MeridianProvider())
+    return MeridianModel(name, provider=MeridianProvider())
 
 
 def compaction_summary(messages) -> str | None:
