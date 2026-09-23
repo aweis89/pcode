@@ -67,7 +67,7 @@ def test_all_calls_retained_with_filters_and_selection():
         assert "run_command · failed" in shown
         # Arguments come from JSON as labelled rows, commands as a code block.
         assert '{"command"' not in shown
-        assert "command\npytest -q" in shown
+        assert "command\n$ pytest -q" in shown
         ui.tool = "write_plan"
         ui.refresh()
         assert not ui.visible
@@ -413,14 +413,42 @@ def test_details_break_commands_at_separators_but_copy_stays_verbatim():
     from pcode.inspector_ui import arguments_renderables, format_command
 
     chain = format_command("cd src && make test; echo done")
-    assert chain == "cd src && \\\n  make test\necho done"
-    assert format_command("a && b || c") == "a && \\\n  b || \\\n  c"
-    assert format_command('echo "x; y && z"; ls') == 'echo "x; y && z"\nls'
-    assert format_command("x=$(a; b) && c") == "x=$(a; b) && \\\n  c"
-    assert format_command("case $x in a) ;; esac") == "case $x in a) ;; esac"
-    assert format_command("already\nmulti; line") == "already\nmulti; line"
+    assert chain == "$ cd src && \\\n$   make test\n$ echo done"
+    assert format_command("a && b || c") == "$ a && \\\n$   b || \\\n$   c"
+    assert format_command('echo "x; y && z"; ls') == '$ echo "x; y && z"\n$ ls'
+    assert format_command("x=$(a; b) && c") == "$ x=$(a; b) && \\\n$   c"
+    assert format_command("case $x in a) ;; esac") == "$ case $x in a) ;; esac"
+    assert format_command("already\nmulti; line") == "$ already\n$ multi; line"
     blocks = arguments_renderables('{"command": "cd src && make test"}', "ansi_dark")
-    assert blocks[-1].code == "cd src && \\\n  make test"
+    assert blocks[-1].code == "$ cd src && \\\n$   make test"
+
+
+def test_command_prompts_preserve_multiline_indentation_and_blank_lines():
+    from pcode.inspector_ui import format_command
+
+    assert format_command("echo one\n\n  echo two\n") == "$ echo one\n$ \n$   echo two\n$ "
+    assert format_command("pwd") == "$ pwd"
+    assert format_command("") == "$ "
+
+
+def test_command_formats_loop_without_splitting_quoted_printf():
+    from pcode.inspector_ui import format_command
+
+    command = (
+        "pwd; git status --short; for p in /workspace/AGENTS.md AGENTS.md; "
+        'do if [ -f "$p" ]; then printf \'\\n%s\\n\' "$p"; '
+        "sed -n '1,120p' \"$p\"; fi; done"
+    )
+    assert format_command(command) == (
+        "$ pwd\n"
+        "$ git status --short\n"
+        "$ for p in /workspace/AGENTS.md AGENTS.md\n"
+        '$ do if [ -f "$p" ]\n'
+        "$ then printf '\\n%s\\n' \"$p\"\n"
+        "$ sed -n '1,120p' \"$p\"\n"
+        "$ fi\n"
+        "$ done"
+    )
 
 
 def test_copy_shortcuts_take_the_command_and_the_output(monkeypatch):
