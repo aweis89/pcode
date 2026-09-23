@@ -148,7 +148,7 @@ def test_print_reports_background_completion_without_repeating_job_inspection(
     )
     assert asyncio.run(app.run_print_async("go", stdout=StringIO())) is not failed_turn
     printed = transcript.getvalue()
-    assert printed.count("✗ Run · background · j14 · exit 2 · 1.0s") == 1
+    assert printed.count("✗ Run(bg j14) · exit 2 · 1.0s") == 1
     assert "wait_for_job" not in printed and "job_output" not in printed
 
 

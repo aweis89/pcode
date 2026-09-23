@@ -130,7 +130,8 @@ characters, after redaction.
 By default, a settled command leaves the same compact summary line every other
 tool leaves, with the command preview inline after the elapsed time. Long summaries
 truncate to the terminal width instead of wrapping. Captured output stays in the
-mutable tool panel. Enable
+mutable tool panel. Background completion notices use `Run(bg j12)`, keeping the
+job id beside the label and the exit status and elapsed time after it. Enable
 `show_commands` to mirror **every settled shell tool call and its captured
 output** into permanent terminal scrollback (a failed call mirrors its output
 only with `tool_error_scrollback` on):

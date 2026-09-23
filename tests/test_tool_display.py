@@ -352,6 +352,42 @@ def test_command_summary_keeps_timing_and_preview_on_one_line(failed):
     assert stream.getvalue().splitlines() == [f"{heading} · 0.8s · echo hello"]
 
 
+@pytest.mark.parametrize("failed, outcome", [(False, "exit 0"), (True, "exit 2")])
+@pytest.mark.parametrize("show_commands", [False, True])
+def test_background_completion_has_compact_job_label(failed, outcome, show_commands):
+    from pcode.runtime import JobFinished
+
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=100, color_system=None))
+    transcript.command_scrollback = show_commands
+    transcript.tool_error_scrollback = True
+    transcript.tool_result(
+        JobFinished(
+            "shell",
+            f"make test → j12 · {outcome}",
+            failed=failed,
+            elapsed_seconds=0.8,
+            command="make test",
+            result=f"test output\n[j12 · {outcome} · 0.8s]",
+        )
+    )
+    output = stream.getvalue()
+    marker = "✗" if failed else "✓"
+    heading = f"{marker} Run(bg j12) · {outcome} · 0.8s"
+    assert output.startswith(heading)
+    assert output.count("j12") == 1
+    assert "background" not in output
+    if not show_commands:
+        assert output.splitlines() == [f"{heading} · make test"]
+
+
+def test_background_heading_without_job_id():
+    from pcode.tool_display import tool_summary_lines
+
+    (line,) = tool_summary_lines("shell", " · stopped", background=True, command="make test")
+    assert line.plain == "✓ Run(bg) · stopped · make test"
+
+
 def test_multiline_command_preview_is_compact_and_sanitized():
     from pcode.tool_display import command_text
 
