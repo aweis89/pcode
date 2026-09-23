@@ -1,6 +1,8 @@
 """Temporary alternate-screen tool browser, separate from the inline editor."""
 
 import json
+import subprocess
+from functools import lru_cache
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.document import Document
@@ -48,17 +50,39 @@ def code_block(text: str, lexer: str | None, code_theme: str) -> Syntax:
     return Syntax(text, lexer or "text", theme=code_theme, word_wrap=True)
 
 
+@lru_cache(maxsize=128)
 def format_command(command: str) -> str:
-    """A one-line shell command broken at its top-level separators for reading.
+    """Format for display only; never execute or change the copied command."""
+    try:
+        result = subprocess.run(
+            ["shfmt", "-ln", "bash", "-i", "2"],
+            input=command,
+            capture_output=True,
+            text=True,
+            timeout=0.25,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired, UnicodeError):
+        pass
+    else:
+        if result.returncode == 0 and result.stdout.strip():
+            # shfmt adds a final newline; don't display an extra empty prompt.
+            return "\n".join("$ " + line for line in result.stdout.removesuffix("\n").split("\n"))
+    return _fallback_format_command(command)
+
+
+def _fallback_format_command(command: str) -> str:
+    """A shell command with a display-only prompt marker on each logical line.
 
     `;` becomes a line break; `&&` and `||` keep the operator, add a backslash
     continuation, and indent the next command so the chain reads as one
     statement. Separators inside quotes or parentheses are left alone, and a
-    command the model already spread over lines is shown as written. Only the
-    display changes: copying still takes the command verbatim.
+    command the model already spread over lines keeps its layout. Each line
+    starts with `$ `, before any indentation. Only the display changes: copying
+    still takes the command verbatim. Soft-wrapped rows are not new lines.
     """
     if "\n" in command.strip():
-        return command
+        return "\n".join("$ " + line for line in command.split("\n"))
     lines: list[str] = []
     current: list[str] = []
     indent = ""
@@ -104,7 +128,7 @@ def format_command(command: str) -> str:
         i += 1
     if "".join(current).strip():
         lines.append(indent + "".join(current).strip())
-    return "\n".join(lines) if lines else command
+    return "\n".join("$ " + line for line in (lines or [command]))
 
 
 def heading(title: str) -> list:
