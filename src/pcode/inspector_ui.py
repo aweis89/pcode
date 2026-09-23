@@ -1,6 +1,8 @@
 """Temporary alternate-screen tool browser, separate from the inline editor."""
 
 import json
+import subprocess
+from functools import lru_cache
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.document import Document
@@ -48,7 +50,28 @@ def code_block(text: str, lexer: str | None, code_theme: str) -> Syntax:
     return Syntax(text, lexer or "text", theme=code_theme, word_wrap=True)
 
 
+@lru_cache(maxsize=128)
 def format_command(command: str) -> str:
+    """Format for display only; never execute or change the copied command."""
+    try:
+        result = subprocess.run(
+            ["shfmt", "-ln", "bash", "-i", "2"],
+            input=command,
+            capture_output=True,
+            text=True,
+            timeout=0.25,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired, UnicodeError):
+        pass
+    else:
+        if result.returncode == 0 and result.stdout.strip():
+            # shfmt adds a final newline; don't display an extra empty prompt.
+            return "\n".join("$ " + line for line in result.stdout.removesuffix("\n").split("\n"))
+    return _fallback_format_command(command)
+
+
+def _fallback_format_command(command: str) -> str:
     """A shell command with a display-only prompt marker on each logical line.
 
     `;` becomes a line break; `&&` and `||` keep the operator, add a backslash
