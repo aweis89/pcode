@@ -114,7 +114,7 @@ is only sensible on a machine where you wrote all of them.
 | `transcript_max_chars` | `2000000` | Positive integer, retained text budget shared by resume and redraw; applies on next launch |
 | `syntax_dark` | `gruvbox-dark` | A Pygments style for fenced code on the dark palette |
 | `syntax_light` | `gruvbox-light` | A Pygments style for fenced code on the light palette |
-| `autocompact` | `off` | `on`, `off` |
+| `autocompact` | `on` | `on`, `off` |
 | `paced_scrollback` | `on` | `on`, `off` (roll settled blocks into scrollback a few rows per frame; see [the transcript](transcript.md#paced-scrollback)) |
 | `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
 | `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |
