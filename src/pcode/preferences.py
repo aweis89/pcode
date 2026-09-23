@@ -158,9 +158,9 @@ SETTINGS = {
         description="Isolate new sessions and worker tasks in .worktrees/ git worktrees",
     ),
     "worker_concurrency": Setting(
-        "4",
-        positive_integer=True,
-        description="Maximum concurrent built-in workers per session (reload to apply)",
+        "0",
+        whole_number=True,
+        description="Concurrent worker cap; 0 is unlimited (reload to apply)",
     ),
     # An untouched worktree is always removed; uncommitted changes are always kept.
     "worktree_exit": Setting(

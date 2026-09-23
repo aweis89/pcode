@@ -131,7 +131,7 @@ is only sensible on a machine where you wrote all of them.
 | `skill_commands` | `prefix` | `prefix`, `bare`, `both`, `off` (how discovered skills appear as slash commands) |
 | `skill_dirs` | `~/.agents/skills:.agents/skills` | `:`-separated directories searched for skills; relative entries resolve against the workspace |
 | `worktree` | `off` | `on`, `off` (isolate new sessions and built-in worker tasks in `.worktrees/` git worktrees; workers follow the effective config, not the CLI launch override) |
-| `worker_concurrency` | `4` | Positive integer, maximum concurrent built-in workers per session; `/reload` to apply |
+| `worker_concurrency` | `0` | `0` means unlimited; a positive integer caps concurrent built-in workers per session; `/reload` to apply |
 | `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `project_extensions` | `off` | `on`, `off` (`on` trusts every repository's `.pcode/extensions` and `worktree-setup`) |
 | `trusted_projects` | `` | `:`-separated repository paths whose shipped code may run; the launch prompt appends here |

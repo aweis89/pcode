@@ -41,7 +41,7 @@ def test_defaults_and_path_do_not_create_files():
         "extensions_off": "",
         "extensions_on": "",
         "worktree": "off",
-        "worker_concurrency": "4",
+        "worker_concurrency": "0",
         "worktree_exit": "ask",
         "retry_attempts": "1",
         "tool_retries": "3",
@@ -343,13 +343,10 @@ def test_config_completion(prefix, expected):
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "many", "", " 20", "２０"])
-@pytest.mark.parametrize(
-    "key,default", [("error_scrollback_lines", "20"), ("worker_concurrency", "4")]
-)
-def test_positive_integer_settings_reject_invalid_values(value, key, default):
+def test_error_scrollback_lines_reject_invalid_values(value):
     with pytest.raises(ValueError, match="positive integer"):
-        configure(["set", key, value])
-    assert configure(["get", key]) == default
+        configure(["set", "error_scrollback_lines", value])
+    assert configure(["get", "error_scrollback_lines"]) == "20"
 
 
 def test_error_scrollback_settings_round_trip():
@@ -363,16 +360,18 @@ def test_error_scrollback_settings_round_trip():
 
 
 @pytest.mark.parametrize("value", ["0", "1", "3"])
-def test_retry_attempts_round_trip(value):
-    assert configure(["get", "retry_attempts"]) == "1"
-    configure(["set", "retry_attempts", value])
-    assert load_preferences()["retry_attempts"] == value
-    configure(["unset", "retry_attempts"])
-    assert configure(["get", "retry_attempts"]) == "1"
+@pytest.mark.parametrize("key,default", [("retry_attempts", "1"), ("worker_concurrency", "0")])
+def test_whole_number_settings_round_trip(value, key, default):
+    assert configure(["get", key]) == default
+    configure(["set", key, value])
+    assert load_preferences()[key] == value
+    configure(["unset", key])
+    assert configure(["get", key]) == default
 
 
 @pytest.mark.parametrize("value", ["-1", "1.5", "many", "", " 1", "１"])
-def test_retry_attempts_rejects_invalid_values(value):
+@pytest.mark.parametrize("key,default", [("retry_attempts", "1"), ("worker_concurrency", "0")])
+def test_whole_number_settings_reject_invalid_values(value, key, default):
     with pytest.raises(ValueError, match="whole number"):
-        configure(["set", "retry_attempts", value])
-    assert configure(["get", "retry_attempts"]) == "1"
+        configure(["set", key, value])
+    assert configure(["get", key]) == default

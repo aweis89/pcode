@@ -112,18 +112,19 @@ async def _setup(tree):
             raise
 
 
+def _worker_slots() -> asyncio.Semaphore | None:
+    limit = int(
+        load_preferences().get("worker_concurrency", SETTINGS["worker_concurrency"].default)
+    )
+    return asyncio.Semaphore(limit) if limit else None
+
+
 @dataclass(kw_only=True)
 class WorkspaceSubAgents(SubAgents):
     workspace: Path
     worker_factory: Any
-    worker_slots: asyncio.Semaphore = field(
-        default_factory=lambda: asyncio.Semaphore(
-            int(
-                load_preferences().get("worker_concurrency", SETTINGS["worker_concurrency"].default)
-            )
-        ),
-        repr=False,
-        compare=False,
+    worker_slots: asyncio.Semaphore | None = field(
+        default_factory=_worker_slots, repr=False, compare=False
     )
 
     def get_toolset(self):
@@ -184,7 +185,7 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         shared uses the parent's live files (not read-only). Specialized agents
         only support shared mode. Review isolated results before integrate_task.
         """
-        if agent_name == "worker":
+        if agent_name == "worker" and self.worker_slots is not None:
             async with self.worker_slots:
                 return await self._delegate(ctx, agent_name, task, workspace_mode, model)
         return await self._delegate(ctx, agent_name, task, workspace_mode, model)

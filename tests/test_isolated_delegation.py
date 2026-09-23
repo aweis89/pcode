@@ -716,13 +716,23 @@ def test_finalization_waits_for_parent_lock_without_blocking_event_loop(repo, mo
 
 
 @pytest.mark.parametrize("mode", ["isolated", "shared"])
-@pytest.mark.parametrize("configured_limit", [None, 1], ids=["default-four", "configured-one"])
+@pytest.mark.parametrize(
+    "configured_limit",
+    [None, 0, 1],
+    ids=["default-unlimited", "explicit-unlimited", "configured-one"],
+)
 def test_worker_concurrency_limits_calls_in_one_response(repo, mode, configured_limit):
     if configured_limit is not None:
         save_preferences(worker_concurrency=str(configured_limit))
-    expected_limit = 4 if configured_limit is None else configured_limit
-    call_count = expected_limit + 1
+    call_count = configured_limit + 1 if configured_limit else 6
+    expected_limit = configured_limit or call_count
     agent = create_agent("test", repo)
+    from pcode.isolated_delegation import WorkspaceSubAgents
+
+    delegation = next(
+        c for c in agent.root_capability.capabilities if isinstance(c, WorkspaceSubAgents)
+    )
+    assert (delegation.worker_slots is None) == (not configured_limit)
     active = peak = executions = 0
     returned = []
     slots_filled = asyncio.Event()
