@@ -231,91 +231,137 @@ Preview and other providers do not support this control.
 
 ## Local Meridian provider
 
-**Opt-in managed instance (Meridian 1.71.1):**
+[Meridian](https://github.com/rynfar/meridian) runs Claude Code behind a local
+Anthropic-compatible API, so a `meridian:` model uses your Claude subscription
+through Anthropic's own client. [Anthropic provider options](anthropic-providers.md)
+compares it with `/login`.
 
 ```sh
-pcode config set meridian_managed on
-pcode -m meridian:claude-sonnet-5
+pcode --upgrade-meridian            # install or upgrade Meridian with npm
+pcode -m meridian:claude-sonnet-5   # then /login meridian if Claude is not signed in
 ```
 
-When constructing a Meridian provider, pcode starts one private proxy per pcode
-process, on an automatically allocated loopback port with a random API key. It
-writes a temporary, private adapter configuration with thinking passthrough on,
-uses a separate session directory and empty plugin directory, disables persistent
-telemetry and update checks, and checks `/health` plus effective adapter settings
-before connecting. Concurrent pcode processes have separate instances. Normal
-process exit terminates only the owned proxy and removes its temporary state;
-switching models keeps it available until exit. A crashed proxy is not automatically
-restarted and requests are not replayed. Startup has a 30-second readiness deadline.
+### Which Meridian pcode uses
 
-This is **configuration/session isolation, not an authentication sandbox**:
-Meridian still uses your existing Claude login and disk-configured Meridian
-profiles. pcode does not copy credentials, log you in, install or upgrade Meridian,
-or modify your shared proxy. Inherited `MERIDIAN_*` / `CLAUDE_PROXY_*` overrides are
-not applied to managed instances. The implementation is gated to the verified
-1.71.1 release; other versions can use external mode. Forced termination of pcode
-(e.g. `kill -9`) cannot run normal cleanup.
+The `meridian_managed` preference decides when a Meridian provider is created:
 
-The `meridian_managed` preference defaults to `off` and is saved alongside other
-pcode settings. You can also use `/config set meridian_managed on` interactively;
-it applies when a Meridian provider is next created (restart pcode to apply it to
-an existing Meridian conversation). Use `pcode config set meridian_managed off` or
-`pcode config unset meridian_managed` to return to external mode.
+| Value | Behavior |
+| --- | --- |
+| `auto` (default) | Use a proxy already answering at `http://127.0.0.1:3456`; otherwise start a private one when `meridian` is on `PATH` |
+| `on` | Always start a private instance |
+| `off` | Always use the external proxy, running or not |
 
-An explicit `PCODE_MERIDIAN_BASE_URL` always selects external mode. Otherwise,
-`PCODE_MERIDIAN_MANAGED=1` or `0` overrides the saved preference for that process;
-an unset or empty variable uses the saved preference. Config commands display the
-saved default, not environment overrides. Changing the preference does not stop
-an already-owned proxy or reroute active requests.
+An explicit `PCODE_MERIDIAN_BASE_URL` always selects that external proxy.
+`PCODE_MERIDIAN_MANAGED=1` or `0` overrides the saved preference for one process
+(as `on` or `off`); an unset or empty variable uses the saved preference. Config
+commands display the saved default, not environment overrides. A change applies
+when a Meridian provider is next created and does not stop an instance pcode
+already owns.
 
-**Externally managed instance:** Use your running [Meridian](https://github.com/rynfar/meridian) proxy as a separate
-provider (no pcode-managed subscription login):
+**Private instance.** pcode starts one per pcode process, on an automatically
+allocated loopback port with a random API key, and needs Meridian 1.71.1 or newer.
+It writes a private adapter configuration with Thinking Passthrough on, uses an
+empty plugin directory, disables persisted telemetry and update checks, and checks
+`/health` plus the effective settings before connecting, with a 30-second deadline.
+Startup happens while the terminal opens, not on the first prompt. Inherited
+`MERIDIAN_*` / `CLAUDE_PROXY_*` overrides are not applied.
 
-```sh
-env -u PCODE_LLM_PROXY pcode -m meridian:claude-sonnet-5
-```
+Your Meridian account profiles are linked into the private configuration, never
+copied. The instance uses your saved active profile, else the first profile, else
+Claude Code's own login. This is configuration and session isolation, not an
+authentication sandbox: Meridian still reads that login, and pcode never reads or
+copies a credential.
 
-The default endpoint is `http://127.0.0.1:3456`. Override it with
-`PCODE_MERIDIAN_BASE_URL` (the server root, without `/v1/messages`). If your proxy
-requires an API key, supply `PCODE_MERIDIAN_API_KEY` in the environment. Otherwise,
-pcode uses a non-secret placeholder. It never inherits `ANTHROPIC_API_KEY`,
-`ANTHROPIC_AUTH_TOKEN`, or `ANTHROPIC_BASE_URL` for Meridian requests; Meridian owns
-upstream authentication. Global HTTP proxy settings are ignored by this client.
+Meridian's session store lives in `$XDG_STATE_HOME/pcode/meridian/sessions`
+(default `~/.local/state/pcode/meridian/sessions`) and is shared by all pcode
+processes, so a resumed conversation continues where it left off instead of
+replaying its history. If the instance exits, pcode restarts it on the same port
+within about a second. Requests in flight are not replayed, and after three
+restarts in five minutes pcode stops trying and says so. A normal pcode exit stops
+the instance; forced termination of pcode (`kill -9`) cannot. After a hard crash of
+Meridian itself, the replacement can answer `503 overloaded_error` for about a
+minute while a lock left by the crashed process expires.
+
+**External instance.** The default endpoint is `http://127.0.0.1:3456`. Override
+it with `PCODE_MERIDIAN_BASE_URL` (the server root, without `/v1/messages`). If
+your proxy requires an API key, supply `PCODE_MERIDIAN_API_KEY` in the
+environment; otherwise pcode uses a non-secret placeholder. pcode never changes an
+external proxy's settings.
+
+Neither kind inherits `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or
+`ANTHROPIC_BASE_URL`; Meridian owns upstream authentication. Global HTTP proxy
+settings and `PCODE_LLM_PROXY` are ignored by this client. There is no fallback to
+direct Anthropic requests when the proxy is unavailable.
+
+### Signing in
+
+`/login meridian` runs `claude auth login` for the login that the Meridian in use
+reads: the active profile of an external proxy that has profiles, the profile a
+private instance was started with, or otherwise Claude Code's own login. The
+browser sign-in completes through Anthropic's own flow and pcode stores nothing;
+the next Meridian request uses it. It needs `claude` on `PATH` (or
+`MERIDIAN_CLAUDE_PATH`).
+
+Over SSH, or when no browser opens, `/login meridian` prints the command to run in
+a terminal on that machine instead, because the fallback flow asks for a pasted
+code that pcode cannot pass on. A profile that authenticates with a
+`claude setup-token` token is replaced with
+`meridian profile add NAME --oauth-token`. `/login` without an argument is still
+pcode's own Anthropic sign-in.
+
+### Upgrading Meridian
+
+`pcode --upgrade-meridian` upgrades each Meridian pcode can use with the npm that
+owns it: the one that `meridian` on `PATH` runs, and the one the running proxy was
+started from (found through its `/health` report). With neither installed, it
+installs `@rynfar/meridian` with the `npm` on `PATH`. A running proxy keeps its old
+version until it restarts; the command says so and, when a macOS launchd agent runs
+Meridian, prints the `launchctl kickstart -k` line that restarts it. Private
+instances pick up the new version when their pcode restarts.
+
+### Requests and conversation identity
 
 **`/model` / Ctrl+L** includes Meridian when its executable is on `PATH`, when
 `PCODE_MERIDIAN_BASE_URL` is configured, or when the current model is Meridian.
 Suggestions use the installed SDK's Claude model catalog; type
-`meridian:<model-id>` for other IDs supported by your proxy. Selecting one uses the
-normal new-conversation flow. Discovery does not start Meridian or verify model
-access; the proxy must already be running.
+`meridian:<model-id>` for other IDs supported by your proxy. Discovery does not
+start Meridian or verify model access.
 
 Requests use the Anthropic streaming API with `x-meridian-agent: passthrough`, so
-pcode—not Meridian's built-in agent—executes the supplied tools. There is no
-fallback to direct Anthropic requests if the proxy is unavailable.
-`PCODE_LLM_PROXY` is ignored when using Meridian; that setting applies only to Codex.
+pcode, not Meridian's built-in agent, executes the supplied tools.
 
 Each request also carries `x-litellm-session-id`, derived from the current pcode
 conversation ID. Tool rounds and saved-session resume reuse it; `/new` and
 independent delegates get separate identities, even when delegates run in parallel.
-For Meridian 1.71.1, telemetry should show `lineage=continuation` on ordinary
-follow-up tool rounds. Repeated `independent-request:headerless-tool-result` means
-the running client is missing this integration; restart pcode after upgrading
-(already-running Python processes do not reload it).
+After compaction the ID gains a suffix taken from the summary, so Meridian starts a
+fresh session holding the compacted history. That costs one cold cache write, as
+compaction does on any route; without it Meridian keeps sending the uncompacted
+history and the summary never reaches the model. Telemetry should show
+`lineage=continuation` on ordinary follow-up tool rounds. Repeated
+`independent-request:headerless-tool-result` means the running client is missing
+this integration; restart pcode after upgrading (already-running Python processes
+do not reload it).
+
+When a Meridian request fails, the error names the cause pcode can recognize: a
+proxy not answering at its URL, a private instance being restarted, a Claude login
+to refresh with `/login meridian`, or a key the proxy rejected.
 
 **Thinking visibility:** `/show-thinking on` controls pcode's saved-thinking
-scrollback view. Meridian must also forward readable thinking blocks. The opt-in
-managed instance enables and verifies **Thinking Passthrough** in its private
-configuration. For an external proxy, inspect the **passthrough** adapter's
-**Thinking Passthrough** option in its `/settings` page (default:
-<http://127.0.0.1:3456/settings>). Meridian 1.71.1 defaults this to off. Changing an
-external proxy's adapter affects other clients too, so pcode does not modify it
-automatically. Forwarding is separate from enabling model thinking or setting
-effort; upstream-omitted thinking still cannot be displayed.
+scrollback view. Meridian must also forward readable thinking blocks. A private
+instance enables and verifies **Thinking Passthrough** in its own configuration.
+For an external proxy, `/show-thinking` reads the proxy's setting (read-only) and
+reports it, and pcode warns once per session when thinking display is on but the
+proxy is not forwarding it. The setting is the **passthrough** adapter's **Thinking
+Passthrough** option in the proxy's `/settings` page (default:
+<http://127.0.0.1:3456/settings>), off by default. Changing it affects every client
+of that proxy, so pcode does not change it. Forwarding is separate from enabling
+model thinking or setting effort; upstream-omitted thinking still cannot be
+displayed.
 
 When a spinner is silent, compare Meridian's request telemetry: queue wait,
 time to first byte, upstream duration, status/error, and lineage. An early first
 byte is not necessarily visible text, and a large output-token count alone does
-not prove what happened during the pause. The UI's “Waiting for model…” means no
+not prove what happened during the pause. The UI's "Waiting for model…" means no
 new displayable event, not necessarily an idle upstream connection.
 
 ## Model-only HTTP proxy

@@ -124,7 +124,7 @@ is only sensible on a machine where you wrote all of them.
 | `tool_output_strategy` | `head_tail` | `head`, `tail`, `head_tail` (truncation only) |
 | `tool_output_retention_hours` | `0` | Whole number, spill retention; `0` keeps indefinitely |
 | `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |
-| `meridian_managed` | `off` | `on`, `off` (private local Meridian proxy) |
+| `meridian_managed` | `auto` | `auto`, `on`, `off` (use a running Meridian proxy or start a private one; see [Meridian](providers.md#which-meridian-pcode-uses)) |
 | `profile` | `off` | `off`, `resources`, `cpu`, `memory` (capture each session's resource use; see [profiling](profiling.md)) |
 | `repo_context_walk_up` | `on` | `on`, `off` (inherit ancestor instruction files) |
 | `repo_context_nested` | `off` | `off`, `pointer`, `contents` (discover instructions on file-tool traversal) |
