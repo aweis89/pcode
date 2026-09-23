@@ -274,7 +274,7 @@ SETTINGS = {
         description="Pygments style for fenced code on the light palette (/theme previews)",
     ),
     "autocompact": Setting(
-        "off",
+        "on",
         ("on", "off"),
         description="Compact the conversation automatically as the context window fills",
     ),
