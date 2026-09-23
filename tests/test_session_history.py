@@ -3,6 +3,7 @@
 import asyncio
 import json
 import subprocess
+from collections import OrderedDict
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,7 @@ from pcode.sessions import SavedSession, SessionInfo
 @pytest.fixture(autouse=True)
 def no_embeddings(monkeypatch):
     monkeypatch.delenv("PCODE_HISTORY_EMBEDDING_MODEL", raising=False)
+    monkeypatch.setattr("pcode.history_cursor._continuations", OrderedDict())
 
 
 @pytest.fixture
@@ -100,6 +102,13 @@ def test_tools_search_and_read_with_custom_root(tmp_path, root):
     assert "Suspend the editor" in read["text"]
     assert read["next_offset"] is None
     assert not (root / CACHE_NAME).exists()
+
+
+def test_empty_scope_is_complete_and_distinct_from_a_pending_page(tmp_path, root):
+    result = call(tools(tmp_path, root)["search_sessions"], query="absent")
+    assert result["scan_complete"] and result["next_cursor"] is None
+    assert result["sessions_in_scope"] == 0 and not result["results"]
+    assert "No saved history" in result["note"]
 
 
 def test_real_agent_context_scopes_to_current_session(tmp_path, root):
@@ -261,7 +270,9 @@ def test_torn_journal_legacy_ids_unreadable_and_symlinks(tmp_path, root):
     scan = History(tmp_path, root).chunks("project")
     chunks, warnings = scan.chunks, scan.warnings
     assert len(chunks) == 1
-    assert warnings == ["Skipped unreadable session other."]
+    assert "Skipped unreadable session other." in warnings
+    assert any("Unfinished final record" in warning for warning in warnings)
+    assert not scan.scan_complete
 
 
 def test_redaction_before_return_and_pagination(tmp_path, root, monkeypatch):
@@ -446,15 +457,16 @@ def test_scan_byte_budget_stops_before_decoding_oversized_record(tmp_path, root,
     monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", prefix_size)
     scan = History(tmp_path, root).chunks("project")
     chunks, warnings = scan.chunks, scan.warnings
-    assert len(chunks) == 1
-    assert chunks[0].turn.branch == "unknown"
+    assert not chunks  # Defer hits until ancestry and turn text are fully resolved.
+    assert scan.next_cursor and not scan.scan_complete
     assert "byte budget" in warnings[0]
     budget = SessionReadBudget(prefix_size)
     assert len(list(session_records(info, root, budget=budget))) == 3
     assert budget.remaining == 0 and budget.exhausted
     read = History(tmp_path, root).read("session-a", "run-a")
-    assert read["warnings"] and read["branch"] == "unknown"
-    assert "xxxxx" not in read["text"]
+    assert read["warnings"] and read["next_cursor"]
+    assert not read["scan_complete"]
+    assert not read["text"]
 
 
 def test_semantic_shortlist_keeps_distinct_turns(tmp_path, root):
@@ -610,9 +622,11 @@ def test_partial_scan_reports_session_coverage(tmp_path, root, monkeypatch):
     monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 10)
     result = call(tools(tmp_path, root)["search_sessions"], query="flicker")
     assert (result["sessions_searched"], result["sessions_in_scope"]) == (0, 2)
-    assert "2 older ones were not searched" in result["warnings"][-1]
-    # The cursor still advances past a session that used the whole budget alone.
-    assert result["next_cursor"] in {"session-a", "older"}
+    assert "inside session" in result["warnings"][-1]
+    assert result["sessions_partial"] == 1
+    assert not result["scan_complete"]
+    assert "empty page does not establish absence" in result["note"]
+    assert result["next_cursor"] not in {None, "session-a", "older"}
 
 
 def test_cursor_continues_into_sessions_the_budget_did_not_reach(tmp_path, root, monkeypatch):
@@ -637,6 +651,336 @@ def test_cursor_continues_into_sessions_the_budget_did_not_reach(tmp_path, root,
     assert second["next_cursor"] is None
     with pytest.raises(ModelRetry, match="Unknown cursor"):
         call(registered["search_sessions"], query="flicker", after="no-such-session")
+
+
+def collect_pages(workspace, root, scope="project"):
+    """Use a fresh History per call, just like the extension does."""
+    after, seen, pages = None, set(), []
+    for _ in range(1000):
+        scan = History(workspace, root, "session-a").chunks(scope, after=after)
+        pages.append(scan)
+        if scan.next_cursor is None:
+            return pages
+        assert not scan.scan_complete
+        assert scan.next_cursor not in seen
+        seen.add(scan.next_cursor)
+        after = scan.next_cursor
+    pytest.fail("pagination did not terminate")
+
+
+@pytest.mark.parametrize("byte_limit", [97, 997, 100_000])
+@pytest.mark.parametrize("chunk_limit", [1, 2, 10_000])
+def test_pagination_covers_every_chunk_and_preserves_ancestry(
+    tmp_path, root, monkeypatch, byte_limit, chunk_limit
+):
+    records = (
+        turn("First", "x" * (CHUNK_CHARS * 2) + " only-tail-match")
+        + turn("Abandoned", "Do not ship.", "abandoned", parent_id="run-a")
+        + [
+            {"kind": "tree_selected", "node_id": "run-a"},
+            {"kind": "compaction_checkpoint", "node_id": "compact", "parent_id": "run-a"},
+        ]
+        + turn("Final", "Shipped.", "final", parent_id="compact")
+        + [{"kind": "Message", "run_id": "run-a", "markdown": "Delayed original response."}]
+    )
+    save(root, tmp_path, records=records)
+    save(root, tmp_path, "older", records=turn("Older", "Older evidence."), updated="2025")
+
+    def signature(chunk):
+        return (
+            chunk.session.id,
+            chunk.turn.id,
+            chunk.offset,
+            chunk.text,
+            chunk.turn.branch,
+            chunk.turn.parent,
+            chunk.turn.status,
+        )
+
+    expected = [signature(c) for c in History(tmp_path, root).chunks("project").chunks]
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", byte_limit)
+    monkeypatch.setattr("pcode.history.MAX_CHUNKS", chunk_limit)
+    pages = collect_pages(tmp_path, root)
+    assert all(len(page.chunks) <= chunk_limit for page in pages)
+    assert [signature(c) for page in pages for c in page.chunks] == expected
+    assert pages[-1].scan_complete
+    assert pages[-1].sessions_searched == pages[-1].sessions_in_scope == 2
+    assert all(page.sessions_searched < 2 for page in pages[:-1])
+
+
+def test_tail_only_hit_is_found_and_read_across_byte_pages(tmp_path, root, monkeypatch):
+    records = turn("Beginning", "No answer here.")
+    records += [{"kind": "TextDelta", "content": "discarded delta " * 50} for _ in range(3)]
+    records += turn("Later", "The answer is tail-only-evidence.", "later", parent_id="run-a")
+    save(root, tmp_path, records=records)
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 100)
+    registered = tools(tmp_path, root)
+    result, after = None, ""
+    for _ in range(100):
+        result = call(registered["search_sessions"], query="tail-only-evidence", after=after)
+        if not result["next_cursor"]:
+            break
+        assert not result["results"]  # No misleading partial turn text or branch labels.
+        assert "absence" in result["note"]
+        after = result["next_cursor"]
+    assert result["scan_complete"]
+    (group,) = result["results"]
+    (hit,) = group["turns"]
+    assert hit["turn_id"] == "later"
+    after = ""
+    for _ in range(100):
+        read = call(
+            registered["read_session"],
+            session_id=group["session_id"],
+            turn_id=hit["turn_id"],
+            after=after,
+        )
+        if not read["next_cursor"]:
+            break
+        assert not read["scan_complete"] and not read["text"]
+        after = read["next_cursor"]
+    assert read["scan_complete"]
+    assert "tail-only-evidence" in read["text"]
+    assert read["context"][0]["turn_id"] == "run-a"
+
+
+def test_byte_pages_do_not_rescan_prefixes_and_redact_after_assembly(tmp_path, root, monkeypatch):
+    from pcode.history_cursor import JournalReader
+
+    info = save(root, tmp_path, records=turn(response="évidence password=synthetic-secret " * 10))
+    path = root / info.id / "transcript.jsonl"
+    # Force actual multibyte characters into the journal, not JSON escape sequences.
+    path.write_text(path.read_text().replace("\\u00e9", "é"))
+    consumed = []
+    records = JournalReader.records
+
+    def measured(self, budget):
+        before, allowed = self.offset, budget.remaining
+        yield from records(self, budget)
+        consumed.append(self.offset - before)
+        assert 0 <= consumed[-1] <= allowed
+
+    monkeypatch.setattr(JournalReader, "records", measured)
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 17)
+    pages = collect_pages(tmp_path, root)
+    assert sum(consumed) == path.stat().st_size
+    assert len(consumed) > 2
+    text = "".join(c.text for page in pages for c in page.chunks)
+    assert "synthetic-secret" not in text
+    assert "évidence" in text and "[redacted]" in text
+
+
+def test_chunk_limit_does_not_mark_a_partial_session_complete(tmp_path, root, monkeypatch):
+    save(root, tmp_path, records=turn("Only match is early", "Older decision.", "early") + turn())
+    monkeypatch.setattr("pcode.history.MAX_CHUNKS", 1)
+    first, last = collect_pages(tmp_path, root)
+    assert first.sessions_searched == 0
+    assert first.sessions_partial == 1
+    assert first.next_cursor and not first.scan_complete
+    assert last.chunks[0].turn.id == "early"
+    assert last.sessions_searched == 1 and last.scan_complete
+    assert History(tmp_path, root).read("session-a", "early")["text"].startswith("User: Only match")
+
+
+def test_complete_final_record_without_newline_remains_searchable(tmp_path, root, monkeypatch):
+    save(root, tmp_path)
+    path = root / "session-a" / "transcript.jsonl"
+    path.write_bytes(path.read_bytes().rstrip(b"\n"))
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 17)
+    pages = collect_pages(tmp_path, root)
+    assert pages[-1].scan_complete
+    (chunk,) = [chunk for page in pages for chunk in page.chunks]
+    assert chunk.turn.status == "completed" and chunk.turn.branch == "active"
+
+
+def test_exact_byte_and_chunk_limits_need_no_extra_page(tmp_path, root, monkeypatch):
+    save(root, tmp_path)
+    size = (root / "session-a" / "transcript.jsonl").stat().st_size
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", size)
+    monkeypatch.setattr("pcode.history.MAX_CHUNKS", 1)
+    (page,) = collect_pages(tmp_path, root)
+    assert len(page.chunks) == 1 and page.scan_complete
+
+
+def test_continuations_freeze_session_order_and_journal_end(tmp_path, root, monkeypatch):
+    save(root, tmp_path, records=turn("Original", "Original evidence."), updated="2026")
+    save(root, tmp_path, "older", records=turn("Older", "Old evidence."), updated="2025")
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 50)
+    history = History(tmp_path, root, "session-a")
+    first = history.chunks("project")
+    # Appends are outside the first session's captured snapshot; reordering the
+    # metadata must not make the second session vanish behind a session-ID cursor.
+    path = root / "session-a" / "transcript.jsonl"
+    with path.open("a") as stream:
+        stream.write("".join(json.dumps(r) + "\n" for r in turn("Appended", "New", "new")))
+    metadata = root / "older" / "session.json"
+    info = json.loads(metadata.read_text())
+    info["updated"] = "2027"
+    metadata.write_text(json.dumps(info))
+    pages, after = [first], first.next_cursor
+    for _ in range(50):
+        page = History(tmp_path, root, "session-a").chunks("project", after=after)
+        pages.append(page)
+        if page.next_cursor is None:
+            break
+        after = page.next_cursor
+    assert pages[-1].scan_complete
+    assert [c.session.id for p in pages for c in p.chunks] == ["session-a", "older"]
+    assert all(c.turn.id != "new" for p in pages for c in p.chunks)
+    assert any(c.turn.id == "new" for p in collect_pages(tmp_path, root) for c in p.chunks)
+
+
+@pytest.mark.parametrize("change", ["truncate", "replace", "delete", "symlink"])
+def test_changed_journal_never_resumes_at_stale_offset(tmp_path, root, monkeypatch, change):
+    save(root, tmp_path)
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 10)
+    history = History(tmp_path, root)
+    first = history.chunks("project")
+    path = root / "session-a" / "transcript.jsonl"
+    if change == "truncate":
+        path.write_text("")
+    elif change == "replace":
+        other = path.with_suffix(".new")
+        other.write_text(path.read_text())
+        other.replace(path)
+    elif change == "delete":
+        (path.parent / "session.json").unlink()
+    else:
+        other = tmp_path / "other.jsonl"
+        path.rename(other)
+        path.symlink_to(other)
+    if change == "symlink":
+        scan = history.chunks("project", after=first.next_cursor)
+        assert scan.sessions_unreadable == 1 and not scan.scan_complete and not scan.chunks
+    else:
+        with pytest.raises(ValueError, match="restart without after"):
+            history.chunks("project", after=first.next_cursor)
+
+
+def test_cursors_are_bound_single_use_and_expire(tmp_path, root, monkeypatch):
+    save(root, tmp_path)
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 10)
+    now = [100.0]
+    monkeypatch.setattr("pcode.history_cursor.time.monotonic", lambda: now[0])
+    history = History(tmp_path, root)
+    first = history.chunks("project")
+    with pytest.raises(ValueError, match="does not match"):
+        history.chunks("all", after=first.next_cursor)
+    with pytest.raises(ValueError, match="does not match"):
+        History(tmp_path / "other", root).chunks("project", after=first.next_cursor)
+    with pytest.raises(ValueError, match="does not match"):
+        history.read("session-a", "run-a", after=first.next_cursor)
+    second = history.chunks("project", after=first.next_cursor)
+    with pytest.raises(ValueError, match="Unknown cursor"):
+        history.chunks("project", after=first.next_cursor)
+    now[0] += 1801
+    with pytest.raises(ValueError, match="expired"):
+        history.chunks("project", after=second.next_cursor)
+
+
+def test_cursor_retention_is_bounded(tmp_path, root, monkeypatch):
+    save(root, tmp_path)
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 10)
+    monkeypatch.setattr("pcode.history_cursor.MAX_CURSORS", 2)
+    history = History(tmp_path, root)
+    first = history.chunks("project")
+    second = history.chunks("project")
+    third = history.chunks("project")
+    with pytest.raises(ValueError, match="expired"):
+        history.chunks("project", after=first.next_cursor)
+    assert history.chunks("project", after=second.next_cursor).next_cursor
+    assert history.chunks("project", after=third.next_cursor).next_cursor
+
+
+@pytest.mark.parametrize("boundary", ["inside", "between"])
+@pytest.mark.parametrize("change", ["scope", "invalid"])
+def test_unvisited_session_is_revalidated_after_continuation(
+    tmp_path, root, monkeypatch, boundary, change
+):
+    save(root, tmp_path, updated="2026")
+    save(root, tmp_path, "older", updated="2025")
+    size = (root / "session-a" / "transcript.jsonl").stat().st_size
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", size if boundary == "between" else size - 1)
+    history = History(tmp_path, root)
+    first = history.chunks("project")
+    metadata = root / "older" / "session.json"
+    if change == "scope":
+        info = json.loads(metadata.read_text())
+        info["workspace"] = str(tmp_path / "elsewhere")
+        metadata.write_text(json.dumps(info))
+    else:
+        metadata.write_text("invalid")
+    with pytest.raises(ValueError, match="no longer in scope"):
+        history.chunks("project", after=first.next_cursor)
+
+
+def test_legacy_attribution_and_compacted_current_turn_survive_byte_pages(
+    tmp_path, root, monkeypatch
+):
+    records = [
+        {"kind": "turn_started", "prompt": "Legacy request"},
+        {"kind": "Message", "markdown": "Legacy reply"},
+        {"kind": "turn_completed"},
+        {"kind": "turn_started", "run_id": "live", "prompt": "Current task"},
+        {"kind": "tree_selected", "node_id": "turn-1"},
+        {"kind": "steering", "prompt": "Steered current task"},
+        {"kind": "auto_compacted", "run_id": "live"},
+        {"kind": "Message", "markdown": "Current reply"},
+    ]
+    save(root, tmp_path, records=records)
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 13)
+    search = tools(tmp_path, root)["search_sessions"].function
+    context = SimpleNamespace(conversation_id="session-a", run_id="live")
+    after = ""
+    for _ in range(100):
+        result = asyncio.run(search(context, query="Steered", scope="session", after=after))
+        if not result["next_cursor"]:
+            break
+        after = result["next_cursor"]
+    assert result["scan_complete"]
+    (hit,) = result["results"][0]["turns"]
+    assert hit["turn_id"] == "live" and hit["current_turn"]
+    assert hit["branch"] == "inactive"
+    assert "User (steering): Steered" in hit["excerpt"]
+
+
+def test_read_scan_continuation_precedes_redacted_text_pagination(tmp_path, root, monkeypatch):
+    save(root, tmp_path, records=turn(response="password=synthetic-secret " + "evidence " * 30))
+    expected = History(tmp_path, root).read("session-a", "run-a")["text"]
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 43)
+    offset, text = 0, ""
+    for _ in range(50):
+        after = None
+        for _ in range(50):
+            result = History(tmp_path, root).read(
+                "session-a", "run-a", offset=offset, max_chars=37, after=after
+            )
+            if not result["next_cursor"]:
+                break
+            after = result["next_cursor"]
+        assert result["scan_complete"]
+        text += result["text"]
+        if result["next_offset"] is None:
+            break
+        offset = result["next_offset"]
+    assert text == expected
+    assert "synthetic-secret" not in text
+
+
+def test_missing_turn_is_only_rejected_after_read_scan_finishes(tmp_path, root, monkeypatch):
+    save(root, tmp_path)
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 10)
+    history = History(tmp_path, root)
+    result = history.read("session-a", "absent")
+    assert not result["scan_complete"] and result["next_cursor"]
+    for _ in range(100):
+        try:
+            result = history.read("session-a", "absent", after=result["next_cursor"])
+        except ValueError as error:
+            assert "Turn not found" in str(error)
+            break
+    else:
+        pytest.fail("missing turn scan did not terminate")
 
 
 def test_snapshot_compaction_leaves_search_intact(tmp_path, root):
