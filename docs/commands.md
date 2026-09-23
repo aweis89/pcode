@@ -233,7 +233,9 @@ A running `delegate_task` keeps its own row, and a sub-agent that plans shows up
 to three of its tasks indented beneath it, centred on its active task, with its
 current tool calls nested under that task the same way. The sub-agent's plan is
 separate from yours: it is never saved, never merged into your plan, and leaves
-the widget when the delegate finishes.
+the widget when the delegate finishes. The built-in worker always plans this way;
+an extension's delegate opts in by giving its agent `IdentifiedPlanning()` from
+`pcode.planning` (see "Sub-agents" in `src/pcode/extension_guide.md`).
 
 ```text
 * Fix the flaky login test
