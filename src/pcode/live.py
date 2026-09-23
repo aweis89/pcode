@@ -72,6 +72,7 @@ from pcode.profiling import activity as profiled_activity
 from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
     CacheBust,
+    ChildPlan,
     CommandOutput,
     EditPreview,
     Event,
@@ -616,8 +617,9 @@ class AgentRuntime:
                 async for event in stream:
                     if isinstance(event, ToolStarted):
                         tools_started = True
-                    if isinstance(event, (PlanPreview, CommandOutput, EditPreview)):
-                        # Unexecuted arguments must never enter replay/tree history.
+                    if isinstance(event, (PlanPreview, ChildPlan, CommandOutput, EditPreview)):
+                        # Unexecuted arguments and a sub-agent's transient plan
+                        # must never enter replay/tree history.
                         yield event
                         continue
                     if saved:
@@ -839,6 +841,8 @@ class AgentRuntime:
                             start = replace(start, activity=event.activity)
                             delegates[event.tool_call_id] = start
                             yield start
+                        if event.plan is not None:
+                            yield ChildPlan(event.tool_call_id, event.plan)
                         if event.child is not None:
                             if isinstance(event.child, ToolStarted):
                                 child_tools[event.child.call_id] = event.child

@@ -229,6 +229,21 @@ historical task ownership. When there is no active task (including no plan),
 tools appear as unparented rows in the same widget instead of beneath a completed
 or pending task. There is no separate Tools panel or Tasks heading.
 
+A running `delegate_task` keeps its own row, and a sub-agent that plans shows up
+to three of its tasks indented beneath it, centred on its active task, with its
+current tool calls nested under that task the same way. The sub-agent's plan is
+separate from yours: it is never saved, never merged into your plan, and leaves
+the widget when the delegate finishes.
+
+```text
+* Fix the flaky login test
+    ⟳ Delegate · Working · 12.4s · worker · Investigate the retry path
+        ✓ Read the retry code
+        * Reproduce the failure
+            ⟳ Run · 1.2s · pytest -q tests/test_login.py
+        ○ Report back
+```
+
 The shared height budget shrinks in small panes, preserving the active task and
 the newest tool calls. Empty tool slots are not reserved, and an empty widget is
 hidden. Each call updates in place from running to success/failure; cancellation
