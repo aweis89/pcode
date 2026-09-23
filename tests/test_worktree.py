@@ -385,6 +385,44 @@ def test_worktree_merge_runs_under_a_system_row_with_a_terminal(repo):
     assert app.activity.prompt_state == "failed"
 
 
+def test_worktree_merge_runs_mid_turn_without_taking_the_turns_row(repo):
+    """A merge during a turn leaves the turn's live row and busy state alone."""
+    import asyncio
+    from types import SimpleNamespace
+
+    created = worktree.create(repo, "feature")
+    commit(created.path, "feature.txt")
+    app = PreviewApp(workspace=created.path)
+    notes, errors = [], []
+    app.transcript.note = lambda text, **_: notes.append(text)
+    app.transcript.error = lambda text, **_: errors.append(text)
+    app.transcript.output = SimpleNamespace(app=SimpleNamespace(invalidate=lambda: None))
+    app.activity.start_prompt("fix the bug")
+    app.activity.busy = True
+
+    app.worktree("merge")
+    seen = {}
+
+    async def run():
+        task = asyncio.ensure_future(app.perform_job())
+        await asyncio.sleep(0)
+        seen["notice"] = app.activity.notice
+        await task
+
+    asyncio.run(run())
+    assert seen["notice"] == "Merging worktree \u25b8 feature\u2026"
+    assert notes == ["merged feature into main"] and not errors
+    assert (repo / "feature.txt").exists()
+    assert app.activity.prompt == "fix the bug"
+    assert app.activity.prompt_kind == "user"
+    assert app.activity.prompt_state == "running" and app.activity.busy
+    assert app.activity.notice == ""
+
+    # Actions that rewrite or delete the worktree still wait for the turn.
+    with pytest.raises(ValueError, match="Wait for the current turn"):
+        app.worktree("remove")
+
+
 def test_module_cli_runs_project_setup_unconditionally(repo, monkeypatch, capsys):
     (repo / ".pcode").mkdir()
     (repo / ".pcode" / "worktree-setup").write_text("touch from-setup\n")

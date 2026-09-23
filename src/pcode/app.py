@@ -1515,7 +1515,8 @@ class PreviewApp:
         terminal the work is picked up by the command loop, which paints a
         `◈ label ▸ detail` row (distinct from a model turn) and runs the job
         in a thread. The job returns lines for the transcript; a ValueError
-        becomes the usual command error.
+        becomes the usual command error. A job started mid-turn leaves the
+        turn's live row alone and says what it is doing in a notice instead.
         """
         if self.transcript.output is None:
             for line in job():
@@ -1528,6 +1529,9 @@ class PreviewApp:
         label, detail, job = self.job_requested
         self.job_requested = None
         output = self.transcript.output
+        if self.activity.prompt_state == "running":
+            await self._perform_job_alongside(label, detail, job)
+            return
         self.activity.busy = True
         self.activity.start_prompt(label, kind="system", detail=detail)
         if output is not None:
@@ -1546,6 +1550,23 @@ class PreviewApp:
             self.activity.busy = bool(self.activity.queued_prompts)
             if output is not None:
                 output.app.invalidate()
+
+    async def _perform_job_alongside(
+        self, label: str, detail: str, job: Callable[[], list[str]]
+    ) -> None:
+        """Run a job beside a live turn without taking over or ending its row."""
+        self.activity.flash(f"{label} \u25b8 {detail}\u2026" if detail else f"{label}\u2026")
+        try:
+            lines = await asyncio.to_thread(job)
+        except ValueError as error:
+            self.transcript.error(str(error))
+        else:
+            for line in lines:
+                self.transcript.note(line)
+        finally:
+            self.activity.notice = ""
+            if self.transcript.output is not None:
+                self.transcript.output.app.invalidate()
 
     def worktree(self, argument: str) -> None:
         from pcode import worktree
@@ -1576,6 +1597,11 @@ class PreviewApp:
                 + (", uncommitted changes" if dirty else "")
             )
             return
+        if action == "merge":
+            # Allowed mid-turn: merge refuses a dirty tree, so it never runs
+            # over uncommitted edits the model has in flight.
+            self.defer("Merging worktree", linked.branch, lambda: [worktree.merge(linked)])
+            return
         if self.activity.busy:
             raise ValueError("Wait for the current turn to finish before changing the worktree.")
         if action == "resolve":
@@ -1586,8 +1612,6 @@ class PreviewApp:
                 raise ValueError("No merge conflicts to resolve; run /worktree merge first.")
             # A prompt in command clothing, dispatched like a skill.
             self.skill_requested = worktree.resolve_prompt(linked, files)
-        elif action == "merge":
-            self.defer("Merging worktree", linked.branch, lambda: [worktree.merge(linked)])
         elif action == "remove":
             if worktree.unmerged_commits(linked):
                 raise ValueError("Branch has unmerged commits; /worktree merge first.")
