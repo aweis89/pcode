@@ -387,9 +387,17 @@ terminal output is buffered until it closes. Inspection never reruns a tool.
 Details include the call/run IDs, timestamp and duration when captured, structured
 arguments, framework outcome, and returned output/error. Commands and results are
 both shown as blocks, highlighted when the payload is code or JSON and verbatim
-otherwise. A one-line shell command is broken at its top-level `;` (a new line)
-and `&&`/`||` (a `\` continuation with the next command indented) so long
-chains are readable; **c** still copies it exactly as run. Nonzero command exits,
+otherwise. When `shfmt` is available on `PATH`, shell commands are formatted as
+Bash with two-space indentation. Formatting never executes the command. Results
+are cached (up to 128 commands); a missing binary, formatting error, or 250 ms
+timeout silently falls back to the built-in formatter. The fallback breaks
+one-line commands at unquoted top-level `;` and `&&`/`||`, and preserves existing
+multiline layout. `shfmt` may keep compact blocks on one line rather than fully
+expanding them.
+
+Every logical command line starts with a display-only `$ `, before any
+indentation; soft-wrapped rows do not get another marker. **c** still copies the
+original command exactly as run, without markers or formatting changes. Nonzero command exits,
 timeouts, and tool retries are failures; interruption and unknown results remain
 distinct. Command tools show an **Execution** row saying whether the model asked
 to wait (`foreground`) or to be handed a job handle (`background`); background
