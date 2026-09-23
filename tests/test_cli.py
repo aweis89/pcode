@@ -30,7 +30,7 @@ def test_cli_passes_model_and_workspace(monkeypatch, tmp_path):
     with patch("pcode.app.PreviewApp") as app:
         main()
     assert app.call_args.kwargs["theme"] == "auto"
-    assert app.call_args.kwargs["color_style"] == "palette"
+    assert app.call_args.kwargs["color_style"] == "terminal"
     assert app.call_args.kwargs["model"] == "openai-codex:gpt-5.6-luna"
     assert app.call_args.kwargs["workspace"] == tmp_path
     assert app.call_args.kwargs["saved_session"] is None

@@ -3261,8 +3261,8 @@ def main() -> None:
     parser.add_argument(
         "--color-style",
         choices=COLOR_STYLES,
-        default="palette",
-        help="Rich output colors (default: palette; terminal uses ANSI colors)",
+        default="terminal",
+        help="Output colors (default: terminal ANSI colors; palette uses pcode's own)",
     )
     parser.add_argument(
         "-m",

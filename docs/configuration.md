@@ -158,8 +158,8 @@ out or that would be unreadable falls back to the palette's own. The two are
 judged against different backgrounds: the menu brings the style's own surface
 with it, while chrome lands on the terminal's background, so a light style
 chosen while the dark palette is active keeps its popup but leaves the chrome
-on the palette. `/colors terminal` drops the style entirely and both return to
-the palette.
+on the palette. All of this applies under `/colors palette`; the default
+`/colors terminal` drops the style entirely and both return to the palette.
 
 These are the styles Pygments installs here; a Pygments style plugin package adds
 to the list automatically.

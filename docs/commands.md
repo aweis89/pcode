@@ -50,11 +50,12 @@ candidate's size so that cost is visible before you pick.
   default; `/syntax` alone reports the current
   style. See [Code highlighting styles](configuration.md#code-highlighting-styles) for the list;
   `/theme-preview` renders every style, marking the one in use.
-- `/colors terminal`: opt into terminal-defined ANSI colors with unpainted code
-  backgrounds and `ansi_dark` / `ansi_light` syntax. `/colors palette` restores
-  the default coordinated palette; `/colors` shows the current selection.
-  This affects Rich output, not the input/completion palette. You can also start
-  with `--color-style terminal` (default: `--color-style palette`). Run
+- `/colors terminal` (the default): terminal-defined ANSI colors with unpainted
+  code backgrounds and `ansi_dark` / `ansi_light` syntax, so output follows
+  whatever color scheme the terminal uses. `/colors palette` switches to pcode's
+  own coordinated palette and the `/syntax` style; `/colors` shows the current
+  selection. This affects Rich output, not the input/completion palette. Start
+  with `--color-style palette` to use the palette from launch. Run
   `/theme-preview` after switching to compare headings, links, quotes, tables, Python, and diffs.
   Retained scrollback is rebuilt with the selected colors, just like `/redraw`.
 - Session, conversation-tree, model, and tool popups share terminal-default
