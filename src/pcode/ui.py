@@ -2329,7 +2329,7 @@ class Transcript:
         self.note("Ctrl+L choose model · Ctrl+N raise effort · Ctrl+P lower effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note(
-            "During a run: Enter sends · Ctrl+S cycles steering/queue/interrupt. "
+            "During a run: Enter sends · Ctrl+S picks steering/queue/interrupt for the next send. "
             "Ctrl+C discards a draft first, then cancels · Ctrl+D cancels, keeps draft."
         )
         self.note("Cancellation clears queued messages. Use terminal/tmux scrollback for history.")

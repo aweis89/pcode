@@ -113,6 +113,8 @@ class PreviewApp:
         session_id: str | None = None,
     ) -> None:
         self.send_mode = load_preferences().get("send_mode", "steering")
+        # Ctrl+S picks a mode for the next prompt only; the saved default stands.
+        self.send_mode_once: str | None = None
         self.model = model
         self.initial_prompt = initial_prompt
         # Consumed by the first saved session so it shares its ID with the
@@ -929,11 +931,17 @@ class PreviewApp:
             )
         self.transcript.flash("\n".join(lines))
 
+    @property
+    def next_send_mode(self) -> str:
+        """The mode the next prompt sends with: a Ctrl+S pick, else the default."""
+        return self.send_mode_once or self.send_mode
+
     def cycle_send_mode(self) -> None:
+        """Cycle the mode for the next send only; the saved default is untouched."""
         from pcode.preferences import SEND_MODES
 
-        self.send_mode = SEND_MODES[(SEND_MODES.index(self.send_mode) + 1) % len(SEND_MODES)]
-        self.persist_defaults(send_mode=self.send_mode)
+        mode = SEND_MODES[(SEND_MODES.index(self.next_send_mode) + 1) % len(SEND_MODES)]
+        self.send_mode_once = None if mode == self.send_mode else mode
 
     def set_show_commands(self, shown: bool) -> None:
         # Reproject retained results as well as future completions.
@@ -2088,7 +2096,8 @@ class PreviewApp:
             model += f" ({self.current_effort()})"
         # Put send mode and activity ahead of model/path metadata so they are
         # never pushed off the footer by long provider names or narrow panes.
-        segments = [("text", f"Enter: {self.send_mode}")]
+        once = " (once)" if self.send_mode_once else ""
+        segments = [("text", f"Enter: {self.next_send_mode}{once}")]
         if self._startup_pending:
             segments.extend([("text", " · "), ("activity", "starting")])
         if self.activity.busy:
@@ -2545,7 +2554,10 @@ class PreviewApp:
                 self.activity.queued = len(self.activity.queued_prompts)
                 self.activity.busy = True
             elif text:
-                if self.send_mode == "interrupt" and live_task and not live_task.done():
+                # One send consumes a Ctrl+S pick; the saved default returns.
+                mode = self.next_send_mode
+                self.send_mode_once = None
+                if mode == "interrupt" and live_task and not live_task.done():
                     clear_queue()
                     interrupt_pending = True
                     # The user is redirecting the model, not cancelling its
@@ -2554,14 +2566,14 @@ class PreviewApp:
                     self.set_cancel_policy("detach")
                     if not live_task.cancelling():
                         live_task.cancel()
-                queue.put_nowait((queue_generation, text, self.send_mode))
+                queue.put_nowait((queue_generation, text, mode))
                 self.activity.queued_prompts.append(text)
-                self.activity.queued_modes.append(self.send_mode)
+                self.activity.queued_modes.append(mode)
                 self.activity.queued = len(self.activity.queued_prompts)
                 # Set immediately so Enter + Ctrl+C in one input batch cancels
                 # the pending request rather than clearing the user's draft.
                 self.activity.busy = True
-                if self.send_mode == "steering" and live_task and not live_task.done():
+                if mode == "steering" and live_task and not live_task.done():
                     # Queued above, released here: the wait returns its handle
                     # and the next model request carries this message.
                     self.release_shell_waits()

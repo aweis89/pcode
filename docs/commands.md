@@ -109,7 +109,7 @@ candidate's size so that cost is visible before you pick.
 | Key | Action |
 | --- | --- |
 | Enter | Send using the active send mode, or accept a selected completion |
-| Ctrl+S | Cycle steering → queue → interrupt (saves the default) |
+| Ctrl+S | Cycle steering → queue → interrupt for the next send only |
 | ↓ | Newline when on the last line with nothing to complete or recall (works in vi insert mode) |
 | Ctrl+J / Shift+Enter | Newline; see [Newlines in tmux](#newlines-in-tmux) if neither reaches pcode |
 | Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
@@ -287,8 +287,9 @@ Long paths shrink first; narrow terminals may truncate trailing context details.
 ## Sending while the agent is working
 
 Enter uses the saved `send_mode` (default: `steering`). **Ctrl+S** cycles
-`steering` → `queue` → `interrupt` and saves the selection; the status bar shows
-which mode is active directly under the editor. Mode and working status take
+`steering` → `queue` → `interrupt` for the *next* send only: the status bar
+shows the picked mode with `(once)` next to it, and the saved default comes back
+as soon as a prompt is sent. Mode and working status take
 priority over model and path metadata in narrow panes. Existing queued messages
 keep their submission mode.
 
@@ -306,7 +307,7 @@ keep their submission mode.
 
 Set the default with `pcode config set send_mode steering` (or `queue` / `interrupt`).
 `/config set send_mode queue` changes the default for the next launch; Ctrl+S
-changes it immediately. Idle input starts a normal turn in every mode. Slash
+overrides it for one send without changing it. Idle input starts a normal turn in every mode. Slash
 commands retain their existing behavior, and Ctrl+D (or Ctrl+C on an empty
 prompt) still cancels and clears pending messages.
 
@@ -478,7 +479,7 @@ The editor remains usable throughout generation, including multiline input,
 history, slash completion, and `@` file references. Enter sends using the active mode (steering by
 default) and clears the editor for another draft; the toolbar shows the mode and
 pending message count. Steering messages join the next model request; queue-mode
-messages run in order after the current turn finishes. Ctrl+S cycles send modes. Slash commands use a separate async
+messages run in order after the current turn finishes. Ctrl+S cycles the mode for the next send. Slash commands use a separate async
 handler, so help, inspection, theme, context, and effort controls remain available
 while the model works. `/model` also opens while working and applies from the next
 request. `/new`, `/resume`, `/login`, and `/logout` require an idle conversation: cancel
