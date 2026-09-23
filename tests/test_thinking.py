@@ -152,7 +152,7 @@ def test_streaming_lines_are_retained_once_and_keep_answer_order():
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-@pytest.mark.parametrize("color_style", ["palette", "terminal"])
+@pytest.mark.parametrize("mode", ["palette", "terminal"])
 @pytest.mark.parametrize(
     "source",
     [
@@ -163,11 +163,17 @@ def test_streaming_lines_are_retained_once_and_keep_answer_order():
         "```python\nprint(1)\n```",
     ],
 )
-def test_thinking_style_is_dim_and_theme_aware(theme, color_style, source):
+def test_thinking_style_is_dim_and_theme_aware(theme, mode, source):
     console = Console(file=StringIO(), force_terminal=True)
     transcript = Transcript(
-        console, theme=theme, color_style=color_style, activity=Activity(show_thinking=True)
+        console,
+        theme=theme,
+        activity=Activity(show_thinking=True),
+        preferences={"syntax_dark": "gruvbox-dark", "syntax_light": "gruvbox-light"}
+        if mode == "palette"
+        else {"syntax_dark": "terminal", "syntax_light": "terminal"},
     )
+    assert transcript.terminal_colors == (mode == "terminal")
     transcript.thinking(source)
     with console.use_theme(transcript.rich_theme):
         segments = list(console.render(transcript.replay()[0][0][0]))
@@ -175,7 +181,7 @@ def test_thinking_style_is_dim_and_theme_aware(theme, color_style, source):
     assert visible
     for segment in visible:
         assert segment.style.dim
-        if color_style == "palette":
+        if mode == "palette":
             assert segment.style.color.triplet.hex == transcript.palette.muted
     if source.startswith("**"):
         assert next(segment for segment in visible if "Bold" in segment.text).style.bold

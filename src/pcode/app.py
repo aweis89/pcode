@@ -59,7 +59,6 @@ from pcode.stream_display import present_events, present_stream_event
 from pcode.theme import THEMES
 from pcode.tool_display import command_text, plain
 from pcode.ui import (
-    COLOR_STYLES,
     SYSTEM_COMMAND_LABELS,
     WATCHED_PREFIX,
     Activity,
@@ -102,7 +101,6 @@ class PreviewApp:
         theme: str | None = None,
         console: Console | None = None,
         *,
-        color_style: str = "palette",
         model: str | None = None,
         workspace: Path | None = None,
         runtime=None,
@@ -147,7 +145,6 @@ class PreviewApp:
             console or Console(),
             theme or load_preferences().get("theme", SETTINGS["theme"].default),
             activity=self.activity,
-            color_style=color_style,
         )
         self.running = True
         self.inspector_requested: str | None = None
@@ -381,13 +378,6 @@ class PreviewApp:
                 "Set the palette: dark / light / auto; bare toggles dark/light",
                 self.theme,
                 THEMES,
-                group="Display",
-            ),
-            Command(
-                "/colors",
-                "Set Rich colors: palette / terminal",
-                self.colors,
-                COLOR_STYLES,
                 group="Display",
             ),
             Command(
@@ -1354,12 +1344,6 @@ class PreviewApp:
         self.transcript.flash(f"Theme: {selected}.")
         self.transcript.regenerate()
 
-    def colors(self, argument: str) -> None:
-        if argument:
-            self.transcript.color_style = argument
-        self.transcript.flash(f"Colors: {self.transcript.color_style}.")
-        self.transcript.regenerate()
-
     def syntax(self, argument: str) -> None:
         """Choose the Pygments style for code, the completion menu and the prompt.
 
@@ -1371,13 +1355,7 @@ class PreviewApp:
             SETTINGS[f"syntax_{palette}"].validate(f"syntax_{palette}", argument)
             self.transcript.syntax_themes[palette] = argument
             self.persist_defaults(**{f"syntax_{palette}": argument})
-        selected = self.transcript.syntax_themes[palette]
-        if self.transcript.color_style == "terminal":
-            self.transcript.flash(
-                f"Syntax ({palette}): {selected}, unused while /colors is terminal."
-            )
-        else:
-            self.transcript.flash(f"Syntax ({palette}): {selected}.")
+        self.transcript.flash(f"Syntax ({palette}): {self.transcript.syntax_themes[palette]}.")
         self.transcript.regenerate()
 
     def current_effort(self) -> str:
@@ -2751,7 +2729,6 @@ class PreviewApp:
                         "/commands",
                         "/theme",
                         "/theme-preview",
-                        "/colors",
                         "/syntax",
                         "/show-tasks",
                         "/autohide-tasks",
@@ -3259,12 +3236,6 @@ def main() -> None:
         help="Color theme (default: saved preference)",
     )
     parser.add_argument(
-        "--color-style",
-        choices=COLOR_STYLES,
-        default="terminal",
-        help="Output colors (default: terminal ANSI colors; palette uses pcode's own)",
-    )
-    parser.add_argument(
         "-m",
         "--model",
         help="Pydantic Agent model string; omitted = saved default or offline preview",
@@ -3614,7 +3585,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.sessions:
         from pcode.sessions import compact_snapshots, list_sessions, session_root
 
-        console = Transcript(Console(), args.theme, color_style=args.color_style)
+        console = Transcript(Console(), args.theme)
         records = list_sessions(args.session_dir)
         if not records:
             console.note("No saved sessions.")
@@ -3632,7 +3603,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         return
     if args.theme_preview:
         # --theme-preview never constructs a provider, even when -m is also supplied.
-        app = PreviewApp(theme=args.theme, color_style=args.color_style)
+        app = PreviewApp(theme=args.theme)
         app.transcript.welcome()
         # There is no mutable panel in the non-interactive sample.
         app.transcript.events(app.preview.demo(), show_tools=True)
@@ -3688,7 +3659,6 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             workspace, session_id = _enter_worktree(workspace, args.worktree)
         app = PreviewApp(
             theme=args.theme,
-            color_style=args.color_style,
             model=args.model,
             workspace=workspace,
             saved_session=saved,

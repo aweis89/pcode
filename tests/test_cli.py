@@ -30,7 +30,7 @@ def test_cli_passes_model_and_workspace(monkeypatch, tmp_path):
     with patch("pcode.app.PreviewApp") as app:
         main()
     assert app.call_args.kwargs["theme"] == "auto"
-    assert app.call_args.kwargs["color_style"] == "terminal"
+    assert "color_style" not in app.call_args.kwargs
     assert app.call_args.kwargs["model"] == "openai-codex:gpt-5.6-luna"
     assert app.call_args.kwargs["workspace"] == tmp_path
     assert app.call_args.kwargs["saved_session"] is None
@@ -256,14 +256,11 @@ def test_missing_login_has_actionable_message_without_dumping_auth(monkeypatch, 
     )
 
 
-@pytest.mark.parametrize("color_style", ["palette", "terminal"])
-def test_theme_preview_cli_passes_color_style(monkeypatch, color_style):
+def test_theme_preview_cli_passes_the_theme(monkeypatch):
     # `--demo` is the old name for this flag, kept so scripts keep working.
-    monkeypatch.setattr(
-        sys, "argv", ["pcode", "--demo", "--theme", "light", "--color-style", color_style]
-    )
+    monkeypatch.setattr(sys, "argv", ["pcode", "--demo", "--theme", "light"])
     with patch("pcode.app.PreviewApp") as app:
         main()
-    app.assert_called_once_with(theme="light", color_style=color_style)
+    app.assert_called_once_with(theme="light")
     app.return_value.transcript.events.assert_called_once()
     app.return_value.transcript.syntax_gallery.assert_called_once_with()

@@ -12,11 +12,15 @@ from pcode.ui import Transcript
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-@pytest.mark.parametrize("color_style", ["palette", "terminal"])
-def test_notices_are_literal_compact_and_readable_without_color(theme, color_style):
+@pytest.mark.parametrize("syntax", ["gruvbox", "terminal"])
+def test_notices_are_literal_compact_and_readable_without_color(theme, syntax):
     stream = StringIO()
     transcript = Transcript(
-        Console(file=stream, width=80, color_system=None), theme, color_style=color_style
+        Console(file=stream, width=80, color_system=None),
+        theme,
+        preferences={"syntax_dark": "terminal", "syntax_light": "terminal"}
+        if syntax == "terminal"
+        else {"syntax_dark": "gruvbox-dark", "syntax_light": "gruvbox-light"},
     )
     transcript.error("[red]**literal**[/red]\nConnection reset", title="Agent failed")
     transcript.warning("Context window nearly full")

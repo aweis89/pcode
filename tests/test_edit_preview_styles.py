@@ -77,12 +77,16 @@ def test_styles_that_color_diffs_by_background_stay_visible(theme):
 
 
 def test_theme_and_terminal_color_mode_changes_recompute_preview_styles():
-    view = Transcript(Console(file=StringIO()), theme="dark")
+    view = Transcript(
+        Console(file=StringIO()),
+        theme="dark",
+        preferences={"syntax_dark": "gruvbox-dark", "syntax_light": "gruvbox-light"},
+    )
     dark = edit_preview_rows("-old\n+new", 40, view.code_theme)
     view.theme = "light"
     light = edit_preview_rows("-old\n+new", 40, view.code_theme)
     assert dark[0][0] != light[0][0]
-    view.color_style = "terminal"
+    view.syntax_themes["light"] = "terminal"
     terminal = edit_preview_rows("-old\n+new", 40, view.code_theme)
     assert terminal[0][0] != light[0][0]
     assert "ansibrightred" in terminal[0][0]
@@ -116,12 +120,13 @@ def test_prompt_preview_uses_colors_and_updates_them_with_the_theme():
             app = session.app
             with set_app(app):
                 try:
-                    for theme, colors in (
-                        ("dark", "palette"),
-                        ("light", "palette"),
+                    for theme, syntax in (
+                        ("dark", "gruvbox-dark"),
+                        ("light", "gruvbox-light"),
                         ("light", "terminal"),
                     ):
-                        view.theme, view.color_style = theme, colors
+                        view.theme = theme
+                        view.syntax_themes[theme] = syntax
                         app.renderer.render(app, app.layout)
                         fragments = [
                             fragment
