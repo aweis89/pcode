@@ -278,10 +278,10 @@ SETTINGS = {
         ("on", "off"),
         description="Compact the conversation automatically as the context window fills",
     ),
-    # Off by default: a popup that captures the mouse takes drag-to-select away
-    # from the terminal. Read when a popup opens, so no restart is needed.
+    # On by default so the wheel scrolls popups; plain drag-to-select then needs
+    # a modifier. Read when a popup opens, so no restart is needed.
     "popup_mouse": Setting(
-        "off",
+        "on",
         ("on", "off"),
         description="Mouse clicks and wheel scrolling in popups; off keeps native text selection",
     ),
