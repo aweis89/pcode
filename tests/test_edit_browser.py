@@ -84,24 +84,30 @@ def test_lexer_colors_match_the_scrollback_diff_theme():
     assert not Style.from_dict({}).get_attrs_for_style_str(line(3)[0][0]).bgcolor
 
 
-def test_keyboard_scrolls_the_diff_from_the_file_pane_and_closes():
+def test_paging_keys_scroll_the_focused_pane_and_escape_closes():
     async def run():
         long = "\n".join(f"+line {i:03}" for i in range(200))
         with create_pipe_input() as pipe:
             ui = EditBrowser([change("long.py", patch=long)], input=pipe, output=DummyOutput())
             task = asyncio.create_task(ui.run())
             await asyncio.sleep(0.05)
-            pipe.send_text("\x1b[6~")  # PageDown, with the file list focused
+            pipe.send_text("\x1b[6~")  # PageDown in the file list pages the list, not the diff.
             await asyncio.sleep(0.05)
             assert ui.app.layout.has_focus(ui.files)
-            scrolled = ui.diff.document.cursor_position_row
-            assert scrolled > 0
-            pipe.send_text("\x1b[5~")  # PageUp
-            await asyncio.sleep(0.05)
-            assert ui.diff.document.cursor_position_row < scrolled
+            assert ui.diff.document.cursor_position_row == 0
             pipe.send_text("\t")
             await asyncio.sleep(0.05)
             assert ui.app.layout.has_focus(ui.diff)
+            pipe.send_text("\x1b[6~")
+            await asyncio.sleep(0.05)
+            scrolled = ui.diff.document.cursor_position_row
+            assert scrolled > 0
+            pipe.send_text("\x15")  # Ctrl+U
+            await asyncio.sleep(0.05)
+            assert ui.diff.document.cursor_position_row < scrolled
+            pipe.send_text("\x04")  # Ctrl+D scrolls; it no longer closes the browser.
+            await asyncio.sleep(0.05)
+            assert not task.done()
             pipe.send_text("\x1b")
             await asyncio.wait_for(task, 2)
 

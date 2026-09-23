@@ -98,6 +98,21 @@ def pane(request):
         reaper.wait(timeout=5)
 
 
+# The spinner row leads with a `dots` frame, or a `line` frame for system work.
+BUSY_FRAMES = tuple(" " + frame + " " for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏-\\|/")
+
+
+def busy(lines):
+    """Whether the spinner row sits in the block directly above the editor."""
+    top = max((i for i, line in enumerate(lines) if line.startswith("┌")), default=0)
+    for line in reversed(lines[:top]):
+        if not line.strip():
+            return False
+        if line.startswith(BUSY_FRAMES):
+            return True
+    return False
+
+
 def capture(pane, expected, *, running=False, columns=None):
     """Allow asynchronous completion and resize paints to settle, with a deadline."""
     deadline = time.monotonic() + 3
@@ -110,8 +125,7 @@ def capture(pane, expected, *, running=False, columns=None):
             and lines[-2].startswith("└")
             and (columns is None or len(lines[-2]) == columns)
             and "Enter:" in lines[-1]
-            # Mode and activity have priority even in narrow real-CPR panes.
-            and (("working" in lines[-1]) == running)
+            and busy(lines) == running
         ):
             return screen
         time.sleep(0.05)
@@ -149,10 +163,10 @@ def input_rows(screen):
 
 def test_footer_theme_switch_keeps_editor_compact(pane):
     assert input_rows(capture(pane, "❯")) == 1
-    for colors in ("terminal", "palette"):
-        pane("send-keys", "-t", "preview:0.0", "-l", f"/colors {colors}")
+    for syntax in ("terminal", "gruvbox-dark"):
+        pane("send-keys", "-t", "preview:0.0", "-l", f"/syntax {syntax}")
         pane("send-keys", "-t", "preview:0.0", "Enter")
-        assert input_rows(capture(pane, f"Colors: {colors}.")) == 1
+        assert input_rows(capture(pane, f"): {syntax}.")) == 1
         for theme in ("light", "dark", "auto"):
             pane("send-keys", "-t", "preview:0.0", "-l", f"/theme {theme}")
             pane("send-keys", "-t", "preview:0.0", "Enter")
@@ -446,7 +460,7 @@ def test_cursor_is_hidden_while_committing_stream_and_returns_to_draft(pane):
         if "CURSOR_LINE_" in screen and not any(line.startswith("│❯") for line in lines):
             samples += 1
             assert not visible, snapshot
-        if "CURSOR_STREAM_DONE" in screen and "Enter:" in lines[-1] and "working" not in lines[-1]:
+        if "CURSOR_STREAM_DONE" in screen and "Enter:" in lines[-1] and not busy(lines):
             assert visible, snapshot
             assert lines[y].startswith("│❯ draft text"), snapshot
             assert x == 9, snapshot  # Three-cell prompt plus 'draft '.

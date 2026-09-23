@@ -56,7 +56,6 @@ def make_app(width=80, workspace=None):
                 "/show-edits",
                 "/show-commands",
                 "/theme",
-                "/colors",
                 "/syntax",
                 "/theme-preview",
                 "/redraw",
@@ -68,8 +67,7 @@ def make_app(width=80, workspace=None):
         ("/theme-p", ["/theme-preview"]),
         ("/theme ", ["dark", "light", "auto"]),
         ("/theme l", ["light"]),
-        ("/colors ", ["palette", "terminal"]),
-        ("/colors t", ["terminal"]),
+        ("/syntax t", ["terminal", "tango", "trac"]),
         ("/syntax gruvbox", ["gruvbox-dark", "gruvbox-light"]),
         ("/ex", ["/quit", "/extensions"]),
         ("hello /", []),
@@ -147,11 +145,11 @@ def test_preview_prompt_is_still_echoed():
 
 @pytest.mark.parametrize("width", [24, 40, 80, 120])
 @pytest.mark.parametrize("theme", ["dark", "light"])
-@pytest.mark.parametrize("color_style", ["palette", "terminal"])
-def test_rendering_fits_terminal(width, theme, color_style):
+@pytest.mark.parametrize("syntax", ["gruvbox-dark", "terminal"])
+def test_rendering_fits_terminal(width, theme, syntax):
     app, stream = make_app(width)
     app.transcript.theme = theme
-    app.transcript.color_style = color_style
+    app.transcript.syntax_themes[theme] = syntax
     app.transcript.welcome()
     app.help("")
     app.theme_preview("")
@@ -168,14 +166,14 @@ def test_rendering_fits_terminal(width, theme, color_style):
 def test_theme_preview_gallery_marks_the_style_in_use_on_replay():
     app, stream = make_app(width=100)
     app.theme_preview("")
-    assert "▸ gruvbox-dark " in stream.getvalue()
+    assert "▸ terminal " in stream.getvalue()
     app.handle("/syntax monokai")
     console = Console(file=StringIO(), width=100, color_system=None)
     for objects, end, _ in app.transcript.replay():
         console.print(*objects, end=end)
     replayed = console.file.getvalue()
     assert "▸ monokai " in replayed
-    assert "▸ gruvbox-dark " not in replayed
+    assert "▸ terminal " not in replayed
 
 
 @pytest.mark.parametrize(

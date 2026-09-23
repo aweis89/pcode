@@ -32,6 +32,7 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame, Label
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
@@ -46,7 +47,7 @@ from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fr
 from pcode.input_keys import configure_newline_keys
 from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN, PastedText
-from pcode.preferences import SETTINGS, SYNTAX_THEMES, load_preferences
+from pcode.preferences import SETTINGS, SYNTAX_THEMES, TERMINAL_SYNTAX, load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.syntax_colors import derive_colors
 from pcode.task_prompt import TaskPrompt
@@ -122,8 +123,8 @@ class Palette:
         return Style.from_dict(
             {
                 "plan": self.muted,
-                "plan.heading": f"{self.task_heading} bold",
-                "plan.active": f"{self.accent} bold",
+                "plan.heading": f"nodim {self.task_heading} bold",
+                "plan.active": f"nodim {self.accent} bold",
                 "prompt": f"{self.accent} bold",
                 "activity.prompt": self.muted,
                 # System work is pcode's own, so it gets the accent colour and
@@ -149,20 +150,33 @@ class Palette:
                 # the app palette may still be dark on a light terminal.
                 "bottom-toolbar": "noreverse nodim bg:default fg:default",
                 "bottom-toolbar.text": "fg:default",
-                "bottom-toolbar.location": "fg:default bold",
-                "bottom-toolbar.model": "fg:default",
-                "bottom-toolbar.activity": "fg:default bold",
+                # Same roles as the prompt chrome: what matters (where, what is
+                # running) in the accent, labels muted so the row stays quiet.
+                "bottom-toolbar.sep": self.muted,
+                "bottom-toolbar.location": f"{self.accent} bold",
+                "bottom-toolbar.mode": self.task_heading,
+                "bottom-toolbar.model": self.accent,
+                "bottom-toolbar.context": self.muted,
+                "bottom-toolbar.activity": f"{self.task_heading} bold",
                 "completion-menu": f"bg:{menu.surface} {menu.foreground}",
                 "completion-menu.completion": f"bg:{menu.surface} {menu.foreground}",
                 # The toolkit's selected-row default uses reverse; explicitly
                 # disable it so light themes keep dark text on a light surface.
                 "completion-menu.completion.current": (
-                    f"noreverse bg:{menu.selected} {menu.accent} bold"
+                    f"reverse bg:default {menu.accent} bold"
+                    if menu.selected == "reverse"
+                    else f"noreverse bg:{menu.selected} {menu.accent} bold"
                 ),
                 "completion-menu scrollbar.background": f"bg:{menu.surface}",
-                "completion-menu scrollbar.button": f"bg:{menu.selected}",
+                "completion-menu scrollbar.button": (
+                    "reverse bg:default" if menu.selected == "reverse" else f"bg:{menu.selected}"
+                ),
                 "completion-menu.meta.completion": f"bg:{menu.surface} {menu.muted}",
-                "completion-menu.meta.completion.current": f"bg:{menu.selected} {menu.foreground}",
+                "completion-menu.meta.completion.current": (
+                    "reverse bg:default fg:default"
+                    if menu.selected == "reverse"
+                    else f"bg:{menu.selected} {menu.foreground}"
+                ),
                 # A file reference is neither prose nor a command: underlining
                 # it marks the token without competing with the prompt chevron.
                 "reference": f"{self.task_heading} underline",
@@ -178,6 +192,16 @@ PALETTES = {
     "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "#c4b5fd"),
     "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "#7c3aed"),
 }
+
+# `/syntax terminal`: named ANSI colors, so the prompt, plan rows and popup
+# follow the terminal's own scheme. Muted text is `dim` rather than bright
+# black, which several schemes (Solarized) paint as the background itself, and
+# the selected row is reversed for the same reason. `fg:default` keeps the
+# toolkit's own RGB defaults (black popup metadata, grey suggestions) from
+# showing through.
+TERMINAL_PALETTE = Palette(
+    "ansicyan", "fg:default dim", "default", "default", "reverse", "ansimagenta"
+)
 
 
 @cache
@@ -206,9 +230,6 @@ def syntax_themes(preferences: dict[str, str] | None = None) -> dict[str, str]:
         name: preferences.get(f"syntax_{name}", SETTINGS[f"syntax_{name}"].default)
         for name in PALETTES
     }
-
-
-COLOR_STYLES = ("palette", "terminal")
 
 
 # Rich owns scrollback, not the prompt palette. Use terminal-defined ANSI colors
@@ -258,6 +279,8 @@ def system_command(text: str) -> tuple[str, str] | None:
 
 # A notice answers a keystroke, so it only has to outlast reading it once.
 NOTICE_SECONDS = 5.0
+# Scrollback columns a sub-agent's calls sit in from their delegate's row.
+CHILD_INDENT = 4
 NOTICE_ROWS = 6
 # Background jobs get a few rows, never the screen; `/jobs` has the full list.
 JOB_ROWS = 3
@@ -862,7 +885,7 @@ class TerminalOutput:
         self.app = app
         self.tail = ""
         self.streamed = False
-        self.code_theme = code_theme or (lambda: SETTINGS["syntax_dark"].default)
+        self.code_theme = code_theme or (lambda: "ansi_dark")
         self.rich_theme = rich_theme or PALETTES["dark"].rich_theme
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.transient_pending: list[tuple[tuple[object, ...], str, bool]] = []
@@ -1826,7 +1849,6 @@ class Transcript:
         theme: str = "dark",
         *,
         activity: Activity | None = None,
-        color_style: str = "palette",
         preferences: dict[str, str] | None = None,
         detected_theme: str | None = None,
     ) -> None:
@@ -1841,7 +1863,6 @@ class Transcript:
         self.console = console
         self.theme = theme
         self.detected_theme = detect_theme() if detected_theme is None else detected_theme
-        self.color_style = color_style
         self.syntax_themes = syntax_themes(preferences)
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
@@ -1853,6 +1874,9 @@ class Transcript:
         )
         self._replay_sink: list | None = None
         self._block: str | None = None
+        # A sub-agent's calls settle before its delegate does. They wait here,
+        # keyed by the delegate's call id, to be written beneath it.
+        self._children: dict[str, list[ToolSummary]] = {}
 
     @property
     def replays_on_resize(self) -> bool:
@@ -1942,8 +1966,27 @@ class Transcript:
     @recorded
     def tool_result(self, event: ToolSummary) -> None:
         """Retain hidden results too; choose one representation on each replay."""
+        if event.parent_call_id:
+            if self.summarizes(event):
+                self._children.setdefault(event.parent_call_id, []).append(event)
+            return
         if self.writes_tool_result(event):
             self.events((event,))
+        for child in self._children.pop(event.call_id, []):
+            for line in self.summary_lines(child, indent=CHILD_INDENT):
+                self.print(Padding(line, (0, 0, 0, CHILD_INDENT), expand=False), tool_line=True)
+
+    def settle_orphans(self) -> None:
+        """Write sub-agent calls whose delegate never settled, e.g. a cancelled turn.
+
+        Without a delegate row to sit under they are written flush, so the
+        steps a sub-agent did take are not silently lost.
+        """
+        orphans, self._children = self._children, {}
+        for children in orphans.values():
+            for child in children:
+                for line in self.summary_lines(child):
+                    self.print(line, tool_line=True)
 
     @recorded
     def edit(self, event) -> None:
@@ -1955,6 +1998,8 @@ class Transcript:
         sink = []
         self._replay_sink = sink
         self._block = None
+        # Replaying the log's own tool results rebuilds whatever is pending.
+        self._children = {}
         self.log.recording = False
         try:
             if self.log.dropped:
@@ -2013,14 +2058,15 @@ class Transcript:
         return PALETTES[self.resolved_theme]
 
     @property
-    def menu_palette(self) -> Palette:
-        """The palette implied by the syntax style in use, for the popup.
+    def terminal_colors(self) -> bool:
+        """Whether `/syntax terminal` hands every color to the terminal's ANSI palette."""
+        return self.syntax_themes[self.resolved_theme] == TERMINAL_SYNTAX
 
-        `/colors terminal` has no Pygments style to read -- code falls back to
-        the ANSI pseudo-styles -- so the hardcoded palette stands in.
-        """
-        if self.color_style == "terminal":
-            return self.palette
+    @property
+    def menu_palette(self) -> Palette:
+        """The palette implied by the syntax style in use, for the popup."""
+        if self.terminal_colors:
+            return TERMINAL_PALETTE
         return syntax_palette(self.syntax_themes[self.resolved_theme], self.palette)
 
     @property
@@ -2031,8 +2077,8 @@ class Transcript:
         frame do not, so the palette's surface stands in for the terminal's
         background and any color that would be lost against it is dropped.
         """
-        if self.color_style == "terminal":
-            return self.palette
+        if self.terminal_colors:
+            return TERMINAL_PALETTE
         style = self.syntax_themes[self.resolved_theme]
         return syntax_palette(style, self.palette, self.palette.surface)
 
@@ -2042,13 +2088,13 @@ class Transcript:
 
     @property
     def rich_theme(self) -> Theme:
-        return TERMINAL_THEME if self.color_style == "terminal" else self.palette.rich_theme()
+        return TERMINAL_THEME if self.terminal_colors else self.palette.rich_theme()
 
     @property
     def code_theme(self) -> str:
         return (
             f"ansi_{self.resolved_theme}"
-            if self.color_style == "terminal"
+            if self.terminal_colors
             else self.syntax_themes[self.resolved_theme]
         )
 
@@ -2084,7 +2130,6 @@ class Transcript:
                 palette=self.resolved_theme,
                 dark=self.syntax_themes["dark"],
                 light=self.syntax_themes["light"],
-                terminal_colors=self.color_style == "terminal",
             )
         )
 
@@ -2143,6 +2188,15 @@ class Transcript:
         return self.command_scrollback and (self.tool_error_scrollback or not event.failed)
 
     def writes_tool_result(self, event: Event) -> bool:
+        """Report whether this settled tool is written to scrollback as it arrives.
+
+        A sub-agent's call is not: it waits to be written beneath its delegate.
+        """
+        return (
+            isinstance(event, ToolSummary) and not event.parent_call_id and self.summarizes(event)
+        )
+
+    def summarizes(self, event: Event) -> bool:
         """Report whether this settled tool reaches scrollback at all.
 
         Omit calls whose results already have a home: planning in the task
@@ -2230,18 +2284,35 @@ class Transcript:
     def warning(self, text: str) -> None:
         self.print(TranscriptNotice(text, "warning", "Warning"))
 
+    @recorded
     def cancelled(self) -> None:
+        self.settle_orphans()
         self.print(
             TranscriptNotice("Completed tool effects are not undone.", "cancelled", "Run cancelled")
         )
 
     @recorded
     def user(self, text: str) -> None:
+        self.settle_orphans()
         self.print()
         self.print(TaskPrompt(text))
         self.print()
 
-    def command_summary(self, event: ToolSummary) -> None:
+    def summary_lines(self, event: ToolSummary, *, indent: int = 0) -> list[Text]:
+        """The compact rows a settled call leaves in scrollback."""
+        if event.name not in COMMAND_TOOLS and not event.command:
+            return [
+                Text.assemble(
+                    (f"{'✗' if event.failed else '✓'} {label(event.name)}  ", "pcode.thinking"),
+                    (plain(event.detail, limit=None), "pcode.thinking"),
+                    (
+                        f"  {event.elapsed_seconds:.1f}s"
+                        if event.elapsed_seconds is not None
+                        else "",
+                        "pcode.thinking",
+                    ),
+                )
+            ]
         # Scrollback shows the outcome only: the live panel already named the
         # target while the call ran. The session browser, which has no such
         # panel, passes the whole detail to the same renderer.
@@ -2250,15 +2321,18 @@ class Transcript:
             if event.failed or (event.name != "run_command" and " → " in event.detail)
             else ""
         )
-        for line in tool_summary_lines(
+        return tool_summary_lines(
             event.name,
             result,
             failed=event.failed,
             elapsed_seconds=event.elapsed_seconds,
             command=event.command,
-            width=self.console.width,
+            width=max(1, self.console.width - indent),
             background=event.execution == "background",
-        ):
+        )
+
+    def command_summary(self, event: ToolSummary) -> None:
+        for line in self.summary_lines(event):
             self.print(line, tool_line=True)
 
     @recorded
@@ -2298,19 +2372,8 @@ class Transcript:
                     else:
                         self.command_summary(event)
                     continue
-                self.print(
-                    Text.assemble(
-                        (f"{'✗' if event.failed else '✓'} {label(event.name)}  ", "pcode.thinking"),
-                        (plain(event.detail, limit=None), "pcode.thinking"),
-                        (
-                            f"  {event.elapsed_seconds:.1f}s"
-                            if event.elapsed_seconds is not None
-                            else "",
-                            "pcode.thinking",
-                        ),
-                    ),
-                    tool_line=True,
-                )
+                for line in self.summary_lines(event):
+                    self.print(line, tool_line=True)
 
     def help(self, registry: CommandRegistry) -> None:
         table = Table(box=None, padding=(0, 2), show_header=False)
@@ -2329,7 +2392,7 @@ class Transcript:
         self.note("Ctrl+L choose model · Ctrl+N raise effort · Ctrl+P lower effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note(
-            "During a run: Enter sends · Ctrl+S cycles steering/queue/interrupt. "
+            "During a run: Enter sends · Ctrl+S picks steering/queue/interrupt for the next send. "
             "Ctrl+C discards a draft first, then cancels · Ctrl+D cancels, keeps draft."
         )
         self.note("Cancellation clears queued messages. Use terminal/tmux scrollback for history.")

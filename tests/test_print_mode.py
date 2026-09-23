@@ -13,6 +13,7 @@ from rich.text import Text
 
 from pcode.app import PreviewApp
 from pcode.jobs import Job, JobRegistry
+from pcode.preferences import save_preferences
 from pcode.runtime import (
     EditCompleted,
     Message,
@@ -236,6 +237,7 @@ def test_print_rendering_follows_the_resolved_light_or_dark_profile(monkeypatch)
         assert asyncio.run(app.run_print_async("what changed?", stdout=stdout))
         return stdout.getvalue()
 
+    save_preferences(syntax_dark="gruvbox-dark", syntax_light="gruvbox-light")
     for theme in ("light", "dark"):
         output = rendered(theme)
         accent = ";".join(Color.parse(PALETTES[theme].accent).get_ansi_codes())

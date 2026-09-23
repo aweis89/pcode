@@ -125,6 +125,22 @@ Saved diagnostics are not disabled or trimmed by these display settings.
 Command diagnostics retain a separate safety bound of 200 lines / 32,000
 characters, after redaction.
 
+## Delegated work in scrollback
+
+A sub-agent's tool calls are written beneath the `delegate_task` row they belong
+to, indented, once that delegate settles. Parallel delegates therefore keep
+their own steps together instead of interleaving. Each step is a compact summary
+line, commands included: `show_commands` mirroring and `tool_error_scrollback`
+diagnostics apply to the main agent's calls only, and a child's full output stays
+in the inspector. If a turn is cancelled before its delegate settles, the steps
+the sub-agent finished are written flush when the cancellation is reported.
+
+```text
+✓ Delegate  worker · Fix the flaky test → Completed  41.2s
+    ✓ Read  tests/test_api.py → lines 1–80 · 80 lines
+    ✓ Run · 2.3s · pytest -q tests/test_api.py
+```
+
 ## Command output in scrollback
 
 By default, a settled command leaves the same compact summary line every other
@@ -162,7 +178,8 @@ The heading sits on the block's opening line, and a plain line closes it:
 
 Details:
 
-- It covers the current `shell` tool, including delegated calls. Saved legacy
+- It covers the current `shell` tool; delegated calls keep their summary line
+  (see [delegated work](#delegated-work-in-scrollback)). Saved legacy
   `run_command`, `start_command`, `check_command`, and `stop_command` entries also
   remain displayable. Other tools are unaffected.
 - Active foreground `shell` calls show a preview above the prompt, refreshed as
@@ -232,7 +249,7 @@ pcode config set paced_scrollback off  # Default on; applies on next launch
 
 `/redraw` rebuilds the retained transcript at the current terminal width and with
 current display settings. Ctrl+G, `/show-commands`, `/show-edits`,
-`/theme`, `/colors`, and `/syntax`
+`/theme`, and `/syntax`
 use the same replay mechanism. The draft, active tool panel, and unfinished model
 text are preserved; replay neither calls tools nor changes model history.
 

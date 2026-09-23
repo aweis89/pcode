@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 from copy import deepcopy
@@ -85,6 +86,23 @@ def list_sessions(root: Path | None = None) -> list[SessionInfo]:
                 except SessionError:
                     continue
     return sorted(result, key=lambda info: info.updated, reverse=True)
+
+
+def delete_session(identity: str, root: Path | None = None) -> None:
+    """Remove a saved session's directory; refuses one open in any process."""
+    root = root or session_root()
+    directory = root / identity
+    if directory.is_symlink() or not directory.is_dir() or directory.parent != root:
+        raise SessionError("No such session.")
+    lock = FileLock(directory / ".lock", mode=0o600)
+    try:
+        lock.acquire(timeout=0)
+    except Timeout:
+        raise SessionError("This session is open in another process.") from None
+    try:
+        shutil.rmtree(directory)
+    finally:
+        lock.release()
 
 
 @dataclass

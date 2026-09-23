@@ -142,12 +142,14 @@ def test_auto_palette_and_syntax(monkeypatch):
     transcript = Transcript(Console(file=StringIO()), "auto")
     assert transcript.theme == "auto"
     assert transcript.palette == PALETTES["light"]
-    assert transcript.code_theme == SETTINGS["syntax_light"].default
-    transcript.color_style = "terminal"
+    # The default `terminal` syntax renders code with the ANSI style for the palette.
+    assert SETTINGS["syntax_light"].default == "terminal"
     assert transcript.code_theme == "ansi_light"
     transcript.theme = "dark"
     assert transcript.palette == PALETTES["dark"]
     assert transcript.code_theme == "ansi_dark"
+    transcript.syntax_themes["dark"] = "gruvbox-dark"
+    assert transcript.code_theme == "gruvbox-dark"
 
 
 def test_auto_setting_persists_and_toggle_uses_resolved_theme(monkeypatch):
@@ -174,7 +176,8 @@ def test_saved_syntax_themes_apply_per_palette(monkeypatch):
 def test_invalid_saved_syntax_theme_falls_back_to_default():
     save_preferences(syntax_dark="no-such-style")
     transcript = Transcript(Console(file=StringIO()), "dark")
-    assert transcript.code_theme == SETTINGS["syntax_dark"].default
+    assert transcript.syntax_themes["dark"] == SETTINGS["syntax_dark"].default
+    assert transcript.code_theme == "ansi_dark"
 
 
 def test_syntax_command_persists_the_resolved_palette_only():
@@ -183,7 +186,8 @@ def test_syntax_command_persists_the_resolved_palette_only():
     assert app.transcript.code_theme == "dracula"
     assert load_preferences() == {"syntax_dark": "dracula"}
     app.transcript.theme = "light"
-    assert app.transcript.code_theme == SETTINGS["syntax_light"].default
+    assert app.transcript.syntax_themes["light"] == SETTINGS["syntax_light"].default
+    assert app.transcript.code_theme == "ansi_light"
     app.syntax("")
     assert "Syntax (light)" in app.transcript.console.file.getvalue()
 

@@ -39,27 +39,18 @@ class SyntaxGallery:
     palette: str = "dark"
     dark: str = ""
     light: str = ""
-    # `/colors terminal` replaces both saved styles with the ANSI ones. The
-    # samples are RGB by definition, so drawing them would break the promise
-    # that mode makes; list the names instead and say why.
-    terminal_colors: bool = False
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         yield Text("Syntax styles", style="pcode.accent")
         yield Text(
-            f"dark: {self.dark} · light: {self.light}"
-            + (" · unused while /colors is terminal" if self.terminal_colors else ""),
+            f"dark: {self.dark} · light: {self.light}",
             style="pcode.muted",
             no_wrap=True,
             overflow="ellipsis",
         )
-        yield from self._names() if self.terminal_colors else self._samples()
+        yield from self._samples()
         yield Text()
         yield from self._instructions()
-
-    def _names(self) -> RenderResult:
-        yield Text("  " + ", ".join(self.styles), style="pcode.muted")
-        yield Text("  Run /colors palette to see each style rendered.", style="pcode.muted")
 
     def _samples(self) -> RenderResult:
         current = self.dark if self.palette == "dark" else self.light
@@ -73,14 +64,15 @@ class SyntaxGallery:
                 overflow="ellipsis",
             )
             row.append(name.ljust(width), style="pcode.accent" if active else "pcode.muted")
-            row.append_text(_sample(name))
+            # `terminal` is not a Pygments style; it renders with the ANSI one.
+            row.append_text(_sample(f"ansi_{self.palette}" if name == "terminal" else name))
             yield row
 
     def _instructions(self) -> RenderResult:
         for command, note in (
             ("/syntax NAME", f"style the palette in use ({self.palette})"),
             ("/theme dark|light", "switch palettes, then /syntax for that one"),
-            ("/colors terminal", "ignore these styles; use ANSI terminal colors"),
+            ("/syntax terminal", "use the terminal's own colors everywhere"),
             ("/config set syntax_dark NAME", "save the dark-palette style"),
             ("/config set syntax_light NAME", "save the light-palette style"),
         ):

@@ -135,6 +135,18 @@ class PlanPreview:
     items: list[dict] | None
 
 
+@dataclass(frozen=True)
+class ChildPlan:
+    """Display-only snapshot of a running sub-agent's plan, keyed by its delegate call.
+
+    Never journaled: the child's plan lives only as long as its run, and the
+    conversation's own plan is `PlanUpdated`.
+    """
+
+    call_id: str
+    items: list[dict]
+
+
 Event = (
     Message
     | ToolStarted
@@ -146,6 +158,7 @@ Event = (
     | CacheBust
     | PlanUpdated
     | PlanPreview
+    | ChildPlan
     | CommandOutput
     | EditCompleted
     | EditPreview
@@ -201,9 +214,8 @@ class PreviewRuntime:
                 "- Markdown, code, and this table reflow when the terminal is resized.\n"
                 "- Try `/theme light` or `/theme dark`, "
                 "then `/theme-preview` again to compare syntax colors.\n"
-                "- Compare `/colors palette` with `/colors terminal`, "
-                "then run `/theme-preview` again.\n"
-                "- `/syntax monokai` restyles fenced code for the palette in use; "
+                "- `/syntax monokai` restyles code and chrome for the palette in use, "
+                "`/syntax terminal` hands every color back to the terminal; "
                 "the gallery below samples every style.\n"
                 "- Use terminal/tmux scrollback to compare previous output.\n\n"
                 "**No files were read or changed, and no tests were executed.**"
