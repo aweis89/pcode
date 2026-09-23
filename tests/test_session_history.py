@@ -27,12 +27,12 @@ def root(tmp_path):
 
 
 def save(root, workspace, identity="session-a", records=None, **metadata):
+    metadata.setdefault("created", "2026-01-01T00:00:00Z")
+    metadata.setdefault("updated", metadata["created"])
     info = SessionInfo(
         id=identity,
         model="test",
         workspace=str(workspace),
-        created="2026-01-01T00:00:00Z",
-        updated="2026-01-01T00:00:00Z",
         packages={},
         **metadata,
     )
@@ -87,8 +87,11 @@ def test_tools_search_and_read_with_custom_root(tmp_path, root):
     registered = tools(tmp_path, root)
     result = call(registered["search_sessions"], query="redraws", scope="session")
     assert result["mode"] == "keyword"
-    (hit,) = result["results"]
-    assert hit["session_id"] == "session-a"
+    (group,) = result["results"]
+    assert group["session_id"] == "session-a"
+    assert group["current"]
+    assert result["sessions_searched"] == result["sessions_in_scope"] == 1
+    (hit,) = group["turns"]
     assert hit["turn_id"] == "run-a"
     assert hit["status"] == "completed"
     assert hit["branch"] == "active"
@@ -190,7 +193,7 @@ def test_compaction_preserves_recall_and_ancestor_context(tmp_path, root):
     assert turns["run-b"].parent == "run-a"
     registered = tools(tmp_path, root)
     result = call(registered["search_sessions"], query="bounded queue", scope="session")
-    assert result["results"][0]["turn_id"] == "run-a"
+    assert result["results"][0]["turns"][0]["turn_id"] == "run-a"
     read = call(registered["read_session"], session_id=info.id, turn_id="run-b", scope="session")
     assert "bounded queue" in read["context"][0]["text"]
 
@@ -227,7 +230,7 @@ def test_searches_all_text_blocks_and_tool_summaries_not_raw_results(tmp_path, r
         {"kind": "turn_completed"},
     ]
     save(root, tmp_path, records=records)
-    chunks, _ = History(tmp_path, root).chunks("project")
+    chunks = History(tmp_path, root).chunks("project").chunks
     assert keyword_ranking(chunks, "redraws")
     assert keyword_ranking(chunks, "pytest")
     assert not keyword_ranking(chunks, "private-output")
@@ -255,7 +258,8 @@ def test_torn_journal_legacy_ids_unreadable_and_symlinks(tmp_path, root):
     (root / other.id / "transcript.jsonl").unlink()
     (root / other.id / "transcript.jsonl").symlink_to(root / info.id / "transcript.jsonl")
     (root / "alias").symlink_to(root / info.id, target_is_directory=True)
-    chunks, warnings = History(tmp_path, root).chunks("project")
+    scan = History(tmp_path, root).chunks("project")
+    chunks, warnings = scan.chunks, scan.warnings
     assert len(chunks) == 1
     assert warnings == ["Skipped unreadable session other."]
 
@@ -266,7 +270,8 @@ def test_redaction_before_return_and_pagination(tmp_path, root, monkeypatch):
     response = f"{secret} " + "a" * (CHUNK_CHARS * 2) + " unique-tail"
     save(root, tmp_path, records=turn(response=response))
     registered = tools(tmp_path, root)
-    hits = call(registered["search_sessions"], query="unique-tail")["results"]
+    (group,) = call(registered["search_sessions"], query="unique-tail")["results"]
+    hits = group["turns"]
     assert len(hits) == 1
     assert hits[0]["offset"] > CHUNK_CHARS
     first = call(registered["read_session"], session_id="session-a", turn_id="run-a", max_chars=40)
@@ -316,7 +321,7 @@ class FakeEmbedder:
 
 def test_embedding_cache_incremental_model_specific_and_private(tmp_path, root):
     save(root, tmp_path)
-    chunks, _ = History(tmp_path, root).chunks("project")
+    chunks = History(tmp_path, root).chunks("project").chunks
     embedder = FakeEmbedder()
     for _ in range(2):
         ranking, warnings = asyncio.run(
@@ -369,7 +374,7 @@ def test_provider_failure_falls_back_without_echoing_error(tmp_path, root, monke
 def test_embedding_batch_budget_and_deleted_sessions_not_returned(tmp_path, root, monkeypatch):
     save(root, tmp_path, records=turn(response="x" * CHUNK_CHARS * 3))
     monkeypatch.setattr("pcode.history_embeddings.MAX_NEW_CHUNKS", 1)
-    chunks, _ = History(tmp_path, root).chunks("project")
+    chunks = History(tmp_path, root).chunks("project").chunks
     embedder = FakeEmbedder()
     ranking, warnings = asyncio.run(
         semantic_ranking(chunks, "query", "test:model", root, embedder=embedder)
@@ -378,7 +383,7 @@ def test_embedding_batch_budget_and_deleted_sessions_not_returned(tmp_path, root
     assert "partial" in warnings[0]
     assert len(embedder.documents) == 1
     (root / "session-a" / "session.json").unlink()
-    assert History(tmp_path, root).chunks("project")[0] == []
+    assert History(tmp_path, root).chunks("project").chunks == []
 
 
 def test_app_passes_session_dir_on_load_and_reload(tmp_path, root):
@@ -426,7 +431,8 @@ def test_explicit_session_root_matches_storage_path_semantics(tmp_path, monkeypa
 def test_scan_budget_reports_partial_results(tmp_path, root, monkeypatch):
     save(root, tmp_path, records=turn(response="x" * CHUNK_CHARS * 3))
     monkeypatch.setattr("pcode.history.MAX_CHUNKS", 1)
-    chunks, warnings = History(tmp_path, root).chunks("project")
+    scan = History(tmp_path, root).chunks("project")
+    chunks, warnings = scan.chunks, scan.warnings
     assert len(chunks) == 1
     assert "limited" in warnings[0]
 
@@ -438,7 +444,8 @@ def test_scan_byte_budget_stops_before_decoding_oversized_record(tmp_path, root,
     info = save(root, tmp_path, records=records)
     prefix_size = sum(len((json.dumps(r) + "\n").encode()) for r in records[:3])
     monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", prefix_size)
-    chunks, warnings = History(tmp_path, root).chunks("project")
+    scan = History(tmp_path, root).chunks("project")
+    chunks, warnings = scan.chunks, scan.warnings
     assert len(chunks) == 1
     assert chunks[0].turn.branch == "unknown"
     assert "byte budget" in warnings[0]
@@ -452,7 +459,7 @@ def test_scan_byte_budget_stops_before_decoding_oversized_record(tmp_path, root,
 
 def test_semantic_shortlist_keeps_distinct_turns(tmp_path, root):
     save(root, tmp_path, records=turn(response="x" * CHUNK_CHARS * 55) + turn(identity="run-b"))
-    chunks, _ = History(tmp_path, root).chunks("project")
+    chunks = History(tmp_path, root).chunks("project").chunks
     # Simulate the long turn ranking first, so a chunk-level top-50 would hide run-b.
     chunks.sort(key=lambda chunk: chunk.turn.id)
     ranking, _ = asyncio.run(
@@ -489,7 +496,7 @@ def test_consumed_steering_is_journaled_and_recallable(tmp_path, root):
                 after=10,
             )
             history = History(tmp_path, root, saved.info.id)
-            chunks, _ = history.chunks("session")
+            chunks = history.chunks("session").chunks
             hits = keyword_ranking(chunks, "bounded queue")
             assert hits
             read = history.read(saved.info.id, chunks[hits[0]].turn.id, "session")
@@ -508,7 +515,7 @@ def test_bm25_ranking_prefers_rare_terms_and_short_documents(tmp_path, root):
         + turn("Nothing", "Unrelated database migration.", "none")
     )
     save(root, tmp_path, records=records)
-    chunks, _ = History(tmp_path, root).chunks("project")
+    chunks = History(tmp_path, root).chunks("project").chunks
     by_turn = {chunk.turn.id: index for index, chunk in enumerate(chunks)}
     ranking = keyword_ranking(chunks, "editor flicker")
     assert [chunks[i].turn.id for i in ranking][0] == "rare-term"
@@ -518,6 +525,131 @@ def test_bm25_ranking_prefers_rare_terms_and_short_documents(tmp_path, root):
     # Punctuation and case are ignored; an empty or symbol-only query matches nothing.
     assert keyword_ranking(chunks, "FLICKER.") == keyword_ranking(chunks, "flicker")
     assert keyword_ranking(chunks, "!!!") == []
+
+
+def test_current_turn_excluded_and_current_session_flagged(tmp_path, root):
+    records = turn("Earlier work", "We chose a bounded queue.") + [
+        {"kind": "turn_started", "run_id": "live", "prompt": "bounded queue question"}
+    ]
+    save(root, tmp_path, records=records)
+    registered = tools(tmp_path, root)
+    search = registered["search_sessions"].function
+    context = SimpleNamespace(conversation_id="session-a", run_id="live")
+    (group,) = asyncio.run(search(context, query="bounded queue", scope="session"))["results"]
+    assert group["current"]
+    assert [t["turn_id"] for t in group["turns"]] == ["run-a"]
+    # Without the in-flight run ID the prompt itself still comes back.
+    again = call(registered["search_sessions"], query="bounded queue", scope="session")
+    (group,) = again["results"]
+    assert "live" in [t["turn_id"] for t in group["turns"]]
+
+
+def test_in_flight_turn_returns_once_auto_compaction_drops_it_from_context(tmp_path, root):
+    records = [
+        {"kind": "turn_started", "run_id": "live", "prompt": "Long task"},
+        {"kind": "Message", "markdown": "Early finding: the queue must stay bounded."},
+        {"kind": "auto_compacted", "run_id": "live", "before": 100, "after": 10},
+        {"kind": "Message", "markdown": "Continuing."},
+    ]
+    save(root, tmp_path, records=records)
+    search = tools(tmp_path, root)["search_sessions"].function
+    context = SimpleNamespace(conversation_id="session-a", run_id="live")
+    (group,) = asyncio.run(search(context, query="bounded queue", scope="session"))["results"]
+    (hit,) = group["turns"]
+    assert hit["turn_id"] == "live"
+    assert hit["current_turn"]
+
+
+def test_results_group_by_session_and_spread_the_limit(tmp_path, root):
+    many = [record for index in range(5) for record in turn("Flicker", "flicker", f"run-{index}")]
+    save(root, tmp_path, records=many, identity="wordy")
+    save(root, tmp_path, "sparse", records=turn("Other", "flicker once"))
+    result = call(tools(tmp_path, root)["search_sessions"], query="flicker", limit=4)
+    assert [g["session_id"] for g in result["results"]] == ["wordy", "sparse"]
+    assert [len(g["turns"]) for g in result["results"]] == [3, 1]
+    assert not any(g["current"] for g in result["results"])
+
+
+def test_excerpt_prefers_prose_over_tool_summaries(tmp_path, root):
+    records = turn()[:-1] + [
+        {"kind": "ToolSummary", "name": "shell", "command": "grep -rn strict_tools src"},
+        {"kind": "Message", "markdown": "Done - strict_tools is now the default."},
+        {"kind": "turn_completed"},
+    ]
+    save(root, tmp_path, records=records)
+    (group,) = call(tools(tmp_path, root)["search_sessions"], query="strict_tools")["results"]
+    assert "Done - strict_tools" in group["turns"][0]["excerpt"]
+
+
+def test_excerpt_anchors_on_the_densest_match_and_carries_the_conclusion(tmp_path, root):
+    body = (
+        "Mentioned strict tools once in passing.\n\n"
+        + "filler " * 300
+        + "\n\nThe strict tools failure was a schema mismatch in tools we send.\n\n"
+        + "filler " * 300
+    )
+    records = [
+        {"kind": "turn_started", "run_id": "run-a", "prompt": "Investigate"},
+        {"kind": "Message", "markdown": body},
+        {"kind": "Message", "markdown": "Shipped: strict tools is the default now."},
+        {"kind": "turn_completed"},
+    ]
+    save(root, tmp_path, records=records)
+    (group,) = call(tools(tmp_path, root)["search_sessions"], query="strict tools failure")[
+        "results"
+    ]
+    hit = group["turns"][0]
+    assert "schema mismatch" in hit["excerpt"]
+    assert "once in passing" not in hit["excerpt"]
+    assert hit["conclusion"] == "Shipped: strict tools is the default now."
+
+
+def test_partial_scan_reports_session_coverage(tmp_path, root, monkeypatch):
+    save(root, tmp_path, records=turn())
+    save(root, tmp_path, "older", records=turn())
+    monkeypatch.setattr("pcode.history.MAX_SCAN_BYTES", 10)
+    result = call(tools(tmp_path, root)["search_sessions"], query="flicker")
+    assert (result["sessions_searched"], result["sessions_in_scope"]) == (0, 2)
+    assert "2 older ones were not searched" in result["warnings"][-1]
+    # The cursor still advances past a session that used the whole budget alone.
+    assert result["next_cursor"] in {"session-a", "older"}
+
+
+def test_cursor_continues_into_sessions_the_budget_did_not_reach(tmp_path, root, monkeypatch):
+    save(
+        root,
+        tmp_path,
+        records=turn("Recent", "Recent work on the editor."),
+        updated="2026-02-01T00:00:00Z",
+    )
+    save(root, tmp_path, "older", records=turn("Older", "The editor flicker fix we shipped."))
+    # One session per scan, so reaching the older one requires the cursor.
+    monkeypatch.setattr(
+        "pcode.history.MAX_SCAN_BYTES",
+        sum(len(json.dumps(record)) + 1 for record in turn()) + 20,
+    )
+    registered = tools(tmp_path, root)
+    first = call(registered["search_sessions"], query="flicker fix")
+    assert not [g for g in first["results"] if g["session_id"] == "older"]
+    second = call(registered["search_sessions"], query="flicker fix", after=first["next_cursor"])
+    (group,) = second["results"]
+    assert group["session_id"] == "older"
+    assert second["next_cursor"] is None
+    with pytest.raises(ModelRetry, match="Unknown cursor"):
+        call(registered["search_sessions"], query="flicker", after="no-such-session")
+
+
+def test_snapshot_compaction_leaves_search_intact(tmp_path, root):
+    # `pcode --sessions --compact` prunes the step store, never the transcript.
+    from pcode.sessions import compact_snapshots
+
+    saved = SavedSession.create("test", tmp_path, root=root)
+    saved.append("turn_started", run_id="run-a", prompt="Fix flicker")
+    saved.append("Message", markdown="Suspend the editor during redraws.")
+    saved.close()
+    compact_snapshots(root / saved.info.id)
+    (group,) = call(tools(tmp_path, root)["search_sessions"], query="redraws")["results"]
+    assert group["turns"][0]["turn_id"] == "run-a"
 
 
 def test_user_override_disables_extension(tmp_path, root):

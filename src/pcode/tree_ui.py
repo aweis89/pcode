@@ -13,6 +13,7 @@ from rich.padding import Padding
 from rich.text import Text
 from rich.theme import Theme
 
+from pcode.clipboard import copy as copy_to_clipboard
 from pcode.conversation_tree import ConversationTree, TurnNode
 from pcode.popup_ui import (
     RichPane,
@@ -51,6 +52,7 @@ class TreeBrowser:
         self.code_theme = code_theme
         self.rows = tree.rows()
         self.selected: Selection = (tree.active, False)
+        self.notice = ""
         self._branch: tuple[str, ...] | None = None
         self._anchors: dict[Selection, int] = {}
         self._refreshing = False
@@ -83,6 +85,10 @@ class TreeBrowser:
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
 
+        @keys.add("c", filter=has_focus(self.list) | has_focus(self.detail))
+        def copy_selection(event):
+            self.copy(event.app.output)
+
         header = Label(
             lambda: (
                 f"Conversation tree · {len(tree.nodes)} turns · "
@@ -91,6 +97,7 @@ class TreeBrowser:
                     if navigable
                     else "read-only while working"
                 )
+                + (f" · {self.notice}" if self.notice else "")
             )
         )
         wide = VSplit(
@@ -112,7 +119,7 @@ class TreeBrowser:
             [
                 header,
                 body,
-                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
+                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page · c Copy selection"),
                 Label(
                     "Enter Navigate · Tab Focus · Esc Cancel"
                     if navigable
@@ -152,12 +159,30 @@ class TreeBrowser:
         if value == self.selected and not force:
             return
         self.selected = value
+        self.notice = ""
         branch = self.branch(value[0])
         if branch != self._branch:
             self._branch = branch
             self.detail.set(self.details(branch), anchor=self._anchors.get(value))
         else:
             self.detail.scroll_to(self._anchors.get(value, 0))
+
+    def copy(self, output=None) -> None:
+        """Copy the selected row's prompt or response, as the pane shows it.
+
+        The text is the redacted `literal` form rendered above, not the raw
+        record: what is on screen is what leaves the popup.
+        """
+        identity, prompt = self.selected
+        node = self.tree.nodes.get(identity) if identity is not None else None
+        name = "prompt" if prompt else "response"
+        text = literal(node.prompt if prompt else node.response) if node is not None else ""
+        if not text:
+            self.notice = f"No {name} to copy"
+            return
+        copied, truncated = copy_to_clipboard(text, output)
+        limit = " (truncated)" if truncated else ""
+        self.notice = f"Copied {name}{limit}" if copied else f"Could not copy {name}"
 
     def branch(self, identity: str | None) -> tuple[str, ...]:
         """Root-to-leaf path through ``identity``, following the active branch below it."""

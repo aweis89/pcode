@@ -4,6 +4,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+from copy import deepcopy
 
 import pytest
 from pydantic_ai import Agent
@@ -635,6 +636,75 @@ def test_compacting_an_old_session_frees_space_and_keeps_what_resume_reads(tmp_p
         ).fetchall()
     # Both turns still restore, from the step they actually settled at.
     assert rows == [("run-0", 0), ("run-1", 39), ("run-2", 39)]
+
+
+def test_compacted_session_still_resumes_and_navigates_to_an_earlier_turn(tmp_path):
+    from pcode.sessions import compact_snapshots
+
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    (tmp_path / "README.md").write_text("a test repository\n")
+    calls = 0
+
+    async def model(messages, info):
+        nonlocal calls
+        calls += 1
+        # A tool per turn settles extra steps, so a turn holds several snapshots.
+        if not [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]:
+            yield {0: DeltaToolCall(name="read_file", json_args='{"path":"README.md"}')}
+        else:
+            yield f"Answer {calls}."
+
+    runtime = AgentRuntime(
+        Agent(FunctionModel(stream_function=model), capabilities=[Coder(tmp_path)]), saved
+    )
+
+    async def run():
+        for prompt in ("First question", "Second question"):
+            async for _ in runtime.stream(prompt):
+                pass
+        expected = deepcopy(runtime.history)
+        first, second = list(runtime.tree.nodes)
+        identity, directory = saved.info.id, saved.directory
+        # Stand in for a session written before the per-turn bound existed. They
+        # are interrupted steps, the case where the retain set widens to keep
+        # each turn's newest settled one as well.
+        with sqlite3.connect(directory / "steps.sqlite3") as connection:
+            for run in (first, second):
+                for step in range(20):
+                    connection.execute(
+                        "insert into snapshots (run_id, step_index, timestamp, state, messages)"
+                        " values (?, ?, '2026-01-01T00:00:00Z', 'interrupted', '[]')",
+                        (run, 100 + step),
+                    )
+        before_rows = snapshot_rows(saved)
+        runtime.close()
+
+        assert compact_snapshots(directory) != (0, 0)
+
+        reopened = SavedSession.open(identity, root)
+        # Space freed is page-granular and a small store may not shrink; rows do.
+        assert snapshot_rows(reopened) < before_rows
+        resumed = AgentRuntime(runtime.agent, reopened)
+        try:
+            # --continue / /resume: the newest turn's settled history comes back.
+            await resumed.restore()
+            assert resumed.history == expected
+            # /tree back to the first turn, which keeps its own newest checkpoint.
+            await resumed.navigate(first)
+            assert resumed.history and resumed.history != expected
+            await resumed.navigate(second)
+            assert resumed.history == expected
+            async for _ in resumed.stream("Third question"):
+                pass
+            assert "Answer" in str(resumed.history[-1])
+        finally:
+            resumed.close()
+
+    try:
+        asyncio.run(run())
+    finally:
+        saved.close()
 
 
 def test_sessions_compact_reports_space_and_needs_the_listing(tmp_path, monkeypatch, capsys):
