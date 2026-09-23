@@ -115,6 +115,13 @@ pcode -m anthropic:<model-id>   # then: /login
   an endpoint scoped to it: compatibility support, not an official third-party OAuth
   integration. Entitlements, quotas, and server behavior can change at any time; the
   supported path remains `ANTHROPIC_API_KEY`.
+- The advertised Claude Code version gates which models the endpoint accepts: below
+  a model's floor it answers `400 claude_code_version_too_old` rather than naming
+  the model. pcode reports the locally installed `claude --version` when it is newer
+  than its own fallback, so keeping Claude Code updated is usually enough. Where it
+  is not installed, set `PCODE_CLAUDE_VERSION` (for example `2.1.280`) to raise the
+  fallback without waiting for a pcode release. A version below the fallback, or one
+  that was never released, is a good way to get requests rejected.
 - No API key is minted, and nothing is written to another tool's credential store.
 
 For OpenAI Codex, `/login openai-codex` uses Pydantic AI OAuth and a separate
