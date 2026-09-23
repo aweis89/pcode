@@ -29,7 +29,7 @@ from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 from pcode.cache_settings import ProviderCacheSettings, model_settings
 from pcode.cache_warnings import CacheBustReporting
 from pcode.code_mode import create_code_mode
-from pcode.delegation import DelegationReporting, child_plan_store, stream_child_activity
+from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.ext import EXTENSION_GUIDE
 from pcode.filesystem import DisplayFileSystem
 from pcode.llm_proxy import ProxiedCodexProvider
@@ -189,10 +189,6 @@ def create_coder(
         for capability in coder.capabilities
         if not isinstance(capability, (*shared_types, ClearToolResults, DelegationReporting))
     ]
-    for capability in worker_capabilities:
-        if isinstance(capability, Planning):
-            # Its own plan per delegation, readable by the parent for display.
-            capability.store_resolver = child_plan_store
     if code_mode := create_code_mode():
         coder.capabilities.append(code_mode)
         worker_capabilities.append(copy(code_mode))

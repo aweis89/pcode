@@ -4,10 +4,6 @@ Harness 0.31 supplies delegation lifecycle events and a child stream handler, bu
 not the parent's call identity in that handler. A context-local execution wrapper
 pairs concurrent children with their own parent tool call. No global event queue
 or mutable per-agent handler is needed, and cancellation resets the binding.
-
-The same wrapper hands each delegation its own plan store. A child's plan lives
-only for its run, so the store is created here, where the parent can still read
-it to show the child's tasks beneath the delegate.
 """
 
 from contextvars import ContextVar
@@ -25,11 +21,11 @@ from pydantic_ai.messages import (
     TextPart,
     ThinkingPart,
 )
-from pydantic_ai_harness.planning import InMemoryPlanStore, PlanStore
 
 from pcode.cache_warnings import CacheBustEvent
 from pcode.filesystem import FileChangeEvent
 from pcode.inspection import capture
+from pcode.planning import PlanSnapshot
 from pcode.runtime import ToolStarted, ToolSummary
 from pcode.shell import result_projection
 from pcode.tool_display import (
@@ -43,7 +39,6 @@ from pcode.tool_display import (
 )
 
 _parent: ContextVar[RunContext | None] = ContextVar("delegation_parent", default=None)
-_plan: ContextVar[InMemoryPlanStore | None] = ContextVar("delegation_plan", default=None)
 
 
 @dataclass(kw_only=True)
@@ -54,33 +49,20 @@ class ChildActivity(CapabilityEvent, namespace="pcode_delegation", name="activit
     plan: list[dict] | None = None
 
 
-def child_plan_store(_ctx) -> PlanStore:
-    """A sub-agent's `Planning.store_resolver`: this delegation's own plan.
-
-    Outside a delegation (a worker run directly) it is a fresh store per run,
-    which is what Planning does without a resolver.
-    """
-    store = _plan.get()
-    return store if store is not None else InMemoryPlanStore()
-
-
 class DelegationReporting(AbstractCapability):
     async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
         if call.tool_name != "delegate_task":
             return await handler(args)
         token = _parent.set(ctx)
-        plan = _plan.set(InMemoryPlanStore())
         try:
             return await handler(args)
         finally:
-            _plan.reset(plan)
             _parent.reset(token)
 
 
 async def stream_child_activity(_ctx, events):
     """Consume child streams, emitting only tool boundaries and phase changes."""
     parent = _parent.get()
-    store = _plan.get()
     plan_items: list[dict] = []
     tools = {}
     phase = ""
@@ -100,8 +82,13 @@ async def stream_child_activity(_ctx, events):
         if isinstance(event, CacheBustEvent):
             await parent.emit(CacheBustEvent(text=f"Sub-agent: {event.text}"))
             continue
+        if isinstance(event, PlanSnapshot):
+            # Its own planning announces the plan; the store stays private to it.
+            if event.items != plan_items:
+                plan_items = event.items
+                await parent.emit(ChildActivity(activity=phase, plan=event.items))
+            continue
         child = None
-        plan = None
         activity = phase
         parent_id = parent.tool_call_id or ""
         if isinstance(event, FunctionToolCallEvent):
@@ -148,17 +135,11 @@ async def stream_child_activity(_ctx, events):
                 parent_call_id=parent_id,
             )
             activity = "Working" if tools else "Waiting for model"
-            # Read the store after every settled tool, as the parent's own plan
-            # is: that covers every planning tool without parsing its result.
-            if store is not None:
-                items = [item.model_dump(mode="json") for item in await store.get_items()]
-                if items != plan_items:
-                    plan_items = plan = items
         elif isinstance(event, PartStartEvent):
             if isinstance(event.part, ThinkingPart):
                 activity = "Thinking"
             elif isinstance(event.part, TextPart):
                 activity = "Responding"
         if child is not None or activity != phase:
-            await parent.emit(ChildActivity(activity=activity, child=child, plan=plan))
+            await parent.emit(ChildActivity(activity=activity, child=child))
             phase = activity
