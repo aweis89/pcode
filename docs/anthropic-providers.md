@@ -13,7 +13,8 @@ and `claude-agent-sdk` 0.2.158.
 
 1. Treat Meridian as the default subscription route and stop defaulting to
    `/login`.
-2. Smooth the rough edges of the Meridian integration.
+2. Smooth the rough edges of the Meridian integration, starting with the
+   compaction fix. The list is under [Meridian work](#meridian-work).
 3. Spike a native Agent SDK provider before committing to build one. The pass
    criteria are under [Direct SDK provider](#direct-sdk-provider).
 4. Do not build ACP as a model provider. An ACP client that lets Claude Code run
@@ -101,8 +102,7 @@ source):
 
 When a request is classified as compaction, pcode's summary never reaches the
 model: upstream, the CLI keeps the full history until its own auto-compaction
-runs. This comes from reading the code and has not yet been reproduced against
-pcode.
+runs. [Meridian work](#meridian-work) has the live reproduction.
 
 A diverged request is a one-time cost rather than a broken cache, since the
 replayed session caches normally afterwards. For a 100k-token history the replay
@@ -267,3 +267,75 @@ ACP agents. It also means pcode's tools, extensions, Harness capabilities,
 `/tree`, cross-provider switching and `cache-report` do not apply to those
 sessions. Harness's experimental ACP module serves a Pydantic AI agent to editors,
 the opposite direction, so the client side would be new code.
+
+## Meridian work
+
+These findings come from live runs against Meridian 1.72.0 on 2026-09-23, with
+the current 1.76.1 checked by reading its bundle.
+
+Meridian ignores pcode's compaction. The probe built a four-round tool
+conversation, then sent a compacted history whose summary alone contained a
+codename, and asked for it:
+
+| Request | Lineage | Answer | Cache read | Cache write |
+|---|---|---|---|---|
+| Compacted, same session ID | compaction | NONE | 17,915 | 2,266 |
+| Compacted, new session ID | new | PELICAN | 8,066 | 7,567 |
+
+Under the same ID the model kept reading the full uncompacted history and never
+saw the summary. Under a new ID the summary arrived, at the cost of one cold write
+of the smaller history, which is what compaction costs on any route. 1.76.1
+classifies compaction the same way.
+
+Managed mode cannot start on any current release because it requires exactly
+1.71.1. With that check relaxed, 1.72.0 was ready in 3.6 s using about 100 MB,
+and 1.76.1 still reads `sdk-features.json`, serves `/settings/api/features` and
+honours the same environment variables.
+
+Managed mode also keeps Meridian's session store in a temporary directory, so a
+resumed pcode conversation starts over. Restarting Meridian between rounds two
+and three gave:
+
+| Session store | Round 3 lineage | Cache read | Cache write |
+|---|---|---|---|
+| Temporary directory (today) | new | 8,066 | 1,152 |
+| Persistent directory | continuation | 9,138 | 263 |
+
+In a real session the first row's write is the whole history, replayed as
+flattened text.
+
+A stopped external proxy surfaces as a generic transient connection error that
+is retried once and then reported as "Check provider/proxy connectivity". Nothing
+says that Meridian is not running or not logged in. The long-running external
+proxy on this machine also has Thinking Passthrough off, so thinking never
+appears.
+
+| # | Work | Size | Notes |
+|---|---|---|---|
+| 1 | Rotate the session ID on compaction | S | Derive `x-litellm-session-id` from the conversation ID plus a digest of the first user prompt. Compaction replaces that prompt with the summary, so the ID changes exactly then, while tool rounds, resume, model switches and `/tree` keep it. |
+| 2 | Accept current releases in managed mode | S | Require a minimum version and keep the existing health and passthrough checks. Warn instead of failing above the newest verified release. |
+| 3 | Preflight and clear errors | S | Check `/health` when the provider is built. Name the URL when the proxy is unreachable, point at `claude auth login` when `auth.loggedIn` is false, and use the same hint for connection failures mid-turn. Say once when thinking display is on but the proxy does not pass thinking through. |
+| 4 | Persistent managed session store | S–M | Keep it under `$XDG_STATE_HOME/pcode/meridian/`. Verify that two Meridian processes can share it and that its pruning bounds disk use. |
+| 5 | Choose the mode automatically | M | `meridian_managed` gains an `auto` default: the configured URL, else a proxy that answers `/health` at the default URL, else a managed instance. Start that instance in the background when the session needs it, and restart a crashed one on the next request. |
+| 6 | Route `anthropic:` through Meridian | M | See below. Needs a decision first. |
+
+Item 6 adds `meridian` as an Anthropic auth source, next to `api-key` and
+`oauth`, which already share the `anthropic:` prefix. Saved sessions, effort
+settings and the default model keep their names. With nothing configured, pcode
+would prefer Meridian over a stored `/login` when Meridian is available, and say
+so once. On this route `/login` checks `claude auth status` and points at
+`claude auth login` instead of running pcode's OAuth flow. Model settings must
+follow the resolved route rather than the model string: prompt-cache settings are
+pointless through Meridian, and the web-search profile narrowing on the OAuth
+model needs checking against what Meridian passes through. The open question is
+whether pcode's own OAuth route stays at all.
+
+Do 1 to 3 first; they are small, independent and useful straight away. Then 4
+and 5, then 6 once the routing question is settled. Later candidates: a picker
+fed by Meridian's account-aware `/v1/models`, an explicit command to turn on
+Thinking Passthrough for an external proxy, and a way to choose the `meridian`
+executable when several are installed (this machine has two).
+
+The per-request CLI start, about 0.5 s per tool round, is inherent to Meridian;
+the SDK spike covers it. When Meridian does start fresh it replays history as
+flattened text. Items 1 and 4 make that rarer but cannot change the format.
