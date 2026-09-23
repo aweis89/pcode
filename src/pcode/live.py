@@ -129,7 +129,7 @@ class AgentRuntime:
 
         self.session_factory = session_factory
         preferences = load_preferences()
-        self.auto_compact = preferences.get("autocompact") == "on"
+        self.auto_compact = preferences.get("autocompact", "on") == "on"
         # Snapshotted like autocompact: a saved default applies to the next launch.
         self.retry_attempts = int(
             preferences.get("retry_attempts", SETTINGS["retry_attempts"].default)
