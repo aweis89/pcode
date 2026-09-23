@@ -24,7 +24,15 @@ from pcode.popup_ui import (
     popup_style,
     steer_list_from_query,
 )
-from pcode.sessions import SessionInfo, ToolCall, Turn, first_prompt, session_turns
+from pcode.sessions import (
+    SessionError,
+    SessionInfo,
+    ToolCall,
+    Turn,
+    delete_session,
+    first_prompt,
+    session_turns,
+)
 from pcode.task_prompt import TaskPrompt
 from pcode.tool_display import plain, tool_summary_lines
 from pcode.worktree import repo_scope
@@ -78,6 +86,8 @@ class SessionBrowser:
         self._turns: dict[str, list[Turn] | None] = {}
         self._titles: dict[str, str] = {}
         self._refreshing = False
+        self.pending_delete: str | None = None
+        self.status = ""
         self.query = TextArea(height=1, prompt="Search prompts: ", multiline=False)
         self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
         self.list.window.cursorline = Always()
@@ -118,11 +128,17 @@ class SessionBrowser:
             self.responses = not self.responses
             self.refresh()
 
+        @keys.add("d", filter=has_focus(self.list))
+        @keys.add("delete", filter=has_focus(self.list))
+        def delete(event):
+            self.delete_selected()
+
         header = Label(
             lambda: (
                 f"Sessions · {len(self.visible)}/{len(self.in_scope())} · "
                 f"Workspace: {'all' if self.everywhere else self.workspace.name} · "
                 f"Search: {'prompts + responses' if self.responses else 'prompts'}"
+                + (f" · {self.status}" if self.status else "")
             )
         )
         wide = VSplit(
@@ -150,7 +166,7 @@ class SessionBrowser:
                 self.query,
                 body,
                 Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label("Enter Resume · Tab Focus · Esc Cancel"),
+                Label("Enter Resume · d Delete (twice) · Tab Focus · Esc Cancel"),
                 Label("In Sessions: / Search (↑↓ select while typing) · r Responses too · w All"),
             ]
         )
@@ -163,6 +179,37 @@ class SessionBrowser:
             **app_options,
         )
         self.refresh()
+
+    def delete_selected(self) -> None:
+        """Delete the selected session on the second press; the first only asks."""
+        info = self.selected
+        if info is None:
+            return
+        if info.id == self.active_id:
+            self.status = "Can't delete the active session"
+            return
+        if self.pending_delete != info.id:
+            self.pending_delete = info.id
+            self.status = f"Press d again to delete {info.id[:8]}"
+            return
+        self.pending_delete = None
+        try:
+            delete_session(info.id, self.root)
+        except SessionError as error:
+            self.status = str(error)
+            return
+        self.records = [record for record in self.records if record.id != info.id]
+        self._turns.pop(info.id, None)
+        self._titles.pop(info.id, None)
+        self.status = f"Deleted {info.id[:8]}"
+        # Keep the cursor on the same row so repeated deletes walk down the list.
+        row = self.list.document.cursor_position_row
+        self.selected = None
+        self.refresh()
+        if self.visible:
+            row = min(row, len(self.visible) - 1)
+            position = self.list.document.translate_row_col_to_index(row, 0)
+            self.list.buffer.cursor_position = position
 
     def turns(self, info: SessionInfo) -> list[Turn]:
         if info.id not in self._turns:
@@ -240,6 +287,10 @@ class SessionBrowser:
         info = self.visible[row] if row < len(self.visible) else None
         if info is self.selected and info is not None and not force:
             return
+        if info is not self.selected and self.pending_delete:
+            # Moving off a session cancels its pending delete.
+            self.pending_delete = None
+            self.status = ""
         self.selected = info
         self.detail.set(self.details(info))
 
