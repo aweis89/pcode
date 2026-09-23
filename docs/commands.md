@@ -61,8 +61,9 @@ candidate's size so that cost is visible before you pick.
   backgrounds and text, with reverse-video selection highlights. They follow your
   terminal background automatically, independently of `/theme` and `/colors`.
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
-- `/login [anthropic|openai-codex]`: sign in in a browser. Anthropic is pcode's own flow;
-  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required).
+- `/login [anthropic|openai-codex|meridian]`: sign in in a browser. Anthropic is pcode's own flow;
+  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required); `meridian` runs
+  `claude auth login` for the login your Meridian proxy reads ([details](providers.md#signing-in)).
   `/logout [anthropic|openai-codex]` removes pcode's stored login, leaving CLI credentials untouched. Both require an idle conversation.
 - `/model`: searchable model picker for configured providers (keeps the conversation;
   applies from the next request when chosen mid-run).
