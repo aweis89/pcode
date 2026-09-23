@@ -123,7 +123,7 @@ def tool_summary_lines(
     command: str = "",
     width: int | None = None,
 ) -> list[Text]:
-    """The settled-tool line, and a command's preview line, as scrollback draws them.
+    """The settled-tool line, including any command preview, as scrollback draws it.
 
     Shared so a browsed conversation looks like the one that scrolled past:
     scrollback and the session browser differ only in how much of `detail`
@@ -133,9 +133,8 @@ def tool_summary_lines(
     # The marker alone reports failure: a summary line keeps one style so a
     # failed call does not shout louder than the diagnostic that follows it.
     marker = "✗" if failed else "✓"
-    lines = [Text(f"{marker} {label(name)}{detail}{elapsed}", style="pcode.thinking")]
-    if command:
-        lines.append(Text("  " + command_preview(command), style="pcode.thinking"))
+    preview = " · " + command_preview(command) if command else ""
+    lines = [Text(f"{marker} {label(name)}{detail}{elapsed}{preview}", style="pcode.thinking")]
     for line in lines:
         line.no_wrap = True
         line.overflow = "ellipsis"
