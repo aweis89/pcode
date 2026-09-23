@@ -502,3 +502,44 @@ def test_thinking_warning_is_shown_once_and_only_when_dropped(monkeypatch, tmp_p
     assert "http://127.0.0.1:3456/settings" in output.getvalue()
     assert "appears in scrollback" in meridian_thinking_note("x", True)
     assert "Managed Meridian does" in meridian_thinking_note(None, None)
+
+
+def test_web_capabilities_use_local_tools(monkeypatch):
+    """Meridian 400s on Anthropic server tools, so web search/fetch must stay local."""
+    from pydantic_ai import Agent
+    from pydantic_ai.capabilities import WebFetch, WebSearch
+
+    from pcode.meridian import meridian_model
+
+    bodies = []
+
+    def handle(request):
+        bodies.append(json.loads(request.content))
+        return httpx2.Response(400, json={"type": "error", "error": {"type": "x", "message": "x"}})
+
+    original = httpx2.AsyncClient
+
+    class Client(original):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs, transport=httpx2.MockTransport(handle))
+
+    monkeypatch.setattr("pcode.meridian.httpx2.AsyncClient", Client)
+
+    def search(query: str) -> str:
+        return query
+
+    def get_page(url: str) -> str:
+        return url
+
+    async def run():
+        agent = Agent(
+            meridian_model("meridian:claude-opus-5"),
+            capabilities=[WebSearch(local=search), WebFetch(local=get_page)],
+        )
+        with pytest.raises(Exception):
+            await agent.run("hi")
+
+    asyncio.run(run())
+    tools = bodies[0]["tools"]
+    assert {tool["name"] for tool in tools} == {"search", "get_page"}
+    assert not any(tool.get("type", "custom") != "custom" for tool in tools)
