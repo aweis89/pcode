@@ -59,8 +59,8 @@ class ToolHistory:
     recent: ToolCall | None = None
 
     def record(self, event: ToolStarted | ToolSummary) -> None:
-        # Planning operations have their own panel, and every settled call is
-        # written to scrollback, so neither belongs in the live view.
+        # Planning operations have their own panel. Settled calls leave the
+        # live view regardless of whether they need a scrollback entry.
         if event.name in PLAN_TOOLS:
             return
         self.prune()

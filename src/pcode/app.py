@@ -42,6 +42,7 @@ from pcode.runtime import (
     CacheBust,
     CommandOutput,
     EditCompleted,
+    JobFinished,
     Message,
     PlanPreview,
     PlanUpdated,
@@ -55,7 +56,7 @@ from pcode.runtime import (
 from pcode.shell_mode import execute, shell_command
 from pcode.stream_display import present_events, present_stream_event
 from pcode.theme import THEMES
-from pcode.tool_display import plain
+from pcode.tool_display import command_text, plain
 from pcode.ui import (
     COLOR_STYLES,
     SYSTEM_COMMAND_LABELS,
@@ -654,9 +655,27 @@ class PreviewApp:
         registry = getattr(self.runtime, "jobs", None)
         if registry is None:
             return []
+        from pcode.shell import REDUCED_SHELL_OUTPUT, result_projection
+
         finished = registry.take_announcements("ui")
         for job in finished:
-            self.transcript.note(job.summary())
+            output, truncated = registry.read_output(job)
+            if truncated:
+                output = REDUCED_SHELL_OUTPUT + "\n" + output
+            result = output + f"\n[{job.id} · {job.outcome()} · {format_duration(job.elapsed)}]"
+            event = JobFinished(
+                "shell",
+                f"{command_text(job.label())} → {job.id} · {job.outcome()}",
+                failed=job.stopped or job.exit_code != 0,
+                elapsed_seconds=job.elapsed,
+                command=command_text(job.command),
+                result=command_text(result_projection(result)),
+                purpose=command_text(job.purpose),
+            )
+            saved = getattr(self.runtime, "session", None)
+            if saved is not None:
+                saved.event(event, run_id=saved.tree.active or "")
+            self.transcript.tool_result(event)
         return finished
 
     def wake_prompt(self) -> str | None:
@@ -696,30 +715,20 @@ class PreviewApp:
     def refresh_jobs(self) -> bool:
         """Recompute the jobs rows and the watched tail. Returns whether they changed.
 
-        Called on the watcher's tick, busy or idle: a job that fails mid-turn
-        shows up here long before the turn ends and scrollback hears of it.
+        Only running jobs belong here. Completion notices stay pending until
+        the turn ends (or the idle watcher reports them) without keeping a row.
         """
         registry = getattr(self.runtime, "jobs", None)
         if registry is None:
             return False
         registry.refresh()
-        running, finished = [], []
+        rows = []
         for job in sorted(registry.jobs.values(), key=lambda job: job.started_at):
             elapsed = format_duration(job.elapsed)
             if job.running and not job.waiting:
-                running.append(
+                rows.append(
                     ("class:activity.job", f"\u27f3 {job.id} \u00b7 {job.label()} \u00b7 {elapsed}")
                 )
-            elif not job.running and "ui" not in job.announced and registry.announceable(job):
-                icon = "\u2713" if job.exit_code == 0 else "\u2717"
-                text = (
-                    f"{icon} {job.id} \u00b7 {job.label()} \u00b7 {job.outcome()} \u00b7 {elapsed}"
-                )
-                finished.append(("class:activity.job.finished", text))
-        # Running jobs lead, so the few rows the widget gets go to work still in
-        # flight when there are more jobs than rows. An exit is not lost by being
-        # folded away: scrollback reports it once the turn ends.
-        rows = running + finished
         changed = rows != self.activity.jobs
         self.activity.jobs = rows
         return self._refresh_watched(registry) or changed
@@ -2017,7 +2026,7 @@ class PreviewApp:
                     from pcode.edits import change_from_record
 
                     self.transcript.edit(change_from_record(record))
-                elif kind == "ToolSummary":
+                elif kind in {"ToolSummary", "JobFinished"}:
                     result = record.get("result")
                     self.transcript.tool_result(
                         ToolSummary(
@@ -2029,7 +2038,10 @@ class PreviewApp:
                             redact(record.get("error", "")),
                             redact(record.get("command", "")),
                             result=redact(result) if isinstance(result, str) else None,
+                            outcome=record.get("outcome", ""),
                             parent_call_id=record.get("parent_call_id", ""),
+                            purpose=redact(record.get("purpose", "")),
+                            execution=record.get("execution", ""),
                         )
                     )
                 elif kind in ("Message", "partial"):
@@ -2963,9 +2975,9 @@ class PreviewApp:
         async def watch_jobs():
             """Keep the jobs rows current, and report exits once the turn is over.
 
-            The rows update busy or idle, so a job that fails mid-turn is seen
-            before the turn ends. Scrollback waits for idle, because a note
-            written mid-turn would land inside the model's streaming text.
+            Running rows update busy or idle and disappear on completion.
+            Scrollback waits for idle, because a completion written mid-turn
+            would land inside the model's streaming text.
             The model is told separately, at its next request, unless nothing
             is going to make one: then the job's notice starts the turn itself.
             Polling here costs one small file read per running job and
@@ -2984,7 +2996,7 @@ class PreviewApp:
                         self.activity.queued_modes.append("wake")
                         self.activity.queued = len(self.activity.queued_prompts)
                         self.activity.busy = True
-                # After reporting, so a row scrollback just took over goes now.
+                # Refresh even while busy so completed jobs leave the live panel.
                 if self.refresh_jobs() or changed:
                     session.app.invalidate()
                 await asyncio.sleep(1)
@@ -3143,6 +3155,7 @@ class PreviewApp:
         except Exception as error:
             if block:
                 write_reply(block, streamed=console is None)
+            self.report_finished_jobs()
             self.transcript.error(error_message(error), title="Agent failed")
             saved = getattr(self.runtime, "session", None)
             if saved is not None:
@@ -3150,6 +3163,7 @@ class PreviewApp:
             return False
         if block:
             write_reply(block, streamed=console is None)
+        self.report_finished_jobs()
         self.print_resume_hint()
         return True
 

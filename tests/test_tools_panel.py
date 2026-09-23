@@ -117,6 +117,35 @@ def test_tools_do_not_commit_model_tail_but_summaries_reach_scrollback():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("name", ["wait_for_job", "job_output"])
+def test_job_inspection_does_not_split_streaming_prose(name):
+    class Runtime:
+        session = None
+
+        async def stream(self, prompt):
+            yield TextDelta("model ")
+            yield ToolStarted(name, "j14", "one")
+            yield ToolSummary(name, "j14 · exit 2", failed=True, call_id="one", outcome="success")
+            assert output.tail == "model "
+            assert app.activity.tools.calls == []
+            yield TextDelta("answer")
+            yield Message("model answer")
+
+    stream = StringIO()
+    app = PreviewApp(model="test:local", runtime=Runtime(), console=Console(file=stream))
+    terminal_app = SimpleNamespace(output=CursorSafeOutput(DummyOutput()), invalidate=lambda: None)
+    output = TerminalOutput(app.transcript.console, terminal_app)
+    app.transcript.output = output
+
+    async def run():
+        assert await app.run_live(output, "go")
+        await output.flush()
+        assert "model answer" in stream.getvalue()
+        assert name not in stream.getvalue()
+
+    asyncio.run(run())
+
+
 def test_failed_commands_keep_only_a_summary_line_without_command_mirroring():
     stream = StringIO()
     app = PreviewApp(console=Console(file=stream))
