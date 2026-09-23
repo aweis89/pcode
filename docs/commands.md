@@ -334,6 +334,40 @@ in the queue, whatever the send mode; nothing is sent to the model until you
 send a message, so `!make test` followed by `why did that fail?` is the usual
 shape.
 
+## Popup keys
+
+Every full-screen popup (`/diffs`, `/tools`, `/links`, `/tree`, `/resume`,
+`/btw`, `/status`, and the Ctrl+L model picker) scrolls with the same keys,
+acting on whichever pane has focus:
+
+| Key | Action |
+| --- | --- |
+| ↑ / ↓ | Move the selection in a list, or scroll a text pane by a line |
+| PageUp / PageDown | Move or scroll by a page |
+| Ctrl+U / Ctrl+D | Move or scroll by half a page |
+| Tab / Shift+Tab | Switch panes, where a popup has more than one |
+| Esc / Ctrl+C | Close the popup and restore the editor draft |
+
+Ctrl+D never closes a popup; it always half-pages. A list with a search line
+keeps these keys working while you type, so the query stays where it is.
+
+Popups leave the mouse to the terminal by default, so dragging selects text and
+your terminal's own copy works (including copy-on-select). The cost is that
+clicks and the scroll wheel do not reach the popup. Terminals that support
+alternate scroll mode turn the wheel into ↑/↓ in full-screen apps, so there it
+still moves the selection or the pane a line at a time. To have popups capture
+the mouse instead:
+
+```sh
+pcode config set popup_mouse on
+```
+
+With it on, clicks select rows and the wheel scrolls whichever pane is under
+the pointer, but a plain drag no longer selects text. Most terminals still
+select with a modifier held while dragging (usually Shift; Option in iTerm2). In tmux, mouse events reach pcode only with
+`tmux set -g mouse on`. The setting is read as each popup opens, so no restart
+is needed.
+
 ## Edit diff browser
 
 `/diffs` opens a full-screen popup showing this conversation's completed file
@@ -341,8 +375,9 @@ edits, using the same diff colors as scrollback. The diff fills most of the
 screen; a small file selector sits at the bottom. Keys are listed in the header:
 
 - Up/Down in the file list selects a file, newest change first.
-- PageUp/PageDown scroll the diff without leaving the file list.
-- Tab/Shift+Tab move focus; arrows and Ctrl+Home/Ctrl+End scroll the focused diff.
+- Tab/Shift+Tab switch between the file list and the diff. The
+  [popup keys](#popup-keys) act on whichever has focus; Ctrl+Home/Ctrl+End jump
+  to the first or last line of the diff.
 - `/` (or Ctrl+F) opens a search for whichever pane has focus. In the file list
   it filters files by path; in the diff it filters to changes whose diff has a
   matching line and jumps the diff to the first one. Matching is fuzzy: a plain
@@ -351,7 +386,7 @@ screen; a small file selector sits at the bottom. Keys are listed in the header:
   still move the file selection while typing; Enter returns to the pane.
   Switching panes and pressing `/` again starts a fresh query for that scope.
 - `n`/`N` in either pane jump to the next/previous matching diff line.
-- Escape, Ctrl+C, or Ctrl+D closes the popup and restores the editor draft.
+- Escape or Ctrl+C closes the popup and restores the editor draft.
 
 Saved sessions read their changes back from the journal on the active branch, so
 resumed and branched conversations show the diffs that belong to them. Redaction
@@ -379,8 +414,8 @@ terminal output is buffered until it closes. Inspection never reruns a tool.
 - In details, use arrows to scroll by line, PageUp/PageDown by page, or Ctrl+U/Ctrl+D
   by half a page. Ctrl+U/Ctrl+D also half-page the call list, including while
   typing a search. The session browser shares these controls.
-- Mouse clicks and wheel scrolling work in the popups. In tmux, enable mouse
-  forwarding with `tmux set -g mouse on` (or `set -g mouse on` in `~/.tmux.conf`).
+- Mouse clicks and wheel scrolling reach the popup only with `popup_mouse on`;
+  see [popup keys](#popup-keys) for the text-selection tradeoff.
 - Escape or Ctrl+C closes only the inspector and restores the editor draft.
 - Wide terminals show calls and details side by side; narrow terminals stack them.
 

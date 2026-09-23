@@ -21,6 +21,7 @@ from pcode.popup_ui import (
     bind_list_paging,
     list_pane_height,
     popup_container,
+    popup_mouse,
     popup_style,
     steer_list_from_query,
 )
@@ -174,7 +175,7 @@ class SessionBrowser:
             layout=Layout(popup_container(root_container), focused_element=self.list),
             key_bindings=keys,
             full_screen=True,
-            mouse_support=True,
+            mouse_support=popup_mouse(),
             style=popup_style(app_options.pop("style", None)),
             **app_options,
         )
@@ -364,15 +365,20 @@ def session_info_dialog(rows, *, input=None, output=None, style=None):
     @bindings.add("enter", eager=True)
     @bindings.add("q", eager=True)
     @bindings.add("c-c")
-    @bindings.add("c-d")
     def close(event):
         event.app.exit(result=None)
+
+    bind_list_paging(bindings, body, has_focus(body))
 
     dialog = Dialog(
         title="Session",
         body=HSplit(
             [
-                Label("↑/↓ scroll · Esc close · /resume switches session", dont_extend_height=True),
+                Label(
+                    "↑↓ Scroll · PgUp/PgDn Page · Ctrl+U/D Half page · Esc close · "
+                    "/resume switches session",
+                    dont_extend_height=True,
+                ),
                 body,
             ],
             padding=1,
@@ -383,7 +389,7 @@ def session_info_dialog(rows, *, input=None, output=None, style=None):
         layout=Layout(popup_container(dialog), focused_element=body),
         key_bindings=bindings,
         full_screen=True,
-        mouse_support=True,
+        mouse_support=popup_mouse(),
         input=input,
         output=output,
         style=popup_style(style),
