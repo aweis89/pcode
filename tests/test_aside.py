@@ -189,6 +189,36 @@ def test_asides_track_running_unread_failed_and_cancelled():
     asyncio.run(run())
 
 
+def test_running_side_questions_get_muted_spinner_rows_above_the_editor():
+    from pcode.aside import Aside
+    from pcode.ui import ASIDE_ROWS, Activity
+
+    activity = Activity()
+    assert activity.aside_rows("⠋", 80) == []
+    assert not activity.asides_running
+    asides = Asides()
+    activity.asides = asides.items
+    running = Aside(question="why recursive descent?", activity="Reading parser.py")
+    asides.items.append(running)
+    asides.items.append(Aside(question="old", status="answered", activity=""))
+    assert activity.asides_running
+    rows = activity.aside_rows("⠋", 80)
+    assert len(rows) == 1
+    style, text = rows[0]
+    assert style == "class:activity.aside"
+    assert text.startswith("⠋ btw · why recursive descent? · Reading parser.py · ")
+    assert text.endswith("s")
+    # Narrow panes truncate rather than wrap so the editor keeps its rows.
+    assert len(activity.aside_rows("⠋", 20)[0][1]) <= 20
+    for index in range(ASIDE_ROWS + 1):
+        asides.items.append(Aside(question=f"q{index}"))
+    rows = activity.aside_rows("⠋", 80)
+    assert len(rows) == ASIDE_ROWS
+    assert rows[-1][1] == "… 3 more (/btw)"
+    running.settle("answered")
+    assert [text for _, text in activity.aside_rows("⠋", 80)][0].startswith("⠋ btw · q0")
+
+
 def test_btw_command_requires_a_question_or_an_answer_to_read():
     preview = PreviewApp(console=Console(file=StringIO()))
     with pytest.raises(ValueError, match="No side questions yet"):

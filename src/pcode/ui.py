@@ -137,6 +137,9 @@ class Palette:
                 # an exit nobody has been told about yet earns the accent.
                 "activity.job": self.muted,
                 "activity.job.finished": f"{self.accent} bold",
+                # A side question runs beside the turn, not as part of it, so its
+                # row spins in the muted shade rather than the prompt's.
+                "activity.aside": self.muted,
                 # The live preview block, drawn the way scrollback draws a
                 # settled one: a heading on the opening line, rules around it.
                 "block.rule": self.muted,
@@ -259,6 +262,8 @@ NOTICE_SECONDS = 5.0
 NOTICE_ROWS = 6
 # Background jobs get a few rows, never the screen; `/jobs` has the full list.
 JOB_ROWS = 3
+# Running side questions likewise; `/btw` has the full list.
+ASIDE_ROWS = 3
 # Command-preview keys for a watched job, so the preview can be shown for it
 # even when the model's own commands are hidden.
 WATCHED_PREFIX = "job:"
@@ -298,6 +303,32 @@ class Activity:
     jobs: list[tuple[str, str]] = field(default_factory=list)
     # A job whose output tail is pinned into the command preview by `/jobs watch`.
     watched_job: str = ""
+    # The session's side-question records (`Asides.items`, shared, not copied):
+    # the running ones get a spinner row below the prompt's.
+    asides: list = field(default_factory=list)
+
+    @property
+    def asides_running(self) -> bool:
+        return any(aside.running for aside in self.asides)
+
+    def aside_rows(self, spinner: str, width: int, budget: int = ASIDE_ROWS):
+        """One muted spinner row per running side question, folded to the budget."""
+        running = [aside for aside in self.asides if aside.running]
+        if budget <= 0 or not running or width < 1:
+            return []
+        shown = running if len(running) <= budget else running[: max(0, budget - 1)]
+        rows = []
+        for aside in shown:
+            parts = [f"{spinner} btw", plain(aside.question, limit=None)]
+            if aside.activity:
+                parts.append(plain(aside.activity, limit=None))
+            parts.append(f"{aside.elapsed:.0f}s")
+            text = Text(" \u00b7 ".join(parts))
+            text.truncate(width, overflow="ellipsis")
+            rows.append(("class:activity.aside", text.plain))
+        if len(shown) < len(running):
+            rows.append(("class:activity.aside", f"\u2026 {len(running) - len(shown)} more (/btw)"))
+        return rows
 
     def job_rows(self, budget: int) -> list[tuple[str, str]]:
         """The jobs row block, folded to the budget so it never crowds the editor."""
@@ -1343,9 +1374,13 @@ def create_prompt(
         spinner to pace, so it keeps the fastest rate as before.
         """
         if not activity.status_shown:
+            if activity.asides_running:
+                return prompt_spinner.interval / 1000
             return fastest_interval / 1000
         spinner = system_spinner if activity.uses_system_spinner else prompt_spinner
         interval = spinner.interval
+        if activity.asides_running:
+            interval = min(interval, prompt_spinner.interval)
         if activity.tasks_shown:
             interval = min(interval, plan_spinner.interval)
         return interval / 1000
@@ -1465,6 +1500,12 @@ def create_prompt(
     def job_rows():
         return activity.job_rows(JOB_ROWS)
 
+    @per_render
+    def aside_rows():
+        return activity.aside_rows(
+            prompt_spinner.render(monotonic()).plain, session.app.output.get_size().columns
+        )
+
     def status_gap() -> bool:
         """Whether the live panel needs its own blank row above it.
 
@@ -1473,11 +1514,19 @@ def create_prompt(
         line. Depend only on state preview_layout already reads, so asking for
         the gap cannot re-enter the layout calculation.
         """
-        shown = activity.status_shown or bool(notice_rows()) or bool(job_rows())
+        shown = (
+            activity.status_shown or bool(notice_rows()) or bool(aside_rows()) or bool(job_rows())
+        )
         return shown and transcript is not None and not transcript.ends_blank
 
     def status_height() -> int:
-        return activity.status_shown + len(notice_rows()) + len(job_rows()) + status_gap()
+        return (
+            activity.status_shown
+            + len(notice_rows())
+            + len(aside_rows())
+            + len(job_rows())
+            + status_gap()
+        )
 
     def activity_height() -> int:
         rows = plan_rows()
@@ -1602,7 +1651,21 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(notice_rows())),
     )
-    # Below the spinner: what is running that the spinner does not cover.
+    # Below the spinner: side questions run beside the turn and outlive it, so
+    # they get their own spinner rows rather than a share of the prompt's.
+    asides = ConditionalContainer(
+        Window(
+            FormattedTextControl(
+                lambda: panel_fragments(aside_rows(), session.app.output.get_size().columns),
+                show_cursor=False,
+            ),
+            height=lambda: len(aside_rows()),
+            wrap_lines=False,
+            dont_extend_height=True,
+        ),
+        filter=Condition(lambda: bool(aside_rows())),
+    )
+    # What is running that the spinner does not cover.
     # Shown while idle too, which is when "is the suite still going?" is asked.
     jobs = ConditionalContainer(
         Window(
@@ -1616,7 +1679,7 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(job_rows())),
     )
-    activity_panel = HSplit([status_spacer, commands, notice, current_status, jobs, plan])
+    activity_panel = HSplit([status_spacer, commands, notice, current_status, asides, jobs, plan])
 
     @per_render
     def queue_rows():
@@ -1706,6 +1769,7 @@ def create_prompt(
             # Keep redrawing while a notice is live: nothing else will ask for
             # the frame that finally removes it.
             or activity.notice_shown
+            or activity.asides_running
             or (activity.tasks_shown and bool(activity.tools.calls))
         )
 

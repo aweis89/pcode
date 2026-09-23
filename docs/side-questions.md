@@ -13,6 +13,11 @@ never enters the conversation.
   ◈ Side answer ready (why did you pick a recursive descent parser?). Opening it.
 ```
 
+While a side question runs it has its own spinner row in the live panel above
+the editor, below the turn's, in the muted shade: the question, what the model
+is doing for it, and how long it has taken. Up to three show; more fold into a
+count that `/btw` expands.
+
 The viewer opens by itself as soon as an answer is ready, since the point of a
 side question is reading the answer while the turn is still running. A bare
 `/btw` opens it at any other time. While an answer is still arriving, the popup
