@@ -245,6 +245,23 @@ def merge(worktree: Worktree) -> str:
     Conflicts are resolved inside the worktree so the mainline checkout is
     never left mid-merge; it only ever moves by fast-forward.
     """
+    from pcode.task_worktrees import parent_operation
+
+    with parent_operation(worktree.path, worktree.main):
+        return _merge(worktree)
+
+
+def _merge(worktree: Worktree) -> str:
+    """Merge with the source parent operation lock already held."""
+    from pcode.task_worktrees import children_reason, task_for
+
+    if reason := children_reason(worktree.path):
+        raise WorktreeError(f"not merging {worktree.path}: {reason}")
+    if record := task_for(worktree):
+        raise WorktreeError(
+            f"task {record.task_id} belongs to parent {record.parent}; "
+            "use task integration, not a mainline merge"
+        )
     if conflicted := conflicted_files(worktree.path):
         raise WorktreeError(
             f"a merge is already in progress with conflicts in {', '.join(conflicted)}; "
@@ -277,6 +294,28 @@ def remove(worktree: Worktree, force: bool = False) -> str:
     `force` is for a worktree pcode itself just created and abandoned; user
     work is never forced because another session may still be in there.
     """
+    from pcode.task_worktrees import discard_integrated, parent_operation, task_for
+
+    if record := task_for(worktree):
+        # Task discard locks its owner and then its own potential children.
+        # Do not hold the child lock here: flock is not reentrant.
+        if record.status != "integrated":
+            raise WorktreeError(
+                f"not removing {worktree.path}: task {record.task_id} ({record.status}), "
+                "awaiting integration or explicit discard"
+            )
+        discard_integrated(worktree, record)
+        return f"removed {worktree.path}"
+    with parent_operation(worktree.path, worktree.main):
+        return _remove(worktree, force)
+
+
+def _remove(worktree: Worktree, force: bool = False) -> str:
+    """Remove an ordinary checkout with its parent operation lock held."""
+    from pcode.task_worktrees import keep_reason as task_keep_reason
+
+    if reason := task_keep_reason(worktree):
+        raise WorktreeError(f"not removing {worktree.path}: {reason}")
     flags = ["--force"] if force else []
     result = _git(worktree.main, "worktree", "remove", *flags, str(worktree.path), check=False)
     if result.returncode:
@@ -294,6 +333,11 @@ def keep_reason(worktree: Worktree) -> str:
     Ignored files (a `.venv`, the shared `tmp` symlink) do not count, matching
     what a non-forced `git worktree remove` tolerates.
     """
+    from pcode.task_worktrees import keep_reason as task_keep_reason
+
+    task_reason = task_keep_reason(worktree)
+    if task_reason is not None:
+        return task_reason
     status = _git(worktree.path, "status", "--porcelain", check=False)
     if status.returncode:
         return "git status failed"
@@ -310,6 +354,15 @@ def is_untouched(worktree: Worktree) -> bool:
 
 def delete_branch(worktree: Worktree) -> None:
     """Drop a fully merged branch; `-d` refuses anything unmerged, which is the point."""
+    from pcode.task_worktrees import records
+
+    # Integrated children still need their parent's ref as the cleanup safety anchor,
+    # even when the parent checkout has already gone away.
+    if any(
+        record.parent == str(worktree.path.resolve()) and record.status != "discarded"
+        for record in records(worktree.main)
+    ):
+        return
     if worktree.branch != DETACHED:
         _git(worktree.main, "branch", "-d", worktree.branch, check=False)
 
@@ -320,16 +373,36 @@ def finish(worktree: Worktree) -> str:
     Any refusal (dirty tree, conflicts, blocked fast-forward, untracked files)
     raises before anything is deleted, leaving the worktree resumable.
     """
-    if conflicted_files(worktree.path) or is_dirty(worktree.path):
-        merge(worktree)  # raises with the precise reason
-    merged = merge(worktree) if unmerged_commits(worktree) else None
-    removed = remove(worktree)
-    delete_branch(worktree)
-    return f"{merged}; {removed}" if merged else removed
+    from pcode.task_worktrees import children_reason, parent_operation, task_for
+
+    if task_for(worktree):
+        return remove(worktree)  # refuses pending tasks; never merges one into mainline
+    with parent_operation(worktree.path, worktree.main):
+        if reason := children_reason(worktree.path):
+            raise WorktreeError(f"not finishing {worktree.path}: {reason}")
+        if conflicted_files(worktree.path) or is_dirty(worktree.path):
+            _merge(worktree)  # raises with the precise reason
+        merged = _merge(worktree) if unmerged_commits(worktree) else None
+        removed = _remove(worktree)
+        delete_branch(worktree)
+        return f"{merged}; {removed}" if merged else removed
 
 
 def listing(repo: Path) -> str:
-    return _git(repo, "worktree", "list").stdout.rstrip()
+    from pcode.task_worktrees import records
+
+    output = _git(repo, "worktree", "list").stdout.rstrip()
+    tasks = {record.worktree: record for record in records(repo) if record.status != "discarded"}
+    lines = []
+    for line in output.splitlines():
+        record = next(
+            (record for path, record in tasks.items() if line.startswith(path + " ")), None
+        )
+        if record:
+            pending = "" if record.status == "integrated" else ", awaiting integration"
+            line += f"  (task, parent={record.parent}, {record.status}{pending})"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def linked_worktrees(repo: Path) -> list[Worktree]:
