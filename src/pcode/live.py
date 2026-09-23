@@ -1085,6 +1085,10 @@ def error_message(error: Exception) -> str:
     if isinstance(error, (SessionError, LoginError)):
         # LoginError contains only fixed, sanitized setup/refresh guidance.
         return str(error)
+    from pcode.meridian import failure_hint
+
+    if (hint := failure_hint(error)) is not None:
+        return hint
     if name == "UserError" and "Codex CLI credentials" in str(error):
         return f"Provider login missing or invalid. {CODEX_LOGIN_HINT}"
     if name == "UserError" and "ANTHROPIC_API_KEY" in str(error):
