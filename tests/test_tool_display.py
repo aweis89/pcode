@@ -330,7 +330,26 @@ def test_long_command_is_compact_without_numbers_or_details_hint():
     assert "exit 0" not in output
     assert "/tool" not in output
     assert "#" not in output
-    assert len(output.splitlines()) == 2
+    assert len(output.splitlines()) == 1
+    assert output.startswith("✓ Run · pytest ")
+    assert len(output.rstrip()) == 60
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_command_summary_keeps_timing_and_preview_on_one_line(failed):
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None))
+    transcript.command_summary(
+        ToolSummary(
+            "shell",
+            "echo hello → exit 1" if failed else "echo hello",
+            failed=failed,
+            elapsed_seconds=0.8,
+            command="echo hello",
+        )
+    )
+    heading = "✗ Run · exit 1" if failed else "✓ Run"
+    assert stream.getvalue().splitlines() == [f"{heading} · 0.8s · echo hello"]
 
 
 def test_multiline_command_preview_is_compact_and_sanitized():
