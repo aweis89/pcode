@@ -1,5 +1,6 @@
 """Anthropic-compatible Meridian transport with client-owned tool execution."""
 
+import hashlib
 import os
 from dataclasses import replace
 
@@ -7,6 +8,7 @@ import httpx2
 from anthropic import AsyncAnthropic
 from pydantic_ai import RunContext
 from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
@@ -78,11 +80,40 @@ def meridian_model(model: str) -> AnthropicModel:
     return AnthropicModel(name, provider=MeridianProvider())
 
 
+def compaction_summary(messages) -> str | None:
+    """The summary text when compaction has replaced the start of `messages`."""
+    from pcode.compaction import SUMMARY_PREFIX
+
+    first = messages[0] if messages else None
+    if not isinstance(first, ModelRequest):
+        return None
+    for part in first.parts:
+        if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+            if part.content.startswith(SUMMARY_PREFIX):
+                return part.content
+    return None
+
+
+def session_identity(conversation_id: str, messages) -> str:
+    """Meridian session for this history, which changes each time it is compacted.
+
+    Meridian classifies a compacted history whose recent messages still match as a
+    continuation and resumes the uncompacted transcript, so the summary never
+    reaches the model. A session keyed on the summary starts fresh instead, once
+    per compaction; an uncompacted history keeps the plain conversation ID.
+    """
+    summary = compaction_summary(messages)
+    if summary is None:
+        return conversation_id
+    return f"{conversation_id}.{hashlib.sha256(summary.encode()).hexdigest()[:16]}"
+
+
 class MeridianSessionIdentity(AbstractCapability):
     """Bind requests, not shared clients, to the current conversation.
 
     Harness children inherit the model but get fresh Pydantic conversation IDs.
-    This also preserves identity across saved-session resume and model switches.
+    This also preserves identity across saved-session resume and model switches,
+    and moves to a new session after compaction (see `session_identity`).
     """
 
     async def before_model_request(
@@ -94,6 +125,8 @@ class MeridianSessionIdentity(AbstractCapability):
         headers = dict(settings.get("extra_headers") or {})
         # Headers are case-insensitive; never leave an alternate-cased stale ID.
         headers = {k: v for k, v in headers.items() if k.lower() != "x-litellm-session-id"}
-        headers["x-litellm-session-id"] = ctx.conversation_id
+        headers["x-litellm-session-id"] = session_identity(
+            ctx.conversation_id, request_context.messages
+        )
         settings["extra_headers"] = headers
         return replace(request_context, model_settings=settings)
