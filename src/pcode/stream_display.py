@@ -2,6 +2,7 @@
 
 from pcode.runtime import (
     CacheBust,
+    ChildPlan,
     CommandOutput,
     EditCompleted,
     EditPreview,
@@ -69,6 +70,8 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         activity.plan = event.items
     elif isinstance(event, PlanPreview):
         activity.plan_preview = event.items
+    elif isinstance(event, ChildPlan):
+        activity.tools.record_plan(event.call_id, event.items)
     elif isinstance(event, (ToolStarted, ToolSummary)):
         output.finish_thinking()
         # Settled calls land in scrollback, so prose must be committed first.

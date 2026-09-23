@@ -135,6 +135,18 @@ class PlanPreview:
     items: list[dict] | None
 
 
+@dataclass(frozen=True)
+class ChildPlan:
+    """Display-only snapshot of a running sub-agent's plan, keyed by its delegate call.
+
+    Never journaled: the child's plan lives only as long as its run, and the
+    conversation's own plan is `PlanUpdated`.
+    """
+
+    call_id: str
+    items: list[dict]
+
+
 Event = (
     Message
     | ToolStarted
@@ -146,6 +158,7 @@ Event = (
     | CacheBust
     | PlanUpdated
     | PlanPreview
+    | ChildPlan
     | CommandOutput
     | EditCompleted
     | EditPreview

@@ -40,6 +40,7 @@ from pcode.preferences import (
 )
 from pcode.runtime import (
     CacheBust,
+    ChildPlan,
     CommandOutput,
     EditCompleted,
     JobFinished,
@@ -3148,7 +3149,9 @@ class PreviewApp:
                         block = ""
                     elif isinstance(event, Thinking):
                         self.transcript.events((event,))
-                    elif isinstance(event, (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated)):
+                    elif isinstance(
+                        event, (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated, ChildPlan)
+                    ):
                         continue
                     else:
                         self.present_events((event,))

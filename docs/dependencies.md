@@ -184,6 +184,11 @@ be installed there, and `SavedSession.recover()` must skip runs with a
 Child tool IDs are scoped by parent call ID, and persisted tool events retain
 `parent_call_id` for replay. The panel pins active delegates within its existing
 row budget; keep `tests/test_delegation_tmux.py` exercising real CPR and resize.
+A worker's `Planning` would default to a private per-run store the parent cannot
+see, so its `store_resolver` is `child_plan_store`, which returns the store
+`DelegationReporting` binds for that delegation. The child stream handler reads it
+after each settled child tool and forwards changes as display-only `ChildPlan`
+events, which are never journaled.
 
 ### MCP integration
 
