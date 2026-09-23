@@ -389,7 +389,10 @@ arguments, framework outcome, and returned output/error. Commands and results ar
 both shown as blocks, highlighted when the payload is code or JSON and verbatim
 otherwise. A one-line shell command is broken at its top-level `;` (a new line)
 and `&&`/`||` (a `\` continuation with the next command indented) so long
-chains are readable; **c** still copies it exactly as run. Nonzero command exits,
+chains are readable. Every logical command line starts with a display-only `$ `,
+before any indentation; soft-wrapped rows do not get another marker. Existing
+multiline commands keep their layout. **c** still copies it exactly as run,
+without the markers or added line breaks. Nonzero command exits,
 timeouts, and tool retries are failures; interruption and unknown results remain
 distinct. Command tools show an **Execution** row saying whether the model asked
 to wait (`foreground`) or to be handed a job handle (`background`); background

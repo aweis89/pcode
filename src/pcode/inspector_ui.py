@@ -49,16 +49,17 @@ def code_block(text: str, lexer: str | None, code_theme: str) -> Syntax:
 
 
 def format_command(command: str) -> str:
-    """A one-line shell command broken at its top-level separators for reading.
+    """A shell command with a display-only prompt marker on each logical line.
 
     `;` becomes a line break; `&&` and `||` keep the operator, add a backslash
     continuation, and indent the next command so the chain reads as one
     statement. Separators inside quotes or parentheses are left alone, and a
-    command the model already spread over lines is shown as written. Only the
-    display changes: copying still takes the command verbatim.
+    command the model already spread over lines keeps its layout. Each line
+    starts with `$ `, before any indentation. Only the display changes: copying
+    still takes the command verbatim. Soft-wrapped rows are not new lines.
     """
     if "\n" in command.strip():
-        return command
+        return "\n".join("$ " + line for line in command.split("\n"))
     lines: list[str] = []
     current: list[str] = []
     indent = ""
@@ -104,7 +105,7 @@ def format_command(command: str) -> str:
         i += 1
     if "".join(current).strip():
         lines.append(indent + "".join(current).strip())
-    return "\n".join(lines) if lines else command
+    return "\n".join("$ " + line for line in (lines or [command]))
 
 
 def heading(title: str) -> list:
