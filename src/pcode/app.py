@@ -40,6 +40,7 @@ from pcode.preferences import (
 )
 from pcode.runtime import (
     CacheBust,
+    ChildPlan,
     CommandOutput,
     EditCompleted,
     JobFinished,
@@ -113,6 +114,8 @@ class PreviewApp:
         session_id: str | None = None,
     ) -> None:
         self.send_mode = load_preferences().get("send_mode", "steering")
+        # Ctrl+S picks a mode for the next prompt only; the saved default stands.
+        self.send_mode_once: str | None = None
         self.model = model
         self.initial_prompt = initial_prompt
         # Consumed by the first saved session so it shares its ID with the
@@ -929,11 +932,17 @@ class PreviewApp:
             )
         self.transcript.flash("\n".join(lines))
 
+    @property
+    def next_send_mode(self) -> str:
+        """The mode the next prompt sends with: a Ctrl+S pick, else the default."""
+        return self.send_mode_once or self.send_mode
+
     def cycle_send_mode(self) -> None:
+        """Cycle the mode for the next send only; the saved default is untouched."""
         from pcode.preferences import SEND_MODES
 
-        self.send_mode = SEND_MODES[(SEND_MODES.index(self.send_mode) + 1) % len(SEND_MODES)]
-        self.persist_defaults(send_mode=self.send_mode)
+        mode = SEND_MODES[(SEND_MODES.index(self.next_send_mode) + 1) % len(SEND_MODES)]
+        self.send_mode_once = None if mode == self.send_mode else mode
 
     def set_show_commands(self, shown: bool) -> None:
         # Reproject retained results as well as future completions.
@@ -2088,7 +2097,8 @@ class PreviewApp:
             model += f" ({self.current_effort()})"
         # Put send mode and activity ahead of model/path metadata so they are
         # never pushed off the footer by long provider names or narrow panes.
-        segments = [("text", f"Enter: {self.send_mode}")]
+        once = " (once)" if self.send_mode_once else ""
+        segments = [("text", f"Enter: {self.next_send_mode}{once}")]
         if self._startup_pending:
             segments.extend([("text", " · "), ("activity", "starting")])
         if self.activity.busy:
@@ -2159,6 +2169,18 @@ class PreviewApp:
         self.transcript.user(text)
         self.present_events(self.preview.reply(text))
         return False
+
+    def command_failed(self, name: str, error: Exception) -> None:
+        """Report a slash command that raised, with frames saved for diagnosis."""
+        from pcode.diagnostics import stale_install
+        from pcode.live import error_message
+
+        self.transcript.error(error_message(error, unexpected=f"{name} failed"))
+        if hint := stale_install():
+            self.transcript.warning(hint)
+        saved = getattr(self.runtime, "session", None)
+        if saved is not None and (path := saved.record_error(error, run_id=name)):
+            self.transcript.note(f"Session and diagnostics: {path}")
 
     def wake_row(self, text: str) -> tuple[str, str]:
         """The live row for a turn a finished job started: a badge, not an echo."""
@@ -2243,7 +2265,11 @@ class PreviewApp:
                     + ". Use /jobs to list or stop them."
                 )
         elif failure:
+            from pcode.diagnostics import stale_install
+
             self.transcript.error(error_message(failure), title="Agent failed")
+            if hint := stale_install():
+                self.transcript.warning(hint)
         if (cancelled or failure) and self.runtime.session:
             directory = self.runtime.session.directory
             # Name the traceback file rather than the directory it sits in: the
@@ -2545,7 +2571,10 @@ class PreviewApp:
                 self.activity.queued = len(self.activity.queued_prompts)
                 self.activity.busy = True
             elif text:
-                if self.send_mode == "interrupt" and live_task and not live_task.done():
+                # One send consumes a Ctrl+S pick; the saved default returns.
+                mode = self.next_send_mode
+                self.send_mode_once = None
+                if mode == "interrupt" and live_task and not live_task.done():
                     clear_queue()
                     interrupt_pending = True
                     # The user is redirecting the model, not cancelling its
@@ -2554,14 +2583,14 @@ class PreviewApp:
                     self.set_cancel_policy("detach")
                     if not live_task.cancelling():
                         live_task.cancel()
-                queue.put_nowait((queue_generation, text, self.send_mode))
+                queue.put_nowait((queue_generation, text, mode))
                 self.activity.queued_prompts.append(text)
-                self.activity.queued_modes.append(self.send_mode)
+                self.activity.queued_modes.append(mode)
                 self.activity.queued = len(self.activity.queued_prompts)
                 # Set immediately so Enter + Ctrl+C in one input batch cancels
                 # the pending request rather than clearing the user's draft.
                 self.activity.busy = True
-                if self.send_mode == "steering" and live_task and not live_task.done():
+                if mode == "steering" and live_task and not live_task.done():
                     # Queued above, released here: the wait returns its handle
                     # and the next model request carries this message.
                     self.release_shell_waits()
@@ -2847,9 +2876,7 @@ class PreviewApp:
                         if self.links_requested:
                             await self.choose_link(output, session)
                 except Exception as error:
-                    from pcode.live import error_message
-
-                    self.transcript.error(error_message(error))
+                    self.command_failed(text.split(maxsplit=1)[0], error)
                 finally:
                     if pending_mcp or pending_model_command:
                         self.activity.busy = True
@@ -3148,7 +3175,9 @@ class PreviewApp:
                         block = ""
                     elif isinstance(event, Thinking):
                         self.transcript.events((event,))
-                    elif isinstance(event, (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated)):
+                    elif isinstance(
+                        event, (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated, ChildPlan)
+                    ):
                         continue
                     else:
                         self.present_events((event,))
