@@ -1,6 +1,10 @@
 import asyncio
+import shutil
+import subprocess
 from io import StringIO
+from unittest.mock import Mock
 
+import pytest
 from prompt_toolkit.application.current import set_app
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.document import Document
@@ -409,7 +413,17 @@ def test_results_and_commands_share_the_same_block_rendering():
     assert isinstance(structured[0], Syntax) and structured[0].lexer.name == "JSON"
 
 
-def test_details_break_commands_at_separators_but_copy_stays_verbatim():
+@pytest.fixture
+def missing_shfmt(monkeypatch):
+    from pcode.inspector_ui import format_command
+
+    format_command.cache_clear()
+    monkeypatch.setattr("pcode.inspector_ui.subprocess.run", Mock(side_effect=FileNotFoundError))
+    yield
+    format_command.cache_clear()
+
+
+def test_details_break_commands_at_separators_but_copy_stays_verbatim(missing_shfmt):
     from pcode.inspector_ui import arguments_renderables, format_command
 
     chain = format_command("cd src && make test; echo done")
@@ -423,7 +437,7 @@ def test_details_break_commands_at_separators_but_copy_stays_verbatim():
     assert blocks[-1].code == "$ cd src && \\\n$   make test"
 
 
-def test_command_prompts_preserve_multiline_indentation_and_blank_lines():
+def test_command_prompts_preserve_multiline_indentation_and_blank_lines(missing_shfmt):
     from pcode.inspector_ui import format_command
 
     assert format_command("echo one\n\n  echo two\n") == "$ echo one\n$ \n$   echo two\n$ "
@@ -431,7 +445,7 @@ def test_command_prompts_preserve_multiline_indentation_and_blank_lines():
     assert format_command("") == "$ "
 
 
-def test_command_formats_loop_without_splitting_quoted_printf():
+def test_command_formats_loop_without_splitting_quoted_printf(missing_shfmt):
     from pcode.inspector_ui import format_command
 
     command = (
@@ -449,6 +463,72 @@ def test_command_formats_loop_without_splitting_quoted_printf():
         "$ fi\n"
         "$ done"
     )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        FileNotFoundError(),
+        PermissionError(),
+        subprocess.TimeoutExpired("shfmt", 0.25),
+        UnicodeError(),
+        subprocess.CompletedProcess([], 1, "partial", "syntax error"),
+        subprocess.CompletedProcess([], 0, "", ""),
+    ],
+)
+def test_shfmt_failure_falls_back_and_is_cached(monkeypatch, outcome):
+    from pcode.inspector_ui import format_command
+
+    run = Mock()
+    if isinstance(outcome, Exception):
+        run.side_effect = outcome
+    else:
+        run.return_value = outcome
+    monkeypatch.setattr("pcode.inspector_ui.subprocess.run", run)
+    format_command.cache_clear()
+    try:
+        assert format_command("a; b") == "$ a\n$ b"
+        assert format_command("a; b") == "$ a\n$ b"
+        assert run.call_count == 1
+    finally:
+        format_command.cache_clear()
+
+
+def test_shfmt_receives_original_command_and_preserves_indentation(monkeypatch):
+    from pcode.inspector_ui import format_command
+
+    command = "for p in a b; do echo $p; done"
+    formatted = "for p in a b; do\n  echo $p\ndone\n"
+    run = Mock(return_value=subprocess.CompletedProcess([], 0, formatted, ""))
+    monkeypatch.setattr("pcode.inspector_ui.subprocess.run", run)
+    format_command.cache_clear()
+    try:
+        assert format_command(command) == "$ for p in a b; do\n$   echo $p\n$ done"
+        assert format_command(command) == "$ for p in a b; do\n$   echo $p\n$ done"
+        run.assert_called_once_with(
+            ["shfmt", "-ln", "bash", "-i", "2"],
+            input=command,
+            capture_output=True,
+            text=True,
+            timeout=0.25,
+            check=False,
+        )
+    finally:
+        format_command.cache_clear()
+
+
+@pytest.mark.skipif(shutil.which("shfmt") is None, reason="shfmt is optional")
+def test_real_shfmt_indents_nested_blocks_without_executing(tmp_path):
+    from pcode.inspector_ui import format_command
+
+    marker = tmp_path / "must-not-exist"
+    command = f'for p in a b; do if [ -n "$p" ]; then touch {marker}; echo "$p"; fi; done'
+    format_command.cache_clear()
+    shown = format_command(command)
+    assert f"$   touch {marker}" in shown
+    assert '$   echo "$p"' in shown
+    assert not marker.exists()
+    format_command.cache_clear()
 
 
 def test_copy_shortcuts_take_the_command_and_the_output(monkeypatch):

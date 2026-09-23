@@ -17,6 +17,10 @@ releases yet, so the formula installs the latest `master` with `--HEAD`, rather
 than a stable release. These commands become available once `Formula/pcode.rb`
 is published to GitHub.
 
+Homebrew installs `shfmt` for indented shell-command previews in `/tools`.
+Non-Homebrew installs can optionally install `shfmt` separately and put it on
+`PATH`; pcode falls back to its built-in formatter when it is unavailable.
+
 Homebrew installs Python 3.13 and uses `uv` at build time to install the
 application and its locked dependencies into a private environment. Installation
 requires network access to fetch Python packages; it does not modify your global
