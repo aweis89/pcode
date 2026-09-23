@@ -20,6 +20,7 @@ from pathlib import Path
 import httpx2
 
 from pcode.auth import LoginError
+from pcode.meridian_process import default_profile, meridian_profiles, profile_dir
 
 PACKAGE = "@rynfar/meridian"
 LOGIN_TIMEOUT_SECONDS = 300.0
@@ -39,22 +40,9 @@ class LoginTarget:
     oauth_token: bool = False
 
 
-def meridian_config_dir() -> Path:
-    return Path(os.environ.get("MERIDIAN_CONFIG_DIR") or Path.home() / ".config" / "meridian")
-
-
-def profile_config_dir(profile_id: str) -> tuple[str, bool]:
-    """(Claude config dir, uses an OAuth token) for a Meridian profile."""
-    root = meridian_config_dir()
-    try:
-        profiles = json.loads((root / "profiles.json").read_text())
-    except (OSError, ValueError):
-        profiles = []
-    for profile in profiles if isinstance(profiles, list) else []:
-        if isinstance(profile, dict) and profile.get("id") == profile_id:
-            token = bool(profile.get("oauthToken")) or profile.get("type") == "oauth-token"
-            return str(profile.get("claudeConfigDir") or root / "profiles" / profile_id), token
-    return str(root / "profiles" / profile_id), False
+def profile_target(profile: dict) -> LoginTarget:
+    token = bool(profile.get("oauthToken")) or profile.get("type") == "oauth-token"
+    return LoginTarget(profile_dir(profile), f"Meridian profile {profile['id']}", token)
 
 
 def active_profile(base_url: str) -> str | None:
@@ -77,27 +65,28 @@ def active_profile(base_url: str) -> str | None:
 
 
 def login_target() -> LoginTarget:
-    """Match `managed_endpoint`: a managed instance reads Claude Code's default login.
+    """The login the Meridian this session uses reads, decided as `managed_endpoint` does.
 
-    A managed instance runs with a private config directory, so it has no
-    profiles; an external proxy reads its active profile's directory.
+    A managed instance uses `default_profile()`, or Claude Code's own login when
+    there are no profiles; an external proxy uses whichever profile it reports
+    as active.
     """
     from pcode.meridian import DEFAULT_BASE_URL, meridian_base_url
     from pcode.meridian_process import external_proxy_running, managed_base_url, managed_mode
 
     default = LoginTarget(os.environ.get("CLAUDE_CONFIG_DIR") or None, "Claude Code's login")
-    if managed_base_url() is not None:
-        return default
     configured = os.environ.get("PCODE_MERIDIAN_BASE_URL", "").strip()
     mode = "off" if configured else managed_mode()
     base = meridian_base_url() if configured else DEFAULT_BASE_URL
-    if mode == "on" or (mode == "auto" and not external_proxy_running(base)):
+    managed = managed_base_url() is not None or mode == "on"
+    if managed or (mode == "auto" and not external_proxy_running(base)):
+        profile = default_profile()
+        return profile_target(profile) if profile else default
+    active = active_profile(base)
+    if active is None:
         return default
-    profile = active_profile(base)
-    if profile is None:
-        return default
-    config_dir, token = profile_config_dir(profile)
-    return LoginTarget(config_dir, f"Meridian profile {profile}", oauth_token=token)
+    known = next((p for p in meridian_profiles() if p["id"] == active), {"id": active})
+    return profile_target(known)
 
 
 def remote_session() -> bool:
