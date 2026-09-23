@@ -94,9 +94,12 @@ SETTINGS = {
         description="Anthropic credential /login selected; env PCODE_ANTHROPIC_AUTH overrides",
     ),
     "meridian_managed": Setting(
-        "off",
-        ("on", "off"),
-        description="Launch a process-owned Meridian instance instead of using a shared one",
+        "auto",
+        ("auto", "on", "off"),
+        description=(
+            "Meridian: auto uses a running proxy, else starts a private one; "
+            "on always starts one; off uses the shared proxy only"
+        ),
     ),
     "repo_context_walk_up": Setting(
         "on",

@@ -30,7 +30,7 @@ def test_defaults_and_path_do_not_create_files():
         "send_mode": "steering",
         # No Anthropic credential has been chosen until /login stores one.
         "anthropic_auth": None,
-        "meridian_managed": "off",
+        "meridian_managed": "auto",
         "repo_context_walk_up": "on",
         "repo_context_nested": "off",
         "skill_commands": "prefix",
@@ -89,6 +89,7 @@ def test_defaults_and_path_do_not_create_files():
         ("repo_context_nested", "off"),
         ("repo_context_nested", "pointer"),
         ("repo_context_nested", "contents"),
+        ("meridian_managed", "auto"),
         ("meridian_managed", "on"),
         ("meridian_managed", "off"),
         ("transcript_max_chars", "4000000"),
