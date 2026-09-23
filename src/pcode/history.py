@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Literal
 
 from pcode.diagnostics import redact
-from pcode.sessions import SessionInfo, SessionReadBudget, list_sessions, session_records
+from pcode.history_cursor import JournalReader, advance
+from pcode.sessions import SessionInfo, SessionReadBudget, list_sessions
 from pcode.worktree import WORKTREES_DIR, project_checkout
 
 Scope = Literal["session", "project", "workspace", "all"]
@@ -28,7 +29,7 @@ CHUNK_CHARS = 4000
 MAX_CHUNKS = 10_000
 # Journal bytes read, not searchable text: most of a transcript is streaming
 # deltas that the record filter discards. Scanning is ~75 MB/s on a warm cache,
-# so this bounds a search at a few seconds; `after` continues past it.
+# so this bounds journal I/O per call; `after` resumes without rereading prefixes.
 MAX_SCAN_BYTES = 256 * 1024 * 1024
 # Ranking is chunk-level, so one long session can otherwise fill the whole limit.
 PER_SESSION_LIMIT = 3
@@ -130,8 +131,8 @@ class Scan:
     sessions_searched: int = 0
     sessions_unreadable: int = 0
     sessions_partial: int = 0
-    sessions_before: int = 0
     next_cursor: str | None = None
+    scan_complete: bool = False
 
 
 def _turn_of(record: dict, turns: dict[str, "HistoryTurn"], recording: str | None):
@@ -146,39 +147,48 @@ def _turn_of(record: dict, turns: dict[str, "HistoryTurn"], recording: str | Non
     return turns.get(identity) if identity is not None else None
 
 
-def read_turns(
-    info: SessionInfo, root: Path, *, budget: SessionReadBudget | None = None
-) -> dict[str, HistoryTurn]:
-    """Keep run IDs and branch ancestry without locking or loading model checkpoints."""
-    budget = budget or SessionReadBudget(MAX_SCAN_BYTES)
-    turns: dict[str, HistoryTurn] = {}
-    parents: dict[str, str | None] = {}
-    active = recording = None
-    for record in session_records(info, root, kinds=KINDS, budget=budget):
+class TurnReader:
+    """Keep attribution and ancestry intact across journal byte pages."""
+
+    def __init__(self, info: SessionInfo, root: Path):
+        self.journal = JournalReader(info, root, KINDS)
+        self.turns: dict[str, HistoryTurn] = {}
+        self.parents: dict[str, str | None] = {}
+        self.active: str | None = None
+        self.recording: str | None = None
+
+    def read(self, budget: SessionReadBudget):
+        for record in self.journal.records(budget):
+            self.accept(record)
+        if self.journal.done:
+            self.finish()
+
+    def accept(self, record: dict):
         kind = record["kind"]
         if kind == "turn_started" and isinstance(record.get("prompt"), str):
-            identity = record.get("run_id") or f"turn-{len(turns) + 1}"
-            parent = record.get("parent_id", active)
+            identity = record.get("run_id") or f"turn-{len(self.turns) + 1}"
+            parent = record.get("parent_id", self.active)
             if not isinstance(identity, str) or not (parent is None or isinstance(parent, str)):
-                continue
-            parents[identity] = parent
-            turns[identity] = HistoryTurn(
+                return
+            self.parents[identity] = parent
+            self.turns[identity] = HistoryTurn(
                 identity,
                 parent,
-                str(record.get("time", info.created)),
+                str(record.get("time", self.journal.info.created)),
+                active=None,
                 blocks=["User: " + record["prompt"]],
             )
-            active = recording = identity
+            self.active = self.recording = identity
         elif kind == "compaction_checkpoint":
             identity, parent = record.get("node_id"), record.get("parent_id")
             if isinstance(identity, str) and (parent is None or isinstance(parent, str)):
-                parents[identity] = parent
-                active, recording = identity, None
+                self.parents[identity] = parent
+                self.active, self.recording = identity, None
         elif kind == "tree_selected":
             identity = record.get("node_id")
             if identity is None or isinstance(identity, str):
-                active = identity
-        elif (turn := _turn_of(record, turns, recording)) is not None:
+                self.active = identity
+        elif (turn := _turn_of(record, self.turns, self.recording)) is not None:
             if kind == "steering" and isinstance(record.get("prompt"), str):
                 turn.blocks.append("User (steering): " + record["prompt"])
             elif kind == "Message" and isinstance(record.get("markdown"), str):
@@ -194,21 +204,35 @@ def read_turns(
                 turn.compacted = True
             elif kind in {"turn_completed", "turn_failed", "turn_cancelled"}:
                 turn.status = kind.removeprefix("turn_")
-    seen = set()
-    while active in parents and active not in seen:
-        seen.add(active)
-        if active in turns:
-            turns[active].active = True
-        active = parents[active]
-    # Resolve compaction nodes to the nearest actual turn for context retrieval.
-    for turn in turns.values():
-        if budget.exhausted:
-            turn.active = None  # Later selections/forks may be outside the scanned prefix.
-        seen = set()
-        while turn.parent in parents and turn.parent not in turns and turn.parent not in seen:
-            seen.add(turn.parent)
-            turn.parent = parents[turn.parent]
-    return turns
+
+    def finish(self):
+        for turn in self.turns.values():
+            turn.active = None if self.journal.incomplete_tail else False
+        active, seen = self.active, set()
+        while not self.journal.incomplete_tail and active in self.parents and active not in seen:
+            seen.add(active)
+            if active in self.turns:
+                self.turns[active].active = True
+            active = self.parents[active]
+        # Resolve compaction nodes to the nearest actual turn for context retrieval.
+        for turn in self.turns.values():
+            seen = set()
+            while (
+                turn.parent in self.parents
+                and turn.parent not in self.turns
+                and turn.parent not in seen
+            ):
+                seen.add(turn.parent)
+                turn.parent = self.parents[turn.parent]
+
+
+def read_turns(
+    info: SessionInfo, root: Path, *, budget: SessionReadBudget | None = None
+) -> dict[str, HistoryTurn]:
+    """Read a bounded prefix; unfinished readers leave branch labels unknown."""
+    reader = TurnReader(info, root)
+    reader.read(budget or SessionReadBudget(MAX_SCAN_BYTES))
+    return reader.turns
 
 
 def project_path(workspace: Path) -> Path:
@@ -261,72 +285,101 @@ class History:
     def chunks(
         self, scope: Scope, *, exclude_turn: str | None = None, after: str | None = None
     ) -> "Scan":
-        """Searchable text in scope, with how much of the scope it actually covers.
-
-        Sessions are newest first, so a budget that runs out always cuts off the
-        older end. `after` resumes from the session that cut off, which is how a
-        question about older work reaches history the first scan never read.
-        """
-        sessions = self.sessions(scope)
-        scan = Scan([], [], sessions_in_scope=len(sessions))
-        if after:
-            identities = [info.id for info in sessions]
-            if after not in identities:
-                raise ValueError("Unknown cursor; use next_cursor from an earlier search.")
-            scan.sessions_before = identities.index(after) + 1
-            sessions = sessions[scan.sessions_before :]
-        budget = SessionReadBudget(MAX_SCAN_BYTES)
-        last = after
-        full = False
-        for info in sessions:
-            if full or budget.exhausted:
-                break
-            try:
-                turns = read_turns(info, self.root, budget=budget)
-            except OSError:
-                scan.warnings.append(f"Skipped unreadable session {info.id}.")
-                scan.sessions_unreadable += 1
-                last = info.id
-                continue
-            complete = not budget.exhausted
-            if complete:
-                scan.sessions_searched += 1
-            # A session cut off mid-way stays behind the cursor, so the next page
-            # re-reads it whole. Unless it used up the page by itself: then the
-            # cursor has to pass it or continuing would never move.
-            if complete or not (scan.sessions_searched or scan.sessions_unreadable):
-                last = info.id
-            if not complete:
-                scan.sessions_partial += 1
-                scan.warnings.append(
-                    f"Journal scan byte budget reached inside session {info.id}; its later "
-                    "records were not searched and its branch labels are unknown."
-                )
-            for turn in reversed(list(turns.values())):
-                if turn.id == exclude_turn and info.id == self.session_id and not turn.compacted:
-                    continue
-                text = turn.text
-                for offset in range(0, len(text), CHUNK_CHARS - 200):
-                    if len(scan.chunks) == MAX_CHUNKS:
-                        scan.warnings.append(f"Search limited to {MAX_CHUNKS} chunks.")
-                        full = True
-                        break
-                    scan.chunks.append(
-                        Chunk(info, turn, offset, text[offset : offset + CHUNK_CHARS])
-                    )
-                if full:
-                    break
-        read = scan.sessions_before + scan.sessions_searched + scan.sessions_unreadable
-        if read < scan.sessions_in_scope:
-            # Sessions are ordered newest first, so the gap is always the older ones.
-            scan.next_cursor = last
-            scan.warnings.append(
-                f"Searched {scan.sessions_searched} of {scan.sessions_in_scope} sessions in "
-                f"scope in full; {scan.sessions_in_scope - read} older ones were not "
-                f'searched. Pass after="{last}" to continue there if the answer may be older.'
-            )
-        scan.warnings = scan.warnings[-10:]
+        """Return a bounded page; cursors retain both journal and chunk positions."""
+        binding = self._binding(scope, "search", exclude_turn)
+        scan, cursor = advance(binding, after, lambda: self._chunk_pages(scope, exclude_turn))
+        scan.next_cursor = cursor
         return scan
+
+    def _binding(self, scope: Scope, *request) -> tuple:
+        # Validate even when resuming, before looking up a process-local cursor.
+        if scope not in ("session", "project", "workspace", "all"):
+            raise ValueError("scope must be session, project, workspace, or all")
+        return (str(self.root.resolve()), str(self.workspace), self.session_id, scope, *request)
+
+    def _chunk_pages(self, scope: Scope, exclude_turn: str | None):
+        # Freeze traversal order: live metadata updates must not reorder later pages.
+        sessions = self.sessions(scope)
+        eligible = {info.id for info in sessions}
+        searched = unreadable = 0
+        warnings = []
+
+        def page():
+            return Scan(
+                [],
+                warnings.copy(),
+                sessions_in_scope=len(sessions),
+                sessions_searched=searched,
+                sessions_unreadable=unreadable,
+            )
+
+        scan = page()
+        budget = SessionReadBudget(MAX_SCAN_BYTES)
+        for info in sessions:
+            try:
+                if budget.remaining == 0:
+                    scan.warnings.append("Journal byte budget reached; continue with next_cursor.")
+                    yield scan, True
+                    eligible = {current.id for current in self.sessions(scope)}
+                    scan, budget = page(), SessionReadBudget(MAX_SCAN_BYTES)
+                if info.id not in eligible:
+                    raise ValueError("Session is no longer in scope; restart without after.")
+                reader = TurnReader(info, self.root)
+                while True:
+                    reader.read(budget)
+                    if reader.journal.done:
+                        break
+                    scan.sessions_partial = 1
+                    scan.warnings.append(
+                        f"Journal byte budget reached inside session {info.id}; continue with "
+                        "next_cursor. Its hits are deferred until its snapshot is fully read."
+                    )
+                    yield scan, True
+                    eligible = self._validate_resume(info, scope, reader)
+                    scan, budget = page(), SessionReadBudget(MAX_SCAN_BYTES)
+                if reader.journal.incomplete_tail:
+                    warnings.append(
+                        f"Unfinished final record in session {info.id}; search again later."
+                    )
+                    scan.warnings = warnings.copy()
+                for turn in reversed(list(reader.turns.values())):
+                    if (
+                        turn.id == exclude_turn
+                        and info.id == self.session_id
+                        and not turn.compacted
+                    ):
+                        continue
+                    # Redact once, before splitting; never redact arbitrary byte pages.
+                    text = turn.text
+                    for offset in range(0, len(text), CHUNK_CHARS - 200):
+                        if len(scan.chunks) == MAX_CHUNKS:
+                            scan.sessions_partial = 1
+                            scan.warnings.append(
+                                f"Search limited to {MAX_CHUNKS} chunks; continue with next_cursor."
+                            )
+                            yield scan, True
+                            eligible = self._validate_resume(info, scope, reader)
+                            scan, budget = page(), SessionReadBudget(MAX_SCAN_BYTES)
+                        scan.chunks.append(
+                            Chunk(info, turn, offset, text[offset : offset + CHUNK_CHARS])
+                        )
+                searched += 1
+                scan.sessions_searched = searched
+                scan.sessions_partial = 0
+            except OSError:
+                unreadable += 1
+                warnings.append(f"Skipped unreadable session {info.id}.")
+                scan.sessions_unreadable = unreadable
+                scan.warnings = warnings.copy()
+        scan.scan_complete = not warnings
+        yield scan, False
+
+    def _validate_resume(self, info: SessionInfo, scope: Scope, reader: TurnReader):
+        eligible = {current.id for current in self.sessions(scope)}
+        if info.id not in eligible:
+            raise ValueError("Session is no longer in scope; restart without after.")
+        reader.journal.validate()
+        return eligible
 
     def read(
         self,
@@ -336,22 +389,56 @@ class History:
         context_turns: int = 1,
         offset: int = 0,
         max_chars: int = 8000,
+        after: str | None = None,
     ) -> dict:
         if not 0 <= context_turns <= 3 or offset < 0 or not 1 <= max_chars <= 16_000:
             raise ValueError("Use context_turns 0..3, offset >= 0, and max_chars 1..16000")
+        binding = self._binding(
+            scope, "read", session_id, turn_id, context_turns, offset, max_chars
+        )
+        result, cursor = advance(
+            binding,
+            after,
+            lambda: self._read_pages(session_id, turn_id, scope, context_turns, offset, max_chars),
+        )
+        result["next_cursor"] = cursor
+        return result
+
+    def _read_pages(self, session_id, turn_id, scope, context_turns, offset, max_chars):
         info = next((s for s in self.sessions(scope) if s.id == session_id), None)
         if info is None:
             raise ValueError(
                 "Session not found in scope. Use an exact session_id from search_sessions."
             )
-        budget = SessionReadBudget(MAX_SCAN_BYTES)
         try:
-            turns = read_turns(info, self.root, budget=budget)
+            reader = TurnReader(info, self.root)
+            while True:
+                reader.read(SessionReadBudget(MAX_SCAN_BYTES))
+                if reader.journal.done:
+                    break
+                yield (
+                    {
+                        "session_id": info.id,
+                        "turn_id": turn_id,
+                        "scan_complete": False,
+                        "next_cursor": None,
+                        "text": "",
+                        "context": [],
+                        "offset": offset,
+                        "next_offset": None,
+                        "warnings": [
+                            "Journal byte budget reached; the requested turn is not yet resolved. "
+                            "Continue with next_cursor as after, keeping the other "
+                            "arguments unchanged."
+                        ],
+                    },
+                    True,
+                )
+                self._validate_resume(info, scope, reader)
         except OSError:
             raise ValueError("Session transcript is unreadable.") from None
+        turns = reader.turns
         if turn_id not in turns:
-            if budget.exhausted:
-                raise ValueError("Turn not found within the journal scan byte budget.")
             raise ValueError("Turn not found. Use a turn_id from search_sessions.")
         turn = turns[turn_id]
         text = turn.text
@@ -367,21 +454,26 @@ class History:
             )
             parent = previous.parent
         end = min(offset + max_chars, len(text))
-        return {
-            "session_id": info.id,
-            "turn_id": turn.id,
-            "time": turn.time,
-            "workspace": redact(info.workspace),
-            "status": turn.status,
-            "branch": turn.branch,
-            "warnings": ["Journal scan byte budget reached; later records were not read."]
-            if budget.exhausted
-            else [],
-            "context": context[::-1],
-            "text": text[offset:end],
-            "offset": offset,
-            "next_offset": end if end < len(text) else None,
-        }
+        yield (
+            {
+                "session_id": info.id,
+                "turn_id": turn.id,
+                "time": turn.time,
+                "workspace": redact(info.workspace),
+                "status": turn.status,
+                "branch": turn.branch,
+                "warnings": ["Unfinished final journal record; read again later."]
+                if reader.journal.incomplete_tail
+                else [],
+                "scan_complete": not reader.journal.incomplete_tail,
+                "next_cursor": None,
+                "context": context[::-1],
+                "text": text[offset:end],
+                "offset": offset,
+                "next_offset": end if end < len(text) else None,
+            },
+            False,
+        )
 
 
 _TOKEN = re.compile(r"\w+")
