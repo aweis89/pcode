@@ -114,7 +114,9 @@ pcode -m anthropic:<model-id>   # then: /login
   `ANTHROPIC_BASE_URL`. This authenticates as the public Claude Code client against
   an endpoint scoped to it: compatibility support, not an official third-party OAuth
   integration. Entitlements, quotas, and server behavior can change at any time; the
-  supported path remains `ANTHROPIC_API_KEY`.
+  supported path remains `ANTHROPIC_API_KEY`. See
+  [Anthropic provider options](anthropic-providers.md) for the account risk of this
+  route and the alternatives.
 - The advertised Claude Code version gates which models the endpoint accepts: below
   a model's floor it answers `400 claude_code_version_too_old` rather than naming
   the model. pcode reports the locally installed `claude --version` when it is newer
