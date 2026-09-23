@@ -67,7 +67,6 @@ def test_browser_keyboard(tmp_path, keys, expected):
     async def run():
         with create_pipe_input() as pipe:
             app, ids = browser(tmp_path, input=pipe)
-            assert app.app.mouse_support()
             task = asyncio.create_task(app.run())
             await asyncio.sleep(0.05)
             pipe.send_text(keys)

@@ -9,7 +9,13 @@ from prompt_toolkit.layout.containers import HSplit
 from prompt_toolkit.widgets import Dialog, Label, TextArea
 
 from pcode.links import Link
-from pcode.popup_ui import popup_container, popup_style, steer_list_from_query
+from pcode.popup_ui import (
+    bind_list_paging,
+    popup_container,
+    popup_mouse,
+    popup_style,
+    steer_list_from_query,
+)
 
 _ROW_WIDTH = 100
 
@@ -66,6 +72,7 @@ def links_dialog(
 
     query.buffer.on_text_changed += lambda _: refresh()
     steer_list_from_query(bindings, query, choices)
+    bind_list_paging(bindings, choices, has_focus(choices) | has_focus(query))
 
     @bindings.add("t", filter=has_focus(choices))
     def toggle_tools(event):
@@ -97,7 +104,6 @@ def links_dialog(
             event.app.exit(result=None)
 
     @bindings.add("c-c")
-    @bindings.add("c-d")
     def cancel(event):
         event.app.exit(result=None)
 
@@ -111,7 +117,8 @@ def links_dialog(
                 ),
                 query,
                 choices,
-                Label("↑/↓ select · Enter open · t toggle tools · / search · Esc cancel"),
+                Label("↑↓ Select · PgUp/PgDn Page · Ctrl+U/D Half page"),
+                Label("Enter open · t toggle tools · / search · Esc cancel"),
                 Label("In search: Enter keeps filter · Esc clears filter"),
             ],
             padding=1,
@@ -123,7 +130,7 @@ def links_dialog(
         layout=Layout(popup_container(dialog), focused_element=choices),
         key_bindings=bindings,
         full_screen=True,
-        mouse_support=True,
+        mouse_support=popup_mouse(),
         input=input,
         output=output,
         style=popup_style(style),
