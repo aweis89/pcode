@@ -40,15 +40,15 @@ def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
     app.branch = "master"
     assert (
         fragment_list_to_text(app.toolbar())
-        == " ~/p/pcode@master · Enter: steering · openai:gpt-5 (default) · ctx: 0/400k"
+        == " ~/p/pcode@master · steering · openai:gpt-5 (default) · 0/400k"
     )
     app.runtime.agent = SimpleNamespace(
         model=SimpleNamespace(settings={"openai_reasoning_effort": "low"}),
         model_settings={"openai_reasoning_effort": "high"},
     )
-    assert fragment_list_to_text(app.toolbar()).endswith("openai:gpt-5 (high) · ctx: 0/400k")
+    assert fragment_list_to_text(app.toolbar()).endswith("openai:gpt-5 (high) · 0/400k")
     app.runtime.agent.model_settings = None
-    assert fragment_list_to_text(app.toolbar()).endswith("openai:gpt-5 (low) · ctx: 0/400k")
+    assert fragment_list_to_text(app.toolbar()).endswith("openai:gpt-5 (low) · 0/400k")
 
 
 @pytest.mark.parametrize(
@@ -70,13 +70,13 @@ def test_footer_location_is_compact(tmp_path, monkeypatch, relative, branch, exp
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, _ = make_app(tmp_path / relative, monkeypatch, width=200)
     app.branch = branch
-    assert fragment_list_to_text(app.toolbar()).startswith(f" {expected} · Enter:")
+    assert fragment_list_to_text(app.toolbar()).startswith(f" {expected} · steering")
 
 
 def test_preview_home_and_help(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, stream = make_app(tmp_path, monkeypatch)
-    assert fragment_list_to_text(app.toolbar()) == " ~ · Enter: steering · preview"
+    assert fragment_list_to_text(app.toolbar()) == " ~ · steering · preview"
     app.handle("/help")
     help_text = stream.getvalue()
     for hint in (
@@ -99,7 +99,7 @@ def test_footer_outside_home_and_busy(tmp_path, monkeypatch):
     app.activity.queued = 2
     text = fragment_list_to_text(app.toolbar())
     assert str(tmp_path) in text
-    assert text.endswith("Enter: steering · 2 queued · preview")
+    assert text.endswith("steering · 2 queued · preview")
     assert "Ctrl" not in text
 
 
@@ -124,12 +124,12 @@ def test_long_unicode_path_stays_one_row(tmp_path, monkeypatch, width):
 
 
 def test_narrow_busy_footer_keeps_send_mode_and_activity(tmp_path, monkeypatch):
-    app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=40)
+    app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=30)
     app.activity.busy = True
     text = fragment_list_to_text(app.toolbar())
-    assert text.startswith(" Enter: steering · test:local")
+    assert text.startswith(" steering · test:local")
     assert text.endswith("…")
-    assert cell_len(text) <= 40
+    assert cell_len(text) <= 30
 
 
 def test_branch_refresh_handles_switches_detached_and_non_repo(tmp_path, monkeypatch):
@@ -231,9 +231,9 @@ def test_footer_provider_and_context(tmp_path, monkeypatch, model):
     app.runtime.history = [ModelResponse(parts=[], usage=RequestUsage(input_tokens=12_500))]
     text = fragment_list_to_text(app.toolbar())
     assert model in text
-    assert "ctx: 12.5k/" in text
+    assert "12.5k/" in text
     app.runtime.history = []
-    assert "ctx: 0/" in fragment_list_to_text(app.toolbar())
+    assert "0/" in fragment_list_to_text(app.toolbar())
 
 
 @pytest.mark.parametrize("width", [1, 20, 40, 60, 100])
@@ -247,7 +247,7 @@ def test_provider_and_context_stay_one_row(tmp_path, monkeypatch, width):
     if width >= 60:
         assert "anthropic:claude-sonnet-4-6" in text
     if width >= 100:
-        assert "ctx: 0/1m" in text
+        assert "0/1m" in text
 
 
 @pytest.mark.parametrize("mode", ["steering", "queue", "interrupt"])
@@ -261,5 +261,5 @@ def test_send_mode_survives_long_model_and_path(tmp_path, monkeypatch, mode, wid
     )
     app.send_mode = mode
     text = fragment_list_to_text(app.toolbar())
-    assert text.startswith(f" Enter: {mode}")
+    assert text.startswith(f" {mode}")
     assert cell_len(text) <= width

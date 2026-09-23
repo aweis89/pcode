@@ -293,10 +293,10 @@ def test_lookup_is_memory_only_and_ui_matches_compaction(monkeypatch):
             service.refresh = AsyncMock(side_effect=AssertionError("rendering did I/O"))
             monkeypatch.setattr(model_metadata, "catalog", service)
             assert effective_window(model) == 272_000
-            assert context_label(model, []) == " · ctx: 0/272k"
+            assert context_label(model, []) == " · 0/272k"
             monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "2000000")
             assert effective_window(model) == 1_000_000
-            assert context_label(model, []) == " · ctx: 0/1m"
+            assert context_label(model, []) == " · 0/1m"
             service.refresh.assert_not_called()
 
     asyncio.run(run())

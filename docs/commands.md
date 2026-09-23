@@ -269,7 +269,7 @@ summaries.
 
 The line below the editor shows the workspace/branch, full `provider:model`
 identifier, reasoning effort, and activity. Live models also show context, for
-example `ctx: 12.5k/200k` (tokens used / effective working window).
+example `12.5k/200k` (tokens used / effective working window).
 
 Used context is the **latest completed request's input tokens**, including cached
 input, not cumulative session usage. It updates as each request completes, so it

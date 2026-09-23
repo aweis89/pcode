@@ -2,7 +2,8 @@
 
 ## Where the fixed prompt goes
 
-`ctx:` is one number, which does not say why it is that large. `/status` also
+The footer's token count is one number, which does not say why it is that
+large. `/status` also
 breaks down the **prompt overhead**: the instructions and tool
 schemas the provider is re-sent on every request, whatever the conversation did.
 
