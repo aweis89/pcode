@@ -278,6 +278,13 @@ SETTINGS = {
         ("on", "off"),
         description="Compact the conversation automatically as the context window fills",
     ),
+    # Off by default: a popup that captures the mouse takes drag-to-select away
+    # from the terminal. Read when a popup opens, so no restart is needed.
+    "popup_mouse": Setting(
+        "off",
+        ("on", "off"),
+        description="Mouse clicks and wheel scrolling in popups; off keeps native text selection",
+    ),
     # Read when a side answer settles, so `/config set` applies without a restart.
     "btw_auto_open": Setting(
         "on",

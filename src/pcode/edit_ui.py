@@ -10,9 +10,11 @@ from prompt_toolkit.widgets import Frame, Label, TextArea
 from pcode.edit_transcript import DiffLexer
 from pcode.edits import edit_text
 from pcode.popup_ui import (
+    bind_list_paging,
     fuzzy_match,
     list_pane_height,
     popup_container,
+    popup_mouse,
     popup_style,
     steer_list_from_query,
 )
@@ -21,8 +23,9 @@ from pcode.runtime import EditCompleted
 EMPTY = "No file edits in this conversation."
 NO_MATCH = "No matching edits."
 KEYS = (
-    "↑↓ File · PgUp/PgDn Scroll diff · Tab Focus · Ctrl+Home/End First/last · "
-    "/ Search paths (in Files) or diff lines (in Diff) · n/N Next/previous match · Esc Close"
+    "↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page · Ctrl+Home/End First/last · "
+    "Tab Focus · / Search paths (in Files) or diff lines (in Diff) · n/N Next/previous match · "
+    "Esc Close"
 )
 PROMPTS = {"paths": "Search paths: ", "diffs": "Search diff lines: "}
 
@@ -90,7 +93,6 @@ class EditBrowser:
 
         @keys.add("escape", eager=True)
         @keys.add("c-c")
-        @keys.add("c-d")
         def close(event):
             event.app.exit()
 
@@ -101,16 +103,10 @@ class EditBrowser:
             focused = event.app.layout.has_focus(self.diff)
             event.app.layout.focus(self.files if focused else self.diff)
 
+        # Paging keys act on the focused pane, as in every other popup.
         steer_list_from_query(keys, self.query, self.files)
-
-        # Scroll the diff from either pane: the file list keeps ↑↓ for selection.
-        @keys.add("pagedown", filter=has_focus(self.files))
-        def page_down(event):
-            self.scroll(self.page())
-
-        @keys.add("pageup", filter=has_focus(self.files))
-        def page_up(event):
-            self.scroll(-self.page())
+        bind_list_paging(keys, self.files, has_focus(self.files) | has_focus(self.query))
+        bind_list_paging(keys, self.diff, has_focus(self.diff))
 
         @keys.add("/", filter=has_focus(self.files))
         @keys.add("c-f", filter=has_focus(self.files))
@@ -153,7 +149,7 @@ class EditBrowser:
             layout=Layout(popup_container(root), focused_element=self.files),
             key_bindings=keys,
             full_screen=True,
-            mouse_support=True,
+            mouse_support=popup_mouse(),
             style=popup_style(app_options.pop("style", None)),
             **app_options,
         )
@@ -161,17 +157,6 @@ class EditBrowser:
 
     def position(self) -> int:
         return self.files.document.cursor_position_row + 1 if self.visible else 0
-
-    def page(self) -> int:
-        """Page by what is actually visible, falling back before the first render."""
-        info = self.diff.window.render_info
-        return max(1, info.window_height - 1) if info is not None else 10
-
-    def scroll(self, rows: int) -> None:
-        """Move the cursor, not vertical_scroll: an unfocused window re-centers it."""
-        document = self.diff.document
-        row = max(0, min(document.line_count - 1, document.cursor_position_row + rows))
-        self.go_to(row)
 
     def go_to(self, row: int) -> None:
         self.diff.buffer.cursor_position = self.diff.document.translate_row_col_to_index(row, 0)
