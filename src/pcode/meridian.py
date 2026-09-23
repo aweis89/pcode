@@ -31,6 +31,75 @@ def meridian_base_url() -> str:
     return value.rstrip("/")
 
 
+def _failed_url(error: BaseException) -> str | None:
+    """URL of the request an SDK error came from, found along its cause chain."""
+    seen = set()
+    while error is not None and id(error) not in seen and len(seen) < 16:
+        seen.add(id(error))
+        try:
+            # httpx raises RuntimeError, not AttributeError, for an unset request.
+            url = getattr(getattr(error, "request", None), "url", None)
+        except Exception:
+            url = None
+        if url is not None:
+            return str(url)
+        error = error.__cause__ or error.__context__
+    return None
+
+
+def failure_hint(error: BaseException) -> str | None:
+    """What to do about a failed Meridian request, or None for any other provider."""
+    from pcode.diagnostics import error_details, transport_types
+    from pcode.meridian_process import managed_base_url
+
+    url = _failed_url(error)
+    if url is None:
+        return None
+    managed = managed_base_url()
+    try:
+        external = meridian_base_url()
+    except ValueError:
+        external = None
+    base = next((b for b in (managed, external) if b and url.startswith(b + "/")), None)
+    if base is None:
+        return None
+    detail = error_details(error)
+    while detail and "status" not in detail:
+        detail = detail.get("cause", detail.get("context", {}))
+    if detail.get("status") == 401:
+        if "api key" in detail.get("provider_message", "").lower():
+            return f"Meridian at {base} rejected pcode's key. Check PCODE_MERIDIAN_API_KEY."
+        return "Meridian could not use your Claude login. Run /login meridian, then retry."
+    if transport_types(error) & {"APIConnectionError", "ConnectError"}:
+        if base == managed:
+            return "pcode's Meridian stopped and is being restarted. Retry in a moment."
+        return (
+            f"Meridian is not answering at {base}. Start it with `meridian`, or restart "
+            "pcode with meridian_managed set to auto or on so it runs its own."
+        )
+    return None
+
+
+def thinking_passthrough(base_url: str, api_key: str | None) -> bool | None:
+    """Whether the proxy forwards readable thinking; None when it cannot say.
+
+    A read-only settings lookup with a short timeout: this never changes a
+    shared proxy's configuration.
+    """
+    headers = {"x-api-key": api_key} if api_key else {}
+    try:
+        response = httpx2.get(
+            base_url.rstrip("/") + "/settings/api/features",
+            headers=headers,
+            timeout=0.5,
+            trust_env=False,
+        )
+        value = response.json().get("passthrough", {}).get("thinkingPassthrough")
+    except (httpx2.HTTPError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, bool) else None
+
+
 class MeridianProvider(AnthropicProvider):
     @property
     def name(self) -> str:
