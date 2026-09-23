@@ -190,8 +190,7 @@ def test_tool_calls_appear_between_the_text_they_ran_between(tmp_path):
         "  Looking now.",
         "",
         "  ✓ Read · src/pcode/ui.py → 40 lines · 0.2s",
-        "  ✗ Run · ls → failed",
-        "    ls /nope … [1 more lines]",
+        "  ✗ Run · ls → failed · ls /nope … [1 more lines]",
         "",
         "  All done.",
     ]
@@ -214,9 +213,8 @@ def test_scrollback_and_browser_share_one_tool_line(tmp_path):
     (line,) = tool_summary_lines("read_file", " · src/x.py → 40 lines", elapsed_seconds=0.25)
     assert line.plain == "✓ Read · src/x.py → 40 lines · 0.2s"
     assert line.style == "pcode.thinking"
-    failed, preview = tool_summary_lines("shell", "", failed=True, command="rm -rf /\nmore")
-    assert failed.plain == "✗ Run"
-    assert preview.plain == "  rm -rf / … [1 more lines]"
+    (failed,) = tool_summary_lines("shell", "", failed=True, command="rm -rf /\nmore")
+    assert failed.plain == "✗ Run · rm -rf / … [1 more lines]"
     # A width truncates rather than wraps, as the scrollback line does.
     (narrow,) = tool_summary_lines("read_file", " · " + "x" * 200, width=20)
     assert len(narrow.plain) == 20 and narrow.plain.endswith("…")
