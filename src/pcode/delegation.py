@@ -27,7 +27,15 @@ from pcode.filesystem import FileChangeEvent
 from pcode.inspection import capture
 from pcode.runtime import ToolStarted, ToolSummary
 from pcode.shell import result_projection
-from pcode.tool_display import execution_mode, result_detail, target
+from pcode.tool_display import (
+    COMMAND_TOOLS,
+    command_error,
+    execution_mode,
+    invocation,
+    result_detail,
+    stated_purpose,
+    target,
+)
 
 _parent: ContextVar[RunContext | None] = ContextVar("delegation_parent", default=None)
 
@@ -88,6 +96,8 @@ async def stream_child_activity(_ctx, events):
                 run_id=parent.run_id or "",
                 started_at=datetime.now(timezone.utc).isoformat(),
                 parent_call_id=parent_id,
+                command=invocation(part.tool_name, args),
+                purpose=stated_purpose(args),
                 execution=execution_mode(part.tool_name, args),
             )
             activity = "Working"
@@ -97,15 +107,19 @@ async def stream_child_activity(_ctx, events):
             )
             outcome = "retry" if isinstance(event.part, RetryPromptPart) else event.part.outcome
             detail, failed = result_detail(name, args, event.part.content, outcome)
+            content = (
+                result_projection(event.part.content) if name == "shell" else event.part.content
+            )
             child = ToolSummary(
                 name,
                 detail,
                 failed=failed,
                 call_id=f"{parent_id}:{event.tool_call_id}",
                 elapsed_seconds=max(0, monotonic() - started),
-                result=capture(
-                    result_projection(event.part.content) if name == "shell" else event.part.content
-                ),
+                command=invocation(name, args),
+                purpose=stated_purpose(args),
+                error=command_error(content) if failed and name in COMMAND_TOOLS else "",
+                result=capture(content),
                 run_id=parent.run_id or "",
                 outcome=outcome,
                 parent_call_id=parent_id,

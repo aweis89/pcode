@@ -406,3 +406,99 @@ def test_settled_or_interrupted_delegate_leaves_the_panel(interrupt):
         history.record(ToolSummary("delegate_task", "explorer → Completed", call_id="parent"))
     assert history.calls == []
     assert history.rows(3) == []
+
+
+def test_child_command_carries_what_it_ran(tmp_path):
+    async def model(messages, info):
+        names = {t.name for t in info.function_tools}
+        if "delegate_task" in names:
+            yield "Done" if returns(messages) else {0: delegate(0, "worker")}
+        elif returns(messages):
+            yield "Child done"
+        else:
+            yield {
+                0: DeltaToolCall(
+                    name="shell",
+                    json_args='{"command":"echo child-ran","purpose":"say hello"}',
+                    tool_call_id="child-shell",
+                )
+            }
+
+    runtime = AgentRuntime(
+        Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)])
+    )
+
+    async def run():
+        events = [e async for e in runtime.stream("Delegate a command")]
+        started, finished = (
+            next(e for e in events if isinstance(e, kind) and e.call_id == "parent-0:child-shell")
+            for kind in (ToolStarted, ToolSummary)
+        )
+        for event in (started, finished):
+            assert event.command == "echo child-ran"
+            assert event.purpose == "say hello"
+        assert started.execution == "foreground"
+
+    asyncio.run(run())
+
+
+def test_child_calls_are_written_indented_under_their_delegate():
+    from io import StringIO
+
+    from rich.console import Console
+
+    from pcode.ui import Transcript
+
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None))
+    for event in (
+        ToolSummary("read_file", "a.py → 3 lines", call_id="p:r", parent_call_id="p"),
+        ToolSummary(
+            "shell",
+            "echo hi",
+            call_id="p:s",
+            command="echo hi",
+            parent_call_id="p",
+        ),
+        ToolSummary("delegate_task", "worker · look → Completed", call_id="p"),
+    ):
+        transcript.tool_result(event)
+    lines = stream.getvalue().splitlines()
+    assert lines == [
+        "✓ Delegate  worker · look → Completed",
+        "    ✓ Read  a.py → 3 lines",
+        "    ✓ Run · echo hi",
+    ]
+    # A redraw rebuilds the same grouping from the retained log.
+    assert [
+        line.rstrip()
+        for objects, _, _ in transcript.replay()
+        for line in _render(objects).splitlines()
+    ] == lines
+
+
+def test_orphaned_child_calls_are_not_lost_when_the_turn_is_cancelled():
+    from io import StringIO
+
+    from rich.console import Console
+
+    from pcode.ui import Transcript
+
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None))
+    transcript.tool_result(
+        ToolSummary("read_file", "a.py → 3 lines", call_id="p:r", parent_call_id="p")
+    )
+    assert stream.getvalue() == ""
+    transcript.cancelled()
+    assert "✓ Read  a.py → 3 lines" in stream.getvalue()
+
+
+def _render(objects):
+    from io import StringIO
+
+    from rich.console import Console
+
+    console = Console(file=StringIO(), width=80, color_system=None)
+    console.print(*objects)
+    return console.file.getvalue()

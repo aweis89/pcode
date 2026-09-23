@@ -93,9 +93,9 @@ from pcode.token_accounting import TokenAccounting, TokenTotals
 from pcode.tool_display import (
     COMMAND_TOOLS,
     command_error,
-    command_text,
     delegation_detail,
     execution_mode,
+    invocation,
     job_status,
     label,
     native_result_detail,
@@ -921,10 +921,7 @@ class AgentRuntime:
                         run_id=run_id,
                         started_at=datetime.now(timezone.utc).isoformat(),
                         process_id=capture(args.get("command_id", "")),
-                        command=command_text(args["command"])
-                        if event.part.tool_name in {"shell", "run_command", "start_command"}
-                        and isinstance(args.get("command"), str)
-                        else "",
+                        command=invocation(event.part.tool_name, args),
                         purpose=stated_purpose(args),
                         execution=execution_mode(event.part.tool_name, args),
                     )
@@ -995,10 +992,7 @@ class AgentRuntime:
                             else capture(args.get("command_id", ""))
                         ),
                         elapsed_seconds=max(0, monotonic() - started),
-                        command=command_text(args["command"])
-                        if name in {"shell", "run_command", "start_command"}
-                        and isinstance(args.get("command"), str)
-                        else "",
+                        command=invocation(name, args),
                         purpose=stated_purpose(args),
                         error=command_error(display_content)
                         if failed and name in COMMAND_TOOLS
