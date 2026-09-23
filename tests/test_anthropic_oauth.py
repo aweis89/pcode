@@ -11,6 +11,7 @@ import hashlib
 import json
 import socket
 import stat
+import subprocess
 import time
 from io import StringIO
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ import pytest
 from pydantic_ai import Agent
 from rich.console import Console
 
-from pcode import anthropic_oauth
+from pcode import anthropic_oauth, auth
 from pcode.anthropic_oauth import (
     CLIENT_ID,
     AnthropicOAuthModel,
@@ -38,7 +39,7 @@ from pcode.anthropic_oauth import (
     refresh_tokens,
     write_tokens,
 )
-from pcode.auth import OAUTH_BETAS, OAUTH_PREAMBLE, OAUTH_USER_AGENT, LoginError
+from pcode.auth import OAUTH_BETAS, OAUTH_PREAMBLE, LoginError, oauth_user_agent
 
 MESSAGE = {
     "id": "msg_synthetic",
@@ -81,6 +82,46 @@ def token_endpoint(responses, recorded):
         return httpx2.Response(status, json=body)
 
     return httpx2.MockTransport(handle)
+
+
+@pytest.mark.parametrize(
+    ("installed", "expected"),
+    [
+        # A newer local install unlocks models whose floor is above the pin.
+        ("2.9.1 (Claude Code)", "claude-cli/2.9.1"),
+        # An older or missing one must not downgrade below the pin.
+        ("2.0.9 (Claude Code)", f"claude-cli/{auth.OAUTH_VERSION}"),
+        ("unparseable", f"claude-cli/{auth.OAUTH_VERSION}"),
+        (None, f"claude-cli/{auth.OAUTH_VERSION}"),
+    ],
+)
+def test_advertised_version_never_falls_below_the_pin(monkeypatch, installed, expected):
+    found = None if installed is None else "/bin/claude"
+    monkeypatch.setattr(auth.shutil, "which", lambda _: found)
+    monkeypatch.setattr(
+        auth.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=installed or ""),
+    )
+    auth.oauth_user_agent.cache_clear()
+    try:
+        assert auth.oauth_user_agent() == expected
+    finally:
+        auth.oauth_user_agent.cache_clear()
+
+
+def test_a_broken_claude_executable_falls_back_to_the_pin(monkeypatch):
+    monkeypatch.setattr(auth.shutil, "which", lambda _: "/bin/claude")
+
+    def explode(*args, **kwargs):
+        raise subprocess.TimeoutExpired("claude", auth.VERSION_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(auth.subprocess, "run", explode)
+    auth.oauth_user_agent.cache_clear()
+    try:
+        assert auth.oauth_user_agent() == f"claude-cli/{auth.OAUTH_VERSION}"
+    finally:
+        auth.oauth_user_agent.cache_clear()
 
 
 def test_authorization_url_matches_the_pkce_authorization_request():
@@ -381,7 +422,7 @@ def test_requests_carry_bearer_auth_and_claude_code_wire_markers(store, monkeypa
         assert OAUTH_BETAS <= set(
             flag.strip() for flag in request.headers["anthropic-beta"].split(",")
         )
-        assert request.headers["user-agent"] == OAUTH_USER_AGENT
+        assert request.headers["user-agent"] == oauth_user_agent()
         assert request.headers["x-app"] == "cli"
         payload = json.loads(request.content)
         assert payload["model"] == "test-model"
