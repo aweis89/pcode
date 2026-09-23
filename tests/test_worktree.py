@@ -106,6 +106,81 @@ def test_create_describes_and_lists(repo):
     assert "feature" in worktree.listing(repo)
 
 
+@pytest.mark.parametrize("status", ["running", "completed", "failed", "cancelled"])
+def test_task_children_and_parent_are_protected_from_generic_cleanup(repo, status):
+    from pcode.task_worktrees import TaskWorktrees
+
+    parent = worktree.create(repo, "parent")
+    manager = TaskWorktrees(parent.path)
+    record = manager.create()
+    task = worktree.describe(Path(record.worktree))
+    if status != "running":
+        manager.finish(record.task_id, status)
+    assert "awaiting integration" in worktree.keep_reason(task)
+    assert "owns task" in worktree.keep_reason(parent)
+    for tree in (task, parent):
+        with pytest.raises(worktree.WorktreeError, match="task"):
+            worktree.remove(tree, force=True)
+    with pytest.raises(worktree.WorktreeError, match="task integration"):
+        worktree.merge(task)
+    with pytest.raises(worktree.WorktreeError, match="task"):
+        worktree.finish(task)
+    worktree.clean(repo)
+    assert parent.path.exists()
+    assert task.path.exists()
+    listed = worktree.listing(repo)
+    assert f"parent={parent.path}" in listed
+    assert f"{status}, awaiting integration" in listed
+
+
+def test_integrated_task_cleanup_uses_parent_history_not_mainline(repo):
+    from pcode.task_worktrees import TaskWorktrees
+
+    parent = worktree.create(repo, "parent")
+    commit(parent.path, "parent-only")
+    manager = TaskWorktrees(parent.path)
+    record = manager.create()
+    commit(Path(record.worktree), "worker-only")
+    task = worktree.describe(Path(record.worktree))
+    manager.finish(record.task_id, "completed")
+    manager.integrate(record.task_id)
+    assert worktree.unmerged_commits(task) > 0
+    assert worktree.keep_reason(task) == ""
+    assert "integrated)" in worktree.listing(repo)
+    worktree.clean(repo)
+    assert not task.path.exists()
+    assert parent.path.exists()
+    assert manager.get(record.task_id).status == "discarded"
+    assert not (repo / "worker-only").exists()
+
+
+def test_integrated_task_cleanup_after_parent_removed(repo):
+    from pcode.task_worktrees import TaskWorktrees
+
+    parent = worktree.create(repo, "parent")
+    manager = TaskWorktrees(parent.path)
+    record = manager.create()
+    manager.finish(record.task_id, "completed")
+    manager.integrate(record.task_id)
+    task = worktree.describe(Path(record.worktree))
+    worktree.remove(parent)
+    worktree.remove(task)
+    assert not task.path.exists()
+
+
+def test_clean_can_remove_integrated_parent_and_child_in_one_pass(repo):
+    from pcode.task_worktrees import TaskWorktrees
+
+    parent = worktree.create(repo, "aaa-parent")
+    manager = TaskWorktrees(parent.path)
+    record = manager.create()
+    manager.finish(record.task_id, "completed")
+    manager.integrate(record.task_id)
+    worktree.clean(repo)
+    assert not parent.path.exists()
+    assert not Path(record.worktree).exists()
+
+
 def test_create_reuses_existing_branch_and_rejects_bad_names(repo):
     git(repo, "branch", "old")
     assert worktree.create(repo, "old").branch == "old"
@@ -514,3 +589,65 @@ def test_run_setup_passes_environment(repo, monkeypatch):
     created = worktree.create(repo, "env")
     worktree.run_setup(created)
     assert (created.path / "out").read_text() == f"yes {repo}"
+
+
+def _try_task_creation(parent, result):
+    from pcode.task_worktrees import TaskWorktrees
+
+    try:
+        TaskWorktrees(Path(parent)).create()
+    except worktree.WorktreeError as error:
+        result.put(str(error))
+    else:
+        result.put("created")
+
+
+@pytest.mark.parametrize("operation", [worktree.remove, worktree.merge, worktree.finish])
+def test_generic_lifecycle_holds_parent_lock_after_ownership_check(repo, monkeypatch, operation):
+    import multiprocessing
+
+    from pcode import task_worktrees
+
+    parent = worktree.create(repo, "parent")
+    commit(parent.path, "result", "parent result")
+    original = task_worktrees.children_reason
+    checked = False
+
+    def interleaved_check(path):
+        nonlocal checked
+        reason = original(path)
+        if not checked:
+            checked = True
+            context = multiprocessing.get_context("spawn")
+            result = context.Queue()
+            process = context.Process(target=_try_task_creation, args=(str(path), result))
+            process.start()
+            try:
+                assert "Another task operation" in result.get(timeout=10)
+            finally:
+                process.join(10)
+                if process.is_alive():
+                    process.terminate()
+                    process.join()
+            assert process.exitcode == 0
+        return reason
+
+    monkeypatch.setattr(task_worktrees, "children_reason", interleaved_check)
+    operation(parent)
+    assert checked
+    assert task_worktrees.records(repo) == []
+
+
+@pytest.mark.parametrize("operation", [worktree.remove, worktree.merge, worktree.finish])
+def test_generic_lifecycle_refuses_parent_with_active_task_before_mainline_change(repo, operation):
+    from pcode.task_worktrees import TaskWorktrees
+
+    parent = worktree.create(repo, "parent")
+    commit(parent.path, "result", "parent result")
+    before = git(repo, "rev-parse", "HEAD")
+    record = TaskWorktrees(parent.path).create()
+    with pytest.raises(worktree.WorktreeError, match="owns task"):
+        operation(parent)
+    assert git(repo, "rev-parse", "HEAD") == before
+    assert parent.path.exists()
+    assert Path(record.worktree).exists()

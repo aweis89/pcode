@@ -26,12 +26,87 @@ protected by file tools. Repository instruction discovery remains scoped to the
 selected workspace and its configured ancestors, not every external path the
 tools can access.
 
-Use `delegate_task` with `agent_name="worker"` and a self-contained task. Workers
-share workspace files, so give concurrent workers non-overlapping edits. Each has
-fresh conversation context and its own shell and plan; the parent's conversation
-is not copied. Recursive delegation is disabled. Each task retains a separate
-120-request budget and a 15-minute timeout. Specialized extension delegates keep
-their own tool configuration rather than automatically gaining the worker's tools.
+Use `delegate_task` with `agent_name="worker"` and a self-contained task. Each has
+fresh conversation context and its own plan; the parent's conversation is not
+copied. Recursive delegation is disabled. Each task retains a separate
+120-request budget and a 15-minute execution timeout. At most `worker_concurrency`
+built-in workers run concurrently per session (default **4**, `/reload` to apply a
+change). Additional calls wait for a slot before creating a checkout or running a
+worker. Specialized extension delegates keep their own tool configuration rather
+than automatically gaining the worker's tools.
+
+### Worker worktrees
+
+`delegate_task` accepts `workspace_mode="auto"` (the default), `"isolated"`, or
+`"shared"`. **Auto follows the active workspace's effective `worktree` setting**:
+`on` isolates built-in workers, and `off` shares the parent's live files. A linked
+session checkout alone does not enable isolation. The setting is checked at each
+delegation; the CLI's one-launch `--worktree` override does not change this saved
+preference. Explicit `isolated` is rejected while the setting is off. Explicit
+`shared` is always available, including for investigations of uncommitted files.
+Shared mode is not read-only; coordinate concurrent edits and Git commands.
+
+For isolated editing:
+
+```python
+delegate_task(
+    agent_name="worker",
+    task="Implement the parser fix, add tests, and commit the result.",
+    workspace_mode="isolated",
+)
+```
+
+pcode creates a unique `task-<id>` branch and sibling checkout under `.worktrees/`,
+starting at the **parent's current commit**, not mainline. The parent must be a
+checkout root on a branch, with no tracked changes or Git operation in progress.
+Commit a checkpoint first; pcode never stashes or creates hidden commits.
+Untracked files are not copied. Existing trusted worktree setup hooks provision
+dependencies and local configuration before the worker starts. Setup has its own
+15-minute budget; cancellation terminates and reaps its process group rather
+than leaving provisioning running in the background.
+
+File tools, shell, repository context, and loaded extensions are rebuilt against
+the child checkout. Extension setup runs again with the child's workspace, and
+its close hooks run when the child ends. Extensions can distinguish worker setup
+with `pcode.is_worker`; shared session resources such as the browser remain owned
+by the parent. Enabled runtime MCP tools remain shared services; they are not
+worktree sandboxes. Isolated workers have a separate job
+registry, and remaining child shell jobs are terminated before recording the
+result. Worktrees do not isolate ports, databases, credentials, or OS permissions.
+
+The tool returns a persistent artifact containing `task_id`, parent path and
+branch, base and result commits, child branch and path, observed dirty state,
+status, and the worker's summary. Commit and cleanliness metadata come from Git;
+verification claims in the summary remain worker-reported. An execution timeout,
+cancellation, setup failure, or worker failure preserves the checkout and record.
+A dead owning process is recognized as a failed task when records are read.
+
+The parent alone has these management tools:
+
+- `list_task_worktrees()` recovers this checkout's task records, including after
+  restarting. Records are local JSON files in the shared Git directory, not
+  tracked repository files.
+- `integrate_task(task_id)` merges a completed result into its recorded **parent
+  branch**, never directly into mainline. Both checkouts must be clean, including
+  untracked files, and the worker's branch and commit must still match its result.
+  A per-parent lock prevents overlapping lifecycle operations. Conflicts remain
+  in the parent: resolve them, commit, then retry integration. Review the diff
+  before integration and run combined checks afterward.
+- `discard_task(task_id, confirm=False)` removes an inactive task's checkout and
+  branch. Unintegrated or dirty work requires `confirm=True`, which the agent is
+  instructed to use only after explicit user approval. Running tasks cannot be
+  discarded. This confirmation argument is not a separate approval UI.
+
+`/worktree list` labels child checkouts with their owner and status.
+`/worktree clean` preserves active and unfinished tasks and their parent checkouts. Clean,
+successfully integrated children can be cleaned against their parent's history;
+mainline need not contain the result yet. Generic worktree merge commands refuse
+task branches, so a child cannot accidentally be integrated into mainline.
+
+Specialized extension delegates retain shared-workspace semantics even when
+`worktree=on`; explicit isolation is only supported for the built-in worker.
+Programmatic callers supplying raw extension capability lists must use shared
+mode or pass the rebindable `load_extensions(...).capabilities` collection.
 
 Harness is pinned to upstream commit
 [`12bce878da99bca61a5d8d798bff0a3bc93bd153`](https://github.com/pydantic/pydantic-ai-harness/commit/12bce878da99bca61a5d8d798bff0a3bc93bd153),

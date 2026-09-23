@@ -159,6 +159,16 @@ with real filesystem tools on both main and worker agents when upgrading.
 
 ### Delegation activity
 
+`WorkspaceSubAgents` in `src/pcode/isolated_delegation.py` subclasses the pinned
+Harness `SubAgents` and `SubAgentToolset`. It changes the tool schema and constructs
+a per-call worker for isolated workspaces, but reuses `_run_delegation` and
+`_settle` for model selection, budgets, lifecycle events, and usage accounting.
+These are private upstream interfaces: keep the isolated delegation, limits,
+cache, and persistence tests when upgrading. A shared toolset must not mutate its
+agent roster for a child; concurrent calls select independent worker instances.
+Creation/finalization wait on per-parent locks in joined threads, so cancellation
+cannot abandon a record update. Integration remains nonblocking on contention.
+
 `src/pcode/delegation.py` bridges Harness 0.31.0's `SubAgents.event_stream_handler`
 into the parent's event stream. The handler receives a **child** `RunContext`,
 not the parent tool identity; `DelegationReporting.wrap_tool_execute` binds the

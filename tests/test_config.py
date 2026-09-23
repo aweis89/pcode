@@ -41,6 +41,7 @@ def test_defaults_and_path_do_not_create_files():
         "extensions_off": "",
         "extensions_on": "",
         "worktree": "off",
+        "worker_concurrency": "4",
         "worktree_exit": "ask",
         "retry_attempts": "1",
         "tool_retries": "3",
@@ -342,10 +343,13 @@ def test_config_completion(prefix, expected):
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "many", "", " 20", "２０"])
-def test_error_scrollback_lines_rejects_invalid_values(value):
+@pytest.mark.parametrize(
+    "key,default", [("error_scrollback_lines", "20"), ("worker_concurrency", "4")]
+)
+def test_positive_integer_settings_reject_invalid_values(value, key, default):
     with pytest.raises(ValueError, match="positive integer"):
-        configure(["set", "error_scrollback_lines", value])
-    assert configure(["get", "error_scrollback_lines"]) == "20"
+        configure(["set", key, value])
+    assert configure(["get", key]) == default
 
 
 def test_error_scrollback_settings_round_trip():
