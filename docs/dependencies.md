@@ -557,6 +557,17 @@ and HTTP clients, including during parallel delegation. Non-Meridian requests
 must remain untouched. `tests/test_meridian.py` exercises HTTP serialization,
 tool loops, resume from history, and parallel child identity separation.
 
+Compaction must change the identity. Meridian's `verifyLineage` classifies a
+history whose first messages changed but whose tail still matches as
+`compaction`, resumes the old CLI session, and sends only the messages after the
+matching tail, so pcode's summary never reaches the model. Reproduced live on
+1.72.0 (the model could not recall a fact only the summary held, while reading
+the full uncompacted prefix from cache); 1.76.1 has the same code.
+`session_identity` therefore appends a digest of the summary when the first
+message starts with `SUMMARY_PREFIX`, and leaves uncompacted conversations on the
+plain conversation ID so upgrading pcode does not cold-start every existing
+session.
+
 Meridian 1.71.1's passthrough transform does not advertise `supportsThinking`;
 its stream path strips thinking blocks unless `thinkingPassthrough` is enabled.
 The default is false. Inspect the running proxy's effective settings with a
@@ -791,25 +802,56 @@ and clear them on cancellation/failure/reset. Preserve `tests/test_shell_streami
 `tests/test_jobs.py`, and the real-tmux command-height tests; no-CPR PTYs cannot
 prove compact height.
 
-### Managed Meridian isolation (verified installed 1.71.1)
+### Managed Meridian isolation (verified 1.71.1 to 1.76.1)
 
 Official reference: <https://github.com/rynfar/meridian/blob/main/docs/configuration.md>.
 Resolve `meridian` through the version-manager shim before inspecting its package.
-The installed `@rynfar/meridian/dist/cli-ryt69ryf.js` implements
-`MERIDIAN_CONFIG_DIR` / `sdk-features.json` (adapter-keyed objects),
-`MERIDIAN_SESSION_DIR`, `/health`, and `/settings/api/features`. A healthy response
-contains `status: healthy` and `version`; an unauthenticated response contains
-`auth.loggedIn: false`. The effective `passthrough.thinkingPassthrough` must be true.
-The managed launcher pins this contract to 1.71.1 rather than assuming newer
-website documentation matches the installed package.
+The contract the managed launcher relies on is `MERIDIAN_CONFIG_DIR` /
+`sdk-features.json` (adapter-keyed objects), `MERIDIAN_SESSION_DIR`,
+`MERIDIAN_DEFAULT_PROFILE`, `/health`, and `/settings/api/features`. A healthy
+response contains `status: healthy` and `version`; an unauthenticated response
+contains `auth.loggedIn: false`. The effective `passthrough.thinkingPassthrough`
+must be true. It was verified in the 1.71.1 bundle, run live on 1.72.0, and read
+in the 1.76.1 bundle, so the launcher accepts 1.71.1 or newer and keeps the
+readiness checks as the real guard. Re-read the bundle before raising the floor.
 
-Config-directory isolation alone is insufficient: disk profiles and default
-telemetry/plugin/update paths can still resolve under the real home. The managed
-launcher explicitly isolates plugins and design-token state and disables persisted
-telemetry/update checks. Existing disk profiles and Claude authentication remain
-shared intentionally; do not describe this mode as a credential sandbox. A local
-smoke check started a private instance, verified health and effective settings,
-and terminated it without making any model request.
+Config-directory isolation alone is insufficient: telemetry, plugin, and update
+paths can still resolve under the real home, so the launcher isolates plugins and
+design-token state and disables persisted telemetry and update checks. Profiles
+are the trap: 1.72 reads `profiles.json` from `~/.config/meridian` whatever
+`MERIDIAN_CONFIG_DIR` says, while 1.76 reads it from the config directory, so a
+private config directory meant the user's profiles on one release and Claude
+Code's default login on the other. The launcher symlinks the user's
+`profiles.json` and `profiles/` into its private directory (never copies: a
+profile can hold a `setup-token` token) and names the profile with
+`MERIDIAN_DEFAULT_PROFILE`, so `/login meridian` knows which login to refresh.
+Claude authentication is shared intentionally; do not describe this mode as a
+credential sandbox.
+
+The session store is deliberately not private. With a per-process store a
+restarted Meridian no longer recognises the conversation (lineage `new`) and
+replays the whole history as flattened text; with the store in pcode's state
+directory a new instance continued the conversation warm. Meridian locks the
+store, so pcode processes can share it, but a SIGKILLed Meridian leaves its lock
+behind: the replacement answered `503 overloaded_error` ("a bookkeeping lock is
+busy") for about a minute before the lock was treated as stale. A normal
+`terminate()` releases it. `meridian_managed` defaults to `auto`, which probes
+the developer's real proxy and can start a real Meridian, so `tests/conftest.py`
+sets `PCODE_MERIDIAN_MANAGED=0`; lifecycle tests clear it and mock the process.
+
+`claude auth login` without a TTY still opens the browser and waits on its
+localhost callback, but it also prints a paste-a-code fallback URL wrapped in
+OSC 8 escapes and then `Paste code here if prompted > ` with no newline, so the
+next message lands on the same line. `/login meridian` strips escapes and the
+prompt rather than dropping lines, and replaces the fallback URL with the command
+to run in a terminal. Meridian's own `meridian profile login NAME` is that same
+command with `CLAUDE_CONFIG_DIR` set to the profile's directory.
+
+`pcode --upgrade-meridian` cannot trust `which meridian`: a launchd-run proxy can
+come from a different Node installation than the shell's version-manager shim
+(this machine had Homebrew's and asdf's, both 1.72.0). It upgrades the `PATH`
+install with the `PATH` npm and the proxy's own install, found from `/health`'s
+`claudeExecutable.path` inside the package, with the npm in that prefix.
 
 
 ### Completed file diffs (verified pinned Harness revision)
