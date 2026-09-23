@@ -2169,6 +2169,18 @@ class PreviewApp:
         self.present_events(self.preview.reply(text))
         return False
 
+    def command_failed(self, name: str, error: Exception) -> None:
+        """Report a slash command that raised, with frames saved for diagnosis."""
+        from pcode.diagnostics import stale_install
+        from pcode.live import error_message
+
+        self.transcript.error(error_message(error, unexpected=f"{name} failed"))
+        if hint := stale_install():
+            self.transcript.warning(hint)
+        saved = getattr(self.runtime, "session", None)
+        if saved is not None and (path := saved.record_error(error, run_id=name)):
+            self.transcript.note(f"Session and diagnostics: {path}")
+
     def wake_row(self, text: str) -> tuple[str, str]:
         """The live row for a turn a finished job started: a badge, not an echo."""
         return "Job finished", text.partition("\n")[0].partition(" Read ")[0]
@@ -2252,7 +2264,11 @@ class PreviewApp:
                     + ". Use /jobs to list or stop them."
                 )
         elif failure:
+            from pcode.diagnostics import stale_install
+
             self.transcript.error(error_message(failure), title="Agent failed")
+            if hint := stale_install():
+                self.transcript.warning(hint)
         if (cancelled or failure) and self.runtime.session:
             directory = self.runtime.session.directory
             # Name the traceback file rather than the directory it sits in: the
@@ -2859,9 +2875,7 @@ class PreviewApp:
                         if self.links_requested:
                             await self.choose_link(output, session)
                 except Exception as error:
-                    from pcode.live import error_message
-
-                    self.transcript.error(error_message(error))
+                    self.command_failed(text.split(maxsplit=1)[0], error)
                 finally:
                     if pending_mcp or pending_model_command:
                         self.activity.busy = True

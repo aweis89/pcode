@@ -1069,10 +1069,15 @@ def retry_ceiling(error: Exception) -> str | None:
 CODEX_LOGIN_HINT = "Run `/login openai-codex` (or `codex login`, then restart pcode)."
 
 
-def error_message(error: Exception) -> str:
-    """Don't print raw provider bodies/validation inputs; they can contain secrets."""
+def error_message(error: Exception, *, unexpected: str | None = None) -> str:
+    """Don't print raw provider bodies/validation inputs; they can contain secrets.
+
+    `unexpected` replaces the closing guess for an unrecognized error, which
+    otherwise blames the model or provider: right for a turn, wrong for a
+    slash command that never reached one.
+    """
     if isinstance(error, BaseExceptionGroup) and error.exceptions:
-        return error_message(error.exceptions[0])
+        return error_message(error.exceptions[0], unexpected=unexpected)
     from pcode.auth import LoginError
     from pcode.compaction import CompactionError
     from pcode.workspace import WorkspaceGoneError
@@ -1136,4 +1141,6 @@ def error_message(error: Exception) -> str:
             "Check network/proxy settings and provider availability, then retry when ready. "
             "See the saved session diagnostics."
         )
+    if unexpected is not None:
+        return f"{unexpected} ({name})."
     return f"Run failed ({name}). Check the model string, provider credentials, and connectivity."
