@@ -27,11 +27,11 @@ with TemporaryDirectory() as directory:
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_resume_popup_cancel_restores_prompt_height(pane):
-    before = capture(pane, "Enter:")
+    before = capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "/resume", "Enter")
     modal(pane, "First popup question")
     pane("send-keys", "-t", "preview:0.0", "Escape")
-    after = capture(pane, "Enter:")
+    after = capture(pane, "❯")
     assert input_rows(before) == input_rows(after)
     pane("send-keys", "-t", "preview:0.0", "still editable")
     capture(pane, "still editable")
@@ -45,7 +45,7 @@ def test_resume_popup_survives_resize(pane):
     its poll fires last, a fixed phase per popup. Spread the resizes across the
     poll cycle so at least one lands in the losing phase.
     """
-    capture(pane, "Enter:")
+    capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "/resume", "Enter")
     modal(pane, "First popup question")
     for step in range(10):
@@ -55,7 +55,7 @@ def test_resume_popup_survives_resize(pane):
         screen = modal(pane, "First popup question")
         assert "Esc Cancel" in screen, screen  # The footer, below the cursor row.
     pane("send-keys", "-t", "preview:0.0", "Escape")
-    after = capture(pane, "Enter:")
+    after = capture(pane, "❯")
     assert input_rows(after) == 1
     pane("send-keys", "-t", "preview:0.0", "still editable")
     capture(pane, "still editable")
@@ -63,11 +63,11 @@ def test_resume_popup_survives_resize(pane):
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_session_info_popup_cancel_restores_prompt_height(pane):
-    before = capture(pane, "Enter:")
+    before = capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "/status", "Enter")
     modal(pane, "Preview turns")
     pane("send-keys", "-t", "preview:0.0", "Escape")
-    after = capture(pane, "Enter:")
+    after = capture(pane, "❯")
     assert input_rows(before) == input_rows(after)
     pane("send-keys", "-t", "preview:0.0", "still editable")
     capture(pane, "still editable")

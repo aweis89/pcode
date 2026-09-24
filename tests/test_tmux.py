@@ -76,10 +76,15 @@ def pane(request):
             "32",
             "-c",
             os.getcwd(),
+            # This checkout's committed .pcode/preferences.json turns worktrees
+            # on, so every main() launch would otherwise check out a real
+            # .worktrees/<session> here and wait on its setup script before
+            # drawing the prompt. `-c SCRIPT ARG` puts ARG in sys.argv, so this
+            # reaches the scripts that call main() too; the rest ignore it.
             shlex.join(
-                [sys.executable, "-c", request.param]
+                [sys.executable, "-c", request.param, "--no-worktree"]
                 if hasattr(request, "param")
-                else [sys.executable, "-m", "pcode.app"]
+                else [sys.executable, "-m", "pcode.app", "--no-worktree"]
             ),
         )
         yield command
@@ -135,6 +140,22 @@ def capture(pane, expected, *, running=False, columns=None):
     pytest.fail(f"Prompt did not settle with {expected!r}:\n{screen}")
 
 
+def settle(pane, ready, *, running=False):
+    """The first settled screen that satisfies ``ready``, else the last one.
+
+    The live status row repaints as soon as an event lands, but scrollback
+    commits wait for the next flush handoff, so a status-row marker can show a
+    frame or two before the rows written above it. Callers assert on the
+    returned screen, so a timeout still fails with the screen in the message.
+    """
+    deadline = time.monotonic() + 3
+    while True:
+        screen = capture(pane, "", running=running)
+        if ready(screen) or time.monotonic() > deadline:
+            return screen
+        time.sleep(0.05)
+
+
 # The last row `/theme-preview` writes: everything above it can scroll away.
 GALLERY_TAIL = "pcode config set syntax_dark NAME"
 
@@ -150,8 +171,9 @@ def scrollback(pane):
 
 
 # The status row is indented one column so the spinner lines up with the task
-# rows inside the frame below it instead of hugging the terminal edge.
-SPINNER_ROW = tuple(" " + frame for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+# rows inside the frame below it instead of hugging the terminal edge. Running
+# tools and pcode's own work (compaction) draw the `line` frames, not `dots`.
+SPINNER_ROW = BUSY_FRAMES
 
 
 def input_rows(screen):
@@ -207,11 +229,17 @@ def test_input_only_grows_for_text(pane, split):
 
     pane("send-keys", "-t", "preview:0.0", "C-c")
     pane("send-keys", "-t", "preview:0.0", "-l", "/")
-    screen = capture(pane, "\n /help ")
+    # Match the menu row, not the banner's "/help for keys". The menu can fill
+    # a short split to its top row, so there is no newline to anchor on, and a
+    # narrow split truncates the description.
+    screen = capture(pane, "List commands")
     assert input_rows(screen) == 1
-    # The menu shows at most six commands, so assert on one that is always in
-    # view rather than a lower entry that a new command can push off the list.
-    assert screen.index("\n /help ") < screen.rindex("┌")  # Menu above the fixed frame.
+    # Assert on the first command, which is always in view, rather than a
+    # lower entry that a new command can push off the list.
+    lines = screen.splitlines()
+    help_row = next(i for i, line in enumerate(lines) if line.startswith(" /help "))
+    top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
+    assert help_row < top  # Menu above the fixed frame.
 
     pane("send-keys", "-t", "preview:0.0", "C-c")
     text = "x" * 120 + "END"
@@ -915,13 +943,14 @@ def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
 @pytest.mark.parametrize("mode", ["queue", "steering"])
 def test_queued_messages_stay_directly_above_editor(pane, mode):
     capture(pane, "❯")
-    if mode == "queue":
-        pane("send-keys", "-t", "preview:0.0", "C-s")
     label = "Queued" if mode == "queue" else "Steering (next model request)"
     pane("send-keys", "-t", "preview:0.0", "-l", "active prompt")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     capture(pane, "COMMITTED MARKER", running=True)
     for text in ("first queued message " * 10, "second queued message"):
+        if mode == "queue":
+            # Ctrl+S picks the mode for one send only.
+            pane("send-keys", "-t", "preview:0.0", "C-s")
         pane("send-keys", "-t", "preview:0.0", "-l", text)
         pane("send-keys", "-t", "preview:0.0", "Enter")
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
@@ -991,7 +1020,8 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    screen = capture(pane, "SLOW_FILE", running=True)
+    capture(pane, "SLOW_FILE", running=True)
+    screen = settle(pane, lambda screen: "file_30.py" in screen, running=True)
     lines = screen.splitlines()
     status = next(i for i, line in enumerate(lines) if "SLOW_FILE" in line)
     assert lines[status].startswith(SPINNER_ROW)
@@ -1023,7 +1053,11 @@ def test_scrollback_quote_is_committed_on_send_with_a_blank_line_after_it(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "sent prompt")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    waiting = capture(pane, "WAITING FOR FIRST MESSAGE", running=True)
+    capture(pane, "WAITING FOR FIRST MESSAGE", running=True)
+    # The runtime withholds the rest of the first message for two seconds, so
+    # the quote must land well before it.
+    waiting = settle(pane, lambda screen: "▌ sent prompt" in screen, running=True)
+    assert "WAITING FOR FIRST MESSAGE" in waiting
     assert "▌ sent prompt" in waiting
     assert "FIRST MODEL" not in waiting
     assert input_rows(waiting) == 1

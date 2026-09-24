@@ -41,7 +41,7 @@ App(runtime=runtime, model="test").run()
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
 def test_tree_cancel_edit_fork_and_resize(pane):
-    before = capture(pane, "Enter:")
+    before = capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "/tree", "Enter")
     modal(pane, "Second tree question")
     assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "1"
