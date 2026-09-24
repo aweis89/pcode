@@ -11,6 +11,8 @@ import sys
 import time
 
 THEMES = ("dark", "light", "auto")
+_pending_input = bytearray()
+_awaiting_reply = False
 _BACKGROUND = re.compile(
     rb"\x1b\]11;rgb:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})(?:\x07|\x1b\\)"
 )
@@ -46,6 +48,7 @@ def _terminal():
 
 
 def _query_background(timeout: float = 0.15) -> str | None:
+    global _awaiting_reply
     # Nothing will be colored, so there is no palette to match: stay quiet
     # rather than write an escape sequence into whatever stdout is.
     if os.environ.get("TERM") == "dumb" or not (sys.stdout.isatty() or sys.stderr.isatty()):
@@ -57,6 +60,7 @@ def _query_background(timeout: float = 0.15) -> str | None:
     fd, query_fd, handle = _terminal()
     if fd is None:
         return None
+    response = bytearray()
     try:
         # Don't steal already queued input, or flush it on entering/leaving cbreak.
         if select.select([fd], [], [], 0)[0]:
@@ -68,13 +72,18 @@ def _query_background(timeout: float = 0.15) -> str | None:
         mode[6][termios.VTIME] = 0
         try:
             termios.tcsetattr(fd, termios.TCSANOW, mode)
+            # Canonical mode hides an unfinished line from select(). Check again
+            # now that every queued character is visible, without consuming it.
+            if select.select([fd], [], [], 0)[0]:
+                return None
             if handle is None:
                 # Keep the query behind any text already queued on stdout.
                 sys.stdout.flush()
+            if handle is None:
+                _awaiting_reply = True
             os.write(query_fd, b"\x1b]11;?\x1b\\")
             deadline = time.monotonic() + timeout
-            response = bytearray()
-            while len(response) < 128:
+            while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
                     break
@@ -84,6 +93,9 @@ def _query_background(timeout: float = 0.15) -> str | None:
                 response.extend(chunk)
                 result = background_theme(response)
                 if result is not None:
+                    response[:] = _BACKGROUND.sub(b"", response)
+                    if handle is None:
+                        _awaiting_reply = False
                     return result
         finally:
             termios.tcsetattr(fd, termios.TCSANOW, original)
@@ -92,7 +104,25 @@ def _query_background(timeout: float = 0.15) -> str | None:
     finally:
         if handle is not None:
             handle.close()
+        else:
+            # Typing can race the query. Only the OSC reply belongs to us;
+            # replay everything else through the editor's normal input parser.
+            _pending_input.extend(response)
     return None
+
+
+def replay_pending_input(app) -> None:
+    """Return bytes read during the probe before the editor reads newer input."""
+    global _awaiting_reply
+    from prompt_toolkit.input.vt100 import Vt100Input
+
+    from pcode.startup_input import StartupInput
+
+    if not (_pending_input or _awaiting_reply) or not isinstance(app.input, Vt100Input):
+        return
+    app.input = StartupInput(app.input.stdin, bytes(_pending_input), _awaiting_reply)
+    _pending_input.clear()
+    _awaiting_reply = False
 
 
 def detect_theme() -> str:
