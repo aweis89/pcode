@@ -75,8 +75,9 @@ async def _start(pcode) -> None:
 
 def _capability(pcode, toolset):
     """The browser tools, the open and login tools, and their guidance, sharing one session."""
+    from playwright.async_api import Error as PlaywrightError
     from pydantic_ai.capabilities import Capability
-    from pydantic_ai_harness.playwright import PlaywrightBrowser
+    from pydantic_ai_harness.playwright import BrowserUnavailableError, PlaywrightBrowser
 
     browser_tools = set(toolset.tools) | {"browser_open", "browser_tabs"}
 
@@ -89,9 +90,18 @@ def _capability(pcode, toolset):
         right URL in your own tab. Read only: act through `navigate`.
         """
         await _start(pcode)
+        try:
+            tabs = await STATE.list_tabs()
+        except (PlaywrightError, BrowserUnavailableError):
+            STATE.session.launch_error = None  # Allow another attempt after a failed launch.
+            return (
+                "Could not list browser tabs: the browser is unavailable or did not respond. "
+                "Check /browser status and remote debugging; if needed, use /browser off "
+                "then /browser attach to reconnect."
+            )
         mine = {page.url for page in STATE.session.pages}
         lines = []
-        for title, url in await STATE.list_tabs():
+        for title, url in tabs:
             ours = " (yours)" if url in mine else ""
             lines.append(f"- {title or '(untitled)'}{ours}: {url}")
         return "\n".join(lines) or "No tabs are open."
@@ -185,7 +195,7 @@ def setup(pcode) -> None:
             if not STATE.enabled:
                 turn_on()
             pcode.ui.notify(
-                f"Joining your Chrome at {STATE.cdp_url}: the model can act as every account "
+                f"Joining your browser at {STATE.cdp_url}: the model can act as every account "
                 "you are signed in to there. A new tab opens on first use.",
                 "warning",
             )
@@ -208,12 +218,12 @@ def setup(pcode) -> None:
 
     pcode.register_command(
         "/browser",
-        "A real Chrome the model can drive; `launch` opens one, `attach` joins yours",
+        "A real browser the model can drive; `launch` opens Chrome, `attach` joins yours",
         browser,
         arguments=("launch", "attach", "off", "status"),
         argument_descriptions={
             "launch": "Open pcode's own Chrome window, with its own logins",
-            "attach": "Join the Chrome you have open, logins included; needs remote debugging on",
+            "attach": "Join Chrome, Chromium, or Edge, logins included; needs remote debugging on",
             "off": "Close the browser and remove the tools",
             "status": "Show which browser is in use and where it is",
         },
