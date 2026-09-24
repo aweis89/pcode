@@ -130,6 +130,11 @@ The widget also hides itself as soon as the model finishes a turn, keeping the
 idle prompt compact, and returns on the next turn. Turn that off with
 `/autohide-tasks off` (or `pcode config set autohide_tasks off`); Ctrl+O brings
 the widget back immediately after an auto-hide.
+
+`/attach-tasks on` (or `pcode config set attach_tasks on`) draws the widget as
+the top of the editor box instead of a separate box above it: its heading
+becomes the editor's top border and a divider separates the tasks from your
+draft. Queued prompts then sit above the combined box. Default: off.
 Ctrl+O replaces the editor’s insert-newline binding; Ctrl+J still inserts a newline.
 
 **Ctrl+Y** copies whatever is in the editor right now, so a draft can be moved

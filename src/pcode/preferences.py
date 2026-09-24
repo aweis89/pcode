@@ -256,6 +256,9 @@ SETTINGS = {
     "autohide_tasks": Setting(
         "on", ("on", "off"), description="Hide the task list once every step is done"
     ),
+    "attach_tasks": Setting(
+        "off", ("on", "off"), description="Draw the task list inside the editor box"
+    ),
     "show_thinking": Setting(
         "off", ("on", "off"), description="Stream the model's thinking into the transcript"
     ),

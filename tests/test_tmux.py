@@ -784,6 +784,60 @@ def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
     assert "Run · " not in screen
 
 
+def attached_box(screen):
+    """The editor box's rows: heading, tasks, divider, text, footer, all one frame."""
+    lines = screen.splitlines()
+    cursor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
+    top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("┌"))
+    divider = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("├"))
+    bottom = next(i for i, line in enumerate(lines[cursor:], cursor) if line.startswith("└"))
+    assert top < divider < cursor, screen
+    assert lines[divider].endswith("┤"), screen
+    return lines[top], lines[top + 1 : divider], bottom - divider - 1
+
+
+@pytest.mark.parametrize(
+    "pane",
+    [TOOLS_SCRIPT.replace("app.run()", "app.activity.attach_tasks = True\napp.run()")],
+    indirect=True,
+)
+def test_attached_tasks_share_the_editor_box(pane):
+    initial = capture(pane, "A task")
+    heading, tasks, text_rows = attached_box(initial)
+    assert heading.startswith("┌─ Tasks 0/1 ─")
+    assert len(tasks) == 1 and "A task" in tasks[0]
+    assert text_rows == 1
+    assert initial.count("┌") == initial.count("└") == 1
+
+    pane("send-keys", "-t", "preview:0.0", "-l", "/attach-tasks off")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    detached = capture(pane, "Tasks inside the editor box: off")
+    assert "├" not in detached and detached.count("┌") == 2
+    assert input_rows(detached) == 1
+    pane("send-keys", "-t", "preview:0.0", "-l", "/attach-tasks on")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    capture(pane, "Tasks inside the editor box: on")
+
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
+    for width, height in ((40, 14), (100, 32), (40, 20)):
+        pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
+        deadline = time.monotonic() + 3
+        while True:
+            screen = capture(pane, "keep draft", running=True, columns=width)
+            if screen.count("├") == 1:
+                break
+            assert time.monotonic() < deadline, screen
+            time.sleep(0.05)
+        heading, tasks, text_rows = attached_box(screen)
+        assert heading.startswith("┌─ Tasks 0/1")
+        assert len(tasks) == 1 and tasks[0][1] in "◜◠◝◞◡◟"
+        assert text_rows == 1
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    capture(pane, "! Run cancelled")
+
+
 RESIZE_TRANSCRIPT_SCRIPT = TOOLS_SCRIPT.replace(
     'yield TextDelta("MODEL CONVERSATION ONLY\\n\\n")',
     'yield TextDelta("".join(f"RESIZE_TRANSCRIPT_{i:03d}\\n\\n" for i in range(40)))',
