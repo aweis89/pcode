@@ -47,7 +47,9 @@ Repository MCP files are **not** loaded automatically. The JSON uses an
   and `cwd`. Commands are executed directly, not through a shell. Relative paths
   are resolved from pcode's launch directory; prefer absolute paths.
 - **Remote HTTP/SSE:** `url` and optional `headers` (string map). Transport is
-  inferred from the URL by the MCP client. Add `"auth": "oauth"` for browser sign-in.
+  inferred from the URL by the MCP client. Add `"auth": "oauth"` for browser sign-in,
+  plus `client_id` and `client_secret` when the service needs a
+  [pre-registered client](#pre-registered-clients).
 
 Either transport also accepts `"enabled": true` (on for every conversation) and
 `"direct": true` (see tool search below).
@@ -90,8 +92,9 @@ no headless/device-code login command.
 
 - Pydantic AI's `MCPToolset(auth="oauth")` delegates PKCE, dynamic client registration,
   callback/state validation, token refresh, and authenticated requests to FastMCP
-  and the MCP SDK. Servers must support that client flow; pre-registered client IDs,
-  custom scopes, and fixed callback ports are not exposed in pcode's config yet.
+  and the MCP SDK. Custom scopes and fixed callback ports are not exposed in
+  pcode's config; a server without dynamic registration needs a
+  [pre-registered client](#pre-registered-clients).
 - **Sign-ins are saved.** Tokens and the client registration are written to
   `~/.config/pcode/mcp-credentials.json` (owner-readable only, next to the
   Anthropic sign-in), keyed by server URL. Disable/re-enable, `/new`, resume, and
@@ -109,6 +112,35 @@ no headless/device-code login command.
 - `/mcp logout NAME` deletes the saved credentials for that server and disables
   it. Neither that nor `/mcp disable` revokes the server-side grant; revoke access
   through the service if needed.
+
+### Pre-registered clients
+
+Some authorization servers, Google's among them, don't let a client register
+itself. Create an OAuth client in the service's console and give pcode its ID
+(and secret, if it has one). Reference them from the environment so they stay
+out of the file:
+
+```json
+{
+  "mcpServers": {
+    "gdrive": {
+      "url": "https://drivemcp.googleapis.com/mcp/v1",
+      "auth": "oauth",
+      "client_id": "${GDRIVE_OAUTH_CLIENT_ID}",
+      "client_secret": "${GDRIVE_OAUTH_CLIENT_SECRET}"
+    }
+  }
+}
+```
+
+pcode's callback listens on `http://127.0.0.1:<port>/callback` with a port chosen
+at sign-in, so the client must accept any loopback port. For Google, create a
+**Desktop app** client (Google Auth Platform > Clients), which does; a Web
+application client only accepts the exact redirect URIs you list. Google's
+[Drive MCP setup](https://developers.google.com/workspace/drive/api/guides/configure-mcp-server)
+also needs the Drive API and Drive MCP API enabled on that project and the Drive
+scopes added to its consent screen. Without a client ID, sign-in fails with
+`Registration failed: 400`.
 
 ## Default-on servers
 

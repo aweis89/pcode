@@ -88,6 +88,9 @@ def test_native_oauth_is_constructed_without_network_or_browser(monkeypatch):
         {"url": URL, "auth": {"type": "oauth", "client_secret": "secret-bearer-value"}},
         {"url": URL, "auth": "oauth", "headers": {"Authorization": "secret-bearer-value"}},
         {"url": URL, "auth": "oauth", "headers": {"authorization": "secret-bearer-value"}},
+        {"url": URL, "client_id": "id", "client_secret": "secret-bearer-value"},
+        {"url": URL, "auth": "oauth", "client_secret": "secret-bearer-value"},
+        {"command": "echo", "client_secret": "secret-bearer-value"},
     ],
 )
 def test_invalid_auth_is_rejected_without_exposing_secrets(entry):
@@ -237,8 +240,12 @@ def test_forget_rejects_unknown_or_non_oauth_servers():
 class FakeOAuthProvider:
     """Real SDK discovery, DCR, PKCE, exchange, and refresh over a mock transport."""
 
-    def __init__(self, token_auth_method="none"):
+    def __init__(self, token_auth_method="none", *, advertised=ISSUER, registration=True):
         self.token_auth_method = token_auth_method
+        # What protected-resource metadata names, which may differ from the issuer
+        # its metadata reports, and whether dynamic registration is offered.
+        self.advertised = advertised
+        self.registration = registration
         self.authorization = None
         self.registrations = 0
         self.grants = []
@@ -279,22 +286,25 @@ class FakeOAuthProvider:
                 )
             return httpx2.Response(200, json={"ok": True})
         if path == "/resource":
-            return httpx2.Response(200, json={"resource": URL, "authorization_servers": [ISSUER]})
+            return httpx2.Response(
+                200, json={"resource": URL, "authorization_servers": [self.advertised]}
+            )
         if path.startswith("/.well-known/"):
+            register = {"registration_endpoint": ISSUER + "/register"} if self.registration else {}
             return httpx2.Response(
                 200,
                 json={
                     "issuer": ISSUER,
                     "authorization_endpoint": ISSUER + "/authorize",
                     "token_endpoint": ISSUER + "/token",
-                    "registration_endpoint": ISSUER + "/register",
+                    **register,
                     "response_types_supported": ["code"],
                     "grant_types_supported": ["authorization_code", "refresh_token"],
                     "token_endpoint_auth_methods_supported": ["none"],
                     "code_challenge_methods_supported": ["S256"],
                 },
             )
-        if path == "/register":
+        if path == "/register" and self.registration:
             self.registrations += 1
             metadata = json.loads(request.content)
             return httpx2.Response(
@@ -424,6 +434,46 @@ def test_native_oauth_exchange_reuse_and_refresh(method, registered):
         assert provider.registrations == (0 if registered else 1)
         assert provider.browser_visits == 1
         assert provider.grants == ["authorization_code", "refresh_token", "refresh_token"]
+
+    asyncio.run(run())
+
+
+def test_preregistered_client_signs_in_where_registration_is_unavailable():
+    """Google's shape: no dynamic registration, and the protected resource names
+    its authorization server with a trailing slash that the server's own
+    metadata omits."""
+    entry = {
+        "url": URL,
+        "auth": "oauth",
+        "client_id": "fake-client",
+        "client_secret": "fake-client-secret",
+    }
+
+    async def run():
+        auth = mcp_transport(build_toolset("remote", entry)).auth
+        provider = FakeOAuthProvider(
+            "client_secret_post", advertised=ISSUER + "/", registration=False
+        )
+        async with httpx2.AsyncClient(auth=auth, transport=provider.install(auth)) as client:
+            assert (await client.get(URL)).status_code == 200
+        assert provider.registrations == 0
+        assert provider.browser_visits == 1
+        assert provider.authorization["client_id"] == ["fake-client"]
+        assert provider.grants == ["authorization_code"]
+
+    asyncio.run(run())
+
+
+def test_issuer_mismatch_beyond_a_trailing_slash_is_still_rejected():
+    from mcp.client.auth.exceptions import OAuthFlowError
+
+    async def run():
+        auth = mcp_transport(build_toolset("remote", {"url": URL, "auth": "oauth"})).auth
+        provider = FakeOAuthProvider(advertised="https://other.example/")
+        async with httpx2.AsyncClient(auth=auth, transport=provider.install(auth)) as client:
+            with pytest.raises(OAuthFlowError, match="issuer mismatch"):
+                await client.get(URL)
+        assert provider.browser_visits == 0
 
     asyncio.run(run())
 
