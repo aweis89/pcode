@@ -10,6 +10,9 @@ from pcode.tool_display import PLAN_TOOLS, command_preview, label, plain
 
 # Delegates outlive their own chatter, so they keep the panel's first rows.
 DELEGATE = "delegate_task"
+# Marks a row as a sub-agent rather than a tool. One terminal cell wide in
+# common fonts, unlike emoji, so the panel's width math still holds.
+AGENT_ICON = "✦"
 # A sub-agent's quick tools (a read, a grep) settle in milliseconds. Dropping
 # their row the instant the result lands makes it flash unreadably and reflows
 # the prompt, so a settled child row lingers long enough to be read.
@@ -57,6 +60,10 @@ class ToolCall:
     def line(self) -> str:
         """The call without a status icon; each surface supplies its own."""
         event = self.event
+        # A settled call keeps the duration it finished with instead of ticking on.
+        elapsed = (self.settled if self.settled is not None else monotonic()) - self.started
+        if event.name == DELEGATE:
+            return self._delegate_line(elapsed)
         # A stated purpose is what this row is for: the widget is the one place
         # that shows a job while it runs, when the command has not paid off yet.
         detail = (
@@ -67,9 +74,22 @@ class ToolCall:
             else plain(event.detail, limit=None)
         )
         state = f" · {plain(event.activity)}" if event.activity else ""
-        # A settled call keeps the duration it finished with instead of ticking on.
-        elapsed = (self.settled if self.settled is not None else monotonic()) - self.started
         return f"{label(event.name)}{state} · {elapsed:.1f}s · {detail}"
+
+    def _delegate_line(self, elapsed: float) -> str:
+        """`✦ Worker · 5.5s · Thinking · <task>`: the agent is what tells delegates apart.
+
+        A settled delegate's last phase is stale (nearly always "Responding"),
+        so it says how it ended instead. The status row draws a spinner, not
+        a check, so this word is the only sign there that the agent is done.
+        """
+        agent, _, task = plain(self.event.detail, limit=None).partition(" · ")
+        if self.settled is not None:
+            state = "Failed" if self.failed else "Done"
+        else:
+            state = plain(self.event.activity) or "Starting"
+        name = agent[:1].upper() + agent[1:]
+        return f"{AGENT_ICON} {name} · {elapsed:.1f}s · {state} · {task}"
 
 
 @dataclass

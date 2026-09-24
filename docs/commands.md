@@ -239,14 +239,20 @@ or pending task. There is no separate Tools panel or Tasks heading.
 A running `delegate_task` keeps its own row, and a sub-agent that plans shows up
 to three of its tasks indented beneath it, centred on its active task, with its
 current tool calls nested under that task the same way. The sub-agent's plan is
-separate from yours: it is never saved, never merged into your plan, and leaves
-the widget when the delegate finishes. The built-in worker always plans this way;
-an extension's delegate opts in by giving its agent `IdentifiedPlanning()` from
-`pcode.planning` (see "Sub-agents" in `src/pcode/extension_guide.md`).
+separate from yours: it is never saved and never merged into your plan. A
+finished delegate stays listed with its plan until the next turn starts. The
+built-in worker always plans this way; an extension's delegate opts in by giving
+its agent `IdentifiedPlanning()` from `pcode.planning` (see "Sub-agents" in
+`src/pcode/extension_guide.md`).
+
+A delegate's row is marked `✦` and reads agent, elapsed time, phase, then its
+assignment. While it runs, the phase is `Waiting for model`, `Thinking`,
+`Working` (one of its tools is running), or `Responding` (writing its answer);
+once it settles, the phase becomes `Done` or `Failed`.
 
 ```text
 * Fix the flaky login test
-    ⟳ Delegate · Working · 12.4s · worker · Investigate the retry path
+    ⟳ ✦ Worker · 12.4s · Working · Investigate the retry path
         ✓ Read the retry code
         * Reproduce the failure
             ⟳ Run · 1.2s · pytest -q tests/test_login.py
