@@ -126,10 +126,13 @@ widget without stopping work or clearing task/tool history. The current prompt
 and queue remain visible. Visibility is saved across launches (default: on);
 use `pcode config set show_tasks off` to set the default from the shell.
 
-The widget also hides itself as soon as the model finishes a turn, keeping the
-idle prompt compact, and returns on the next turn. Turn that off with
-`/autohide-tasks off` (or `pcode config set autohide_tasks off`); Ctrl+O brings
-the widget back immediately after an auto-hide.
+Delegated sub-agents are listed in the widget like tasks. A finished delegate
+stays with a ✓ (or `!` if it failed), along with its own task list, until the
+next turn starts.
+
+`/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
+as soon as the model finishes a turn, keeping the idle prompt compact; it
+returns on the next turn, and Ctrl+O brings it back immediately. Default: off.
 
 `/attach-tasks on` (or `pcode config set attach_tasks on`) draws the widget as
 the top of the editor box instead of a separate box above it: its heading
