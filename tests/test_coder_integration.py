@@ -53,6 +53,38 @@ def test_coder_preserves_upstream_tools_schemas_and_read_budget(tmp_path, monkey
     asyncio.run(read())
 
 
+def test_parent_and_worker_replace_finish_before_responding_guidance(tmp_path):
+    seen = []
+
+    async def model(messages, info):
+        parent = any(tool.name == "delegate_task" for tool in info.function_tools)
+        seen.append("parent" if parent else "worker")
+        instructions = info.instructions
+        assert instructions.count("You are a software engineering agent.") == 1
+        assert "Finish required long-running work before responding" not in instructions
+        assert "poll status and output" not in instructions
+        assert "answer user follow-ups and do independent work" in instructions
+        assert "verify required results before reporting task" in instructions
+        assert "Do not edit inputs used by a" in instructions
+        tools = {tool.name: tool for tool in info.function_tools}
+        assert "no independent work remains" in tools["wait_for_job"].description
+        if parent and not any(
+            isinstance(part, ToolReturnPart) for message in messages for part in message.parts
+        ):
+            yield {
+                0: DeltaToolCall(
+                    name="delegate_task",
+                    json_args=json.dumps({"agent_name": "worker", "task": "Inspect the guidance"}),
+                )
+            }
+        else:
+            yield "Done"
+
+    agent = Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)])
+    assert agent.run_sync("Inspect the guidance").output == "Done"
+    assert seen == ["parent", "worker", "parent"]
+
+
 def test_bundled_ripgrep_works_without_activating_the_tool_environment(tmp_path, monkeypatch):
     import os
     import shutil
