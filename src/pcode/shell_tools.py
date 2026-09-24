@@ -164,8 +164,8 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         """Wait for a job started by `shell`. It is not re-run.
 
         Returns the job's output and exit status once it finishes, or a job
-        handle again if the wait ends first. Use this when you need a
-        background job's result before you can continue.
+        handle again if the wait ends first. Use this when the next step needs
+        this job's result and no independent work remains.
 
         Pass `until_output` to wait for readiness instead of exit: a server
         that never exits is ready when its log says so.

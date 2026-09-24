@@ -756,6 +756,14 @@ and keyed by that identity. They do not add model calls. Planning and SubAgents
 are no longer in Coder and must be composed explicitly. `ClearToolResults` remains
 removed so pcode can summarize before discarding evidence.
 
+Pcode also replaces Coder's instruction-only `Capability` with the local
+`CODER_INSTRUCTIONS` in `agent.py`, before copying capabilities to the worker.
+The pinned upstream prompt says to finish long-running work before responding
+and to poll status, which conflicts with steering and delivered job notices.
+Keep the job-aware workflow in that replacement, not in a second competing
+instruction block. `test_parent_and_worker_replace_finish_before_responding_guidance`
+checks the resolved prompt for both agents.
+
 Why the replacement rather than the upstream tool: a command that outlives its
 call needs a name. Without one, a still-running command can only be handed back
 as a PID and two paths, so the model's only way to learn it finished is to poll
