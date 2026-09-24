@@ -22,11 +22,13 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit
 
 import anyio
 import httpx2
+import mcp.client.auth.oauth2 as sdk_oauth
 from fastmcp.client.auth import OAuth
 from fastmcp.client.oauth_callback import OAuthCallbackResult, create_oauth_callback_server
 from filelock import FileLock
 from key_value.aio.stores.base import BaseStore
-from mcp.shared.auth import AuthorizationCodeResult
+from mcp.client.auth.utils import issuers_match, validate_metadata_issuer
+from mcp.shared.auth import AuthorizationCodeResult, OAuthMetadata
 from pydantic import AnyHttpUrl
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -39,6 +41,23 @@ _HOST = "127.0.0.1"
 
 class SignInRequired(RuntimeError):
     """The server wants a browser login, which a non-interactive enable must not start."""
+
+
+def _validate_metadata_issuer(oauth_metadata: OAuthMetadata, expected_issuer: str) -> None:
+    """Accept a root issuer written with or without its trailing slash.
+
+    The SDK treats `https://host` and `https://host/` as one server when binding
+    stored credentials and on its legacy discovery path, but compares strictly
+    when resource metadata names the server. Google's MCP servers name
+    `https://accounts.google.com/` there while Google's metadata says
+    `https://accounts.google.com`, so every sign-in failed. Any other mismatch
+    still fails the SDK's own check.
+    """
+    if not issuers_match(str(oauth_metadata.issuer), expected_issuer):
+        validate_metadata_issuer(oauth_metadata, expected_issuer)
+
+
+sdk_oauth.validate_metadata_issuer = _validate_metadata_issuer
 
 
 def credentials_path() -> Path:
@@ -159,11 +178,26 @@ def _single_token_auth(request: httpx2.Request) -> httpx2.Request:
 class LoopbackOAuth(OAuth):
     """FastMCP handles protocol/security; this adapter owns callback I/O lifetime."""
 
-    def __init__(self, store: CredentialStore | None = None, *, interactive: bool = True):
+    def __init__(
+        self,
+        store: CredentialStore | None = None,
+        *,
+        interactive: bool = True,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+    ):
         super().__init__(
-            client_name="pcode", callback_host=_HOST, token_storage=store or CredentialStore()
+            client_name="pcode",
+            callback_host=_HOST,
+            token_storage=store or CredentialStore(),
+            client_id=client_id,
+            client_secret=client_secret,
         )
         self.interactive = interactive
+        # Only a dynamic registration pins a callback port. A client created
+        # ahead of time may use any loopback port (RFC 8252 section 7.3), so the
+        # socket pcode reserves decides, not a port saved by an earlier process.
+        self._preregistered = client_id is not None
         self._callback_socket: socket.socket | None = None
         self._flow_lock = asyncio.Lock()
         self._expected_state: str | None = None
@@ -194,12 +228,15 @@ class LoopbackOAuth(OAuth):
         # The SDK builds the authorization URL from client_metadata before calling
         # redirect_handler, so the saved registration's port must be adopted here.
         await super()._initialize()
-        self._adopt_registered_port(self.context.client_info)
+        if not self._preregistered:
+            self._adopt_registered_port(self.context.client_info)
 
     async def _reserve_callback(self) -> socket.socket:
         if self._callback_socket is not None:
             return self._callback_socket
-        registered = await self.token_storage_adapter.get_client_info()
+        registered = (
+            None if self._preregistered else await self.token_storage_adapter.get_client_info()
+        )
         port = self._adopt_registered_port(registered)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
