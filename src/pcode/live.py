@@ -1090,6 +1090,30 @@ def retry_ceiling(error: Exception) -> str | None:
 
 CODEX_LOGIN_HINT = "Run `/login openai-codex` (or `codex login`, then restart pcode)."
 
+# Packages whose exceptions mean an MCP server failed, not the model or provider.
+_MCP_AUTH_PACKAGES = ("mcp.client.auth", "fastmcp.client.auth", "pcode.mcp_oauth")
+_MCP_PACKAGES = ("mcp", "fastmcp", "pydantic_ai.mcp", "pcode.mcp", *_MCP_AUTH_PACKAGES)
+
+
+def _mcp_failure(error: BaseException) -> str | None:
+    """`"auth"` or `"server"` when an MCP client raised the error or its explicit cause.
+
+    Recognized by the raising package, never by message text: an MCP tool call
+    that fails mid-turn otherwise reaches the generic guess, which blames the
+    model and provider.
+    """
+    found = None
+    for _ in range(8):
+        module = type(error).__module__
+        if any(module == pkg or module.startswith(f"{pkg}.") for pkg in _MCP_AUTH_PACKAGES):
+            return "auth"
+        if any(module == pkg or module.startswith(f"{pkg}.") for pkg in _MCP_PACKAGES):
+            found = "server"
+        if error.__cause__ is None:
+            break
+        error = error.__cause__
+    return found
+
 
 def error_message(error: Exception, *, unexpected: str | None = None) -> str:
     """Don't print raw provider bodies/validation inputs; they can contain secrets.
@@ -1112,6 +1136,19 @@ def error_message(error: Exception, *, unexpected: str | None = None) -> str:
     if isinstance(error, (SessionError, LoginError)):
         # LoginError contains only fixed, sanitized setup/refresh guidance.
         return str(error)
+    if (mcp := _mcp_failure(error)) is not None:
+        # SDK messages can carry token-endpoint bodies; the diagnostics log has them.
+        if mcp == "auth":
+            return (
+                f"MCP server sign-in failed ({name}), not the model or provider. "
+                "Retry with `/mcp enable NAME`, or `/mcp logout NAME` to start over. "
+                "See the saved session diagnostics."
+            )
+        return (
+            f"MCP server request failed ({name}), not the model or provider. "
+            "Check it with `/mcp list`, or turn it off with `/mcp disable NAME`. "
+            "See the saved session diagnostics."
+        )
     from pcode.meridian import failure_hint
 
     if (hint := failure_hint(error)) is not None:
