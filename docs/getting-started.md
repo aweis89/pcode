@@ -67,6 +67,11 @@ pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
 Try asking: `What does this repository do? Read the README and cite relevant files.`
 Live conversations save automatically when the first model prompt is submitted.
 
+You can start typing immediately after launching `pcode`, before the editor
+appears. Startup input is kept for the editor, including text typed during theme
+detection. If a repository trust question appears, answer it before typing your
+prompt.
+
 A prompt on the command line is sent as the first message, then the editor opens
 as usual. Add `-p`/`--print` to skip the editor: the reply goes to stdout, tool
 activity and errors go to stderr, and the exit status reports whether the turn

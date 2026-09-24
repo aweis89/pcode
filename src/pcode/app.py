@@ -23,6 +23,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from pcode.aside import Asides
+from pcode.cli import ask, restore_stdin
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.config import USAGE as CONFIG_USAGE
@@ -58,7 +59,7 @@ from pcode.runtime import (
 )
 from pcode.shell_mode import execute, shell_command
 from pcode.stream_display import present_events, present_stream_event
-from pcode.theme import THEMES
+from pcode.theme import THEMES, replay_pending_input
 from pcode.tool_display import command_text, plain
 from pcode.ui import (
     SYSTEM_COMMAND_LABELS,
@@ -3189,6 +3190,8 @@ class PreviewApp:
         self.asides.on_settle = aside_settled
 
         def start():
+            restore_stdin()
+            replay_pending_input(session.app)
             session.app.create_background_task(initialize())
             session.app.create_background_task(watch_branch())
             session.app.create_background_task(watch_jobs())
@@ -3784,7 +3787,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
 
         # Before the worktree, whose setup script is one of the things being
         # trusted. --print has no one to ask, so untrusted code is skipped.
-        prompt_trust(workspace, ask=None if args.print else input)
+        prompt_trust(workspace, ask=None if args.print else ask)
         session_id = None
         if not args.resume and not args.no_worktree and not args.theme_preview:
             workspace, session_id = _enter_worktree(workspace, args.worktree)

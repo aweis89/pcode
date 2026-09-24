@@ -137,6 +137,68 @@ def test_query_restores_terminal(monkeypatch, respond):
         os.close(slave)
 
 
+def test_query_does_not_consume_an_unfinished_canonical_line(monkeypatch):
+    master, slave = pty.openpty()
+    monkeypatch.setenv("TERM", "xterm-256color")
+    try:
+        with os.fdopen(os.dup(slave), "r") as stdin, os.fdopen(os.dup(slave), "w") as stdout:
+            monkeypatch.setattr(sys, "stdin", stdin)
+            monkeypatch.setattr(sys, "stdout", stdout)
+            os.write(master, b"early draft")
+            assert not select.select([slave], [], [], 0)[0]  # No newline yet.
+            assert theme._query_background() is None
+            from prompt_toolkit.input.vt100 import raw_mode
+
+            with raw_mode(slave):
+                assert select.select([slave], [], [], 1)[0]
+                assert os.read(slave, 1024) == b"early draft"
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+@pytest.mark.parametrize("reply", [b"", b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\"])
+@pytest.mark.parametrize("draft", [b"early ", b"x" * 256])
+def test_typing_during_query_is_replayed_with_split_utf8(monkeypatch, reply, draft):
+    from types import SimpleNamespace
+
+    from prompt_toolkit.input.vt100 import Vt100Input
+
+    master, slave = pty.openpty()
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr(theme, "_pending_input", bytearray())
+    monkeypatch.setattr(theme, "_awaiting_reply", False)
+
+    def terminal():
+        if select.select([master], [], [], 2)[0]:
+            os.read(master, 1024)
+            os.write(master, draft + reply + b"\xc3")
+
+    worker = threading.Thread(target=terminal)
+    try:
+        with os.fdopen(os.dup(slave), "r") as stdin, os.fdopen(os.dup(slave), "w") as stdout:
+            monkeypatch.setattr(sys, "stdin", stdin)
+            monkeypatch.setattr(sys, "stdout", stdout)
+            worker.start()
+            assert theme._query_background(0.2) == ("light" if reply else None)
+            worker.join(2)
+            keys = []
+            terminal_input = Vt100Input(stdin)
+            app = SimpleNamespace(input=terminal_input)
+            theme.replay_pending_input(app)
+            with app.input.raw_mode():
+                keys.extend(app.input.read_keys())
+                os.write(master, b"\xa9")
+                assert select.select([slave], [], [], 1)[0]
+                keys.extend(app.input.read_keys())
+            assert "".join(key.data for key in keys) == draft.decode() + "é"
+            assert not theme._pending_input
+    finally:
+        worker.join(2)
+        os.close(master)
+        os.close(slave)
+
+
 def test_auto_palette_and_syntax(monkeypatch):
     monkeypatch.setattr("pcode.ui.detect_theme", lambda: "light")
     transcript = Transcript(Console(file=StringIO()), "auto")
