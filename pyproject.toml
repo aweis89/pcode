@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pcode = "pcode.app:main"
+pcode = "pcode.cli:main"
 pcode-benchmark = "pcode.profile_benchmark:main"
 
 [build-system]
