@@ -106,6 +106,9 @@ class ServerConfig(BaseModel):
     url: str | None = None
     headers: dict[str, str] | None = None
     auth: Literal["oauth"] | None = None
+    # For servers without dynamic client registration, such as Google's.
+    client_id: str | None = None
+    client_secret: str | None = None
     # Enable at startup, /new, and resume instead of waiting for /mcp enable.
     enabled: bool = False
     # Off by default: a server's schemas otherwise sit in every request of the
@@ -117,7 +120,10 @@ class ServerConfig(BaseModel):
         if bool(self.command) == bool(self.url):
             raise ValueError("Specify exactly one of command or url.")
         if self.command:
-            if not self.command.strip() or self.headers is not None or self.auth is not None:
+            if not self.command.strip() or any(
+                item is not None
+                for item in (self.headers, self.auth, self.client_id, self.client_secret)
+            ):
                 raise ValueError("Invalid stdio options.")
             return self
         if any(item is not None for item in (self.command, self.args, self.env, self.cwd)):
@@ -127,6 +133,10 @@ class ServerConfig(BaseModel):
             raise ValueError("Expected an HTTP(S) URL.")
         if self.auth and any(key.lower() == "authorization" for key in self.headers or {}):
             raise ValueError("OAuth cannot be combined with an Authorization header.")
+        if (self.client_id or self.client_secret) and not self.auth:
+            raise ValueError("A client ID needs OAuth.")
+        if self.client_secret and not self.client_id:
+            raise ValueError("A client secret needs a client ID.")
         return self
 
 
@@ -137,7 +147,8 @@ def _config(name: str, raw: Any) -> ServerConfig:
         # Pydantic errors include input values: never print credentials from config.
         raise ValueError(
             f"Invalid MCP server '{name}'. Use command/args/env/cwd for stdio or url/headers "
-            'for HTTP (optional auth: "oauth", enabled: true, direct: true); other fields '
+            'for HTTP (optional auth: "oauth" with client_id/client_secret, enabled: true, '
+            "direct: true); other fields "
             "are not supported."
         ) from None
 
@@ -168,7 +179,15 @@ def build_toolset(name: str, raw: Any, *, interactive: bool = True):
             # and the credential file (see mcp_oauth).
             from pcode.mcp_oauth import LoopbackOAuth
 
-            auth = LoopbackOAuth(interactive=interactive) if config.auth == "oauth" else None
+            auth = (
+                LoopbackOAuth(
+                    interactive=interactive,
+                    client_id=config.client_id,
+                    client_secret=config.client_secret,
+                )
+                if config.auth == "oauth"
+                else None
+            )
             toolset = MCPToolset(
                 config.url,
                 id=name,

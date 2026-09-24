@@ -26,7 +26,9 @@ from fastmcp.client.auth import OAuth
 from fastmcp.client.oauth_callback import OAuthCallbackResult, create_oauth_callback_server
 from filelock import FileLock
 from key_value.aio.stores.base import BaseStore
-from mcp.shared.auth import AuthorizationCodeResult
+from mcp.client.auth import oauth2
+from mcp.client.auth.utils import issuers_match
+from mcp.shared.auth import AuthorizationCodeResult, OAuthMetadata
 from pydantic import AnyHttpUrl
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -35,6 +37,27 @@ from uvicorn import Server
 from pcode.preferences import preferences_path
 
 _HOST = "127.0.0.1"
+
+
+def _validate_metadata_issuer(metadata: OAuthMetadata, expected_issuer: str) -> None:
+    """Accept a root issuer with or without its trailing slash.
+
+    Google's Drive MCP advertises `https://accounts.google.com/` as its
+    authorization server while that server's metadata names
+    `https://accounts.google.com`. The SDK already treats the two as one server
+    on its legacy discovery path and when binding stored credentials
+    (`issuers_match`), but compares them exactly after protected-resource
+    discovery, so sign-in fails before the browser opens. Any other difference
+    is still rejected.
+    """
+    if not issuers_match(str(metadata.issuer), expected_issuer):
+        _strict_validate_metadata_issuer(metadata, expected_issuer)
+
+
+# The check is inline in the SDK's `_auth_flow`, so the module global is the
+# only seam. Fail loudly at import if an upgrade renames it.
+_strict_validate_metadata_issuer = oauth2.validate_metadata_issuer
+oauth2.validate_metadata_issuer = _validate_metadata_issuer
 
 
 class SignInRequired(RuntimeError):
@@ -159,9 +182,20 @@ def _single_token_auth(request: httpx2.Request) -> httpx2.Request:
 class LoopbackOAuth(OAuth):
     """FastMCP handles protocol/security; this adapter owns callback I/O lifetime."""
 
-    def __init__(self, store: CredentialStore | None = None, *, interactive: bool = True):
+    def __init__(
+        self,
+        store: CredentialStore | None = None,
+        *,
+        interactive: bool = True,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+    ):
         super().__init__(
-            client_name="pcode", callback_host=_HOST, token_storage=store or CredentialStore()
+            client_name="pcode",
+            callback_host=_HOST,
+            token_storage=store or CredentialStore(),
+            client_id=client_id,
+            client_secret=client_secret,
         )
         self.interactive = interactive
         self._callback_socket: socket.socket | None = None
