@@ -661,14 +661,14 @@ class PreviewApp:
         if registry is not None:
             registry.release_waits()
 
-    def report_finished_jobs(self) -> list:
+    def report_finished_jobs(self, job_id: str | None = None) -> list:
         """Announce job exits in scrollback, each one once. Returns those announced."""
         registry = getattr(self.runtime, "jobs", None)
         if registry is None:
             return []
         from pcode.shell import REDUCED_SHELL_OUTPUT, result_projection
 
-        finished = registry.take_announcements("ui")
+        finished = registry.take_announcements("ui", job_id)
         for job in finished:
             output, truncated = registry.read_output(job)
             if truncated:
@@ -1391,6 +1391,31 @@ class PreviewApp:
 
     def present_events(self, events) -> None:
         present_events(events, activity=self.activity, transcript=self.transcript, edits=self.edits)
+        for event in events:
+            if (
+                isinstance(event, ToolSummary)
+                and event.name in {"wait_for_job", "job_output"}
+                and not event.parent_call_id
+            ):
+                self.report_delivered_job(event.detail.partition(" ")[0])
+
+    def report_delivered_job(self, job_id: str) -> None:
+        """Write a job's exit where the call that collected it settled.
+
+        The call's own row is left out of scrollback because the exit notice
+        says the same thing. Holding that notice until idle would print it
+        after the final answer, long after the model acted on the result.
+        A job that is still running, or was already reported, prints nothing.
+        """
+        registry = getattr(self.runtime, "jobs", None)
+        job = registry.get(job_id) if registry is not None else None
+        if job is None or job.running or "ui" in job.announced:
+            return
+        # A suppressed row does not commit streamed prose; the notice must not
+        # land ahead of text the model wrote before making the call.
+        if self.transcript.output is not None:
+            self.transcript.output.finish()
+        self.report_finished_jobs(job_id)
 
     def theme_preview(self, argument: str) -> None:
         self.present_events(self.preview.demo())
@@ -2194,7 +2219,9 @@ class PreviewApp:
         # Colorize the token counts distinctly from the " · " and "/" around them.
         parts = re.split(r"(~?\d[\d.]*[a-z]?)", context)
         segments.extend(
-            ("context-value", part) if re.fullmatch(r"~?\d[\d.]*[a-z]?", part) else ("context", part)
+            ("context-value", part)
+            if re.fullmatch(r"~?\d[\d.]*[a-z]?", part)
+            else ("context", part)
             for part in parts
             if part
         )

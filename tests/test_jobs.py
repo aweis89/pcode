@@ -243,6 +243,9 @@ def test_background_then_wait_returns_the_result_without_rerunning(tmp_path):
     assert 'wait_for_job("j1")' not in waited.result
     # One launch, not two.
     assert len(runtime.jobs.jobs) == 1
+    # The wait was the model's report; only the terminal has yet to show it.
+    assert runtime.jobs.take_announcements("model") == []
+    assert [job.id for job in runtime.jobs.take_announcements("ui")] == ["j1"]
 
 
 def test_purpose_from_the_model_reaches_the_row_and_the_registry(tmp_path):
