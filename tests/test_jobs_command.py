@@ -168,7 +168,7 @@ def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
     assert app.report_finished_jobs() == [job]
     printed = stream.getvalue()
     marker = "✓" if outcome == "success" else "✗"
-    assert f"{marker} Run(bg j12)" in printed
+    assert f"{marker} Run · j12 · " in printed
     assert "j12" in printed and "8.8s" in printed
     assert "make test" in printed
     assert job.outcome() in printed
@@ -188,6 +188,34 @@ def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
     assert stream.getvalue() == printed
     # Terminal delivery does not consume the model's independent notification.
     assert jobs.take_announcements("model") == [job]
+
+
+def test_collected_job_exit_prints_where_the_wait_settled(tmp_path):
+    """Not after the final answer, minutes after the model already acted on it."""
+    from pcode.runtime import ToolSummary
+
+    stream = StringIO()
+    app = PreviewApp(
+        model="test:local",
+        runtime=Runtime(),
+        console=Console(file=stream, width=100, color_system=None),
+    )
+    app.activity.busy = True
+    jobs = app.runtime.jobs
+    done = jobs.launch(command("pass"), cwd=tmp_path, background=True)
+    live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path, background=True)
+    try:
+        until_finished(jobs, done)
+        app.present_events((ToolSummary("wait_for_job", "j2 · still running", outcome="success"),))
+        assert stream.getvalue() == ""
+        app.present_events((ToolSummary("wait_for_job", "j1", outcome="success"),))
+        assert stream.getvalue().startswith("✓ Run · j1 · exit 0 · ")
+        # Reported once: neither a second read nor the idle reporter repeats it.
+        app.present_events((ToolSummary("job_output", "j1", outcome="success"),))
+        assert app.report_finished_jobs() == []
+        assert stream.getvalue().count("j1") == 1
+    finally:
+        jobs.stop(live)
 
 
 def test_wake_prompt_is_the_notice_for_jobs_the_model_launched(tmp_path, monkeypatch):

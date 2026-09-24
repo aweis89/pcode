@@ -373,7 +373,7 @@ def test_background_completion_has_compact_job_label(failed, outcome, show_comma
     )
     output = stream.getvalue()
     marker = "✗" if failed else "✓"
-    heading = f"{marker} Run(bg j12) · {outcome} · 0.8s"
+    heading = f"{marker} Run · j12 · {outcome} · 0.8s"
     assert output.startswith(heading)
     assert output.count("j12") == 1
     assert "background" not in output
@@ -381,11 +381,11 @@ def test_background_completion_has_compact_job_label(failed, outcome, show_comma
         assert output.splitlines() == [f"{heading} · make test"]
 
 
-def test_background_heading_without_job_id():
+def test_background_heading_matches_other_command_lines():
     from pcode.tool_display import tool_summary_lines
 
-    (line,) = tool_summary_lines("shell", " · stopped", background=True, command="make test")
-    assert line.plain == "✓ Run(bg) · stopped · make test"
+    (line,) = tool_summary_lines("shell", " · j3 · stopped", command="make test")
+    assert line.plain == "✓ Run · j3 · stopped · make test"
 
 
 def test_multiline_command_preview_is_compact_and_sanitized():

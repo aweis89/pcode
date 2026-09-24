@@ -63,7 +63,6 @@ from pcode.tool_display import (
     label,
     plain,
     split_outcome,
-    tool_heading,
     tool_summary_lines,
 )
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
@@ -2241,11 +2240,7 @@ class Transcript:
         if event.execution == "background":
             # This is the delayed exit notice, not just a tool result: keep the
             # exact outcome even when the footer is absorbed into the heading.
-            title = tool_heading(
-                event.name,
-                " · " + plain(event.detail.rsplit(" → ", 1)[-1], limit=None),
-                background=True,
-            )
+            title += " · " + plain(event.detail.rsplit(" → ", 1)[-1], limit=None)
         elif job:
             title += f" · {job}"
         self.print(
@@ -2329,7 +2324,6 @@ class Transcript:
             elapsed_seconds=event.elapsed_seconds,
             command=event.command,
             width=max(1, self.console.width - indent),
-            background=event.execution == "background",
         )
 
     def command_summary(self, event: ToolSummary) -> None:

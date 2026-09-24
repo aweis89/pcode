@@ -80,6 +80,9 @@ is what makes the rest of the behaviour describable.
 
 Job exits are **delivered**, not polled for: a finished job is reported to the
 model before its next request, and printed to the terminal while you are idle.
+A job whose result the model already collected with `wait_for_job` or
+`job_output` is not reported again: its exit is printed where that call
+settled, and the model gets no second notice.
 A failed job's notice carries the last 2 KB of its output, so the model can
 usually act without a `job_output` round trip. The model is instructed never
 to `sleep` waiting for a command.
