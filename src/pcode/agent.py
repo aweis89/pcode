@@ -33,6 +33,8 @@ from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.ext import EXTENSION_GUIDE
 from pcode.filesystem import DisplayFileSystem
 from pcode.llm_proxy import ProxiedCodexProvider
+from pcode.mcp import configured_servers
+from pcode.mcp_notice import MCPServers
 from pcode.meridian import MeridianSessionIdentity
 from pcode.meridian_reminders import MeridianLimitWarnings
 from pcode.output_limits import ModelOutputLimits
@@ -106,6 +108,18 @@ def tool_retries() -> dict[str, int]:
     return {"tools": int(configured)}
 
 
+def has_mcp_servers() -> bool:
+    """Whether mcp.json configures any server, deciding once per agent.
+
+    A broken file counts as none: nothing can be enabled from it, and `/mcp`
+    reports the error when it is used.
+    """
+    try:
+        return bool(configured_servers())
+    except ValueError:
+        return False
+
+
 def create_coder(
     workspace: Path, subagents: Sequence = (), extensions: Sequence = ()
 ) -> CombinedCapability:
@@ -158,6 +172,9 @@ def create_coder(
     # Ahead of the worker copy below, so a delegate edits under the same schema.
     if strict_tools := create_strict_tools():
         coder.capabilities.append(strict_tools)
+    # Ahead of the worker copy below, so a delegate that inherits MCP tools also
+    # learns which servers they come from.
+    coder.capabilities.append(MCPServers(instruct=has_mcp_servers()))
     debug = load_preferences().get("debug", SETTINGS["debug"].default) == "on"
     if debug:
         coder.capabilities.append(CacheBustReporting())
@@ -276,7 +293,8 @@ def create_aside_agent(agent: Agent, workspace: Path) -> Agent:
     """
     capabilities = []
     for capability in create_coder(workspace).capabilities:
-        if isinstance(capability, (Shell, SubAgents, Planning, DelegationReporting)):
+        # A side question gets no MCP tools, so no list of their servers either.
+        if isinstance(capability, (Shell, SubAgents, Planning, DelegationReporting, MCPServers)):
             continue
         if isinstance(capability, FileSystem):
             capability = replace(capability, read_only=True)

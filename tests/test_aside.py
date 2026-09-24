@@ -32,6 +32,7 @@ from pcode.agent import create_aside_agent, create_coder
 from pcode.app import PreviewApp
 from pcode.aside import Aside, Asides, settled_context
 from pcode.live import AgentRuntime
+from pcode.mcp_notice import MCPServers
 from pcode.preferences import save_preferences
 from pcode.runtime import Message
 from pcode.ui import create_prompt
@@ -61,12 +62,13 @@ def test_aside_agent_shares_the_model_but_keeps_nothing_that_can_change_the_work
     # Effort and thinking change the live agent's settings; a copy would go stale.
     assert not aside.model_settings
     capabilities = aside.root_capability.capabilities
-    assert not [c for c in capabilities if isinstance(c, (Shell, SubAgents, Planning))]
+    assert not [c for c in capabilities if isinstance(c, (Shell, SubAgents, Planning, MCPServers))]
     filesystem = next(c for c in capabilities if isinstance(c, FileSystem))
     assert filesystem.read_only
     # Its own instances: two concurrent runs may not share one filesystem or shell.
     assert filesystem is not next(c for c in coder.capabilities if isinstance(c, FileSystem))
     assert [c for c in coder.capabilities if isinstance(c, (Shell, SubAgents, Planning))]
+    assert [c for c in coder.capabilities if isinstance(c, MCPServers)]
 
 
 def test_aside_answers_while_a_turn_runs_and_records_nothing(tmp_path):

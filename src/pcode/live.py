@@ -65,6 +65,7 @@ from pcode.inspection import ToolArchive, capture
 from pcode.job_notices import JobNotices
 from pcode.jobs import registry as job_registry
 from pcode.mcp import MCPState, deferred_schemas_rejected
+from pcode.mcp_notice import enabled_servers
 from pcode.native_results import drop_unreadable_results, unreadable_native_results
 from pcode.plan_preview import StreamingPlanPreview
 from pcode.preferences import SETTINGS, load_preferences
@@ -796,6 +797,7 @@ class AgentRuntime:
         async with (
             self.agent,
             worker_toolsets(self.mcp.toolsets()),
+            enabled_servers(self.mcp.servers()),
             self.agent.run_stream_events(
                 prompt,
                 message_history=context.messages(),
