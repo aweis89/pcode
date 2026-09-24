@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 
 import pytest
 from pydantic_ai import Agent
@@ -168,14 +169,14 @@ def test_active_delegations_are_pinned_and_children_share_the_row_budget():
     for budget in range(1, 10):
         rows = task_panel_rows([], history, budget, "⟳")
         assert len(rows) <= min(3, budget)
-        assert "explorer" in rows[0][1]
+        assert "Explorer" in rows[0][1]
         assert len(panel_fragments(rows, 20)) == len(rows)
     rows = history.rows(3)
     assert all(row[1].startswith("    ") for row in rows[1:])
     assert "child.py" in rows[1][1]
     # Finishing the plan must not hide a still-running child agent.
     assert any(
-        "explorer" in text
+        "Explorer" in text
         for _, text in task_panel_rows(
             [{"content": "done", "status": "completed"}], history, 4, "⟳"
         )
@@ -211,7 +212,7 @@ def test_parallel_parents_take_priority_over_child_chatter():
     history.record(ToolStarted("read_file", "newest.py", "status-row"))
     rows = history.rows(3)
     assert len(rows) == 3
-    assert all("Delegate" in text and "Read" not in text for _, text in rows)
+    assert all("✦ Explorer-" in text and "Read" not in text for _, text in rows)
 
 
 def test_timeout_settles_inflight_child_tool_before_parent_resumes():
@@ -415,7 +416,8 @@ def test_a_finished_delegate_stays_listed_until_the_next_turn(failed, monkeypatc
     monkeypatch.setattr("pcode.tool_panel.CHILD_DWELL", 0.0)
     history.end_turn()
     rows = [text for _, text in task_panel_rows([], history, 10, "○")]
-    assert rows[0].startswith("! Delegate" if failed else "✓ Delegate")
+    icon, state = ("!", "Failed") if failed else ("✓", "Done")
+    assert re.fullmatch(rf"{icon} ✦ Explorer · \d+\.\ds · {state} · investigate", rows[0])
     # Its sub-tasks stay with it; its calls do not.
     assert rows[1:] == ["    ✓ Look"]
     assert not history.animating  # A finished row never keeps the idle screen redrawing.
@@ -426,9 +428,9 @@ def test_a_finished_delegate_stays_listed_until_the_next_turn(failed, monkeypatc
 def test_running_delegates_outrank_finished_ones_for_rows():
     history = ToolHistory()
     for i in range(3):
-        history.record(ToolStarted("delegate_task", f"done-{i}", f"d{i}"))
+        history.record(ToolStarted("delegate_task", f"worker · done-{i}", f"d{i}"))
         history.record(ToolSummary("delegate_task", f"done-{i}", call_id=f"d{i}"))
-    history.record(ToolStarted("delegate_task", "running", "live"))
+    history.record(ToolStarted("delegate_task", "worker · running", "live"))
     history.record(ToolStarted("read_file", "newest.py", "status-row"))
     rows = [text for _, text in history.rows(3)]
     assert len(rows) == 3
@@ -584,7 +586,7 @@ def test_a_delegate_shows_its_plan_with_its_calls_under_the_active_task():
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     history.record(ToolStarted("grep", "newest", "status-row"))
     rows = [text for _, text in task_panel_rows([], history, 10, "*")]
-    assert rows[0].startswith("⟳ Delegate")
+    assert rows[0].startswith("⟳ ✦ Worker · ") and " · Starting · fix it" in rows[0]
     assert rows[1:] == [
         "    ✓ Read the code",
         "    * Fix the bug",
@@ -601,7 +603,8 @@ def test_a_delegate_shows_its_plan_with_its_calls_under_the_active_task():
     # And stays with it once it finishes.
     history.record(ToolSummary("delegate_task", "worker → Completed", call_id="parent"))
     rows = [text for _, text in task_panel_rows([], history, 10, "*")]
-    assert rows[0].startswith("✓ Delegate") and "    * Fix the bug" in rows
+    assert rows[0].startswith("✓ ✦ Worker") and " · Done · " in rows[0]
+    assert "    * Fix the bug" in rows
 
 
 def test_a_short_panel_keeps_the_delegate_before_its_plan():
@@ -609,7 +612,7 @@ def test_a_short_panel_keeps_the_delegate_before_its_plan():
     history.record(ToolStarted("delegate_task", "worker · fix it", "parent"))
     history.record_plan("parent", [{"content": f"step {i}", "status": "pending"} for i in range(5)])
     rows = task_panel_rows([{"content": "Parent task", "status": "in_progress"}], history, 3, "*")
-    assert [text.strip()[:10] for _, text in rows] == ["* Parent t", "⟳ Delegate", "○ step 0"]
+    assert [text.strip()[:10] for _, text in rows] == ["* Parent t", "⟳ ✦ Worker", "○ step 0"]
 
 
 def test_an_extension_delegate_opts_in_to_showing_its_plan():
