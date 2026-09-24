@@ -125,6 +125,17 @@ def isolated_preferences(monkeypatch, tmp_path):
     from pcode import preferences
 
     monkeypatch.setattr(preferences, "_project_root", None)
+    # main() sets the root again from the cwd, which is this checkout. Its
+    # committed overlay turns worktrees on, so every in-process main() would
+    # check out a real .worktrees/<session> here. Overlay tests use tmp repos.
+    checkout = Path(__file__).resolve().parents[1]
+    set_root = preferences.set_project_root
+
+    def set_project_root(path):
+        own = path is not None and path.resolve() == checkout
+        set_root(None if own else path)
+
+    monkeypatch.setattr(preferences, "set_project_root", set_project_root)
 
 
 @pytest.fixture(autouse=True)
