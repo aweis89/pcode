@@ -34,6 +34,8 @@ class Setting:
     path_list: bool = False
     # A comma-separated list of names; empty meaning depends on the setting.
     name_list: bool = False
+    # Terminal rows as a whole number, or a share of the screen below 1 (0.5).
+    height: bool = False
     # One line shown beside the key in /config completions.
     description: str = ""
 
@@ -55,6 +57,12 @@ class Setting:
                 } - PROVIDERS.keys()
                 if unknown:
                     raise ValueError(f"Unknown model providers: {', '.join(sorted(unknown))}")
+        elif self.height:
+            if parse_height(value) is None:
+                raise ValueError(
+                    f"{key} must be a whole number of rows or a fraction of the screen "
+                    "between 0 and 1 (0.5 is half)."
+                )
         elif self.positive_integer or self.whole_number:
             floor = 0 if self.whole_number else 1
             if not value.isascii() or not value.isdecimal() or int(value) < floor:
@@ -68,6 +76,19 @@ class Setting:
                 raise ValueError(f"{key} must be one of: {', '.join(self.choices)}")
         elif not value or any(char.isspace() for char in value):
             raise ValueError(f"{key} must be a non-empty model name without whitespace.")
+
+
+def parse_height(value: str | None) -> float | None:
+    """Whole rows (12), or a share of the screen below 1 (0.5); None if invalid."""
+    if not value:
+        return None
+    try:
+        height = float(value)
+    except ValueError:
+        return None
+    if height >= 1:
+        return height if value.isascii() and value.isdecimal() else None
+    return height if height > 0 else None
 
 
 SEND_MODES = ("steering", "queue", "interrupt")
@@ -258,6 +279,11 @@ SETTINGS = {
     ),
     "attach_tasks": Setting(
         "off", ("on", "off"), description="Draw the task list inside the editor box"
+    ),
+    "tasks_max_height": Setting(
+        None,
+        height=True,
+        description="Max height of the task list plus editor: rows, or 0.5 for half the screen",
     ),
     "show_thinking": Setting(
         "off", ("on", "off"), description="Stream the model's thinking into the transcript"
