@@ -389,6 +389,11 @@ acting on whichever pane has focus:
 Ctrl+D never closes a popup; it always half-pages. A list with a search line
 keeps these keys working while you type, so the query stays where it is.
 
+Selected rows and scrollbars follow the active theme and syntax colors, like
+completion menus. Popup bodies keep the terminal's default background. With
+terminal syntax colors, selections use reverse video in the terminal's accent
+color and scrollbar thumbs use that accent too.
+
 Popups capture the mouse by default: clicks select rows and the wheel scrolls
 whichever pane is under the pointer, but a plain drag no longer selects text. Most terminals still
 select with a modifier held while dragging (usually Shift; Option in iTerm2). In tmux, mouse events reach pcode only with
