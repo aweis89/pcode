@@ -119,6 +119,11 @@ class Palette:
         # `menu` colors the completion popup, which follows the selected syntax
         # style rather than this palette; it is immutable and cached too.
         menu = self if menu is None else menu
+        highlight = (
+            f"reverse bg:default {menu.accent}"
+            if menu.selected == "reverse"
+            else f"noreverse bg:{menu.selected} {menu.accent}"
+        )
         return Style.from_dict(
             {
                 "plan": self.muted,
@@ -162,15 +167,19 @@ class Palette:
                 "completion-menu.completion": f"bg:{menu.surface} {menu.foreground}",
                 # The toolkit's selected-row default uses reverse; explicitly
                 # disable it so light themes keep dark text on a light surface.
-                "completion-menu.completion.current": (
-                    f"reverse bg:default {menu.accent} bold"
-                    if menu.selected == "reverse"
-                    else f"noreverse bg:{menu.selected} {menu.accent} bold"
-                ),
+                "completion-menu.completion.current": f"{highlight} bold",
                 "completion-menu scrollbar.background": f"bg:{menu.surface}",
                 "completion-menu scrollbar.button": (
                     "reverse bg:default" if menu.selected == "reverse" else f"bg:{menu.selected}"
                 ),
+                # Full-screen popups keep native body surfaces, but share the
+                # completion menu's paired highlight colors, even when a syntax
+                # style has a different appearance from the terminal.
+                "popup selected": f"{highlight} nodim nounderline",
+                "popup cursor-line": f"{highlight} nodim nounderline",
+                "popup scrollbar.background": f"noreverse bg:{menu.surface} fg:default",
+                "popup scrollbar.button": f"noreverse bg:{menu.accent} fg:default",
+                "popup scrollbar.arrow": f"noreverse bg:default {self.accent} bold",
                 "completion-menu.meta.completion": f"bg:{menu.surface} {menu.muted}",
                 "completion-menu.meta.completion.current": (
                     "reverse bg:default fg:default"
