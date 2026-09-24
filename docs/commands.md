@@ -140,6 +140,13 @@ becomes the editor's top border and a divider separates the tasks from your
 draft. Queued prompts then sit above the combined box. Default: off.
 Ctrl+O replaces the editor’s insert-newline binding; Ctrl+J still inserts a newline.
 
+`pcode config set tasks_max_height 0.5` caps the widget and the editor box
+together at half the screen; a whole number such as `20` caps them at that many
+rows instead. The tasks get the room first and the editor keeps at least one
+text row, so a long plan lists more of its steps while a long draft scrolls
+inside the editor. Unset (the default), the widget stays at no more than 10 rows
+or half the screen, whichever is smaller, and the editor grows into whatever is left.
+
 **Ctrl+Y** copies whatever is in the editor right now, so a draft can be moved
 somewhere else without sending it. A collapsed paste marker is expanded first:
 what lands on the clipboard is what Enter would send. It replaces `yank` in
