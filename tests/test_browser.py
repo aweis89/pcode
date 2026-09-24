@@ -6,6 +6,7 @@ around it, and a fake page stands in for the launched browser.
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
@@ -26,6 +27,7 @@ def fresh_state(monkeypatch, tmp_path):
     fake_chrome.touch()
     monkeypatch.setenv("PCODE_BROWSER_CHROME", str(fake_chrome))
     monkeypatch.delenv("PCODE_BROWSER_CDP_URL", raising=False)
+    monkeypatch.delenv("PCODE_BROWSER_PORT_FILE", raising=False)
     yield browser_state.STATE
 
 
@@ -177,12 +179,14 @@ def test_browser_tabs_lists_the_users_tabs_and_marks_ours(tmp_path, fresh_state,
     fresh_state.enabled = True
     _, extension = browser_extension(tmp_path)
     tabs = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_tabs"]
-    fresh_state.session.pages = [SimpleNamespace(url="about:blank")]
+    fresh_state.session.pages = []
 
     async def nothing():
         return ""
 
     async def list_tabs():
+        # The first query connects lazily and opens our tab.
+        fresh_state.session.pages.append(SimpleNamespace(url="about:blank"))
         return [
             ("Inbox", "https://mail.example.com/inbox"),
             ("", "https://x/"),
@@ -199,29 +203,125 @@ def test_browser_tabs_lists_the_users_tabs_and_marks_ours(tmp_path, fresh_state,
     ]
 
 
-def test_list_tabs_asks_chromes_target_endpoint(fresh_state, monkeypatch):
+@pytest.fixture
+def cdp_session(fresh_state, monkeypatch):
+    monkeypatch.setenv("PCODE_BROWSER_CDP_URL", "ws://127.0.0.1:9333/devtools/browser/abc")
+    fresh_state.attach = True
+    fresh_state.open()
+    cdp = SimpleNamespace(
+        send=AsyncMock(return_value={"targetInfos": []}),
+        detach=AsyncMock(),
+    )
+    browser = SimpleNamespace(new_browser_cdp_session=AsyncMock(return_value=cdp))
+
+    async def ensure_page():
+        fresh_state.session._browser = browser
+
+    monkeypatch.setattr(fresh_state.session, "ensure_page", AsyncMock(side_effect=ensure_page))
+    return cdp, browser
+
+
+def test_list_tabs_uses_cdp_without_http_discovery(fresh_state, monkeypatch, cdp_session):
     import httpx
 
-    fresh_state.cdp_url = "ws://127.0.0.1:9333/devtools/browser/abc"
-    seen = []
-
-    def handler(request):
-        seen.append(str(request.url))
-        return httpx.Response(
-            200,
-            json=[
-                {"type": "page", "title": "Inbox", "url": "https://mail.example.com/"},
-                {"type": "service_worker", "title": "sw", "url": "https://mail.example.com/sw.js"},
-            ],
-        )
-
-    transport = httpx.MockTransport(handler)
+    cdp, browser = cdp_session
+    # Edge's debugging switch returns an empty 404 here, not a JSON target list.
+    http = Mock(return_value=httpx.Response(404, content=b""))
     real = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
-    assert asyncio.run(fresh_state.list_tabs()) == [("Inbox", "https://mail.example.com/")]
-    assert seen == ["http://127.0.0.1:9333/json/list"]
-    fresh_state.cdp_url = None
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(http), **kw)
+    )
+    cdp.send.return_value = {
+        "targetInfos": [
+            {"type": "page", "title": "Inbox", "url": "https://mail.example.com/"},
+            {"type": "service_worker", "title": "sw", "url": "https://mail.example.com/sw.js"},
+            {"type": "page"},
+        ]
+    }
+    assert asyncio.run(fresh_state.list_tabs()) == [
+        ("Inbox", "https://mail.example.com/"),
+        ("", ""),
+    ]
+    fresh_state.session.ensure_page.assert_awaited_once_with()
+    browser.new_browser_cdp_session.assert_awaited_once_with()
+    cdp.send.assert_awaited_once_with("Target.getTargets")
+    cdp.detach.assert_awaited_once_with()
+    http.assert_not_called()
+
+
+def test_list_tabs_is_empty_without_a_session(fresh_state):
     assert asyncio.run(fresh_state.list_tabs()) == []
+
+
+@pytest.mark.parametrize("stage", ["connect", "send", "detach"])
+@pytest.mark.parametrize("failure", ["error", "timeout"])
+def test_list_tabs_bounds_cdp_operations_and_detaches(fresh_state, cdp_session, stage, failure):
+    from playwright.async_api import Error as PlaywrightError
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    cdp, browser = cdp_session
+    operation = {
+        "connect": browser.new_browser_cdp_session,
+        "send": cdp.send,
+        "detach": cdp.detach,
+    }[stage]
+    if failure == "error":
+        operation.side_effect = PlaywrightError("disconnected")
+        error = PlaywrightError
+    else:
+
+        async def stalled(*args):
+            await asyncio.Event().wait()
+
+        operation.side_effect = stalled
+        fresh_state.session._launch_timeout_ms = 10
+        error = PlaywrightTimeoutError
+    with pytest.raises(error):
+        asyncio.run(fresh_state.list_tabs())
+    if stage == "connect":
+        cdp.send.assert_not_awaited()
+        cdp.detach.assert_not_awaited()
+    else:
+        cdp.detach.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("failure", ["disconnected", "unavailable"])
+def test_browser_tabs_failure_is_a_tool_result_not_a_failed_turn(
+    tmp_path, fresh_state, monkeypatch, failure
+):
+    from playwright.async_api import Error as PlaywrightError
+    from pydantic_ai.messages import ToolReturnPart
+    from pydantic_ai_harness.playwright import BrowserUnavailableError
+
+    fresh_state.enabled = True
+    loaded, _ = browser_extension(tmp_path)
+    error = (
+        PlaywrightError("disconnected")
+        if failure == "disconnected"
+        else BrowserUnavailableError("unavailable")
+    )
+    monkeypatch.setattr(fresh_state, "arm", AsyncMock())
+    monkeypatch.setattr(fresh_state, "ensure_chrome", AsyncMock(return_value=""))
+    monkeypatch.setattr(fresh_state, "list_tabs", AsyncMock(side_effect=error))
+    fresh_state.session.launch_error = "previous failure"
+    results = []
+
+    async def respond(messages, info):
+        if len(messages) == 1:
+            yield {0: DeltaToolCall(name="browser_tabs", json_args="{}")}
+        else:
+            results.extend(
+                part.content for part in messages[-1].parts if isinstance(part, ToolReturnPart)
+            )
+            yield "Browser unavailable; reconnect it."
+
+    agent = create_agent("test", tmp_path, loaded.capabilities, loaded.subagents)
+    result = agent.run_sync("List my browser tabs", model=FunctionModel(stream_function=respond))
+    assert result.output == "Browser unavailable; reconnect it."
+    assert len(results) == 1
+    assert "Could not list browser tabs" in results[0]
+    assert "/browser attach" in results[0]
+    assert fresh_state.session.launch_error is None
 
 
 def test_guidance_says_logins_persist_per_mode(tmp_path, fresh_state, monkeypatch):
@@ -263,7 +363,7 @@ def test_attach_joins_a_running_chrome_and_never_launches(fresh_state, monkeypat
     assert fresh_state.attached and fresh_state.cdp_url == "http://127.0.0.1:9222"
     assert asyncio.run(fresh_state.ensure_chrome()) == ""
     assert fresh_state.process is None
-    assert "attached to your Chrome" in fresh_state.describe()
+    assert "attached to your browser" in fresh_state.describe()
     asyncio.run(fresh_state.close())
     assert not fresh_state.attach
 
@@ -276,6 +376,38 @@ def test_attach_reads_chromes_port_file(fresh_state, monkeypatch, tmp_path):
     assert running_chrome_url() is None
     port_file.write_text("9333\n/devtools/browser/abc\n")
     assert running_chrome_url() == "ws://127.0.0.1:9333/devtools/browser/abc"
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/Chromium",
+        ".config/google-chrome",
+        ".config/chromium",
+        "Library/Application Support/Microsoft Edge",
+        ".config/microsoft-edge",
+    ],
+)
+def test_attach_discovers_browser_profiles(tmp_path, monkeypatch, profile):
+    monkeypatch.setattr(browser_state.Path, "home", lambda: tmp_path)
+    directory = tmp_path / profile
+    directory.mkdir(parents=True)
+    (directory / "DevToolsActivePort").write_text("9333\n/devtools/browser/abc\n")
+    assert browser_state.running_chrome_url() == "ws://127.0.0.1:9333/devtools/browser/abc"
+
+
+def test_explicit_endpoint_and_port_file_override_discovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(browser_state.Path, "home", lambda: tmp_path)
+    directory = tmp_path / "Library/Application Support/Microsoft Edge"
+    directory.mkdir(parents=True)
+    (directory / "DevToolsActivePort").write_text("9333\n/devtools/browser/edge\n")
+    port_file = tmp_path / "custom-port"
+    port_file.write_text("9444\n/devtools/browser/custom\n")
+    monkeypatch.setenv("PCODE_BROWSER_PORT_FILE", str(port_file))
+    assert browser_state.running_chrome_url() == "ws://127.0.0.1:9444/devtools/browser/custom"
+    monkeypatch.setenv("PCODE_BROWSER_CDP_URL", "http://127.0.0.1:9555")
+    assert browser_state.running_chrome_url() == "http://127.0.0.1:9555"
 
 
 def test_attach_command_fails_cleanly_without_any_chrome(tmp_path, fresh_state, monkeypatch):

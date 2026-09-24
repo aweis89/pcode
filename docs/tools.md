@@ -199,23 +199,29 @@ the directory to forget everything. Set `PCODE_BROWSER_CHROME` to pick the
 binary. With no Chrome installed it falls back to Playwright's Chromium,
 downloaded on first use.
 
-`/browser attach` joins the Chrome you already have open instead, logins
-included, so nothing needs signing in to. The model works in a tab of its own,
+`/browser attach` joins Chrome, Chromium, or Microsoft Edge you already have
+open instead, logins included, so nothing needs signing in to. The model works in a tab of its own,
 and `browser_tabs()` shows it what you have open, so "check my email" finds the
 mail tab and opens that site rather than guessing. Chrome only exposes itself
 once remote debugging is on: the first `/browser attach` opens
 `chrome://inspect/#remote-debugging` in your Chrome for you to flip the switch,
 then run it again. (Starting Chrome with `--remote-debugging-port` works too.)
-pcode finds the port from Chrome's `DevToolsActivePort` file, or from
-`PCODE_BROWSER_CDP_URL` / `PCODE_BROWSER_PORT_FILE`. pcode opens its own tab
-there and closes it on `/browser off`, never quitting your Chrome. This is the
-higher-risk mode: the model can act as every account that browser is signed in
-to.
+pcode searches the standard Chrome, Chromium, and Edge profile directories on
+macOS and Linux for `DevToolsActivePort`. For Edge, enable remote debugging in
+Edge before attaching; the automatic setup-page shortcut still opens Chrome.
+Set `PCODE_BROWSER_CDP_URL` to choose a specific endpoint, or
+`PCODE_BROWSER_PORT_FILE` for a custom profile's port file. These overrides take
+precedence over discovery. Tab listing uses the browser's CDP connection, so it
+also works when the debugging endpoint has no HTTP `/json/list` route. Tab-listing
+connection failures are reported as a tool result rather than aborting the turn.
+pcode opens its own tab there and closes it on `/browser off`, never quitting
+your browser. This is the higher-risk mode: the model can act as every account
+that browser is signed in to.
 
 | `/browser …` | Does |
 | --- | --- |
 | `launch` | Open pcode's own Chrome window, with its own persistent logins |
-| `attach` | Join the Chrome you have open, your logins included |
+| `attach` | Join Chrome, Chromium, or Edge you have open, your logins included |
 | `off` | Close the browser (or pcode's tab in yours) and remove the tools |
 | `status` | Show which browser is in use and where it is |
 
