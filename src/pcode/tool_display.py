@@ -210,18 +210,24 @@ def invocation(name: str, args: dict) -> str:
     return ""
 
 
+def assignment(name: str, args: dict) -> tuple[str, str]:
+    """A delegation's sanitized agent name and task, or ("", "") for any other tool."""
+    if name != "delegate_task":
+        return "", ""
+    agent = args.get("agent_name")
+    task = args.get("task")
+    return (
+        plain(argument(agent), 60) if isinstance(agent, str) else "agent unavailable",
+        plain(argument(task), 160) if isinstance(task, str) else "assignment unavailable",
+    )
+
+
 def target(name: str, args: dict) -> str:
     if name == "run_code":
         code = args.get("code")
         return code_preview(code) if isinstance(code, str) else "code unavailable"
     if name == "delegate_task":
-        agent = args.get("agent_name")
-        task = args.get("task")
-        return (
-            (plain(argument(agent), 60) if isinstance(agent, str) else "agent unavailable")
-            + " · "
-            + (plain(argument(task), 160) if isinstance(task, str) else "assignment unavailable")
-        )
+        return " · ".join(assignment(name, args))
     if name in {"shell", "run_command", "start_command"}:
         command = args.get("command")
         shown = command_preview(command) if isinstance(command, str) else "command unavailable"

@@ -94,6 +94,7 @@ from pcode.steering import Steering
 from pcode.token_accounting import TokenAccounting, TokenTotals
 from pcode.tool_display import (
     COMMAND_TOOLS,
+    assignment,
     command_error,
     delegation_detail,
     execution_mode,
@@ -926,6 +927,7 @@ class AgentRuntime:
                         except (ValueError, TypeError):
                             args = {}
                         tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
+                        agent, task = assignment(event.part.tool_name, args)
                         yield ToolStarted(
                             event.part.tool_name,
                             target(event.part.tool_name, args),
@@ -933,6 +935,8 @@ class AgentRuntime:
                             arguments=capture(args if args else event.part.args),
                             run_id=run_id,
                             started_at=datetime.now(timezone.utc).isoformat(),
+                            agent=agent,
+                            task=task,
                         )
                         yield activity()
                 elif isinstance(event, FunctionToolCallEvent):
@@ -941,6 +945,7 @@ class AgentRuntime:
                     except (ValueError, TypeError):
                         args = {}
                     tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
+                    agent, task = assignment(event.part.tool_name, args)
                     start = ToolStarted(
                         event.part.tool_name,
                         target(event.part.tool_name, args),
@@ -952,6 +957,8 @@ class AgentRuntime:
                         command=invocation(event.part.tool_name, args),
                         purpose=stated_purpose(args),
                         execution=execution_mode(event.part.tool_name, args),
+                        agent=agent,
+                        task=task,
                     )
                     if event.part.tool_name == "delegate_task":
                         delegates[event.part.tool_call_id] = start
