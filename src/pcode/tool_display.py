@@ -114,17 +114,6 @@ def command_preview(value: str) -> str:
     return plain(first, limit=100)
 
 
-def tool_heading(name: str, detail: str = "", *, background: bool = False) -> str:
-    """Keep a background job's identity beside the tool label, without repeating it."""
-    title = label(name)
-    if background:
-        job = re.match(r" · (j\d+)(?= · |$)", detail)
-        title += f"(bg {job[1]})" if job else "(bg)"
-        if job:
-            detail = detail[job.end() :]
-    return title + detail
-
-
 def tool_summary_lines(
     name: str,
     detail: str = "",
@@ -133,7 +122,6 @@ def tool_summary_lines(
     elapsed_seconds: float | None = None,
     command: str = "",
     width: int | None = None,
-    background: bool = False,
 ) -> list[Text]:
     """The settled-tool line, including any command preview, as scrollback draws it.
 
@@ -146,8 +134,7 @@ def tool_summary_lines(
     # failed call does not shout louder than the diagnostic that follows it.
     marker = "✗" if failed else "✓"
     preview = " · " + command_preview(command) if command else ""
-    heading = tool_heading(name, detail, background=background)
-    lines = [Text(f"{marker} {heading}{elapsed}{preview}", style="pcode.thinking")]
+    lines = [Text(f"{marker} {label(name)}{detail}{elapsed}{preview}", style="pcode.thinking")]
     for line in lines:
         line.no_wrap = True
         line.overflow = "ellipsis"

@@ -371,8 +371,8 @@ class JobRegistry:
             return None
         return status if isinstance(status, dict) else None
 
-    def take_announcements(self, channel: str) -> list[Job]:
-        """Finished jobs this channel has not reported yet.
+    def take_announcements(self, channel: str, job_id: str | None = None) -> list[Job]:
+        """Finished jobs this channel has not reported yet, or just `job_id`.
 
         Separate channels so the terminal and the model can each be told once.
         Only jobs the model was handed a handle for are worth announcing to it;
@@ -383,7 +383,10 @@ class JobRegistry:
         pending = [
             job
             for job in self.jobs.values()
-            if not job.running and channel not in job.announced and self.announceable(job)
+            if not job.running
+            and channel not in job.announced
+            and self.announceable(job)
+            and job_id in (None, job.id)
         ]
         for job in pending:
             job.announced.add(channel)

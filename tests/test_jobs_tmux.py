@@ -71,7 +71,7 @@ def test_jobs_row_watch_and_wake_keep_the_prompt_compact(pane):
     assert "serving on 8000" not in panel
     assert "⟳ j2" in screen and "⟳ j1" not in panel
     # Completion uses the normal Run summary, never a finished live row.
-    assert "✓ Run(bg j1) · exit 0 · " in screen.split("WOKEN")[0]
+    assert "✓ Run · j1 · exit 0 · " in screen.split("WOKEN")[0]
     assert "✓ j1" not in capture(pane, "⟳ j2")
     assert input_rows(screen) == 1
 

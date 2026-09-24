@@ -146,8 +146,10 @@ the sub-agent finished are written flush when the cancellation is reported.
 By default, a settled command leaves the same compact summary line every other
 tool leaves, with the command preview inline after the elapsed time. Long summaries
 truncate to the terminal width instead of wrapping. Captured output stays in the
-mutable tool panel. Background completion notices use `Run(bg j12)`, keeping the
-job id beside the label and the exit status and elapsed time after it. Enable
+mutable tool panel. A background job's exit uses the same line with its id
+after the label, as in `✓ Run · j12 · exit 0 · 4.1s · make test`. It is written
+where the model collected the result with `wait_for_job` or `job_output`, or
+once the session is idle if nothing collected it. Enable
 `show_commands` to mirror **every settled shell tool call and its captured
 output** into permanent terminal scrollback (a failed call mirrors its output
 only with `tool_error_scrollback` on):
