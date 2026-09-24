@@ -6,7 +6,7 @@ import re
 from asyncio import Future
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
-from functools import cache, lru_cache, wraps
+from functools import cache, lru_cache, partial, wraps
 from io import StringIO
 from time import monotonic
 
@@ -297,6 +297,8 @@ class Activity:
     # Hide the widget again as soon as a turn ends, without forgetting that the
     # user wants it shown while the model works.
     autohide_tasks: bool = True
+    # Draw the widget as the top section of the editor box instead of its own box.
+    attach_tasks: bool = False
     tasks_autohidden: bool = False
     show_thinking: bool = False
     busy: bool = False
@@ -1363,13 +1365,15 @@ def create_prompt(
 
     @per_render
     def frame_height() -> int:
+        """The editor box, including any tasks drawn inside it above a divider."""
+        tasks = attached_height()
         live = preview_layout()
         if live is not None:
-            return live[3]
+            return live[3] + tasks
         size = session.app.output.get_size()
-        available = max(1, size.rows - 4 - activity_height() - len(queue_rows()))
+        available = max(1, size.rows - 4 - activity_height() - tasks - len(queue_rows()))
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
-        return min(text_height, available) + 2
+        return min(text_height, available) + 2 + tasks
 
     plan_spinner = Spinner("arc")
     # Give the prompt line its own glyph so it reads as the overall turn, not as
@@ -1479,14 +1483,16 @@ def create_prompt(
         # Editor: two borders and at least one text row. Preview: two rule
         # lines, the command, and at least one output row. Keep one task when
         # possible.
-        task_floor = 3 if plans else 0
+        # Attached tasks share the editor's top border and add only a divider.
+        chrome_rows = 1 if activity.attach_tasks else 2
+        task_floor = 1 + chrome_rows if plans else 0
         editor_room = max(1, room - 2 - 4 - task_floor)
         editor_rows = min(editor_room, editor.preferred_height(width, editor_room).preferred)
         editor_height = editor_rows + 2
-        plan_budget = max(0, room - editor_height - 4 - 2)
+        plan_budget = max(0, room - editor_height - 4 - chrome_rows)
         if len(plans) > plan_budget:
             plans = base_plan_rows(plan_budget)
-        plan_height = len(plans) + 2 if plans else 0
+        plan_height = len(plans) + chrome_rows if plans else 0
         # Chrome: the two rule lines, plus the indented `$ command` a shell
         # preview repeats below its heading, exactly as scrollback does.
         chrome = 2 if edits else 3
@@ -1550,8 +1556,15 @@ def create_prompt(
             + status_gap()
         )
 
+    def plan_attached() -> bool:
+        return activity.attach_tasks and bool(plan_rows())
+
+    def attached_height() -> int:
+        """Rows attached tasks add to the editor box: the tasks plus a divider."""
+        return len(plan_rows()) + 1 if plan_attached() else 0
+
     def activity_height() -> int:
-        rows = plan_rows()
+        rows = [] if activity.attach_tasks else plan_rows()
         commands = command_rows()
         return (
             status_height()
@@ -1593,40 +1606,45 @@ def create_prompt(
         ),
         filter=Condition(lambda: activity.status_shown),
     )
-    plan_frame = Frame(
-        Window(
+
+    def plan_body() -> Window:
+        return Window(
             FormattedTextControl(plan_text),
             height=lambda: len(plan_rows()),
             dont_extend_height=True,
             wrap_lines=False,
-        ),
-        height=lambda: len(plan_rows()) + 2,
-    )
-    # Frame centers its title and has no alignment option. Replace only its
-    # top border with a fixed left prefix and an expanding right border.
-    plan_frame.container.children[0] = VSplit(
-        [
-            Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
-            Label(
-                lambda: panel_fragments(
-                    [
-                        (
-                            "class:plan.heading" if activity.displayed_plan else "bold",
-                            activity.panel_heading(),
-                        )
-                    ],
-                    session.app.output.get_size().columns - 8,
+        )
+
+    def plan_heading_border() -> VSplit:
+        """A top border with the heading at the left; Frame can only center it."""
+        return VSplit(
+            [
+                Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
+                Label(
+                    lambda: panel_fragments(
+                        [
+                            (
+                                "class:plan.heading" if activity.displayed_plan else "bold",
+                                activity.panel_heading(),
+                            )
+                        ],
+                        session.app.output.get_size().columns - 8,
+                    ),
+                    style="class:frame.label",
+                    dont_extend_width=True,
                 ),
-                style="class:frame.label",
-                dont_extend_width=True,
-            ),
-            Window(FormattedTextControl(" "), width=1, style="class:frame.border"),
-            Window(char="─", style="class:frame.border"),
-            Window(char="┐", width=1, style="class:frame.border"),
-        ],
-        height=1,
+                Window(FormattedTextControl(" "), width=1, style="class:frame.border"),
+                Window(char="─", style="class:frame.border"),
+                Window(char="┐", width=1, style="class:frame.border"),
+            ],
+            height=1,
+        )
+
+    plan_frame = Frame(plan_body(), height=lambda: len(plan_rows()) + 2)
+    plan_frame.container.children[0] = plan_heading_border()
+    plan = ConditionalContainer(
+        plan_frame, filter=Condition(lambda: bool(plan_rows()) and not activity.attach_tasks)
     )
-    plan = ConditionalContainer(plan_frame, filter=Condition(lambda: bool(plan_rows())))
     # Keep the turn and its activity adjacent even when the root layout justifies
     # the transcript and editor across the remaining terminal height.
     # Framed the way scrollback frames the same run once it settles: the
@@ -1739,6 +1757,33 @@ def create_prompt(
             Window(FormattedTextControl("─┘"), width=2, style="class:frame.border"),
         ],
         height=1,
+    )
+    # Attached tasks: the widget's heading becomes the editor's top border and
+    # a divider separates the tasks from the text. frame_height counts both.
+    side = partial(Window, char="│", width=1, style="class:frame.border")
+    editor_frame.container.children[0] = HSplit(
+        [
+            ConditionalContainer(
+                HSplit(
+                    [
+                        plan_heading_border(),
+                        VSplit([side(), plan_body(), side()]),
+                        VSplit(
+                            [
+                                Window(char="├", width=1, style="class:frame.border"),
+                                Window(char="─", style="class:frame.border"),
+                                Window(char="┤", width=1, style="class:frame.border"),
+                            ],
+                            height=1,
+                        ),
+                    ]
+                ),
+                filter=Condition(plan_attached),
+            ),
+            ConditionalContainer(
+                editor_frame.container.children[0], filter=~Condition(plan_attached)
+            ),
+        ]
     )
     children = [menu, search, activity_panel, queued, editor_frame]
     if transcript is not None:
