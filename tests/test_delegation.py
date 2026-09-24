@@ -30,6 +30,13 @@ def delegate(index=0, agent_name="explorer"):
     )
 
 
+def delegate_started(agent, task, call_id, **fields):
+    """A delegation's start, as the runtime reports it."""
+    return ToolStarted(
+        "delegate_task", f"{agent} · {task}", call_id, agent=agent, task=task, **fields
+    )
+
+
 def test_real_parallel_children_are_correlated_streamed_and_inspectable(tmp_path):
     (tmp_path / "sample.txt").write_text("workspace evidence")
 
@@ -83,6 +90,12 @@ def test_real_parallel_children_are_correlated_streamed_and_inspectable(tmp_path
         assert {
             e.activity for e in events if isinstance(e, ToolStarted) and e.name == "delegate_task"
         } >= {"Waiting for model", "Responding", "Working"}
+        # The panel names the agent from its real arguments, not by parsing `detail`.
+        assert {
+            (e.agent, e.task)
+            for e in events
+            if isinstance(e, ToolStarted) and e.name == "delegate_task"
+        } == {("worker", "Read sample.txt (0)"), ("worker", "Read sample.txt (1)")}
         assert len(runtime.inspections.calls) == 4  # Phase changes don't create new calls.
         assert all(c.state == "succeeded" for c in runtime.inspections.calls)
 
@@ -159,7 +172,7 @@ def test_delegation_display_redacts_and_bounds_assignment():
 
 def test_active_delegations_are_pinned_and_children_share_the_row_budget():
     history = ToolHistory()
-    history.record(ToolStarted("delegate_task", "explorer · investigate", "parent"))
+    history.record(delegate_started("explorer", "investigate", "parent"))
     for i in range(20):
         history.record(ToolStarted("read_file", f"file-{i}", str(i)))
         history.record(ToolSummary("read_file", f"file-{i}", call_id=str(i)))
@@ -187,7 +200,7 @@ def test_active_delegations_are_pinned_and_children_share_the_row_budget():
 
 def test_a_settled_child_row_lingers_long_enough_to_read(monkeypatch):
     history = ToolHistory()
-    history.record(ToolStarted("delegate_task", "explorer · investigate", "parent"))
+    history.record(delegate_started("explorer", "investigate", "parent"))
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     history.record(ToolStarted("grep", "newest", "status-row"))
     history.record(ToolSummary("read_file", "child.py", call_id="parent:child"))
@@ -207,7 +220,7 @@ def test_a_settled_child_row_lingers_long_enough_to_read(monkeypatch):
 def test_parallel_parents_take_priority_over_child_chatter():
     history = ToolHistory()
     for i in range(4):
-        history.record(ToolStarted("delegate_task", f"explorer-{i}", str(i)))
+        history.record(delegate_started(f"explorer-{i}", "look", str(i)))
         history.record(ToolStarted("read_file", "file", f"{i}:child", parent_call_id=str(i)))
     history.record(ToolStarted("read_file", "newest.py", "status-row"))
     rows = history.rows(3)
@@ -343,9 +356,7 @@ def test_replay_keeps_child_identity_and_interrupted_delegation(tmp_path):
     saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
     try:
         saved.append("turn_started", prompt="Explore")
-        saved.event(
-            ToolStarted("delegate_task", "explorer · Explore", "parent", activity="Thinking")
-        )
+        saved.event(delegate_started("explorer", "Explore", "parent", activity="Thinking"))
         saved.event(ToolStarted("read_file", "file.py", "child", parent_call_id="parent"))
         saved.append("turn_cancelled")
         app = PreviewApp(
@@ -398,7 +409,7 @@ def test_rejected_delegation_has_no_false_success():
 @pytest.mark.parametrize("clear", ["clear", "end_turn"])
 def test_an_interrupted_delegate_leaves_the_panel(clear):
     history = ToolHistory()
-    history.record(ToolStarted("delegate_task", "explorer · investigate", "parent"))
+    history.record(delegate_started("explorer", "investigate", "parent"))
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     getattr(history, clear)()
     assert history.calls == []
@@ -408,7 +419,7 @@ def test_an_interrupted_delegate_leaves_the_panel(clear):
 @pytest.mark.parametrize("failed", [False, True])
 def test_a_finished_delegate_stays_listed_until_the_next_turn(failed, monkeypatch):
     history = ToolHistory()
-    history.record(ToolStarted("delegate_task", "explorer · investigate", "parent"))
+    history.record(delegate_started("explorer", "investigate", "parent"))
     history.record_plan("parent", [{"content": "Look", "status": "completed"}])
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     history.record(ToolSummary("delegate_task", "explorer → Done", call_id="parent", failed=failed))
@@ -428,9 +439,9 @@ def test_a_finished_delegate_stays_listed_until_the_next_turn(failed, monkeypatc
 def test_running_delegates_outrank_finished_ones_for_rows():
     history = ToolHistory()
     for i in range(3):
-        history.record(ToolStarted("delegate_task", f"worker · done-{i}", f"d{i}"))
+        history.record(delegate_started("worker", f"done-{i}", f"d{i}"))
         history.record(ToolSummary("delegate_task", f"done-{i}", call_id=f"d{i}"))
-    history.record(ToolStarted("delegate_task", "worker · running", "live"))
+    history.record(delegate_started("worker", "running", "live"))
     history.record(ToolStarted("read_file", "newest.py", "status-row"))
     rows = [text for _, text in history.rows(3)]
     assert len(rows) == 3
@@ -573,7 +584,7 @@ def test_a_child_plan_reaches_the_parent_without_touching_its_plan(tmp_path):
 
 def test_a_delegate_shows_its_plan_with_its_calls_under_the_active_task():
     history = ToolHistory()
-    history.record(ToolStarted("delegate_task", "worker · fix it", "parent"))
+    history.record(delegate_started("worker", "fix it", "parent"))
     history.record_plan(
         "parent",
         [
@@ -609,7 +620,7 @@ def test_a_delegate_shows_its_plan_with_its_calls_under_the_active_task():
 
 def test_a_short_panel_keeps_the_delegate_before_its_plan():
     history = ToolHistory()
-    history.record(ToolStarted("delegate_task", "worker · fix it", "parent"))
+    history.record(delegate_started("worker", "fix it", "parent"))
     history.record_plan("parent", [{"content": f"step {i}", "status": "pending"} for i in range(5)])
     rows = task_panel_rows([{"content": "Parent task", "status": "in_progress"}], history, 3, "*")
     assert [text.strip()[:10] for _, text in rows] == ["* Parent t", "⟳ ✦ Worker", "○ step 0"]
