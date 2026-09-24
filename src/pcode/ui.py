@@ -296,7 +296,7 @@ class Activity:
     show_tasks: bool = True
     # Hide the widget again as soon as a turn ends, without forgetting that the
     # user wants it shown while the model works.
-    autohide_tasks: bool = True
+    autohide_tasks: bool = False
     # Draw the widget as the top section of the editor box instead of its own box.
     attach_tasks: bool = False
     tasks_autohidden: bool = False
@@ -1835,7 +1835,7 @@ def create_prompt(
             # the frame that finally removes it.
             or activity.notice_shown
             or activity.asides_running
-            or (activity.tasks_shown and bool(activity.tools.calls))
+            or (activity.tasks_shown and activity.tools.animating)
         )
 
     async def animate(app):

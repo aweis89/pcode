@@ -38,11 +38,21 @@ class ToolCall:
     event: ToolStarted
     started: float = field(default_factory=monotonic)
     settled: float | None = None
+    failed: bool = False
+
+    @property
+    def finished_delegate(self) -> bool:
+        """A settled delegate stays listed, with its plan, like a completed task."""
+        return self.event.name == DELEGATE and self.settled is not None
 
     @property
     def expired(self) -> bool:
         """A settled row has said its piece and no longer belongs on screen."""
-        return self.settled is not None and monotonic() - self.settled >= CHILD_DWELL
+        return (
+            self.settled is not None
+            and not self.finished_delegate
+            and monotonic() - self.settled >= CHILD_DWELL
+        )
 
     def line(self) -> str:
         """The call without a status icon; each surface supplies its own."""
@@ -64,12 +74,16 @@ class ToolCall:
 
 @dataclass
 class ToolHistory:
-    """Calls still in flight, oldest first. A result removes its call."""
+    """Calls still in flight, oldest first. A result removes its call.
+
+    Delegates are the exception: a finished one stays, with its plan, until
+    the next turn starts, the way the parent's completed tasks stay listed.
+    """
 
     calls: list[ToolCall] = field(default_factory=list)
     # The last call to leave, kept only so the status row can hold it.
     recent: ToolCall | None = None
-    # Each running delegate's plan, keyed by its call id; it leaves with the delegate.
+    # Each delegate's plan, keyed by its call id; it leaves with the delegate.
     plans: dict[str, list[dict]] = field(default_factory=dict)
 
     def record_plan(self, call_id: str, items: list[dict]) -> None:
@@ -87,6 +101,15 @@ class ToolHistory:
         )
         if isinstance(event, ToolSummary):
             if existing is None:
+                return
+            existing.failed = event.failed
+            if existing.event.name == DELEGATE:
+                # Its own calls are done; the delegate and its plan stay listed.
+                existing.settled = monotonic()
+                self.recent = existing
+                self.calls = [
+                    c for c in self.calls if c.event.parent_call_id != existing.event.call_id
+                ]
                 return
             # A child's row is the only trace of the sub-agent's step, so let it
             # dwell; anything else leaves as soon as it settles.
@@ -118,6 +141,18 @@ class ToolHistory:
         self.plans.clear()
         self.recent = None
 
+    def end_turn(self) -> None:
+        """Drop whatever the turn left running; finished delegates stay listed."""
+        self.calls = [c for c in self.calls if c.finished_delegate]
+        kept = {c.event.call_id for c in self.calls}
+        self.plans = {k: v for k, v in self.plans.items() if k in kept}
+        self.recent = None
+
+    @property
+    def animating(self) -> bool:
+        """Something on the panel still ticks or has a dwell to wait out."""
+        return any(not c.finished_delegate for c in self.calls)
+
     @property
     def visible(self) -> list[ToolCall]:
         """Calls worth a row: in flight, or settled within the dwell window."""
@@ -147,20 +182,27 @@ class ToolHistory:
         return [c for c in self.visible if c is not active]
 
     def _delegates(self) -> list[ToolCall]:
-        """Running delegates that get a panel row.
+        """Delegates that get a panel row.
 
-        Those beside the status row, plus any with a plan even while it holds
-        the status row: otherwise its tasks would vanish every time the
-        sub-agent went back to the model and the delegate took the row back.
+        Finished ones, plus running ones beside the status row, plus any with
+        a plan even while it holds the status row: otherwise its tasks would
+        vanish every time the sub-agent went back to the model and the
+        delegate took the row back.
         """
         active = self.active
         return [
             c
             for c in self.visible
             if c.event.name == DELEGATE
-            and c.settled is None
-            and (c is not active or self.plans.get(c.event.call_id))
+            and (c.settled is not None or c is not active or self.plans.get(c.event.call_id))
         ]
+
+    def _shown_delegates(self, count: int) -> list[ToolCall]:
+        """At most `count` delegates in start order, dropping the oldest finished first."""
+        delegates = self._delegates()
+        finished = [c for c in delegates if c.settled is not None]
+        surplus = set(map(id, finished[: max(0, len(delegates) - count)]))
+        return [c for c in delegates if id(c) not in surplus][:count]
 
     def plan_rows(self) -> int:
         """Rows the running delegates' plans would fill, before any budget."""
@@ -183,7 +225,7 @@ class ToolHistory:
         """
         calls = self.background
         base = "    " if nested else ""
-        delegates = self._delegates()[:count]
+        delegates = self._shown_delegates(count)
         remaining = count - len(delegates)
         lines = []
         for parent in delegates:
@@ -209,7 +251,8 @@ class ToolHistory:
 def _call_row(call: ToolCall, indent: str) -> tuple[str, str]:
     done = call.settled is not None
     style = "class:plan" if done else "class:plan.active"
-    return style, f"{indent}{'✓' if done else '⟳'} {call.line()}"
+    icon = PLAN_ICONS["blocked"] if call.failed else "✓" if done else "⟳"
+    return style, f"{indent}{icon} {call.line()}"
 
 
 def plan_window(items: list[dict], count: int) -> tuple[range, int | None]:

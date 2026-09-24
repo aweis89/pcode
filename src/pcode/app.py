@@ -153,7 +153,7 @@ class PreviewApp:
             apply_effort(agent, model, effort_for(model))
         self.activity = Activity(
             show_tasks=load_preferences().get("show_tasks", "on") == "on",
-            autohide_tasks=load_preferences().get("autohide_tasks", "on") == "on",
+            autohide_tasks=load_preferences().get("autohide_tasks", "off") == "on",
             attach_tasks=load_preferences().get("attach_tasks") == "on",
             show_thinking=load_preferences().get("show_thinking") == "on",
         )
@@ -2308,6 +2308,8 @@ class PreviewApp:
     ) -> bool:
         from pcode.live import error_message
 
+        # The last turn's finished delegates stay listed only until this one.
+        self.activity.tools.clear()
         if wake:
             # Scrollback already carries the job's summary line; the prompt is
             # pcode's, so it is labelled as system work rather than quoted.
@@ -2361,7 +2363,7 @@ class PreviewApp:
                 del self.activity.command_outputs[key]
             self.activity.plan_preview = None
             output.end_turn()
-            self.activity.tools.clear()
+            self.activity.tools.end_turn()
             self.activity.status = ""
         # Abandoning a wait is the exception, not the rule: restore the safe
         # default so the next Ctrl+C-free cancellation cannot kill a command.
