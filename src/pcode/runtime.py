@@ -27,6 +27,10 @@ class ToolStarted:
     # "background" or "foreground" for command tools, "" for everything else:
     # whether the model asked for a job handle or waited on the command.
     execution: str = ""
+    # A delegation's sub-agent and its assignment, "" for every other tool.
+    # Sessions saved before these existed restore without them.
+    agent: str = ""
+    task: str = ""
 
 
 @dataclass(frozen=True)

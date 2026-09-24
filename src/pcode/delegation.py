@@ -30,6 +30,7 @@ from pcode.runtime import ToolStarted, ToolSummary
 from pcode.shell import result_projection
 from pcode.tool_display import (
     COMMAND_TOOLS,
+    assignment,
     command_error,
     execution_mode,
     invocation,
@@ -98,6 +99,7 @@ async def stream_child_activity(_ctx, events):
             except (TypeError, ValueError):
                 args = {}
             tools[part.tool_call_id] = (part.tool_name, args, monotonic())
+            agent, task = assignment(part.tool_name, args)
             child = ToolStarted(
                 part.tool_name,
                 target(part.tool_name, args),
@@ -109,6 +111,8 @@ async def stream_child_activity(_ctx, events):
                 command=invocation(part.tool_name, args),
                 purpose=stated_purpose(args),
                 execution=execution_mode(part.tool_name, args),
+                agent=agent,
+                task=task,
             )
             activity = "Working"
         elif isinstance(event, FunctionToolResultEvent):

@@ -83,12 +83,13 @@ class ToolCall:
         so it says how it ended instead. The status row draws a spinner, not
         a check, so this word is the only sign there that the agent is done.
         """
-        agent, _, task = plain(self.event.detail, limit=None).partition(" · ")
+        event = self.event
         if self.settled is not None:
             state = "Failed" if self.failed else "Done"
         else:
-            state = plain(self.event.activity) or "Starting"
-        name = agent[:1].upper() + agent[1:]
+            state = plain(event.activity) or "Starting"
+        name = event.agent[:1].upper() + event.agent[1:] or label(event.name)
+        task = event.task or plain(event.detail, limit=None)
         return f"{AGENT_ICON} {name} · {elapsed:.1f}s · {state} · {task}"
 
 

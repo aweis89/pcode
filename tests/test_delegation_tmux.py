@@ -19,7 +19,8 @@ class Runtime:
 
     async def stream(self, prompt):
         yield ToolStarted("delegate_task", "explorer · investigate authentication", "parent",
-                          activity="Working")
+                          activity="Working", agent="explorer",
+                          task="investigate authentication")
         for i in range(20):
             yield ToolStarted("read_file", f"chatter-{i}", str(i))
             yield ToolSummary("read_file", f"chatter-{i}", call_id=str(i))
