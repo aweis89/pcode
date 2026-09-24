@@ -149,15 +149,28 @@ class MeridianModel(AnthropicModel):
         # Meridian answers any Anthropic server tool (`web_search_*`, `web_fetch_*`)
         # with a 400: the Claude Max path cannot emit server_tool_use blocks. Drop
         # them from the profile so the web capabilities fall back to local tools.
+        #
+        # Tool search fails quietly rather than with a 400. Meridian re-registers
+        # client tools with the Agent SDK, which drops `defer_loading` and
+        # `tool_reference`: the model sees every deferred schema, but no search
+        # result it could produce counts as discovery, so Pydantic AI refuses each
+        # deferred call as "not available yet". Use the local `search_tools` and
+        # no wire deferral: hidden tools are withheld, then sent in full once found.
         from pydantic_ai.native_tools import WebFetchTool, WebSearchTool
+        from pydantic_ai.native_tools._tool_search import ToolSearchTool
         from pydantic_ai.profiles import SUPPORTED_NATIVE_TOOLS, merge_profile
         from pydantic_ai.profiles.anthropic import AnthropicModelProfile
 
         profile = super().profile
         native = profile.get("supported_native_tools", SUPPORTED_NATIVE_TOOLS)
+        unsupported = {WebSearchTool, WebFetchTool, ToolSearchTool}
         return merge_profile(
             profile,
-            AnthropicModelProfile(supported_native_tools=native - {WebSearchTool, WebFetchTool}),
+            AnthropicModelProfile(
+                supported_native_tools=native - unsupported,
+                tool_deferral_mode=None,
+                tool_addition_mode=None,
+            ),
         )
 
 

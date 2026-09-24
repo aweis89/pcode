@@ -261,6 +261,16 @@ history: `MCPState.undefer()` rebuilds the wrappers around the *same*
 `DeferredLoadingToolset` layer and the turn is sent again. Both are pinned by
 `tests/test_codex_profile.py` and `tests/test_mcp.py`.
 
+Meridian breaks the same contract without a 400. It re-registers client tools
+with the Agent SDK, which ignores `defer_loading`, `tool_reference`, and the
+`tool_search_tool_bm25` server tool. The model therefore sees every deferred
+schema and calls tools directly, and Pydantic AI refuses each call as "not
+available yet" because no search ever landed in history. `MeridianModel.profile`
+drops `ToolSearchTool` and clears both deferral and addition modes. Hidden tools
+are then withheld, found through the local `search_tools`, and sent in full.
+`tests/test_meridian.py` pins the wire shape; this was verified live against
+Meridian 1.76.2.
+
 ### Codex sign-in
 
 `src/pcode/codex_login.py` uses the installed Pydantic AI public

@@ -543,3 +543,73 @@ def test_web_capabilities_use_local_tools(monkeypatch):
     tools = bodies[0]["tools"]
     assert {tool["name"] for tool in tools} == {"search", "get_page"}
     assert not any(tool.get("type", "custom") != "custom" for tool in tools)
+
+
+def test_deferred_tools_are_found_with_local_search(monkeypatch):
+    """Meridian cannot run `tool_search_tool_bm25`, so deferred tools go through `search_tools`.
+
+    With native search on the wire the model saw deferred schemas it could never
+    unlock, and every call to one was refused as "not available yet".
+    """
+    from pydantic_ai import Agent
+    from pydantic_ai.toolsets import FunctionToolset
+
+    from pcode.meridian import meridian_model
+
+    bodies = []
+    calls = [
+        ("search_tools", {"queries": ["drive document"]}),
+        ("read_document", {"file_id": "abc"}),
+    ]
+
+    def handle(request):
+        bodies.append(json.loads(request.content))
+        if calls:
+            name, args = calls.pop(0)
+            call_id = f"call-{len(bodies)}"
+            content = [{"type": "tool_use", "id": call_id, "name": name, "input": args}]
+            stop = "tool_use"
+        else:
+            content, stop = [{"type": "text", "text": "done"}], "end_turn"
+        return httpx2.Response(
+            200,
+            json={
+                "id": f"msg-{len(bodies)}",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": content,
+                "stop_reason": stop,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    original = httpx2.AsyncClient
+
+    class Client(original):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs, transport=httpx2.MockTransport(handle))
+
+    monkeypatch.setattr("pcode.meridian.httpx2.AsyncClient", Client)
+    read = []
+
+    def read_document(file_id: str) -> str:
+        """Read a Google Drive document."""
+        read.append(file_id)
+        return "contents"
+
+    async def run():
+        deferred = FunctionToolset([read_document]).defer_loading()
+        agent = Agent(meridian_model("meridian:claude-opus-5"), toolsets=[deferred])
+        return await agent.run("read the drive document")
+
+    assert asyncio.run(run()).output == "done"
+    assert read == ["abc"]
+    first = bodies[0]["tools"]
+    assert [tool["name"] for tool in first] == ["search_tools"]
+    # Found tools arrive with full definitions, never Anthropic-only reveal shapes.
+    later = bodies[1]["tools"]
+    assert "read_document" in {tool["name"] for tool in later}
+    wire = json.dumps(bodies)
+    for anthropic_only in ("defer_loading", "tool_reference", "tool_search_tool"):
+        assert anthropic_only not in wire
