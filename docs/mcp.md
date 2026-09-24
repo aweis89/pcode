@@ -49,8 +49,9 @@ Repository MCP files are **not** loaded automatically. The JSON uses an
 - **Remote HTTP/SSE:** `url` and optional `headers` (string map). Transport is
   inferred from the URL by the MCP client. Add `"auth": "oauth"` for browser sign-in.
 
-Either transport also accepts `"enabled": true` (on for every conversation) and
-`"direct": true` (see tool search below).
+Either transport also accepts `"enabled": true` (on for every conversation),
+`"direct": true` (see tool search below), and a `"description"` string (see
+[what the model is told](#what-the-model-is-told)).
 
 Server names start with a letter and contain letters, digits, `_`, or `-` (up to
 32 characters). Unsupported server fields are rejected on enable rather than
@@ -163,6 +164,8 @@ searched servers can be enabled together.
 Discovery is handled by Pydantic AI's auto-injected `ToolSearch` capability:
 natively by the provider where supported (recent Anthropic and OpenAI models),
 otherwise by a local `search_tools` tool that pcode shows as **Find tools**.
+Meridian always uses the local tool, because the Claude Agent SDK behind it
+cannot run Anthropic's server-side search.
 Either way the revealed tools keep their `mcp_NAME_TOOL` names, and the search
 exchange is appended to history, so the prompt cache prefix stays intact.
 
@@ -171,6 +174,52 @@ pcode stops deferring for the rest of the session, says so, and sends the turn
 again with every tool declared up front, as `"direct": true` would. The tools
 stay usable at their full prompt cost rather than the session failing every
 request.
+
+## What the model is told
+
+Hidden tools only help if the model thinks to search for them, so pcode tells
+it which servers are enabled, in two parts:
+
+- **A fixed instruction**, present whenever `mcp.json` configures at least one
+  server. It says where the list of enabled servers is, that their tools are
+  named `mcp_NAME_TOOL`, and to search for them before deciding an integration
+  is unavailable. It names no server, so it never changes during a session.
+- **The list itself**, added to the conversation with the next request whenever
+  it changes: at the start of a conversation with servers enabled, after
+  `/mcp enable` or `/mcp disable`, and again after compaction drops it. Turning
+  the last server off sends "no MCP servers are enabled", so the model stops
+  looking for tools that are gone.
+
+```text
+<mcp-servers>
+Enabled MCP servers (replaces any earlier list):
+- gdrive
+- cs: CodeSignal assessments and candidates
+</mcp-servers>
+```
+
+Because the list is appended rather than written into the instructions, changing
+it never rewrites earlier messages or the instructions, so the list does not
+invalidate the prompt cache by itself. Enabling the first searchable server
+still does, since that adds the search tool to the request. A delegated worker
+sees the same list, because it shares the parent's enabled servers; side
+questions (`/btw`) get neither the tools nor the list.
+
+The name is often enough. Add a `description` when it is not:
+
+```json
+{
+  "mcpServers": {
+    "cs": {
+      "command": "cs-mcp",
+      "description": "CodeSignal assessments and candidates"
+    }
+  }
+}
+```
+
+Keep it to a short phrase. It is read when the server is enabled, so after
+editing it, disable and enable the server again.
 
 ## Activation and token usage
 

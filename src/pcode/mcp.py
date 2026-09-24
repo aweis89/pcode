@@ -111,6 +111,9 @@ class ServerConfig(BaseModel):
     # Off by default: a server's schemas otherwise sit in every request of the
     # conversation, while tool search costs one call for the tools actually used.
     direct: bool = False
+    # What the server is for, shown to the model beside its name in the list of
+    # enabled servers. Only worth setting when the name does not already say it.
+    description: str | None = None
 
     @model_validator(mode="after")
     def transport(self):
@@ -137,8 +140,8 @@ def _config(name: str, raw: Any) -> ServerConfig:
         # Pydantic errors include input values: never print credentials from config.
         raise ValueError(
             f"Invalid MCP server '{name}'. Use command/args/env/cwd for stdio or url/headers "
-            'for HTTP (optional auth: "oauth", enabled: true, direct: true); other fields '
-            "are not supported."
+            'for HTTP (optional auth: "oauth", enabled: true, direct: true, description); '
+            "other fields are not supported."
         ) from None
 
 
@@ -246,6 +249,9 @@ class MCPState:
 
     def __init__(self) -> None:
         self.enabled: dict[str, Any] = {}
+        # Captured at enable, like the toolset, so a later config edit changes
+        # neither until the server is disabled and enabled again.
+        self.descriptions: dict[str, str] = {}
 
     async def enable(self, name: str, *, interactive: bool = True) -> None:
         if name in self.enabled:
@@ -253,6 +259,8 @@ class MCPState:
         servers = configured_servers()
         if name not in servers:
             raise ValueError(f"Unknown MCP server '{name}'. Use /mcp list.")
+        # Read before building, so a bad entry fails here, not after enabling.
+        description = _config(name, servers[name]).description
         toolset = build_toolset(name, servers[name], interactive=interactive)
         # Only OAuth needs an enable-time connection. Entering the MCP toolset
         # initializes the server and completes native auth without a model call.
@@ -271,10 +279,13 @@ class MCPState:
                     raise sign_in from error
                 raise
         self.enabled[name] = toolset
+        if description:
+            self.descriptions[name] = description
 
     async def forget(self, name: str) -> None:
         """Drop stored OAuth credentials for a server, and its toolset if enabled."""
         self.enabled.pop(name, None)
+        self.descriptions.pop(name, None)
         servers = configured_servers()
         if name not in servers:
             raise ValueError(f"Unknown MCP server '{name}'. Use /mcp list.")
@@ -292,9 +303,14 @@ class MCPState:
         if name not in self.enabled:
             raise ValueError(f"MCP server '{name}' is not enabled.")
         del self.enabled[name]
+        self.descriptions.pop(name, None)
 
     def toolsets(self) -> list:
         return list(self.enabled.values())
+
+    def servers(self) -> dict[str, str | None]:
+        """Enabled server names, sorted, with the descriptions configured for them."""
+        return {name: self.descriptions.get(name) for name in sorted(self.enabled)}
 
     def undefer(self) -> list[str]:
         """Send every enabled server's schemas up front, for the rest of the session.
