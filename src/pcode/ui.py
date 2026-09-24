@@ -1525,7 +1525,7 @@ def create_prompt(
     @per_render
     def aside_rows():
         return activity.aside_rows(
-            prompt_spinner.render(monotonic()).plain, session.app.output.get_size().columns
+            prompt_spinner.render(monotonic()).plain, session.app.output.get_size().columns - 1
         )
 
     def status_gap() -> bool:
@@ -1562,26 +1562,34 @@ def create_prompt(
     def plan_text():
         return panel_fragments(plan_rows(), session.app.output.get_size().columns - 2)
 
-    current_status = ConditionalContainer(
-        # One column of left padding so the spinner lines up with the task rows
-        # inside the frame below instead of sitting against the terminal edge.
-        VSplit(
+    def spinner_rows(fragments, height) -> VSplit:
+        """Rows that lead with a spinner or status icon.
+
+        One column of left padding so every icon lines up with the task rows
+        inside the frame below instead of sitting against the terminal edge.
+        """
+        return VSplit(
             [
                 Window(width=1),
                 Window(
-                    FormattedTextControl(
-                        lambda: activity.status_fragments(
-                            (system_spinner if activity.uses_system_spinner else prompt_spinner)
-                            .render(monotonic())
-                            .plain,
-                            session.app.output.get_size().columns - 1,
-                        ),
-                        show_cursor=False,
-                    ),
+                    FormattedTextControl(fragments, show_cursor=False),
+                    height=height,
                     wrap_lines=False,
+                    dont_extend_height=True,
                 ),
             ],
-            height=1,
+            height=height,
+        )
+
+    current_status = ConditionalContainer(
+        spinner_rows(
+            lambda: activity.status_fragments(
+                (system_spinner if activity.uses_system_spinner else prompt_spinner)
+                .render(monotonic())
+                .plain,
+                session.app.output.get_size().columns - 1,
+            ),
+            1,
         ),
         filter=Condition(lambda: activity.status_shown),
     )
@@ -1676,28 +1684,18 @@ def create_prompt(
     # Below the spinner: side questions run beside the turn and outlive it, so
     # they get their own spinner rows rather than a share of the prompt's.
     asides = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: panel_fragments(aside_rows(), session.app.output.get_size().columns),
-                show_cursor=False,
-            ),
-            height=lambda: len(aside_rows()),
-            wrap_lines=False,
-            dont_extend_height=True,
+        spinner_rows(
+            lambda: panel_fragments(aside_rows(), session.app.output.get_size().columns - 1),
+            lambda: len(aside_rows()),
         ),
         filter=Condition(lambda: bool(aside_rows())),
     )
     # What is running that the spinner does not cover.
     # Shown while idle too, which is when "is the suite still going?" is asked.
     jobs = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: panel_fragments(job_rows(), session.app.output.get_size().columns),
-                show_cursor=False,
-            ),
-            height=lambda: len(job_rows()),
-            wrap_lines=False,
-            dont_extend_height=True,
+        spinner_rows(
+            lambda: panel_fragments(job_rows(), session.app.output.get_size().columns - 1),
+            lambda: len(job_rows()),
         ),
         filter=Condition(lambda: bool(job_rows())),
     )
