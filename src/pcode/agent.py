@@ -11,7 +11,7 @@ from dataclasses import fields, replace
 from pathlib import Path
 
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import CombinedCapability
+from pydantic_ai.capabilities import Capability, CombinedCapability
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai_codex import OpenAICodexProvider
@@ -54,6 +54,26 @@ from pcode.workspace import WorkspaceGuard
 # already spent. `pcode.ext.subagent` applies this to extension delegates too.
 SUBAGENT_REQUEST_LIMIT = 120
 SUBAGENT_TIMEOUT_SECONDS = 900
+
+# Coder's default prompt without "finish long-running work before responding",
+# which kept the model waiting on jobs instead of answering steering. Job
+# mechanics are in the shell tool descriptions; don't add workflow rules here.
+CODER_INSTRUCTIONS = """\
+You are a software engineering agent. Use tools to investigate, implement, and
+verify the requested work. Read existing code and follow repository instructions
+and conventions. Prefer focused changes that fix causes, not symptoms.
+
+Apply DRY, YAGNI, SOLID, and the Zen of Python pragmatically: simple, explicit,
+cohesive code beats abstractions without a present need.
+
+Work autonomously until complete. Ask only for missing requirements, credentials,
+consequential ambiguity, or approval for irreversible actions. Use reasonable
+defaults for minor ambiguities. Run focused tests and appropriate lint/type checks;
+report what you actually verified, assumptions, and remaining limitations.
+
+Servers may remain running once readiness is verified; shut them down when no
+longer needed.
+"""
 
 AGENT_INSTRUCTIONS = (
     "Responses are displayed in a terminal with Markdown rendering "
@@ -147,7 +167,10 @@ def create_coder(
     # blanket-rename everything either: `replace()`-copied children compare
     # fields with their parent and a renamed parent breaks that match.
     coder.capabilities = [
-        create_repo_context(workspace)
+        # The pinned Coder's sole plain Capability holds its base instructions.
+        Capability(instructions=CODER_INSTRUCTIONS)
+        if type(capability) is Capability
+        else create_repo_context(workspace)
         if isinstance(capability, RepoContext)
         # Named so /status can attribute its prompt; ids never reach the model.
         else replace(DisplayFileSystem.from_filesystem(capability), id="file_tools")

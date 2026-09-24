@@ -7,13 +7,14 @@ import sys
 
 import pytest
 from pydantic_ai import Agent
+from pydantic_ai.messages import ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from pcode.agent import create_coder
 from pcode.job_notices import notice, notice_for
 from pcode.jobs import JobRegistry, format_duration, registry
 from pcode.live import AgentRuntime
-from pcode.runtime import ToolSummary
+from pcode.runtime import Message, ToolSummary
 
 
 def command(source):
@@ -316,6 +317,97 @@ def test_released_wait_hands_back_a_handle_and_leaves_the_command_running(tmp_pa
         assert runtime.jobs.announceable(job)
     finally:
         runtime.jobs.stop_all()
+
+
+@pytest.mark.parametrize("wait_tool", ["shell", "wait_for_job"])
+def test_steering_can_do_independent_work_then_collect_the_original_job(tmp_path, wait_tool):
+    """Exercise the real tools and streaming runtime, not model obedience."""
+    release = tmp_path / "release-job"
+    source = (
+        "import time; from pathlib import Path\n"
+        f"while not Path({str(release)!r}).exists(): time.sleep(.02)\n"
+        "print('JOB_FINISHED')"
+    )
+    calls = [("shell", {"command": command(source), "background": wait_tool != "shell"})]
+    if wait_tool == "wait_for_job":
+        calls.append(("wait_for_job", {"job_id": "j1"}))
+    follow_up_step = len(calls)
+    calls.extend(
+        [
+            ("write_file", {"path": "notes.txt", "content": "Independent work completed.\n"}),
+            ("wait_for_job", {"job_id": "j1"}),
+        ]
+    )
+    question = "In the meantime, write notes.txt while the job keeps running."
+    answer = "I'll write the notes while the original job continues."
+    pending = []
+    step = 0
+
+    async def model(messages, info):
+        nonlocal step
+        if step == follow_up_step:
+            parts = messages[-1].parts
+            result = next(p for p in parts if isinstance(p, ToolReturnPart))
+            follow_up = next(p for p in parts if isinstance(p, UserPromptPart))
+            assert "The user sent a follow-up, so the wait ended" in result.content
+            assert follow_up.content == question
+            assert parts.index(result) < parts.index(follow_up)
+            assert runtime.jobs.get("j1").running
+            yield answer
+        if step < len(calls):
+            name, args = calls[step]
+            yield {0: DeltaToolCall(name=name, json_args=json.dumps(args))}
+        else:
+            result = next(p for p in messages[-1].parts if isinstance(p, ToolReturnPart))
+            assert "JOB_FINISHED" in result.content
+            assert "[j1 · exit 0 · " in result.content
+            yield "Both tasks are complete."
+        step += 1
+
+    runtime = AgentRuntime(
+        Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)])
+    )
+
+    def take():
+        messages = pending[:]
+        pending.clear()
+        return messages
+
+    runtime.take_steering = take
+
+    async def run():
+        events = []
+
+        async def collect():
+            async for event in runtime.stream("Run the job and verify its result."):
+                events.append(event)
+                if isinstance(event, ToolSummary) and event.name == "write_file":
+                    assert not event.failed
+                    assert Message(answer) in events
+                    assert runtime.jobs.get("j1").running
+                    assert (tmp_path / "notes.txt").read_text() == "Independent work completed.\n"
+                    release.touch()
+
+        task = asyncio.create_task(collect())
+        try:
+            async with asyncio.timeout(10):
+                while not (job := runtime.jobs.get("j1")) or not job.waiting:
+                    await asyncio.sleep(0.02)
+                pending.append(question)
+                runtime.jobs.release_waits()
+                await task
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        return events
+
+    events = asyncio.run(run())
+    assert [e.name for e in events if isinstance(e, ToolSummary)] == [name for name, _ in calls]
+    assert Message("Both tasks are complete.") in events
+    assert not pending
+    assert len(runtime.jobs.jobs) == 1
+    assert runtime.jobs.get("j1").exit_code == 0
+    assert not runtime.jobs.get("j1").stopped
 
 
 def test_completed_job_is_reported_to_the_model_at_the_next_request(tmp_path):

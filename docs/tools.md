@@ -119,6 +119,10 @@ so it also stops the command the turn was waiting on. A job the model
 explicitly backgrounded survives all of these, because nothing was waiting on
 it.
 
+Nothing in the prompt makes the model finish a job before replying, so a
+follow-up such as “write the release notes in the meantime” can steer the same
+turn into other work while a build continues, without `/btw`.
+
 Jobs outlive the turn, the conversation, and pcode itself. Use
 [`/jobs`](commands.md#offline-preview-and-commands) to see what is still running, and
 `/jobs stop ID` or `/jobs stop all` to stop it. A stop is `SIGTERM` to the
