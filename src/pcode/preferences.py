@@ -254,7 +254,7 @@ SETTINGS = {
         "on", ("on", "off"), description="Show the model's plan as a pinned task list"
     ),
     "autohide_tasks": Setting(
-        "on", ("on", "off"), description="Hide the task list once every step is done"
+        "off", ("on", "off"), description="Hide the task list when a turn ends"
     ),
     "attach_tasks": Setting(
         "off", ("on", "off"), description="Draw the task list inside the editor box"
