@@ -154,6 +154,7 @@ class PreviewApp:
         self.activity = Activity(
             show_tasks=load_preferences().get("show_tasks", "on") == "on",
             autohide_tasks=load_preferences().get("autohide_tasks", "on") == "on",
+            attach_tasks=load_preferences().get("attach_tasks") == "on",
             show_thinking=load_preferences().get("show_thinking") == "on",
         )
         if agent is not None and model:
@@ -367,6 +368,13 @@ class PreviewApp:
                 "/autohide-tasks",
                 "Hide the Tasks/Tools widget when a turn ends: on / off; bare toggles",
                 self.autohide_tasks,
+                ("on", "off"),
+                group="Display",
+            ),
+            Command(
+                "/attach-tasks",
+                "Draw the Tasks/Tools widget inside the editor box: on / off; bare toggles",
+                self.attach_tasks,
                 ("on", "off"),
                 group="Display",
             ),
@@ -896,6 +904,17 @@ class PreviewApp:
         state = "on" if enabled else "off"
         self.transcript.flash(
             f"Auto-hide tasks after each turn: {state}. Usage: /autohide-tasks [on|off]"
+        )
+
+    def attach_tasks(self, argument: str) -> None:
+        enabled = self.toggle_argument("/attach-tasks", argument, self.activity.attach_tasks)
+        self.activity.attach_tasks = enabled
+        self.persist_defaults(attach_tasks="on" if enabled else "off")
+        if self.transcript.output is not None:
+            self.transcript.output.app.invalidate()
+        state = "on" if enabled else "off"
+        self.transcript.flash(
+            f"Tasks inside the editor box: {state}. Usage: /attach-tasks [on|off]"
         )
 
     def show_edits(self, argument: str) -> None:

@@ -50,6 +50,7 @@ def test_defaults_and_path_do_not_create_files():
         "show_thinking": "off",
         "show_tasks": "on",
         "autohide_tasks": "on",
+        "attach_tasks": "off",
         "transcript_max_chars": "2000000",
         "error_scrollback_lines": "20",
         "tool_error_scrollback": "off",
