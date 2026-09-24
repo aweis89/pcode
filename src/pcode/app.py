@@ -36,6 +36,7 @@ from pcode.preferences import (
     effort_for,
     effort_setting,
     load_preferences,
+    parse_height,
     save_model_effort,
     save_preferences,
 )
@@ -155,6 +156,7 @@ class PreviewApp:
             show_tasks=load_preferences().get("show_tasks", "on") == "on",
             autohide_tasks=load_preferences().get("autohide_tasks", "off") == "on",
             attach_tasks=load_preferences().get("attach_tasks") == "on",
+            tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
             show_thinking=load_preferences().get("show_thinking") == "on",
         )
         if agent is not None and model:
@@ -871,6 +873,8 @@ class PreviewApp:
             result = configure(shlex.split(argument))
         except OSError as error:
             raise ValueError(f"Could not access global defaults: {error}") from None
+        # Layout-only, so it can apply at once rather than on the next launch.
+        self.activity.tasks_max_height = parse_height(load_preferences().get("tasks_max_height"))
         self.transcript.note(result)
 
     def set_show_tasks(self, shown: bool) -> None:

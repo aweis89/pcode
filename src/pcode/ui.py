@@ -65,7 +65,7 @@ from pcode.tool_display import (
     split_outcome,
     tool_summary_lines,
 )
-from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
+from pcode.tool_panel import TASK_ROWS, ToolHistory, panel_fragments, task_panel_rows
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
@@ -299,6 +299,9 @@ class Activity:
     autohide_tasks: bool = False
     # Draw the widget as the top section of the editor box instead of its own box.
     attach_tasks: bool = False
+    # Cap on the task widget plus the editor box: whole rows, or a share of the
+    # screen below 1 (0.5 is half). None keeps the default layout.
+    tasks_max_height: float | None = None
     tasks_autohidden: bool = False
     show_thinking: bool = False
     busy: bool = False
@@ -408,6 +411,13 @@ class Activity:
         self.status = ""
         self.tasks_autohidden = False
 
+    def height_cap(self, rows: int) -> int | None:
+        """The task widget plus editor box's row limit on a screen this tall."""
+        cap = self.tasks_max_height
+        if cap is None:
+            return None
+        return min(rows, int(rows * cap) if cap < 1 else int(cap))
+
     @property
     def tasks_shown(self) -> bool:
         """Visible only when enabled and not auto-hidden after the last turn."""
@@ -443,7 +453,9 @@ class Activity:
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
         icon = spinner if self.status_shown else "○"
-        return task_panel_rows(self.displayed_plan, self.tools, budget, icon)
+        # A configured height is room the user asked the tasks to fill.
+        max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
+        return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
 
     def panel_title(self) -> str:
         items = self.displayed_plan
@@ -1372,6 +1384,9 @@ def create_prompt(
             return live[3] + tasks
         size = session.app.output.get_size()
         available = max(1, size.rows - 4 - activity_height() - tasks - len(queue_rows()))
+        cap = activity.height_cap(size.rows)
+        if cap is not None:
+            available = min(available, max(1, cap - 2 - tasks_height()))
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
         return min(text_height, available) + 2 + tasks
 
@@ -1414,7 +1429,14 @@ def create_prompt(
     @per_render
     def base_plan_rows(budget: int | None = None):
         if budget is None:
-            budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
+            rows = session.app.output.get_size().rows
+            cap = activity.height_cap(rows)
+            budget = (
+                min(10, max(1, rows // 2 - 2))
+                if cap is None
+                # The editor box keeps one text row inside its two borders.
+                else max(1, cap - task_chrome() - 3)
+            )
         return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
     @lru_cache(maxsize=1)
@@ -1487,6 +1509,10 @@ def create_prompt(
         chrome_rows = 1 if activity.attach_tasks else 2
         task_floor = 1 + chrome_rows if plans else 0
         editor_room = max(1, room - 2 - 4 - task_floor)
+        cap = activity.height_cap(size.rows)
+        if cap is not None:
+            tasks = len(plans) + chrome_rows if plans else 0
+            editor_room = min(editor_room, max(1, cap - 2 - tasks))
         editor_rows = min(editor_room, editor.preferred_height(width, editor_room).preferred)
         editor_height = editor_rows + 2
         plan_budget = max(0, room - editor_height - 4 - chrome_rows)
@@ -1555,6 +1581,15 @@ def create_prompt(
             + len(job_rows())
             + status_gap()
         )
+
+    def task_chrome() -> int:
+        """Rows the widget adds around its tasks: a divider attached, else a frame."""
+        return 1 if activity.attach_tasks else 2
+
+    def tasks_height() -> int:
+        """The widget's full height, wherever it is drawn."""
+        rows = plan_rows()
+        return len(rows) + task_chrome() if rows else 0
 
     def plan_attached() -> bool:
         return activity.attach_tasks and bool(plan_rows())
