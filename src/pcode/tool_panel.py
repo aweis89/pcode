@@ -25,6 +25,9 @@ CHILD_INDENT = "    "
 CHILD_PLAN_ROWS = 3
 # Rows for tool work beside the parent's tasks, before any child plans.
 TOOL_ROWS = 3
+# The parent's task window at the default height. With `tasks_max_height`
+# set, the tasks fill whatever budget the tools leave instead.
+TASK_ROWS = 5
 PLAN_ICONS = {
     "pending": "○",
     "completed": "✓",
@@ -270,7 +273,13 @@ def plan_row(item: dict, active_icon: str, indent: str = "") -> tuple[str, str]:
     return style, f"{indent}{icon} {plain(item['content'], limit=None)}"
 
 
-def task_panel_rows(items: list[dict], tools: ToolHistory, budget: int, active_icon: str):
+def task_panel_rows(
+    items: list[dict],
+    tools: ToolHistory,
+    budget: int,
+    active_icon: str,
+    max_tasks: int = TASK_ROWS,
+):
     """A bounded task viewport, with any concurrent tool work below the active task.
 
     The newest call lives on the status row instead, so this only shows work
@@ -285,7 +294,7 @@ def task_panel_rows(items: list[dict], tools: ToolHistory, budget: int, active_i
     if budget <= 0:
         return []
     tool_count = min(TOOL_ROWS + tools.plan_rows(), tools.wanted(), max(0, budget - bool(items)))
-    steps, active = plan_window(items, min(5, len(items), budget - tool_count))
+    steps, active = plan_window(items, min(max_tasks, len(items), budget - tool_count))
     lines = []
     for index in steps:
         lines.append(plan_row(items[index], active_icon))
