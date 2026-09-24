@@ -91,8 +91,9 @@ no headless/device-code login command.
 
 - Pydantic AI's `MCPToolset(auth="oauth")` delegates PKCE, dynamic client registration,
   callback/state validation, token refresh, and authenticated requests to FastMCP
-  and the MCP SDK. Servers must support that client flow; pre-registered client IDs,
-  custom scopes, and fixed callback ports are not exposed in pcode's config yet.
+  and the MCP SDK. Servers without dynamic client registration need a
+  [pre-registered client](#pre-registered-clients); custom scopes and fixed
+  callback ports are not exposed in pcode's config yet.
 - **Sign-ins are saved.** Tokens and the client registration are written to
   `~/.config/pcode/mcp-credentials.json` (owner-readable only, next to the
   Anthropic sign-in), keyed by server URL. Disable/re-enable, `/new`, resume, and
@@ -110,6 +111,31 @@ no headless/device-code login command.
 - `/mcp logout NAME` deletes the saved credentials for that server and disables
   it. Neither that nor `/mcp disable` revokes the server-side grant; revoke access
   through the service if needed.
+
+### Pre-registered clients
+
+Some services, Google's Workspace MCP servers among them, offer no dynamic client
+registration. Create an OAuth client with the provider and give pcode its ID and
+secret, keeping the secret in the environment:
+
+```json
+{
+  "mcpServers": {
+    "gdrive": {
+      "url": "https://drivemcp.googleapis.com/mcp/v1",
+      "auth": "oauth",
+      "client_id": "${GOOGLE_MCP_CLIENT_ID}",
+      "client_secret": "${GOOGLE_MCP_CLIENT_SECRET}"
+    }
+  }
+}
+```
+
+`client_id` requires `"auth": "oauth"`, and `client_secret` requires `client_id`.
+The sign-in redirects to `http://127.0.0.1:PORT/callback` on a free port chosen
+each time, so the client must accept any loopback port. For Google, create a
+**Desktop app** client (Google Auth Platform > Clients), which does; a Web
+application client only accepts the exact redirect URIs listed on it.
 
 ## Default-on servers
 

@@ -220,7 +220,7 @@ FastMCP resolves it to `fastmcp.client.auth.OAuth`. Consult
 `mcp/client/auth/oauth2.py`. In 4.0.4, default storage is **in-memory**, not disk;
 the helper manages browser authorization, PKCE, callback validation, and refresh.
 Do not assume older FastMCP documentation about persistent token caches applies.
-Pcode intentionally uses that default rather than adding a credential store. The slim install omits `websockets`, but FastMCP 4.0.4's
+Pcode passes its own file-backed `CredentialStore` (see `mcp_oauth.py`) instead. The slim install omits `websockets`, but FastMCP 4.0.4's
 callback server explicitly selects Uvicorn's `websockets-sansio` implementation.
 Pcode adds `websockets>=15.0.1,<17` (verified with 16.1.1) so browser callbacks
 actually start; mocked OAuth exchange tests alone would miss this dependency.
@@ -235,7 +235,16 @@ If a previously registered redirect port is occupied, pcode fails normally with
 instructions to disable/re-enable rather than silently changing a registered URI.
 The adapter uses FastMCP's `token_storage_adapter`, the SDK's
 `context.client_metadata.redirect_uris`, and Uvicorn's `capture_signals` hook;
-recheck these installed-source APIs on upgrades. OAuth protocol handling, PKCE,
+recheck these installed-source APIs on upgrades. A pre-registered `client_id`
+(FastMCP's static client) never pins the callback port; only a dynamic
+registration does. The module also replaces
+`mcp.client.auth.oauth2.validate_metadata_issuer` so a root issuer matches with
+or without its trailing slash (the SDK's own `issuers_match`). `mcp` 2.2.0
+compares strictly when protected resource metadata names the server, and
+Google's MCP servers name `https://accounts.google.com/` while Google's metadata
+says `https://accounts.google.com`. Drop the patch once upstream relaxes that
+check; the Google-shaped tests in `tests/test_mcp_oauth.py` fail if the SDK
+renames the function out from under it. OAuth protocol handling, PKCE,
 state validation, token exchange, and refresh remain in FastMCP/the MCP SDK.
 Keep mocked-provider tests, real loopback success/cancellation tests, deliberate
 port-collision tests, and the full MCP-client startup-failure subprocess test in
