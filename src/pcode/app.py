@@ -243,7 +243,12 @@ class PreviewApp:
                 ("failed",),
                 group="Inspect",
             ),
-            Command("/diffs", "Browse this conversation's file diffs", self.diffs, group="Inspect"),
+            Command(
+                "/diffs",
+                "Git diff of this worktree's branch, or of files edited this session",
+                self.diffs,
+                group="Inspect",
+            ),
             Command(
                 "/links",
                 "Pick a URL from this conversation and open it in the browser",
@@ -1395,14 +1400,31 @@ class PreviewApp:
             if record.get("kind") == "EditCompleted"
         ]
 
+    def diff_view(self):
+        """The git view of this session's work, or its tool edits where git has none."""
+        from pcode.edit_ui import EMPTY
+        from pcode.git_diff import DiffView, GitDiffError, session_diff
+
+        edits = self.recorded_edits()
+        reason = ""
+        try:
+            view = session_diff(self.workspace, [edit.path for edit in edits])
+        except GitDiffError as error:
+            view, reason = None, f" · git diff unavailable: {plain(str(error), limit=160)}"
+        if view is not None:
+            return view
+        return DiffView(f"Tool edits, newest first{reason}", list(reversed(edits)), EMPTY)
+
     async def browse_diffs(self, output: TerminalOutput, session) -> None:
         from pcode.edit_ui import EditBrowser
 
         self.diffs_requested = False
-        changes = await asyncio.to_thread(self.recorded_edits)
+        view = await asyncio.to_thread(self.diff_view)
         async with self.popup(output, session) as modal_input:
             browser = EditBrowser(
-                changes,
+                view.changes,
+                title=view.title,
+                empty=view.empty,
                 code_theme=self.transcript.code_theme,
                 input=modal_input,
                 output=session.app.output,
