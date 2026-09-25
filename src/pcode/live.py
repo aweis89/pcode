@@ -64,7 +64,13 @@ from pcode.filesystem import FileChangeEvent
 from pcode.inspection import ToolArchive, capture
 from pcode.job_notices import JobNotices
 from pcode.jobs import registry as job_registry
-from pcode.mcp import MCPState, deferred_schemas_rejected
+from pcode.mcp import (
+    OAUTH_PACKAGES,
+    MCPConnectError,
+    MCPState,
+    deferred_schemas_rejected,
+    find_cause,
+)
 from pcode.mcp_notice import enabled_servers
 from pcode.native_results import drop_unreadable_results, unreadable_native_results
 from pcode.plan_preview import StreamingPlanPreview
@@ -1122,7 +1128,7 @@ def retry_ceiling(error: Exception) -> str | None:
 CODEX_LOGIN_HINT = "Run `/login openai-codex` (or `codex login`, then restart pcode)."
 
 # Packages whose exceptions mean an MCP server failed, not the model or provider.
-_MCP_AUTH_PACKAGES = ("mcp.client.auth", "fastmcp.client.auth", "pcode.mcp_oauth")
+_MCP_AUTH_PACKAGES = OAUTH_PACKAGES
 _MCP_PACKAGES = ("mcp", "fastmcp", "pydantic_ai.mcp", "pcode.mcp", *_MCP_AUTH_PACKAGES)
 
 
@@ -1175,6 +1181,9 @@ def error_message(error: Exception, *, unexpected: str | None = None) -> str:
                 "Retry with `/mcp enable NAME`, or `/mcp logout NAME` to start over. "
                 "See the saved session diagnostics."
             )
+        if (failed := find_cause(error, MCPConnectError)) is not None:
+            # Fixed text, the server name, and the config path only.
+            return f"{failed} Not the model or provider. See the saved session diagnostics."
         return (
             f"MCP server request failed ({name}), not the model or provider. "
             "Check it with `/mcp list`, or turn it off with `/mcp disable NAME`. "
