@@ -5,6 +5,7 @@ import pytest
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
@@ -154,8 +155,14 @@ def _popups(tmp_path, options):
     asides = AsideBrowser(Asides(), **options)
     sessions = SessionBrowser([], root=tmp_path, workspace=tmp_path, **options)
     tools = ToolInspector(ToolArchive(), **options)
+    # The links picker opens in its search line; the read-only window is the list.
+    links_list = next(
+        window
+        for window in links.layout.find_all_windows()
+        if isinstance(window.content, BufferControl) and window.content.buffer.read_only()
+    )
     return {
-        "links": (links, [links.layout.current_window]),
+        "links": (links, [links_list]),
         "session info": (info, [info.layout.current_window]),
         "edits": (edits.app, [edits.files.window, edits.diff.window]),
         "tree": (tree.app, [tree.list.window]),
