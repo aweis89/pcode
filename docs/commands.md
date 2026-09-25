@@ -67,7 +67,8 @@ candidate's size so that cost is visible before you pick.
   applies from the next request when chosen mid-run).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed`: open the same inspector filtered to failures.
-- `/diffs`: browse this conversation's file diffs in a full-screen popup.
+- `/diffs`: review the session's work as a git diff, one entry per file, in a
+  full-screen popup (see [Diff browser](#diff-browser)).
 - `/links`: pick a URL from the active conversation branch (your prompts, tool
   arguments and captured results, or the assistant's replies, last appearance first).
   Tool links show the tool name; duplicate URLs appear once, at their most recent
@@ -128,9 +129,9 @@ widget without stopping work or clearing task/tool history. The current prompt
 and queue remain visible. Visibility is saved across launches (default: on);
 use `pcode config set show_tasks off` to set the default from the shell.
 
-Delegated sub-agents are listed in the widget like tasks. A finished delegate
-stays with a ✓ (or `!` if it failed), along with its own task list, until the
-next turn starts.
+Delegated sub-agents are listed in the widget beneath your active task. A
+finished delegate stays, reading `Done` (or `Failed`), along with its own task
+list, until you move to another task or the next turn starts.
 
 `/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
 as soon as the model finishes a turn, keeping the idle prompt compact; it
@@ -252,13 +253,15 @@ A running `delegate_task` keeps its own row, and a sub-agent that plans shows up
 to three of its tasks indented beneath it, centred on its active task, with its
 current tool calls nested under that task the same way. The sub-agent's plan is
 separate from yours: it is never saved and never merged into your plan. A
-finished delegate stays listed with its plan until the next turn starts. The
-built-in worker always plans this way; an extension's delegate opts in by giving
+finished delegate stays listed with its plan until your active task changes or
+the next turn starts. The built-in worker always plans this way; an extension's delegate opts in by giving
 its agent `IdentifiedPlanning()` from `pcode.planning` (see "Sub-agents" in
 `src/pcode/extension_guide.md`).
 
-A delegate's row is marked `✦` and reads agent, elapsed time, phase, then its
-assignment. While it runs, the phase is `Waiting for model`, `Thinking`,
+A delegate's row starts with `✦` instead of a status icon, and has its own colour
+while it runs, so it never reads as one of your tasks. It reads agent, elapsed
+time, phase, then the purpose the model gave `delegate_task` (or, without one,
+the opening of its assignment). While it runs, the phase is `Waiting for model`, `Thinking`,
 `Working` (one of its tools is running), or `Responding` (writing its answer);
 once it settles, the phase becomes `Done` or `Failed`.
 
@@ -413,13 +416,36 @@ Terminals that support alternate scroll mode still turn the wheel into ↑/↓
 then, moving the selection or the pane a line at a time. The setting is read as each popup opens, so no restart
 is needed.
 
-## Edit diff browser
+## Diff browser
 
-`/diffs` opens a full-screen popup showing this conversation's completed file
-edits, using the same diff colors as scrollback. The diff fills most of the
-screen; a small file selector sits at the bottom. Keys are listed in the header:
+`/diffs` opens a full-screen popup showing one net git diff per file, however
+many times the file was edited, using the same diff colors as scrollback. The
+first line says what is being compared:
 
-- Up/Down in the file list selects a file, newest change first.
+- **In a linked worktree** (the default with `worktree on`): the whole branch
+  against its merge-base with the mainline branch, including uncommitted and
+  untracked files. That is what a merge would bring in, whichever tool made the
+  change (file tools, the shell, a formatter, a worker). Merging mainline into
+  the branch moves the merge-base, so mainline's own changes never show up here.
+- **In any other checkout**: uncommitted changes against `HEAD`, limited to the
+  files this session's file tools edited, since anything else dirty may be
+  yours. Those files show all of their changes, including ones made before the
+  session or by hand. Files changed only through the shell are not listed.
+- **Outside git**, or when git cannot produce the diff (no commits yet, a
+  detached mainline): the individual tool edits, newest first, with the reason
+  in the title.
+
+Untracked files are included without touching your staging area: the working
+tree is recorded into a throwaway copy of the index, which is deleted
+afterwards. Untracked files that look sensitive (`.env`, keys, credentials) are
+listed but never read, and tracked ones show only their line counts. Secrets in
+other diffs are redacted as in scrollback. A file's diff is clipped at 2,000
+lines, and one over 1 MB shows only its counts.
+
+The diff fills most of the screen; a small file selector sits at the bottom.
+Keys are listed in the header:
+
+- Up/Down in the file list selects a file.
 - Tab/Shift+Tab switch between the file list and the diff. The
   [popup keys](#popup-keys) act on whichever has focus; Ctrl+Home/Ctrl+End jump
   to the first or last line of the diff.
@@ -433,10 +459,9 @@ screen; a small file selector sits at the bottom. Keys are listed in the header:
 - `n`/`N` in either pane jump to the next/previous matching diff line.
 - Escape or Ctrl+C closes the popup and restores the editor draft.
 
-Saved sessions read their changes back from the journal on the active branch, so
-resumed and branched conversations show the diffs that belong to them. Redaction
-and size limits are the same as the scrollback blocks; nothing is re-read from
-disk and no edit is re-applied.
+The tool-edit fallback reads saved sessions back from the journal on the active
+branch, so resumed and branched conversations show the edits that belong to
+them; nothing is re-read from disk and no edit is re-applied.
 
 ## Tool-call inspector
 

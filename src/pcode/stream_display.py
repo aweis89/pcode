@@ -16,6 +16,7 @@ from pcode.runtime import (
     ToolStarted,
     ToolSummary,
 )
+from pcode.tool_panel import active_step
 
 
 def present_events(events, *, activity, transcript, edits) -> None:
@@ -67,6 +68,8 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
     elif isinstance(event, RunStatus):
         activity.status = event.text
     elif isinstance(event, PlanUpdated):
+        if active_step(event.items) != active_step(activity.plan):
+            activity.tools.retire_finished()
         activity.plan = event.items
     elif isinstance(event, PlanPreview):
         activity.plan_preview = event.items

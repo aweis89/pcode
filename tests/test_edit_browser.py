@@ -22,18 +22,18 @@ def change(path, call_id="one", patch="@@ -1 +1 @@\n-old\n+new", **kwargs):
     return EditCompleted(call_id, path, "edited", patch, added=1, removed=1, **kwargs)
 
 
-def test_newest_file_is_selected_and_diff_follows_the_selection():
+def test_first_file_is_selected_and_diff_follows_the_selection():
     changes = [change(f"file_{i}.py", call_id=str(i)) for i in range(3)]
     with create_pipe_input() as pipe:
         ui = EditBrowser(changes, input=pipe, output=DummyOutput())
-        assert ui.selected.path == "file_2.py"
-        assert "file_2.py" in ui.diff.text and "-old" in ui.diff.text
+        assert ui.selected.path == "file_0.py"
+        assert "file_0.py" in ui.diff.text and "-old" in ui.diff.text
         assert ui.files.text.splitlines() == [
             line for line in ui.files.text.splitlines() if "file_" in line
         ]
         ui.files.buffer.cursor_position = ui.files.document.translate_row_col_to_index(2, 0)
-        assert ui.selected.path == "file_0.py"
-        assert "file_0.py" in ui.diff.text
+        assert ui.selected.path == "file_2.py"
+        assert "file_2.py" in ui.diff.text
         assert ui.diff.window.vertical_scroll == 0
 
 
@@ -41,8 +41,8 @@ def test_unavailable_and_truncated_diffs_are_explained():
     with create_pipe_input() as pipe:
         ui = EditBrowser(
             [
-                change("binary.bin", patch="", omitted="Binary content"),
                 change("big.py", truncated=True),
+                change("binary.bin", patch="", omitted="Binary content"),
             ],
             input=pipe,
             output=DummyOutput(),
@@ -58,6 +58,25 @@ def test_empty_conversation_shows_a_notice_without_a_selection():
         assert ui.selected is None
         assert "No file edits" in ui.diff.text and "No file edits" in ui.files.text
         assert ui.position() == 0
+
+
+def test_title_and_empty_text_come_from_the_caller():
+    async def run():
+        screen = StringIO()
+        with create_pipe_input() as pipe:
+            ui = EditBrowser(
+                [],
+                title="Git diff · x vs main",
+                empty="Nothing.",
+                input=pipe,
+                output=Vt100_Output(screen, lambda: Size(rows=24, columns=80), enable_cpr=False),
+            )
+            assert ui.diff.text == "Nothing." and ui.files.text == "Nothing."
+            with set_app(ui.app):
+                ui.app.renderer.render(ui.app, ui.app.layout)
+        assert "Git diff · x vs main" in screen.getvalue()
+
+    asyncio.run(run())
 
 
 def test_secrets_are_redacted_before_display():
