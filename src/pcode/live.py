@@ -355,7 +355,14 @@ class AgentRuntime:
         history = self.context_history if self.context_history is not None else self.history
         return deepcopy(settled_context(list(history)))
 
-    async def aside(self, question: str, *, report=None, model: SideModel | None = None) -> str:
+    async def aside(
+        self,
+        question: str,
+        *,
+        report=None,
+        model: SideModel | None = None,
+        settings: dict | None = None,
+    ) -> str:
         """Answer `question` beside the conversation, recording nothing.
 
         Nothing here touches conversation state: no journal record, no tree
@@ -377,6 +384,11 @@ class AgentRuntime:
         id of its own: Meridian keys its session on the id, and a request from
         another model under the conversation's id would move that session and
         force the conversation's next turn to replay cold.
+
+        `settings` replaces the conversation's model settings for this question
+        alone, which is how `/btw +EFFORT` asks the conversation's own model at
+        another effort. It keeps the conversation id: the cache may not match
+        at a different effort, but the user asked for that trade.
         """
         from pcode.aside import ASIDE_REQUEST_LIMIT, framed
         from pcode.aside_guard import AsideGuard
@@ -395,12 +407,15 @@ class AgentRuntime:
             capabilities.append(Steering(lambda: [pending.pop()] if pending else []))
         conversation_id = self.conversation_id
         other: dict = {}
-        settings = nullcontext()
         if model is not None:
             conversation_id = f"{self.conversation_id}.btw-{uuid4().hex[:8]}"
             other = {"model": model.model}
-            settings = agent.override(model_settings=model.settings)
-        with settings:
+            override = agent.override(model_settings=model.settings)
+        elif settings is not None:
+            override = agent.override(model_settings=settings)
+        else:
+            override = nullcontext()
+        with override:
             async with (
                 agent,
                 model.model if model is not None else nullcontext(),
