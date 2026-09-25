@@ -48,7 +48,7 @@ before pointing it at anything you care about.
 | [MCP servers](docs/mcp.md) | Opt-in MCP configuration, OAuth sign-in, deferred tool search |
 | [Working in a repository](docs/workspace.md) | `AGENTS.md`/`CLAUDE.md`, skills as slash commands, one worktree per session |
 | [Sessions and recovery](docs/sessions.md) | Saving, resuming, recalling earlier sessions, checkpoints, retries |
-| [Context, limits and caching](docs/context.md) | Prompt overhead, compaction, output limits, prompt cache warnings |
+| [Context, limits and caching](docs/context.md) | Prompt overhead, compaction, output limits, prompt cache notices |
 | [The transcript](docs/transcript.md) | What lands in scrollback: diffs, thinking, errors, command output, `/redraw` |
 | [Development](docs/development.md) | Tests, architecture, profiling, references |
 

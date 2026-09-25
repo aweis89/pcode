@@ -5,7 +5,7 @@ import shutil
 import time
 
 import pytest
-from test_tmux import capture, input_rows
+from test_tmux import TIMEOUT, capture, input_rows
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -33,7 +33,7 @@ app.run()
 
 
 def modal(pane, expected):
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         screen = pane("capture-pane", "-p", "-t", "preview:0.0")
         if expected in screen:
@@ -50,9 +50,10 @@ def test_modal_scroll_resize_and_restore_editor(pane):
     modal(pane, "Status: Failed")
     assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "1"
     modal(pane, "15/30 calls")
-    # The newest call is selected; Tab focuses Details, which has no
-    # jump-to-end key, so page down to the last line.
-    pane("send-keys", "-t", "preview:0.0", "Tab")
+    # The newest call is selected. Focus opens in the search line, so Tab twice
+    # (past Calls) to reach Details, which has no jump-to-end key: page down to
+    # the last line.
+    pane("send-keys", "-t", "preview:0.0", "Tab", "Tab")
     for _ in range(20):
         if "DETAIL 29 LINE 199" in pane("capture-pane", "-p", "-t", "preview:0.0"):
             break

@@ -16,6 +16,66 @@ from conftest import tmux_socket_dir
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
 
+# How long a pane gets to reach an expected state. Every wait polls and returns
+# the moment the state shows, so this costs time only when a test fails. Keep it
+# generous: beside other tests (xdist workers, or another worktree's run) a cold
+# pane can spend several seconds importing before its first paint.
+TIMEOUT = 20
+
+# Prepended to every pane script. A script that holds a turn open for the test
+# to look inside awaits `gate()`, and the test calls `release()` once it has
+# looked. A fixed sleep instead is a window that closes before a loaded machine
+# gets to look, and makes an idle one wait it out.
+GATE = """
+import asyncio, os
+
+async def gate(name="release"):
+    path = os.path.join(os.environ["PCODE_TEST_GATES"], name)
+    while not os.path.exists(path):
+        await asyncio.sleep(0.02)
+"""
+
+
+def until(condition, message):
+    """Poll ``condition`` until it holds, failing with ``message()`` after TIMEOUT."""
+    deadline = time.monotonic() + TIMEOUT
+    while not condition():
+        if time.monotonic() > deadline:
+            pytest.fail(message())
+        time.sleep(0.05)
+
+
+# Only a scrollback replay writes this: it clears history before rebuilding it.
+REPLAY = b"\x1b[3J"
+
+
+def resize(pane, *args):
+    """Run a tmux command that resizes the app, then wait for its scrollback replay.
+
+    The live panel repaints at the new size at once, but the debounced replay
+    lands a beat later and rebuilds history from the transcript, dropping notes
+    already shown. Settle a resize this way before asserting on a note, or a
+    loaded machine looks only after the replay has erased it.
+    """
+
+    def size():
+        return pane("display-message", "-p", "-t", "preview:0.0", "#{pane_width}x#{pane_height}")
+
+    before, replays = size(), pane.output.read_bytes().count(REPLAY)
+    pane(*args)
+    if size() == before:
+        return  # The app saw no resize, so nothing is replayed.
+    until(
+        lambda: pane.output.read_bytes().count(REPLAY) > replays,
+        lambda: f"No scrollback replay after {' '.join(args)}",
+    )
+
+
+@pytest.fixture
+def release(tmp_path):
+    """Open the pane script's ``gate(name)``."""
+    return lambda name="release": (tmp_path / name).touch()
+
 
 def tmux_reaper(server, owner_pid):
     """Kill `server` once `owner_pid` exits, even if that exit skips teardown.
@@ -38,15 +98,16 @@ def tmux_reaper(server, owner_pid):
 
 
 @pytest.fixture
-def pane(request):
+def pane(request, tmp_path):
+    # A private server per test: nothing is shared with other tests, xdist
+    # workers, or another worktree's run beyond the socket directory.
     server = "pcode-test-" + uuid.uuid4().hex
     base = ["tmux", "-L", server, "-f", "/dev/null"]
-    env = {**os.environ}
+    env = {**os.environ, "PCODE_TEST_GATES": str(tmp_path)}
     # These tests exist because a PTY with PROMPT_TOOLKIT_NO_CPR=1 (as in
     # test_terminal.py) never exercises real prompt height: cursor-position
     # reports can stretch the layout into the remaining pane. Keep them on a
-    # real tmux, and keep them serial: pane-paint deadlines expire under
-    # xdist, even `-n 4`.
+    # real tmux.
     env.pop("PROMPT_TOOLKIT_NO_CPR", None)
     # Most panes assert on the widget while the prompt is idle, so opt them out
     # of the default auto-hide; a test that wants it turns it back on itself.
@@ -82,11 +143,16 @@ def pane(request):
             # drawing the prompt. `-c SCRIPT ARG` puts ARG in sys.argv, so this
             # reaches the scripts that call main() too; the rest ignore it.
             shlex.join(
-                [sys.executable, "-c", request.param, "--no-worktree"]
+                [sys.executable, "-c", GATE + request.param, "--no-worktree"]
                 if hasattr(request, "param")
                 else [sys.executable, "-m", "pcode.app", "--no-worktree"]
             ),
         )
+        # Mirror everything the app writes, so a test can wait on terminal
+        # events no screen capture shows (see `resize`).
+        command.output = tmp_path / "pane-output"
+        command.output.touch()
+        command("pipe-pane", "-t", "preview:0.0", f"cat >> {shlex.quote(str(command.output))}")
         yield command
     finally:
         subprocess.run([*base, "kill-server"], capture_output=True, env=env)
@@ -123,7 +189,7 @@ def busy(lines):
 
 def capture(pane, expected, *, running=False, columns=None):
     """Allow asynchronous completion and resize paints to settle, with a deadline."""
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         screen = pane("capture-pane", "-p", "-t", "preview:0.0")
         lines = screen.splitlines()
@@ -148,7 +214,7 @@ def settle(pane, ready, *, running=False):
     frame or two before the rows written above it. Callers assert on the
     returned screen, so a timeout still fails with the screen in the message.
     """
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + TIMEOUT
     while True:
         screen = capture(pane, "", running=running)
         if ready(screen) or time.monotonic() > deadline:
@@ -257,7 +323,6 @@ def test_input_only_grows_for_text(pane, split):
 
 
 LIVE_SCRIPT = """
-import asyncio
 from pydantic_ai import Agent
 from pydantic_ai.models.function import FunctionModel
 from pcode.app import PreviewApp
@@ -265,7 +330,7 @@ from pcode.live import AgentRuntime
 
 async def model(messages, info):
     yield "COMMITTED LINE\\n\\nFIRST STREAM CHUNK"
-    await asyncio.sleep(2)
+    await gate()
     yield "\\n\\nLIVE ANSWER COMPLETE"
 
 runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
@@ -274,7 +339,7 @@ PreviewApp(model="test:local", runtime=runtime).run()
 
 
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
-def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
+def test_stream_keeps_prompt_at_bottom_and_commits_once(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "hello")
     pane("send-keys", "-t", "preview:0.0", "Enter")
@@ -288,6 +353,7 @@ def test_stream_keeps_prompt_at_bottom_and_commits_once(pane):
     )
     assert "▌ hello" in streaming
     assert "FIRST STREAM CHUNK" not in streaming
+    release()
     completed = capture(pane, "LIVE ANSWER COMPLETE")
     assert input_rows(completed) == 1
     assert "✓ hello" not in completed
@@ -303,7 +369,7 @@ def test_stream_resize_and_cancellation(pane):
     pane("send-keys", "-t", "preview:0.0", "-l", "hello")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     capture(pane, "COMMITTED LINE", running=True)
-    pane("split-window", "-v", "-t", "preview:0.0", "cat")
+    resize(pane, "split-window", "-v", "-t", "preview:0.0", "cat")
     assert input_rows(capture(pane, "❯", running=True)) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "next input")
     capture(pane, "❯ next input", running=True)
@@ -317,7 +383,7 @@ def test_stream_resize_and_cancellation(pane):
 
 
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
-def test_draft_and_cursor_survive_stream_completion_and_width_resize(pane):
+def test_draft_and_cursor_survive_stream_completion_and_width_resize(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     capture(pane, "COMMITTED LINE", running=True)
@@ -326,6 +392,7 @@ def test_draft_and_cursor_survive_stream_completion_and_width_resize(pane):
     capture(pane, "❯ draft text", running=True)
     pane("split-window", "-h", "-t", "preview:0.0", "cat")
     capture(pane, "❯ draft text", running=True)
+    release()
     screen = capture(pane, "LIVE ANSWER COMPLETE")
     assert "❯ draft text" in screen
     pane("send-keys", "-t", "preview:0.0", "-l", "my ")
@@ -345,11 +412,13 @@ def test_immediate_cancellation_unlocks_editor(pane):
 
 
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
-def test_width_resize_does_not_leave_a_copy_of_unfinished_line(pane):
+def test_width_resize_does_not_leave_a_copy_of_unfinished_line(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     capture(pane, "COMMITTED LINE", running=True)
     pane("split-window", "-h", "-t", "preview:0.0", "cat")
+    capture(pane, "❯", running=True, columns=50)
+    release()
     capture(pane, "LIVE ANSWER COMPLETE")
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert history.count("FIRST STREAM CHUNK") == 1
@@ -377,7 +446,7 @@ async def model(messages, info):
         yield f"LINE_{i:03d}\\n\\n"
         await asyncio.sleep(0.005)
     yield "**FORMATTED MARKDOWN** " + "wide界 " * 60 + "TAIL_MARKER"
-    await asyncio.sleep(1)
+    await gate()
     yield " FINISHED"
 
 runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
@@ -386,12 +455,14 @@ PreviewApp(model="test:local", runtime=runtime).run()
 
 
 @pytest.mark.parametrize("pane", [LONG_SCRIPT], indirect=True)
-def test_long_stream_remains_in_scrollback_without_truncation(pane):
+def test_long_stream_remains_in_scrollback_without_truncation(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "LINE_079", running=True)
     assert "TAIL_MARKER" not in screen
     pane("send-keys", "-t", "preview:0.0", "-l", "still editable")
+    capture(pane, "❯ still editable", running=True)
+    release()
     screen = capture(pane, "FINISHED")
     assert "❯ still editable" in screen
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
@@ -451,7 +522,7 @@ class SlowConsole(Console):
             time.sleep(0.15)
 
 async def model(messages, info):
-    await asyncio.sleep(0.5)
+    await gate()
     for i in range(12):
         yield f"CURSOR_LINE_{i:03d}\\n\\n"
         await asyncio.sleep(0.05)
@@ -463,14 +534,15 @@ PreviewApp(model="test:local", runtime=runtime, console=SlowConsole()).run()
 
 
 @pytest.mark.parametrize("pane", [CURSOR_SCRIPT], indirect=True)
-def test_cursor_is_hidden_while_committing_stream_and_returns_to_draft(pane):
+def test_cursor_is_hidden_while_committing_stream_and_returns_to_draft(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     pane("send-keys", "-t", "preview:0.0", "-l", "draft text")
     pane("send-keys", "-t", "preview:0.0", "Left", "Left", "Left", "Left")
     capture(pane, "❯ draft text", running=True)
+    release()
     samples = 0
-    deadline = time.monotonic() + 6
+    deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         # These commands run in one tmux invocation, so the screen and cursor
         # mode describe the same terminal state rather than different paints.
@@ -508,7 +580,6 @@ def test_cursor_is_hidden_while_committing_stream_and_returns_to_draft(pane):
 
 
 MARKDOWN_SCRIPT = """
-import asyncio
 from pydantic_ai import Agent
 from pydantic_ai.models.function import FunctionModel
 from pcode.app import PreviewApp
@@ -519,7 +590,7 @@ async def model(messages, info):
     for i in range(60):
         yield f"value_{i:03d} = {i}\\n"
     yield "# PREVIEW_MARKER"
-    await asyncio.sleep(2)
+    await gate()
     yield "\\n```\\n\\nMARKDOWN_DONE"
 
 runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
@@ -528,7 +599,7 @@ PreviewApp(model="test:local", runtime=runtime).run()
 
 
 @pytest.mark.parametrize("pane", [MARKDOWN_SCRIPT], indirect=True)
-def test_markdown_code_stays_hidden_until_committed_once(pane):
+def test_markdown_code_stays_hidden_until_committed_once(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "Styled response", running=True)
@@ -537,6 +608,8 @@ def test_markdown_code_stays_hidden_until_committed_once(pane):
     assert "**Styled response**" not in screen
     assert "value_000" not in screen  # Still buffered, not a pane-sized live block.
     pane("send-keys", "-t", "preview:0.0", "-l", "draft survives")
+    capture(pane, "❯ draft survives", running=True)
+    release()
     assert input_rows(capture(pane, "MARKDOWN_DONE")) == 1
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     for i in range(60):
@@ -574,13 +647,14 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 def test_paced_scrollback_rolls_a_block_out_and_keeps_taking_input(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    deadline = time.monotonic() + 3
-    while "PACED_ROW_000" not in scrollback(pane):
+    deadline = time.monotonic() + TIMEOUT
+    while "PACED_ROW_000" not in (history := scrollback(pane)):
         assert time.monotonic() < deadline, "The block never started to appear"
         time.sleep(0.02)
     # The block is written a few rows per frame, so the first row shows while
-    # the last is still queued.
-    assert "PACED_ROW_199" not in scrollback(pane)
+    # the last is still queued. One snapshot answers both: a second capture
+    # could land after a stalled test process let the whole roll-out finish.
+    assert "PACED_ROW_199" not in history
     # Typing during the roll-out reaches the editor unchanged: the handoffs stay
     # in raw mode, so Return submits rather than landing as a newline.
     pane("send-keys", "-t", "preview:0.0", "-l", "next")
@@ -596,7 +670,7 @@ def test_paced_scrollback_rolls_a_block_out_and_keeps_taking_input(pane):
 
 def single_editor_history(pane, marker, *, frames=1):
     """History-inclusive check; a resize erase/repaint is not an atomic write."""
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
         if history.count("┌") == history.count("└") == frames and history.count(marker) == 1:
@@ -630,7 +704,6 @@ def test_repeated_resize_keeps_one_editor_frame_and_draft(pane, multiline, split
 
 
 PLAN_SCRIPT = r"""
-import asyncio
 from pcode.app import PreviewApp
 from pcode.runtime import PlanUpdated, ToolSummary
 
@@ -641,7 +714,7 @@ class Runtime:
         items[8]["status"] = "in_progress"
         yield PlanUpdated(items)
         yield ToolSummary("write_plan", "Plan updated")
-        await asyncio.sleep(2)
+        await gate()
         yield PlanUpdated([dict(item, status="completed") for item in items])
     def reset(self):
         pass
@@ -652,13 +725,13 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 
 @pytest.mark.parametrize("pane", [PLAN_SCRIPT], indirect=True)
 @pytest.mark.parametrize("split", ["-h", "-v"])
-def test_plan_panel_is_bounded_updates_and_clears(pane, split):
+def test_plan_panel_is_bounded_updates_and_clears(pane, release, split):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "Task 8", running=True)
     frames = "◜◠◝◞◡◟"
     first_frame = next(frame for frame in frames if f"{frame} Task 8" in screen)
-    deadline = time.monotonic() + 1
+    deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         animated = pane("capture-pane", "-p", "-t", "preview:0.0")
         if any(f"{frame} Task 8" in animated for frame in frames if frame != first_frame):
@@ -680,13 +753,14 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     assert input_rows(screen) == 1
     assert "Task 0\n" not in screen
     pane("send-keys", "-t", "preview:0.0", "-l", "editable draft")
-    pane("split-window", split, "-t", "preview:0.0", "cat")
+    resize(pane, "split-window", split, "-t", "preview:0.0", "cat")
+    release()
     completed = capture(pane, "✓ Task 0")
     assert any(line.startswith("┌─ Tasks 12/12 ─") for line in completed.splitlines())
     assert "│✓ Task 0" in completed
     assert input_rows(completed) == 1
     assert completed.count("┌") == completed.count("└") == 1
-    pane("kill-pane", "-t", "preview:0.1")
+    resize(pane, "kill-pane", "-t", "preview:0.1")
     capture(pane, "editable draft", columns=100)
     history = single_editor_history(pane, "editable draft")
     assert "Plan updated" not in history
@@ -799,8 +873,8 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
 
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width, height in ((40, 20), (100, 32), (40, 14)):
-        pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
-        deadline = time.monotonic() + 3
+        resize(pane, "resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
+        deadline = time.monotonic() + TIMEOUT
         while True:
             screen = capture(pane, "A task", running=True, columns=width)
             lines = screen.splitlines()
@@ -854,7 +928,7 @@ def test_tasks_share_the_editor_box_by_default_and_config_applies_live(pane):
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width, height in ((40, 14), (100, 32), (40, 20)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + TIMEOUT
         while True:
             screen = capture(pane, "keep draft", running=True, columns=width)
             if screen.count("├") == 1:
@@ -909,11 +983,12 @@ def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
     ],
     indirect=True,
 )
-def test_failure_is_reported_in_scrollback_and_clears_the_status_row(pane):
+def test_failure_is_reported_in_scrollback_and_clears_the_status_row(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "hello")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     capture(pane, "COMMITTED LINE", running=True)
+    release()
     failed = capture(pane, "✗ Agent failed")
     assert input_rows(failed) == 1
     assert "Run failed" in failed
@@ -959,7 +1034,7 @@ def test_queued_messages_stay_directly_above_editor(pane, mode):
         pane("send-keys", "-t", "preview:0.0", "Enter")
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width in (100, 40):
-        pane("resize-window", "-t", "preview:0", "-x", str(width))
+        resize(pane, "resize-window", "-t", "preview:0", "-x", str(width))
         screen = capture(pane, "│❯ keep draft", running=True, columns=width)
         lines = screen.splitlines()
         editor_top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
@@ -1034,7 +1109,6 @@ def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
 
 
 IMMEDIATE_PROMPT_SCRIPT = """
-import asyncio
 from pcode.app import PreviewApp
 from pcode.runtime import TextDelta, ToolStarted, Message
 
@@ -1043,9 +1117,10 @@ class Runtime:
     async def stream(self, prompt):
         yield ToolStarted("read_file", "WAITING FOR FIRST MESSAGE", "one")
         yield TextDelta("FIRST MODEL")
-        await asyncio.sleep(2)
+        await gate("message")
         yield TextDelta(" MESSAGE\\n\\n")
-        await asyncio.sleep(2)
+        # Never released: the response is asserted while the turn still runs.
+        await gate("finish")
         yield Message("FIRST MODEL MESSAGE")
 
 PreviewApp(model="test:local", runtime=Runtime()).run()
@@ -1053,18 +1128,19 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 
 
 @pytest.mark.parametrize("pane", [IMMEDIATE_PROMPT_SCRIPT], indirect=True)
-def test_scrollback_quote_is_committed_on_send_with_a_blank_line_after_it(pane):
+def test_scrollback_quote_is_committed_on_send_with_a_blank_line_after_it(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "sent prompt")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     capture(pane, "WAITING FOR FIRST MESSAGE", running=True)
-    # The runtime withholds the rest of the first message for two seconds, so
-    # the quote must land well before it.
+    # The runtime withholds the rest of the first message until released, so
+    # the quote must land before it.
     waiting = settle(pane, lambda screen: "▌ sent prompt" in screen, running=True)
     assert "WAITING FOR FIRST MESSAGE" in waiting
     assert "▌ sent prompt" in waiting
     assert "FIRST MODEL" not in waiting
     assert input_rows(waiting) == 1
+    release("message")
     response = capture(pane, "FIRST MODEL MESSAGE", running=True)
     assert "▌ sent prompt\n\nFIRST MODEL MESSAGE" in response
     assert input_rows(response) == 1
@@ -1147,8 +1223,7 @@ def test_thinking_toggle_redraws_scrollback_without_growing_prompt(pane):
         screen = capture(pane, "SAVED_REASONING_TEXT", running=True, columns=width)
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-t")
-    time.sleep(0.2)
-    screen = capture(pane, "❯", running=True)
+    screen = settle(pane, lambda screen: "SAVED_REASONING_TEXT" not in screen, running=True)
     assert "SAVED_REASONING_TEXT" not in screen
     pane("send-keys", "-t", "preview:0.0", "C-t")
     capture(pane, "SAVED_REASONING_TEXT", running=True)
@@ -1187,7 +1262,7 @@ def test_vi_newline_and_escape_keep_editor_compact(pane, newline):
     assert input_rows(screen) == 2
     # Normal-mode dd removes the second line rather than inserting literal 'dd'.
     pane("send-keys", "-t", "preview:0.0", "-l", "dd")
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         screen = capture(pane, "first")
         if input_rows(screen) == 1:
@@ -1252,7 +1327,7 @@ class Runtime:
 
 class App(PreviewApp):
     def _create_runtime(self):
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 60
         while not (root / 'release-startup').exists():
             if time.monotonic() > deadline:
                 raise RuntimeError('test did not release initialization')
@@ -1264,7 +1339,7 @@ App(model='test:local').run()
 
 
 @pytest.mark.parametrize("pane", [STARTUP_SCRIPT], indirect=True)
-def test_startup_keeps_real_cpr_editor_editable_and_compact(pane, tmp_path):
+def test_startup_keeps_real_cpr_editor_editable_and_compact(pane, release, tmp_path):
     assert input_rows(capture(pane, "starting")) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "draft before agent is ready")
     screen = capture(pane, "draft before agent is ready")
@@ -1272,11 +1347,8 @@ def test_startup_keeps_real_cpr_editor_editable_and_compact(pane, tmp_path):
     assert input_rows(screen) == 1
     pane("resize-window", "-t", "preview:0", "-x", "80", "-y", "40")
     assert input_rows(capture(pane, "draft before agent is ready", columns=80)) == 1
-    (tmp_path / "release-startup").touch()
-    deadline = time.monotonic() + 5
-    while not (tmp_path / "metadata-started").exists():
-        assert time.monotonic() < deadline
-        time.sleep(0.02)
+    release("release-startup")
+    until((tmp_path / "metadata-started").exists, lambda: "Metadata refresh never started")
     assert input_rows(capture(pane, "draft before agent is ready", columns=80)) == 1
     pane("send-keys", "-t", "preview:0.0", "Enter")
     assert input_rows(capture(pane, "Startup response received", columns=80)) == 1

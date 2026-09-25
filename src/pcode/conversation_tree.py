@@ -16,6 +16,8 @@ class TurnNode:
     resend_blocked: bool = False
     response: str = ""
     plan: list[dict] = field(default_factory=list)
+    # "turn", "compaction", or "aside": a side question merged from /btw, or a
+    # side thread's summary, recorded like a turn that ran no tools.
     kind: str = "turn"
     # Unsaved turns and durable compaction checkpoints carry message history.
     history: list | None = None
@@ -63,6 +65,7 @@ class ConversationTree:
                 record["prompt"],
                 continuation=record.get("continuation", False),
                 plan=deepcopy(self.nodes[parent].plan) if parent else [],
+                kind="aside" if record.get("aside") else "turn",
             )
             self.active = self.recording = identity
         elif kind == "compaction_checkpoint":
@@ -132,12 +135,8 @@ class ConversationTree:
                 prefix = "… " + prefix[-22:]
             connector = ("└─ " if last else "├─ ") if fork else ""
             if node.kind != "compaction":
-                rows.append(
-                    (
-                        (node.id, True),
-                        prefix + connector + "user: " + excerpt(node.prompt),
-                    )
-                )
+                who = "btw: " if node.kind == "aside" else "user: "
+                rows.append(((node.id, True), prefix + connector + who + excerpt(node.prompt)))
             continuation = prefix + (("   " if last else "│  ") if fork else "")
             rows.append(
                 (

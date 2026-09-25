@@ -201,9 +201,13 @@ def create_coder(
     # Ahead of the worker copy below, so a delegate that inherits MCP tools also
     # learns which servers they come from.
     coder.capabilities.append(MCPServers(instruct=has_mcp_servers()))
-    debug = load_preferences().get("debug", SETTINGS["debug"].default) == "on"
-    if debug:
-        coder.capabilities.append(CacheBustReporting())
+    preferences = load_preferences()
+    cache_notices = None
+    if preferences.get("cache_notices", SETTINGS["cache_notices"].default) == "on":
+        cache_notices = CacheBustReporting(
+            dump_fingerprints=preferences.get("debug", SETTINGS["debug"].default) == "on"
+        )
+        coder.capabilities.append(cache_notices)
     for index, capability in enumerate(coder.capabilities):
         if isinstance(capability, Shell):
             # direnv writes its status banner to stderr on every cd into a
@@ -270,7 +274,7 @@ def create_coder(
             shared_capabilities=[
                 MeridianSessionIdentity(),
                 ModelOutputLimits(),
-                *([CacheBustReporting()] if debug else []),
+                *([replace(cache_notices)] if cache_notices else []),
                 ProviderCacheSettings(),
                 replace(output_limits),
             ],
@@ -330,26 +334,12 @@ def codex_model(model: str) -> OpenAICodexModel:
     # Subscription endpoints reject the explicit cache markers that Harness
     # Planning adds after write_plan. Keep the native provider/auth/model name;
     # override only this advertised capability (verified against AI 2.43.0).
-    #
-    # The Codex profile inherits `ToolSearchTool` from the OpenAI profile but not
-    # the deferral/addition modes, which `OpenAIProvider.model_profile` adds and
-    # `OpenAICodexProvider` does not. Without them every hidden tool is withheld
-    # rather than declared as deferred, and the wire carries `tool_search` with
-    # nothing to search: the endpoint answers `400 tools.tool_search requires at
-    # least one deferred tool` for the whole session. Deferred MCP tools are
-    # searched, revealed and called normally with these set (live-verified
-    # against gpt-6-astra on the subscription endpoint).
-    # TODO: drop `tool_deferral_mode` once a pinned Pydantic AI release includes
-    # https://github.com/pydantic/pydantic-ai/pull/8693 (it sets the mode in
-    # `openai_codex_model_profile`). That PR omits `tool_addition_mode`, so check
-    # whether upstream has it before removing that one too.
+    # The tool-search deferral and addition modes come from the provider's
+    # profile, which layers `OpenAIProvider.model_profile` under the Codex
+    # dialect since AI 2.49.0 (pydantic/pydantic-ai#8693).
     return OpenAICodexModel(
         model.removeprefix("openai-codex:"),
-        profile=OpenAIModelProfile(
-            openai_supports_prompt_cache_breakpoints=False,
-            tool_deferral_mode="with_tool_search",
-            tool_addition_mode="with_definitions",
-        ),
+        profile=OpenAIModelProfile(openai_supports_prompt_cache_breakpoints=False),
         **({"provider": provider} if provider is not None else {}),
     )
 

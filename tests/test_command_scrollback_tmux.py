@@ -4,8 +4,9 @@ import shutil
 import time
 
 import pytest
-from test_tmux import capture, input_rows, scrollback
+from test_tmux import TIMEOUT, capture, input_rows, scrollback, settle
 from test_tmux import pane as pane
+from test_tmux import release as release
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
 
@@ -95,7 +96,7 @@ def test_toggle_rebuilds_existing_history_without_rerunning_commands(pane):
     for enabled in (True, False, True, False):
         pane("send-keys", "-t", "preview:0.0", "C-g")
         # Wait for the coalesced terminal handoff, not an old toggle notice.
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + TIMEOUT
         while True:
             screen = capture(pane, "keep draft")
             text = history()
@@ -154,14 +155,13 @@ LIVE_SCRIPT = (
     )
     .replace(
         "await asyncio.sleep(0.05)",
-        'yield CommandOutput("one", "printf MIRRORED_COMMAND", OUTPUT)\n'
-        "        await asyncio.sleep(4)",
+        'yield CommandOutput("one", "printf MIRRORED_COMMAND", OUTPUT)\n        await gate()',
     )
 )
 
 
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
-def test_active_output_precedes_completion_and_keeps_real_cpr_height(pane):
+def test_active_output_precedes_completion_and_keeps_real_cpr_height(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "OUTPUT_LINE_03", running=True)
@@ -174,13 +174,18 @@ def test_active_output_precedes_completion_and_keeps_real_cpr_height(pane):
         screen = capture(pane, "OUTPUT_LINE_03", columns=width, running=True)
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-g")
-    screen = capture(pane, "Show commands: off", columns=35, running=True)
+    # The toggle's notice paints a frame before the preview it hides is gone.
+    screen = settle(
+        pane,
+        lambda screen: "Show commands: off" in screen and "OUTPUT_LINE_03" not in screen,
+        running=True,
+    )
+    assert "Show commands: off" in screen
     assert "OUTPUT_LINE_03" not in screen
     pane("send-keys", "-t", "preview:0.0", "C-g")
     screen = capture(pane, "OUTPUT_LINE_03", columns=35, running=True)
     assert input_rows(screen) == 1
-    time.sleep(2)
-    time.sleep(6)
+    release()
     screen = capture(pane, "TURN_1_DONE", columns=35)
     assert "running · Ctrl+G" not in screen
     assert input_rows(screen) == 1
@@ -205,7 +210,6 @@ PRESSURE_SCRIPT = (
         'save_preferences(show_commands="on", command_preview_lines="6")',
     )
     .replace("range(4)", "range(60)")
-    .replace("await asyncio.sleep(4)", "await asyncio.sleep(60)")
     .replace(
         'app.activity.plan = [{"id": "one", "content": "A task", "status": "in_progress"}]',
         'app.activity.plan = [{"id": str(i), "content": f"TASK_{i}", '
