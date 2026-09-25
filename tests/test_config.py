@@ -21,6 +21,7 @@ from pcode.preferences import (
     set_project_root,
     update_preferences,
 )
+from pcode.ui import Activity
 
 
 def test_defaults_and_path_do_not_create_files():
@@ -52,7 +53,7 @@ def test_defaults_and_path_do_not_create_files():
         "show_thinking": "off",
         "show_tasks": "on",
         "autohide_tasks": "off",
-        "attach_tasks": "off",
+        "attach_tasks": "on",
         "tasks_max_height": None,
         "transcript_max_chars": "2000000",
         "error_scrollback_lines": "20",
@@ -104,6 +105,8 @@ def test_defaults_and_path_do_not_create_files():
         ("editing_mode", "vi"),
         ("editing_mode", "emacs"),
         ("autocompact", "on"),
+        ("attach_tasks", "on"),
+        ("attach_tasks", "off"),
         ("paced_scrollback", "off"),
         ("effort", "high"),
         ("skill_dirs", "~/.agents/skills:/opt/skills"),
@@ -177,6 +180,7 @@ def test_reset_without_a_file_writes_nothing():
         ["set", "theme", "blue"],
         ["set", "editing_mode", "vim"],
         ["set", "autocompact", "true"],
+        ["set", "attach_tasks", "true"],
         ["set", "effort", "max"],
         ["set", "model", ""],
         ["set", "model", "a b"],
@@ -307,6 +311,51 @@ def test_slash_config_edits_defaults_not_active_session():
     assert load_preferences()["theme"] == "light"
 
 
+@pytest.mark.parametrize(
+    "saved,attached", [(None, True), ("on", True), ("off", False), ("invalid", True)]
+)
+def test_attach_tasks_startup_default_and_saved_preference(saved, attached):
+    assert Activity().attach_tasks is True
+    if saved is not None:
+        save_preferences(attach_tasks=saved)
+    app = PreviewApp(console=Console(file=StringIO()))
+    assert app.activity.attach_tasks is attached
+    assert configure(["get", "attach_tasks"]) == ("on" if attached else "off")
+    assert "/attach-tasks" not in [command.name for command in app.registry.commands]
+
+
+@pytest.mark.parametrize("scope", ["", "project "])
+def test_slash_config_updates_task_attachment_immediately(tmp_path, scope):
+    set_project_root(tmp_path)
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output, width=160))
+    assert app.activity.attach_tasks is True
+    for edit, attached in (
+        ("set attach_tasks off", False),
+        ("set attach_tasks on", True),
+        ("set attach_tasks off", False),
+        ("unset attach_tasks", True),
+        ("set attach_tasks off", False),
+        ("reset", True),
+    ):
+        app.handle(f"/config {scope}{edit}")
+        assert app.activity.attach_tasks is attached
+        assert PreviewApp(console=Console(file=StringIO())).activity.attach_tasks is attached
+    assert "Layout settings apply immediately." in output.getvalue()
+    assert "attach_tasks" not in load_preferences()
+
+
+def test_slash_config_task_attachment_respects_project_override(tmp_path):
+    set_project_root(tmp_path)
+    configure(["project", "set", "attach_tasks", "off"])
+    app = PreviewApp(console=Console(file=StringIO()))
+    assert app.activity.attach_tasks is False
+    app.handle("/config set attach_tasks on")
+    assert app.activity.attach_tasks is False
+    app.handle("/config project unset attach_tasks")
+    assert app.activity.attach_tasks is True
+
+
 def test_slash_config_io_errors_do_not_crash():
     output = StringIO()
     app = PreviewApp(console=Console(file=output))
@@ -334,6 +383,9 @@ def test_shortcut_corrupt_config_keeps_active_selection():
         ("/config get th", "get theme"),
         ("/config set theme l", "set theme light"),
         ("/config set autocompact o", "set autocompact on"),
+        ("/config set attach_tasks o", "set attach_tasks on"),
+        ("/config set attach_tasks o", "set attach_tasks off"),
+        ("/config project set attach_tasks o", "project set attach_tasks off"),
         ("/config unset ef", "unset effort"),
         ("/config set tool_output_mode s", "set tool_output_mode spill"),
         ("/config set tool_output_strategy t", "set tool_output_strategy tail"),
