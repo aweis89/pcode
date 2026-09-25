@@ -1,8 +1,10 @@
 """Explicit, conversation-scoped MCP activation; configuration alone does nothing."""
 
+import functools
 import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
@@ -264,6 +266,56 @@ def error_message(error: BaseException) -> str:
     )
 
 
+@functools.cache
+def _isolated() -> type:
+    """A per-server layer that turns a failed connection into an empty toolset.
+
+    pydantic-ai enters every run toolset in one exit stack, so one server whose
+    handshake fails would otherwise fail the whole turn and take every other
+    tool, built-in or MCP, down with it.
+    """
+    from dataclasses import dataclass, field
+
+    from pydantic_ai.toolsets import WrapperToolset
+
+    @dataclass
+    class IsolatedServer(WrapperToolset):
+        server: str = ""
+        state: Any = None
+        # Per instance: exit only what this instance entered.
+        _entered: bool = field(default=False, init=False, compare=False, repr=False)
+
+        async def __aenter__(self):
+            try:
+                await self.wrapped.__aenter__()
+            except Exception as error:  # CancelledError is not an Exception.
+                self.state.connect_failed(self.server, error)
+            else:
+                self._entered = True
+                self.state.unavailable.pop(self.server, None)
+            return self
+
+        async def __aexit__(self, *args: Any) -> bool | None:
+            if not self._entered:
+                return None
+            self._entered = False
+            return await self.wrapped.__aexit__(*args)
+
+        # Keyed on the shared state, not `_entered`: pydantic-ai may hand these
+        # calls a per-step copy of this wrapper rather than the entered instance.
+        async def get_tools(self, ctx):
+            if self.server in self.state.unavailable:
+                return {}
+            return await self.wrapped.get_tools(ctx)
+
+        async def get_instructions(self, ctx):
+            if self.server in self.state.unavailable:
+                return None
+            return await super().get_instructions(ctx)
+
+    return IsolatedServer
+
+
 class MCPState:
     """Never persisted. Disabled servers have no toolsets, connections, or prompt cost."""
 
@@ -272,6 +324,19 @@ class MCPState:
         # Captured at enable, like the toolset, so a later config edit changes
         # neither until the server is disabled and enabled again.
         self.descriptions: dict[str, str] = {}
+        # Enabled servers whose latest connection attempt failed, with a message
+        # safe to show (fixed text and an exception type, nothing the server
+        # sent). Cleared by the next successful connection, retried every turn.
+        self.unavailable: dict[str, str] = {}
+        # Set by the runtime to surface a failure and save its frames.
+        self.on_connect_failure: Callable[[str, BaseException], None] = lambda name, error: None
+
+    def connect_failed(self, name: str, error: BaseException) -> None:
+        self.unavailable[name] = (
+            f"MCP server '{name}' failed to connect ({type(error).__name__}); "
+            "continuing without its tools this turn."
+        )
+        self.on_connect_failure(name, error)
 
     async def enable(self, name: str, *, interactive: bool = True) -> None:
         if name in self.enabled:
@@ -306,6 +371,7 @@ class MCPState:
         """Drop stored OAuth credentials for a server, and its toolset if enabled."""
         self.enabled.pop(name, None)
         self.descriptions.pop(name, None)
+        self.unavailable.pop(name, None)
         servers = configured_servers()
         if name not in servers:
             raise ValueError(f"Unknown MCP server '{name}'. Use /mcp list.")
@@ -324,9 +390,14 @@ class MCPState:
             raise ValueError(f"MCP server '{name}' is not enabled.")
         del self.enabled[name]
         self.descriptions.pop(name, None)
+        self.unavailable.pop(name, None)
 
     def toolsets(self) -> list:
-        return list(self.enabled.values())
+        """The enabled servers, isolated so one that cannot connect costs only its tools."""
+        isolated = _isolated()
+        return [
+            isolated(toolset, server=name, state=self) for name, toolset in self.enabled.items()
+        ]
 
     def servers(self) -> dict[str, str | None]:
         """Enabled server names, sorted, with the descriptions configured for them."""
