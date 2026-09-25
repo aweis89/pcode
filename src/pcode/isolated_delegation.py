@@ -24,6 +24,10 @@ from pcode.worktree import WorktreeError, describe, setup_scripts
 
 _outcome: ContextVar[str | None] = ContextVar("isolated_delegation_outcome", default=None)
 
+# Setup hooks run with no model watching and their output discarded, so a hang
+# is invisible until the user gives up. Room for a cold dependency install.
+SETUP_TIMEOUT_SECONDS = 900
+
 
 def isolation_enabled() -> bool:
     """Require explicit worker opt-in as well as the active worktree preference."""
@@ -227,9 +231,12 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             raise ModelRetry(str(error)) from error
         token = _outcome.set(None)
         try:
-            # Keep hung provisioning bounded too; timeout/failure preserves the artifact.
-            async with asyncio.timeout(self._agents[agent_name].timeout_seconds):
-                await _setup(describe(Path(record.worktree)))
+            # Timeout or failure preserves the artifact below.
+            try:
+                async with asyncio.timeout(SETUP_TIMEOUT_SECONDS):
+                    await _setup(describe(Path(record.worktree)))
+            except TimeoutError:
+                raise WorktreeError(f"Worktree setup exceeded {SETUP_TIMEOUT_SECONDS}s") from None
             async with self.worker_factory(Path(record.worktree)) as worker:
                 prompt = (
                     f"{task}\n\nYou are working in an isolated task worktree.\n"

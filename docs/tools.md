@@ -28,9 +28,10 @@ tools can access.
 
 Use `delegate_task` with `agent_name="worker"` and a self-contained task. Each has
 fresh conversation context and its own plan; the parent's conversation is not
-copied. Recursive delegation is disabled. Each task retains a separate
-120-request budget and a 15-minute execution timeout. There is **no concurrency
-cap by default** (`worker_concurrency=0`). Set a positive `worker_concurrency` to
+copied. Recursive delegation is disabled. Each task counts its own requests
+apart from the parent's, with no request cap or execution timeout: its tool
+calls show under the parent's, and Ctrl+C cancels it with the turn. There is
+**no concurrency cap by default** (`worker_concurrency=0`). Set a positive `worker_concurrency` to
 limit built-in workers per session, then `/reload` to apply it. When a cap is set,
 additional calls wait for a slot before creating a checkout or running a worker.
 Provider limits and machine resources still apply. Specialized extension
@@ -96,8 +97,8 @@ Worktrees do not isolate ports, databases, credentials, or OS permissions.
 The tool returns a persistent artifact containing `task_id`, parent path and
 branch, base and result commits, child branch and path, observed dirty state,
 status, and the worker's summary. Commit and cleanliness metadata come from Git;
-verification claims in the summary remain worker-reported. An execution timeout,
-cancellation, setup failure, or worker failure preserves the checkout and record.
+verification claims in the summary remain worker-reported. Cancellation, setup
+failure or timeout, or worker failure preserves the checkout and record.
 A dead owning process is recognized as a failed task when records are read.
 
 The parent alone has these management tools:

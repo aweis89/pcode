@@ -187,8 +187,9 @@ successful tool strings. A max-calls refusal emits no lifecycle events; cancella
 and uncontained errors may omit the end event, so keep turn-end interruption cleanup.
 
 Do not add `DelegationEndEvent.usage` to session totals. `SubAgent.usage_limits`
-isolates a child's *request count* (that is what bounds a runaway child and turns
-exhaustion into a steering message rather than a raised limit), but its tokens
+isolates a child's *request count* (so a long child cannot trip the parent's
+limit, and a delegate with a set cap gets a steering message rather than a
+raised limit), but its tokens
 still arrive in the parent's `result.usage`, so adding them again doubles every
 delegated token. Verified against the installed `_toolset.py` and a delegated run.
 Sub-agents also receive only `shared_capabilities`, never the per-run capabilities
