@@ -211,14 +211,19 @@ def invocation(name: str, args: dict) -> str:
 
 
 def assignment(name: str, args: dict) -> tuple[str, str]:
-    """A delegation's sanitized agent name and task, or ("", "") for any other tool."""
+    """A delegation's sanitized agent name and task label, or ("", "") for any other tool.
+
+    The label is the model's stated purpose when it gave one: a task usually
+    opens with setup ("Repository: ...") that says nothing about the work.
+    """
     if name != "delegate_task":
         return "", ""
     agent = args.get("agent_name")
     task = args.get("task")
     return (
         plain(argument(agent), 60) if isinstance(agent, str) else "agent unavailable",
-        plain(argument(task), 160) if isinstance(task, str) else "assignment unavailable",
+        stated_purpose(args)
+        or (plain(argument(task), 160) if isinstance(task, str) else "assignment unavailable"),
     )
 
 

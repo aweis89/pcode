@@ -129,6 +129,9 @@ class Palette:
                 "plan": self.muted,
                 "plan.heading": f"nodim {self.task_heading} bold",
                 "plan.active": f"nodim {self.accent} bold",
+                # A running sub-agent's row: its own shade, so it never reads
+                # as one of the tasks it sits among.
+                "plan.agent": f"nodim {self.task_heading}",
                 "prompt": f"{self.accent} bold",
                 "activity.prompt": self.muted,
                 # System work is pcode's own, so it gets the accent colour and
@@ -558,7 +561,7 @@ def command_heading(activity: Activity, event: CommandOutput) -> str:
     marker differs, because nothing has finished yet. A watched job and a
     `!command` typed at the prompt have no live tool call to name them.
     """
-    call = next((c for c in activity.tools.visible if c.event.call_id == event.call_id), None)
+    call = next((c for c in activity.tools.calls if c.event.call_id == event.call_id), None)
     if call is not None:
         purpose = plain(call.event.purpose, limit=60) if call.event.purpose else ""
         name = label(call.event.name)
