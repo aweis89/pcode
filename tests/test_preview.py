@@ -36,6 +36,7 @@ def make_app(width=80, workspace=None):
                 "/links",
                 "/tree",
                 "/btw",
+                "/workers",
                 "/model",
                 "/effort",
                 "/mcp",

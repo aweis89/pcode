@@ -213,6 +213,16 @@ class RichPane:
             self.control, wrap_lines=False, right_margins=[ScrollbarMargin(display_arrows=True)]
         )
 
+    def follow(self, renderables: list) -> None:
+        """Replace streaming content: stay on the tail if the reader was there, else hold."""
+        info = self.window.render_info
+        offset = self.window.vertical_scroll
+        tailing = info is not None and offset >= max(0, info.content_height - info.window_height)
+        self.set(renderables)
+        if info is not None:
+            rows = len(self.lines(info.window_width))
+            self.window.vertical_scroll = max(0, rows - info.window_height) if tailing else offset
+
     def set(self, renderables: list, *, anchor: int | None = None) -> None:
         """Replace the content, scrolled to the top or to ``renderables[anchor]``."""
         self.renderables = renderables

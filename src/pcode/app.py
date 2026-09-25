@@ -44,6 +44,7 @@ from pcode.preferences import (
 from pcode.runtime import (
     CacheBust,
     ChildPlan,
+    ChildText,
     CommandOutput,
     EditCompleted,
     JobFinished,
@@ -187,6 +188,7 @@ class PreviewApp:
         self.aside_requested: tuple[list[str], str] | None = None
         self._model_suggestions: tuple[str | None, float, list[str]] | None = None
         self.aside_view_requested = False
+        self.worker_view_requested = False
         # The viewer follows answers that settle while it is open, so auto-open
         # has nothing to do then.
         self.aside_view_open = False
@@ -271,6 +273,12 @@ class PreviewApp:
                 self.aside,
                 free_arguments=True,
                 argument_completer=self.aside_completions,
+                group="Inspect",
+            ),
+            Command(
+                "/workers",
+                "Follow delegated workers' own output, live and read-only",
+                self.workers,
                 group="Inspect",
             ),
             Command(
@@ -2137,6 +2145,29 @@ class PreviewApp:
         finally:
             self.aside_view_open = False
 
+    def workers(self, argument: str) -> None:
+        if not self.activity.workers.items:
+            self.transcript.note("No workers yet. They appear once the model delegates a task.")
+            return
+        self.worker_view_requested = True
+
+    async def read_workers(self, output: TerminalOutput, session) -> None:
+        from pcode.worker_ui import WorkerBrowser
+
+        self.worker_view_requested = False
+        async with self.popup(output, session) as modal_input:
+            browser = WorkerBrowser(
+                self.activity.workers,
+                rich_theme=self.transcript.rich_theme,
+                code_theme=self.transcript.code_theme,
+                color_system=self.transcript.console.color_system,
+                show_thinking=self.activity.show_thinking,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            await browser.run()
+
     async def navigate_tree(self, identity: str | None, *, edit: bool = False) -> str:
         if self.activity.busy or self.activity.queued:
             raise ValueError("/tree is unavailable while working or messages are queued.")
@@ -2479,6 +2510,7 @@ class PreviewApp:
             self.activity.plan_preview = None
             output.end_turn()
             self.activity.tools.end_turn()
+            self.activity.workers.end_turn()
             self.activity.status = ""
         # Abandoning a wait is the exception, not the rule: restore the safe
         # default so the next Ctrl+C-free cancellation cannot kill a command.
@@ -3097,6 +3129,8 @@ class PreviewApp:
                             await self.start_aside(question, models)
                         if self.aside_view_requested:
                             await self.read_asides(output, session)
+                        if self.worker_view_requested:
+                            await self.read_workers(output, session)
                         if self.tree_requested:
                             await self.choose_tree(output, session)
                         if self.session_requested:
@@ -3417,7 +3451,8 @@ class PreviewApp:
                     elif isinstance(event, Thinking):
                         self.transcript.events((event,))
                     elif isinstance(
-                        event, (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated, ChildPlan)
+                        event,
+                        (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated, ChildPlan, ChildText),
                     ):
                         continue
                     else:
