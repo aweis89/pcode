@@ -109,8 +109,35 @@ gives `/NAME`, `both` registers the bare name as an alias of the prefixed one,
 and `off` registers nothing. A bare name that collides with a built-in command is
 dropped, and the built-in wins. Discovery happens at launch, so add a skill (or
 change this setting) and restart to pick it up. The startup banner lists the
-commands that were registered. Only the frontmatter `description` is read at
-launch, to label the completion menu.
+commands that were registered. Only the frontmatter is read at launch: its
+`description` labels the completion menu.
+
+### MCP servers a skill needs
+
+A skill that only works with certain [MCP servers](mcp.md) can list them under
+the frontmatter's `metadata`, the Agent Skills spec's slot for client-specific
+fields, so other assistants reading the same file ignore it:
+
+```yaml
+---
+name: oncall-pay
+description: Claim on-call pay from the PagerDuty schedule.
+metadata:
+  pcode-mcp-servers: pagerduty, conduit
+---
+```
+
+`/skill:NAME` then enables each listed server that is configured in `mcp.json`
+and not already on, exactly as `/mcp enable` would, including an OAuth browser
+sign-in if one is needed, before the skill's prompt is sent. The prompt waits
+for them. A server that fails to enable is reported and stays off while the rest
+proceed; Ctrl+C during sign-in cancels the prompt too. Names missing from
+`mcp.json` get a warning. Servers cannot change under a running turn, so
+invoking the skill while one runs prints the `/mcp enable` commands to run
+afterward instead.
+
+This applies only to the slash command. When the model decides on its own to
+read a `SKILL.md`, the turn's tools are already fixed, so nothing is enabled.
 
 ## One git worktree per session
 

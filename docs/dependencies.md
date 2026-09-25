@@ -265,6 +265,15 @@ Keep mocked-provider tests, real loopback success/cancellation tests, deliberate
 port-collision tests, and the full MCP-client startup-failure subprocess test in
 `tests/test_mcp_oauth.py`. Tests must not open the real browser, contact a real
 service, or read real credential stores.
+`mcp` 2.2.0's streamable HTTP client turns every failed response except a 404
+into a bare `MCPError("Server returned an error response")`, dropping the status.
+Streamable HTTP servers therefore get a `StreamableHttpTransport` subclass that
+extends FastMCP's private `_capture_session_id` response hook (registered on
+every client it builds, including the test factories) to record the endpoint's
+last HTTP error, and every server gets an innermost wrapper that turns a failed
+connection into `MCPConnectError`: the server name, the status, and a fixed hint.
+SSE URLs keep Pydantic AI's own transport and report no status. Recheck the hook
+name on FastMCP upgrades; `tests/test_mcp_diagnostics.py` fails if it stops firing.
 FastMCP defaults `StdioTransport.keep_alive` to `True`: pcode explicitly sets it
 to `False` so turn cleanup closes subprocesses. Keep the real-stdio tests in
 `tests/test_mcp.py` for success, failure, cancellation, and reconnection. Filtering

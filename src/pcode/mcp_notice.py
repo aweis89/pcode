@@ -31,22 +31,36 @@ INSTRUCTIONS = (
 # field because the worker is built once, from copies of these capabilities,
 # yet must see the servers enabled for the turn that delegated to it.
 _servers: ContextVar[tuple[tuple[str, str | None], ...]] = ContextVar("mcp_servers", default=())
+# A live view, read at each request: servers fail while the run enters its
+# toolsets, after this turn's list was published.
+_unavailable: ContextVar[Mapping[str, str]] = ContextVar("mcp_unavailable", default={})
 
 
 @asynccontextmanager
-async def enabled_servers(servers: Mapping[str, str | None]):
+async def enabled_servers(
+    servers: Mapping[str, str | None], unavailable: Mapping[str, str] | None = None
+):
     """Publish a turn's enabled servers (name -> description) to its agents."""
     token = _servers.set(tuple(servers.items()))
+    down = _unavailable.set(unavailable if unavailable is not None else {})
     try:
         yield
     finally:
+        _unavailable.reset(down)
         _servers.reset(token)
 
 
-def render(servers) -> str:
+def render(servers, unavailable: Mapping[str, str] | None = None) -> str:
+    unavailable = unavailable or {}
     if servers:
         lines = "\n".join(
-            f"- {name}" + (f": {' '.join(description.split())}" if description else "")
+            f"- {name}"
+            + (f": {' '.join(description.split())}" if description else "")
+            + (
+                " (failed to connect this turn; its tools are unavailable)"
+                if name in unavailable
+                else ""
+            )
             for name, description in servers
         )
         body = f"Enabled MCP servers (replaces any earlier list):\n{lines}"
@@ -70,5 +84,5 @@ class MCPServers(AbstractCapability):
         servers = _servers.get()
         # "None enabled" only retracts an earlier list; it is never news on its own.
         if servers or last_reminder(request_context.messages, TAG):
-            append_reminder(request_context, TAG, render(servers))
+            append_reminder(request_context, TAG, render(servers, _unavailable.get()))
         return request_context
