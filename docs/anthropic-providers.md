@@ -177,7 +177,7 @@ wait until Pydantic AI runs the tool and sends the result in its next request:
 ```python
 async def request_stream(self, messages, settings, params, run_context):
     session = self.sessions.for_conversation(run_context.conversation_id)
-    if session.can_continue(messages):          # only tool results or a new prompt added
+    if session.can_continue(messages):  # only tool results or a new prompt added
         session.deliver(tool_returns(messages))  # releases the parked handlers
     else:
         session = await self.sessions.recover(messages)
