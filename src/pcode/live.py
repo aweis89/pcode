@@ -146,17 +146,12 @@ class AgentRuntime:
         # Prompt overhead describes the agent's configuration, not one
         # conversation, so it outlives /new and conversation checkout.
         self.request_parameters = None
-        # Built on first use by `aside`; see `create_aside_agent`.
-        self._aside_agent: Agent | None = None
         self._clear()
         self.replace_agent(agent)
 
     def replace_agent(self, agent: Agent) -> None:
         """Change the agent without resetting conversation-scoped state."""
         self.agent = agent
-        # Side questions follow the conversation's model, so the twin is rebuilt
-        # against the new agent rather than left on the previous provider.
-        self._aside_agent = None
         # Coder's public root capability is flattened by Pydantic AI. A resolver
         # keeps the store conversation-scoped, including after /new. It resolves
         # per request, so this is also where a second turn would be handed its
@@ -349,14 +344,19 @@ class AgentRuntime:
         node, no plan, and `self.history` is only read. The run is billed to the
         session's token totals, because the tokens were really spent. `report`
         receives `(answer_so_far, activity)` as the answer streams.
-        """
-        from pcode.agent import create_aside_agent
-        from pcode.aside import ASIDE_REQUEST_LIMIT
 
-        if self._aside_agent is None:
-            workspace, _ = self.shell_environment()
-            self._aside_agent = create_aside_agent(self.agent, workspace)
-        agent = self._aside_agent
+        The run is set up the way `_stream` sets up a turn -- same agent, MCP
+        toolsets, server list, conversation id, and model settings -- because
+        the provider caches a request prefix, and a side question whose
+        instructions or tool definitions differ by a byte re-bills the whole
+        conversation. Per-run capabilities here add neither instructions nor
+        tools; `AsideGuard` refuses the plan and delegation tools at execution
+        instead of hiding them.
+        """
+        from pcode.aside import ASIDE_REQUEST_LIMIT, framed
+        from pcode.aside_guard import AsideGuard
+
+        agent = self.agent
         messages = self.aside_context()
         # A turn in flight ends on a user-role request: its new prompt, or the
         # tool results it is working through. A second user message after one of
@@ -364,8 +364,8 @@ class AgentRuntime:
         # question joins that request the way steering does, and the run
         # continues from history instead of adding a message of its own.
         joined = bool(messages) and isinstance(messages[-1], ModelRequest)
-        pending = [question]
-        capabilities = [TokenAccounting(record=self.totals.add)]
+        pending = [framed(question)]
+        capabilities = [AsideGuard(), TokenAccounting(record=self.totals.add)]
         if joined:
             capabilities.append(Steering(lambda: [pending.pop()] if pending else []))
         blocks: list[str] = []
@@ -379,10 +379,13 @@ class AgentRuntime:
 
         async with (
             agent,
+            worker_toolsets(self.mcp.toolsets()),
+            enabled_servers(self.mcp.servers()),
             agent.run_stream_events(
-                None if joined else question,
+                None if joined else pending.pop(),
                 message_history=messages,
-                model_settings=self.agent.model_settings,
+                toolsets=self.mcp.toolsets(),
+                conversation_id=self.conversation_id,
                 capabilities=capabilities,
                 usage_limits=UsageLimits(request_limit=ASIDE_REQUEST_LIMIT),
             ) as events,
@@ -403,7 +406,7 @@ class AgentRuntime:
                         args = {}
                     where = target(event.part.tool_name, args)
                     tools[event.part.tool_call_id] = event.part.tool_name
-                    activity = f"Reading {event.part.tool_name}" + (f" · {where}" if where else "")
+                    activity = f"Running {event.part.tool_name}" + (f" · {where}" if where else "")
                 elif isinstance(event, FunctionToolResultEvent):
                     tools.pop(event.tool_call_id, None)
                     activity = "Waiting for model…" if not tools else activity

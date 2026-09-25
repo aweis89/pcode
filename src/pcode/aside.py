@@ -2,9 +2,11 @@
 
 A side question ("btw") reuses the conversation's context but is never part of
 it: it is not written to the session journal, does not appear in the
-conversation tree, and cannot be steered or resent. What it shares with the
-conversation is the message prefix it was asked against and the session's token
-totals, both of which are read-only concerns.
+conversation tree, and cannot be steered or resent. It runs on the
+conversation's own agent, with the same instructions and tool definitions, so
+its requests reuse the provider cache the conversation has already paid for.
+That is also why its framing travels in the question rather than the system
+prompt: anything added ahead of the history would miss the cache.
 """
 
 import asyncio
@@ -21,6 +23,20 @@ ASIDE_TIMEOUT_SECONDS = 300
 # Side questions accumulate over a long session; keep the recent ones readable
 # rather than growing the viewer without bound.
 ASIDE_HISTORY = 20
+
+ASIDE_FRAMING = (
+    "[Side question] The user is asking a side question about the conversation so far. "
+    "Answer only this question, briefly, preferring what the conversation already shows "
+    "over fresh investigation. Your answer appears in a popup beside the conversation "
+    "and is not added to it, so do not address the main agent, continue its task, "
+    "or promise work. Tools work normally, but the plan and delegation tools are "
+    "unavailable here."
+)
+
+
+def framed(question: str) -> str:
+    """The user message a side question is sent as."""
+    return f"{ASIDE_FRAMING}\n\nQuestion: {question}"
 
 
 def settled_context(messages: list) -> list:
@@ -102,6 +118,9 @@ class Asides:
         # one that settled. Off-terminal callers (tests, `--print`) need neither.
         self.on_update: Callable[[Aside], None] = lambda aside: None
         self.on_settle: Callable[[Aside], None] = lambda aside: None
+        # Given the exception of a question that failed or timed out, so the
+        # frames can be kept where the session keeps turn failures.
+        self.on_failure: Callable[[Aside, BaseException], None] = lambda aside, error: None
 
     @property
     def running(self) -> int:
@@ -154,15 +173,24 @@ class Asides:
         try:
             async with asyncio.timeout(ASIDE_TIMEOUT_SECONDS):
                 await work(aside)
-        except TimeoutError:
+        except TimeoutError as error:
             aside.settle("timed out", error=f"No answer within {ASIDE_TIMEOUT_SECONDS}s.")
+            self._failed(aside, error)
         except asyncio.CancelledError:
             aside.settle("cancelled")
             raise
         except Exception as error:
             aside.settle("failed", error=error_message(error))
+            self._failed(aside, error)
         else:
             aside.settle("answered")
         finally:
             self._tasks.pop(aside.id, None)
             self.on_settle(aside)
+
+    def _failed(self, aside: Aside, error: BaseException) -> None:
+        # Diagnostics must never replace the failure being diagnosed.
+        try:
+            self.on_failure(aside, error)
+        except Exception:
+            pass

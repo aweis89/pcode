@@ -183,6 +183,7 @@ class PreviewApp:
         # The live panel spins a row per running question; share the list so
         # it needs no refresh hook of its own.
         self.activity.asides = self.asides.items
+        self.asides.on_failure = self.record_aside_failure
         self.aside_requested: str | None = None
         self.aside_view_requested = False
         # The viewer follows answers that settle while it is open, so auto-open
@@ -1991,8 +1992,27 @@ class PreviewApp:
 
         self.asides.start(question, work)
         self.transcript.note(
-            "Asking beside the conversation, read-only: the turn keeps running and "
+            "Asking beside the conversation: the turn keeps running and "
             "this question does not join it. /btw opens the answer."
+        )
+
+    def record_aside_failure(self, aside, error: BaseException) -> None:
+        """Keep a failed side question's frames beside the session's turn failures.
+
+        The viewer shows only the error summary, and nothing about a side
+        question is journaled, so without this its traceback is simply lost.
+        """
+        from pcode.diagnostics import provider_context
+
+        saved = getattr(self.runtime, "session", None)
+        if saved is None:
+            return
+        agent = getattr(self.runtime, "agent", None)
+        saved.record_error(
+            error,
+            run_id=f"aside {aside.id}",
+            provider_context=provider_context(agent.model) if agent is not None else None,
+            detail=f"Side question ({aside.status}): {aside.question}",
         )
 
     def auto_open_asides(self) -> bool:
@@ -3176,9 +3196,12 @@ class PreviewApp:
                     + ("Opening it." if opening else "/btw opens it.")
                 )
             elif aside.status == "cancelled":
-                self.transcript.note("Side question stopped; nothing was changed.")
+                self.transcript.note("Side question stopped.")
             else:
                 self.transcript.warning(f"Side question {aside.status}. {aside.error}".strip())
+                saved = getattr(self.runtime, "session", None)
+                if saved is not None and (saved.directory / "errors.log").exists():
+                    self.transcript.note(f"Diagnostics: {saved.directory / 'errors.log'}")
             session.app.invalidate()
 
         # The footer counts side questions, and an open viewer follows the answer

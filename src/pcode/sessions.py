@@ -464,6 +464,7 @@ class SavedSession:
         *,
         run_id: str,
         provider_context: dict[str, str] | None = None,
+        detail: str = "",
     ) -> Path | None:
         """Append the traceback the transcript's bounded `error` summary cannot carry.
 
@@ -480,6 +481,8 @@ class SavedSession:
             private_file(path)
             with path.open("a", encoding="utf-8") as file:
                 file.write(f"--- {now()} run {run_id} ---\n")
+                if detail:
+                    file.write(redact(detail) + "\n")
                 if provider_context:
                     file.write(
                         "Configured provider: " + redact(json.dumps(provider_context)) + "\n"
