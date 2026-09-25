@@ -20,14 +20,17 @@ path. Every failure is recorded on the extension and reported, never raised: a
 broken extension must not prevent a coding session.
 """
 
+import asyncio
 import importlib.util
 import os
 import re
 import sys
 import traceback
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 from pcode.commands import Command
 from pcode.preferences import SETTINGS, load_preferences, preferences_path, update_preferences
@@ -146,13 +149,20 @@ class ExtensionAPI:
     """The object handed to `setup`. Collects contributions; `capabilities()` builds them."""
 
     def __init__(
-        self, name: str, workspace: Path, ui: ExtensionUI, *, session_dir: Path | None = None
+        self,
+        name: str,
+        workspace: Path,
+        ui: ExtensionUI,
+        *,
+        session_dir: Path | None = None,
+        is_worker: bool = False,
     ) -> None:
         from pcode.sessions import session_root
 
         self.session_dir = (session_dir or session_root()).resolve()
         self.name = name
         self.workspace = workspace
+        self.is_worker = is_worker
         self.ui = ui
         self.id = ID_PREFIX + name
         self._tools: list = []
@@ -288,6 +298,11 @@ class Extension:
     subagents: list = field(default_factory=list)
     closers: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
 
+    # Loading provenance is optional for backwards-compatible manual construction.
+    workspace: Path | None = None
+    session_dir: Path | None = None
+    ui: ExtensionUI = field(default_factory=ExtensionUI, repr=False)
+
     @property
     def enabled(self) -> bool:
         return self.disabled is None
@@ -353,12 +368,17 @@ def load_extension(
     on: set[str] | None = None,
     *,
     session_dir: Path | None = None,
+    module_name: str | None = None,
+    is_worker: bool = False,
 ) -> Extension:
     """Import the module, run `setup`, and validate what it contributed.
 
     An extension the user turned off is never imported; one that ships opt-in is
     imported (that is where the flag lives) but its `setup` does not run.
     """
+    extension.workspace = workspace.resolve()
+    extension.session_dir = session_dir
+    extension.ui = ui
     extension.error = None
     extension.disabled = None
     extension.capabilities = []
@@ -371,7 +391,7 @@ def load_extension(
         extension.disabled = "off"
         return extension
     target = extension.path / "__init__.py" if extension.path.is_dir() else extension.path
-    name = _module_name(extension)
+    name = module_name or _module_name(extension)
     try:
         spec = importlib.util.spec_from_file_location(
             name,
@@ -391,7 +411,12 @@ def load_extension(
         setup = getattr(module, "setup", None)
         if not callable(setup):
             raise AttributeError("extension defines no setup(pcode) function")
-        api = ExtensionAPI(extension.name, workspace, ui, session_dir=session_dir)
+        api = ExtensionAPI(
+            extension.name, workspace, ui, session_dir=session_dir, is_worker=is_worker
+        )
+        # Keep partial setup's resources available for cleanup on failure too.
+        extension.closers = api.closers
+        extension.session_dir = api.session_dir
         setup(api)
         capabilities = api.capabilities()
         for capability in capabilities:
@@ -404,11 +429,77 @@ def load_extension(
         extension.subagents = api.subagents
         extension.closers = api.closers
     except BaseException as error:  # noqa: BLE001 - a bad extension must not stop launch.
-        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+        if isinstance(error, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
             raise
         extension.error = _failure(error, extension.path)
-        sys.modules.pop(name, None)
+        # Rebound packages stay importable until their partial setup is closed.
+        if module_name is None:
+            sys.modules.pop(name, None)
     return extension
+
+
+class ExtensionCapabilities(list):
+    """A normal capability list carrying the sources needed for isolated workers.
+
+    Rebinding uses only successful parent loads, not discovery or child preferences.
+    Project sources follow the checkout; all other sources retain their original path.
+    """
+
+    def __init__(self, extensions: list[Extension]) -> None:
+        super().__init__(c for extension in extensions for c in extension.capabilities)
+        self._extensions = tuple(extension for extension in extensions if extension.loaded)
+
+    @asynccontextmanager
+    async def for_workspace(self, workspace: Path) -> AsyncIterator["ExtensionCapabilities"]:
+        """Re-run setup for a child workspace and own only that child's resources.
+
+        The active parent's preference overlay is deliberately left untouched. A
+        failed rebind is fatal: silently losing a guardrail is not safe.
+        """
+        workspace = workspace.resolve()
+        children = LoadedExtensions()
+        module_names: list[str] = []
+        try:
+            for parent in self._extensions:
+                if parent.workspace is None:
+                    raise ValueError(f"Extension {parent.name} has no workspace loading provenance")
+                path = parent.path
+                if parent.scope == "project":
+                    path = workspace / path.relative_to(parent.workspace)
+                child = Extension(parent.name, path, parent.scope)
+                children.extensions.append(child)
+                name = f"{_module_name(child)}_rebind_{uuid4().hex}"
+                module_names.append(name)
+                load_extension(
+                    child,
+                    workspace,
+                    ExtensionUI(notify=parent.ui.notify),
+                    off=set(),
+                    on={parent.name},
+                    session_dir=parent.session_dir,
+                    module_name=name,
+                    is_worker=True,
+                )
+                if child.error is not None:
+                    raise ValueError(f"Failed to rebind extension {child.name}: {child.error}")
+            yield children.capabilities
+        finally:
+            # Shield cleanup so cancellation of a worker cannot strand its resources.
+            cleanup = asyncio.create_task(children.close())
+            try:
+                cancelled = False
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                cleanup.result()
+                if cancelled:
+                    raise asyncio.CancelledError
+            finally:
+                for name in tuple(sys.modules):
+                    if any(name == root or name.startswith(root + ".") for root in module_names):
+                        sys.modules.pop(name, None)
 
 
 @dataclass
@@ -418,8 +509,8 @@ class LoadedExtensions:
     extensions: list[Extension] = field(default_factory=list)
 
     @property
-    def capabilities(self) -> list:
-        return [c for extension in self.extensions for c in extension.capabilities]
+    def capabilities(self) -> ExtensionCapabilities:
+        return ExtensionCapabilities(self.extensions)
 
     @property
     def commands(self) -> list[Command]:

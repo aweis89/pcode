@@ -135,10 +135,12 @@ next turn starts.
 as soon as the model finishes a turn, keeping the idle prompt compact; it
 returns on the next turn, and Ctrl+O brings it back immediately. Default: off.
 
-`/attach-tasks on` (or `pcode config set attach_tasks on`) draws the widget as
-the top of the editor box instead of a separate box above it: its heading
-becomes the editor's top border and a divider separates the tasks from your
-draft. Queued prompts then sit above the combined box. Default: off.
+The widget sits at the top of the editor box by default (`attach_tasks=on`):
+its heading becomes the editor's top border and a divider separates the tasks
+from your draft. Queued prompts sit above the combined box. Use
+`/config set attach_tasks off` to draw it in a separate box above the editor,
+or `/config set attach_tasks on` to attach it again. Both apply immediately
+and save the preference; `pcode config set attach_tasks off` sets it from the shell.
 Ctrl+O replaces the editor’s insert-newline binding; Ctrl+J still inserts a newline.
 
 `pcode config set tasks_max_height 0.5` caps the widget and the editor box

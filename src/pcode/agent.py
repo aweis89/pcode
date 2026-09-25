@@ -30,8 +30,11 @@ from pcode.cache_settings import ProviderCacheSettings, model_settings
 from pcode.cache_warnings import CacheBustReporting
 from pcode.code_mode import create_code_mode
 from pcode.delegation import DelegationReporting, stream_child_activity
-from pcode.ext import EXTENSION_GUIDE
+from pcode.ext import EXTENSION_GUIDE, ExtensionCapabilities
 from pcode.filesystem import DisplayFileSystem
+from pcode.isolated_delegation import WorkspaceSubAgents
+from pcode.job_notices import JobNotices
+from pcode.jobs import isolated_registry
 from pcode.llm_proxy import ProxiedCodexProvider
 from pcode.mcp import configured_servers
 from pcode.mcp_notice import MCPServers
@@ -141,7 +144,7 @@ def has_mcp_servers() -> bool:
 
 
 def create_coder(
-    workspace: Path, subagents: Sequence = (), extensions: Sequence = ()
+    workspace: Path, subagents: Sequence = (), extensions: Sequence = (), *, delegation: bool = True
 ) -> CombinedCapability:
     """Compose Harness's Coder with pcode's repository context and planning.
 
@@ -232,35 +235,35 @@ def create_coder(
     if code_mode := create_code_mode():
         coder.capabilities.append(code_mode)
         worker_capabilities.append(copy(code_mode))
-    worker = Agent(
-        name="worker",
-        retries=tool_retries(),
-        description=(
-            "Complete a self-contained task using the main agent's tools and permissions, "
-            "including file edits, shell commands, tests, web research, and enabled MCP tools"
-        ),
-        instructions=AGENT_INSTRUCTIONS
-        + (
-            " You are a general-purpose worker. Complete only the delegated task and report "
-            "your changes, verification, and remaining limitations. You inherit the main "
-            "agent's instructions, tools, and permission checks, but not its conversation. "
-            "You share its workspace: coordinate edits with the parent. Your shell and "
-            "plan are independent. You cannot delegate further. Stop jobs you no "
-            "longer need with stop_job."
-        ),
-        capabilities=[*worker_capabilities, *extensions],
-        toolsets=[worker_runtime_tools],
-    )
+    if not delegation:
+        return CombinedCapability(worker_capabilities)
+    worker = _create_worker(worker_capabilities, extensions)
+
+    @asynccontextmanager
+    async def isolated_worker(child_workspace: Path):
+        if extensions and not isinstance(extensions, ExtensionCapabilities):
+            raise ValueError(
+                "Isolated workers require rebindable extensions from load_extensions(); "
+                "use workspace_mode='shared' for directly supplied capabilities."
+            )
+        rebound = (
+            extensions
+            if isinstance(extensions, ExtensionCapabilities)
+            else ExtensionCapabilities([])
+        )
+        with isolated_registry() as jobs:
+            async with rebound.for_workspace(child_workspace) as child_extensions:
+                child_coder = create_coder(child_workspace, delegation=False)
+                child_coder.capabilities.append(JobNotices(jobs))
+                yield _create_worker(child_coder.capabilities, child_extensions, isolated=True)
+
     coder.capabilities.append(
-        SubAgents(
+        WorkspaceSubAgents(
+            workspace=workspace,
+            worker_factory=isolated_worker,
             agents=[
                 SubAgent(
                     worker,
-                    # An unattended child is the runaway worth bounding: its budget
-                    # is its own, so exhausting it steers the parent with an
-                    # observation instead of aborting the turn. Child usage is
-                    # then isolated too, and rejoins session totals through
-                    # `DelegationEndEvent.usage`.
                     usage_limits=UsageLimits(request_limit=SUBAGENT_REQUEST_LIMIT),
                     timeout_seconds=SUBAGENT_TIMEOUT_SECONDS,
                 ),
@@ -277,13 +280,38 @@ def create_coder(
             ],
         )
     )
-    # Web search and fetch come from the bundled `web_research` extension, so a
-    # user file of the same name can replace them.
-    # Recompose so instruction sources track replaced/added capabilities too.
-    # Summarize evidence before discarding it. Coder defaults to clearing old
-    # tool results at 70%, which otherwise runs before pcode compaction.
+    # Summarize evidence before discarding it; pcode owns compaction.
     return CombinedCapability(
         [c for c in coder.capabilities if not isinstance(c, ClearToolResults)]
+    )
+
+
+def _create_worker(
+    capabilities: Sequence, extensions: Sequence, *, isolated: bool = False
+) -> Agent:
+    return Agent(
+        name="worker",
+        retries=tool_retries(),
+        description=(
+            "Complete a self-contained task using the main agent's tools and permissions, "
+            "including file edits, shell commands, tests, web research, and enabled MCP tools"
+        ),
+        instructions=AGENT_INSTRUCTIONS
+        + (
+            " You are a general-purpose worker. Complete only the delegated task and report "
+            "your changes, verification, and remaining limitations. You inherit the main "
+            "agent's instructions, tools, and permission checks, but not its conversation. "
+            "Your plan is independent. You cannot delegate further or manage other task worktrees. "
+            "Stop jobs you no longer need with stop_job. "
+        )
+        + (
+            "You have an isolated checkout. Commit completed changes here; do not push or merge "
+            "into any other checkout. Parent integration and cleanup happen after you return."
+            if isolated
+            else "You share the parent's workspace: coordinate edits with the parent."
+        ),
+        capabilities=[*capabilities, *extensions],
+        toolsets=[worker_runtime_tools],
     )
 
 
