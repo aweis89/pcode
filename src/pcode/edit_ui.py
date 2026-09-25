@@ -24,8 +24,8 @@ EMPTY = "No file edits in this conversation."
 NO_MATCH = "No matching edits."
 KEYS = (
     "↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page · Ctrl+Home/End First/last · "
-    "Tab Focus · / Search paths (in Files) or diff lines (in Diff) · n/N Next/previous match · "
-    "Esc Close"
+    "Type to search paths, Enter to leave · Tab Focus · "
+    "/ Search paths (in Files) or diff lines (in Diff) · n/N Next/previous match · Esc Close"
 )
 PROMPTS = {"paths": "Search paths: ", "diffs": "Search diff lines: "}
 
@@ -106,6 +106,7 @@ class EditBrowser:
             event.app.exit()
 
         # Tab only toggles the panes; the query line is entered with / and left with Enter.
+        # The browser opens in it, searching paths.
         @keys.add("tab")
         @keys.add("s-tab")
         def toggle(event):
@@ -156,7 +157,9 @@ class EditBrowser:
             ]
         )
         self.app = Application(
-            layout=Layout(popup_container(root), focused_element=self.files),
+            # Open in the search line, so typing filters rather than reaching
+            # the panes' one-key shortcuts.
+            layout=Layout(popup_container(root), focused_element=self.query),
             key_bindings=keys,
             full_screen=True,
             mouse_support=popup_mouse(),

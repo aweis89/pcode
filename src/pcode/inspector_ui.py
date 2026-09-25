@@ -267,13 +267,17 @@ class ToolInspector:
                 self.query,
                 body,
                 Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label("Tab Focus · Esc Close"),
-                Label("In Calls: f Failures · t Tool filter · / Search (↑↓ select while typing)"),
+                Label(
+                    "Type to search (↑↓ select while typing) · Enter Calls · Tab Focus · Esc Close"
+                ),
+                Label("In Calls: f Failures · t Tool filter · / Search"),
                 Label("In Calls/Details: c Copy command · o Copy output"),
             ]
         )
         self.app = Application(
-            layout=Layout(popup_container(root), focused_element=self.list),
+            # Open in the search line: typed letters would otherwise hit the
+            # list's one-key shortcuts, and `t` silently swaps the tool filter.
+            layout=Layout(popup_container(root), focused_element=self.query),
             key_bindings=keys,
             full_screen=True,
             mouse_support=popup_mouse(),

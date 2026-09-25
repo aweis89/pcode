@@ -72,12 +72,12 @@ candidate's size so that cost is visible before you pick.
 - `/links`: pick a URL from the active conversation branch (your prompts, tool
   arguments and captured results, or the assistant's replies, last appearance first).
   Tool links show the tool name; duplicate URLs appear once, at their most recent
-  position. Press `t` to show/hide tool links (shown by default); URLs also present
-  in prompts or replies remain when tools are hidden. Press `/` to search URLs,
-  labels, and sources, case-insensitively. Search filters as you type; `↑`/`↓`
-  move the selection, `Enter` returns to the list with the filter applied, and
-  `Esc` clears the search and returns to the list. In the list, `Enter` opens the
-  selected URL and `Esc` closes the picker. Filters reset when you reopen `/links`.
+  position. The picker opens in its search line: typing searches URLs, labels, and
+  sources, case-insensitively, filtering as you type, while `↑`/`↓` move the
+  selection. `Enter` opens the selected URL. `Esc` clears the search, or closes the
+  picker when the search is empty. Tab moves to the list, where `t` shows/hides tool
+  links (shown by default; URLs also present in prompts or replies remain when tools
+  are hidden) and `/` returns to the search. Filters reset when you reopen `/links`.
   Output omitted by truncation or stored only in a spill file is not searched. Open the selection
   in the default browser via
   `open` (macOS), `xdg-open` (Linux), or the shell association (Windows). Useful
@@ -397,6 +397,11 @@ acting on whichever pane has focus:
 Ctrl+D never closes a popup; it always half-pages. A list with a search line
 keeps these keys working while you type, so the query stays where it is.
 
+Popups with a search line (`/tools`, `/resume`, `/diffs`, `/links`) open with
+the cursor in it, so you can type to filter straight away. Their one-letter
+shortcuts (such as `t` for the tool filter in `/tools`) act only once Tab or
+Enter has moved focus out of the search line.
+
 Selected rows and scrollbars follow the active theme and syntax colors, like
 completion menus. Popup bodies keep the terminal's default background. With
 terminal syntax colors, selections use reverse video in the terminal's accent
@@ -445,6 +450,8 @@ lines, and one over 1 MB shows only its counts.
 The diff fills most of the screen; a small file selector sits at the bottom.
 Keys are listed in the header:
 
+- The browser opens in the search line, searching paths (see `/` below). Enter
+  moves to the file list.
 - Up/Down in the file list selects a file.
 - Tab/Shift+Tab switch between the file list and the diff. The
   [popup keys](#popup-keys) act on whichever has focus; Ctrl+Home/Ctrl+End jump
@@ -470,8 +477,9 @@ The inspector shows a snapshot of the calls available when opened; reopen it to
 see newer results. The model keeps running while the inspector is open, and
 terminal output is buffered until it closes. Inspection never reruns a tool.
 
-- Calls are newest first. Use arrows to select and Tab/Shift+Tab to move between
-  the call list, detail pane, and search field.
+- Calls are newest first. The inspector opens in the search field, so typing
+  filters straight away while arrows move the selection; Enter moves to the call
+  list. Tab/Shift+Tab move between the search field, call list, and detail pane.
 - In the call list or details, **c** copies the selected call's command (its whole
   arguments payload when it has no command) and **o** copies the returned output.
   Copying uses `pbcopy`/`wl-copy`/`xclip` when one is installed and OSC 52

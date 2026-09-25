@@ -46,7 +46,7 @@ def links_dialog(
         message_links = [link for link in links if link.source in ("", "user", "assistant")]
     show_tools = True
     visible: list[Link] = []
-    query = TextArea(height=1, prompt="/ Search: ", multiline=False)
+    query = TextArea(height=1, prompt="Search: ", multiline=False)
     choices = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
     choices.window.cursorline = Always()
     bindings = KeyBindings()
@@ -85,11 +85,8 @@ def links_dialog(
     def search(event):
         event.app.layout.focus(query)
 
-    @bindings.add("enter", filter=has_focus(query), eager=True)
-    def search_done(event):
-        event.app.layout.focus(choices)
-
-    @bindings.add("enter", filter=has_focus(choices), eager=True)
+    # The picker opens in the search line, so Enter opens from there too.
+    @bindings.add("enter", eager=True)
     def accept(event):
         url = selected_url()
         if url is not None:
@@ -97,9 +94,8 @@ def links_dialog(
 
     @bindings.add("escape", eager=True)
     def escape(event):
-        if event.app.layout.has_focus(query):
+        if event.app.layout.has_focus(query) and query.text:
             query.text = ""
-            event.app.layout.focus(choices)
         else:
             event.app.exit(result=None)
 
@@ -118,8 +114,8 @@ def links_dialog(
                 query,
                 choices,
                 Label("↑↓ Select · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label("Enter open · t toggle tools · / search · Esc cancel"),
-                Label("In search: Enter keeps filter · Esc clears filter"),
+                Label("Type to search · Enter open · Tab list · Esc clear search, then cancel"),
+                Label("In the list: t toggle tools · / search"),
             ],
             padding=1,
         ),
@@ -127,7 +123,9 @@ def links_dialog(
     )
     refresh()
     return Application(
-        layout=Layout(popup_container(dialog), focused_element=choices),
+        # Open in the search line, so typing filters instead of reaching the
+        # list's one-key shortcuts.
+        layout=Layout(popup_container(dialog), focused_element=query),
         key_bindings=bindings,
         full_screen=True,
         mouse_support=popup_mouse(),

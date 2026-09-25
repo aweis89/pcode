@@ -110,9 +110,10 @@ def test_paging_keys_scroll_the_focused_pane_and_escape_closes():
             ui = EditBrowser([change("long.py", patch=long)], input=pipe, output=DummyOutput())
             task = asyncio.create_task(ui.run())
             await asyncio.sleep(0.05)
-            pipe.send_text("\x1b[6~")  # PageDown in the file list pages the list, not the diff.
+            # It opens in the search line, where PageDown pages the file list, not the diff.
+            pipe.send_text("\x1b[6~")
             await asyncio.sleep(0.05)
-            assert ui.app.layout.has_focus(ui.files)
+            assert ui.app.layout.has_focus(ui.query)
             assert ui.diff.document.cursor_position_row == 0
             pipe.send_text("\t")
             await asyncio.sleep(0.05)
@@ -195,6 +196,14 @@ def test_slash_targets_the_focused_pane_and_enter_returns_to_it():
             ui = EditBrowser([change("x.py")], input=pipe, output=DummyOutput())
             task = asyncio.create_task(ui.run())
             await asyncio.sleep(0.05)
+            # It opens searching paths, so typing filters (`n` is not next-match here).
+            assert ui.scope == "paths" and ui.app.layout.has_focus(ui.query)
+            pipe.send_text("nx")
+            await asyncio.sleep(0.05)
+            assert ui.query.text == "nx" and ui.visible == []
+            pipe.send_text("\x7f\x7f\r")
+            await asyncio.sleep(0.05)
+            assert ui.app.layout.has_focus(ui.files)
             pipe.send_text("/")
             await asyncio.sleep(0.05)
             assert ui.scope == "paths" and ui.app.layout.has_focus(ui.query)

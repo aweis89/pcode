@@ -56,11 +56,13 @@ def browser(tmp_path, **options):
         ("\r", "newest"),
         ("\x1b[B\r", "older"),
         ("\x1b", None),
-        # Search narrows the list to the matching session; Enter resumes it while typing.
-        ("/cache warn\r", "older"),
+        # It opens in the search line, which narrows the list; Enter resumes while typing.
+        ("cache warn\r", "older"),
         # Arrows steer the list while typing; Enter does nothing with no match.
-        ("/a\x1b[B\r", "older"),
-        ("/nothing-matches\r\x1b", None),
+        ("a\x1b[B\r", "older"),
+        ("nothing-matches\r\x1b", None),
+        # `/` in the list returns to the search.
+        ("\t/cache warn\r", "older"),
     ],
 )
 def test_browser_keyboard(tmp_path, keys, expected):
@@ -83,7 +85,11 @@ def test_browser_deletes_after_confirmation(tmp_path):
             root = app.root
             task = asyncio.create_task(app.run())
             await asyncio.sleep(0.05)
-            pipe.send_text("d")
+            # Typed on open, `d` searches: only the list's `d` deletes.
+            pipe.send_text("dd")
+            await asyncio.sleep(0.05)
+            assert app.query.text == "dd" and not app.status
+            pipe.send_text("\x7f\x7f\td")
             await asyncio.sleep(0.05)
             assert (root / ids["newest"]).is_dir()
             assert "Press d again" in app.status
