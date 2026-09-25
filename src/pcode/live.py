@@ -112,6 +112,7 @@ from pcode.tool_display import (
     native_result_projection,
     result_detail,
     stated_purpose,
+    subject,
     target,
 )
 from pcode.turn import TurnContext
@@ -1013,6 +1014,7 @@ class AgentRuntime:
                         args = {}
                     tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
                     agent, task = assignment(event.part.tool_name, args)
+                    command, purpose = subject(event.part.tool_name, args, self.jobs)
                     start = ToolStarted(
                         event.part.tool_name,
                         target(event.part.tool_name, args),
@@ -1021,8 +1023,8 @@ class AgentRuntime:
                         run_id=run_id,
                         started_at=datetime.now(timezone.utc).isoformat(),
                         process_id=capture(args.get("command_id", "")),
-                        command=invocation(event.part.tool_name, args),
-                        purpose=stated_purpose(args),
+                        command=command,
+                        purpose=purpose,
                         execution=execution_mode(event.part.tool_name, args),
                         agent=agent,
                         task=task,

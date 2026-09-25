@@ -6,13 +6,16 @@ from time import monotonic
 from rich.text import Text
 
 from pcode.runtime import ToolStarted, ToolSummary
-from pcode.tool_display import PLAN_TOOLS, command_preview, label, plain
+from pcode.tool_display import JOB_HANDLE_TOOLS, PLAN_TOOLS, command_preview, label, plain
 
 # Delegates outlive their own chatter, so they keep the panel's first rows.
 DELEGATE = "delegate_task"
 # Marks a row as a sub-agent rather than a tool. One terminal cell wide in
 # common fonts, unlike emoji, so the panel's width math still holds.
 AGENT_ICON = "✦"
+# Marks a wait on a job an earlier call started, so it never reads as a fresh
+# run of the command it names. One cell wide, for the same reason.
+WAIT_ICON = "⧗"
 # The status row has the same problem, worse: a command that finishes in
 # milliseconds appears and vanishes before it can be read, and the row snaps
 # back to "Working…". The finished call keeps the row until it has been up this
@@ -74,15 +77,23 @@ class ToolCall:
             return self._delegate_line(elapsed)
         # A stated purpose is what this row is for: the widget is the one place
         # that shows a job while it runs, when the command has not paid off yet.
-        detail = (
+        command = (
             f"{event.purpose} · {command_preview(event.command)}"
             if event.command and event.purpose
             else command_preview(event.command)
             if event.command
-            else plain(event.detail, limit=None)
+            else ""
         )
+        detail = plain(event.detail, limit=None)
+        if event.name in JOB_HANDLE_TOOLS:
+            # The id matches the job's own row and notices; the command says
+            # what it runs. Neither is enough alone.
+            detail = " · ".join(part for part in (detail, command) if part)
+        else:
+            detail = command or detail
+        icon = f"{WAIT_ICON} " if event.name == "wait_for_job" else ""
         state = f" · {plain(event.activity)}" if event.activity else ""
-        return f"{label(event.name)}{state} · {elapsed:.1f}s · {detail}"
+        return f"{icon}{label(event.name)}{state} · {elapsed:.1f}s · {detail}"
 
     def _delegate_line(self, elapsed: float) -> str:
         """`✦ Worker · 5.5s · Thinking · <task>`: the agent is what tells delegates apart.
