@@ -145,6 +145,7 @@ class AgentRuntime:
         )
         self.compaction_notice = lambda text: None
         self.retry_notice = lambda text: None
+        self.warning_notice = lambda text: None
         # Shell jobs outlive both the run and the conversation, so the registry
         # is not reset by `_clear`, `/new`, or conversation checkout.
         self.jobs = job_registry()
@@ -218,6 +219,15 @@ class AgentRuntime:
                 lines.extend(capability.startup_summary())
         return lines
 
+    def _mcp_connect_failed(self, name: str, error: BaseException) -> None:
+        """One server is down; the turn continues with every other tool."""
+        text = self.mcp.unavailable[name]
+        saved = self.session
+        path = saved.record_error(error, run_id=f"mcp:{name}") if saved else None
+        if path is not None:
+            text += f" Diagnostics: {path}"
+        self.warning_notice(text)
+
     def _clear(self) -> None:
         info = self.session.info if self.session else None
         self.tree = self.session.tree if self.session else ConversationTree()
@@ -235,6 +245,7 @@ class AgentRuntime:
         )
         self.recovery_blocked = ""
         self.mcp = MCPState()
+        self.mcp.on_connect_failure = self._mcp_connect_failed
 
     # The active branch's turn state, under the names callers already use.
     @property
@@ -393,7 +404,7 @@ class AgentRuntime:
                 agent,
                 model.model if model is not None else nullcontext(),
                 worker_toolsets(self.mcp.toolsets()),
-                enabled_servers(self.mcp.servers()),
+                enabled_servers(self.mcp.servers(), self.mcp.unavailable),
                 agent.run_stream_events(
                     None if joined else pending.pop(),
                     message_history=messages,
@@ -828,7 +839,7 @@ class AgentRuntime:
         async with (
             self.agent,
             worker_toolsets(self.mcp.toolsets()),
-            enabled_servers(self.mcp.servers()),
+            enabled_servers(self.mcp.servers(), self.mcp.unavailable),
             self.agent.run_stream_events(
                 prompt,
                 message_history=context.messages(),

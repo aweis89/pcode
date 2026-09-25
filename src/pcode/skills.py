@@ -15,6 +15,9 @@ from pcode.preferences import SETTINGS, load_preferences
 
 PREFIX = "/skill:"
 
+# Under the spec's free-form `metadata` map, so other assistants ignore it.
+MCP_SERVERS_KEY = "metadata.pcode-mcp-servers"
+
 # Mirrors Harness's RepoContext.asset_roots and its skills/**/SKILL.md glob.
 # Importing Harness here would cost ~0.8s on the terminal's startup path, which
 # the app otherwise keeps off the event loop; test_skills guards the drift.
@@ -28,13 +31,16 @@ class Skill:
     name: str
     path: str
     description: str = ""
+    # MCP servers `/skill:NAME` enables before sending the skill's prompt.
+    mcp_servers: tuple[str, ...] = ()
 
 
 def _frontmatter(path: Path) -> dict[str, str]:
     """Read the leading `---` block as flat `key: value` pairs.
 
-    Skills are authored for other assistants, so treat anything unparsable as
-    absent rather than failing the launch.
+    Indented pairs under a top-level `metadata:` are kept as `metadata.<key>`;
+    other nesting is ignored. Skills are authored for other assistants, so treat
+    anything unparsable as absent rather than failing the launch.
     """
     try:
         text = path.read_text(errors="replace")
@@ -44,13 +50,25 @@ def _frontmatter(path: Path) -> dict[str, str]:
     if not lines or lines[0].strip() != "---":
         return {}
     fields = {}
+    section = ""
     for line in lines[1:]:
         if line.strip() == "---":
             break
         key, separator, value = line.partition(":")
-        if separator and key and not key[0].isspace():
-            fields[key.strip().lower()] = value.strip().strip("\"'")
+        if not separator or not key.strip():
+            continue
+        value = value.strip().strip("\"'")
+        if not key[0].isspace():
+            section = key.strip().lower()
+            fields[section] = value
+        elif section == "metadata":
+            fields[f"metadata.{key.strip().lower()}"] = value
     return fields
+
+
+def _names(value: str) -> tuple[str, ...]:
+    """Split a comma- or space-separated list, dropping duplicates in order."""
+    return tuple(dict.fromkeys(value.replace(",", " ").split()))
 
 
 def skill_dirs(workspace: Path) -> list[Path]:
@@ -89,8 +107,13 @@ def discover_skills(workspace: Path) -> list[Skill]:
             name = path.parent.name.strip().replace(" ", "-")
             if not name or name in skills:
                 continue
-            reference = _reference(path, workspace)
-            skills[name] = Skill(name, reference, _frontmatter(path).get("description", ""))
+            fields = _frontmatter(path)
+            skills[name] = Skill(
+                name,
+                _reference(path, workspace),
+                fields.get("description", ""),
+                _names(fields.get(MCP_SERVERS_KEY, "")),
+            )
     return list(skills.values())
 
 
