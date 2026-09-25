@@ -504,21 +504,14 @@ def test_setup_failure_preserves_record_and_partial_files(repo):
     assert not seen
 
 
-@pytest.mark.parametrize("outcome", ["timeout", "cancelled"])
-def test_interrupted_worker_preserves_partial_artifact(repo, monkeypatch, outcome):
-    if outcome == "timeout":
-        monkeypatch.setattr("pcode.agent.SUBAGENT_TIMEOUT_SECONDS", 0.5)
+def test_cancelled_worker_preserves_partial_artifact(repo):
     entered = asyncio.Event()
     stopped = asyncio.Event()
-    returned = []
 
     async def model(messages, info):
         if "delegate_task" in {t.name for t in info.function_tools}:
-            if not results(messages):
-                yield call("delegate_task", {"agent_name": "worker", "task": "Partial change"})
-            else:
-                returned.append(content(results(messages)[-1]))
-                yield "Parent complete"
+            assert not results(messages), "a cancelled worker must not return"
+            yield call("delegate_task", {"agent_name": "worker", "task": "Partial change"})
         elif not results(messages):
             yield call("write_file", {"path": "file.txt", "content": "partial edit\n"})
         else:
@@ -536,12 +529,9 @@ def test_interrupted_worker_preserves_partial_artifact(repo, monkeypatch, outcom
         )
         try:
             await asyncio.wait_for(entered.wait(), 5)
-            if outcome == "cancelled":
-                task.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await task
-            else:
-                await asyncio.wait_for(task, 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
         finally:
             if not task.done():
                 task.cancel()
@@ -551,13 +541,36 @@ def test_interrupted_worker_preserves_partial_artifact(repo, monkeypatch, outcom
     asyncio.run(run())
     assert stopped.is_set()
     (record,) = TaskWorktrees(repo).list()
-    assert record.status == ("failed" if outcome == "timeout" else "cancelled")
+    assert record.status == "cancelled"
     assert record.dirty
     assert (Path(record.worktree) / "file.txt").read_text() == "partial edit\n"
     assert (repo / "file.txt").read_text() == "original\n"
-    if outcome == "timeout":
-        assert_artifact(repo, returned[0], "failed")
-        assert "tim" in returned[0]["summary"].lower()
+
+
+def test_hung_setup_times_out_without_leaking_and_preserves_record(repo, monkeypatch):
+    script = repo / ".pcode/worktree-setup"
+    script.parent.mkdir(exist_ok=True)
+    script.write_text('printf %s "$$" > "$PCODE_MAIN/../setup-pid"\nexec sleep 60\n')
+    git(repo, "add", ".pcode/worktree-setup")
+    git(repo, "commit", "-m", "Add hanging setup fixture")
+    save_preferences(project_extensions="on")
+    monkeypatch.setattr("pcode.isolated_delegation.SETUP_TIMEOUT_SECONDS", 1)
+    seen = False
+
+    async def child(messages, info):
+        nonlocal seen
+        seen = True
+        yield "Unexpected child"
+
+    artifact = content(delegate_once(create_agent("test", repo), child))
+    assert_artifact(repo, artifact, "failed")
+    assert "setup exceeded 1s" in artifact["summary"]
+    assert not seen
+    pid = int((repo.parent / "setup-pid").read_text())
+    state = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True
+    ).stdout.strip()
+    assert not state or state.startswith("Z"), state
 
 
 def test_isolated_shell_jobs_are_child_owned_and_cleaned_before_return(repo):

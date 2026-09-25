@@ -218,15 +218,14 @@ class ExtensionAPI:
         A delegate without `usage_limits` shares the parent run's usage counter
         under the library's default 50-request cap, so a long session trips it
         mid-delegation and `UsageLimitExceeded` aborts the whole turn instead of
-        steering the parent. Default to the worker's own budget; pass
-        `usage_limits` explicitly to override.
+        steering the parent. Default to the worker's own uncapped counter; pass
+        `usage_limits` explicitly to set a budget.
         """
-        from pydantic_ai.usage import UsageLimits
         from pydantic_ai_harness.subagents import SubAgent
 
-        from pcode.agent import SUBAGENT_REQUEST_LIMIT
+        from pcode.agent import SUBAGENT_USAGE_LIMITS
 
-        options.setdefault("usage_limits", UsageLimits(request_limit=SUBAGENT_REQUEST_LIMIT))
+        options.setdefault("usage_limits", SUBAGENT_USAGE_LIMITS)
         self.subagents.append(SubAgent(agent, **options))
 
     def on_close(self, function: Callable[[], Awaitable[None]]):

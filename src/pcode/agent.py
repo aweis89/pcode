@@ -49,14 +49,14 @@ from pcode.strict_tools import create_strict_tools
 from pcode.tool_output_limits import create_tool_output_limits
 from pcode.workspace import WorkspaceGuard
 
-# Generous enough for a real investigation, small enough that a child stuck in a
-# loop is stopped within a turn rather than after a session's worth of requests.
-# Harness isolates a child's request budget only when its `SubAgent` carries
-# `usage_limits`; without one the child shares the parent's usage counter and
-# silently gets the library's 50-request default, which a busy session has
-# already spent. `pcode.ext.subagent` applies this to extension delegates too.
-SUBAGENT_REQUEST_LIMIT = 120
-SUBAGENT_TIMEOUT_SECONDS = 900
+# Harness gives a child its own usage counter only when its `SubAgent` carries
+# `usage_limits`; without one the child shares the parent's counter and silently
+# gets the library's 50-request default, which a busy session has already spent.
+# The limits set no cap: like the parent turn, which is uncapped too, a child's
+# activity is on screen and Ctrl+C stops it, while a fixed budget discarded a
+# working child's whole result. `pcode.ext.subagent` applies this to extension
+# delegates too.
+SUBAGENT_USAGE_LIMITS = UsageLimits(request_limit=None)
 
 # Coder's default prompt without "finish long-running work before responding",
 # which kept the model waiting on jobs instead of answering steering. Job
@@ -262,11 +262,7 @@ def create_coder(
             workspace=workspace,
             worker_factory=isolated_worker,
             agents=[
-                SubAgent(
-                    worker,
-                    usage_limits=UsageLimits(request_limit=SUBAGENT_REQUEST_LIMIT),
-                    timeout_seconds=SUBAGENT_TIMEOUT_SECONDS,
-                ),
+                SubAgent(worker, usage_limits=SUBAGENT_USAGE_LIMITS),
                 *subagents,
             ],
             agent_folders=None,

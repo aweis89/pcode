@@ -162,9 +162,12 @@ unset to run on the session's model; keyword options are Harness `SubAgent`
 fields (`usage_limits`, `timeout_seconds`, `max_calls`). Give it capabilities
 of its own; the parent's tools are not inherited.
 
-Without an explicit `usage_limits` the delegate gets its own request budget, so
-a long delegation cannot exhaust the turn. Overriding it with `None` shares the
-parent's counter, where the library's 50-request default aborts the run.
+Without an explicit `usage_limits` the delegate gets its own uncapped request
+counter, so a long delegation cannot exhaust the turn, and it has no timeout.
+Pass `usage_limits=UsageLimits(request_limit=N)` or `timeout_seconds` to bound
+it; either returns a steering message and discards the delegate's result.
+Overriding it with `None` shares the parent's counter, where the library's
+50-request default aborts the run.
 
 The built-in worker shares the parent's workspace by default. Isolated delegation
 requires both `worktree=on` and `worker_isolation=on` in the active workspace's
