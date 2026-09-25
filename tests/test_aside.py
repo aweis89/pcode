@@ -1,6 +1,7 @@
 """Side questions run beside a turn without joining, steering, or blocking it."""
 
 import asyncio
+from copy import deepcopy
 from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -22,17 +24,12 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
-from pydantic_ai_harness.filesystem import FileSystem
-from pydantic_ai_harness.planning import Planning
-from pydantic_ai_harness.shell import Shell
-from pydantic_ai_harness.subagents import SubAgents
 from rich.console import Console
 
-from pcode.agent import create_aside_agent, create_coder
+from pcode.agent import create_coder
 from pcode.app import PreviewApp
-from pcode.aside import Aside, Asides, settled_context
+from pcode.aside import ASIDE_FRAMING, Aside, Asides, framed, settled_context
 from pcode.live import AgentRuntime
-from pcode.mcp_notice import MCPServers
 from pcode.preferences import save_preferences
 from pcode.runtime import Message
 from pcode.ui import create_prompt
@@ -54,21 +51,185 @@ def test_settled_context_stops_before_an_unanswered_tool_call():
     assert settled_context([]) == []
 
 
-def test_aside_agent_shares_the_model_but_keeps_nothing_that_can_change_the_workspace(tmp_path):
-    coder = create_coder(tmp_path)
-    main = Agent(TestModel(), capabilities=[coder], model_settings={"temperature": 0.5})
-    aside = create_aside_agent(main, tmp_path)
-    assert aside.model is main.model
-    # Effort and thinking change the live agent's settings; a copy would go stale.
-    assert not aside.model_settings
-    capabilities = aside.root_capability.capabilities
-    assert not [c for c in capabilities if isinstance(c, (Shell, SubAgents, Planning, MCPServers))]
-    filesystem = next(c for c in capabilities if isinstance(c, FileSystem))
-    assert filesystem.read_only
-    # Its own instances: two concurrent runs may not share one filesystem or shell.
-    assert filesystem is not next(c for c in coder.capabilities if isinstance(c, FileSystem))
-    assert [c for c in coder.capabilities if isinstance(c, (Shell, SubAgents, Planning))]
-    assert [c for c in coder.capabilities if isinstance(c, MCPServers)]
+def side_question(messages) -> str | None:
+    """The question a request asks, when it is a side question's request."""
+    for message in messages:
+        for part in message.parts:
+            if isinstance(part, UserPromptPart) and part.content.startswith(ASIDE_FRAMING):
+                return part.content.rpartition("Question: ")[2]
+    return None
+
+
+def test_a_side_question_repeats_the_turns_request_prefix_byte_for_byte(tmp_path):
+    """Instructions, tools, settings and history match, so the cache is reused."""
+    requests = []
+
+    async def model(messages, info):
+        requests.append(
+            {
+                "aside": side_question(messages) is not None,
+                "messages": deepcopy(messages),
+                "instructions": info.instructions,
+                "tools": [
+                    (tool.name, tool.description, tool.parameters_json_schema)
+                    for tool in info.function_tools
+                ],
+                "settings": info.model_settings,
+            }
+        )
+        if side_question(messages) is not None:
+            yield "Side answer."
+        elif not any(isinstance(m, ModelResponse) for m in messages):
+            yield {0: DeltaToolCall(name="read_file", json_args='{"path":"sample.txt"}')}
+        else:
+            yield "Main answer."
+
+    (tmp_path / "sample.txt").write_text("marker")
+    runtime = AgentRuntime(
+        Agent(
+            FunctionModel(stream_function=model),
+            capabilities=[create_coder(tmp_path)],
+            model_settings={"temperature": 0.5},
+        )
+    )
+
+    async def run():
+        [event async for event in runtime.stream("Main task")]
+        assert await runtime.aside("Why this file?") == "Side answer."
+
+    asyncio.run(run())
+    *main, side = requests
+    assert [request["aside"] for request in requests] == [False, False, True]
+    tool_names = [name for name, _, _ in side["tools"]]
+    # The full tool list, not a read-only subset: dropping one breaks the cache.
+    assert {"shell", "write_file", "write_plan", "delegate_task"} <= set(tool_names)
+    for request in main:
+        assert side["instructions"] == request["instructions"]
+        assert side["tools"] == request["tools"]
+        assert side["settings"] == request["settings"]
+    # The framing is in the question, not the system prompt.
+    assert ASIDE_FRAMING not in (side["instructions"] or "")
+    prefix = main[-1]["messages"]
+    assert side["messages"][: len(prefix)] == prefix
+    assert side_question(side["messages"][len(prefix) :]) == "Why this file?"
+
+
+def test_a_side_question_cannot_change_the_plan_or_delegate_but_still_answers(tmp_path):
+    from pydantic_ai_harness.planning import PlanItem
+
+    results = {}
+
+    async def model(messages, info):
+        returned = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, (ToolReturnPart, RetryPromptPart))
+        ]
+        if not returned:
+            yield {
+                0: DeltaToolCall(
+                    name="write_plan",
+                    json_args='{"items":[{"content":"Hijacked","status":"pending"}]}',
+                    tool_call_id="plan",
+                ),
+                1: DeltaToolCall(
+                    name="delegate_task",
+                    json_args='{"agent_name":"worker","task":"do it"}',
+                    tool_call_id="delegate",
+                ),
+                2: DeltaToolCall(name="read_plan", json_args="{}", tool_call_id="read"),
+            }
+            return
+        results.update({part.tool_call_id: part.model_response_str() for part in returned})
+        yield "Answered anyway."
+
+    runtime = AgentRuntime(
+        Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)])
+    )
+
+    async def run():
+        await runtime.plan_store.set_items([PlanItem(content="Real plan", status="pending")])
+        assert await runtime.aside("What is left?") == "Answered anyway."
+        assert [item.content for item in await runtime.plan_store.get_items()] == ["Real plan"]
+
+    asyncio.run(run())
+    assert "unavailable in a side question" in results["plan"]
+    assert "unavailable in a side question" in results["delegate"]
+    # Reading the plan is how a side question learns what the turn is doing.
+    assert "Real plan" in results["read"]
+
+
+def test_aside_guard_passes_everything_but_plan_writes_and_delegation():
+    from pydantic_ai.exceptions import ToolFailed
+
+    from pcode.aside_guard import AsideGuard
+
+    guard = AsideGuard()
+
+    async def handler(args):
+        return "ran"
+
+    async def call(name):
+        return await guard.wrap_tool_execute(
+            None,
+            call=ToolCallPart(name, {}),
+            tool_def=None,
+            args={},
+            handler=handler,
+        )
+
+    async def run():
+        for name in ["shell", "write_file", "edit_file", "read_plan", "list_task_worktrees"]:
+            assert await call(name) == "ran"
+        for name in ["write_plan", "add_task", "update_task_statuses", "remove_task"]:
+            with pytest.raises(ToolFailed):
+                await call(name)
+        for name in ["delegate_task", "integrate_task", "discard_task"]:
+            with pytest.raises(ToolFailed):
+                await call(name)
+
+    asyncio.run(run())
+
+
+def test_a_failed_side_question_writes_its_frames_to_errors_log(tmp_path):
+    from pcode.sessions import SavedSession
+
+    saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
+    forever = asyncio.Event()
+
+    class Runtime:
+        session = saved
+        tree = None
+
+        async def aside(self, question, report):
+            if question == "stop me":
+                await forever.wait()
+            raise ValueError("provider refused")
+
+    app = PreviewApp(
+        model="test:local", runtime=Runtime(), console=Console(file=StringIO(), width=140)
+    )
+
+    async def run():
+        await app.start_aside("why this file?")
+        await asyncio.sleep(0.05)
+        failed = app.asides.items[0]
+        assert failed.status == "failed"
+        log = (saved.directory / "errors.log").read_text()
+        assert f"run aside {failed.id}" in log
+        assert "Side question (failed): why this file?" in log
+        assert "ValueError: provider refused" in log
+        assert "Traceback" in log
+        # Stopping on purpose is not a defect worth a traceback.
+        await app.start_aside("stop me")
+        await asyncio.sleep(0)
+        app.asides.cancel()
+        await app.asides.close()
+        assert (saved.directory / "errors.log").read_text() == log
+
+    asyncio.run(run())
+    saved.close()
 
 
 def test_aside_answers_while_a_turn_runs_and_records_nothing(tmp_path):
@@ -76,11 +237,12 @@ def test_aside_answers_while_a_turn_runs_and_records_nothing(tmp_path):
     blocked = asyncio.Event()
     released = asyncio.Event()
     side_tools: set[str] = set()
+    main_tools: set[str] = set()
     side_requests = []
 
     async def model(messages, info):
         names = {tool.name for tool in info.function_tools}
-        if "shell" not in names:  # The read-only side agent, not the conversation's.
+        if (question := side_question(messages)) is not None:
             side_tools.update(names)
             prompts = [
                 part.content
@@ -91,8 +253,10 @@ def test_aside_answers_while_a_turn_runs_and_records_nothing(tmp_path):
             side_requests.append(sum(isinstance(m, ModelRequest) for m in messages))
             # It sees the turn in flight, and its question comes last.
             assert prompts[0] == "Main task"
-            yield f"Answer: {prompts[-1]}"
+            assert prompts[-1] == framed(question)
+            yield f"Answer: {question}"
             return
+        main_tools.update(names)
         if not blocked.is_set():
             blocked.set()
             await released.wait()
@@ -134,8 +298,8 @@ def test_aside_answers_while_a_turn_runs_and_records_nothing(tmp_path):
             if isinstance(part, UserPromptPart)
         ]
         assert prompts == ["Main task"]
-        assert "read_file" in side_tools
-        assert not {"shell", "write_file", "edit_file", "delegate_task"} & side_tools
+        # The conversation's own tools, so the request prefix stays cached.
+        assert side_tools == main_tools
         # The tokens were really spent, so they are billed to the session.
         assert runtime.input_tokens > 0
 
@@ -237,7 +401,7 @@ def test_btw_command_requires_a_question_or_an_answer_to_read():
     app.activity.busy = True
     app.activity.queued = 1
     assert app.registry.dispatch("/btw  why this file?  ")
-    assert app.aside_requested == "why this file?"
+    assert app.aside_requested == ([], "why this file?")
     app.asides.items.append(Aside(question="earlier"))
     assert app.registry.dispatch("/btw")
     assert app.aside_view_requested
@@ -263,7 +427,7 @@ def test_btw_runs_in_the_background_and_reports_in_the_footer_and_transcript():
             runtime=Runtime(),
             console=Console(file=output, color_system=None, width=140),
         )
-        app.start_aside("why")
+        await app.start_aside("why")
         await asyncio.sleep(0)
         assert app.asides.running == 1
         # A side question is not "working": input and the queue stay untouched.
@@ -275,7 +439,7 @@ def test_btw_runs_in_the_background_and_reports_in_the_footer_and_transcript():
         assert app.asides.unread == 1
         await app.asides.close()
         text = " ".join(output.getvalue().split())
-        assert "Asking beside the conversation, read-only" in text
+        assert "Asking beside the conversation: the turn keeps running" in text
 
     asyncio.run(run())
 

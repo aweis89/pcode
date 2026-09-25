@@ -2,9 +2,11 @@
 
 A side question ("btw") reuses the conversation's context but is never part of
 it: it is not written to the session journal, does not appear in the
-conversation tree, and cannot be steered or resent. What it shares with the
-conversation is the message prefix it was asked against and the session's token
-totals, both of which are read-only concerns.
+conversation tree, and cannot be steered or resent. It runs on the
+conversation's own agent, with the same instructions and tool definitions, so
+its requests reuse the provider cache the conversation has already paid for.
+That is also why its framing travels in the question rather than the system
+prompt: anything added ahead of the history would miss the cache.
 """
 
 import asyncio
@@ -21,6 +23,73 @@ ASIDE_TIMEOUT_SECONDS = 300
 # Side questions accumulate over a long session; keep the recent ones readable
 # rather than growing the viewer without bound.
 ASIDE_HISTORY = 20
+# `/btw $a $b QUESTION` fans out one side question per model. Each one sends
+# the whole conversation, uncached on any model but the conversation's own.
+ASIDE_MODEL_LIMIT = 4
+MODEL_MARK = "$"
+ASIDE_MODEL_USAGE = "Usage: /btw [$PROVIDER:MODEL ...] QUESTION"
+
+ASIDE_FRAMING = (
+    "[Side question] The user is asking a side question about the conversation so far. "
+    "Answer only this question, briefly, preferring what the conversation already shows "
+    "over fresh investigation. Your answer appears in a popup beside the conversation "
+    "and is not added to it, so do not address the main agent, continue its task, "
+    "or promise work. Tools work normally, but the plan and delegation tools are "
+    "unavailable here."
+)
+
+
+def framed(question: str) -> str:
+    """The user message a side question is sent as."""
+    return f"{ASIDE_FRAMING}\n\nQuestion: {question}"
+
+
+def parse_models(argument: str) -> tuple[list[str], str]:
+    """Split `$model [$model ...] question` into its models and the question.
+
+    Only leading `$` words name models, so a `$` inside the question is text.
+    Repeated models collapse to one, in the order first given.
+    """
+    models: list[str] = []
+    rest = argument.strip()
+    while rest.startswith(MODEL_MARK):
+        word, *tail = rest.split(maxsplit=1)
+        rest = tail[0] if tail else ""
+        name = word.removeprefix(MODEL_MARK)
+        if not name:
+            raise ValueError(f"A model name must follow `{MODEL_MARK}`. {ASIDE_MODEL_USAGE}")
+        if name not in models:
+            models.append(name)
+    if models and not rest:
+        raise ValueError(f"No question after the model. {ASIDE_MODEL_USAGE}")
+    if len(models) > ASIDE_MODEL_LIMIT:
+        raise ValueError(
+            f"At most {ASIDE_MODEL_LIMIT} models per side question; got {len(models)}."
+        )
+    return models, rest
+
+
+def model_fragment(argument: str) -> str | None:
+    """The partial model name being typed in `/btw` arguments, if any.
+
+    Only a word in the leading run of `$` words completes as a model; once the
+    question has started, a `$` is ordinary text.
+    """
+    if not argument or argument[-1].isspace():
+        return None
+    words = argument.split()
+    if not all(word.startswith(MODEL_MARK) for word in words):
+        return None
+    return words[-1].removeprefix(MODEL_MARK)
+
+
+def model_labels(models: list[str]) -> dict[str, str]:
+    """Short labels: the model without its provider, unless two would collide."""
+    short = {model: model.partition(":")[2] or model for model in models}
+    counts: dict[str, int] = {}
+    for label in short.values():
+        counts[label] = counts.get(label, 0) + 1
+    return {model: label if counts[label] == 1 else model for model, label in short.items()}
 
 
 def settled_context(messages: list) -> list:
@@ -63,6 +132,10 @@ class Aside:
 
     question: str
     id: str = field(default_factory=lambda: uuid4().hex[:8])
+    # The model named with `/btw $MODEL`, and its short display form. Empty when
+    # the question was asked without one, on the conversation's own model.
+    model: str = ""
+    label: str = ""
     # running → answered / failed / cancelled / timed out.
     status: str = "running"
     answer: str = ""
@@ -102,6 +175,9 @@ class Asides:
         # one that settled. Off-terminal callers (tests, `--print`) need neither.
         self.on_update: Callable[[Aside], None] = lambda aside: None
         self.on_settle: Callable[[Aside], None] = lambda aside: None
+        # Given the exception of a question that failed or timed out, so the
+        # frames can be kept where the session keeps turn failures.
+        self.on_failure: Callable[[Aside, BaseException], None] = lambda aside, error: None
 
     @property
     def running(self) -> int:
@@ -116,9 +192,16 @@ class Asides:
         unread = [aside for aside in self.items if not aside.running and not aside.read]
         return (unread or self.items or [None])[-1]
 
-    def start(self, question: str, work: Callable[[Aside], Awaitable[None]]) -> Aside:
+    def start(
+        self,
+        question: str,
+        work: Callable[[Aside], Awaitable[None]],
+        *,
+        model: str = "",
+        label: str = "",
+    ) -> Aside:
         """Register a side question and run `work` for it in the background."""
-        aside = Aside(question=question)
+        aside = Aside(question=question, model=model, label=label)
         self.items.append(aside)
         # Trim settled records only: a running question owns a live task.
         while len(self.items) > ASIDE_HISTORY:
@@ -154,15 +237,24 @@ class Asides:
         try:
             async with asyncio.timeout(ASIDE_TIMEOUT_SECONDS):
                 await work(aside)
-        except TimeoutError:
+        except TimeoutError as error:
             aside.settle("timed out", error=f"No answer within {ASIDE_TIMEOUT_SECONDS}s.")
+            self._failed(aside, error)
         except asyncio.CancelledError:
             aside.settle("cancelled")
             raise
         except Exception as error:
             aside.settle("failed", error=error_message(error))
+            self._failed(aside, error)
         else:
             aside.settle("answered")
         finally:
             self._tasks.pop(aside.id, None)
             self.on_settle(aside)
+
+    def _failed(self, aside: Aside, error: BaseException) -> None:
+        # Diagnostics must never replace the failure being diagnosed.
+        try:
+            self.on_failure(aside, error)
+        except Exception:
+            pass
