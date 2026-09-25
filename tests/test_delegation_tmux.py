@@ -11,16 +11,24 @@ pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is no
 SCRIPT = """
 import asyncio
 from pcode.app import PreviewApp
-from pcode.runtime import ToolStarted, ToolSummary
+from pcode.runtime import ChildPlan, PlanUpdated, ToolStarted, ToolSummary
 
 class Runtime:
     session = None
     turns = 0
 
     async def stream(self, prompt):
+        if prompt == "tree":
+            yield PlanUpdated([{"content": "Main task", "status": "in_progress"}])
         yield ToolStarted("delegate_task", "explorer · investigate authentication", "parent",
                           activity="Working", agent="explorer",
                           task="investigate authentication")
+        if prompt == "tree":
+            yield ChildPlan("parent", [
+                {"content": "Inspect", "status": "completed"},
+                {"content": "Work", "status": "in_progress"},
+                {"content": "Validate", "status": "pending"},
+            ])
         for i in range(20):
             yield ToolStarted("read_file", f"chatter-{i}", str(i))
             yield ToolSummary("read_file", f"chatter-{i}", call_id=str(i))
@@ -40,7 +48,7 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
     screen = capture(pane, "src/auth.py", running=True)
     assert "Explorer" in screen
     # The newest child owns the status row; the delegate and its other child stay boxed.
-    assert "│    ⟳ Search" in screen
+    assert "│└── ⟳ Search" in screen
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width, height in ((40, 14), (100, 32), (60, 20)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
@@ -48,7 +56,7 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
         lines = screen.splitlines()
         top = max(i for i, line in enumerate(lines) if line.startswith("┌─ Tools"))
         assert "⟳ ✦ Explorer" in lines[top + 1]
-        assert lines[top + 2].startswith("│    ⟳ Search")
+        assert lines[top + 2].startswith("│└── ⟳ Search")
         assert lines[top + 3].startswith("└")
         assert input_rows(screen) == 1
         assert "keep draft" in screen
@@ -63,3 +71,21 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
     assert "Tools" not in lines[editor_top]
     assert not lines[editor_top - 1].startswith("└")
     assert input_rows(screen) == 1
+
+
+@pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
+def test_task_tree_guides_survive_resize_at_each_depth(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "tree", "Enter")
+    capture(pane, "src/auth.py", running=True)
+    pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
+    for width, height in ((40, 18), (100, 32), (60, 20)):
+        pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
+        screen = capture(pane, "src/auth.py", running=True, columns=width)
+        assert "Main task" in screen
+        assert "│└── ⟳ ✦ Explorer" in screen
+        assert "│    ├── ✓ Inspect" in screen
+        assert "│    │   └── ⟳ Search" in screen
+        assert "│    └── ○ Validate" in screen
+        assert "keep draft" in screen
+        assert input_rows(screen) == 1

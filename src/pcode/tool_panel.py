@@ -22,7 +22,6 @@ CHILD_DWELL = 0.8
 # back to "Working…". The finished call keeps the row until it has been up this
 # long, unless real work starts first.
 STATUS_DWELL = 2.5
-CHILD_INDENT = "    "
 # A sub-agent's plan is a window around its active task, like the parent's, but
 # shorter: several delegates share the panel with the parent's own tasks.
 CHILD_PLAN_ROWS = 3
@@ -37,6 +36,25 @@ PLAN_ICONS = {
     "cancelled": "–",
     "blocked": "!",
 }
+
+
+@dataclass
+class _PanelNode:
+    row: tuple[str, str]
+    children: list["_PanelNode"] = field(default_factory=list)
+
+
+def _tree_rows(nodes: list[_PanelNode], prefix: str | None = None) -> list[tuple[str, str]]:
+    """Draw guides for the visible tree, leaving unparented roots undecorated."""
+    rows = []
+    for index, node in enumerate(nodes):
+        last = index == len(nodes) - 1
+        style, text = node.row
+        branch = "" if prefix is None else prefix + ("└── " if last else "├── ")
+        rows.append((style, branch + text))
+        stem = "" if prefix is None else prefix + ("    " if last else "│   ")
+        rows.extend(_tree_rows(node.children, stem))
+    return rows
 
 
 @dataclass
@@ -241,42 +259,49 @@ class ToolHistory:
         return len(self._delegates()) + len(others) + self.plan_rows()
 
     def rows(self, count: int, *, nested: bool = False, icon: str = "⟳"):
+        return _tree_rows(self._nodes(count, icon), "" if nested else None)
+
+    def _nodes(self, count: int, icon: str) -> list[_PanelNode]:
         """Delegates first: a running sub-agent must stay addressable and visible.
 
         Beneath each goes its plan, then its own calls, nested under its active
         task the way the parent's calls sit under the parent's. Both are bounded
         so several delegates cannot crowd each other out.
         """
+        if count <= 0:
+            return []
         calls = self.background
-        base = "    " if nested else ""
         delegates = self._shown_delegates(count)
         remaining = count - len(delegates)
-        lines = []
+        nodes = []
         for parent in delegates:
-            lines.append(_call_row(parent, base))
+            node = _PanelNode(_call_row(parent))
+            nodes.append(node)
             plan = self.plans.get(parent.event.call_id, [])
             steps, active = plan_window(plan, min(CHILD_PLAN_ROWS, len(plan), remaining))
             remaining -= len(steps)
             children = [c for c in calls if c.event.parent_call_id == parent.event.call_id]
             children = children[-min(2, remaining) :] if remaining else []
             remaining -= len(children)
+            child_nodes = [_PanelNode(_call_row(c)) for c in children]
             for index in steps:
-                lines.append(plan_row(plan[index], icon, base + CHILD_INDENT))
+                step = _PanelNode(plan_row(plan[index], icon))
+                node.children.append(step)
                 if index == active:
-                    lines.extend(_call_row(c, base + CHILD_INDENT * 2) for c in children)
+                    step.children = child_nodes
             if active is None or active not in steps:
-                lines.extend(_call_row(c, base + CHILD_INDENT) for c in children)
+                node.children.extend(child_nodes)
         if remaining:
             other = [c for c in calls if not c.event.parent_call_id and c.event.name != DELEGATE]
-            lines.extend(_call_row(c, base) for c in other[:remaining])
-        return lines
+            nodes.extend(_PanelNode(_call_row(c)) for c in other[:remaining])
+        return nodes
 
 
-def _call_row(call: ToolCall, indent: str) -> tuple[str, str]:
+def _call_row(call: ToolCall) -> tuple[str, str]:
     done = call.settled is not None
     style = "class:plan" if done else "class:plan.active"
     icon = PLAN_ICONS["blocked"] if call.failed else "✓" if done else "⟳"
-    return style, f"{indent}{icon} {call.line()}"
+    return style, f"{icon} {call.line()}"
 
 
 def plan_window(items: list[dict], count: int) -> tuple[range, int | None]:
@@ -287,11 +312,11 @@ def plan_window(items: list[dict], count: int) -> tuple[range, int | None]:
     return range(start, start + count), active
 
 
-def plan_row(item: dict, active_icon: str, indent: str = "") -> tuple[str, str]:
+def plan_row(item: dict, active_icon: str) -> tuple[str, str]:
     status = item["status"]
     style = "class:plan.active" if status == "in_progress" else "class:plan"
     icon = active_icon if status == "in_progress" else PLAN_ICONS.get(status, "○")
-    return style, f"{indent}{icon} {plain(item['content'], limit=None)}"
+    return style, f"{icon} {plain(item['content'], limit=None)}"
 
 
 def task_panel_rows(
@@ -316,14 +341,16 @@ def task_panel_rows(
         return []
     tool_count = min(TOOL_ROWS + tools.plan_rows(), tools.wanted(), max(0, budget - bool(items)))
     steps, active = plan_window(items, min(max_tasks, len(items), budget - tool_count))
-    lines = []
+    nodes = []
+    tool_nodes = tools._nodes(tool_count, active_icon)
     for index in steps:
-        lines.append(plan_row(items[index], active_icon))
+        node = _PanelNode(plan_row(items[index], active_icon))
+        nodes.append(node)
         if index == active:
-            lines.extend(tools.rows(tool_count, nested=True, icon=active_icon))
+            node.children = tool_nodes
     if active is None or active not in steps:
-        lines.extend(tools.rows(tool_count, icon=active_icon))
-    return lines
+        nodes.extend(tool_nodes)
+    return _tree_rows(nodes)
 
 
 def panel_fragments(lines: list[tuple[str, str]], width: int):

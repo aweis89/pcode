@@ -235,13 +235,14 @@ next row whole, instead of being cut in half. The buffer text is unchanged — t
 padding is display only, so editing positions, selection, and what gets sent are
 all unaffected. A single word wider than the pane still has to be split.
 
-Tasks and recent tool activity share one compact, headerless widget above the
-editor. Task rows show status icons and keep the active item visible. Up to five
-recent tool calls appear as indented subitems immediately below the active task;
-this rolling view follows the currently active item, rather than recording
-historical task ownership. When there is no active task (including no plan),
-tools appear as unparented rows in the same widget instead of beneath a completed
-or pending task. There is no separate Tools panel or Tasks heading.
+Tasks and concurrent tool activity share one compact widget above the editor.
+Task rows show status icons and keep the active item visible. Background tool
+calls appear beneath the active task with tree guides (`├──`, `└──`, `│`) that
+make parent/child relationships clear. This view follows the currently active
+item, rather than recording historical task ownership. The newest running call
+appears in the status row above the widget instead of being repeated inside it.
+When there is no active task (including no plan), background tools appear as
+unparented rows rather than beneath a completed or pending task.
 
 A running `delegate_task` keeps its own row, and a sub-agent that plans shows up
 to three of its tasks indented beneath it, centred on its active task, with its
@@ -259,11 +260,11 @@ once it settles, the phase becomes `Done` or `Failed`.
 
 ```text
 * Fix the flaky login test
-    ⟳ ✦ Worker · 12.4s · Working · Investigate the retry path
-        ✓ Read the retry code
-        * Reproduce the failure
-            ⟳ Run · 1.2s · pytest -q tests/test_login.py
-        ○ Report back
+└── ⟳ ✦ Worker · 12.4s · Working · Investigate the retry path
+    ├── ✓ Read the retry code
+    ├── * Reproduce the failure
+    │   └── ⟳ Run · 1.2s · pytest -q tests/test_login.py
+    └── ○ Report back
 ```
 
 The shared height budget shrinks in small panes, preserving the active task and
