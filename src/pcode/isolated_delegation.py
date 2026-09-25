@@ -185,6 +185,7 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         task: str,
         workspace_mode: Literal["auto", "isolated", "shared"] = "auto",
         model: str | None = None,
+        purpose: str = "",
     ) -> Any:
         """Delegate a self-contained task; the child does not see this conversation.
 
@@ -193,7 +194,13 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         and clean tracked files, creates a branch at the parent's HEAD, and returns
         a persistent task record. shared is not read-only. Specialized agents only
         support shared mode. Review isolated results before integrate_task.
+
+        Args:
+            purpose: What the sub-agent is doing, at most 8 words, present tense
+                (e.g. "fixing the /btw cache prefix"). It labels the delegation
+                in the user's task list; the sub-agent never sees it.
         """
+        # `purpose` is display-only: the event layer reads it from the call's arguments.
         if agent_name == "worker" and self.worker_slots is not None:
             async with self.worker_slots:
                 return await self._delegate(ctx, agent_name, task, workspace_mode, model)

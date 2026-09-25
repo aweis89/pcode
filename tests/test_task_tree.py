@@ -43,7 +43,7 @@ def test_guides_continue_past_descendants_to_the_next_visible_sibling(task_tree)
     assert rows == [
         ("class:plan", "✓ Inspect"),
         ("class:plan.active", "* Implement"),
-        ("class:plan.active", "├── ⟳ ✦ Worker · 0.0s · Working · Fix it"),
+        ("class:plan.agent", "├── ✦ Worker · 0.0s · Working · Fix it"),
         ("class:plan.active", "│   ├── * Read the code"),
         ("class:plan.active", "│   │   └── ⟳ Read · 0.0s · child.py"),
         ("class:plan", "│   └── ○ Test the fix"),
@@ -92,11 +92,11 @@ def test_parallel_delegates_have_separate_branches(task_tree):
     history.record(ToolStarted("grep", "new status row", "new-status"))
     text = [text for _, text in history.rows(10, nested=True)]
     assert text == [
-        "├── ⟳ ✦ Worker · 0.0s · Working · Fix it",
+        "├── ✦ Worker · 0.0s · Working · Fix it",
         "│   ├── ⟳ Read the code",
         "│   │   └── ⟳ Read · 0.0s · child.py",
         "│   └── ○ Test the fix",
-        "├── ⟳ ✦ Reviewer · 0.0s · Starting · Review",
+        "├── ✦ Reviewer · 0.0s · Starting · Review",
         "│   ├── ○ Check diff",
         "│   └── ⟳ Read · 0.0s · diff",
         "├── ⟳ Run · 0.0s · make check",
@@ -112,7 +112,7 @@ def test_without_an_active_task_only_the_delegate_children_have_guides(task_tree
         "✓ Inspect",
         "✓ Implement",
         "○ Validate",
-        "⟳ ✦ Worker · 0.0s · Working · Fix it",
+        "✦ Worker · 0.0s · Working · Fix it",
         "├── * Read the code",
         "│   └── ⟳ Read · 0.0s · child.py",
         "└── ○ Test the fix",

@@ -16,8 +16,9 @@ from pydantic_ai.messages import RetryPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness.subagents import SubAgent
 
-from pcode.agent import create_agent, create_aside_agent
+from pcode.agent import create_agent
 from pcode.ext import ExtensionAPI, ExtensionUI, load_extensions
+from pcode.live import AgentRuntime
 from pcode.preferences import save_preferences, set_project_root, update_preferences
 from pcode.task_worktrees import TaskWorktrees
 from pcode.task_worktrees import records as task_records
@@ -452,14 +453,33 @@ def test_specialized_delegate_is_shared_or_rejects_explicit_isolation(repo, mode
     assert TaskWorktrees(repo).list() == []
 
 
-def test_aside_has_no_task_management_tools(repo):
-    aside = create_aside_agent(create_agent("test", repo), repo)
+def test_aside_keeps_task_management_tools_declared_but_refuses_them(repo):
+    """Declared for a cache-identical prefix; refused so no task is touched."""
+    agent = create_agent("test", repo)
+    runtime = AgentRuntime(agent)
+    seen = {}
 
     async def model(messages, info):
-        assert not PARENT_ONLY & {t.name for t in info.function_tools}
-        yield "Read-only"
+        returned = results(messages)
+        if not returned:
+            assert PARENT_ONLY <= {t.name for t in info.function_tools}
+            yield {
+                0: DeltaToolCall(
+                    name="discard_task",
+                    json_args='{"task_id":"missing","confirm":true}',
+                    tool_call_id="discard",
+                ),
+                1: DeltaToolCall(name="list_task_worktrees", json_args="{}", tool_call_id="list"),
+            }
+            return
+        seen.update({part.tool_call_id: part.model_response_str() for part in returned})
+        yield "Answered"
 
-    aside.run_sync("Inspect", model=FunctionModel(stream_function=model))
+    with agent.override(model=FunctionModel(stream_function=model)):
+        assert asyncio.run(runtime.aside("Which tasks exist?")) == "Answered"
+    assert "unavailable in a side question" in seen["discard"]
+    # Listing only reads, so it runs.
+    assert "unavailable" not in seen["list"]
 
 
 @pytest.mark.parametrize("mode", ["shared", "isolated"])
