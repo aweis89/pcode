@@ -123,7 +123,7 @@ def tool_summary_lines(
     command: str = "",
     width: int | None = None,
 ) -> list[Text]:
-    """The settled-tool line, and a command's preview line, as scrollback draws them.
+    """The settled-tool line, including any command preview, as scrollback draws it.
 
     Shared so a browsed conversation looks like the one that scrolled past:
     scrollback and the session browser differ only in how much of `detail`
@@ -133,9 +133,8 @@ def tool_summary_lines(
     # The marker alone reports failure: a summary line keeps one style so a
     # failed call does not shout louder than the diagnostic that follows it.
     marker = "✗" if failed else "✓"
-    lines = [Text(f"{marker} {label(name)}{detail}{elapsed}", style="pcode.thinking")]
-    if command:
-        lines.append(Text("  " + command_preview(command), style="pcode.thinking"))
+    preview = " · " + command_preview(command) if command else ""
+    lines = [Text(f"{marker} {label(name)}{detail}{elapsed}{preview}", style="pcode.thinking")]
     for line in lines:
         line.no_wrap = True
         line.overflow = "ellipsis"
@@ -199,18 +198,36 @@ def execution_mode(name: str, args: dict) -> str:
     return ""
 
 
+def invocation(name: str, args: dict) -> str:
+    """The sanitized command a command tool ran, or "" for every other tool.
+
+    Scrollback previews a settled command from this, so an event built without
+    it settles as a bare "Run" row that never says what ran.
+    """
+    command = args.get("command")
+    if name in {"shell", "run_command", "start_command"} and isinstance(command, str):
+        return command_text(command)
+    return ""
+
+
+def assignment(name: str, args: dict) -> tuple[str, str]:
+    """A delegation's sanitized agent name and task, or ("", "") for any other tool."""
+    if name != "delegate_task":
+        return "", ""
+    agent = args.get("agent_name")
+    task = args.get("task")
+    return (
+        plain(argument(agent), 60) if isinstance(agent, str) else "agent unavailable",
+        plain(argument(task), 160) if isinstance(task, str) else "assignment unavailable",
+    )
+
+
 def target(name: str, args: dict) -> str:
     if name == "run_code":
         code = args.get("code")
         return code_preview(code) if isinstance(code, str) else "code unavailable"
     if name == "delegate_task":
-        agent = args.get("agent_name")
-        task = args.get("task")
-        return (
-            (plain(argument(agent), 60) if isinstance(agent, str) else "agent unavailable")
-            + " · "
-            + (plain(argument(task), 160) if isinstance(task, str) else "assignment unavailable")
-        )
+        return " · ".join(assignment(name, args))
     if name in {"shell", "run_command", "start_command"}:
         command = args.get("command")
         shown = command_preview(command) if isinstance(command, str) else "command unavailable"

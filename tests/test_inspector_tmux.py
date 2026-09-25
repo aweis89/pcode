@@ -1,5 +1,6 @@
 """Real CPR/alternate-screen regression for the temporary inspector."""
 
+import re
 import shutil
 import time
 
@@ -49,10 +50,19 @@ def test_modal_scroll_resize_and_restore_editor(pane):
     modal(pane, "Status: Failed")
     assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "1"
     modal(pane, "15/30 calls")
-    pane("send-keys", "-t", "preview:0.0", "Tab", "C-End")
-    modal(pane, "DETAIL 29 LINE 199")
+    # The newest call is selected; Tab focuses Details, which has no
+    # jump-to-end key, so page down to the last line.
+    pane("send-keys", "-t", "preview:0.0", "Tab")
+    for _ in range(20):
+        if "DETAIL 29 LINE 199" in pane("capture-pane", "-p", "-t", "preview:0.0"):
+            break
+        pane("send-keys", "-t", "preview:0.0", "PageDown")
+        time.sleep(0.1)
+    screen = modal(pane, "DETAIL 29 LINE 199")
+    top = re.search(r"DETAIL 29 LINE \d+", screen).group()
     pane("resize-window", "-t", "preview:0", "-x", "70", "-y", "24")
-    modal(pane, "DETAIL 29 LINE 199")
+    # Details keeps its top row across a resize rather than snapping back.
+    modal(pane, top)
     pane("send-keys", "-t", "preview:0.0", "Escape")
     screen = capture(pane, "draft must survive", columns=70)
     assert input_rows(screen) == 1

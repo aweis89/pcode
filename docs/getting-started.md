@@ -17,6 +17,10 @@ releases yet, so the formula installs the latest `master` with `--HEAD`, rather
 than a stable release. These commands become available once `Formula/pcode.rb`
 is published to GitHub.
 
+Homebrew installs `shfmt` for indented shell-command previews in `/tools`.
+Non-Homebrew installs can optionally install `shfmt` separately and put it on
+`PATH`; pcode falls back to its built-in formatter when it is unavailable.
+
 Homebrew installs Python 3.13 and uses `uv` at build time to install the
 application and its locked dependencies into a private environment. Installation
 requires network access to fetch Python packages; it does not modify your global
@@ -62,6 +66,11 @@ pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
 
 Try asking: `What does this repository do? Read the README and cite relevant files.`
 Live conversations save automatically when the first model prompt is submitted.
+
+You can start typing immediately after launching `pcode`, before the editor
+appears. Startup input is kept for the editor, including text typed during theme
+detection. If a repository trust question appears, answer it before typing your
+prompt.
 
 A prompt on the command line is sent as the first message, then the editor opens
 as usual. Add `-p`/`--print` to skip the editor: the reply goes to stdout, tool

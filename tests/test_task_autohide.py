@@ -10,9 +10,12 @@ from pcode.preferences import SETTINGS, load_preferences, save_preferences
 from pcode.ui import Activity
 
 
-def test_autohide_defaults_on_and_restores_on_the_next_turn():
-    activity = Activity(plan=[{"content": "Task", "status": "pending"}])
-    assert activity.autohide_tasks
+def test_autohide_defaults_off():
+    assert not Activity().autohide_tasks
+
+
+def test_autohide_hides_and_restores_on_the_next_turn():
+    activity = Activity(autohide_tasks=True, plan=[{"content": "Task", "status": "pending"}])
     assert activity.plan_rows(10, "*")
     activity.finish_prompt("done")
     assert activity.prompt_state == "done"
@@ -29,7 +32,7 @@ def test_autohide_off_keeps_the_widget_after_a_turn():
 
 
 def test_toggle_after_autohide_shows_the_widget_again():
-    activity = Activity(plan=[{"content": "Task", "status": "pending"}])
+    activity = Activity(autohide_tasks=True, plan=[{"content": "Task", "status": "pending"}])
     activity.finish_prompt("done")
     assert activity.toggle_tasks() is True
     assert activity.plan_rows(10, "*")
@@ -46,9 +49,10 @@ def test_reset_clears_the_auto_hidden_state():
 
 def test_command_and_preference(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert SETTINGS["autohide_tasks"].default == "on"
+    assert SETTINGS["autohide_tasks"].default == "off"
     app = PreviewApp(console=Console(file=StringIO()))
-    assert app.activity.autohide_tasks
+    assert not app.activity.autohide_tasks
+    assert app.registry.dispatch("/autohide-tasks on")
     app.activity.finish_prompt("done")
     assert app.registry.dispatch("/autohide-tasks off")
     assert not app.activity.autohide_tasks

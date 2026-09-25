@@ -11,7 +11,9 @@ pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is no
 SCRIPT = r"""
 import os, shlex, sys, tempfile
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
+from pathlib import Path
 from pcode.app import PreviewApp
+from pcode.commands import Command
 from pcode.jobs import JobRegistry
 from pcode.runtime import Message
 
@@ -35,8 +37,12 @@ def command(source):
 
 app = PreviewApp(model="test:local", runtime=Runtime())
 jobs = app.runtime.jobs
+finish = Path(os.environ["XDG_CONFIG_HOME"]) / "finish-job"
+app.registry.register(Command("/finish-job", "Finish the test job", lambda _: finish.touch()))
 jobs.launch(
-    command("import time; print('serving on 8000', flush=True); time.sleep(2.5); print('bye')"),
+    command("import time, os; print('serving on 8000', flush=True)\n"
+            f"while not os.path.exists({str(finish)!r}): time.sleep(0.05)\n"
+            "print('bye')"),
     cwd=os.getcwd(), background=True, purpose="serving the docs",
 )
 jobs.launch(command("import time; time.sleep(600)"), cwd=os.getcwd())
@@ -56,14 +62,16 @@ def test_jobs_row_watch_and_wake_keep_the_prompt_compact(pane):
     assert "$ " in screen and "Watching [j1]" in screen
     assert input_rows(screen) == 1
 
+    # Release only after watch is visible: startup time must not race the exit.
+    pane("send-keys", "-t", "preview:0.0", "/finish-job", "Enter")
     # The backgrounded job ends while idle, so its notice starts a turn on its
-    # own: the model hears without the user typing, and the watch clears.
+    # own: the model hears without a prompt, and the watch clears.
     screen = capture(pane, "WOKEN: [j1] serving the docs → exit 0")
     panel = screen.rsplit("WOKEN", 1)[-1]
     assert "serving on 8000" not in panel
     assert "⟳ j2" in screen and "⟳ j1" not in panel
-    # Scrollback has the exit line, so the ✓ row has nothing left to say.
-    assert "→ exit 0 · " in screen.split("WOKEN")[0]
+    # Completion uses the normal Run summary, never a finished live row.
+    assert "✓ Run · j1 · exit 0 · " in screen.split("WOKEN")[0]
     assert "✓ j1" not in capture(pane, "⟳ j2")
     assert input_rows(screen) == 1
 

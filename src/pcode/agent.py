@@ -11,7 +11,7 @@ from dataclasses import fields, replace
 from pathlib import Path
 
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import CombinedCapability
+from pydantic_ai.capabilities import Capability, CombinedCapability
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai_codex import OpenAICodexProvider
@@ -35,6 +35,8 @@ from pcode.filesystem import DisplayFileSystem
 from pcode.isolated_delegation import WorkspaceSubAgents
 from pcode.jobs import isolated_registry
 from pcode.llm_proxy import ProxiedCodexProvider
+from pcode.mcp import configured_servers
+from pcode.mcp_notice import MCPServers
 from pcode.meridian import MeridianSessionIdentity
 from pcode.meridian_reminders import MeridianLimitWarnings
 from pcode.output_limits import ModelOutputLimits
@@ -54,6 +56,26 @@ from pcode.workspace import WorkspaceGuard
 # already spent. `pcode.ext.subagent` applies this to extension delegates too.
 SUBAGENT_REQUEST_LIMIT = 120
 SUBAGENT_TIMEOUT_SECONDS = 900
+
+# Coder's default prompt without "finish long-running work before responding",
+# which kept the model waiting on jobs instead of answering steering. Job
+# mechanics are in the shell tool descriptions; don't add workflow rules here.
+CODER_INSTRUCTIONS = """\
+You are a software engineering agent. Use tools to investigate, implement, and
+verify the requested work. Read existing code and follow repository instructions
+and conventions. Prefer focused changes that fix causes, not symptoms.
+
+Apply DRY, YAGNI, SOLID, and the Zen of Python pragmatically: simple, explicit,
+cohesive code beats abstractions without a present need.
+
+Work autonomously until complete. Ask only for missing requirements, credentials,
+consequential ambiguity, or approval for irreversible actions. Use reasonable
+defaults for minor ambiguities. Run focused tests and appropriate lint/type checks;
+report what you actually verified, assumptions, and remaining limitations.
+
+Servers may remain running once readiness is verified; shut them down when no
+longer needed.
+"""
 
 AGENT_INSTRUCTIONS = (
     "Responses are displayed in a terminal with Markdown rendering "
@@ -108,6 +130,18 @@ def tool_retries() -> dict[str, int]:
     return {"tools": int(configured)}
 
 
+def has_mcp_servers() -> bool:
+    """Whether mcp.json configures any server, deciding once per agent.
+
+    A broken file counts as none: nothing can be enabled from it, and `/mcp`
+    reports the error when it is used.
+    """
+    try:
+        return bool(configured_servers())
+    except ValueError:
+        return False
+
+
 def create_coder(
     workspace: Path, subagents: Sequence = (), extensions: Sequence = (), *, delegation: bool = True
 ) -> CombinedCapability:
@@ -135,7 +169,10 @@ def create_coder(
     # blanket-rename everything either: `replace()`-copied children compare
     # fields with their parent and a renamed parent breaks that match.
     coder.capabilities = [
-        create_repo_context(workspace)
+        # The pinned Coder's sole plain Capability holds its base instructions.
+        Capability(instructions=CODER_INSTRUCTIONS)
+        if type(capability) is Capability
+        else create_repo_context(workspace)
         if isinstance(capability, RepoContext)
         # Named so /status can attribute its prompt; ids never reach the model.
         else replace(DisplayFileSystem.from_filesystem(capability), id="file_tools")
@@ -160,6 +197,9 @@ def create_coder(
     # Ahead of the worker copy below, so a delegate edits under the same schema.
     if strict_tools := create_strict_tools():
         coder.capabilities.append(strict_tools)
+    # Ahead of the worker copy below, so a delegate that inherits MCP tools also
+    # learns which servers they come from.
+    coder.capabilities.append(MCPServers(instruct=has_mcp_servers()))
     debug = load_preferences().get("debug", SETTINGS["debug"].default) == "on"
     if debug:
         coder.capabilities.append(CacheBustReporting())
@@ -302,7 +342,8 @@ def create_aside_agent(agent: Agent, workspace: Path) -> Agent:
     """
     capabilities = []
     for capability in create_coder(workspace).capabilities:
-        if isinstance(capability, (Shell, SubAgents, Planning, DelegationReporting)):
+        # A side question gets no MCP tools, so no list of their servers either.
+        if isinstance(capability, (Shell, SubAgents, Planning, DelegationReporting, MCPServers)):
             continue
         if isinstance(capability, FileSystem):
             capability = replace(capability, read_only=True)
@@ -341,9 +382,26 @@ def codex_model(model: str) -> OpenAICodexModel:
     # Subscription endpoints reject the explicit cache markers that Harness
     # Planning adds after write_plan. Keep the native provider/auth/model name;
     # override only this advertised capability (verified against AI 2.43.0).
+    #
+    # The Codex profile inherits `ToolSearchTool` from the OpenAI profile but not
+    # the deferral/addition modes, which `OpenAIProvider.model_profile` adds and
+    # `OpenAICodexProvider` does not. Without them every hidden tool is withheld
+    # rather than declared as deferred, and the wire carries `tool_search` with
+    # nothing to search: the endpoint answers `400 tools.tool_search requires at
+    # least one deferred tool` for the whole session. Deferred MCP tools are
+    # searched, revealed and called normally with these set (live-verified
+    # against gpt-6-astra on the subscription endpoint).
+    # TODO: drop `tool_deferral_mode` once a pinned Pydantic AI release includes
+    # https://github.com/pydantic/pydantic-ai/pull/8693 (it sets the mode in
+    # `openai_codex_model_profile`). That PR omits `tool_addition_mode`, so check
+    # whether upstream has it before removing that one too.
     return OpenAICodexModel(
         model.removeprefix("openai-codex:"),
-        profile=OpenAIModelProfile(openai_supports_prompt_cache_breakpoints=False),
+        profile=OpenAIModelProfile(
+            openai_supports_prompt_cache_breakpoints=False,
+            tool_deferral_mode="with_tool_search",
+            tool_addition_mode="with_definitions",
+        ),
         **({"provider": provider} if provider is not None else {}),
     )
 

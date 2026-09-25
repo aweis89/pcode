@@ -9,11 +9,18 @@ from pcode.task_prompt import TaskPrompt
 from pcode.ui import Transcript
 
 
+def syntax_preferences(mode):
+    """Preferences selecting pcode's derived palette or the terminal's colors."""
+    if mode == "terminal":
+        return {"syntax_dark": "terminal", "syntax_light": "terminal"}
+    return {"syntax_dark": "gruvbox-dark", "syntax_light": "gruvbox-light"}
+
+
 @pytest.mark.parametrize("theme", ["dark", "light"])
-@pytest.mark.parametrize("color_style", ["palette", "terminal"])
-def test_prompt_uses_current_accent(theme, color_style):
+@pytest.mark.parametrize("mode", ["palette", "terminal"])
+def test_prompt_uses_current_accent(theme, mode):
     console = Console(file=StringIO(), width=80)
-    transcript = Transcript(console, theme=theme, color_style=color_style)
+    transcript = Transcript(console, theme=theme, preferences=syntax_preferences(mode))
     with console.use_theme(transcript.rich_theme):
         segments = list(console.render(TaskPrompt("literal **text**")))
         accent = console.get_style("pcode.accent")

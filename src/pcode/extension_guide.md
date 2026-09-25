@@ -188,6 +188,19 @@ when creating the agent. This list-compatible collection preserves the factories
 needed to bind extensions to another workspace; flattening it to a plain list
 loses that provenance, and isolated delegation then refuses the unsafe rebind.
 
+To give a delegate a task plan that also shows in the Tasks widget beneath its
+`delegate_task` row, use pcode's planning capability rather than Harness's:
+
+```python
+from pcode.planning import IdentifiedPlanning
+
+reviewer = Agent(name="reviewer", description="...", capabilities=[IdentifiedPlanning()])
+```
+
+It is Harness `Planning` plus an announcement of the plan after each planning
+call; the plan itself stays private to the delegate's run. A plain Harness
+`Planning()` works for the delegate but never reaches the widget.
+
 ### Notices and lifecycle
 
 `pcode.ui.notify(text, level="info" | "warning" | "error")` prints a transient

@@ -6,7 +6,7 @@ import re
 from asyncio import Future
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
-from functools import cache, lru_cache, wraps
+from functools import cache, lru_cache, partial, wraps
 from io import StringIO
 from time import monotonic
 
@@ -32,6 +32,7 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame, Label
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
@@ -46,7 +47,7 @@ from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fr
 from pcode.input_keys import configure_newline_keys
 from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN, PastedText
-from pcode.preferences import SETTINGS, SYNTAX_THEMES, load_preferences
+from pcode.preferences import SETTINGS, SYNTAX_THEMES, TERMINAL_SYNTAX, load_preferences
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.syntax_colors import derive_colors
 from pcode.task_prompt import TaskPrompt
@@ -64,7 +65,7 @@ from pcode.tool_display import (
     split_outcome,
     tool_summary_lines,
 )
-from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
+from pcode.tool_panel import TASK_ROWS, ToolHistory, panel_fragments, task_panel_rows
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
@@ -118,11 +119,16 @@ class Palette:
         # `menu` colors the completion popup, which follows the selected syntax
         # style rather than this palette; it is immutable and cached too.
         menu = self if menu is None else menu
+        highlight = (
+            f"reverse bg:default {menu.accent}"
+            if menu.selected == "reverse"
+            else f"noreverse bg:{menu.selected} {menu.accent}"
+        )
         return Style.from_dict(
             {
                 "plan": self.muted,
-                "plan.heading": f"{self.task_heading} bold",
-                "plan.active": f"{self.accent} bold",
+                "plan.heading": f"nodim {self.task_heading} bold",
+                "plan.active": f"nodim {self.accent} bold",
                 "prompt": f"{self.accent} bold",
                 "activity.prompt": self.muted,
                 # System work is pcode's own, so it gets the accent colour and
@@ -133,10 +139,8 @@ class Palette:
                 # Short-lived answers to a keystroke live above the spinner
                 # rather than in scrollback; italics mark them as chrome.
                 "activity.notice": f"italic {self.muted}",
-                # Background jobs: running ones are chrome like the spinner row;
-                # an exit nobody has been told about yet earns the accent.
+                # Running background jobs are chrome like the spinner row.
                 "activity.job": self.muted,
-                "activity.job.finished": f"{self.accent} bold",
                 # A side question runs beside the turn, not as part of it, so its
                 # row spins in the muted shade rather than the prompt's.
                 "activity.aside": self.muted,
@@ -150,20 +154,38 @@ class Palette:
                 # the app palette may still be dark on a light terminal.
                 "bottom-toolbar": "noreverse nodim bg:default fg:default",
                 "bottom-toolbar.text": "fg:default",
-                "bottom-toolbar.location": "fg:default bold",
-                "bottom-toolbar.model": "fg:default",
-                "bottom-toolbar.activity": "fg:default bold",
+                # Same roles as the prompt chrome: what matters (where, what is
+                # running) in the accent, labels muted so the row stays quiet.
+                "bottom-toolbar.sep": self.muted,
+                "bottom-toolbar.location": f"{self.accent} bold",
+                "bottom-toolbar.mode": self.task_heading,
+                "bottom-toolbar.model": self.accent,
+                "bottom-toolbar.context": self.muted,
+                "bottom-toolbar.context-value": self.accent,
+                "bottom-toolbar.activity": f"{self.task_heading} bold",
                 "completion-menu": f"bg:{menu.surface} {menu.foreground}",
                 "completion-menu.completion": f"bg:{menu.surface} {menu.foreground}",
                 # The toolkit's selected-row default uses reverse; explicitly
                 # disable it so light themes keep dark text on a light surface.
-                "completion-menu.completion.current": (
-                    f"noreverse bg:{menu.selected} {menu.accent} bold"
-                ),
+                "completion-menu.completion.current": f"{highlight} bold",
                 "completion-menu scrollbar.background": f"bg:{menu.surface}",
-                "completion-menu scrollbar.button": f"bg:{menu.selected}",
+                "completion-menu scrollbar.button": (
+                    "reverse bg:default" if menu.selected == "reverse" else f"bg:{menu.selected}"
+                ),
+                # Full-screen popups keep native body surfaces, but share the
+                # completion menu's paired highlight colors, even when a syntax
+                # style has a different appearance from the terminal.
+                "popup selected": f"{highlight} nodim nounderline",
+                "popup cursor-line": f"{highlight} nodim nounderline",
+                "popup scrollbar.background": f"noreverse bg:{menu.surface} fg:default",
+                "popup scrollbar.button": f"noreverse bg:{menu.accent} fg:default",
+                "popup scrollbar.arrow": f"noreverse bg:default {self.accent} bold",
                 "completion-menu.meta.completion": f"bg:{menu.surface} {menu.muted}",
-                "completion-menu.meta.completion.current": f"bg:{menu.selected} {menu.foreground}",
+                "completion-menu.meta.completion.current": (
+                    "reverse bg:default fg:default"
+                    if menu.selected == "reverse"
+                    else f"bg:{menu.selected} {menu.foreground}"
+                ),
                 # A file reference is neither prose nor a command: underlining
                 # it marks the token without competing with the prompt chevron.
                 "reference": f"{self.task_heading} underline",
@@ -179,6 +201,16 @@ PALETTES = {
     "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "#c4b5fd"),
     "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "#7c3aed"),
 }
+
+# `/syntax terminal`: named ANSI colors, so the prompt, plan rows and popup
+# follow the terminal's own scheme. Muted text is `dim` rather than bright
+# black, which several schemes (Solarized) paint as the background itself, and
+# the selected row is reversed for the same reason. `fg:default` keeps the
+# toolkit's own RGB defaults (black popup metadata, grey suggestions) from
+# showing through.
+TERMINAL_PALETTE = Palette(
+    "ansicyan", "fg:default dim", "default", "default", "reverse", "ansimagenta"
+)
 
 
 @cache
@@ -207,9 +239,6 @@ def syntax_themes(preferences: dict[str, str] | None = None) -> dict[str, str]:
         name: preferences.get(f"syntax_{name}", SETTINGS[f"syntax_{name}"].default)
         for name in PALETTES
     }
-
-
-COLOR_STYLES = ("palette", "terminal")
 
 
 # Rich owns scrollback, not the prompt palette. Use terminal-defined ANSI colors
@@ -259,6 +288,8 @@ def system_command(text: str) -> tuple[str, str] | None:
 
 # A notice answers a keystroke, so it only has to outlast reading it once.
 NOTICE_SECONDS = 5.0
+# Scrollback columns a sub-agent's calls sit in from their delegate's row.
+CHILD_INDENT = 4
 NOTICE_ROWS = 6
 # Background jobs get a few rows, never the screen; `/jobs` has the full list.
 JOB_ROWS = 3
@@ -274,7 +305,12 @@ class Activity:
     show_tasks: bool = True
     # Hide the widget again as soon as a turn ends, without forgetting that the
     # user wants it shown while the model works.
-    autohide_tasks: bool = True
+    autohide_tasks: bool = False
+    # Draw the widget as the top section of the editor box instead of its own box.
+    attach_tasks: bool = False
+    # Cap on the task widget plus the editor box: whole rows, or a share of the
+    # screen below 1 (0.5 is half). None keeps the default layout.
+    tasks_max_height: float | None = None
     tasks_autohidden: bool = False
     show_thinking: bool = False
     busy: bool = False
@@ -384,6 +420,13 @@ class Activity:
         self.status = ""
         self.tasks_autohidden = False
 
+    def height_cap(self, rows: int) -> int | None:
+        """The task widget plus editor box's row limit on a screen this tall."""
+        cap = self.tasks_max_height
+        if cap is None:
+            return None
+        return min(rows, int(rows * cap) if cap < 1 else int(cap))
+
     @property
     def tasks_shown(self) -> bool:
         """Visible only when enabled and not auto-hidden after the last turn."""
@@ -419,7 +462,9 @@ class Activity:
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
         icon = spinner if self.status_shown else "○"
-        return task_panel_rows(self.displayed_plan, self.tools, budget, icon)
+        # A configured height is room the user asked the tasks to fill.
+        max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
+        return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
 
     def panel_title(self) -> str:
         items = self.displayed_plan
@@ -863,7 +908,7 @@ class TerminalOutput:
         self.app = app
         self.tail = ""
         self.streamed = False
-        self.code_theme = code_theme or (lambda: SETTINGS["syntax_dark"].default)
+        self.code_theme = code_theme or (lambda: "ansi_dark")
         self.rich_theme = rich_theme or PALETTES["dark"].rich_theme
         self.pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.transient_pending: list[tuple[tuple[object, ...], str, bool]] = []
@@ -1341,13 +1386,18 @@ def create_prompt(
 
     @per_render
     def frame_height() -> int:
+        """The editor box, including any tasks drawn inside it above a divider."""
+        tasks = attached_height()
         live = preview_layout()
         if live is not None:
-            return live[3]
+            return live[3] + tasks
         size = session.app.output.get_size()
-        available = max(1, size.rows - 4 - activity_height() - len(queue_rows()))
+        available = max(1, size.rows - 4 - activity_height() - tasks - len(queue_rows()))
+        cap = activity.height_cap(size.rows)
+        if cap is not None:
+            available = min(available, max(1, cap - 2 - tasks_height()))
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
-        return min(text_height, available) + 2
+        return min(text_height, available) + 2 + tasks
 
     plan_spinner = Spinner("arc")
     # Give the prompt line its own glyph so it reads as the overall turn, not as
@@ -1388,7 +1438,14 @@ def create_prompt(
     @per_render
     def base_plan_rows(budget: int | None = None):
         if budget is None:
-            budget = min(10, max(1, session.app.output.get_size().rows // 2 - 2))
+            rows = session.app.output.get_size().rows
+            cap = activity.height_cap(rows)
+            budget = (
+                min(10, max(1, rows // 2 - 2))
+                if cap is None
+                # The editor box keeps one text row inside its two borders.
+                else max(1, cap - task_chrome() - 3)
+            )
         return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
 
     @lru_cache(maxsize=1)
@@ -1457,14 +1514,20 @@ def create_prompt(
         # Editor: two borders and at least one text row. Preview: two rule
         # lines, the command, and at least one output row. Keep one task when
         # possible.
-        task_floor = 3 if plans else 0
+        # Attached tasks share the editor's top border and add only a divider.
+        chrome_rows = 1 if activity.attach_tasks else 2
+        task_floor = 1 + chrome_rows if plans else 0
         editor_room = max(1, room - 2 - 4 - task_floor)
+        cap = activity.height_cap(size.rows)
+        if cap is not None:
+            tasks = len(plans) + chrome_rows if plans else 0
+            editor_room = min(editor_room, max(1, cap - 2 - tasks))
         editor_rows = min(editor_room, editor.preferred_height(width, editor_room).preferred)
         editor_height = editor_rows + 2
-        plan_budget = max(0, room - editor_height - 4 - 2)
+        plan_budget = max(0, room - editor_height - 4 - chrome_rows)
         if len(plans) > plan_budget:
             plans = base_plan_rows(plan_budget)
-        plan_height = len(plans) + 2 if plans else 0
+        plan_height = len(plans) + chrome_rows if plans else 0
         # Chrome: the two rule lines, plus the indented `$ command` a shell
         # preview repeats below its heading, exactly as scrollback does.
         chrome = 2 if edits else 3
@@ -1494,7 +1557,7 @@ def create_prompt(
     @per_render
     def notice_rows():
         """Freeze the expiring notice for this render so height matches content."""
-        return activity.notice_rows(session.app.output.get_size().columns)
+        return activity.notice_rows(session.app.output.get_size().columns - 1)
 
     @per_render
     def job_rows():
@@ -1503,7 +1566,7 @@ def create_prompt(
     @per_render
     def aside_rows():
         return activity.aside_rows(
-            prompt_spinner.render(monotonic()).plain, session.app.output.get_size().columns
+            prompt_spinner.render(monotonic()).plain, session.app.output.get_size().columns - 1
         )
 
     def status_gap() -> bool:
@@ -1528,8 +1591,24 @@ def create_prompt(
             + status_gap()
         )
 
-    def activity_height() -> int:
+    def task_chrome() -> int:
+        """Rows the widget adds around its tasks: a divider attached, else a frame."""
+        return 1 if activity.attach_tasks else 2
+
+    def tasks_height() -> int:
+        """The widget's full height, wherever it is drawn."""
         rows = plan_rows()
+        return len(rows) + task_chrome() if rows else 0
+
+    def plan_attached() -> bool:
+        return activity.attach_tasks and bool(plan_rows())
+
+    def attached_height() -> int:
+        """Rows attached tasks add to the editor box: the tasks plus a divider."""
+        return len(plan_rows()) + 1 if plan_attached() else 0
+
+    def activity_height() -> int:
+        rows = [] if activity.attach_tasks else plan_rows()
         commands = command_rows()
         return (
             status_height()
@@ -1540,63 +1619,76 @@ def create_prompt(
     def plan_text():
         return panel_fragments(plan_rows(), session.app.output.get_size().columns - 2)
 
-    current_status = ConditionalContainer(
-        # One column of left padding so the spinner lines up with the task rows
-        # inside the frame below instead of sitting against the terminal edge.
-        VSplit(
+    def spinner_rows(fragments, height) -> VSplit:
+        """Chrome rows outside a frame: spinners, notices and queued prompts.
+
+        One column of left padding so every row lines up with the task rows
+        inside the frame below instead of sitting against the terminal edge.
+        """
+        return VSplit(
             [
                 Window(width=1),
                 Window(
-                    FormattedTextControl(
-                        lambda: activity.status_fragments(
-                            (system_spinner if activity.uses_system_spinner else prompt_spinner)
-                            .render(monotonic())
-                            .plain,
-                            session.app.output.get_size().columns - 1,
-                        ),
-                        show_cursor=False,
-                    ),
+                    FormattedTextControl(fragments, show_cursor=False),
+                    height=height,
                     wrap_lines=False,
+                    dont_extend_height=True,
                 ),
             ],
-            height=1,
+            height=height,
+        )
+
+    current_status = ConditionalContainer(
+        spinner_rows(
+            lambda: activity.status_fragments(
+                (system_spinner if activity.uses_system_spinner else prompt_spinner)
+                .render(monotonic())
+                .plain,
+                session.app.output.get_size().columns - 1,
+            ),
+            1,
         ),
         filter=Condition(lambda: activity.status_shown),
     )
-    plan_frame = Frame(
-        Window(
+
+    def plan_body() -> Window:
+        return Window(
             FormattedTextControl(plan_text),
             height=lambda: len(plan_rows()),
             dont_extend_height=True,
             wrap_lines=False,
-        ),
-        height=lambda: len(plan_rows()) + 2,
-    )
-    # Frame centers its title and has no alignment option. Replace only its
-    # top border with a fixed left prefix and an expanding right border.
-    plan_frame.container.children[0] = VSplit(
-        [
-            Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
-            Label(
-                lambda: panel_fragments(
-                    [
-                        (
-                            "class:plan.heading" if activity.displayed_plan else "bold",
-                            activity.panel_heading(),
-                        )
-                    ],
-                    session.app.output.get_size().columns - 8,
+        )
+
+    def plan_heading_border() -> VSplit:
+        """A top border with the heading at the left; Frame can only center it."""
+        return VSplit(
+            [
+                Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
+                Label(
+                    lambda: panel_fragments(
+                        [
+                            (
+                                "class:plan.heading" if activity.displayed_plan else "bold",
+                                activity.panel_heading(),
+                            )
+                        ],
+                        session.app.output.get_size().columns - 8,
+                    ),
+                    style="class:frame.label",
+                    dont_extend_width=True,
                 ),
-                style="class:frame.label",
-                dont_extend_width=True,
-            ),
-            Window(FormattedTextControl(" "), width=1, style="class:frame.border"),
-            Window(char="─", style="class:frame.border"),
-            Window(char="┐", width=1, style="class:frame.border"),
-        ],
-        height=1,
+                Window(FormattedTextControl(" "), width=1, style="class:frame.border"),
+                Window(char="─", style="class:frame.border"),
+                Window(char="┐", width=1, style="class:frame.border"),
+            ],
+            height=1,
+        )
+
+    plan_frame = Frame(plan_body(), height=lambda: len(plan_rows()) + 2)
+    plan_frame.container.children[0] = plan_heading_border()
+    plan = ConditionalContainer(
+        plan_frame, filter=Condition(lambda: bool(plan_rows()) and not activity.attach_tasks)
     )
-    plan = ConditionalContainer(plan_frame, filter=Condition(lambda: bool(plan_rows())))
     # Keep the turn and its activity adjacent even when the root layout justifies
     # the transcript and editor across the remaining terminal height.
     # Framed the way scrollback frames the same run once it settles: the
@@ -1640,42 +1732,27 @@ def create_prompt(
     # Directly above the spinner: a notice answers the keystroke that caused it
     # without ever reaching scrollback, and vanishes on its own.
     notice = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: panel_fragments(notice_rows(), session.app.output.get_size().columns),
-                show_cursor=False,
-            ),
-            height=lambda: len(notice_rows()),
-            wrap_lines=False,
-            dont_extend_height=True,
+        spinner_rows(
+            lambda: panel_fragments(notice_rows(), session.app.output.get_size().columns - 1),
+            lambda: len(notice_rows()),
         ),
         filter=Condition(lambda: bool(notice_rows())),
     )
     # Below the spinner: side questions run beside the turn and outlive it, so
     # they get their own spinner rows rather than a share of the prompt's.
     asides = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: panel_fragments(aside_rows(), session.app.output.get_size().columns),
-                show_cursor=False,
-            ),
-            height=lambda: len(aside_rows()),
-            wrap_lines=False,
-            dont_extend_height=True,
+        spinner_rows(
+            lambda: panel_fragments(aside_rows(), session.app.output.get_size().columns - 1),
+            lambda: len(aside_rows()),
         ),
         filter=Condition(lambda: bool(aside_rows())),
     )
     # What is running that the spinner does not cover.
     # Shown while idle too, which is when "is the suite still going?" is asked.
     jobs = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: panel_fragments(job_rows(), session.app.output.get_size().columns),
-                show_cursor=False,
-            ),
-            height=lambda: len(job_rows()),
-            wrap_lines=False,
-            dont_extend_height=True,
+        spinner_rows(
+            lambda: panel_fragments(job_rows(), session.app.output.get_size().columns - 1),
+            lambda: len(job_rows()),
         ),
         filter=Condition(lambda: bool(job_rows())),
     )
@@ -1687,14 +1764,9 @@ def create_prompt(
         return activity.queue_rows(budget)
 
     queued = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: panel_fragments(queue_rows(), session.app.output.get_size().columns),
-                show_cursor=False,
-            ),
-            height=lambda: len(queue_rows()),
-            wrap_lines=False,
-            dont_extend_height=True,
+        spinner_rows(
+            lambda: panel_fragments(queue_rows(), session.app.output.get_size().columns - 1),
+            lambda: len(queue_rows()),
         ),
         filter=Condition(lambda: bool(activity.queued_prompts)),
     )
@@ -1719,6 +1791,33 @@ def create_prompt(
             Window(FormattedTextControl("─┘"), width=2, style="class:frame.border"),
         ],
         height=1,
+    )
+    # Attached tasks: the widget's heading becomes the editor's top border and
+    # a divider separates the tasks from the text. frame_height counts both.
+    side = partial(Window, char="│", width=1, style="class:frame.border")
+    editor_frame.container.children[0] = HSplit(
+        [
+            ConditionalContainer(
+                HSplit(
+                    [
+                        plan_heading_border(),
+                        VSplit([side(), plan_body(), side()]),
+                        VSplit(
+                            [
+                                Window(char="├", width=1, style="class:frame.border"),
+                                Window(char="─", style="class:frame.border"),
+                                Window(char="┤", width=1, style="class:frame.border"),
+                            ],
+                            height=1,
+                        ),
+                    ]
+                ),
+                filter=Condition(plan_attached),
+            ),
+            ConditionalContainer(
+                editor_frame.container.children[0], filter=~Condition(plan_attached)
+            ),
+        ]
     )
     children = [menu, search, activity_panel, queued, editor_frame]
     if transcript is not None:
@@ -1770,7 +1869,7 @@ def create_prompt(
             # the frame that finally removes it.
             or activity.notice_shown
             or activity.asides_running
-            or (activity.tasks_shown and bool(activity.tools.calls))
+            or (activity.tasks_shown and activity.tools.animating)
         )
 
     async def animate(app):
@@ -1827,7 +1926,6 @@ class Transcript:
         theme: str = "dark",
         *,
         activity: Activity | None = None,
-        color_style: str = "palette",
         preferences: dict[str, str] | None = None,
         detected_theme: str | None = None,
     ) -> None:
@@ -1842,7 +1940,6 @@ class Transcript:
         self.console = console
         self.theme = theme
         self.detected_theme = detect_theme() if detected_theme is None else detected_theme
-        self.color_style = color_style
         self.syntax_themes = syntax_themes(preferences)
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
@@ -1854,6 +1951,9 @@ class Transcript:
         )
         self._replay_sink: list | None = None
         self._block: str | None = None
+        # A sub-agent's calls settle before its delegate does. They wait here,
+        # keyed by the delegate's call id, to be written beneath it.
+        self._children: dict[str, list[ToolSummary]] = {}
 
     @property
     def replays_on_resize(self) -> bool:
@@ -1943,8 +2043,27 @@ class Transcript:
     @recorded
     def tool_result(self, event: ToolSummary) -> None:
         """Retain hidden results too; choose one representation on each replay."""
+        if event.parent_call_id:
+            if self.summarizes(event):
+                self._children.setdefault(event.parent_call_id, []).append(event)
+            return
         if self.writes_tool_result(event):
             self.events((event,))
+        for child in self._children.pop(event.call_id, []):
+            for line in self.summary_lines(child, indent=CHILD_INDENT):
+                self.print(Padding(line, (0, 0, 0, CHILD_INDENT), expand=False), tool_line=True)
+
+    def settle_orphans(self) -> None:
+        """Write sub-agent calls whose delegate never settled, e.g. a cancelled turn.
+
+        Without a delegate row to sit under they are written flush, so the
+        steps a sub-agent did take are not silently lost.
+        """
+        orphans, self._children = self._children, {}
+        for children in orphans.values():
+            for child in children:
+                for line in self.summary_lines(child):
+                    self.print(line, tool_line=True)
 
     @recorded
     def edit(self, event) -> None:
@@ -1956,6 +2075,8 @@ class Transcript:
         sink = []
         self._replay_sink = sink
         self._block = None
+        # Replaying the log's own tool results rebuilds whatever is pending.
+        self._children = {}
         self.log.recording = False
         try:
             if self.log.dropped:
@@ -2014,14 +2135,15 @@ class Transcript:
         return PALETTES[self.resolved_theme]
 
     @property
-    def menu_palette(self) -> Palette:
-        """The palette implied by the syntax style in use, for the popup.
+    def terminal_colors(self) -> bool:
+        """Whether `/syntax terminal` hands every color to the terminal's ANSI palette."""
+        return self.syntax_themes[self.resolved_theme] == TERMINAL_SYNTAX
 
-        `/colors terminal` has no Pygments style to read -- code falls back to
-        the ANSI pseudo-styles -- so the hardcoded palette stands in.
-        """
-        if self.color_style == "terminal":
-            return self.palette
+    @property
+    def menu_palette(self) -> Palette:
+        """The palette implied by the syntax style in use, for the popup."""
+        if self.terminal_colors:
+            return TERMINAL_PALETTE
         return syntax_palette(self.syntax_themes[self.resolved_theme], self.palette)
 
     @property
@@ -2032,8 +2154,8 @@ class Transcript:
         frame do not, so the palette's surface stands in for the terminal's
         background and any color that would be lost against it is dropped.
         """
-        if self.color_style == "terminal":
-            return self.palette
+        if self.terminal_colors:
+            return TERMINAL_PALETTE
         style = self.syntax_themes[self.resolved_theme]
         return syntax_palette(style, self.palette, self.palette.surface)
 
@@ -2043,13 +2165,13 @@ class Transcript:
 
     @property
     def rich_theme(self) -> Theme:
-        return TERMINAL_THEME if self.color_style == "terminal" else self.palette.rich_theme()
+        return TERMINAL_THEME if self.terminal_colors else self.palette.rich_theme()
 
     @property
     def code_theme(self) -> str:
         return (
             f"ansi_{self.resolved_theme}"
-            if self.color_style == "terminal"
+            if self.terminal_colors
             else self.syntax_themes[self.resolved_theme]
         )
 
@@ -2085,7 +2207,6 @@ class Transcript:
                 palette=self.resolved_theme,
                 dark=self.syntax_themes["dark"],
                 light=self.syntax_themes["light"],
-                terminal_colors=self.color_style == "terminal",
             )
         )
 
@@ -2144,15 +2265,28 @@ class Transcript:
         return self.command_scrollback and (self.tool_error_scrollback or not event.failed)
 
     def writes_tool_result(self, event: Event) -> bool:
+        """Report whether this settled tool is written to scrollback as it arrives.
+
+        A sub-agent's call is not: it waits to be written beneath its delegate.
+        """
+        return (
+            isinstance(event, ToolSummary) and not event.parent_call_id and self.summarizes(event)
+        )
+
+    def summarizes(self, event: Event) -> bool:
         """Report whether this settled tool reaches scrollback at all.
 
-        Every call the live panel drops is written here instead, except where
-        something else already tells the story: the task panel owns successful
-        planning calls, and a shown diff owns successful edits. Neither tells
-        the story of a failure, so a failed call is always written; only how
-        much of it, its summary line or its diagnostic, is configurable.
+        Omit calls whose results already have a home: planning in the task
+        panel, shown edits in their diff, and job inspection in the job's own
+        completion notice. Actual tool errors still get their own entry; only
+        how much of them, a summary or diagnostic, is configurable.
         """
         if not isinstance(event, ToolSummary):
+            return False
+        # Inspecting/waiting on a job is not another command completion. A
+        # nonzero job exit sets `failed`, but the helper call itself succeeded;
+        # only actual helper errors/retries need their own scrollback entry.
+        if event.name in {"wait_for_job", "job_output"} and event.outcome == "success":
             return False
         # A command always leaves at least the summary line every other tool
         # leaves; `show_commands` governs only its mirrored output.
@@ -2179,7 +2313,13 @@ class Transcript:
         output = output.rstrip("\n")
         if not output.strip():
             output = "(no output)"
-        title = label(event.name) + (f" · {job}" if job else "")
+        title = label(event.name)
+        if event.execution == "background":
+            # This is the delayed exit notice, not just a tool result: keep the
+            # exact outcome even when the footer is absorbed into the heading.
+            title += " · " + plain(event.detail.rsplit(" → ", 1)[-1], limit=None)
+        elif job:
+            title += f" · {job}"
         self.print(
             CommandTranscript(
                 command=invocation,
@@ -2217,18 +2357,35 @@ class Transcript:
     def warning(self, text: str) -> None:
         self.print(TranscriptNotice(text, "warning", "Warning"))
 
+    @recorded
     def cancelled(self) -> None:
+        self.settle_orphans()
         self.print(
             TranscriptNotice("Completed tool effects are not undone.", "cancelled", "Run cancelled")
         )
 
     @recorded
     def user(self, text: str) -> None:
+        self.settle_orphans()
         self.print()
         self.print(TaskPrompt(text))
         self.print()
 
-    def command_summary(self, event: ToolSummary) -> None:
+    def summary_lines(self, event: ToolSummary, *, indent: int = 0) -> list[Text]:
+        """The compact rows a settled call leaves in scrollback."""
+        if event.name not in COMMAND_TOOLS and not event.command:
+            return [
+                Text.assemble(
+                    (f"{'✗' if event.failed else '✓'} {label(event.name)}  ", "pcode.thinking"),
+                    (plain(event.detail, limit=None), "pcode.thinking"),
+                    (
+                        f"  {event.elapsed_seconds:.1f}s"
+                        if event.elapsed_seconds is not None
+                        else "",
+                        "pcode.thinking",
+                    ),
+                )
+            ]
         # Scrollback shows the outcome only: the live panel already named the
         # target while the call ran. The session browser, which has no such
         # panel, passes the whole detail to the same renderer.
@@ -2237,14 +2394,17 @@ class Transcript:
             if event.failed or (event.name != "run_command" and " → " in event.detail)
             else ""
         )
-        for line in tool_summary_lines(
+        return tool_summary_lines(
             event.name,
             result,
             failed=event.failed,
             elapsed_seconds=event.elapsed_seconds,
             command=event.command,
-            width=self.console.width,
-        ):
+            width=max(1, self.console.width - indent),
+        )
+
+    def command_summary(self, event: ToolSummary) -> None:
+        for line in self.summary_lines(event):
             self.print(line, tool_line=True)
 
     @recorded
@@ -2284,19 +2444,8 @@ class Transcript:
                     else:
                         self.command_summary(event)
                     continue
-                self.print(
-                    Text.assemble(
-                        (f"{'✗' if event.failed else '✓'} {label(event.name)}  ", "pcode.thinking"),
-                        (plain(event.detail, limit=None), "pcode.thinking"),
-                        (
-                            f"  {event.elapsed_seconds:.1f}s"
-                            if event.elapsed_seconds is not None
-                            else "",
-                            "pcode.thinking",
-                        ),
-                    ),
-                    tool_line=True,
-                )
+                for line in self.summary_lines(event):
+                    self.print(line, tool_line=True)
 
     def help(self, registry: CommandRegistry) -> None:
         table = Table(box=None, padding=(0, 2), show_header=False)
@@ -2315,7 +2464,7 @@ class Transcript:
         self.note("Ctrl+L choose model · Ctrl+N raise effort · Ctrl+P lower effort (next turn)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note(
-            "During a run: Enter sends · Ctrl+S cycles steering/queue/interrupt. "
+            "During a run: Enter sends · Ctrl+S picks steering/queue/interrupt for the next send. "
             "Ctrl+C discards a draft first, then cancels · Ctrl+D cancels, keeps draft."
         )
         self.note("Cancellation clears queued messages. Use terminal/tmux scrollback for history.")

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -20,6 +21,24 @@ def mcp_transport(toolset: Any) -> Any:
     while (wrapped := getattr(toolset, "wrapped", None)) is not None:
         toolset = wrapped
     return getattr(getattr(toolset, "client", None), "transport", None)
+
+
+def _without_deferred_loading(toolset: Any) -> Any | None:
+    """Rebuild a toolset without its deferred-loading layer, or `None` if it has none.
+
+    Only the wrappers are rebuilt: the `MCPToolset` itself (with its client, its
+    OAuth object and whatever tokens it already holds) is the same instance, so
+    dropping deferral costs neither a reconnection nor a second sign-in.
+    """
+    from pydantic_ai.toolsets.deferred_loading import DeferredLoadingToolset
+
+    if isinstance(toolset, DeferredLoadingToolset):
+        return toolset.wrapped
+    wrapped = getattr(toolset, "wrapped", None)
+    if wrapped is None:
+        return None
+    inner = _without_deferred_loading(wrapped)
+    return None if inner is None else replace(toolset, wrapped=inner)
 
 
 def config_path() -> Path:
@@ -87,18 +106,32 @@ class ServerConfig(BaseModel):
     url: str | None = None
     headers: dict[str, str] | None = None
     auth: Literal["oauth"] | None = None
+    # A client created with the provider ahead of time, for services without
+    # dynamic client registration (Google's MCP servers, for one).
+    client_id: str | None = None
+    client_secret: str | None = None
     # Enable at startup, /new, and resume instead of waiting for /mcp enable.
     enabled: bool = False
     # Off by default: a server's schemas otherwise sit in every request of the
     # conversation, while tool search costs one call for the tools actually used.
     direct: bool = False
+    # What the server is for, shown to the model beside its name in the list of
+    # enabled servers. Only worth setting when the name does not already say it.
+    description: str | None = None
 
     @model_validator(mode="after")
     def transport(self):
         if bool(self.command) == bool(self.url):
             raise ValueError("Specify exactly one of command or url.")
+        if self.client_secret is not None and self.client_id is None:
+            raise ValueError("client_secret needs client_id.")
+        if self.client_id is not None and (self.auth != "oauth" or not self.client_id.strip()):
+            raise ValueError('client_id needs auth: "oauth".')
         if self.command:
-            if not self.command.strip() or self.headers is not None or self.auth is not None:
+            if not self.command.strip() or any(
+                item is not None
+                for item in (self.headers, self.auth, self.client_id, self.client_secret)
+            ):
                 raise ValueError("Invalid stdio options.")
             return self
         if any(item is not None for item in (self.command, self.args, self.env, self.cwd)):
@@ -118,8 +151,9 @@ def _config(name: str, raw: Any) -> ServerConfig:
         # Pydantic errors include input values: never print credentials from config.
         raise ValueError(
             f"Invalid MCP server '{name}'. Use command/args/env/cwd for stdio or url/headers "
-            'for HTTP (optional auth: "oauth", enabled: true, direct: true); other fields '
-            "are not supported."
+            'for HTTP (optional auth: "oauth" with client_id/client_secret, enabled: true, '
+            "direct: true, description); "
+            "other fields are not supported."
         ) from None
 
 
@@ -149,7 +183,15 @@ def build_toolset(name: str, raw: Any, *, interactive: bool = True):
             # and the credential file (see mcp_oauth).
             from pcode.mcp_oauth import LoopbackOAuth
 
-            auth = LoopbackOAuth(interactive=interactive) if config.auth == "oauth" else None
+            auth = (
+                LoopbackOAuth(
+                    interactive=interactive,
+                    client_id=config.client_id,
+                    client_secret=config.client_secret,
+                )
+                if config.auth == "oauth"
+                else None
+            )
             toolset = MCPToolset(
                 config.url,
                 id=name,
@@ -168,6 +210,24 @@ def build_toolset(name: str, raw: Any, *, interactive: bool = True):
         raise ValueError(
             f"Cannot configure MCP server '{name}'; check its transport options."
         ) from None
+
+
+def deferred_schemas_rejected(error: BaseException) -> bool:
+    """Whether the provider rejected this request's hidden tool schemas.
+
+    Deferred loading is a request-shape choice, not history: a provider that
+    will not pair withheld schemas with its tool search rejects every request
+    the same way, so the session is stuck until the tools are sent in full.
+    Narrow on purpose -- a 400 naming the search surface is the provider saying
+    this pairing is impossible; any other 400 is a request pcode built wrong.
+    """
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    return (
+        isinstance(error, ModelHTTPError)
+        and error.status_code == 400
+        and ("tool_search" in str(error.body) or "defer_loading" in str(error.body))
+    )
 
 
 def _find_cause(error: BaseException, kind: type[BaseException]) -> BaseException | None:
@@ -209,6 +269,9 @@ class MCPState:
 
     def __init__(self) -> None:
         self.enabled: dict[str, Any] = {}
+        # Captured at enable, like the toolset, so a later config edit changes
+        # neither until the server is disabled and enabled again.
+        self.descriptions: dict[str, str] = {}
 
     async def enable(self, name: str, *, interactive: bool = True) -> None:
         if name in self.enabled:
@@ -216,6 +279,8 @@ class MCPState:
         servers = configured_servers()
         if name not in servers:
             raise ValueError(f"Unknown MCP server '{name}'. Use /mcp list.")
+        # Read before building, so a bad entry fails here, not after enabling.
+        description = _config(name, servers[name]).description
         toolset = build_toolset(name, servers[name], interactive=interactive)
         # Only OAuth needs an enable-time connection. Entering the MCP toolset
         # initializes the server and completes native auth without a model call.
@@ -234,10 +299,13 @@ class MCPState:
                     raise sign_in from error
                 raise
         self.enabled[name] = toolset
+        if description:
+            self.descriptions[name] = description
 
     async def forget(self, name: str) -> None:
         """Drop stored OAuth credentials for a server, and its toolset if enabled."""
         self.enabled.pop(name, None)
+        self.descriptions.pop(name, None)
         servers = configured_servers()
         if name not in servers:
             raise ValueError(f"Unknown MCP server '{name}'. Use /mcp list.")
@@ -255,6 +323,25 @@ class MCPState:
         if name not in self.enabled:
             raise ValueError(f"MCP server '{name}' is not enabled.")
         del self.enabled[name]
+        self.descriptions.pop(name, None)
 
     def toolsets(self) -> list:
         return list(self.enabled.values())
+
+    def servers(self) -> dict[str, str | None]:
+        """Enabled server names, sorted, with the descriptions configured for them."""
+        return {name: self.descriptions.get(name) for name in sorted(self.enabled)}
+
+    def undefer(self) -> list[str]:
+        """Send every enabled server's schemas up front, for the rest of the session.
+
+        The recovery for a provider that rejects withheld schemas: the tools stay
+        available (at their full prompt cost) instead of the session failing every
+        request. Returns the servers that were still deferring.
+        """
+        undeferred = []
+        for name, toolset in list(self.enabled.items()):
+            if (direct := _without_deferred_loading(toolset)) is not None:
+                self.enabled[name] = direct
+                undeferred.append(name)
+        return undeferred

@@ -31,7 +31,9 @@ searches prompts across sessions (space-separated words are all required) and â†
 move the selection while you type (Ctrl+U/Ctrl+D by half a page); `r` includes
 responses, `w` includes every workspace. Tab focuses the content pane, where arrows
 scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page. Enter resumes the selected
-session in place, Esc cancels. Resuming restores the saved model, history, and plan.
+session in place, Esc cancels. `d` (or Delete) in the session list, pressed twice,
+permanently removes the selected session's directory; the active session and one
+open in another process are refused. Resuming restores the saved model, history, and plan.
 A session from another worktree of the same repository switches the workspace to
 that worktree: file tools, the shell, extensions, and skill commands are rebuilt
 there, and the worktree being left is tidied as on exit (an untouched `pcode-`
@@ -83,12 +85,33 @@ paginates long text, and includes bounded ancestor context (not sibling branches
 - Excerpts are centred on the densest match in prose where there is one, so a
   conclusion outranks the shell command that led to it, and each hit carries the
   turn's closing assistant text as `conclusion` when the excerpt misses it.
-- Results report `sessions_searched` against `sessions_in_scope`. Sessions are
-  scanned newest first up to a journal byte budget, so anything left out is the
-  older end; the reply then carries a `next_cursor` and a warning naming how many
-  sessions it did not reach. Pass that value back as `after` to scan them. A
-  session the budget cut off mid-way stays behind the cursor and is re-read whole
-  on the next page, so paging never skips records.
+- Results report cumulative `sessions_searched` against `sessions_in_scope`, plus
+  `sessions_partial`, `sessions_unreadable`, and `scan_complete`. Sessions start
+  newest first, with traversal order fixed across pages. Both the journal-byte
+  budget and the chunk limit return `next_cursor` when work remains. Pass it as
+  `after` with the same arguments, even when the page has no hits. Continuation
+  resumes inside the journal or turn, without skipping its remaining records or
+  chunks. Coverage counts apply to the whole continuation chain; hits and rankings
+  apply to the current page. An empty page does not establish absence while
+  coverage is incomplete.
+- A session's hits are deferred until its journal snapshot has been read in full,
+  so attribution, branch labels, redaction, and text offsets agree. A journal
+  larger than the byte budget can therefore produce several empty pages first.
+  A session counts as searched only after all its chunks have been considered.
+- `read_session` also returns `next_cursor` if it needs more journal bytes before
+  resolving a turn. Continue with `after`, keeping the other arguments unchanged.
+  Once `next_cursor` is null, use `next_offset` to page through the returned turn's
+  text. A scan cutoff is not reported as a missing turn.
+- Continuations retain parser state in memory, not a persistent transcript cache.
+  Tokens are single-use, tied to the scope and request, and expire after 30 idle
+  minutes or a process restart. At most 16 pending continuations are retained;
+  the oldest is evicted when that limit is reached. An expired token reports an
+  error: restart without `after`. Each journal is read to the size captured when
+  first opened; appends require a fresh search. Replaced files, shrinking files,
+  and same-size edits invalidate a continuation. Journals must otherwise remain
+  append-only: a growing in-place rewrite is not reliably distinguishable from
+  an append. An unfinished final record produces a warning rather than a claim
+  of complete coverage.
 - New sessions record their project path so deleted worktrees remain discoverable.
   Older sessions use Git discovery or the conventional `.worktrees/` layout;
   a deleted legacy worktree elsewhere may need `scope="all"`.
@@ -112,13 +135,15 @@ Provider/cache failures fall back to keywords with a warning.
 The optional cache is `.history-embeddings.sqlite3` inside the session root,
 mode 0600, containing content hashes and vectors, not transcript text. Vectors
 are still sensitive data. It is created lazily; there is no startup indexing.
-Each search has a 64 MiB journal-read budget, returns candidates from at most
-10,000 chunks, and embeds at most 128 new chunks. Sessions are scanned newest
-first, each journal from its beginning. Reaching a limit reports partial coverage;
-branch labels are unknown when the rest of a journal was not read. Narrowing to
-`scope="session"` avoids spending the budget on other conversations. Reading a
-referenced turn also has a 64 MiB scan budget. Subsequent semantic searches extend
-the vector cache (they do not advance the journal-read window). Cache
+Each search call has a 256 MiB journal-read budget, returns candidates from at
+most 10,000 chunks, and embeds at most 128 new chunks. Reading a referenced turn
+has the same per-call byte budget. These limits bound journal bytes read and
+chunks ranked, not total memory or processing time: an unfinished record and a
+session's parsed turns are retained across calls, and a complete JSON record is
+decoded as a unit. They do not cap the history reachable through continuation.
+Narrowing to `scope="session"` avoids
+spending the budget on other conversations. Subsequent semantic searches extend
+the vector cache; use `after` explicitly to advance the journal scan. Cache
 keys include the model and content; removed sessions are never returned, but
 old cached vectors remain until the cache is deleted. Delete that file with
 pcode stopped to clear it (also necessary if a provider changes a model's vector
