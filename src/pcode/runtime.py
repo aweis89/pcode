@@ -152,6 +152,21 @@ class ChildPlan:
     items: list[dict]
 
 
+@dataclass(frozen=True)
+class ChildText:
+    """A running sub-agent's own prose or reasoning, keyed by its delegate call.
+
+    Display-only and never journaled: it feeds the worker viewer, never the
+    conversation's transcript. `start` opens a new part; otherwise the text
+    continues the previous part of the same kind.
+    """
+
+    call_id: str
+    text: str
+    thinking: bool = False
+    start: bool = False
+
+
 Event = (
     Message
     | ToolStarted
@@ -164,6 +179,7 @@ Event = (
     | PlanUpdated
     | PlanPreview
     | ChildPlan
+    | ChildText
     | CommandOutput
     | EditCompleted
     | EditPreview
