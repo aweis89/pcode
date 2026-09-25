@@ -18,7 +18,7 @@ from pydantic_ai_harness.subagents import SubAgent
 
 from pcode.agent import create_agent, create_aside_agent
 from pcode.ext import ExtensionAPI, ExtensionUI, load_extensions
-from pcode.preferences import save_preferences, set_project_root
+from pcode.preferences import save_preferences, set_project_root, update_preferences
 from pcode.task_worktrees import TaskWorktrees
 from pcode.task_worktrees import records as task_records
 
@@ -44,7 +44,7 @@ def repo(tmp_path):
     (root / ".gitignore").write_text(".worktrees/\n.pcode/preferences.json\n__pycache__/\n")
     git(root, "add", ".")
     git(root, "commit", "-m", "Initial fixture")
-    save_preferences(worktree="on", web_search="off")
+    save_preferences(worktree="on", worker_isolation="on", web_search="off")
     set_project_root(root)
     return root
 
@@ -260,14 +260,15 @@ def test_concurrent_children_same_filename_and_serial_integration_conflict(repo)
         assert not git(path, "status", "--porcelain")
 
 
+@pytest.mark.parametrize("key", ["worktree", "worker_isolation"])
 @pytest.mark.parametrize("user_setting,overlay", [("on", "off"), ("off", "on")])
-def test_active_overlay_and_live_toggle_control_default(repo, user_setting, overlay):
-    save_preferences(worktree=user_setting)
+def test_active_overlay_and_live_toggle_control_default(repo, key, user_setting, overlay):
+    save_preferences(**{key: user_setting})
     preferences = repo / ".pcode/preferences.json"
     preferences.parent.mkdir(exist_ok=True)
     agent = create_agent("test", repo)
     for setting in (overlay, user_setting, overlay):
-        preferences.write_text(json.dumps({"worktree": setting}))
+        preferences.write_text(json.dumps({key: setting}))
         result = delegate_once(agent, finished_child)
         if setting == "on":
             assert_artifact(repo, content(result))
@@ -275,10 +276,92 @@ def test_active_overlay_and_live_toggle_control_default(repo, user_setting, over
             assert content(result) == "Worker complete"
 
 
-def test_existing_linked_checkout_with_config_off_uses_shared(repo):
+@pytest.mark.parametrize("worktree", [None, "off", "on"])
+@pytest.mark.parametrize("worker_isolation", [None, "off", "on"])
+@pytest.mark.parametrize("mode", ["auto", "isolated"])
+def test_isolation_requires_both_settings(repo, worktree, worker_isolation, mode):
+    settings = {"worktree": worktree, "worker_isolation": worker_isolation}
+    update_preferences(
+        {key: value for key, value in settings.items() if value is not None},
+        remove=tuple(key for key, value in settings.items() if value is None),
+    )
+    returned = delegate_once(create_agent("test", repo), finished_child, workspace_mode=mode)
+    if worktree == worker_isolation == "on":
+        assert_artifact(repo, content(returned))
+    else:
+        if mode == "isolated":
+            assert isinstance(returned, RetryPromptPart)
+            assert "worktree=on and worker_isolation=on" in str(returned.content)
+        else:
+            assert content(returned) == "Worker complete"
+        assert not (repo / ".worktrees").exists()
+        assert not (repo / ".git/pcode-tasks").exists()
+
+
+@pytest.mark.parametrize("setting", [None, "off"])
+def test_worktree_alone_keeps_shared_edits_and_jobs_without_setup(repo, monkeypatch, setting):
+    from pcode.jobs import registry
+
+    if setting is None:
+        update_preferences({}, remove=("worker_isolation",))
+    else:
+        save_preferences(worker_isolation=setting)
+    (repo / "file.txt").write_text("parent uncommitted\n")
+    parent_jobs = registry()
+
+    async def unexpected_setup(tree):
+        pytest.fail("Disabled worker isolation must not run worktree setup")
+
+    monkeypatch.setattr("pcode.isolated_delegation._setup", unexpected_setup)
+
+    async def child(messages, info):
+        assert registry() is parent_jobs
+        if not results(messages):
+            yield call("read_file", {"path": "file.txt"})
+        elif len(results(messages)) == 1:
+            assert "parent uncommitted" in str(results(messages)[-1].content)
+            yield call("write_file", {"path": "file.txt", "content": "shared edit\n"})
+        else:
+            yield "Shared complete"
+
+    returned = delegate_once(create_agent("test", repo), child)
+    assert content(returned) == "Shared complete"
+    assert (repo / "file.txt").read_text() == "shared edit\n"
+    assert not (repo / ".worktrees").exists()
+    assert not (repo / ".git/pcode-tasks").exists()
+
+
+def test_disabling_isolation_keeps_existing_task_recovery_available(repo):
+    store = TaskWorktrees(repo)
+    record = store.create()
+    store.finish(record.task_id, "completed")
+    save_preferences(worker_isolation="off")
+    returned = []
+
+    async def model(messages, info):
+        previous = results(messages)
+        if not previous:
+            yield call("list_task_worktrees", {})
+        elif len(previous) == 1:
+            assert content(previous[-1])[0]["task_id"] == record.task_id
+            yield call("integrate_task", {"task_id": record.task_id})
+        elif len(previous) == 2:
+            assert content(previous[-1])["status"] == "integrated"
+            yield call("discard_task", {"task_id": record.task_id})
+        else:
+            returned.append(content(previous[-1]))
+            yield "Existing task recovered and cleaned"
+
+    create_agent("test", repo).run_sync("Recover task", model=FunctionModel(stream_function=model))
+    assert returned[0]["status"] == "discarded"
+    assert not Path(record.worktree).exists()
+
+
+@pytest.mark.parametrize("settings", [{"worktree": "off"}, {"worker_isolation": "off"}])
+def test_existing_linked_checkout_with_config_off_uses_shared(repo, settings):
     linked = repo.parent / "linked"
     git(repo, "worktree", "add", "-b", "session", str(linked))
-    save_preferences(worktree="off")
+    save_preferences(**settings)
     set_project_root(linked)
     returned = delegate_once(create_agent("test", linked), finished_child)
     assert content(returned) == "Worker complete"
@@ -286,8 +369,9 @@ def test_existing_linked_checkout_with_config_off_uses_shared(repo):
 
 
 @pytest.mark.parametrize("setting", ["on", "off"])
-def test_explicit_shared_allows_dirty_tracked_files(repo, setting):
-    save_preferences(worktree=setting)
+@pytest.mark.parametrize("worker_isolation", ["on", "off"])
+def test_explicit_shared_allows_dirty_tracked_files(repo, setting, worker_isolation):
+    save_preferences(worktree=setting, worker_isolation=worker_isolation)
     (repo / "file.txt").write_text("parent uncommitted\n")
 
     async def child(messages, info):
@@ -302,12 +386,19 @@ def test_explicit_shared_allows_dirty_tracked_files(repo, setting):
     assert TaskWorktrees(repo).list() == []
 
 
-@pytest.mark.parametrize("failure", ["config_off", "dirty", "no_git"])
+@pytest.mark.parametrize("failure", ["config_off", "worker_isolation_off", "dirty", "no_git"])
 def test_rejected_isolation_is_actionable_and_never_starts_child(repo, tmp_path, failure):
     workspace = repo
-    expected = {"config_off": "worktree=on", "dirty": "commit", "no_git": "git"}[failure]
+    expected = {
+        "config_off": "worktree=on",
+        "worker_isolation_off": "worker_isolation=on",
+        "dirty": "commit",
+        "no_git": "git",
+    }[failure]
     if failure == "config_off":
         save_preferences(worktree="off")
+    elif failure == "worker_isolation_off":
+        save_preferences(worker_isolation="off")
     elif failure == "dirty":
         (repo / "file.txt").write_text("dirty\n")
     else:

@@ -39,14 +39,30 @@ the worker's tools.
 
 ### Worker worktrees
 
+Worker isolation is **opt-in**: `worker_isolation` defaults to `off`. Enabling
+`worktree` alone still creates session worktrees, but workers keep sharing their
+parent's live workspace, including uncommitted files, just as before.
+
+To opt in for this workspace:
+
+```sh
+pcode config project set worktree on
+pcode config project set worker_isolation on
+```
+
 `delegate_task` accepts `workspace_mode="auto"` (the default), `"isolated"`, or
-`"shared"`. **Auto follows the active workspace's effective `worktree` setting**:
-`on` isolates built-in workers, and `off` shares the parent's live files. A linked
-session checkout alone does not enable isolation. The setting is checked at each
-delegation; the CLI's one-launch `--worktree` override does not change this saved
-preference. Explicit `isolated` is rejected while the setting is off. Explicit
-`shared` is always available, including for investigations of uncommitted files.
-Shared mode is not read-only; coordinate concurrent edits and Git commands.
+`"shared"`. Auto isolates built-in workers only when **both `worktree=on` and
+`worker_isolation=on`** are effective for the active workspace; otherwise it uses
+shared mode. Both preferences are checked at each delegation, so no reload is
+needed for this gate. A linked session checkout or the CLI's one-launch
+`--worktree` override does not enable worker isolation. Explicit `isolated` is
+rejected unless both settings are on; a tool argument cannot bypass the opt-in.
+Explicit `shared` is always available, including for investigations of uncommitted
+files. Shared mode is not read-only; coordinate concurrent edits and Git commands.
+
+Turning `worker_isolation` off stops new isolated delegations. It does not remove
+existing task worktrees: their management tools and cleanup protections remain
+available so outstanding results can still be integrated or explicitly discarded.
 
 For isolated editing:
 

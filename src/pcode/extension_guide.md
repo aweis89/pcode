@@ -166,10 +166,12 @@ Without an explicit `usage_limits` the delegate gets its own request budget, so
 a long delegation cannot exhaust the turn. Overriding it with `None` shares the
 parent's counter, where the library's 50-request default aborts the run.
 
-The built-in worker follows the active workspace's `worktree` preference. With
-`worktree=on`, its default delegation creates an isolated checkout; `shared`
-remains an explicit opt-in. Specialized delegates registered here remain shared,
-and cannot request isolated mode because pcode cannot reconstruct their tools.
+The built-in worker shares the parent's workspace by default. Isolated delegation
+requires both `worktree=on` and `worker_isolation=on` in the active workspace's
+effective preferences; `worker_isolation` defaults to `off`. With both on, default
+delegation creates an isolated checkout, while explicit `shared` remains available.
+Specialized delegates registered here remain shared and cannot request isolated
+mode because pcode cannot reconstruct their tools.
 
 For isolated workers, pcode re-runs each successfully loaded extension's `setup`
 with the child's `pcode.workspace` and `pcode.is_worker=True` (false for the

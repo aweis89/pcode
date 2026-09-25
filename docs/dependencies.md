@@ -160,9 +160,13 @@ with real filesystem tools on both main and worker agents when upgrading.
 ### Delegation activity
 
 `WorkspaceSubAgents` in `src/pcode/isolated_delegation.py` subclasses the pinned
-Harness `SubAgents` and `SubAgentToolset`. It changes the tool schema and constructs
-a per-call worker for isolated workspaces, but reuses `_run_delegation` and
-`_settle` for model selection, budgets, lifecycle events, and usage accounting.
+Harness `SubAgents` and `SubAgentToolset`. New isolated workers require both effective
+`worker_isolation=on` (default off) and `worktree=on`, checked at each delegation;
+otherwise auto delegation keeps the shared workspace and job registry. Task recovery
+and lifecycle protections remain available when isolation is disabled. It changes
+the tool schema and constructs a per-call worker for isolated workspaces, but reuses
+`_run_delegation` and `_settle` for model selection, budgets, lifecycle events, and
+usage accounting.
 These are private upstream interfaces: keep the isolated delegation, limits,
 cache, and persistence tests when upgrading. A shared toolset must not mutate its
 agent roster for a child; concurrent calls select independent worker instances.
