@@ -197,7 +197,9 @@ turns it off; the model then hears at your next message instead.
 
 While a job runs with nothing waiting on it, a row under the spinner (or under
 the editor, while idle) shows it: `⟳ j3 · running the e2e suite · 1m42s`. The
-row disappears when the job finishes, including failures. Its completion goes
+row disappears when the job finishes, including failures. While the model
+waits on a job, the wait's own row names it instead, with the job's purpose and
+command: `⧗ Wait · 45.2s · j3 · running the e2e suite · make e2e`. Its completion goes
 to scrollback at the end of the turn, or immediately while idle, using the
 normal `Run` presentation with a `background` label, job id, and elapsed time.
 The same `show_commands` and `tool_error_scrollback` settings control captured

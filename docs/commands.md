@@ -106,6 +106,10 @@ candidate's size so that cost is visible before you pick.
   when it is ready (`btw_auto_open`); a bare `/btw` opens the answers at any time.
   `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks on other models instead, one
   side question per model ([choosing the model](side-questions.md#choosing-the-model)).
+- `/workers`: follow delegated workers in a popup, live and read-only: each worker's
+  assignment, plan, prose and tool calls, which the transcript only summarizes under its
+  delegate row. Works while the turn runs. `T` shows or hides reasoning. Workers are kept in
+  memory for the session, so a resumed session starts with none.
 - `/skill:NAME [text]`: run a discovered skill; see
   [Skills as slash commands](workspace.md#skills-as-slash-commands) for naming and configuration.
 - `/quit` (alias `/exit`): exit.

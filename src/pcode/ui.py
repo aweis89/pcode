@@ -69,6 +69,7 @@ from pcode.tool_panel import TASK_ROWS, ToolHistory, panel_fragments, task_panel
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
+from pcode.workers import Workers
 
 
 @dataclass(frozen=True)
@@ -332,6 +333,7 @@ class Activity:
     plan: list[dict] = field(default_factory=list)
     plan_preview: list[dict] | None = None
     tools: ToolHistory = field(default_factory=ToolHistory)
+    workers: Workers = field(default_factory=Workers)
     command_outputs: dict[str, CommandOutput] = field(default_factory=dict)
     edit_previews: dict = field(default_factory=dict)
     notice: str = ""
@@ -418,6 +420,7 @@ class Activity:
         self.plan = []
         self.plan_preview = None
         self.tools.clear()
+        self.workers = Workers()
         self.prompt = ""
         self.prompt_state = ""
         self.prompt_kind = "user"
