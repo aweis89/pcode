@@ -41,6 +41,7 @@ def test_defaults_and_path_do_not_create_files():
         "extensions_off": "",
         "extensions_on": "",
         "worktree": "off",
+        "worker_isolation": "off",
         "worker_concurrency": "0",
         "worktree_exit": "ask",
         "retry_attempts": "1",
@@ -90,6 +91,8 @@ def test_defaults_and_path_do_not_create_files():
     [
         ("repo_context_walk_up", "on"),
         ("repo_context_walk_up", "off"),
+        ("worker_isolation", "on"),
+        ("worker_isolation", "off"),
         ("repo_context_nested", "off"),
         ("repo_context_nested", "pointer"),
         ("repo_context_nested", "contents"),
@@ -338,6 +341,7 @@ def test_shortcut_corrupt_config_keeps_active_selection():
         ("/config set repo_context_walk_up o", "set repo_context_walk_up off"),
         ("/config set repo_context_nested p", "set repo_context_nested pointer"),
         ("/config set repo_context_nested c", "set repo_context_nested contents"),
+        ("/config set worker_isolation o", "set worker_isolation on"),
     ],
 )
 def test_config_completion(prefix, expected):

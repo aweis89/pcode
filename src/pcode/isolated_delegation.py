@@ -26,8 +26,12 @@ _outcome: ContextVar[str | None] = ContextVar("isolated_delegation_outcome", def
 
 
 def isolation_enabled() -> bool:
-    """Use the active workspace's preference overlay, not cwd or linked-tree state."""
-    return load_preferences().get("worktree", SETTINGS["worktree"].default) == "on"
+    """Require explicit worker opt-in as well as the active worktree preference."""
+    preferences = load_preferences()
+    return all(
+        preferences.get(key, SETTINGS[key].default) == "on"
+        for key in ("worktree", "worker_isolation")
+    )
 
 
 async def _joined(task):
@@ -146,8 +150,9 @@ class WorkspaceSubAgents(SubAgents):
 
     def get_instructions(self):
         return (super().get_instructions() or "") + (
-            "\nWorker workspace_mode defaults to auto: isolated when the active workspace's "
-            "worktree setting is on, shared otherwise. Isolation requires a clean tracked "
+            "\nWorker workspace_mode defaults to auto: shared unless both worktree=on and "
+            "worker_isolation=on in the active workspace's config. worker_isolation defaults "
+            "to off; worktree alone never isolates workers. Isolation requires a clean tracked "
             "parent checkout; commit a checkpoint first, never stash or silently switch modes. "
             "Use shared explicitly for work that needs the live parent files; coordinate writes. "
             "Specialized delegates retain their own tools and use shared mode. "
@@ -179,11 +184,11 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
     ) -> Any:
         """Delegate a self-contained task; the child does not see this conversation.
 
-        auto follows the active workspace's worktree setting for the built-in
-        worker. isolated creates a branch at the parent's HEAD and returns a
-        persistent task record; it requires worktree=on and clean tracked files.
-        shared uses the parent's live files (not read-only). Specialized agents
-        only support shared mode. Review isolated results before integrate_task.
+        auto shares the parent's live files unless both worktree=on and
+        worker_isolation=on in the active config. isolated requires both settings
+        and clean tracked files, creates a branch at the parent's HEAD, and returns
+        a persistent task record. shared is not read-only. Specialized agents only
+        support shared mode. Review isolated results before integrate_task.
         """
         if agent_name == "worker" and self.worker_slots is not None:
             async with self.worker_slots:
@@ -197,7 +202,10 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         if not isolated:
             return await super().delegate_task(ctx, agent_name, task, model)
         if not isolation_enabled():
-            raise ModelRetry("Isolated delegation requires worktree=on in the active config.")
+            raise ModelRetry(
+                "Isolated delegation requires both worktree=on and worker_isolation=on "
+                "in the active config. Use shared mode without worker isolation."
+            )
         if agent_name != "worker":
             raise ModelRetry("Only the built-in worker supports isolated workspaces; use shared.")
         key = self._resolve_model_key(agent_name, self._agents[agent_name], model)

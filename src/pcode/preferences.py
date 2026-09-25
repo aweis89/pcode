@@ -182,7 +182,12 @@ SETTINGS = {
     "worktree": Setting(
         "off",
         ("on", "off"),
-        description="Isolate new sessions and worker tasks in .worktrees/ git worktrees",
+        description="Start each session in its own .worktrees/<session> git worktree",
+    ),
+    "worker_isolation": Setting(
+        "off",
+        ("on", "off"),
+        description="Isolate built-in worker tasks in git worktrees (requires worktree=on)",
     ),
     "worker_concurrency": Setting(
         "0",

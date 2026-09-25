@@ -173,11 +173,13 @@ reason it was kept, so the command cannot lose work. It runs from the mainline
 checkout too (`make worktree-clean`), which is usually where the pile is
 visible. A worktree someone locked with `git worktree lock` is skipped.
 
-The effective `worktree=on` preference also isolates built-in worker delegations.
-These use `task-<id>` branches starting at the parent session's current commit,
-not mainline. `/worktree list` shows their owner and status. Pending tasks and
-parents owning pending tasks are protected from generic removal/finish; task
-results must first be integrated into their parent or explicitly discarded.
+Worker delegation remains shared by default, even with `worktree=on`. To opt in
+to isolated workers, also set `worker_isolation=on` (it defaults to `off`). Both
+preferences must be on. Isolated tasks use `task-<id>` branches starting at the
+parent session's current commit, not mainline. `/worktree list` shows their owner
+and status. Pending tasks and parents owning pending tasks are protected from
+generic removal/finish; task results must first be integrated into their parent
+or explicitly discarded.
 Clean integrated task checkouts can be swept relative to the parent's history,
 even before that parent merges into mainline. Failed task setup preserves the
 checkout for inspection rather than applying the session-launch removal rule.
