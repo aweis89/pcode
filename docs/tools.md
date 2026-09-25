@@ -28,7 +28,8 @@ tools can access.
 
 Use `delegate_task` with `agent_name="worker"` and a self-contained task. Each has
 fresh conversation context and its own plan; the parent's conversation is not
-copied. Recursive delegation is disabled. Each task retains a separate
+copied. An optional `purpose` of a few words labels the delegation in the task
+widget and scrollback; the sub-agent never sees it. Recursive delegation is disabled. Each task retains a separate
 120-request budget and a 15-minute execution timeout. There is **no concurrency
 cap by default** (`worker_concurrency=0`). Set a positive `worker_concurrency` to
 limit built-in workers per session, then `/reload` to apply it. When a cap is set,

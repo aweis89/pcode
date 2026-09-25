@@ -13,10 +13,6 @@ DELEGATE = "delegate_task"
 # Marks a row as a sub-agent rather than a tool. One terminal cell wide in
 # common fonts, unlike emoji, so the panel's width math still holds.
 AGENT_ICON = "✦"
-# A sub-agent's quick tools (a read, a grep) settle in milliseconds. Dropping
-# their row the instant the result lands makes it flash unreadably and reflows
-# the prompt, so a settled child row lingers long enough to be read.
-CHILD_DWELL = 0.8
 # The status row has the same problem, worse: a command that finishes in
 # milliseconds appears and vanishes before it can be read, and the row snaps
 # back to "Working…". The finished call keeps the row until it has been up this
@@ -69,15 +65,6 @@ class ToolCall:
         """A settled delegate stays listed, with its plan, like a completed task."""
         return self.event.name == DELEGATE and self.settled is not None
 
-    @property
-    def expired(self) -> bool:
-        """A settled row has said its piece and no longer belongs on screen."""
-        return (
-            self.settled is not None
-            and not self.finished_delegate
-            and monotonic() - self.settled >= CHILD_DWELL
-        )
-
     def line(self) -> str:
         """The call without a status icon; each surface supplies its own."""
         event = self.event
@@ -119,7 +106,8 @@ class ToolHistory:
     """Calls still in flight, oldest first. A result removes its call.
 
     Delegates are the exception: a finished one stays, with its plan, until
-    the next turn starts, the way the parent's completed tasks stay listed.
+    the parent moves to another task or the next turn starts, the way the
+    parent's completed tasks stay listed.
     """
 
     calls: list[ToolCall] = field(default_factory=list)
@@ -137,7 +125,6 @@ class ToolHistory:
         # live view regardless of whether they need a scrollback entry.
         if event.name in PLAN_TOOLS:
             return
-        self.prune()
         existing = next(
             (c for c in self.calls if event.call_id and c.event.call_id == event.call_id), None
         )
@@ -145,38 +132,23 @@ class ToolHistory:
             if existing is None:
                 return
             existing.failed = event.failed
+            existing.settled = monotonic()
+            self.recent = existing
             if existing.event.name == DELEGATE:
                 # Its own calls are done; the delegate and its plan stay listed.
-                existing.settled = monotonic()
-                self.recent = existing
                 self.calls = [
                     c for c in self.calls if c.event.parent_call_id != existing.event.call_id
                 ]
-                return
-            # A child's row is the only trace of the sub-agent's step, so let it
-            # dwell; anything else leaves as soon as it settles.
-            if existing.event.parent_call_id and existing.settled is None:
-                existing.settled = monotonic()
             else:
-                existing.settled = monotonic()
-                self.recent = existing
-                self._drop(existing)
+                # A sub-agent's calls leave the way the parent's do: scrollback
+                # keeps them under their delegate. Held here instead, a row
+                # would appear only once its call had finished, then vanish.
+                self.calls.remove(existing)
         elif existing is not None:
             # A restated start carries fresh progress, not a new invocation.
             existing.event = event
         else:
             self.calls.append(ToolCall(event))
-
-    def _drop(self, call: ToolCall) -> None:
-        """A settled call leaves, and takes any child row still waiting out its dwell."""
-        self.plans.pop(call.event.call_id, None)
-        self.calls = [
-            c for c in self.calls if c is not call and c.event.parent_call_id != call.event.call_id
-        ]
-
-    def prune(self) -> None:
-        """Forget dwelt-out rows, so the animation loop can stop once nothing runs."""
-        self.calls = [c for c in self.calls if not c.expired]
 
     def clear(self) -> None:
         self.calls.clear()
@@ -185,20 +157,27 @@ class ToolHistory:
 
     def end_turn(self) -> None:
         """Drop whatever the turn left running; finished delegates stay listed."""
-        self.calls = [c for c in self.calls if c.finished_delegate]
+        self._keep(lambda c: c.finished_delegate)
+        self.recent = None
+
+    def retire_finished(self) -> None:
+        """The parent moved to another task, so finished delegates leave.
+
+        Every row hangs under the task active now, so a delegate that finished
+        under an earlier one would otherwise read as part of the new one.
+        """
+        self._keep(lambda c: not c.finished_delegate)
+
+    def _keep(self, keep) -> None:
+        """Keep only the calls `keep` accepts, and the plans of those still here."""
+        self.calls = [c for c in self.calls if keep(c)]
         kept = {c.event.call_id for c in self.calls}
         self.plans = {k: v for k, v in self.plans.items() if k in kept}
-        self.recent = None
 
     @property
     def animating(self) -> bool:
-        """Something on the panel still ticks or has a dwell to wait out."""
+        """Something on the panel still ticks; a finished delegate's row is frozen."""
         return any(not c.finished_delegate for c in self.calls)
-
-    @property
-    def visible(self) -> list[ToolCall]:
-        """Calls worth a row: in flight, or settled within the dwell window."""
-        return [c for c in self.calls if not c.expired]
 
     @property
     def active(self) -> ToolCall | None:
@@ -208,7 +187,7 @@ class ToolHistory:
         long as its dwell lasts. Anything that starts meanwhile wins the row:
         holding a stale line over live work would be the worse lie.
         """
-        running = next((c for c in reversed(self.visible) if c.settled is None), None)
+        running = next((c for c in reversed(self.calls) if c.settled is None), None)
         if running is not None:
             return running
         held = self.recent
@@ -221,7 +200,7 @@ class ToolHistory:
     def background(self) -> list[ToolCall]:
         """Everything the status row does not already show."""
         active = self.active
-        return [c for c in self.visible if c is not active]
+        return [c for c in self.calls if c is not active]
 
     def _delegates(self) -> list[ToolCall]:
         """Delegates that get a panel row.
@@ -234,7 +213,7 @@ class ToolHistory:
         active = self.active
         return [
             c
-            for c in self.visible
+            for c in self.calls
             if c.event.name == DELEGATE
             and (c.settled is not None or c is not active or self.plans.get(c.event.call_id))
         ]
@@ -298,10 +277,21 @@ class ToolHistory:
 
 
 def _call_row(call: ToolCall) -> tuple[str, str]:
-    done = call.settled is not None
-    style = "class:plan" if done else "class:plan.active"
-    icon = PLAN_ICONS["blocked"] if call.failed else "✓" if done else "⟳"
-    return style, f"{icon} {call.line()}"
+    """A running call's row, or a delegate's in either state.
+
+    A delegate's `✦` stands in for the status icon, and it has a colour of
+    its own while it runs: with a task's icon in front, a sub-agent would read
+    as one of the parent's tasks, and as a child of whichever task names it.
+    Nothing else settles here, since a finished call leaves the panel.
+    """
+    if call.event.name == DELEGATE:
+        return ("class:plan" if call.settled is not None else "class:plan.agent"), call.line()
+    return "class:plan.active", f"⟳ {call.line()}"
+
+
+def active_step(items: list[dict]) -> str | None:
+    """The id of the task in progress, or None between tasks."""
+    return next((item.get("id") for item in items if item.get("status") == "in_progress"), None)
 
 
 def plan_window(items: list[dict], count: int) -> tuple[range, int | None]:
@@ -332,11 +322,7 @@ def task_panel_rows(
     running alongside it: delegates (with their own plans) and other parallel
     calls. Keep at least one task visible, even on short panes, and never add
     headers or empty rows.
-
-    Rendering is also when dwelt-out rows are forgotten, so the animation loop
-    stops once the last settled row has left.
     """
-    tools.prune()
     if budget <= 0:
         return []
     tool_count = min(TOOL_ROWS + tools.plan_rows(), tools.wanted(), max(0, budget - bool(items)))

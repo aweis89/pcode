@@ -127,9 +127,9 @@ widget without stopping work or clearing task/tool history. The current prompt
 and queue remain visible. Visibility is saved across launches (default: on);
 use `pcode config set show_tasks off` to set the default from the shell.
 
-Delegated sub-agents are listed in the widget like tasks. A finished delegate
-stays with a ✓ (or `!` if it failed), along with its own task list, until the
-next turn starts.
+Delegated sub-agents are listed in the widget beneath your active task. A
+finished delegate stays, reading `Done` (or `Failed`), along with its own task
+list, until you move to another task or the next turn starts.
 
 `/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
 as soon as the model finishes a turn, keeping the idle prompt compact; it
@@ -251,13 +251,15 @@ A running `delegate_task` keeps its own row, and a sub-agent that plans shows up
 to three of its tasks indented beneath it, centred on its active task, with its
 current tool calls nested under that task the same way. The sub-agent's plan is
 separate from yours: it is never saved and never merged into your plan. A
-finished delegate stays listed with its plan until the next turn starts. The
-built-in worker always plans this way; an extension's delegate opts in by giving
+finished delegate stays listed with its plan until your active task changes or
+the next turn starts. The built-in worker always plans this way; an extension's delegate opts in by giving
 its agent `IdentifiedPlanning()` from `pcode.planning` (see "Sub-agents" in
 `src/pcode/extension_guide.md`).
 
-A delegate's row is marked `✦` and reads agent, elapsed time, phase, then its
-assignment. While it runs, the phase is `Waiting for model`, `Thinking`,
+A delegate's row starts with `✦` instead of a status icon, and has its own colour
+while it runs, so it never reads as one of your tasks. It reads agent, elapsed
+time, phase, then the purpose the model gave `delegate_task` (or, without one,
+the opening of its assignment). While it runs, the phase is `Waiting for model`, `Thinking`,
 `Working` (one of its tools is running), or `Responding` (writing its answer);
 once it settles, the phase becomes `Done` or `Failed`.
 
