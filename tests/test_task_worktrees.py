@@ -87,6 +87,108 @@ def test_integration_targets_parent_not_mainline(repo):
     assert not child(record).exists()
 
 
+@pytest.mark.parametrize("options", ["--squash", "--no-ff --no-commit"])
+@pytest.mark.parametrize("diverged", [False, True])
+def test_integration_overrides_parent_merge_options(repo, options, diverged):
+    manager = TaskWorktrees(repo)
+    record = manager.create()
+    commit(child(record), "result")
+    manager.finish(record.task_id, "completed")
+    if diverged:
+        commit(repo, "parent-result")
+    git(repo, "config", "branch.main.mergeOptions", options)
+    assert manager.integrate(record.task_id).status == "integrated"
+    git(repo, "merge-base", "--is-ancestor", git(child(record), "rev-parse", "HEAD"), "HEAD")
+    assert git(repo, "status", "--porcelain") == ""
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+
+
+@pytest.mark.parametrize("result", ["noop", "squash", "uncommitted"])
+def test_integration_checks_successful_merge_postconditions(repo, monkeypatch, result):
+    from subprocess import CompletedProcess
+
+    manager = TaskWorktrees(repo)
+    record = manager.create()
+    commit(child(record), "result")
+    manager.finish(record.task_id, "completed")
+    original = worktree._git
+
+    def incomplete(path, *args, **kwargs):
+        if args[0] == "merge":
+            if result == "noop":
+                return CompletedProcess(args, 0, "", "")
+            flags = ["--squash"] if result == "squash" else ["--no-ff", "--no-commit"]
+            return original(path, "merge", *flags, record.branch, **kwargs)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(worktree, "_git", incomplete)
+    with pytest.raises(worktree.WorktreeError, match="integration is incomplete"):
+        manager.integrate(record.task_id)
+    assert manager.get(record.task_id).status == "conflicted"
+    assert child(record).exists()
+
+
+def test_bare_repository_metadata_and_task_lifecycle(repo, tmp_path):
+    bare = (tmp_path / "bare.git").resolve()
+    git(repo, "clone", "--bare", str(repo), str(bare))
+    git(bare, "config", "user.email", "t@example.com")
+    git(bare, "config", "user.name", "t")
+    parent = worktree.create(bare, "parent")
+    assert str(parent.path) in worktree.listing(bare)
+    assert str(parent.path) in worktree.listing(parent.path)
+    ordinary = worktree.create(bare, "ordinary")
+    worktree.remove(ordinary)
+    assert not ordinary.path.exists()
+    manager = TaskWorktrees(parent.path)
+    record = manager.create()
+    commit(child(record), "result")
+    manager.finish(record.task_id, "completed")
+    assert "awaiting integration" in worktree.listing(bare)
+    manager.integrate(record.task_id)
+    # Metadata and locking must not depend on the owning checkout surviving.
+    worktree.remove(parent)
+    worktree.remove(worktree.Worktree(child(record), record.branch, bare))
+    assert manager.get(record.task_id).status == "discarded"
+    assert not child(record).exists()
+
+
+def test_task_creation_still_requires_checkout_root(repo):
+    nested = repo / "nested"
+    nested.mkdir()
+    with pytest.raises(worktree.WorktreeError, match="checkout root"):
+        TaskWorktrees(nested).create()
+
+
+@pytest.mark.parametrize("integrated", [False, True])
+def test_moved_tasks_are_protected_from_generic_lifecycle(repo, tmp_path, integrated):
+    parent = worktree.create(repo, "parent")
+    manager = TaskWorktrees(parent.path)
+    record = manager.create()
+    commit(child(record), "result")
+    manager.finish(record.task_id, "completed")
+    if integrated:
+        manager.integrate(record.task_id)
+    moved = (tmp_path / "moved task").resolve()
+    git(repo, "worktree", "move", record.worktree, str(moved))
+    tree = next(tree for tree in worktree.linked_worktrees(repo) if tree.path == moved)
+    main_head = git(repo, "rev-parse", "HEAD")
+    for operation in (worktree.merge, worktree.remove, worktree.finish):
+        with pytest.raises(worktree.WorktreeError, match="restore it with git worktree move"):
+            operation(tree)
+    assert "restore it with git worktree move" in worktree.keep_reason(tree)
+    ordinary = worktree.create(repo, "ordinary")
+    messages = worktree.clean(repo, keep=parent.path)
+    assert any("restore it with git worktree move" in message for message in messages)
+    assert not ordinary.path.exists()  # a moved task must not abort the sweep
+    assert moved.exists()
+    assert git(repo, "rev-parse", "HEAD") == main_head
+    assert git(repo, "rev-parse", record.branch) == git(moved, "rev-parse", "HEAD")
+    git(repo, "worktree", "move", str(moved), record.worktree)
+    manager.integrate(record.task_id)
+    worktree.finish(worktree.Worktree(child(record), record.branch, repo))
+    assert not child(record).exists()
+
+
 def test_noop_integration(repo):
     manager = TaskWorktrees(repo)
     record = manager.create()

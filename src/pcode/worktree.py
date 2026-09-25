@@ -253,11 +253,13 @@ def merge(worktree: Worktree) -> str:
 
 def _merge(worktree: Worktree) -> str:
     """Merge with the source parent operation lock already held."""
-    from pcode.task_worktrees import children_reason, task_for
+    from pcode.task_worktrees import children_reason, moved_reason, task_for
 
     if reason := children_reason(worktree.path):
         raise WorktreeError(f"not merging {worktree.path}: {reason}")
     if record := task_for(worktree):
+        if reason := moved_reason(worktree, record):
+            raise WorktreeError(reason)
         raise WorktreeError(
             f"task {record.task_id} belongs to parent {record.parent}; "
             "use task integration, not a mainline merge"
@@ -294,9 +296,11 @@ def remove(worktree: Worktree, force: bool = False) -> str:
     `force` is for a worktree pcode itself just created and abandoned; user
     work is never forced because another session may still be in there.
     """
-    from pcode.task_worktrees import discard_integrated, parent_operation, task_for
+    from pcode.task_worktrees import discard_integrated, moved_reason, parent_operation, task_for
 
     if record := task_for(worktree):
+        if reason := moved_reason(worktree, record):
+            raise WorktreeError(reason)
         # Task discard locks its owner and then its own potential children.
         # Do not hold the child lock here: flock is not reentrant.
         if record.status != "integrated":

@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -89,9 +90,8 @@ class TaskWorktrees:
         self.main = wt.main_checkout(self.parent)
         if self.main is None:
             raise wt.WorktreeError(f"{self.parent} is not a Git checkout")
-        root = Path(wt._git(self.parent, "rev-parse", "--show-toplevel").stdout.strip()).resolve()
-        if root != self.parent:
-            raise wt.WorktreeError(f"Use the checkout root {root} as the task parent")
+        # Metadata and locks also serve bare repositories and removed parents.
+        # Only create() requires a live checkout root.
         common = wt._git(self.parent, "rev-parse", "--path-format=absolute", "--git-common-dir")
         self.directory = Path(common.stdout.strip()) / "pcode-tasks"
         self.directory.mkdir(exist_ok=True)
@@ -305,7 +305,15 @@ class TaskWorktrees:
                     "Parent no longer descends from the task base; restore its history"
                 )
             if not _ancestor(self.parent, record.head_commit, "HEAD"):
-                result = wt._git(self.parent, "merge", "--no-edit", record.head_commit, check=False)
+                result = wt._git(
+                    self.parent,
+                    "merge",
+                    "--no-squash",
+                    "--commit",
+                    "--no-edit",
+                    record.head_commit,
+                    check=False,
+                )
                 if result.returncode:
                     record.status = "conflicted"
                     self._save(record)
@@ -314,6 +322,22 @@ class TaskWorktrees:
                         f"{(result.stderr or result.stdout).strip()}. Resolve and commit there, "
                         "then retry integration; the child is preserved."
                     )
+            # Exit zero alone also describes a squash or an uncommitted merge.
+            # Never publish integration until Git is idle and HEAD contains the result.
+            try:
+                _idle(self.parent)
+                if _dirty(self.parent) or not _ancestor(self.parent, record.head_commit, "HEAD"):
+                    raise wt.WorktreeError(
+                        "Parent HEAD does not contain a clean committed task result"
+                    )
+            except wt.WorktreeError as error:
+                record.status = "conflicted"
+                self._save(record)
+                raise wt.WorktreeError(
+                    f"Task integration is incomplete in parent {self.parent}: {error}. "
+                    "Finish or abort the merge there, then retry integration; "
+                    "the child is preserved."
+                ) from error
             record.status, record.dirty = "integrated", False
             self._save(record)
             return record
@@ -404,10 +428,21 @@ def task_for(tree: wt.Worktree) -> TaskRecord | None:
         (
             record
             for record in records(tree.main)
-            if record.worktree == str(tree.path.resolve()) and record.status != "discarded"
+            if (record.worktree == str(tree.path.resolve()) or record.branch == tree.branch)
+            and record.status != "discarded"
         ),
         None,
     )
+
+
+def moved_reason(tree: wt.Worktree, record: TaskRecord) -> str:
+    if record.worktree != str(tree.path.resolve()):
+        return (
+            f"task {record.task_id} moved to {tree.path}; restore it with "
+            f"git worktree move {shlex.quote(str(tree.path))} {shlex.quote(record.worktree)} "
+            "before task integration or removal"
+        )
+    return ""
 
 
 def children_reason(parent: Path) -> str:
@@ -430,6 +465,8 @@ def keep_reason(tree: wt.Worktree) -> str | None:
     record = task_for(tree)
     if record is None:
         return None
+    if reason := moved_reason(tree, record):
+        return reason
     if record.status != "integrated":
         return f"task {record.task_id} ({record.status}), awaiting integration or explicit discard"
     try:

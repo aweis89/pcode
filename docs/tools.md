@@ -72,9 +72,10 @@ the child checkout. Extension setup runs again with the child's workspace, and
 its close hooks run when the child ends. Extensions can distinguish worker setup
 with `pcode.is_worker`; shared session resources such as the browser remain owned
 by the parent. Enabled runtime MCP tools remain shared services; they are not
-worktree sandboxes. Isolated workers have a separate job
-registry, and remaining child shell jobs are terminated before recording the
-result. Worktrees do not isolate ports, databases, credentials, or OS permissions.
+worktree sandboxes. Isolated workers have a separate job registry. Job-completion
+notices go to that worker at its next model request, not to the parent or other
+workers. Remaining child shell jobs are terminated before recording the result.
+Worktrees do not isolate ports, databases, credentials, or OS permissions.
 
 The tool returns a persistent artifact containing `task_id`, parent path and
 branch, base and result commits, child branch and path, observed dirty state,
@@ -91,9 +92,11 @@ The parent alone has these management tools:
 - `integrate_task(task_id)` merges a completed result into its recorded **parent
   branch**, never directly into mainline. Both checkouts must be clean, including
   untracked files, and the worker's branch and commit must still match its result.
-  A per-parent lock prevents overlapping lifecycle operations. Conflicts remain
-  in the parent: resolve them, commit, then retry integration. Review the diff
-  before integration and run combined checks afterward.
+  A per-parent lock prevents overlapping lifecycle operations. Integration overrides
+  squash/no-commit merge options and verifies the result is committed in the parent
+  before reporting success. Conflicts remain in the parent: resolve them, commit,
+  then retry integration. Review the diff before integration and run combined
+  checks afterward.
 - `discard_task(task_id, confirm=False)` removes an inactive task's checkout and
   branch. Unintegrated or dirty work requires `confirm=True`, which the agent is
   instructed to use only after explicit user approval. Running tasks cannot be
@@ -103,7 +106,9 @@ The parent alone has these management tools:
 `/worktree clean` preserves active and unfinished tasks and their parent checkouts. Clean,
 successfully integrated children can be cleaned against their parent's history;
 mainline need not contain the result yet. Generic worktree merge commands refuse
-task branches, so a child cannot accidentally be integrated into mainline.
+task branches, so a child cannot accidentally be integrated into mainline. Moving
+a task checkout is unsupported: generic lifecycle commands preserve it and explain
+how to restore its recorded path before integration or cleanup.
 
 Specialized extension delegates retain shared-workspace semantics even when
 `worktree=on`; explicit isolation is only supported for the built-in worker.

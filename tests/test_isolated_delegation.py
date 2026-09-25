@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
+from pydantic_ai.messages import RetryPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness.subagents import SubAgent
 
@@ -501,6 +501,77 @@ def test_isolated_shell_jobs_are_child_owned_and_cleaned_before_return(repo):
         assert parent_job.id in parent_registry.jobs
     finally:
         parent_registry.reset()
+
+
+@pytest.mark.parametrize("exit_code", [0, 17])
+def test_isolated_job_notices_reach_only_the_worker_once(repo, exit_code):
+    from pcode.job_notices import JobNotices
+    from pcode.jobs import registry
+
+    parent_jobs = registry()
+    parent_job = parent_jobs.launch("printf 'PARENT_OUTPUT'; exit 23", cwd=repo, background=True)
+    returned = []
+    child_notices = []
+    parent_notices = []
+    child_jobs = None
+
+    def notices(messages):
+        return [
+            str(part.content)
+            for message in messages
+            for part in message.parts
+            if isinstance(part, UserPromptPart) and str(part.content).startswith("[j1]")
+        ]
+
+    async def model(messages, info):
+        nonlocal child_jobs
+        if "delegate_task" in {tool.name for tool in info.function_tools}:
+            if not results(messages):
+                yield call("delegate_task", {"agent_name": "worker", "task": "Run a check"})
+            else:
+                returned.append(content(results(messages)[-1]))
+                parent_notices.extend(notices(messages))
+                yield "Parent complete"
+        elif not results(messages):
+            child_jobs = registry()
+            assert child_jobs is not parent_jobs
+            yield call(
+                "shell",
+                {"command": f"printf 'CHILD_OUTPUT'; exit {exit_code}", "background": True},
+            )
+        elif len(results(messages)) == 1:
+            # Let real processes finish during independent work, not via a model poll.
+            def finished():
+                parent_jobs.refresh()
+                child_jobs.refresh()
+                return not parent_job.running and not child_jobs.get("j1").running
+
+            await wait_until(finished)
+            yield call("read_file", {"path": "file.txt"})
+        elif len(results(messages)) == 2:
+            child_notices.extend(notices(messages))
+            yield call("read_file", {"path": "AGENTS.md"})
+        else:
+            # A further request must not duplicate a notice already delivered.
+            assert notices(messages) == child_notices
+            yield "Worker complete"
+
+    create_agent("test", repo).run_sync(
+        "Delegate",
+        model=FunctionModel(stream_function=model),
+        capabilities=[JobNotices(parent_jobs)],
+    )
+    assert len(returned) == 1
+    assert_artifact(repo, returned[0])
+    assert len(child_notices) == 1
+    assert f"exit {exit_code}" in child_notices[0]
+    assert "CHILD_OUTPUT" in child_notices[0]
+    assert "PARENT_OUTPUT" not in child_notices[0]
+    assert len(parent_notices) == 1
+    assert "exit 23" in parent_notices[0] and "PARENT_OUTPUT" in parent_notices[0]
+    assert "CHILD_OUTPUT" not in parent_notices[0]
+    assert "model" in parent_job.announced
+    assert child_jobs.jobs == {}
 
 
 def test_extension_setup_body_and_close_share_child_job_registry(repo):
