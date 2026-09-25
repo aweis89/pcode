@@ -48,13 +48,24 @@ never throws away the side question as well.
 
 ## What a side question can and cannot do
 
-A side question is asked with a **read-only twin** of the conversation's agent:
-the same model and the same workspace, but only the read-only file tools
-(`read_file`, `list_files`, `grep`). It has no shell, cannot write or edit files,
-cannot delegate to sub-agents, and cannot touch the task plan. Two runs sharing
-one persistent shell or one plan store would interleave commands and clobber the
-plan, and a side question is a question — if the answer implies work, send it as
-a normal message.
+A side question runs on the **conversation's own agent**: the same model,
+instructions, tool definitions, enabled MCP servers and model settings as the
+turn beside it. Its requests therefore start with the exact prefix the
+conversation has already sent, so the provider's prompt cache covers everything
+but the question itself. The instructions telling the model it is answering a
+side question travel inside the question message for the same reason; putting
+them in the system prompt would change the prefix and re-bill the whole
+conversation.
+
+Tools work as they do in a turn. The model can read files, search the web, use
+MCP tools, and run shell commands or edit files if the question calls for it,
+with the usual permission checks. The exceptions are the tools that change the
+conversation itself: the plan (`write_plan`, `add_task`, `update_task_status`
+and the rest; `read_plan` is fine) and delegation (`delegate_task`,
+`integrate_task`, `discard_task`). They stay declared, since removing them would
+break the cache, but a call is refused with a result telling the model the tool
+is unavailable in a side question, and it carries on answering. A side question
+is a question; if the answer implies work, send it as a normal message.
 
 Nothing about a side question joins the conversation:
 
@@ -77,6 +88,11 @@ streaming beside it.
 Side questions are bounded: 12 model requests and 300 seconds each. They are not
 retried, and they do not survive exiting pcode.
 
+When one fails or times out, the viewer shows the error and the traceback is
+appended to the session's `errors.log`, the same file failed turns write to,
+under a `run aside <id>` header with the question. A stopped side question
+writes nothing.
+
 ## Parallel work and `/tree`
 
 `/tree` opens while a turn is running, but only to read: the header says
@@ -92,5 +108,7 @@ throughout: the conversation tree records events against a single "recording"
 cursor, the runtime keeps one history, plan store, request checkpoint and shell,
 the session journal is a single append-only stream, and the transcript and
 activity widget present one stream of tool and text events. `/btw` is the useful
-slice that fits those constraints, because its answer is read-only and lands in
-its own surface instead of the conversation.
+slice that fits those constraints, because its answer lands in its own surface
+instead of the conversation and it cannot touch the plan or start workers.
+A shell command it runs is still a real job in the shared job list, though, so
+prefer questions that only need reading while a turn is editing the same files.
