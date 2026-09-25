@@ -128,7 +128,10 @@ class ServerConfig(BaseModel):
         if self.client_id is not None and (self.auth != "oauth" or not self.client_id.strip()):
             raise ValueError('client_id needs auth: "oauth".')
         if self.command:
-            if not self.command.strip() or self.headers is not None or self.auth is not None:
+            if not self.command.strip() or any(
+                item is not None
+                for item in (self.headers, self.auth, self.client_id, self.client_secret)
+            ):
                 raise ValueError("Invalid stdio options.")
             return self
         if any(item is not None for item in (self.command, self.args, self.env, self.cwd)):

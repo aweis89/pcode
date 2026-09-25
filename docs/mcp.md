@@ -47,7 +47,9 @@ Repository MCP files are **not** loaded automatically. The JSON uses an
   and `cwd`. Commands are executed directly, not through a shell. Relative paths
   are resolved from pcode's launch directory; prefer absolute paths.
 - **Remote HTTP/SSE:** `url` and optional `headers` (string map). Transport is
-  inferred from the URL by the MCP client. Add `"auth": "oauth"` for browser sign-in.
+  inferred from the URL by the MCP client. Add `"auth": "oauth"` for browser sign-in,
+  plus `client_id` and `client_secret` when the service needs a
+  [pre-registered client](#pre-registered-clients).
 
 Either transport also accepts `"enabled": true` (on for every conversation),
 `"direct": true` (see tool search below), and a `"description"` string (see
@@ -135,7 +137,11 @@ secret, keeping the secret in the environment:
 The sign-in redirects to `http://127.0.0.1:PORT/callback` on a free port chosen
 each time, so the client must accept any loopback port. For Google, create a
 **Desktop app** client (Google Auth Platform > Clients), which does; a Web
-application client only accepts the exact redirect URIs listed on it.
+application client only accepts the exact redirect URIs listed on it. Google's
+[Drive MCP setup](https://developers.google.com/workspace/drive/api/guides/configure-mcp-server)
+also needs the Drive API and Drive MCP API enabled on that project and the Drive
+scopes added to its consent screen. Without a client ID, sign-in fails with
+`Registration failed: 400`.
 
 ## Default-on servers
 

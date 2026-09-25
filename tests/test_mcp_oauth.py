@@ -92,6 +92,7 @@ def test_native_oauth_is_constructed_without_network_or_browser(monkeypatch):
         {"url": URL, "auth": "oauth", "client_secret": "secret-bearer-value"},
         {"url": URL, "auth": "oauth", "client_id": " ", "client_secret": "secret-bearer-value"},
         {"command": "echo", "client_id": "fake-client", "client_secret": "secret-bearer-value"},
+        {"command": "echo", "client_secret": "secret-bearer-value"},
     ],
 )
 def test_invalid_auth_is_rejected_without_exposing_secrets(entry):
@@ -487,14 +488,17 @@ PREREGISTERED = {
 }
 
 
-def test_preregistered_client_skips_dynamic_registration(monkeypatch):
+@pytest.mark.parametrize("advertised", [ISSUER, ISSUER + "/"])
+def test_preregistered_client_skips_dynamic_registration(monkeypatch, advertised):
     """Google offers no dynamic registration: its MCP servers need a client created
     in the Cloud console, configured with its secret kept in the environment."""
     monkeypatch.setenv("FAKE_CLIENT_SECRET", "fake-client-secret")
 
     async def run():
         auth = mcp_transport(build_toolset("remote", PREREGISTERED)).auth
-        provider = FakeOAuthProvider("client_secret_post", registration=False)
+        provider = FakeOAuthProvider(
+            "client_secret_post", advertised=advertised, registration=False
+        )
         async with httpx2.AsyncClient(auth=auth, transport=provider.install(auth)) as client:
             assert (await client.get(URL)).status_code == 200
         assert provider.grants == ["authorization_code"]

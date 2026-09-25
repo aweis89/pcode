@@ -959,9 +959,9 @@ def test_queued_messages_stay_directly_above_editor(pane, mode):
         screen = capture(pane, "│❯ keep draft", running=True, columns=width)
         lines = screen.splitlines()
         editor_top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
-        assert lines[editor_top - 2].startswith(f"{label}: first")
+        assert lines[editor_top - 2].startswith(f" {label}: first")
         assert lines[editor_top - 2].endswith("…")
-        assert lines[editor_top - 1].startswith(f"{label}: second")
+        assert lines[editor_top - 1].startswith(f" {label}: second")
         assert lines[editor_top - 3].startswith(SPINNER_ROW)
         assert "active prompt" not in lines[editor_top - 3]
         assert "│❯ keep draft" in screen
