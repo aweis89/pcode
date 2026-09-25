@@ -11,6 +11,7 @@ from pcode.commands import CommandRegistry
 from pcode.config import configure
 from pcode.preferences import load_preferences, save_preferences
 from pcode.runtime import ToolSummary
+from pcode.tool_display import label
 from pcode.ui import Transcript, create_prompt
 
 
@@ -79,7 +80,7 @@ def test_job_inspection_errors_still_reach_scrollback(name, outcome, tool_error_
     )
     assert view.writes_tool_result(event)
     view.tool_result(event)
-    assert name in stream.getvalue()
+    assert label(name) in stream.getvalue()
     assert "No job 'j99'" in stream.getvalue()
 
 

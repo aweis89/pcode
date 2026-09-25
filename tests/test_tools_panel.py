@@ -9,7 +9,7 @@ from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.runtime import Message, TextDelta, ToolStarted, ToolSummary
-from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
+from pcode.tool_panel import ToolCall, ToolHistory, panel_fragments, task_panel_rows
 from pcode.ui import CursorSafeOutput, TerminalOutput
 
 
@@ -59,6 +59,21 @@ def test_a_command_that_finishes_instantly_still_holds_the_status_row(monkeypatc
     monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 0.0)
     assert history.active is None
     assert history.recent is None
+
+
+def test_a_wait_row_names_its_job_and_the_command_that_job_runs():
+    def line(event):
+        return ToolCall(event, started=0.0, settled=45.2).line()
+
+    known = ToolStarted(
+        "wait_for_job", "j3", "one", command="make e2e", purpose="running the suite"
+    )
+    assert line(known) == "⧗ Wait · 45.2s · j3 · running the suite · make e2e"
+    # A job the runtime could not name still says which one is being waited on.
+    assert line(ToolStarted("wait_for_job", "j9", "two")) == "⧗ Wait · 45.2s · j9"
+    # Reading a job is not waiting on it, but names the job the same way.
+    output = ToolStarted("job_output", "j3", "three", command="make e2e")
+    assert line(output) == "Job output · 45.2s · j3 · make e2e"
 
 
 @pytest.mark.parametrize("width", [1, 8, 24, 80])
