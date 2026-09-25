@@ -212,7 +212,7 @@ def test_a_failed_side_question_writes_its_frames_to_errors_log(tmp_path):
     )
 
     async def run():
-        app.start_aside("why this file?")
+        await app.start_aside("why this file?")
         await asyncio.sleep(0.05)
         failed = app.asides.items[0]
         assert failed.status == "failed"
@@ -222,7 +222,7 @@ def test_a_failed_side_question_writes_its_frames_to_errors_log(tmp_path):
         assert "ValueError: provider refused" in log
         assert "Traceback" in log
         # Stopping on purpose is not a defect worth a traceback.
-        app.start_aside("stop me")
+        await app.start_aside("stop me")
         await asyncio.sleep(0)
         app.asides.cancel()
         await app.asides.close()
@@ -401,7 +401,7 @@ def test_btw_command_requires_a_question_or_an_answer_to_read():
     app.activity.busy = True
     app.activity.queued = 1
     assert app.registry.dispatch("/btw  why this file?  ")
-    assert app.aside_requested == "why this file?"
+    assert app.aside_requested == ([], "why this file?")
     app.asides.items.append(Aside(question="earlier"))
     assert app.registry.dispatch("/btw")
     assert app.aside_view_requested
@@ -427,7 +427,7 @@ def test_btw_runs_in_the_background_and_reports_in_the_footer_and_transcript():
             runtime=Runtime(),
             console=Console(file=output, color_system=None, width=140),
         )
-        app.start_aside("why")
+        await app.start_aside("why")
         await asyncio.sleep(0)
         assert app.asides.running == 1
         # A side question is not "working": input and the queue stay untouched.

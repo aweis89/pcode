@@ -50,7 +50,7 @@ never throws away the side question as well.
 
 A side question runs on the **conversation's own agent**: the same model,
 instructions, tool definitions, enabled MCP servers and model settings as the
-turn beside it. Its requests therefore start with the exact prefix the
+turn beside it (unless you [choose another model](#choosing-the-model)). Its requests therefore start with the exact prefix the
 conversation has already sent, so the provider's prompt cache covers everything
 but the question itself. The instructions telling the model it is answering a
 side question travel inside the question message for the same reason; putting
@@ -75,6 +75,40 @@ Nothing about a side question joins the conversation:
 
 What it does share is the context it was asked against and the session's token
 totals: the request really happened, so `/status` counts it.
+
+## Choosing the model
+
+Leading `$` words pick the model a side question runs on; the rest of the line
+is the question.
+
+```text
+❯ /btw $anthropic:claude-sonnet-5 is this migration safe?
+❯ /btw $meridian:claude-opus-5-5 $openai-codex:gpt-6-astra second opinions on the plan?
+```
+
+Typing `$` in a `/btw` line completes model names from the same catalog as the
+`/model` picker, matching any part of the name (`$opus` finds
+`anthropic:claude-opus-…`). It works for each `$` word in the leading run; once
+the question starts, `$` is ordinary text, and it never completes in a normal
+prompt or `!` shell mode.
+
+- **No `$`:** the conversation's model, sharing its prompt cache as described
+  above. Naming the conversation's own model is the same thing.
+- **Another model:** the same agent, tools, history and framing, but the
+  model's own settings: its defaults and its saved `/effort`, never the
+  conversation model's. It starts **without the conversation's cache**, so its
+  first request pays full price for the whole conversation. It also runs under
+  a conversation id of its own, so a Meridian session for the main conversation
+  is never moved by it.
+- **Several models:** one side question per model, started together. Each has
+  its own row, answer, error and `errors.log` entry, and one failing does not
+  affect the others. Rows, the viewer list, and the ready notices carry a short
+  model label (the name without its provider, unless two would look the same).
+  Repeated models collapse to one, and at most 4 models can be named at once.
+
+A name that cannot be resolved (unknown provider, missing credentials or SDK)
+fails the whole `/btw` command before any side question starts. `/btw $MODEL`
+with no question is an error too.
 
 ## Which context it sees
 

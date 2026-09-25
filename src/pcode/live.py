@@ -3,7 +3,7 @@
 import asyncio
 import re
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing
+from contextlib import aclosing, nullcontext
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
@@ -47,7 +47,7 @@ from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersis
 from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent, SubAgents
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
-from pcode.agent import worker_toolsets
+from pcode.agent import SideModel, worker_toolsets
 from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, ContextTracking, summarize
 from pcode.conversation_tree import ConversationTree
@@ -337,7 +337,7 @@ class AgentRuntime:
         history = self.context_history if self.context_history is not None else self.history
         return deepcopy(settled_context(list(history)))
 
-    async def aside(self, question: str, *, report=None) -> str:
+    async def aside(self, question: str, *, report=None, model: SideModel | None = None) -> str:
         """Answer `question` beside the conversation, recording nothing.
 
         Nothing here touches conversation state: no journal record, no tree
@@ -352,6 +352,13 @@ class AgentRuntime:
         conversation. Per-run capabilities here add neither instructions nor
         tools; `AsideGuard` refuses the plan and delegation tools at execution
         instead of hiding them.
+
+        `model` runs the question on another model instead. It keeps the same
+        agent, tools and history but has no cache to share, so it takes that
+        model's own settings rather than the conversation's, and a conversation
+        id of its own: Meridian keys its session on the id, and a request from
+        another model under the conversation's id would move that session and
+        force the conversation's next turn to replay cold.
         """
         from pcode.aside import ASIDE_REQUEST_LIMIT, framed
         from pcode.aside_guard import AsideGuard
@@ -368,6 +375,33 @@ class AgentRuntime:
         capabilities = [AsideGuard(), TokenAccounting(record=self.totals.add)]
         if joined:
             capabilities.append(Steering(lambda: [pending.pop()] if pending else []))
+        conversation_id = self.conversation_id
+        other: dict = {}
+        settings = nullcontext()
+        if model is not None:
+            conversation_id = f"{self.conversation_id}.btw-{uuid4().hex[:8]}"
+            other = {"model": model.model}
+            settings = agent.override(model_settings=model.settings)
+        with settings:
+            async with (
+                agent,
+                model.model if model is not None else nullcontext(),
+                worker_toolsets(self.mcp.toolsets()),
+                enabled_servers(self.mcp.servers()),
+                agent.run_stream_events(
+                    None if joined else pending.pop(),
+                    message_history=messages,
+                    toolsets=self.mcp.toolsets(),
+                    conversation_id=conversation_id,
+                    capabilities=capabilities,
+                    usage_limits=UsageLimits(request_limit=ASIDE_REQUEST_LIMIT),
+                    **other,
+                ) as events,
+            ):
+                return await self._aside_answer(events, report)
+
+    async def _aside_answer(self, events, report) -> str:
+        """Collect a side question's answer from its event stream, reporting progress."""
         blocks: list[str] = []
         partial = ""
         activity = "Waiting for model…"
@@ -377,42 +411,29 @@ class AgentRuntime:
             if report is not None:
                 report("\n\n".join([*blocks, partial] if partial else blocks), activity)
 
-        async with (
-            agent,
-            worker_toolsets(self.mcp.toolsets()),
-            enabled_servers(self.mcp.servers()),
-            agent.run_stream_events(
-                None if joined else pending.pop(),
-                message_history=messages,
-                toolsets=self.mcp.toolsets(),
-                conversation_id=self.conversation_id,
-                capabilities=capabilities,
-                usage_limits=UsageLimits(request_limit=ASIDE_REQUEST_LIMIT),
-            ) as events,
-        ):
-            async for event in events:
-                if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-                    partial += event.part.content
-                elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-                    partial += event.delta.content_delta
-                elif isinstance(event, PartEndEvent) and isinstance(event.part, TextPart):
-                    if event.part.content:
-                        blocks.append(event.part.content)
-                    partial = ""
-                elif isinstance(event, FunctionToolCallEvent):
-                    try:
-                        args = event.part.args_as_dict()
-                    except (ValueError, TypeError):
-                        args = {}
-                    where = target(event.part.tool_name, args)
-                    tools[event.part.tool_call_id] = event.part.tool_name
-                    activity = f"Running {event.part.tool_name}" + (f" · {where}" if where else "")
-                elif isinstance(event, FunctionToolResultEvent):
-                    tools.pop(event.tool_call_id, None)
-                    activity = "Waiting for model…" if not tools else activity
-                else:
-                    continue
-                publish()
+        async for event in events:
+            if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                partial += event.part.content
+            elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                partial += event.delta.content_delta
+            elif isinstance(event, PartEndEvent) and isinstance(event.part, TextPart):
+                if event.part.content:
+                    blocks.append(event.part.content)
+                partial = ""
+            elif isinstance(event, FunctionToolCallEvent):
+                try:
+                    args = event.part.args_as_dict()
+                except (ValueError, TypeError):
+                    args = {}
+                where = target(event.part.tool_name, args)
+                tools[event.part.tool_call_id] = event.part.tool_name
+                activity = f"Running {event.part.tool_name}" + (f" · {where}" if where else "")
+            elif isinstance(event, FunctionToolResultEvent):
+                tools.pop(event.tool_call_id, None)
+                activity = "Waiting for model…" if not tools else activity
+            else:
+                continue
+            publish()
         if partial:
             blocks.append(partial)
             partial = ""

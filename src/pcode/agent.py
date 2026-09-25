@@ -7,11 +7,12 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from copy import copy
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import Capability, CombinedCapability
+from pydantic_ai.models import Model
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai_codex import OpenAICodexProvider
@@ -357,34 +358,78 @@ def codex_model(model: str) -> OpenAICodexModel:
     )
 
 
+def resolve_model(model: str) -> Model | str:
+    """The model object for a name, on pcode's own logins where it manages them.
+
+    Names pcode has no special handling for come back unchanged for Pydantic
+    AI's inference. So does an Anthropic name when API-key auth has no key yet,
+    which lets the terminal open and reach /login.
+    """
+    if model.startswith("openai-codex:"):
+        return codex_model(model)
+    if model.startswith("meridian:"):
+        from pcode.meridian import meridian_model
+
+        return meridian_model(model)
+    if not model.startswith("anthropic:"):
+        return model
+    from pcode.anthropic_oauth import anthropic_auth_source
+    from pcode.auth import anthropic_model
+
+    auth_source = anthropic_auth_source()
+    if auth_source == "oauth":
+        from pcode.anthropic_oauth import AnthropicOAuthModel
+
+        return AnthropicOAuthModel(model)
+    if auth_source == "api-key":
+        key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        return anthropic_model(model, key) if key else model
+    raise ValueError("PCODE_ANTHROPIC_AUTH must be api-key or oauth.")
+
+
+@dataclass(frozen=True)
+class SideModel:
+    """A model a single run uses instead of the agent's, with its own settings."""
+
+    name: str
+    model: Model
+    settings: dict | None
+
+
+def side_model(name: str) -> SideModel:
+    """Resolve `name` now, failing with a clear message rather than on first request.
+
+    The settings are the ones the model would get as the conversation's model:
+    its defaults plus its own saved /effort. None of the conversation model's
+    settings carry over, since they belong to another model or provider.
+    """
+    from types import SimpleNamespace
+
+    from pydantic_ai.exceptions import UserError
+    from pydantic_ai.models import infer_model
+
+    from pcode.preferences import apply_effort, effort_for
+
+    try:
+        resolved = resolve_model(name)
+        if isinstance(resolved, str):
+            if name.startswith("anthropic:"):
+                raise ValueError("no Anthropic credentials; use /login or set ANTHROPIC_API_KEY")
+            resolved = infer_model(resolved)
+    except (UserError, ValueError, ImportError) as error:
+        raise ValueError(f"Cannot use {name}: {error}") from error
+    holder = SimpleNamespace(model=resolved, model_settings=model_settings(name))
+    apply_effort(holder, name, effort_for(name))
+    return SideModel(name, resolved, holder.model_settings)
+
+
 def create_agent(
     model: str, workspace: Path, extensions: Sequence = (), subagents: Sequence = ()
 ) -> Agent:
     """Build the terminal's agent; `extensions` and `subagents` come from `pcode.ext`."""
-    resolved = codex_model(model) if model.startswith("openai-codex:") else model
-    if model.startswith("meridian:"):
-        from pcode.meridian import meridian_model
-
-        resolved = meridian_model(model)
-    defer_model_check = False
-    if model.startswith("anthropic:"):
-        from pcode.anthropic_oauth import anthropic_auth_source
-        from pcode.auth import anthropic_model
-
-        auth_source = anthropic_auth_source()
-        if auth_source == "oauth":
-            from pcode.anthropic_oauth import AnthropicOAuthModel
-
-            resolved = AnthropicOAuthModel(model)
-        elif auth_source == "api-key":
-            key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-            if key:
-                resolved = anthropic_model(model, key)
-            else:
-                # Allow the terminal to open so /login is reachable without credentials.
-                defer_model_check = True
-        else:
-            raise ValueError("PCODE_ANTHROPIC_AUTH must be api-key or oauth.")
+    resolved = resolve_model(model)
+    # Allow the terminal to open so /login is reachable without credentials.
+    defer_model_check = model.startswith("anthropic:") and isinstance(resolved, str)
     return Agent(
         resolved,
         defer_model_check=defer_model_check,
