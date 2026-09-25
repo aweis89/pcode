@@ -198,6 +198,8 @@ class PreviewApp:
         self.resend_requested = False
         # A skill command is a prompt in disguise; it leaves the command path too.
         self.skill_requested: str | None = None
+        # The MCP servers that skill declares, enabled before its prompt runs.
+        self.skill_mcp_requested: tuple[str, tuple[str, ...]] | None = None
         self.mcp_enable_requested: str | None = None
         # Servers marked enabled in mcp.json, enabled without a browser after a
         # conversation starts (startup, /new, resume).
@@ -460,6 +462,8 @@ class PreviewApp:
         if not self.model:
             raise ValueError(f"/skill:{skill.name} requires a live model session.")
         self.skill_requested = skill_prompt(skill, argument)
+        if skill.mcp_servers:
+            self.skill_mcp_requested = (skill.name, skill.mcp_servers)
 
     def register_extension_commands(self) -> None:
         """Expose extension commands, replacing the previous load's; built-ins win."""
@@ -1852,6 +1856,16 @@ class PreviewApp:
             # not create a session or silently persist a separate diagnostics file.
             self.transcript.note(error_report(error))
 
+    async def enable_skill_mcp(self, skill: str, names: list[str]) -> None:
+        """Enable a skill's servers in order; one that fails stays off, the rest proceed."""
+        for name in names:
+            try:
+                await self.runtime.mcp.enable(name)
+            except Exception as error:
+                self.report_mcp_error(name, error)
+            else:
+                self.transcript.note(f"MCP '{name}' enabled for the {skill} skill.")
+
     async def enable_mcp_defaults(self, names: list[str]) -> None:
         """Enable `"enabled": true` servers, using saved sign-ins but never a browser."""
         from pcode.mcp_oauth import SignInRequired
@@ -2453,6 +2467,8 @@ class PreviewApp:
 
         if hasattr(self.runtime, "retry_notice"):
             self.runtime.retry_notice = retry_notice
+        if hasattr(self.runtime, "warning_notice"):
+            self.runtime.warning_notice = self.transcript.warning
         failure = None
         cancelled = False
         try:
@@ -2878,6 +2894,45 @@ class PreviewApp:
                 cancelled=f"MCP '{name}' sign-in cancelled; server remains off.",
             )
 
+        def start_skill_mcp(skill, names):
+            """Enable what `skill` declares before its prompt, which waits on MCP work."""
+            from pcode.mcp import config_path, configured_servers
+
+            state = getattr(self.runtime, "mcp", None)
+            if state is None:
+                return
+            try:
+                configured = configured_servers()
+            except ValueError as error:
+                self.transcript.error(str(error))
+                return
+            if unknown := [name for name in names if name not in configured]:
+                self.transcript.warning(
+                    f"The {skill} skill asks for MCP {', '.join(unknown)}, "
+                    f"not configured in {config_path()}."
+                )
+            wanted = [name for name in names if name in configured and name not in state.enabled]
+            if not wanted:
+                return
+            # Same rule as /mcp enable: never swap toolsets under a running turn.
+            if mcp_task is not None or (live_task is not None and not live_task.done()):
+                listed = " ".join(f"`/mcp enable {name}`" for name in wanted)
+                self.transcript.warning(
+                    f"The {skill} skill asks for MCP {', '.join(wanted)}, which cannot be "
+                    f"enabled while working. Run {listed} after this turn."
+                )
+                return
+            self.transcript.note(
+                f"Enabling MCP {', '.join(wanted)} for the {skill} skill. "
+                "OAuth sign-in happens now if needed; Ctrl+C cancels."
+            )
+            start_mcp_task(
+                ", ".join(wanted),
+                self.enable_skill_mcp(skill, wanted),
+                status=f"Enabling MCP for the {skill} skill — complete sign-in if prompted…",
+                cancelled=f"MCP sign-in for the {skill} skill cancelled; its prompt was not sent.",
+            )
+
         def start_mcp_defaults():
             from pcode.mcp import default_servers
 
@@ -3052,6 +3107,12 @@ class PreviewApp:
                             self.activity.start_prompt(previous)
                             self.activity.busy = True
                         if self.skill_requested is not None:
+                            if self.skill_mcp_requested is not None:
+                                skill, names = self.skill_mcp_requested
+                                self.skill_mcp_requested = None
+                                # Started before the prompt is queued: the
+                                # consumer then waits for it on mcp_idle.
+                                start_skill_mcp(skill, names)
                             prompt = self.skill_requested
                             self.skill_requested = None
                             # Queue it like a typed message so send mode, steering,
@@ -3395,6 +3456,8 @@ class PreviewApp:
         self.runtime.compaction_notice = self.transcript.note
         if hasattr(self.runtime, "retry_notice"):
             self.runtime.retry_notice = self.transcript.note
+        if hasattr(self.runtime, "warning_notice"):
+            self.runtime.warning_notice = self.transcript.warning
         # Text streamed since the last settled message, so a turn that ends
         # mid-block still prints what arrived.
         block = ""

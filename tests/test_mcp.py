@@ -574,19 +574,34 @@ def test_cancel_during_mcp_work(stdio_server, phase):
     asyncio.run(run())
 
 
-def test_partial_startup_failure_closes_connected_server(stdio_server):
+def test_a_server_that_cannot_connect_costs_only_its_own_tools(stdio_server):
+    """One broken server must not fail the turn and take every other tool with it."""
+    requests = []
+
     async def model(messages, info):
-        pytest.fail("Model must not run when MCP initialization fails")
-        yield
+        requests.append({tool.name for tool in info.function_tools})
+        yield "done"
 
     runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+    warnings = []
+    runtime.warning_notice = warnings.append
     asyncio.run(runtime.mcp.enable("local"))
     asyncio.run(runtime.mcp.enable("unused"))
 
-    async def run():
-        with pytest.raises(Exception):
-            async for _ in runtime.stream("hello"):
-                pass
-        assert_processes_closed(stdio_server)
+    async def turn():
+        return [event async for event in runtime.stream("hello")]
 
-    asyncio.run(run())
+    asyncio.run(turn())
+    assert "mcp_local_echo" in requests[-1]
+    assert set(runtime.mcp.unavailable) == {"unused"}
+    assert len(warnings) == 1 and "MCP server 'unused' failed to connect" in warnings[0]
+    assert_processes_closed(stdio_server)
+
+    # Retried every turn; disabling the server clears it.
+    asyncio.run(turn())
+    assert len(warnings) == 2
+    runtime.mcp.disable("unused")
+    assert runtime.mcp.unavailable == {}
+    asyncio.run(turn())
+    assert len(warnings) == 2 and "mcp_local_echo" in requests[-1]
+    assert_processes_closed(stdio_server)
