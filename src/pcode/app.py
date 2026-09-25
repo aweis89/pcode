@@ -205,6 +205,7 @@ class PreviewApp:
         self._model_suggestions: tuple[str | None, float, list[str]] | None = None
         self.aside_view_requested = False
         self.worker_view_requested = False
+        self.jobs_view_requested = False
         # The viewer follows answers that settle while it is open, so auto-open
         # has nothing to do then.
         self.aside_view_open = False
@@ -376,7 +377,7 @@ class PreviewApp:
             ),
             Command(
                 "/jobs",
-                "Shell commands still running: list / stop ID / stop all / watch ID / unwatch",
+                "Browse shell jobs and their output; stop ID / stop all / watch ID / unwatch",
                 self.jobs,
                 free_arguments=True,
                 argument_provider=self.jobs_arguments,
@@ -825,7 +826,6 @@ class PreviewApp:
             (job for job in registry.jobs.values() if job.running), key=lambda job: job.started_at
         )
         return (
-            "list",
             "unwatch",
             "stop all",
             *(f"stop {job.id}" for job in running),
@@ -833,46 +833,54 @@ class PreviewApp:
         )
 
     def jobs(self, argument: str) -> None:
-        """Show, watch, or stop the shell jobs this session started.
+        """Browse, watch, or stop the shell jobs this session started.
 
         Jobs outlive the turn that started them and, deliberately, the session
-        itself, so the only way to know what is still running is to ask.
+        itself, so the only way to know what is still running is to ask. Bare
+        `/jobs` opens the browser; the subcommands act without it.
         """
         registry = getattr(self.runtime, "jobs", None)
         if registry is None:
             raise ValueError("/jobs requires a live model session.")
         registry.refresh()
         action, _, target = argument.partition(" ")
+        # `list` predates the browser; it still opens it rather than failing.
         if not action or action == "list":
-            listing = sorted(
-                registry.jobs.values(), key=lambda job: (not job.running, job.started_at)
-            )
-            for line in listing or ["No jobs have been started."]:
-                self.transcript.note(line if isinstance(line, str) else line.summary())
+            if not registry.jobs:
+                self.transcript.note("No jobs have been started.")
+                return
+            self.jobs_view_requested = True
             return
         if action == "unwatch":
-            self.activity.watched_job = ""
-            self.refresh_jobs()
+            self.watch_job(None)
             return
         if action == "watch":
             job = registry.get(target.strip())
             if job is None:
-                raise ValueError(f"No job {target.strip()!r}. Run /jobs to list them.")
+                raise ValueError(f"No job {target.strip()!r}. Run /jobs to browse them.")
             if not job.running:
                 raise ValueError(f"[{job.id}] has finished; nothing to watch.")
-            self.activity.watched_job = job.id
-            self.refresh_jobs()
+            self.watch_job(job)
             self.transcript.note(f"Watching [{job.id}] {job.label()}; /jobs unwatch hides it.")
             return
         if action != "stop":
-            raise ValueError("/jobs takes list, stop ID, stop all, watch ID, or unwatch.")
+            raise ValueError("/jobs takes stop ID, stop all, watch ID, or unwatch.")
         target = target.strip()
         if target == "all":
-            stopped = registry.stop_all()
+            self.stop_jobs(None)
         elif job := registry.get(target):
-            stopped = registry.stop_all([job])
+            self.stop_jobs([job])
         else:
-            raise ValueError(f"No job {target!r}. Run /jobs to list them.")
+            raise ValueError(f"No job {target!r}. Run /jobs to browse them.")
+
+    def watch_job(self, job) -> None:
+        """Pin a running job's output tail into the preview, or unpin with None."""
+        self.activity.watched_job = job.id if job is not None else ""
+        self.refresh_jobs()
+
+    def stop_jobs(self, jobs) -> None:
+        """Stop these jobs, or every running one for None, and say so in scrollback."""
+        stopped = self.runtime.jobs.stop_all(jobs)
         for job in stopped:
             # Printed here, so the idle watcher does not repeat it.
             job.announced.add("ui")
@@ -881,6 +889,25 @@ class PreviewApp:
             self.transcript.note("Nothing was running.")
         # Now, not at the watcher's next tick: the rows answer this command.
         self.refresh_jobs()
+
+    async def browse_jobs(self, output: TerminalOutput, session) -> None:
+        from pcode.jobs_ui import JobBrowser
+
+        self.jobs_view_requested = False
+        async with self.popup(output, session) as modal_input:
+            browser = JobBrowser(
+                self.runtime.jobs,
+                stop=lambda job: self.stop_jobs([job]),
+                watch=self.watch_job,
+                watched=lambda: self.activity.watched_job,
+                rich_theme=self.transcript.rich_theme,
+                code_theme=self.transcript.code_theme,
+                color_system=self.transcript.console.color_system,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            await browser.run()
 
     def autocompact(self, argument: str) -> None:
         if not self.model or not hasattr(self.runtime, "auto_compact"):
@@ -3258,6 +3285,8 @@ class PreviewApp:
                             await self.read_asides(output, session)
                         if self.worker_view_requested:
                             await self.read_workers(output, session)
+                        if self.jobs_view_requested:
+                            await self.browse_jobs(output, session)
                         if self.tree_requested:
                             await self.choose_tree(output, session)
                         if self.session_requested:

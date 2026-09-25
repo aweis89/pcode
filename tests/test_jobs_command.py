@@ -32,11 +32,23 @@ def app_with_jobs():
     return app, app.runtime.jobs
 
 
-def test_jobs_lists_running_first_then_stops_them(tmp_path):
+def test_bare_jobs_opens_the_browser_only_when_there_is_something_to_browse(tmp_path):
+    app, jobs = app_with_jobs()
+    app.jobs("")
+    assert not app.jobs_view_requested
+    jobs.launch(command("pass"), cwd=tmp_path)
+    app.jobs("")
+    assert app.jobs_view_requested
+    app.jobs_view_requested = False
+    # `list` predates the browser and still opens it.
+    app.jobs("list")
+    assert app.jobs_view_requested
+
+
+def test_jobs_stop_all_reports_each_stop_once(tmp_path):
     app, jobs = app_with_jobs()
     jobs.launch(command("pass"), cwd=tmp_path)
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
-    app.jobs("")
     app.jobs("stop all")
     assert not live.running and live.outcome() == "stopped"
     # Stopping reported it, so the idle watcher must not say it again.
@@ -45,12 +57,11 @@ def test_jobs_lists_running_first_then_stops_them(tmp_path):
 
 def test_jobs_arguments_offer_running_ids_for_stop_and_watch(tmp_path):
     app, jobs = app_with_jobs()
-    assert app.jobs_arguments() == ("list", "unwatch", "stop all")
+    assert app.jobs_arguments() == ("unwatch", "stop all")
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
     done = jobs.launch(command("pass"), cwd=tmp_path)
     until_finished(jobs, done)
     assert app.jobs_arguments() == (
-        "list",
         "unwatch",
         "stop all",
         f"stop {live.id}",
@@ -61,7 +72,7 @@ def test_jobs_arguments_offer_running_ids_for_stop_and_watch(tmp_path):
 
 def test_jobs_rejects_unknown_actions_and_ids(tmp_path):
     app, jobs = app_with_jobs()
-    with pytest.raises(ValueError, match="list, stop ID, stop all, watch ID, or unwatch"):
+    with pytest.raises(ValueError, match="stop ID, stop all, watch ID, or unwatch"):
         app.jobs("burn")
     with pytest.raises(ValueError, match="No job 'j9'"):
         app.jobs("stop j9")
