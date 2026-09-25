@@ -288,7 +288,7 @@ SETTINGS = {
         "off", ("on", "off"), description="Hide the task list when a turn ends"
     ),
     "attach_tasks": Setting(
-        "off", ("on", "off"), description="Draw the task list inside the editor box"
+        "on", ("on", "off"), description="Draw the task list inside the editor box"
     ),
     "tasks_max_height": Setting(
         None,

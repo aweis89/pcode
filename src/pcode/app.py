@@ -156,7 +156,8 @@ class PreviewApp:
         self.activity = Activity(
             show_tasks=load_preferences().get("show_tasks", "on") == "on",
             autohide_tasks=load_preferences().get("autohide_tasks", "off") == "on",
-            attach_tasks=load_preferences().get("attach_tasks") == "on",
+            attach_tasks=load_preferences().get("attach_tasks", SETTINGS["attach_tasks"].default)
+            == "on",
             tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
             show_thinking=load_preferences().get("show_thinking") == "on",
         )
@@ -371,13 +372,6 @@ class PreviewApp:
                 "/autohide-tasks",
                 "Hide the Tasks/Tools widget when a turn ends: on / off; bare toggles",
                 self.autohide_tasks,
-                ("on", "off"),
-                group="Display",
-            ),
-            Command(
-                "/attach-tasks",
-                "Draw the Tasks/Tools widget inside the editor box: on / off; bare toggles",
-                self.attach_tasks,
                 ("on", "off"),
                 group="Display",
             ),
@@ -870,12 +864,26 @@ class PreviewApp:
         self.transcript.flash(f"Automatic compaction: {state}. Usage: /autocompact on|off")
 
     def config(self, argument: str) -> None:
+        args = shlex.split(argument)
         try:
-            result = configure(shlex.split(argument))
+            result = configure(args)
         except OSError as error:
             raise ValueError(f"Could not access global defaults: {error}") from None
-        # Layout-only, so it can apply at once rather than on the next launch.
-        self.activity.tasks_max_height = parse_height(load_preferences().get("tasks_max_height"))
+        # Layout-only settings apply at once rather than on the next launch.
+        preferences = load_preferences()
+        self.activity.attach_tasks = (
+            preferences.get("attach_tasks", SETTINGS["attach_tasks"].default) == "on"
+        )
+        self.activity.tasks_max_height = parse_height(preferences.get("tasks_max_height"))
+        if self.transcript.output is not None:
+            self.transcript.output.app.invalidate()
+        edits = args[1:] if args[:1] == ["project"] else args
+        if (
+            len(edits) >= 2
+            and edits[0] in ("set", "unset")
+            and edits[1] in ("attach_tasks", "tasks_max_height")
+        ):
+            result = result.replace("Applies on next launch.", "Layout settings apply immediately.")
         self.transcript.note(result)
 
     def set_show_tasks(self, shown: bool) -> None:
@@ -909,17 +917,6 @@ class PreviewApp:
         state = "on" if enabled else "off"
         self.transcript.flash(
             f"Auto-hide tasks after each turn: {state}. Usage: /autohide-tasks [on|off]"
-        )
-
-    def attach_tasks(self, argument: str) -> None:
-        enabled = self.toggle_argument("/attach-tasks", argument, self.activity.attach_tasks)
-        self.activity.attach_tasks = enabled
-        self.persist_defaults(attach_tasks="on" if enabled else "off")
-        if self.transcript.output is not None:
-            self.transcript.output.app.invalidate()
-        state = "on" if enabled else "off"
-        self.transcript.flash(
-            f"Tasks inside the editor box: {state}. Usage: /attach-tasks [on|off]"
         )
 
     def show_edits(self, argument: str) -> None:

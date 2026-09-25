@@ -22,10 +22,12 @@ pcode config reset                # Remove every saved default at once
 
 The same commands are available inside pcode as `/config`, with tab completion:
 `/config set theme light`, `/config get autocompact`, `/config unset effort`, etc.
-**Config edits affect the next launch, not the running conversation.** To change
+**Most config edits affect the next launch, not the running conversation.** To change
 an active setting and save its default immediately, use `/theme`, `/effort`,
-`/model`, or `/autocompact` instead. CLI overrides such as `--theme` and `--model`
-do not rewrite global defaults, and resumed sessions retain their own model.
+`/model`, or `/autocompact` instead. The layout settings `attach_tasks` and
+`tasks_max_height` apply immediately through `/config`. CLI overrides such as
+`--theme` and `--model` do not rewrite global defaults, and resumed sessions retain
+their own model.
 
 ## Model provider filter
 
@@ -115,6 +117,7 @@ is only sensible on a machine where you wrote all of them.
 | `syntax_dark` | `terminal` | `terminal` or a Pygments style, for the dark palette |
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
 | `autocompact` | `on` | `on`, `off` |
+| `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
 | `paced_scrollback` | `on` | `on`, `off` (roll settled blocks into scrollback a few rows per frame; see [the transcript](transcript.md#paced-scrollback)) |
 | `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
 | `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |

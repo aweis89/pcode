@@ -57,7 +57,7 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
         top = max(i for i, line in enumerate(lines) if line.startswith("┌─ Tools"))
         assert "⟳ ✦ Explorer" in lines[top + 1]
         assert lines[top + 2].startswith("│└── ⟳ Search")
-        assert lines[top + 3].startswith("└")
+        assert lines[top + 3].startswith("├")
         assert input_rows(screen) == 1
         assert "keep draft" in screen
     # The draft absorbs the first Ctrl+C; the second one reaches the run.
