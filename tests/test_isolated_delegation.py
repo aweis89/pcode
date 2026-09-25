@@ -476,7 +476,7 @@ def test_aside_keeps_task_management_tools_declared_but_refuses_them(repo):
         yield "Answered"
 
     with agent.override(model=FunctionModel(stream_function=model)):
-        assert asyncio.run(runtime.aside("Which tasks exist?")) == "Answered"
+        assert asyncio.run(runtime.aside("Which tasks exist?")).answer == "Answered"
     assert "unavailable in a side question" in seen["discard"]
     # Listing only reads, so it runs.
     assert "unavailable" not in seen["list"]

@@ -1,20 +1,26 @@
 """Shared terminal-native styling for alternate-screen popups."""
 
 import re
+from collections.abc import Callable
 from io import StringIO
 
 from prompt_toolkit.data_structures import Point
-from prompt_toolkit.filters import has_focus
-from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+from prompt_toolkit.filters import Condition, Filter, has_focus
+from prompt_toolkit.formatted_text import ANSI, AnyFormattedText, to_formatted_text
 from prompt_toolkit.formatted_text.utils import fragment_list_to_text, split_lines
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Window
 from prompt_toolkit.layout.controls import UIContent, UIControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
+from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
 from prompt_toolkit.styles import Style, merge_styles
+from prompt_toolkit.utils import get_cwidth
+from prompt_toolkit.widgets import Frame, TextArea
 from rich.console import Console
 from rich.theme import Theme
 
+from pcode.input_keys import configure_newline_keys
 from pcode.preferences import SETTINGS, load_preferences
 
 # Rich writes Markdown links as OSC 8 hyperlinks on a terminal, but
@@ -26,6 +32,9 @@ OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 LIST_ROWS_MIN = 3
 LIST_ROWS_MAX = 6
 _BORDERS = 2
+# Rows a docked editor grows to before it scrolls; the panes above keep the rest.
+INPUT_ROWS_MAX = 6
+_INPUT_PROMPT = "\u203a "
 
 _NATIVE = "bg:default fg:default noreverse"
 POPUP_STYLE = Style.from_dict(
@@ -49,6 +58,7 @@ POPUP_ACCENTS = Style.from_dict(
         "popup scrollbar.arrow": f"{_NATIVE} bold",
         "popup selected": f"{_NATIVE} reverse",
         "popup cursor-line": f"{_NATIVE} reverse nounderline",
+        "popup placeholder": "dim italic",
     }
 )
 
@@ -282,8 +292,14 @@ class RichPane:
     def __pt_container__(self):
         return self.window
 
-    def bind_scrolling(self, keys) -> None:
+    def bind_scrolling(self, keys, *, paging: Filter | None = None) -> None:
+        """Arrow and page keys scroll the pane while it has focus.
+
+        ``paging`` also gives it PageUp/PageDown from elsewhere, e.g. from a
+        docked editor, so the reader can scroll an answer while replying to it.
+        """
         focused = has_focus(self.window)
+        pages = focused | paging if paging is not None else focused
 
         def scroll(direction: int, page: bool = False, half: bool = False):
             def handler(event):
@@ -304,8 +320,8 @@ class RichPane:
 
         keys.add("up", filter=focused)(scroll(-1))
         keys.add("down", filter=focused)(scroll(1))
-        keys.add("pageup", filter=focused)(scroll(-1, page=True))
-        keys.add("pagedown", filter=focused)(scroll(1, page=True))
+        keys.add("pageup", filter=pages)(scroll(-1, page=True))
+        keys.add("pagedown", filter=pages)(scroll(1, page=True))
         keys.add("c-u", filter=focused)(scroll(-1, half=True))
         keys.add("c-d", filter=focused)(scroll(1, half=True))
 
@@ -325,3 +341,113 @@ def list_pane_height(rows: int = LIST_ROWS_MAX) -> Dimension:
         preferred=visible + _BORDERS,
         max=LIST_ROWS_MAX + _BORDERS,
     )
+
+
+class PopupInput:
+    """A message editor docked in a popup: type, Enter sends, Esc goes back.
+
+    The popup decides what sending means. ``submit`` receives the draft and
+    either accepts it, which clears the draft, or raises ``ValueError`` to
+    refuse, which keeps the draft and shows why in the editor's title.
+
+    The editor's own keys are scoped to it, so its Enter and Esc win over the
+    popup's while it has focus. The popup's one-letter shortcuts are not
+    scoped, and a letter binding outranks typing: gate them on ``browsing``,
+    or pressing ``c`` in the editor copies instead of typing a ``c``.
+
+    Focus it with ``open``. A popup should not open with focus here: one that
+    appears on its own could swallow keystrokes meant for the main prompt, and
+    Enter would then send them.
+    """
+
+    def __init__(
+        self,
+        submit: Callable[[str], None],
+        *,
+        home,
+        title: AnyFormattedText = "Message",
+        placeholder: str = "",
+    ) -> None:
+        # Ctrl+J and Shift+Enter arrive as terminal-specific sequences; the
+        # main prompt registers them too, but a popup can open without it.
+        configure_newline_keys()
+        self.submit = submit
+        # Where Esc returns focus: the popup's list, usually.
+        self.home = home
+        self.title = title
+        self.notice = ""
+        self.area = TextArea(
+            multiline=True,
+            wrap_lines=True,
+            focus_on_click=True,
+            prompt=_INPUT_PROMPT,
+            height=self.rows,
+            input_processors=[
+                ConditionalProcessor(
+                    AfterInput(placeholder, style="class:placeholder"),
+                    Condition(lambda: not self.area.text),
+                )
+            ],
+        )
+        self.area.buffer.on_text_changed += lambda _: self._clear_notice()
+        self.editing = has_focus(self.area)
+        self.browsing = ~self.editing
+        keys = KeyBindings()
+
+        @keys.add("enter")
+        def send(event):
+            self.send()
+
+        @keys.add("c-j")
+        def newline(event):
+            self.area.buffer.newline(copy_margin=False)
+
+        @keys.add("escape", eager=True)
+        def leave(event):
+            # The draft stays: Esc steps out to browse, it does not discard.
+            event.app.layout.focus(self.home)
+
+        frame = Frame(self.area, title=self._title)
+        self.container = HSplit([frame], key_bindings=keys)
+
+    def __pt_container__(self):
+        return self.container
+
+    @property
+    def text(self) -> str:
+        return self.area.text
+
+    def open(self, app) -> None:
+        app.layout.focus(self.area)
+
+    def send(self) -> bool:
+        """Hand the draft to ``submit``; whether it was accepted."""
+        text = self.area.text.strip()
+        if not text:
+            return False
+        try:
+            self.submit(text)
+        except ValueError as error:
+            self.notice = str(error)
+            return False
+        self.area.buffer.reset()
+        self.notice = ""
+        return True
+
+    def rows(self) -> Dimension:
+        """Exactly as tall as the draft, up to ``INPUT_ROWS_MAX``, then it scrolls.
+
+        An open-ended height would take a share of the popup's spare rows and
+        sit mostly empty under the answer it is replying to.
+        """
+        info = self.area.window.render_info
+        width = max(1, (info.window_width if info else 80) - get_cwidth(_INPUT_PROMPT))
+        rows = sum(max(1, -(-get_cwidth(line) // width)) for line in self.area.text.split("\n"))
+        return Dimension.exact(min(INPUT_ROWS_MAX, rows))
+
+    def _title(self):
+        title = fragment_list_to_text(to_formatted_text(self.title))
+        return f"{title} · {self.notice}" if self.notice else title
+
+    def _clear_notice(self) -> None:
+        self.notice = ""
