@@ -99,6 +99,8 @@ candidate's size so that cost is visible before you pick.
 - `/btw QUESTION`: [ask a side question](side-questions.md) against the context the model is
   working with right now, without interrupting or queueing it. The answer opens in a popup
   when it is ready (`btw_auto_open`); a bare `/btw` opens the answers at any time.
+  `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks on other models instead, one
+  side question per model ([choosing the model](side-questions.md#choosing-the-model)).
 - `/skill:NAME [text]`: run a discovered skill; see
   [Skills as slash commands](workspace.md#skills-as-slash-commands) for naming and configuration.
 - `/quit` (alias `/exit`): exit.

@@ -22,7 +22,7 @@ from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.text import Text
 
-from pcode.aside import Asides
+from pcode.aside import MODEL_MARK, Asides, model_fragment, model_labels, parse_models
 from pcode.cli import ask, restore_stdin
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
@@ -184,7 +184,8 @@ class PreviewApp:
         # it needs no refresh hook of its own.
         self.activity.asides = self.asides.items
         self.asides.on_failure = self.record_aside_failure
-        self.aside_requested: str | None = None
+        self.aside_requested: tuple[list[str], str] | None = None
+        self._model_suggestions: tuple[str | None, float, list[str]] | None = None
         self.aside_view_requested = False
         # The viewer follows answers that settle while it is open, so auto-open
         # has nothing to do then.
@@ -260,9 +261,11 @@ class PreviewApp:
             ),
             Command(
                 "/btw",
-                "Ask a side question beside the running turn; bare opens the answers",
+                "Ask a side question beside the running turn ($MODEL ... picks models); "
+                "bare opens the answers",
                 self.aside,
                 free_arguments=True,
+                argument_completer=self.aside_completions,
                 group="Inspect",
             ),
             Command(
@@ -1965,8 +1968,8 @@ class PreviewApp:
         self.tree_requested = True
 
     def aside(self, argument: str) -> None:
-        """`/btw QUESTION` asks beside the turn; bare `/btw` reads the answers."""
-        question = argument.strip()
+        """`/btw [$MODEL ...] QUESTION` asks beside the turn; bare `/btw` reads the answers."""
+        models, question = parse_models(argument)
         if not question:
             if not self.asides.items:
                 raise ValueError(
@@ -1979,22 +1982,86 @@ class PreviewApp:
             raise ValueError("/btw needs a model; this is a local UI preview.")
         if self._startup_pending or self._startup_error is not None:
             raise ValueError("/btw is unavailable until the agent has started.")
-        self.aside_requested = question
+        self.aside_requested = (models, question)
 
-    def start_aside(self, question: str) -> None:
-        """Run a side question in the background, on the context available now."""
+    async def start_aside(self, question: str, models: list[str] | None = None) -> None:
+        """Run a side question in the background, on the context available now.
 
-        async def work(aside) -> None:
-            def report(answer: str, activity: str) -> None:
-                self.asides.update(aside, answer=answer, activity=activity)
+        With `models`, one side question starts per model. The conversation's
+        own model takes the default path, which shares its prompt cache; every
+        other one is resolved first, so a bad name fails the command before
+        anything starts.
+        """
+        from pcode.agent import side_model
 
-            await self.runtime.aside(question, report=report)
+        models = models or []
+        others = [model for model in models if model != self.model]
+        resolved = {}
+        if others:
+            chosen = await asyncio.to_thread(lambda: [side_model(model) for model in others])
+            resolved = {choice.name: choice for choice in chosen}
+        labels = model_labels(models)
 
-        self.asides.start(question, work)
-        self.transcript.note(
-            "Asking beside the conversation: the turn keeps running and "
-            "this question does not join it. /btw opens the answer."
-        )
+        def work_on(choice):
+            async def work(aside) -> None:
+                def report(answer: str, activity: str) -> None:
+                    self.asides.update(aside, answer=answer, activity=activity)
+
+                if choice is None:
+                    await self.runtime.aside(question, report=report)
+                else:
+                    await self.runtime.aside(question, report=report, model=choice)
+
+            return work
+
+        for model in models or [""]:
+            self.asides.start(
+                question,
+                work_on(resolved.get(model)),
+                model=model,
+                label=labels.get(model, ""),
+            )
+        if others:
+            names = ", ".join(others)
+            self.transcript.note(
+                f"Asking beside the conversation on {names}: the turn keeps running and "
+                "this question does not join it. Another model starts without the "
+                "conversation's prompt cache, so it pays for the whole prompt. "
+                "/btw opens the answers."
+            )
+        else:
+            self.transcript.note(
+                "Asking beside the conversation: the turn keeps running and "
+                "this question does not join it. /btw opens the answer."
+            )
+
+    def aside_completions(self, argument: str):
+        """Complete a `$MODEL` word in `/btw` arguments from the /model catalog."""
+        from prompt_toolkit.completion import Completion
+
+        fragment = model_fragment(argument)
+        if fragment is None:
+            return
+        needle = fragment.casefold()
+        for model in self.model_suggestions():
+            if needle in model.casefold():
+                yield Completion(
+                    MODEL_MARK + model,
+                    start_position=-(len(fragment) + len(MODEL_MARK)),
+                    display=model,
+                )
+
+    def model_suggestions(self) -> list[str]:
+        """The /model picker's catalog, kept briefly so typing does not re-scan it."""
+        from time import monotonic
+
+        from pcode.models import active_providers, model_catalog
+
+        cached = self._model_suggestions
+        if cached is None or cached[0] != self.model or monotonic() - cached[1] > 30:
+            models = model_catalog(active_providers(self.model), self.model)
+            cached = self._model_suggestions = (self.model, monotonic(), models)
+        return cached[2]
 
     def record_aside_failure(self, aside, error: BaseException) -> None:
         """Keep a failed side question's frames beside the session's turn failures.
@@ -2011,8 +2078,12 @@ class PreviewApp:
         saved.record_error(
             error,
             run_id=f"aside {aside.id}",
-            provider_context=provider_context(agent.model) if agent is not None else None,
-            detail=f"Side question ({aside.status}): {aside.question}",
+            provider_context=(
+                provider_context(aside.model or agent.model) if agent is not None else None
+            ),
+            detail=f"Side question ({aside.status}"
+            + (f" on {aside.model}" if aside.model else "")
+            + f"): {aside.question}",
         )
 
     def auto_open_asides(self) -> bool:
@@ -3000,8 +3071,8 @@ class PreviewApp:
                         if self.logout_requested:
                             await self.perform_logout()
                         if self.aside_requested is not None:
-                            question, self.aside_requested = self.aside_requested, None
-                            self.start_aside(question)
+                            (models, question), self.aside_requested = self.aside_requested, None
+                            await self.start_aside(question, models)
                         if self.aside_view_requested:
                             await self.read_asides(output, session)
                         if self.tree_requested:
@@ -3191,14 +3262,16 @@ class PreviewApp:
                 opening = self.auto_open_asides()
                 if opening:
                     commands.put_nowait((queue_generation, "/btw", False))
+                on = f"{aside.label}: " if aside.label else ""
                 self.transcript.note(
-                    f"Side answer ready ({plain(aside.question, 60)}). "
+                    f"Side answer ready ({on}{plain(aside.question, 60)}). "
                     + ("Opening it." if opening else "/btw opens it.")
                 )
             elif aside.status == "cancelled":
                 self.transcript.note("Side question stopped.")
             else:
-                self.transcript.warning(f"Side question {aside.status}. {aside.error}".strip())
+                on = f" on {aside.label}" if aside.label else ""
+                self.transcript.warning(f"Side question{on} {aside.status}. {aside.error}".strip())
                 saved = getattr(self.runtime, "session", None)
                 if saved is not None and (saved.directory / "errors.log").exists():
                     self.transcript.note(f"Diagnostics: {saved.directory / 'errors.log'}")

@@ -356,6 +356,8 @@ class Activity:
         rows = []
         for aside in shown:
             parts = [f"{spinner} btw", plain(aside.question, limit=None)]
+            if aside.label:
+                parts.insert(1, aside.label)
             if aside.activity:
                 parts.append(plain(aside.activity, limit=None))
             parts.append(f"{aside.elapsed:.0f}s")
