@@ -155,6 +155,46 @@ def test_warning_deduplicates_deciles_and_preserves_old_messages():
     asyncio.run(run())
 
 
+def test_context_warning_uses_pcode_window_not_harness_fallback(monkeypatch):
+    """A 1M Meridian session at ~162k was told 90% of 180k (0.9 of Harness's 200k)."""
+    import time
+    from types import SimpleNamespace
+
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+    from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
+    from pydantic_ai.usage import RunUsage
+
+    from pcode import model_metadata
+    from pcode.meridian import meridian_model
+
+    monkeypatch.setenv("PCODE_MERIDIAN_ENDPOINT", "http://localhost:1/v1")
+    model = meridian_model("meridian:claude-opus-5-5")
+
+    def warning(limits):
+        model_metadata.catalog.state(model).limits = limits
+        context = ModelRequestContext(
+            model=model,
+            # ~162k tokens by Harness's four-characters-per-token estimate.
+            messages=[ModelRequest(parts=[UserPromptPart(content="word " * 130_000)])],
+            model_settings=None,
+            model_request_parameters=ModelRequestParameters(),
+        )
+        capability = MeridianLimitWarnings(max_context_fraction=0.9)
+        ctx = SimpleNamespace(usage=RunUsage())
+        asyncio.run(capability.before_model_request(ctx, context))
+        return context.messages[-1].parts[0].content if len(context.messages) > 1 else None
+
+    meridian = model_metadata.ModelLimits(
+        context=1_000_000, source="meridian", fetched_at=time.time()
+    )
+    assert warning(meridian) is None
+    # Without pcode metadata, Harness's own fallback still applies.
+    assert "/180000 tokens used" in warning(None)
+    # An explicit working window is honored too, as in the footer and compaction.
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "150000")
+    assert "/135000 tokens used" in warning(None)
+
+
 def test_coder_installs_meridian_aware_warning(tmp_path):
     from pydantic_ai_harness.compaction import WarnNearLimits
 
