@@ -997,7 +997,7 @@ def test_enable_allows_browser_sign_in_longer_than_default_init_timeout(monkeypa
         monkeypatch.setattr("pcode.mcp.build_toolset", lambda name, raw, **kw: toolset)
         async with asyncio.timeout(10):
             await state.enable("remote")
-        assert state.toolsets() == [toolset]
+        assert list(state.enabled.values()) == [toolset]
         assert provider.grants == ["authorization_code"]
 
     asyncio.run(run())
@@ -1033,7 +1033,7 @@ def test_enable_oauth_failure_or_cancel_leaves_server_off(monkeypatch, mode):
         # Retry after failure/cancellation should succeed, without poisoning the client.
         provider.callback_mode = "success"
         await state.enable("remote")
-        assert state.toolsets() == [toolset]
+        assert list(state.enabled.values()) == [toolset]
 
     asyncio.run(run())
 
@@ -1082,7 +1082,7 @@ def test_enable_publishes_only_after_connection_teardown(monkeypatch, outcome):
             else:
                 finish.set()
                 await task
-            assert state.toolsets() == ([connection] if outcome == "success" else [])
+            assert list(state.enabled.values()) == ([connection] if outcome == "success" else [])
         finally:
             if not task.done():
                 task.cancel()
