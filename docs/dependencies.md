@@ -14,7 +14,7 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | prompt_toolkit (`prompt-toolkit`) | 3.0.53 | [Docs](https://python-prompt-toolkit.readthedocs.io/en/stable/) | [python-prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) |
 | Rich (`rich`) | 14.3.4 | [Docs](https://rich.readthedocs.io/en/stable/) | [rich](https://github.com/Textualize/rich) |
 | Pydantic AI (`pydantic-ai-slim`) | 2.50.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
-| Pydantic AI Harness (`pydantic-ai-harness`) | 0.31.1.dev48+12bce878 (commit `12bce878da99bca61a5d8d798bff0a3bc93bd153`) | [Docs](https://ai.pydantic.dev/harness/) | [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) |
+| Pydantic AI Harness (`pydantic-ai-harness`) | 0.35.1.dev14+a7bbe89 (commit `a7bbe89fd855138916d4f64060479f4ddb0ef9b0`) | [Docs](https://ai.pydantic.dev/harness/) | [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) |
 | Playwright (`playwright`, via the Harness `playwright` extra; Chromium downloaded on first `/browser` use) | 1.63.0 | [Docs](https://playwright.dev/python/) | [playwright-python](https://github.com/microsoft/playwright-python) |
 
 From the repository root, this read-only command prints installed versions and
@@ -744,7 +744,7 @@ we cannot reconstruct provider-omitted content.
 Harness is pinned by full Git SHA in `pyproject.toml`, not only a uv source
 override, so `make install` also receives the pin. Hatch requires
 `allow-direct-references = true` for editable and wheel builds with this dependency.
-The verified revision is `12bce878da99bca61a5d8d798bff0a3bc93bd153`.
+The verified revision is `a7bbe89fd855138916d4f64060479f4ddb0ef9b0`.
 
 Coder selects `Shell(tools=['shell'], default_timeout=270)`. Pcode replaces that
 capability with `pcode.shell_tools.JobShell`, which keeps upstream's command

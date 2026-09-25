@@ -1,7 +1,7 @@
 """Route Harness cache-collapse warnings through the normal event stream."""
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from pydantic_ai import CapabilityEvent
 from pydantic_ai.messages import NativeToolCallPart
@@ -37,6 +37,13 @@ class CacheBustReporting(WarnOnCacheBusts):
         init=False, default_factory=CacheDiagnostics, compare=False, repr=False
     )
 
+    async def for_run(self, ctx):
+        # Upstream shares marks across the runs of a conversation, so a turn
+        # after /compact (a deliberately shorter prefix) would read as a bust.
+        # A run without a conversation id is judged alone: keep pcode's
+        # per-turn comparison until cross-turn busts can skip rewritten history.
+        return await super().for_run(replace(ctx, conversation_id=None))
+
     async def after_model_request(self, ctx, *, request_context, response):
         # Harness hooks are filters, not listeners: the return value replaces the
         # response (or request context, for `before_model_request`). A hook that
@@ -48,7 +55,7 @@ class CacheBustReporting(WarnOnCacheBusts):
         # emission is captured, never model/tool execution or another task's work.
         # Emit outside this scope; ctx.emit can suspend. No global warning handler.
         key = (response.provider_name, response.model_name)
-        prior = self._state.keys.get(key)
+        prior = self._state.conversation.keys.get(key)
         with warnings.catch_warnings(record=True) as caught:
             result = await super().after_model_request(
                 ctx, request_context=request_context, response=response
@@ -61,7 +68,7 @@ class CacheBustReporting(WarnOnCacheBusts):
             # after three web searches; the next request read exactly 47k).
             # Keep the previous mark; the next single-pass response sets a real
             # one from its own usage.
-            self._state.keys[key].prefix = prior.prefix if prior else 0
+            self._state.conversation.keys[key].prefix = prior.prefix if prior else 0
         # Fingerprint every request, not just collapsing ones: diagnosing a
         # collapse needs the healthy request before it to compare against.
         # Part shapes vary by provider and capability, so a diagnostic that

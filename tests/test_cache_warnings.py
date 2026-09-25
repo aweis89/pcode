@@ -204,7 +204,8 @@ def test_model_switch_starts_own_mark_and_switch_back_keeps_original():
 
 
 def test_expiry_speculation_is_omitted_even_after_a_long_gap(monkeypatch):
-    times = iter([0, 301])
+    # Run start, first response, then a response past the ~300s cache TTL.
+    times = iter([0, 0, 301])
     monkeypatch.setattr(
         "pydantic_ai_harness.warn_on_cache_busts._capability._now", lambda: next(times)
     )

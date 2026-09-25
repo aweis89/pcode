@@ -11,9 +11,9 @@ misses come from planning or that stable requests guarantee server-side hits.
 
 There are two upstream designs to distinguish. When investigated, the
 [public Planning documentation](https://pydantic.dev/docs/ai/harness/planning/)
-described a breakpoint after the reminder's stable opening tag. Our pinned
-Harness source at `12bce878da99bca61a5d8d798bff0a3bc93bd153` already included a
-correction to that design. Treat the versioned source, not the live website, as
+described a breakpoint after the reminder's stable opening tag. The Harness
+source pinned at the time, `12bce878da99bca61a5d8d798bff0a3bc93bd153`, already
+included a correction to that design. Treat the versioned source, not the live website, as
 the description of what this installation does.
 
 ### Earlier design: a breakpoint after a moving tag

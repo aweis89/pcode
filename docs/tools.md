@@ -34,8 +34,8 @@ is not copied. Recursive delegation is disabled. Each task retains a separate
 their own tool configuration rather than automatically gaining the worker's tools.
 
 Harness is pinned to upstream commit
-[`12bce878da99bca61a5d8d798bff0a3bc93bd153`](https://github.com/pydantic/pydantic-ai-harness/commit/12bce878da99bca61a5d8d798bff0a3bc93bd153),
-which is newer than the 0.31.0 release. The pin is a direct dependency, so both
+[`a7bbe89fd855138916d4f64060479f4ddb0ef9b0`](https://github.com/pydantic/pydantic-ai-harness/commit/a7bbe89fd855138916d4f64060479f4ddb0ef9b0),
+which is newer than the 0.35.0 release. The pin is a direct dependency, so both
 `uv sync` and `make install` use it. Coder supplies `read_file`, `write_file`,
 `edit_file`, `list_files`, `grep`, and `shell`; pcode adds planning, the worker,
 and optional web search. `list_files` and `grep` use the bundled ripgrep and
