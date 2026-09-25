@@ -58,6 +58,10 @@ candidate's size so that cost is visible before you pick.
 - Session, conversation-tree, model, and tool popups share terminal-default
   backgrounds and text, with reverse-video selection highlights. They follow your
   terminal background automatically, independently of `/theme` and `/syntax`.
+  Opening a popup cancels other popup requests already waiting, so pressing
+  Ctrl+L twice quickly opens one picker, not a second one after dismissal.
+  Queued messages and non-popup commands are kept; a fresh request after closing
+  the popup opens it normally.
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
 - `/login [anthropic|openai-codex|meridian]`: sign in in a browser. Anthropic is pcode's own flow;
   `openai-codex` uses Pydantic AI's OAuth flow (no CLI required); `meridian` runs

@@ -109,6 +109,10 @@ BRANCH_POLL_SECONDS = 30
 """Safety net for a checkout made outside this session; turns refresh it directly."""
 
 
+class _PopupSuperseded(Exception):
+    """Another popup opened after this command was queued."""
+
+
 def meridian_thinking_note(base: str | None, passthrough: bool | None) -> str:
     if passthrough:
         return "Meridian forwards readable thinking, so it appears in scrollback."
@@ -180,6 +184,8 @@ class PreviewApp:
             activity=self.activity,
         )
         self.running = True
+        self._popup_generation = 0
+        self._command_popup_generation: int | None = None
         self.inspector_requested: str | None = None
         self.diffs_requested = False
         self.links_requested = False
@@ -1126,7 +1132,12 @@ class PreviewApp:
 
     @asynccontextmanager
     async def popup(self, output: TerminalOutput, session):
-        """Give a modal exclusive terminal ownership, then restore the transcript."""
+        """Give a modal exclusive terminal ownership, superseding pending popups."""
+        if (
+            self._command_popup_generation is not None
+            and self._command_popup_generation != self._popup_generation
+        ):
+            raise _PopupSuperseded
         await output.flush(drain=True)
         try:
             async with output.lock:
@@ -1138,6 +1149,11 @@ class PreviewApp:
                         create_input(stdin=stdin) if stdin is not None else session.app.input
                     )
                     try:
+                        # Include requests queued during preparation and terminal
+                        # handoff, not just those waiting when this command began.
+                        self._popup_generation += 1
+                        if self._command_popup_generation is not None:
+                            self._command_popup_generation = self._popup_generation
                         yield modal_input
                     finally:
                         if modal_input is not session.app.input:
@@ -2880,6 +2896,7 @@ class PreviewApp:
                         queue_generation,
                         text,
                         not self.activity.busy and not self.activity.queued_prompts,
+                        self._popup_generation,
                     )
                 )
                 command_idle.clear()
@@ -3086,7 +3103,8 @@ class PreviewApp:
         async def consume_commands():
             nonlocal pending_mcp, pending_model_command
             while self.running:
-                generation, text, submitted_idle = await commands.get()
+                generation, text, submitted_idle, popup_generation = await commands.get()
+                self._command_popup_generation = popup_generation
                 try:
                     if text.split()[0] not in {
                         "/quit",
@@ -3107,7 +3125,9 @@ class PreviewApp:
                         if not ready.is_set():
                             # Keep consuming frontend-only commands while backend
                             # commands wait, preserving their order for readiness.
-                            startup_commands.append((generation, text, submitted_idle))
+                            startup_commands.append(
+                                (generation, text, submitted_idle, popup_generation)
+                            )
                             continue
                         if generation != queue_generation:
                             continue
@@ -3250,9 +3270,12 @@ class PreviewApp:
                             await self.browse_diffs(output, session)
                         if self.links_requested:
                             await self.choose_link(output, session)
+                except _PopupSuperseded:
+                    pass
                 except Exception as error:
                     self.command_failed(text.split(maxsplit=1)[0], error)
                 finally:
+                    self._command_popup_generation = None
                     if pending_mcp or pending_model_command:
                         self.activity.busy = True
                     if commands.empty() and not startup_commands:
@@ -3424,7 +3447,7 @@ class PreviewApp:
                 # popup or command is already using it instead of racing it.
                 opening = self.auto_open_asides()
                 if opening:
-                    commands.put_nowait((queue_generation, "/btw", False))
+                    commands.put_nowait((queue_generation, "/btw", False, self._popup_generation))
                 on = f"{aside.label}: " if aside.label else ""
                 self.transcript.note(
                     f"Side answer ready ({on}{plain(aside.question, 60)}). "

@@ -28,6 +28,7 @@ from pydantic_ai.messages import (
 from pcode.cache_warnings import CacheBustEvent
 from pcode.filesystem import FileChangeEvent
 from pcode.inspection import capture
+from pcode.jobs import registry
 from pcode.planning import PlanSnapshot
 from pcode.runtime import ToolStarted, ToolSummary
 from pcode.shell import result_projection
@@ -39,6 +40,7 @@ from pcode.tool_display import (
     invocation,
     result_detail,
     stated_purpose,
+    subject,
     target,
 )
 
@@ -128,6 +130,9 @@ async def stream_child_activity(_ctx, events):
                 args = {}
             tools[part.tool_call_id] = (part.tool_name, args, monotonic())
             agent, task = assignment(part.tool_name, args)
+            # Resolved here, in the child's context, so an isolated worker's
+            # job ids are looked up among its own jobs, not the parent's.
+            command, purpose = subject(part.tool_name, args, registry())
             child = ToolStarted(
                 part.tool_name,
                 target(part.tool_name, args),
@@ -136,8 +141,8 @@ async def stream_child_activity(_ctx, events):
                 run_id=parent.run_id or "",
                 started_at=datetime.now(timezone.utc).isoformat(),
                 parent_call_id=parent_id,
-                command=invocation(part.tool_name, args),
-                purpose=stated_purpose(args),
+                command=command,
+                purpose=purpose,
                 execution=execution_mode(part.tool_name, args),
                 agent=agent,
                 task=task,

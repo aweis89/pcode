@@ -5,11 +5,15 @@ import json
 import re
 from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.text import Text
 
 from pcode.code_mode import SANDBOXED_TOOLS
 from pcode.diagnostics import redact
+
+if TYPE_CHECKING:
+    from pcode.jobs import JobRegistry
 
 LABELS = {
     "run_code": "Code",
@@ -24,6 +28,9 @@ LABELS = {
     "create_directory": "Create directory",
     "file_info": "File info",
     "shell": "Run",
+    "wait_for_job": "Wait",
+    "job_output": "Job output",
+    "stop_job": "Stop job",
     "list_files": "Find",
     "grep": "Search",
     "run_command": "Run",
@@ -210,6 +217,23 @@ def invocation(name: str, args: dict) -> str:
     return ""
 
 
+def subject(name: str, args: dict, jobs: "JobRegistry") -> tuple[str, str]:
+    """The sanitized command a call is about and its stated purpose, each "" if none.
+
+    A command tool's come from its own arguments. A job tool names only an id,
+    so its come from the `shell` call that started that job: otherwise a wait
+    says a job is being waited on but never what the job runs. An id `jobs`
+    does not know leaves both empty rather than guessing.
+    """
+    if name in JOB_HANDLE_TOOLS:
+        job_id = args.get("job_id")
+        job = jobs.get(job_id) if isinstance(job_id, str) else None
+        if job is None:
+            return "", ""
+        name, args = "shell", {"command": job.command, "purpose": job.purpose}
+    return invocation(name, args), stated_purpose(args)
+
+
 def assignment(name: str, args: dict) -> tuple[str, str]:
     """A delegation's sanitized agent name and task label, or ("", "") for any other tool.
 
@@ -240,9 +264,9 @@ def target(name: str, args: dict) -> str:
         # keep saying what actually ran, not only what it was meant to do.
         purpose = stated_purpose(args)
         return f"{purpose} · {shown}" if purpose else shown
-    if name in {"wait_for_job", "job_output", "stop_job"}:
-        # The id is the whole subject of these calls: without it the status line
-        # says a job is being waited on but not which one.
+    if name in JOB_HANDLE_TOOLS:
+        # The id is all these calls are given: without it the status line says
+        # a job is being waited on but not which one. `subject` adds the rest.
         job_id = args.get("job_id")
         return argument(job_id) if isinstance(job_id, str) else "job unavailable"
     if name == "read_tool_result":
@@ -543,8 +567,11 @@ def native_result_projection(content: object) -> object:
     return "\n".join(lines)
 
 
+# Tools that act on a job `shell` started, named by its id, instead of running one.
+JOB_HANDLE_TOOLS = frozenset({"wait_for_job", "job_output", "stop_job"})
+
 # Tools whose result carries a job marker, not command output of their own.
-JOB_TOOLS = frozenset({"shell", "wait_for_job", "job_output", "stop_job"})
+JOB_TOOLS = JOB_HANDLE_TOOLS | {"shell"}
 
 # Shell-facing tools whose captured output can be mirrored into scrollback.
 COMMAND_TOOLS = frozenset(
