@@ -45,7 +45,7 @@ pcode -m openai-codex:gpt-5.6-luna
 - [Sessions and recovery](sessions.md): where conversations are stored,
   resuming, recalling earlier sessions, checkpoints, and retries.
 - [Context, limits and caching](context.md): what the fixed prompt costs,
-  compaction, model and tool output limits, and prompt cache warnings.
+  compaction, model and tool output limits, and prompt cache notices.
 - [The transcript](transcript.md): what lands in scrollback and how to
   regenerate it.
 

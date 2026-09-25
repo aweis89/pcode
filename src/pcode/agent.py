@@ -198,9 +198,13 @@ def create_coder(
     # Ahead of the worker copy below, so a delegate that inherits MCP tools also
     # learns which servers they come from.
     coder.capabilities.append(MCPServers(instruct=has_mcp_servers()))
-    debug = load_preferences().get("debug", SETTINGS["debug"].default) == "on"
-    if debug:
-        coder.capabilities.append(CacheBustReporting())
+    preferences = load_preferences()
+    cache_notices = None
+    if preferences.get("cache_notices", SETTINGS["cache_notices"].default) == "on":
+        cache_notices = CacheBustReporting(
+            dump_fingerprints=preferences.get("debug", SETTINGS["debug"].default) == "on"
+        )
+        coder.capabilities.append(cache_notices)
     for index, capability in enumerate(coder.capabilities):
         if isinstance(capability, Shell):
             # direnv writes its status banner to stderr on every cd into a
@@ -271,7 +275,7 @@ def create_coder(
             shared_capabilities=[
                 MeridianSessionIdentity(),
                 ModelOutputLimits(),
-                *([CacheBustReporting()] if debug else []),
+                *([replace(cache_notices)] if cache_notices else []),
                 ProviderCacheSettings(),
                 replace(output_limits),
             ],
