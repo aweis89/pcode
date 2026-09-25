@@ -266,6 +266,12 @@ editing it, disable and enable the server again.
   silently and the first authentication error arrives mid-turn.
   All enabled servers reconnect for each turn and close afterward, including on
   failure or cancellation; local subprocesses do not stay running between turns.
+- A server that fails to connect costs only its own tools. The turn goes ahead
+  with every other tool, pcode prints a warning naming the server (its frames go
+  to the session's `errors.log`), and the model's server list marks it
+  `failed to connect this turn` so it doesn't go searching for tools that aren't
+  there. It stays enabled and is tried again on the next turn;
+  `/mcp disable NAME` stops that.
 - `/mcp disable NAME` removes those tools from subsequent model requests. MCP
   selection cannot change during an active turn. To reload a server after editing
   its configuration or environment, disable and enable it again.

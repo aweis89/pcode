@@ -121,6 +121,35 @@ def test_list_is_appended_when_it_changes_and_never_rewrites_history():
     asyncio.run(run())
 
 
+class Unreachable(FunctionToolset):
+    async def __aenter__(self):
+        raise ConnectionError("handshake refused")
+
+
+def test_a_server_that_fails_to_connect_is_listed_as_unavailable():
+    runtime, requests = recording_runtime()
+    down = render([("remote", None)], {"remote": "failed"})
+    up = render([("remote", None)])
+    assert "- remote (failed to connect this turn; its tools are unavailable)" in down
+
+    async def turn():
+        requests.clear()
+        async for _ in runtime.stream("go"):
+            pass
+        return requests[0][0]
+
+    async def run():
+        runtime.mcp.enabled["remote"] = Unreachable([])
+        # The turn still runs (probe is called), and the model is told why the
+        # server it was promised has no tools.
+        assert await turn() == [down]
+        assert len(requests) == 2
+        runtime.mcp.enabled["remote"] = FunctionToolset([])
+        assert await turn() == [down, up]
+
+    asyncio.run(run())
+
+
 def test_list_returns_after_compaction_drops_it():
     runtime, requests = recording_runtime()
     summary = [
