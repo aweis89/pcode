@@ -26,13 +26,7 @@ def test_codex_uses_native_model_with_only_wire_dialect_overrides(tmp_path, monk
     with patch("pcode.agent.Agent") as constructor, patch("pcode.agent.OpenAICodexModel") as model:
         create_agent("openai-codex:gpt-5.6-luna", tmp_path)
     model.assert_called_once_with(
-        "gpt-5.6-luna",
-        profile={
-            "openai_supports_prompt_cache_breakpoints": False,
-            # Inherited by the standard OpenAI provider's profile, not the Codex one.
-            "tool_deferral_mode": "with_tool_search",
-            "tool_addition_mode": "with_definitions",
-        },
+        "gpt-5.6-luna", profile={"openai_supports_prompt_cache_breakpoints": False}
     )
     assert constructor.call_args.args == (model.return_value,)
     assert isinstance(constructor.call_args.kwargs["capabilities"][0], CombinedCapability)
