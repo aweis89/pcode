@@ -228,7 +228,9 @@ def setup(pcode) -> None:
             "status": "Show which browser is in use and where it is",
         },
     )
-    pcode.on_close(STATE.close)
+    # Workers borrow the session browser, not ownership of its process/connection.
+    if not pcode.is_worker:
+        pcode.on_close(STATE.close)
     if not STATE.enabled:
         return
     toolset = STATE.open()

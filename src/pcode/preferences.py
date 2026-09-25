@@ -184,6 +184,16 @@ SETTINGS = {
         ("on", "off"),
         description="Start each session in its own .worktrees/<session> git worktree",
     ),
+    "worker_isolation": Setting(
+        "off",
+        ("on", "off"),
+        description="Isolate built-in worker tasks in git worktrees (requires worktree=on)",
+    ),
+    "worker_concurrency": Setting(
+        "0",
+        whole_number=True,
+        description="Concurrent worker cap; 0 is unlimited (reload to apply)",
+    ),
     # An untouched worktree is always removed; uncommitted changes are always kept.
     "worktree_exit": Setting(
         "ask",
@@ -278,7 +288,7 @@ SETTINGS = {
         "off", ("on", "off"), description="Hide the task list when a turn ends"
     ),
     "attach_tasks": Setting(
-        "off", ("on", "off"), description="Draw the task list inside the editor box"
+        "on", ("on", "off"), description="Draw the task list inside the editor box"
     ),
     "tasks_max_height": Setting(
         None,

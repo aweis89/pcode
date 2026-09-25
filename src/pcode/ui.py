@@ -307,7 +307,7 @@ class Activity:
     # user wants it shown while the model works.
     autohide_tasks: bool = False
     # Draw the widget as the top section of the editor box instead of its own box.
-    attach_tasks: bool = False
+    attach_tasks: bool = True
     # Cap on the task widget plus the editor box: whole rows, or a share of the
     # screen below 1 (0.5 is half). None keeps the default layout.
     tasks_max_height: float | None = None
