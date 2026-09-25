@@ -22,7 +22,16 @@ from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.text import Text
 
-from pcode.aside import MODEL_MARK, Asides, model_fragment, model_labels, parse_models
+from pcode.aside import (
+    EFFORT_MARK,
+    MODEL_MARK,
+    Asides,
+    SideTarget,
+    effort_fragment,
+    model_fragment,
+    model_labels,
+    parse_models,
+)
 from pcode.cli import ask, restore_stdin
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
@@ -30,6 +39,7 @@ from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_argument_descriptions, config_arguments, configure
 from pcode.jobs import OUTPUT_TAIL_BYTES, format_duration
 from pcode.preferences import (
+    EFFORTS,
     SETTINGS,
     SYNTAX_THEMES,
     apply_effort,
@@ -185,7 +195,7 @@ class PreviewApp:
         # it needs no refresh hook of its own.
         self.activity.asides = self.asides.items
         self.asides.on_failure = self.record_aside_failure
-        self.aside_requested: tuple[list[str], str] | None = None
+        self.aside_requested: tuple[list[SideTarget], str] | None = None
         self._model_suggestions: tuple[str | None, float, list[str]] | None = None
         self.aside_view_requested = False
         self.worker_view_requested = False
@@ -270,7 +280,8 @@ class PreviewApp:
             ),
             Command(
                 "/btw",
-                "Ask a side question beside the running turn ($MODEL ... picks models); "
+                "Ask a side question beside the running turn ($MODEL ... picks models, "
+                "+EFFORT the effort); "
                 "bare opens the answers",
                 self.aside,
                 free_arguments=True,
@@ -2012,7 +2023,10 @@ class PreviewApp:
         self.tree_requested = True
 
     def aside(self, argument: str) -> None:
-        """`/btw [$MODEL ...] QUESTION` asks beside the turn; bare `/btw` reads the answers."""
+        """`/btw [$MODEL[+EFFORT] | +EFFORT ...] QUESTION` asks beside the turn.
+
+        Bare `/btw` reads the answers.
+        """
         models, question = parse_models(argument)
         if not question:
             if not self.asides.items:
@@ -2026,47 +2040,67 @@ class PreviewApp:
             raise ValueError("/btw needs a model; this is a local UI preview.")
         if self._startup_pending or self._startup_error is not None:
             raise ValueError("/btw is unavailable until the agent has started.")
+        # Refused the way /effort refuses it, before anything starts, rather
+        # than asking at an effort the provider would silently ignore.
+        for target in models:
+            name = target.model or self.model
+            if target.effort and effort_setting(name) is None:
+                raise ValueError(
+                    f"Effort control requires an OpenAI/Codex, Anthropic, or Meridian model; "
+                    f"{name} is not one."
+                )
         self.aside_requested = (models, question)
 
-    async def start_aside(self, question: str, models: list[str] | None = None) -> None:
+    async def start_aside(self, question: str, models: list[SideTarget] | None = None) -> None:
         """Run a side question in the background, on the context available now.
 
-        With `models`, one side question starts per model. The conversation's
+        With `models`, one side question starts per target. The conversation's
         own model takes the default path, which shares its prompt cache; every
         other one is resolved first, so a bad name fails the command before
-        anything starts.
+        anything starts. An effort on the conversation's own model stays on
+        that path, with the effort applied to its settings for that question.
         """
-        from pcode.agent import side_model
+        from pcode.agent import side_model, with_effort
 
-        models = models or []
-        others = [model for model in models if model != self.model]
+        models = models or [SideTarget()]
+        others = [target for target in models if target.model not in ("", self.model)]
         resolved = {}
         if others:
-            chosen = await asyncio.to_thread(lambda: [side_model(model) for model in others])
-            resolved = {choice.name: choice for choice in chosen}
+            chosen = await asyncio.to_thread(
+                lambda: [side_model(target.model, target.effort) for target in others]
+            )
+            resolved = dict(zip(others, chosen))
         labels = model_labels(models)
 
-        def work_on(choice):
+        def options_for(target: SideTarget) -> dict:
+            if target in resolved:
+                return {"model": resolved[target]}
+            if not target.effort:
+                return {}
+            # Taken now, like the context: a later /effort must not reach it.
+            agent = self.runtime.agent
+            settings = with_effort(self.model, agent.model, agent.model_settings, target.effort)
+            return {"settings": settings}
+
+        def work_on(options: dict):
             async def work(aside) -> None:
                 def report(answer: str, activity: str) -> None:
                     self.asides.update(aside, answer=answer, activity=activity)
 
-                if choice is None:
-                    await self.runtime.aside(question, report=report)
-                else:
-                    await self.runtime.aside(question, report=report, model=choice)
+                await self.runtime.aside(question, report=report, **options)
 
             return work
 
-        for model in models or [""]:
+        for target in models:
             self.asides.start(
                 question,
-                work_on(resolved.get(model)),
-                model=model,
-                label=labels.get(model, ""),
+                work_on(options_for(target)),
+                model=target.model,
+                label=labels[target],
+                effort=target.effort,
             )
         if others:
-            names = ", ".join(others)
+            names = ", ".join(dict.fromkeys(target.model for target in others))
             self.transcript.note(
                 f"Asking beside the conversation on {names}: the turn keeps running and "
                 "this question does not join it. Another model starts without the "
@@ -2080,9 +2114,20 @@ class PreviewApp:
             )
 
     def aside_completions(self, argument: str):
-        """Complete a `$MODEL` word in `/btw` arguments from the /model catalog."""
+        """Complete a `$MODEL` word in `/btw` arguments from the /model catalog.
+
+        After a `+`, bare or ending a `$MODEL` word, the /effort levels complete.
+        """
         from prompt_toolkit.completion import Completion
 
+        effort = effort_fragment(argument)
+        if effort is not None:
+            for level in EFFORTS:
+                if level.startswith(effort.casefold()):
+                    yield Completion(
+                        level, start_position=-len(effort), display=EFFORT_MARK + level
+                    )
+            return
         fragment = model_fragment(argument)
         if fragment is None:
             return
@@ -2127,6 +2172,7 @@ class PreviewApp:
             ),
             detail=f"Side question ({aside.status}"
             + (f" on {aside.model}" if aside.model else "")
+            + (f" at {aside.effort} effort" if aside.effort else "")
             + f"): {aside.question}",
         )
 

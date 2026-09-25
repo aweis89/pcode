@@ -392,19 +392,18 @@ class SideModel:
     settings: dict | None
 
 
-def side_model(name: str) -> SideModel:
+def side_model(name: str, effort: str = "") -> SideModel:
     """Resolve `name` now, failing with a clear message rather than on first request.
 
     The settings are the ones the model would get as the conversation's model:
-    its defaults plus its own saved /effort. None of the conversation model's
-    settings carry over, since they belong to another model or provider.
+    its defaults plus its own saved /effort, or `effort` when one was asked
+    for. None of the conversation model's settings carry over, since they
+    belong to another model or provider.
     """
-    from types import SimpleNamespace
-
     from pydantic_ai.exceptions import UserError
     from pydantic_ai.models import infer_model
 
-    from pcode.preferences import apply_effort, effort_for
+    from pcode.preferences import effort_for
 
     try:
         resolved = resolve_model(name)
@@ -414,9 +413,25 @@ def side_model(name: str) -> SideModel:
             resolved = infer_model(resolved)
     except (UserError, ValueError, ImportError) as error:
         raise ValueError(f"Cannot use {name}: {error}") from error
-    holder = SimpleNamespace(model=resolved, model_settings=model_settings(name))
-    apply_effort(holder, name, effort_for(name))
-    return SideModel(name, resolved, holder.model_settings)
+    return SideModel(
+        name,
+        resolved,
+        with_effort(name, resolved, model_settings(name), effort or effort_for(name)),
+    )
+
+
+def with_effort(name: str, model, settings: dict | None, effort: str | None) -> dict | None:
+    """`settings` with `effort` applied for `name` the way /effort applies it.
+
+    `settings` itself is never mutated: it may be captured by a run in flight.
+    """
+    from types import SimpleNamespace
+
+    from pcode.preferences import apply_effort
+
+    holder = SimpleNamespace(model=model, model_settings=settings)
+    apply_effort(holder, name, effort)
+    return holder.model_settings
 
 
 def create_agent(
