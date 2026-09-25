@@ -406,9 +406,11 @@ not inherit a familiar model name's direct-API limit. An explicit
 input/maximum limits.
 
 Harness capabilities that take a `max_*_fraction` resolve the window from
-genai-prices instead, which knows no `meridian:` or `openai-codex:` ids and
-silently assumes 200k. Pass them pcode's window (`context_window=`), or a 1M
-session gets told it is nearly full at 160k and starts cutting work short.
+genai-prices instead. It knows no `meridian:` ids and silently assumes 200k, and
+it gives `openai-codex:` ids the direct API's window by model name (1.05M for a
+model Codex serves at 272k). Pass them pcode's window (`context_window=`), or a
+1M Meridian session gets told it is nearly full at 160k and starts cutting work
+short.
 
 - Public catalog: [Models.dev JSON](https://models.dev/api.json) and
   [schema](https://github.com/anomalyco/models.dev/blob/dev/README.md).

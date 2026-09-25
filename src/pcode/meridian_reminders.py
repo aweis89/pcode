@@ -64,9 +64,10 @@ class MeridianLimitWarnings(WarnNearLimits):
     async def _for_model(self, model) -> WarnNearLimits:
         """This capability, bound to the window the footer and compaction use.
 
-        Harness resolves windows from genai-prices, which has no `meridian:` or
-        `openai-codex:` ids and silently assumes 200k: a 1M Meridian session was
-        told it was 90% full at 162k. Explicit windows and models pcode cannot
+        Harness resolves windows from genai-prices, which knows no `meridian:` ids
+        and silently assumes 200k (a 1M Meridian session was told it was 90% full
+        at 162k), and gives `openai-codex:` the direct API's window by model name
+        (1.05M where Codex serves 272k). Explicit windows and models pcode cannot
         resolve keep Harness's own resolution.
         """
         if self.max_context_fraction is None or self.context_window is not None:
