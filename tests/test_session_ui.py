@@ -425,6 +425,32 @@ def test_session_turns_pairs_prompts_with_final_responses(tmp_path):
     assert first_prompt(missing, root) == "(Prompt unavailable)"
 
 
+def test_resume_continues_a_copy_of_a_session_open_elsewhere(tmp_path):
+    async def run():
+        root = tmp_path / "sessions"
+        saved = SavedSession.create("test:local", tmp_path, root)
+
+        async def model(messages, info):
+            yield "Saved answer"
+
+        agent = Agent(FunctionModel(stream_function=model))
+        elsewhere = AgentRuntime(agent, saved)  # Still open, as in another process.
+        _ = [event async for event in elsewhere.stream("First question")]
+        app = PreviewApp(workspace=tmp_path, session_dir=root, console=Console(file=StringIO()))
+        with patch("pcode.agent.create_agent", return_value=agent):
+            await app.resume_session(saved.info.id)
+        try:
+            assert app.runtime.session.forked_from == saved.info.id
+            assert app.runtime.session.info.id != saved.info.id
+            assert app.runtime.history == elsewhere.history
+            assert "open in another process" in repr(app.transcript.replay())
+        finally:
+            app.runtime.close()
+            elsewhere.close()
+
+    asyncio.run(run())
+
+
 def test_resume_restores_before_replacing_runtime(tmp_path):
     async def run():
         root = tmp_path / "sessions"

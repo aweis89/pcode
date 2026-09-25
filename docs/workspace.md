@@ -235,4 +235,7 @@ hand-made ones are only reported):
 | Uncommitted changes | Kept, with the resume command. Committing on your behalf at exit is not pcode's call. |
 
 `--print` has nobody to ask, so it only does the untouched cleanup. Merging
-never pushes; push from the mainline when you are ready.
+never pushes; push from the mainline when you are ready. None of this happens
+while another session is still open in the same worktree, as a
+[copied session](sessions.md#continuing-a-session-that-is-open-elsewhere) is
+alongside its original: the worktree is kept with a note naming that session.
