@@ -3,6 +3,7 @@
 import shutil
 
 import pytest
+from test_inspector_tmux import modal
 from test_tmux import capture, input_rows
 from test_tmux import pane as pane
 
@@ -61,6 +62,17 @@ def test_jobs_row_watch_and_wake_keep_the_prompt_compact(pane):
     screen = capture(pane, "serving on 8000")
     assert "$ " in screen and "Watching [j1]" in screen
     assert input_rows(screen) == 1
+
+    # Bare /jobs is a popup over the log, not another listing in scrollback.
+    pane("send-keys", "-t", "preview:0.0", "/jobs", "Enter")
+    screen = modal(pane, "Jobs · 2 this session · 2 running")
+    assert "⟳ j1 · running · " in screen and "serving on 8000" in screen
+    assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "1"
+    pane("send-keys", "-t", "preview:0.0", "Escape")
+    screen = capture(pane, "serving on 8000")
+    assert input_rows(screen) == 1
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert "this session" not in history
 
     # Release only after watch is visible: startup time must not race the exit.
     pane("send-keys", "-t", "preview:0.0", "/finish-job", "Enter")

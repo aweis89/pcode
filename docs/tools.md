@@ -227,8 +227,9 @@ follow-up such as “write the release notes in the meantime” can steer the sa
 turn into other work while a build continues, without `/btw`.
 
 Jobs outlive the turn, the conversation, and pcode itself. Use
-[`/jobs`](commands.md#offline-preview-and-commands) to see what is still running, and
-`/jobs stop ID` or `/jobs stop all` to stop it. A stop is `SIGTERM` to the
+[`/jobs`](commands.md#offline-preview-and-commands) to browse them and read each one's log
+(the last 128 KiB, with the same redaction as the preview), and **Ctrl+K** there,
+`/jobs stop ID`, or `/jobs stop all` to stop one. A stop is `SIGTERM` to the
 job's whole process group, so a server can release its port; whatever is still
 there two seconds later gets `SIGKILL`. Logs of finished jobs are dropped on
 exit and the oldest are evicted after 50; a running job keeps its log, because

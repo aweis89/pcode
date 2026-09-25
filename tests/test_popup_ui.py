@@ -276,3 +276,13 @@ def test_model_picker_pages_its_selection():
                     await task
 
     asyncio.run(run())
+
+
+def test_anchor_on_an_empty_last_renderable_stays_on_a_real_line():
+    pane = RichPane(color_system=None)
+    pane.set([Text("one"), Text("two"), Text("")], anchor=2)
+    content = pane.control.create_content(40, 10)
+    # Trailing newlines are stripped, so the empty block starts past the end.
+    assert content.line_count == 2
+    assert content.cursor_position.y == 1
+    content.get_line(content.cursor_position.y)
