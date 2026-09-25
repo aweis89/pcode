@@ -2453,6 +2453,8 @@ class PreviewApp:
 
         if hasattr(self.runtime, "retry_notice"):
             self.runtime.retry_notice = retry_notice
+        if hasattr(self.runtime, "warning_notice"):
+            self.runtime.warning_notice = self.transcript.warning
         failure = None
         cancelled = False
         try:
@@ -3395,6 +3397,8 @@ class PreviewApp:
         self.runtime.compaction_notice = self.transcript.note
         if hasattr(self.runtime, "retry_notice"):
             self.runtime.retry_notice = self.transcript.note
+        if hasattr(self.runtime, "warning_notice"):
+            self.runtime.warning_notice = self.transcript.warning
         # Text streamed since the last settled message, so a turn that ends
         # mid-block still prints what arrived.
         block = ""
