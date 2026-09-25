@@ -1,4 +1,4 @@
-"""Forward bounded child activity without exposing child prose to the transcript.
+"""Forward child activity; child prose goes to the worker viewer, never the transcript.
 
 Harness 0.31 supplies delegation lifecycle events and a child stream handler, but
 not the parent's call identity in that handler. A context-local execution wrapper
@@ -16,10 +16,13 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    PartDeltaEvent,
     PartStartEvent,
     RetryPromptPart,
     TextPart,
+    TextPartDelta,
     ThinkingPart,
+    ThinkingPartDelta,
 )
 
 from pcode.cache_warnings import CacheBustEvent
@@ -52,6 +55,29 @@ class ChildActivity(CapabilityEvent, namespace="pcode_delegation", name="activit
     plan: list[dict] | None = None
 
 
+@dataclass(kw_only=True)
+class ChildOutput(CapabilityEvent, namespace="pcode_delegation", name="output"):
+    """A slice of the child's prose or reasoning; `start` opens a new part."""
+
+    text: str
+    thinking: bool = False
+    start: bool = False
+
+
+def _output(event) -> ChildOutput | None:
+    """The prose or reasoning a streamed part carries, if any."""
+    if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart | ThinkingPart):
+        return ChildOutput(
+            text=event.part.content, thinking=isinstance(event.part, ThinkingPart), start=True
+        )
+    if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+        return ChildOutput(text=event.delta.content_delta)
+    if isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta):
+        if event.delta.content_delta:
+            return ChildOutput(text=event.delta.content_delta, thinking=True)
+    return None
+
+
 class DelegationReporting(AbstractCapability):
     async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
         if call.tool_name != "delegate_task":
@@ -64,7 +90,7 @@ class DelegationReporting(AbstractCapability):
 
 
 async def stream_child_activity(_ctx, events):
-    """Consume child streams, emitting only tool boundaries and phase changes."""
+    """Consume child streams: tool boundaries, phase changes, plans and prose."""
     parent = _parent.get()
     plan_items: list[dict] = []
     tools = {}
@@ -91,6 +117,8 @@ async def stream_child_activity(_ctx, events):
                 plan_items = event.items
                 await parent.emit(ChildActivity(activity=phase, plan=event.items))
             continue
+        if (output := _output(event)) is not None:
+            await parent.emit(output)
         child = None
         activity = phase
         parent_id = parent.tool_call_id or ""

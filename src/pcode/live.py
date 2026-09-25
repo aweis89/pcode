@@ -51,7 +51,7 @@ from pcode.agent import SideModel, worker_toolsets
 from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, ContextTracking, summarize
 from pcode.conversation_tree import ConversationTree
-from pcode.delegation import ChildActivity
+from pcode.delegation import ChildActivity, ChildOutput
 from pcode.diagnostics import (
     error_details,
     provider_context,
@@ -80,6 +80,7 @@ from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
     CacheBust,
     ChildPlan,
+    ChildText,
     CommandOutput,
     EditPreview,
     Event,
@@ -683,9 +684,11 @@ class AgentRuntime:
                 async for event in stream:
                     if isinstance(event, ToolStarted):
                         tools_started = True
-                    if isinstance(event, (PlanPreview, ChildPlan, CommandOutput, EditPreview)):
+                    if isinstance(
+                        event, (PlanPreview, ChildPlan, ChildText, CommandOutput, EditPreview)
+                    ):
                         # Unexecuted arguments and a sub-agent's transient plan
-                        # must never enter replay/tree history.
+                        # and prose must never enter replay/tree history.
                         yield event
                         continue
                     if saved:
@@ -902,6 +905,14 @@ class AgentRuntime:
                                 parent_call_id=child.parent_call_id,
                             )
                             del child_tools[call_id]
+                elif isinstance(event, ChildOutput):
+                    if event.tool_call_id in delegates:
+                        yield ChildText(
+                            event.tool_call_id,
+                            event.text,
+                            thinking=event.thinking,
+                            start=event.start,
+                        )
                 elif isinstance(event, ChildActivity):
                     if start := delegates.get(event.tool_call_id):
                         if event.activity != start.activity:
