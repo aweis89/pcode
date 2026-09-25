@@ -234,8 +234,8 @@ Because the list is appended rather than written into the instructions, changing
 it never rewrites earlier messages or the instructions, so the list does not
 invalidate the prompt cache by itself. Enabling the first searchable server
 still does, since that adds the search tool to the request. A delegated worker
-sees the same list, because it shares the parent's enabled servers; side
-questions (`/btw`) get neither the tools nor the list.
+sees the same list, because it shares the parent's enabled servers, and so does
+a side question (`/btw`), which sends the conversation's exact tools and list.
 
 The name is often enough. Add a `description` when it is not:
 

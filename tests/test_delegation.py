@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 from pydantic_ai import Agent
@@ -14,8 +15,10 @@ from pcode.agent import create_coder
 from pcode.delegation import DelegationReporting, _parent, stream_child_activity
 from pcode.live import AgentRuntime
 from pcode.runtime import ChildPlan, Message, PlanUpdated, TextDelta, ToolStarted, ToolSummary
-from pcode.tool_display import delegation_detail, target
+from pcode.stream_display import present_stream_event
+from pcode.tool_display import assignment, delegation_detail, target
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
+from pcode.ui import Activity
 
 
 def returns(messages):
@@ -170,6 +173,16 @@ def test_delegation_display_redacts_and_bounds_assignment():
     assert "agent unavailable" in target("delegate_task", {})
 
 
+def test_a_stated_purpose_labels_the_delegation_instead_of_the_task_opening():
+    args = {"agent_name": "worker", "task": "Repository: /repo\nFix it"}
+    args["purpose"] = " fixing\x1b it "
+    assert assignment("delegate_task", args) == ("worker", "fixing it")
+    assert target("delegate_task", args) == "worker · fixing it"
+    assert delegation_detail(args, "ok") == ("worker · fixing it → Completed", False)
+    args["purpose"] = "  "
+    assert assignment("delegate_task", args)[1].startswith("Repository: /repo")
+
+
 def test_active_delegations_are_pinned_and_children_share_the_row_budget():
     history = ToolHistory()
     history.record(delegate_started("explorer", "investigate", "parent"))
@@ -198,23 +211,26 @@ def test_active_delegations_are_pinned_and_children_share_the_row_budget():
     assert history.calls == []
 
 
-def test_a_settled_child_row_lingers_long_enough_to_read(monkeypatch):
+def test_a_child_row_shows_while_it_runs_and_leaves_when_it_settles():
+    """Like the parent's calls: a row that appeared once its call had finished would flash."""
     history = ToolHistory()
     history.record(delegate_started("explorer", "investigate", "parent"))
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     history.record(ToolStarted("grep", "newest", "status-row"))
-    history.record(ToolSummary("read_file", "child.py", call_id="parent:child"))
     rows = history.rows(3)
-    assert "child.py" in rows[1][1]
-    # Settled, so it reads as finished rather than still spinning.
-    assert rows[1][1].startswith("└── ✓") and rows[1][0] == "class:plan"
-    assert history.rows(3)[1][1] == rows[1][1]  # Its duration stops ticking.
-    # And it never takes over the status row, which only reports running work.
-    assert history.active is not None and history.active.event.call_id == "status-row"
-    monkeypatch.setattr("pcode.tool_panel.CHILD_DWELL", 0.0)
+    assert rows[1] == ("class:plan.active", rows[1][1]) and "child.py" in rows[1][1]
+    history.record(ToolSummary("read_file", "child.py", call_id="parent:child"))
     assert all("child.py" not in text for _, text in history.rows(3))
-    history.prune()
     assert [c.event.call_id for c in history.calls] == ["parent", "status-row"]
+    # The status row keeps reporting running work, not the settled child.
+    assert history.active is not None and history.active.event.call_id == "status-row"
+    # A lone child call is on the status row while it runs, so the tree never
+    # shows it at all: before this, it appeared there only after finishing.
+    history.record(ToolSummary("grep", "newest", call_id="status-row"))
+    history.record(ToolStarted("read_file", "next.py", "parent:next", parent_call_id="parent"))
+    assert history.active.event.call_id == "parent:next"
+    history.record(ToolSummary("read_file", "next.py", call_id="parent:next"))
+    assert all("next.py" not in text for _, text in history.rows(3))
 
 
 def test_parallel_parents_take_priority_over_child_chatter():
@@ -424,16 +440,46 @@ def test_a_finished_delegate_stays_listed_until_the_next_turn(failed, monkeypatc
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     history.record(ToolSummary("delegate_task", "explorer → Done", call_id="parent", failed=failed))
     monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 0.0)
-    monkeypatch.setattr("pcode.tool_panel.CHILD_DWELL", 0.0)
     history.end_turn()
-    rows = [text for _, text in task_panel_rows([], history, 10, "○")]
-    icon, state = ("!", "Failed") if failed else ("✓", "Done")
-    assert re.fullmatch(rf"{icon} ✦ Explorer · \d+\.\ds · {state} · investigate", rows[0])
+    styled = task_panel_rows([], history, 10, "○")
+    rows = [text for _, text in styled]
+    state = "Failed" if failed else "Done"
+    # Muted like a completed task, but with no task icon: `✦` is its own.
+    assert styled[0][0] == "class:plan"
+    assert re.fullmatch(rf"✦ Explorer · \d+\.\ds · {state} · investigate", rows[0])
     # Its sub-tasks stay with it; its calls do not.
     assert rows[1:] == ["└── ✓ Look"]
     assert not history.animating  # A finished row never keeps the idle screen redrawing.
     history.clear()
     assert task_panel_rows([], history, 10, "○") == []
+
+
+def test_finished_delegates_leave_when_the_parent_moves_to_another_task():
+    """Rows hang under the task active now, so a finished one would join the next task."""
+    activity = Activity()
+    plan = [
+        {"id": "a", "content": "Hand off the fix", "status": "in_progress"},
+        {"id": "b", "content": "Hand off the feature", "status": "pending"},
+    ]
+    output = SimpleNamespace(app=SimpleNamespace(invalidate=lambda: None))
+
+    def show(event):
+        present_stream_event(
+            event, output=output, transcript=None, activity=activity, present=lambda _: None
+        )
+
+    show(PlanUpdated(plan))
+    for call_id in ("done", "live"):
+        activity.tools.record(delegate_started("worker", call_id, call_id))
+        activity.tools.record_plan(call_id, [{"content": "Look", "status": "pending"}])
+    activity.tools.record(ToolSummary("delegate_task", "done", call_id="done"))
+    # The same task, restated with other changes, keeps it.
+    show(PlanUpdated([dict(plan[0], content="Hand off the fix now"), plan[1]]))
+    assert [c.event.call_id for c in activity.tools.calls] == ["done", "live"]
+    show(PlanUpdated([dict(plan[0], status="completed"), dict(plan[1], status="in_progress")]))
+    # A running delegate stays, and so does its plan; the finished one's goes too.
+    assert [c.event.call_id for c in activity.tools.calls] == ["live"]
+    assert list(activity.tools.plans) == ["live"]
 
 
 def test_running_delegates_outrank_finished_ones_for_rows():
@@ -597,7 +643,7 @@ def test_a_delegate_shows_its_plan_with_its_calls_under_the_active_task():
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     history.record(ToolStarted("grep", "newest", "status-row"))
     rows = [text for _, text in task_panel_rows([], history, 10, "*")]
-    assert rows[0].startswith("⟳ ✦ Worker · ") and " · Starting · fix it" in rows[0]
+    assert rows[0].startswith("✦ Worker · ") and " · Starting · fix it" in rows[0]
     assert rows[1:] == [
         "├── ✓ Read the code",
         "├── * Fix the bug",
@@ -608,13 +654,12 @@ def test_a_delegate_shows_its_plan_with_its_calls_under_the_active_task():
     # The plan stays while the delegate itself holds the status row.
     history.record(ToolSummary("read_file", "child.py", call_id="parent:child"))
     history.record(ToolSummary("grep", "newest", call_id="status-row"))
-    history.prune()
     assert history.active.event.call_id == "parent"
     assert "├── * Fix the bug" in [text for _, text in task_panel_rows([], history, 10, "*")]
     # And stays with it once it finishes.
     history.record(ToolSummary("delegate_task", "worker → Completed", call_id="parent"))
     rows = [text for _, text in task_panel_rows([], history, 10, "*")]
-    assert rows[0].startswith("✓ ✦ Worker") and " · Done · " in rows[0]
+    assert rows[0].startswith("✦ Worker") and " · Done · " in rows[0]
     assert "├── * Fix the bug" in rows
 
 
@@ -624,7 +669,7 @@ def test_a_short_panel_keeps_the_delegate_before_its_plan():
     history.record_plan("parent", [{"content": f"step {i}", "status": "pending"} for i in range(5)])
     rows = task_panel_rows([{"content": "Parent task", "status": "in_progress"}], history, 3, "*")
     assert rows[0] == ("class:plan.active", "* Parent task")
-    assert rows[1][1].startswith("└── ⟳ ✦ Worker")
+    assert rows[1][1].startswith("└── ✦ Worker")
     assert rows[2] == ("class:plan", "    └── ○ step 0")
 
 

@@ -7,11 +7,12 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from copy import copy
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import Capability, CombinedCapability
+from pydantic_ai.models import Model
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai_codex import OpenAICodexProvider
@@ -20,10 +21,9 @@ from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
 from pydantic_ai_harness.filesystem import FileSystem
-from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
-from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness.subagents import SubAgent
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.cache_settings import ProviderCacheSettings, model_settings
@@ -311,56 +311,6 @@ def _create_worker(
     )
 
 
-ASIDE_INSTRUCTIONS = (
-    "You are answering a side question about a conversation that is still in progress. "
-    "The message history is the main agent's context and may stop mid-task; the final "
-    "user message is the side question. Answer that question and nothing else, briefly, "
-    "preferring what the conversation already shows over fresh investigation. "
-    "You are read-only: you cannot write files, run commands, delegate, or change the "
-    "plan. Your answer is shown in a popup beside the conversation and is not added to "
-    "it, so do not address the main agent, propose next steps it should take, or promise "
-    "work. If the question needs changes made, say so and let the user send it as a "
-    "normal message."
-)
-
-
-def create_aside_agent(agent: Agent, workspace: Path) -> Agent:
-    """A read-only twin of `agent` for questions asked beside a running turn.
-
-    Side questions run concurrently with the conversation's own turn, so they
-    cannot share the live agent's capability instances: one persistent shell,
-    one plan store and one set of sub-agents between two runs would interleave
-    commands, clobber the plan and bill delegated work to the wrong turn. This
-    builds its own `Coder` instead, keeps only the read-only file tools, and
-    drops the shell, planning, and delegation entirely, so the worst a side
-    question can do to a working conversation is spend tokens.
-
-    The resolved model object is shared: it is stateless per request, and a
-    second one would mean a second HTTP client and provider handshake.
-    """
-    capabilities = []
-    for capability in create_coder(workspace).capabilities:
-        # A side question gets no MCP tools, so no list of their servers either.
-        if isinstance(capability, (Shell, SubAgents, Planning, DelegationReporting, MCPServers)):
-            continue
-        if isinstance(capability, FileSystem):
-            capability = replace(capability, read_only=True)
-        capabilities.append(capability)
-    return Agent(
-        agent.model,
-        # A model string that never resolved (missing credentials) must not turn
-        # a side question into a startup error at construction time.
-        defer_model_check=True,
-        # Model settings are passed per run instead: /effort and /show-thinking
-        # change them in place on the live agent, and a copy taken here would
-        # pin a side question to whatever they were when it was first asked.
-        name="pcode-aside",
-        retries=tool_retries(),
-        instructions=AGENT_INSTRUCTIONS + " " + ASIDE_INSTRUCTIONS,
-        capabilities=capabilities,
-    )
-
-
 def codex_model(model: str) -> OpenAICodexModel:
     """Build a Codex model on pcode's stored login, else the CLI's `auth.json`.
 
@@ -404,34 +354,78 @@ def codex_model(model: str) -> OpenAICodexModel:
     )
 
 
+def resolve_model(model: str) -> Model | str:
+    """The model object for a name, on pcode's own logins where it manages them.
+
+    Names pcode has no special handling for come back unchanged for Pydantic
+    AI's inference. So does an Anthropic name when API-key auth has no key yet,
+    which lets the terminal open and reach /login.
+    """
+    if model.startswith("openai-codex:"):
+        return codex_model(model)
+    if model.startswith("meridian:"):
+        from pcode.meridian import meridian_model
+
+        return meridian_model(model)
+    if not model.startswith("anthropic:"):
+        return model
+    from pcode.anthropic_oauth import anthropic_auth_source
+    from pcode.auth import anthropic_model
+
+    auth_source = anthropic_auth_source()
+    if auth_source == "oauth":
+        from pcode.anthropic_oauth import AnthropicOAuthModel
+
+        return AnthropicOAuthModel(model)
+    if auth_source == "api-key":
+        key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        return anthropic_model(model, key) if key else model
+    raise ValueError("PCODE_ANTHROPIC_AUTH must be api-key or oauth.")
+
+
+@dataclass(frozen=True)
+class SideModel:
+    """A model a single run uses instead of the agent's, with its own settings."""
+
+    name: str
+    model: Model
+    settings: dict | None
+
+
+def side_model(name: str) -> SideModel:
+    """Resolve `name` now, failing with a clear message rather than on first request.
+
+    The settings are the ones the model would get as the conversation's model:
+    its defaults plus its own saved /effort. None of the conversation model's
+    settings carry over, since they belong to another model or provider.
+    """
+    from types import SimpleNamespace
+
+    from pydantic_ai.exceptions import UserError
+    from pydantic_ai.models import infer_model
+
+    from pcode.preferences import apply_effort, effort_for
+
+    try:
+        resolved = resolve_model(name)
+        if isinstance(resolved, str):
+            if name.startswith("anthropic:"):
+                raise ValueError("no Anthropic credentials; use /login or set ANTHROPIC_API_KEY")
+            resolved = infer_model(resolved)
+    except (UserError, ValueError, ImportError) as error:
+        raise ValueError(f"Cannot use {name}: {error}") from error
+    holder = SimpleNamespace(model=resolved, model_settings=model_settings(name))
+    apply_effort(holder, name, effort_for(name))
+    return SideModel(name, resolved, holder.model_settings)
+
+
 def create_agent(
     model: str, workspace: Path, extensions: Sequence = (), subagents: Sequence = ()
 ) -> Agent:
     """Build the terminal's agent; `extensions` and `subagents` come from `pcode.ext`."""
-    resolved = codex_model(model) if model.startswith("openai-codex:") else model
-    if model.startswith("meridian:"):
-        from pcode.meridian import meridian_model
-
-        resolved = meridian_model(model)
-    defer_model_check = False
-    if model.startswith("anthropic:"):
-        from pcode.anthropic_oauth import anthropic_auth_source
-        from pcode.auth import anthropic_model
-
-        auth_source = anthropic_auth_source()
-        if auth_source == "oauth":
-            from pcode.anthropic_oauth import AnthropicOAuthModel
-
-            resolved = AnthropicOAuthModel(model)
-        elif auth_source == "api-key":
-            key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-            if key:
-                resolved = anthropic_model(model, key)
-            else:
-                # Allow the terminal to open so /login is reachable without credentials.
-                defer_model_check = True
-        else:
-            raise ValueError("PCODE_ANTHROPIC_AUTH must be api-key or oauth.")
+    resolved = resolve_model(model)
+    # Allow the terminal to open so /login is reachable without credentials.
+    defer_model_check = model.startswith("anthropic:") and isinstance(resolved, str)
     return Agent(
         resolved,
         defer_model_check=defer_model_check,
