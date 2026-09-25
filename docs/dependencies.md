@@ -159,6 +159,20 @@ with real filesystem tools on both main and worker agents when upgrading.
 
 ### Delegation activity
 
+`WorkspaceSubAgents` in `src/pcode/isolated_delegation.py` subclasses the pinned
+Harness `SubAgents` and `SubAgentToolset`. New isolated workers require both effective
+`worker_isolation=on` (default off) and `worktree=on`, checked at each delegation;
+otherwise auto delegation keeps the shared workspace and job registry. Task recovery
+and lifecycle protections remain available when isolation is disabled. It changes
+the tool schema and constructs a per-call worker for isolated workspaces, but reuses
+`_run_delegation` and `_settle` for model selection, budgets, lifecycle events, and
+usage accounting.
+These are private upstream interfaces: keep the isolated delegation, limits,
+cache, and persistence tests when upgrading. A shared toolset must not mutate its
+agent roster for a child; concurrent calls select independent worker instances.
+Creation/finalization wait on per-parent locks in joined threads, so cancellation
+cannot abandon a record update. Integration remains nonblocking on contention.
+
 `src/pcode/delegation.py` bridges Harness 0.31.0's `SubAgents.event_stream_handler`
 into the parent's event stream. The handler receives a **child** `RunContext`,
 not the parent tool identity; `DelegationReporting.wrap_tool_execute` binds the
@@ -781,10 +795,12 @@ the model supplying one; `Job.summary()` and `tool_display.target` keep the
 command alongside it, because a stated intention is not evidence of what is
 running.
 
-`pcode.jobs.registry()` is process-wide and deliberately not per-run: a run is
-exactly the scope a job escapes, and the worker sub-agent shares it. Tests must
-call `registry().reset()` (the `isolated_jobs` autouse fixture does). The
-process-wide registry persists under `jobs_root()/<pid>/` (job dirs plus
+`pcode.jobs.registry()` is process-wide for the parent and shared-workspace workers:
+a run is exactly the scope a job escapes. Isolated workers instead bind a context-local
+registry, with their own `JobNotices` capability, and stop its jobs on teardown.
+The parent's per-run `JobNotices` cannot reach those jobs and is not inherited by
+sub-agents. Tests must call `registry().reset()` (the `isolated_jobs` autouse fixture
+does). The process-wide registry persists under `jobs_root()/<pid>/` (job dirs plus
 `registry.json`, resolved lazily so the test env's `XDG_STATE_HOME` applies);
 `JobRegistry()` with no `state` is ephemeral and uses temp dirs. `adopt_orphans`
 treats a record whose `owner_pid` is dead as up for grabs and skips its own

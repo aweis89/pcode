@@ -48,6 +48,28 @@ def test_off_by_default_contributes_only_the_command(tmp_path):
     assert len(extension.closers) == 1
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_rebound_worker_does_not_close_parent_browser(tmp_path, fresh_state, monkeypatch, enabled):
+    from unittest.mock import AsyncMock
+
+    fresh_state.enabled = enabled
+    close = AsyncMock()
+    monkeypatch.setattr(fresh_state, "close", close)
+    loaded, extension = browser_extension(tmp_path)
+    child = tmp_path / "child"
+    child.mkdir()
+    assert extension.closers == [close]
+
+    async def scenario():
+        async with loaded.capabilities.for_workspace(child):
+            close.assert_not_awaited()
+        close.assert_not_awaited()
+        await loaded.close()
+        close.assert_awaited_once_with()
+
+    asyncio.run(scenario())
+
+
 def test_on_adds_the_tools_and_a_subagent_sharing_one_session(tmp_path, fresh_state):
     fresh_state.enabled = True
     loaded, extension = browser_extension(tmp_path)

@@ -166,6 +166,30 @@ Without an explicit `usage_limits` the delegate gets its own request budget, so
 a long delegation cannot exhaust the turn. Overriding it with `None` shares the
 parent's counter, where the library's 50-request default aborts the run.
 
+The built-in worker shares the parent's workspace by default. Isolated delegation
+requires both `worktree=on` and `worker_isolation=on` in the active workspace's
+effective preferences; `worker_isolation` defaults to `off`. With both on, default
+delegation creates an isolated checkout, while explicit `shared` remains available.
+Specialized delegates registered here remain shared and cannot request isolated
+mode because pcode cannot reconstruct their tools.
+
+For isolated workers, pcode re-runs each successfully loaded extension's `setup`
+with the child's `pcode.workspace` and `pcode.is_worker=True` (false for the
+parent). Treat setup as per-agent initialization: do not assume it runs only once
+per terminal, and register child-owned resources with `on_close`. If an extension
+borrows a process-global resource, only its parent setup should register that
+resource's closer (`if not pcode.is_worker`). The bundled browser follows this
+rule: workers may use the session browser but must not close it on return.
+Setup, tool calls, and close hooks all run with the child's shell-job registry.
+The child retains the parent's effective preferences and session storage root. Only child resources are closed afterward; child slash commands
+and reload requests are not installed in the parent's UI. A failed child setup
+fails that delegation rather than silently dropping tools or guardrails.
+
+Programmatic callers should pass `load_extensions(...).capabilities` unchanged
+when creating the agent. This list-compatible collection preserves the factories
+needed to bind extensions to another workspace; flattening it to a plain list
+loses that provenance, and isolated delegation then refuses the unsafe rebind.
+
 To give a delegate a task plan that also shows in the Tasks widget beneath its
 `delegate_task` row, use pcode's planning capability rather than Harness's:
 

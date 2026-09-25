@@ -30,6 +30,8 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -532,6 +534,25 @@ def _remove_if_empty(directory: Path) -> None:
 
 
 _REGISTRY = JobRegistry(state=jobs_root)
+_WORKER_REGISTRY: ContextVar[JobRegistry | None] = ContextVar("worker_job_registry", default=None)
+
+
+@contextmanager
+def isolated_registry():
+    """Own an isolated worker's jobs; no process may outlive its task snapshot.
+
+    Shared workers retain the session registry. Isolated workers cannot inspect
+    or stop a parent's jobs, and are torn down before their Git result is recorded.
+    """
+    jobs = JobRegistry()
+    token = _WORKER_REGISTRY.set(jobs)
+    try:
+        yield jobs
+    finally:
+        try:
+            jobs.reset()
+        finally:
+            _WORKER_REGISTRY.reset(token)
 
 
 def registry() -> JobRegistry:
@@ -541,4 +562,4 @@ def registry() -> JobRegistry:
     supposed to escape, and the worker sub-agent should see -- and be able to
     stop -- the same jobs the parent started.
     """
-    return _REGISTRY
+    return _WORKER_REGISTRY.get() or _REGISTRY

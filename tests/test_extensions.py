@@ -1,6 +1,9 @@
 """User extensions load from Python files and reach the agent and the terminal."""
 
 import asyncio
+import os
+import shutil
+import sys
 import textwrap
 from io import StringIO
 
@@ -14,6 +17,7 @@ from pcode.commands import CommandRegistry
 from pcode.ext import (
     EXTENSION_GUIDE,
     ExtensionAPI,
+    ExtensionCapabilities,
     ExtensionUI,
     discover_extensions,
     load_extensions,
@@ -378,3 +382,302 @@ def test_commands_require_a_live_session(tmp_path):
     text = output.getvalue()
     assert "/extensions requires a live model session" in text
     assert "/reload requires a live model session" in text
+
+
+WORKSPACE_EXTENSION = '''
+def setup(pcode):
+    @pcode.tool
+    def write_bound() -> str:
+        """Write into the workspace captured at setup."""
+        (pcode.workspace / "written").write_text(__name__)
+        return str(pcode.workspace)
+
+    async def close():
+        (pcode.workspace / "closed").write_text(__name__)
+    pcode.on_close(close)
+'''
+
+
+def bound_tool(capabilities):
+    return capabilities[0].get_toolset().tools["write_bound"].function
+
+
+def test_worker_flag_is_false_for_parent_and_true_for_rebound_setup(tmp_path):
+    write_extension(
+        user_extension_dir(),
+        "worker_probe",
+        '''
+def setup(pcode):
+    assert type(pcode.is_worker) is bool
+    @pcode.tool
+    def is_worker() -> bool:
+        """Report whether this extension belongs to a worker."""
+        return pcode.is_worker
+''',
+    )
+    loaded = load_extensions(tmp_path)
+    parent_tool = loaded.capabilities[0].get_toolset().tools["is_worker"].function
+    assert parent_tool() is False
+    child = tmp_path / "child"
+    child.mkdir()
+
+    async def scenario():
+        async with loaded.capabilities.for_workspace(child) as rebound:
+            child_tool = rebound[0].get_toolset().tools["is_worker"].function
+            assert child_tool() is True
+            assert parent_tool() is False
+        await loaded.close()
+
+    asyncio.run(scenario())
+
+
+def test_capabilities_rebind_concurrently_and_clean_package_modules(tmp_path):
+    workspace = tmp_path / "parent"
+    workspace.mkdir()
+    package = user_extension_dir() / "writer"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from .helper import setup\n")
+    (package / "helper.py").write_text(WORKSPACE_EXTENSION)
+    loaded = load_extensions(workspace)
+    capabilities = loaded.capabilities
+    assert isinstance(capabilities, list)
+    assert isinstance(capabilities, ExtensionCapabilities)
+    assert capabilities == loaded.extensions[0].capabilities
+    parent_tool = bound_tool(capabilities)
+    parent_module = sys.modules[parent_tool.__module__]
+    assert parent_tool() == str(workspace)
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    async def scenario():
+        ready = asyncio.Event()
+        active = []
+
+        async def worker(path):
+            async with capabilities.for_workspace(path) as rebound:
+                tool = bound_tool(rebound)
+                active.append(tool.__module__)
+                if len(active) == 2:
+                    ready.set()
+                await ready.wait()
+                assert len(set(active + [parent_tool.__module__])) == 3
+                assert all(name in sys.modules for name in active)
+                assert tool() == str(path)
+                assert not (path / "closed").exists()
+                assert not (workspace / "closed").exists()
+            assert (path / "closed").read_text() == tool.__module__
+            assert tool.__module__ not in sys.modules
+            assert tool.__module__.removesuffix(".helper") not in sys.modules
+
+        await asyncio.gather(worker(first), worker(second))
+        assert sys.modules[parent_tool.__module__] is parent_module
+        assert not (workspace / "closed").exists()
+        await loaded.close()
+        assert (workspace / "closed").read_text() == parent_tool.__module__
+
+    asyncio.run(scenario())
+    assert (first / "written").read_text() != (second / "written").read_text()
+    assert (workspace / "written").read_text() == parent_tool.__module__
+
+
+def test_rebinding_uses_only_successful_parent_sources(tmp_path, monkeypatch):
+    workspace, child = tmp_path / "parent", tmp_path / "child"
+    workspace.mkdir()
+    child.mkdir()
+    write_extension(user_extension_dir(), "good", WORKSPACE_EXTENSION)
+    broken = write_extension(user_extension_dir(), "broken", "raise RuntimeError('broken')")
+    off = write_extension(user_extension_dir(), "off", WORKSPACE_EXTENSION)
+    opt_in = write_extension(
+        user_extension_dir(), "opt_in", "DEFAULT_ENABLED = False\n" + WORKSPACE_EXTENSION
+    )
+    save_preferences(extensions_off="off")
+    loaded = load_extensions(workspace)
+    assert len(loaded.failed) == 1
+    assert len(loaded.disabled) == 2
+    for path in (broken, off, opt_in):
+        path.write_text("raise AssertionError('must not import')")
+    write_extension(user_extension_dir(), "new", "raise AssertionError('must not discover')")
+    save_preferences(extensions_off="good", extensions_on="off,opt_in")
+    monkeypatch.setattr(
+        "pcode.ext.discover_extensions", lambda _: pytest.fail("must not rediscover")
+    )
+
+    async def scenario():
+        async with loaded.capabilities.for_workspace(child) as capabilities:
+            assert len(capabilities) == 1
+            assert bound_tool(capabilities)() == str(child)
+        assert not (workspace / "closed").exists()
+        await loaded.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "failure", ["RuntimeError('guardrail failed')", "asyncio.CancelledError()"]
+)
+def test_rebinding_failure_closes_partial_setup_and_previous_children(tmp_path, failure):
+    workspace, child = tmp_path / "parent", tmp_path / "child"
+    workspace.mkdir()
+    child.mkdir()
+    write_extension(user_extension_dir(), "a_good", WORKSPACE_EXTENSION)
+    write_extension(
+        user_extension_dir(),
+        "z_fails",
+        f"""
+        import asyncio
+        def setup(pcode):
+            async def close():
+                (pcode.workspace / "partial_closed").write_text(__name__)
+            pcode.on_close(close)
+            if pcode.workspace.name == "child":
+                raise {failure}
+        """,
+    )
+    loaded = load_extensions(workspace)
+    assert not loaded.failed
+    modules = {name for name in sys.modules if "_rebind_" in name}
+
+    async def scenario():
+        expected = asyncio.CancelledError if "CancelledError" in failure else ValueError
+        with pytest.raises(expected) as caught:
+            async with loaded.capabilities.for_workspace(child):
+                pytest.fail("a failed guardrail must abort rebinding")
+        if expected is ValueError:
+            assert "z_fails: RuntimeError: guardrail failed" in str(caught.value)
+        assert (child / "closed").exists()
+        assert (child / "partial_closed").exists()
+        assert not (workspace / "closed").exists()
+        assert not (workspace / "partial_closed").exists()
+        assert bound_tool(loaded.capabilities)() == str(workspace)
+        assert {name for name in sys.modules if "_rebind_" in name} == modules
+        await loaded.close()
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_rebound_context_awaits_child_closers(tmp_path):
+    workspace, child = tmp_path / "parent", tmp_path / "child"
+    workspace.mkdir()
+    child.mkdir()
+    write_extension(
+        user_extension_dir(),
+        "writer",
+        "import asyncio\n"
+        + WORKSPACE_EXTENSION.replace(
+            "    async def close():",
+            "    async def close():\n"
+            '        (pcode.workspace / "closing").touch()\n'
+            "        await asyncio.sleep(0.01)",
+        ),
+    )
+    loaded = load_extensions(workspace)
+
+    async def scenario():
+        ready = asyncio.Event()
+
+        async def worker():
+            async with loaded.capabilities.for_workspace(child):
+                ready.set()
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(worker())
+        await ready.wait()
+        task.cancel()
+        async with asyncio.timeout(2):
+            while not (child / "closing").exists():
+                await asyncio.sleep(0)
+        # A second cancellation during teardown must not cancel the closer itself.
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert (child / "closed").exists()
+        assert not (workspace / "closed").exists()
+        await loaded.close()
+
+    asyncio.run(scenario())
+
+
+def test_rebinding_preserves_session_and_notify_without_parent_reload(tmp_path):
+    workspace, child = tmp_path / "parent", tmp_path / "child"
+    workspace.mkdir()
+    child.mkdir()
+    session_dir = tmp_path / "custom_sessions"
+    notices, reloads = [], []
+    write_extension(
+        user_extension_dir(),
+        "context",
+        """
+        def setup(pcode):
+            pcode.ui.notify(str(pcode.session_dir))
+            pcode.ui.request_reload()
+            pcode.register_command("/context", "Context", lambda arg: None)
+            pcode.instructions(str(pcode.workspace))
+        """,
+    )
+    loaded = load_extensions(
+        workspace,
+        ExtensionUI(
+            notify=lambda text, level: notices.append((text, level)),
+            request_reload=lambda: reloads.append(True),
+        ),
+        session_dir=session_dir,
+    )
+    commands = loaded.commands
+
+    async def scenario():
+        async with loaded.capabilities.for_workspace(child) as capabilities:
+            assert str(child) in str(capabilities[0].get_instructions())
+            assert notices == [(str(session_dir), "info")] * 2
+            assert reloads == [True]
+            assert loaded.commands == commands
+        await loaded.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("trusted", [False, True])
+def test_rebinding_remaps_only_trusted_project_sources(tmp_path, monkeypatch, trusted):
+    workspace, child = tmp_path / "parent", tmp_path / "child"
+    workspace.mkdir()
+    child.mkdir()
+    project = workspace / ".pcode" / "extensions"
+    configured = workspace / "configured"
+    bundled = tmp_path / "bundled"
+    monkeypatch.setattr("pcode.ext.BUNDLED_DIR", bundled)
+    write_extension(project, "project", 'def setup(pcode): pcode.instructions("parent project")')
+    write_extension(
+        configured, "configured", 'def setup(pcode): pcode.instructions("original configured")'
+    )
+    write_extension(bundled, "bundled", 'def setup(pcode): pcode.instructions("original bundled")')
+    write_extension(
+        user_extension_dir(), "user", 'def setup(pcode): pcode.instructions("original user")'
+    )
+    save_preferences(project_extensions="on" if trusted else "off", extension_dirs="configured")
+    loaded = load_extensions(workspace)
+    shutil.copytree(project, child / ".pcode" / "extensions")
+    write_extension(
+        child / ".pcode" / "extensions",
+        "project",
+        'def setup(pcode): pcode.instructions("child project")',
+    )
+    write_extension(child / "configured", "configured", "raise AssertionError('wrong source')")
+    write_extension(
+        child / ".pcode" / "extensions", "new", "raise AssertionError('untrusted discovery')"
+    )
+    cwd = os.getcwd()
+    # Trust was decided at parent discovery, not by the child worktree or a new overlay.
+    monkeypatch.setattr("pcode.project_trust.is_trusted", lambda _: False)
+
+    async def scenario():
+        async with loaded.capabilities.for_workspace(child) as capabilities:
+            instructions = " ".join(str(c.get_instructions()) for c in capabilities)
+            assert "original configured" in instructions
+            assert "original bundled" in instructions
+            assert "original user" in instructions
+            assert ("child project" in instructions) is trusted
+            assert "parent project" not in instructions
+            assert os.getcwd() == cwd
+        await loaded.close()
+
+    asyncio.run(scenario())
