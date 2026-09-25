@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from time import monotonic
 from uuid import uuid4
 
+from pcode.preferences import EFFORTS
+
 # One side question is a question, not a second conversation: it gets a small
 # request budget and a hard deadline so a confused run cannot spend a session's
 # worth of tokens in the background where nobody is watching it.
@@ -27,7 +29,12 @@ ASIDE_HISTORY = 20
 # the whole conversation, uncached on any model but the conversation's own.
 ASIDE_MODEL_LIMIT = 4
 MODEL_MARK = "$"
-ASIDE_MODEL_USAGE = "Usage: /btw [$PROVIDER:MODEL ...] QUESTION"
+# `+high` asks on the conversation's model at that effort; `$model+high` on
+# another model. The levels are the ones /effort accepts.
+EFFORT_MARK = "+"
+ASIDE_MODEL_USAGE = (
+    f"Usage: /btw [$PROVIDER:MODEL[+EFFORT] | +EFFORT ...] QUESTION (EFFORT: {'|'.join(EFFORTS)})"
+)
 
 ASIDE_FRAMING = (
     "[Side question] The user is asking a side question about the conversation so far. "
@@ -44,22 +51,57 @@ def framed(question: str) -> str:
     return f"{ASIDE_FRAMING}\n\nQuestion: {question}"
 
 
-def parse_models(argument: str) -> tuple[list[str], str]:
-    """Split `$model [$model ...] question` into its models and the question.
+@dataclass(frozen=True)
+class SideTarget:
+    """Where one side question runs: a model and the effort to ask it at.
 
-    Only leading `$` words name models, so a `$` inside the question is text.
-    Repeated models collapse to one, in the order first given.
+    An empty `model` is the conversation's own; an empty `effort` keeps the
+    effort that model already gets.
     """
-    models: list[str] = []
+
+    model: str = ""
+    effort: str = ""
+
+
+def split_effort(word: str) -> tuple[str, str]:
+    """Split `model+high` into the model and its effort.
+
+    Model ids can hold `:` and `/`, so only the part after the last `+` is
+    considered, and only a real level counts: anything else stays in the name.
+    """
+    name, mark, effort = word.rpartition(EFFORT_MARK)
+    if mark and effort in EFFORTS:
+        return name, effort
+    return word, ""
+
+
+def _target(word: str) -> SideTarget:
+    if word.startswith(EFFORT_MARK):
+        effort = word.removeprefix(EFFORT_MARK)
+        if effort not in EFFORTS:
+            raise ValueError(f"Unknown effort `{word}`. {ASIDE_MODEL_USAGE}")
+        return SideTarget(effort=effort)
+    model, effort = split_effort(word.removeprefix(MODEL_MARK))
+    if not model:
+        raise ValueError(f"A model name must follow `{MODEL_MARK}`. {ASIDE_MODEL_USAGE}")
+    return SideTarget(model, effort)
+
+
+def parse_models(argument: str) -> tuple[list[SideTarget], str]:
+    """Split `$model[+effort] [+effort ...] question` into targets and the question.
+
+    Only leading `$` and `+` words name targets, so either one inside the
+    question is text. Repeated targets collapse to one, in the order first
+    given; the same model at two efforts is two targets.
+    """
+    models: list[SideTarget] = []
     rest = argument.strip()
-    while rest.startswith(MODEL_MARK):
+    while rest.startswith((MODEL_MARK, EFFORT_MARK)):
         word, *tail = rest.split(maxsplit=1)
         rest = tail[0] if tail else ""
-        name = word.removeprefix(MODEL_MARK)
-        if not name:
-            raise ValueError(f"A model name must follow `{MODEL_MARK}`. {ASIDE_MODEL_USAGE}")
-        if name not in models:
-            models.append(name)
+        target = _target(word)
+        if target not in models:
+            models.append(target)
     if models and not rest:
         raise ValueError(f"No question after the model. {ASIDE_MODEL_USAGE}")
     if len(models) > ASIDE_MODEL_LIMIT:
@@ -69,27 +111,55 @@ def parse_models(argument: str) -> tuple[list[str], str]:
     return models, rest
 
 
-def model_fragment(argument: str) -> str | None:
-    """The partial model name being typed in `/btw` arguments, if any.
-
-    Only a word in the leading run of `$` words completes as a model; once the
-    question has started, a `$` is ordinary text.
-    """
+def _leading_word(argument: str) -> str | None:
+    """The word being typed, while every word so far is a `$` or `+` target."""
     if not argument or argument[-1].isspace():
         return None
     words = argument.split()
-    if not all(word.startswith(MODEL_MARK) for word in words):
+    if not all(word.startswith((MODEL_MARK, EFFORT_MARK)) for word in words):
         return None
-    return words[-1].removeprefix(MODEL_MARK)
+    return words[-1]
 
 
-def model_labels(models: list[str]) -> dict[str, str]:
-    """Short labels: the model without its provider, unless two would collide."""
-    short = {model: model.partition(":")[2] or model for model in models}
+def model_fragment(argument: str) -> str | None:
+    """The partial model name being typed in `/btw` arguments, if any.
+
+    Only a word in the leading run of `$` and `+` words completes as a model;
+    once the question has started, a `$` is ordinary text. A word already
+    carrying `+` is choosing an effort instead; see `effort_fragment`.
+    """
+    word = _leading_word(argument)
+    if word is None or not word.startswith(MODEL_MARK) or EFFORT_MARK in word:
+        return None
+    return word.removeprefix(MODEL_MARK)
+
+
+def effort_fragment(argument: str) -> str | None:
+    """The partial effort being typed after `+` in a leading `/btw` word, if any."""
+    word = _leading_word(argument)
+    if word is None or EFFORT_MARK not in word:
+        return None
+    return word.rpartition(EFFORT_MARK)[2]
+
+
+def model_labels(models: list[SideTarget]) -> dict[SideTarget, str]:
+    """Short labels: the model without its provider, unless two would collide.
+
+    An effort joins the label, so answers at different efforts stay apart; the
+    conversation's own model shows the effort alone.
+    """
+    names = list(dict.fromkeys(target.model for target in models if target.model))
+    short = {name: name.partition(":")[2] or name for name in names}
     counts: dict[str, int] = {}
     for label in short.values():
         counts[label] = counts.get(label, 0) + 1
-    return {model: label if counts[label] == 1 else model for model, label in short.items()}
+    labels = {}
+    for target in models:
+        label = short.get(target.model, "")
+        if label and counts[label] > 1:
+            label = target.model
+        labels[target] = " \u00b7 ".join(part for part in (label, target.effort) if part)
+    return labels
 
 
 def settled_context(messages: list) -> list:
@@ -136,6 +206,8 @@ class Aside:
     # the question was asked without one, on the conversation's own model.
     model: str = ""
     label: str = ""
+    # The effort named with `+EFFORT`; empty when the model's own applies.
+    effort: str = ""
     # running → answered / failed / cancelled / timed out.
     status: str = "running"
     answer: str = ""
@@ -199,9 +271,10 @@ class Asides:
         *,
         model: str = "",
         label: str = "",
+        effort: str = "",
     ) -> Aside:
         """Register a side question and run `work` for it in the background."""
-        aside = Aside(question=question, model=model, label=label)
+        aside = Aside(question=question, model=model, label=label, effort=effort)
         self.items.append(aside)
         # Trim settled records only: a running question owns a live task.
         while len(self.items) > ASIDE_HISTORY:

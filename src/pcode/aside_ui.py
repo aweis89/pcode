@@ -194,8 +194,16 @@ class AsideBrowser:
         if aside is None:
             return [Text("Ask one with /btw <question>.", style="dim")]
         blocks: list = [TaskPrompt(literal(aside.question))]
-        if aside.model:
-            blocks.append(Text(f"  on {aside.model}", style="dim"))
+        where = " ".join(
+            part
+            for part in (
+                f"on {aside.model}" if aside.model else "",
+                f"at {aside.effort} effort" if aside.effort else "",
+            )
+            if part
+        )
+        if where:
+            blocks.append(Text(f"  {where}", style="dim"))
         blocks.append(Text(""))
         if answer := literal(aside.answer):
             blocks.append(Markdown(answer, code_theme=self.code_theme))

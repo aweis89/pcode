@@ -110,6 +110,36 @@ A name that cannot be resolved (unknown provider, missing credentials or SDK)
 fails the whole `/btw` command before any side question starts. `/btw $MODEL`
 with no question is an error too.
 
+### Choosing the effort
+
+A `+LEVEL` suffix sets the reasoning effort for one side question, using the
+levels `/effort` accepts: `low`, `medium`, `high`, `xhigh` and `default`. A bare
+`+LEVEL` word asks on the conversation's model; on a `$` word it applies to
+that model alone.
+
+```text
+❯ /btw +low what was the last file edited?
+❯ /btw $openai:gpt-5+high $anthropic:claude-opus-4-5+low which approach is safer?
+❯ /btw +low +xhigh is this lock ordering right?
+```
+
+- **No suffix:** the model's usual effort, as above.
+- **The conversation's model:** it stays on the conversation's own path with
+  that effort in place of the current one, for this question only. A different
+  effort can miss the conversation's prompt cache.
+- **Another model:** the effort replaces that model's saved `/effort`.
+- **`default`:** drops the effort setting, so the provider's own default
+  applies, exactly as `/effort default` does.
+
+The same model at two efforts is two side questions; labels show the effort
+(`gpt-5 · high`, or just `low` on the conversation's model) so their answers
+stay apart. The effort is only read from the leading words, and only after the
+last `+` in a model word when what follows is a real level, so model ids that
+contain `+` still work. An unknown level fails the command, and so does an
+effort on a model without effort control (only OpenAI/Codex, Anthropic and
+Meridian models have it, as with `/effort`). Typing `+` in the leading words
+completes the levels.
+
 ## Which context it sees
 
 A side question is asked against the newest **settled** prefix of the request in
