@@ -791,10 +791,12 @@ the model supplying one; `Job.summary()` and `tool_display.target` keep the
 command alongside it, because a stated intention is not evidence of what is
 running.
 
-`pcode.jobs.registry()` is process-wide and deliberately not per-run: a run is
-exactly the scope a job escapes, and the worker sub-agent shares it. Tests must
-call `registry().reset()` (the `isolated_jobs` autouse fixture does). The
-process-wide registry persists under `jobs_root()/<pid>/` (job dirs plus
+`pcode.jobs.registry()` is process-wide for the parent and shared-workspace workers:
+a run is exactly the scope a job escapes. Isolated workers instead bind a context-local
+registry, with their own `JobNotices` capability, and stop its jobs on teardown.
+The parent's per-run `JobNotices` cannot reach those jobs and is not inherited by
+sub-agents. Tests must call `registry().reset()` (the `isolated_jobs` autouse fixture
+does). The process-wide registry persists under `jobs_root()/<pid>/` (job dirs plus
 `registry.json`, resolved lazily so the test env's `XDG_STATE_HOME` applies);
 `JobRegistry()` with no `state` is ephemeral and uses temp dirs. `adopt_orphans`
 treats a record whose `owner_pid` is dead as up for grabs and skips its own

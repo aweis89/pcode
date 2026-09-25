@@ -33,6 +33,7 @@ from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.ext import EXTENSION_GUIDE, ExtensionCapabilities
 from pcode.filesystem import DisplayFileSystem
 from pcode.isolated_delegation import WorkspaceSubAgents
+from pcode.job_notices import JobNotices
 from pcode.jobs import isolated_registry
 from pcode.llm_proxy import ProxiedCodexProvider
 from pcode.mcp import configured_servers
@@ -250,9 +251,10 @@ def create_coder(
             if isinstance(extensions, ExtensionCapabilities)
             else ExtensionCapabilities([])
         )
-        with isolated_registry():
+        with isolated_registry() as jobs:
             async with rebound.for_workspace(child_workspace) as child_extensions:
                 child_coder = create_coder(child_workspace, delegation=False)
+                child_coder.capabilities.append(JobNotices(jobs))
                 yield _create_worker(child_coder.capabilities, child_extensions, isolated=True)
 
     coder.capabilities.append(
