@@ -212,10 +212,15 @@ SETTINGS = {
         ("on", "off"),
         description="Constrain edit_file arguments with Anthropic strict tool use",
     ),
+    "cache_notices": Setting(
+        "on",
+        ("on", "off"),
+        description="Note in the transcript when a request reuses less of the prompt cache",
+    ),
     "debug": Setting(
         "off",
         ("on", "off"),
-        description="Enable prompt-cache warnings and diagnostic fingerprints",
+        description="Write prompt-cache request fingerprints with each cache notice",
     ),
     # Captures land in the state directory, oldest pruned; `--no-profile` skips
     # one run and `--profile DIR` still names its own directory.

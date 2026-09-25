@@ -1,7 +1,12 @@
-"""Route Harness cache-collapse warnings through the normal event stream."""
+"""Report prompt-cache reuse drops as transcript notices, from Harness's detector.
+
+A drop is information, not a fault: /compact, a new tool, or an expired
+provider cache all shorten what the next request can reuse. The notice says
+how much was reused so the cost is visible; it never claims a cause.
+"""
 
 import warnings
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from pydantic_ai import CapabilityEvent
 from pydantic_ai.messages import NativeToolCallPart
@@ -26,23 +31,31 @@ def server_tool_iterations(response) -> int:
     return sum(isinstance(part, NativeToolCallPart) for part in response.parts)
 
 
+def notice_text(step: int, read: int, established: int, model: str, *, earlier_turn: bool) -> str:
+    """One neutral line: what was reused, against what an earlier request cached."""
+    source = "tokens cached in an earlier turn" if earlier_turn else "previously cached tokens"
+    suffix = f" ({model})" if model else ""
+    return f"Prompt cache: request {step} reused {read:,} of ~{established:,} {source}{suffix}."
+
+
 @dataclass
 class CacheBustReporting(WarnOnCacheBusts):
-    """Keep Harness's per-run detector, thresholds, latch, and warning filters."""
+    """Keep Harness's detector, thresholds, latch, and warning filters.
 
+    Upstream keys its marks by `RunContext.conversation_id`, which pcode keeps
+    stable per session, so the first request of a turn is compared with what
+    the previous turn cached (until the conversation idles past the cache TTL).
+    A notice after /compact is therefore expected: it reports the reset.
+    """
+
+    # Write each notice's fingerprint window to disk (the `debug` setting).
+    dump_fingerprints: bool = False
     # `for_run` copies the capability with `replace()`, which re-initializes
     # `init=False` fields, so each run fingerprints its own requests -- matching
     # the upstream detector's per-run step numbering.
     diagnostics: CacheDiagnostics = field(
         init=False, default_factory=CacheDiagnostics, compare=False, repr=False
     )
-
-    async def for_run(self, ctx):
-        # Upstream shares marks across the runs of a conversation, so a turn
-        # after /compact (a deliberately shorter prefix) would read as a bust.
-        # A run without a conversation id is judged alone: keep pcode's
-        # per-turn comparison until cross-turn busts can skip rewritten history.
-        return await super().for_run(replace(ctx, conversation_id=None))
 
     async def after_model_request(self, ctx, *, request_context, response):
         # Harness hooks are filters, not listeners: the return value replaces the
@@ -81,16 +94,18 @@ class CacheBustReporting(WarnOnCacheBusts):
             if issubclass(warning.category, CacheBustWarning):
                 # Report measured reuse, not upstream's speculative expiry cause
                 # or an inferred number of tokens billed uncached.
-                detail = (
-                    f"request {self._state.step}: cached {response.usage.cache_read_tokens:,}"
-                    f" vs ~{prior.prefix if prior else 0:,} established tokens."
-                )
                 model = "/".join(
                     part for part in (response.provider_name, response.model_name) if part
                 )
-                text = f"{model}: {detail}" if model else detail
+                text = notice_text(
+                    self._state.step,
+                    response.usage.cache_read_tokens,
+                    prior.prefix if prior else 0,
+                    model,
+                    earlier_turn=prior is not None and prior.run_id != ctx.run_id,
+                )
                 text = "\n".join(part for part in (text, self.diagnostics.summary()) if part)
-                path = self.diagnostics.dump()
+                path = self.diagnostics.dump() if self.dump_fingerprints else None
                 if path is not None:
                     text += f"\nRequest fingerprints: {path}"
                 await ctx.emit(CacheBustEvent(text=command_text(text)))

@@ -45,6 +45,7 @@ def test_defaults_and_path_do_not_create_files():
         "retry_attempts": "1",
         "tool_retries": "3",
         "strict_tools": "on",
+        "cache_notices": "on",
         "debug": "off",
         "profile": "off",
         "show_thinking": "off",

@@ -2411,9 +2411,8 @@ class Transcript:
     def events(self, events: tuple[Event, ...], *, show_tools: bool = False) -> None:
         for event in events:
             if isinstance(event, CacheBust):
-                self.print(
-                    TranscriptNotice(command_text(event.text), "warning", "Prompt cache miss")
-                )
+                # Informational, like a retained note: muted, no marker or title.
+                self.print(Text(command_text(event.text), style="pcode.muted"))
             elif isinstance(event, Thinking):
                 self.thinking(event.text.rstrip("\n") + "\n\n")
             elif isinstance(event, Message):

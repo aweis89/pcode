@@ -1,4 +1,4 @@
-"""Real Harness detection, streamed UI delivery, and saved warning replay."""
+"""Real Harness detection, streamed UI delivery, and saved notice replay."""
 
 import asyncio
 import warnings
@@ -101,10 +101,13 @@ def test_streamed_detector_preserves_threshold_and_latch(usages, count):
     assert len(busts) == count
     assert Message("Done") in events
     for bust in busts:
-        assert "cached " in bust.text and "vs ~8" in bust.text
+        assert bust.text.startswith("Prompt cache: request ")
+        assert " reused " in bust.text and " of ~8" in bust.text
+        assert "previously cached tokens (test/test)." in bust.text
         assert "cache expired" not in bust.text and "TTL" not in bust.text
         assert "To silence" not in bust.text
-        assert "test/test:" in bust.text
+        for alarm in ("bust", "warning", "collapse", "fail", "miss"):
+            assert alarm not in bust.text.lower()
 
 
 def reply(read, write, *, server_tool=False):
@@ -159,7 +162,7 @@ def test_server_tool_usage_does_not_establish_a_prefix(last, count):
     busts = [call.args[0] for call in ctx.emit.await_args_list]
     assert len(busts) == count
     for bust in busts:
-        assert "~8,200 established tokens" in bust.text
+        assert "of ~8,200 previously cached tokens" in bust.text
 
 
 def test_turns_and_parallel_runs_have_independent_detectors():
@@ -174,13 +177,29 @@ def test_turns_and_parallel_runs_have_independent_detectors():
     asyncio.run(run())
 
 
-def test_separate_chat_turns_do_not_compare_cached_prefixes():
+def test_next_chat_turn_is_compared_with_what_the_last_one_cached():
     async def run():
         runtime = runtime_for([(8000, 0)])
         first = await collect(runtime)
         runtime.agent.model.usages = [(0, 0)]
         second = await collect(runtime)
-        assert not any(isinstance(e, CacheBust) for e in first + second)
+        assert not any(isinstance(e, CacheBust) for e in first)
+        (notice,) = [e for e in second if isinstance(e, CacheBust)]
+        assert notice.text == (
+            "Prompt cache: request 1 reused 0 of ~8,000 tokens cached in an earlier turn"
+            " (test/test)."
+        )
+
+    asyncio.run(run())
+
+
+def test_another_conversation_starts_from_a_clean_mark():
+    async def run():
+        monitor = CacheBustReporting()
+        first = runtime_for([(8000, 0)], monitor=monitor)
+        await collect(first)
+        second = runtime_for([(0, 0)], monitor=monitor)
+        assert not any(isinstance(e, CacheBust) for e in await collect(second))
 
     asyncio.run(run())
 
@@ -199,7 +218,7 @@ def test_model_switch_starts_own_mark_and_switch_back_keeps_original():
     events = asyncio.run(collect(runtime))
     busts = [e for e in events if isinstance(e, CacheBust)]
     assert len(busts) == 1
-    assert busts[0].text.startswith("provider/first:")
+    assert busts[0].text.splitlines()[0].endswith("(provider/first).")
     assert "request 3" in busts[0].text
 
 
@@ -240,19 +259,27 @@ def test_unrelated_warnings_are_not_swallowed(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "preferences, count", [({}, 0), ({"debug": "off"}, 0), ({"debug": "on"}, 1)]
+    "preferences, count, dumps",
+    [
+        ({}, 1, False),
+        ({"cache_notices": "on", "debug": "on"}, 1, True),
+        ({"cache_notices": "off"}, 0, False),
+        ({"cache_notices": "off", "debug": "on"}, 0, False),
+    ],
 )
-def test_debug_controls_parent_and_shared_child_monitoring(
-    tmp_path, monkeypatch, preferences, count
+def test_setting_controls_parent_and_shared_child_notices(
+    tmp_path, monkeypatch, preferences, count, dumps
 ):
     monkeypatch.setattr("pcode.agent.load_preferences", lambda: preferences)
     coder = create_coder(tmp_path)
-    assert sum(isinstance(c, CacheBustReporting) for c in coder.capabilities) == count
     children = next(c for c in coder.capabilities if isinstance(c, SubAgents))
-    assert sum(isinstance(c, CacheBustReporting) for c in children.shared_capabilities) == count
+    for capabilities in (coder.capabilities, children.shared_capabilities):
+        notices = [c for c in capabilities if isinstance(c, CacheBustReporting)]
+        assert len(notices) == count
+        assert all(notice.dump_fingerprints is dumps for notice in notices)
 
 
-def test_delegated_warning_reaches_parent_without_child_prose():
+def test_delegated_notice_reaches_parent_without_child_prose():
     calls = 0
 
     async def model(messages, info):
@@ -298,7 +325,7 @@ def replay_text(transcript):
     return stream.getvalue()
 
 
-def test_warning_survives_saved_session_reopen_and_redraw(tmp_path):
+def test_notice_survives_saved_session_reopen_and_redraw(tmp_path):
     saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
     runtime = runtime_for([(8000, 0), (0, 0)], saved)
     try:
@@ -319,22 +346,22 @@ def test_warning_survives_saved_session_reopen_and_redraw(tmp_path):
         app.replay()
         for _ in range(2):
             text = replay_text(app.transcript)
-            assert text.count("! Prompt cache miss") == 1
-            assert "8,000" in text
+            assert text.count("Prompt cache: request 2 reused 0 of ~8,000") == 1
+            assert "!" not in text
     finally:
         reopened.close()
 
 
 @pytest.mark.parametrize("thinking", [False, True])
-def test_live_warning_flushes_output_in_order_and_sanitizes(thinking):
+def test_live_notice_flushes_output_in_order_and_sanitizes(thinking):
     class Runtime:
         session = None
 
         async def stream(self, prompt):
-            yield ThinkingDelta("Before warning") if thinking else TextDelta("Before warning")
-            yield CacheBust("[red]literal[/red]\x1b]0;evil\x07")
-            yield TextDelta("After warning")
-            yield Message("After warning")
+            yield ThinkingDelta("Before notice") if thinking else TextDelta("Before notice")
+            yield CacheBust("Prompt cache: [red]literal[/red]\x1b]0;evil\x07")
+            yield TextDelta("After notice")
+            yield Message("After notice")
 
     async def run():
         buffer = StringIO()
@@ -352,13 +379,18 @@ def test_live_warning_flushes_output_in_order_and_sanitizes(thinking):
         await output.flush()
         text = buffer.getvalue()
         assert (
-            text.index("Before warning")
-            < text.index("Prompt cache miss")
-            < text.index("After warning")
+            text.index("Before notice") < text.index("Prompt cache:") < text.index("After notice")
         )
-        assert text.count("! Prompt cache miss") == 1
-        assert "[red]literal[/red]" in text
-        assert "evil" not in text and "\x1b" not in text
-        assert replay_text(app.transcript).count("! Prompt cache miss") == 1
+        assert text.count("Prompt cache: [red]literal[/red]") == 1
+        assert "evil" not in text and "\x1b" not in text and "!" not in text
+        assert replay_text(app.transcript).count("Prompt cache:") == 1
+        # Muted like other informational notes, not the warning style.
+        (notice,) = [
+            obj
+            for objects, _, _ in app.transcript.replay()
+            for obj in objects
+            if "Prompt cache:" in getattr(obj, "plain", "")
+        ]
+        assert notice.style == "pcode.muted"
 
     asyncio.run(run())
