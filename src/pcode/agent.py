@@ -55,8 +55,9 @@ from pcode.workspace import WorkspaceGuard
 SUBAGENT_REQUEST_LIMIT = 120
 SUBAGENT_TIMEOUT_SECONDS = 900
 
-# Coder's default prompt says to finish jobs before responding and to poll them.
-# Replace that prompt, rather than layering contradictory job guidance on top.
+# Coder's default prompt without "finish long-running work before responding",
+# which kept the model waiting on jobs instead of answering steering. Job
+# mechanics are in the shell tool descriptions; don't add workflow rules here.
 CODER_INSTRUCTIONS = """\
 You are a software engineering agent. Use tools to investigate, implement, and
 verify the requested work. Read existing code and follow repository instructions
@@ -70,12 +71,6 @@ consequential ambiguity, or approval for irreversible actions. Use reasonable
 defaults for minor ambiguities. Run focused tests and appropriate lint/type checks;
 report what you actually verified, assumptions, and remaining limitations.
 
-While shell jobs run, answer user follow-ups and do independent work. Use
-`background=True` for commands that can overlap other work; use `wait_for_job`
-only when the next step needs that job's result and no independent work remains.
-Keep track of unfinished jobs and verify required results before reporting task
-completion, not before giving an interim answer. Do not edit inputs used by a
-running job or run conflicting mutations in parallel; isolate that work or wait.
 Servers may remain running once readiness is verified; shut them down when no
 longer needed.
 """

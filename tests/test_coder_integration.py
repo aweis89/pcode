@@ -63,11 +63,8 @@ def test_parent_and_worker_replace_finish_before_responding_guidance(tmp_path):
         assert instructions.count("You are a software engineering agent.") == 1
         assert "Finish required long-running work before responding" not in instructions
         assert "poll status and output" not in instructions
-        assert "answer user follow-ups and do independent work" in instructions
-        assert "verify required results before reporting task" in instructions
-        assert "Do not edit inputs used by a" in instructions
-        tools = {tool.name: tool for tool in info.function_tools}
-        assert "no independent work remains" in tools["wait_for_job"].description
+        assert "Work autonomously until complete." in instructions
+        assert "Servers may remain running once readiness is verified" in instructions
         if parent and not any(
             isinstance(part, ToolReturnPart) for message in messages for part in message.parts
         ):

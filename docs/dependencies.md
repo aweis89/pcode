@@ -758,10 +758,11 @@ removed so pcode can summarize before discarding evidence.
 
 Pcode also replaces Coder's instruction-only `Capability` with the local
 `CODER_INSTRUCTIONS` in `agent.py`, before copying capabilities to the worker.
-The pinned upstream prompt says to finish long-running work before responding
-and to poll status, which conflicts with steering and delivered job notices.
-Keep the job-aware workflow in that replacement, not in a second competing
-instruction block. `test_parent_and_worker_replace_finish_before_responding_guidance`
+It is upstream's prompt minus the paragraph telling the model to finish
+long-running work before responding and to poll status, which kept it waiting
+on jobs instead of answering steering. Do not add job workflow rules back there;
+the shell tool descriptions cover the mechanics. Recheck the copy when bumping
+the Harness pin. `test_parent_and_worker_replace_finish_before_responding_guidance`
 checks the resolved prompt for both agents.
 
 Why the replacement rather than the upstream tool: a command that outlives its
