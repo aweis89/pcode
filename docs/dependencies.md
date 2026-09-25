@@ -13,7 +13,7 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | --- | --- | --- | --- |
 | prompt_toolkit (`prompt-toolkit`) | 3.0.53 | [Docs](https://python-prompt-toolkit.readthedocs.io/en/stable/) | [python-prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) |
 | Rich (`rich`) | 14.3.4 | [Docs](https://rich.readthedocs.io/en/stable/) | [rich](https://github.com/Textualize/rich) |
-| Pydantic AI (`pydantic-ai-slim`) | 2.45.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
+| Pydantic AI (`pydantic-ai-slim`) | 2.50.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
 | Pydantic AI Harness (`pydantic-ai-harness`) | 0.31.1.dev48+12bce878 (commit `12bce878da99bca61a5d8d798bff0a3bc93bd153`) | [Docs](https://ai.pydantic.dev/harness/) | [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) |
 | Playwright (`playwright`, via the Harness `playwright` extra; Chromium downloaded on first `/browser` use) | 1.63.0 | [Docs](https://playwright.dev/python/) | [playwright-python](https://github.com/microsoft/playwright-python) |
 
@@ -260,10 +260,14 @@ Deferral is only half a contract: a model whose profile claims `ToolSearchTool`
 but no `tool_deferral_mode` sends `tool_search` on the wire and withholds the
 deferred schemas instead of declaring them, which OpenAI Responses rejects with
 `400 tools.tool_search requires at least one deferred tool` — for every request
-of that session, not just the one. `openai_codex_model_profile` inherits the
-first from `openai_model_profile` and the second only from
-`OpenAIProvider.model_profile`, so `agent.codex_model` supplies the deferral and
-addition modes itself; keep them if that profile is revisited on an upgrade.
+of that session, not just the one. Before AI 2.49.0 the Codex provider took
+the first from `openai_model_profile` and never got the second, which only
+`OpenAIProvider.model_profile` sets; since
+[pydantic-ai#8693](https://github.com/pydantic/pydantic-ai/pull/8693),
+`OpenAICodexProvider.model_profile` layers that first-party profile under the
+Codex dialect, so `agent.codex_model` overrides only cache breakpoints.
+`tests/test_tool_search_profiles.py` checks the pairing for every model pcode
+can build, so a provider that drifts apart again fails there first.
 `AgentRuntime.stream` also treats such a 400 as a request shape rather than a
 history: `MCPState.undefer()` rebuilds the wrappers around the *same*
 `MCPToolset` (keeping its connection and OAuth tokens) without the
