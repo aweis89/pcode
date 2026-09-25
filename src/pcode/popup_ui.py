@@ -15,6 +15,8 @@ from prompt_toolkit.styles import Style, merge_styles
 from rich.console import Console
 from rich.theme import Theme
 
+from pcode.preferences import SETTINGS, load_preferences
+
 # Rich writes Markdown links as OSC 8 hyperlinks on a terminal, but
 # prompt_toolkit's ANSI parser reads CSI only and spills the rest as literal
 # text ("8;id=1;https://…"). A pane cannot follow a link anyway, so drop them.
@@ -35,12 +37,18 @@ POPUP_STYLE = Style.from_dict(
         "popup frame.border": _NATIVE,
         "popup frame.label": f"{_NATIVE} bold",
         "popup shadow": _NATIVE,
+        "popup text-area last-line": "nounderline",
+    }
+)
+# These are fallbacks for standalone popups without a caller theme. Keep them
+# before the caller's style, unlike the terminal-native surfaces above.
+POPUP_ACCENTS = Style.from_dict(
+    {
         "popup scrollbar.background": _NATIVE,
         "popup scrollbar.button": f"{_NATIVE} reverse",
         "popup scrollbar.arrow": f"{_NATIVE} bold",
         "popup selected": f"{_NATIVE} reverse",
         "popup cursor-line": f"{_NATIVE} reverse nounderline",
-        "popup text-area last-line": "nounderline",
     }
 )
 
@@ -50,9 +58,21 @@ def popup_container(body):
     return HSplit([body], style="class:popup")
 
 
+def popup_mouse() -> bool:
+    """Whether popups capture the mouse, read as each one opens.
+
+    Capturing gives clicks and wheel scrolling to the popup, but the terminal
+    then stops treating a drag as a text selection.
+    """
+    return load_preferences().get("popup_mouse", SETTINGS["popup_mouse"].default) == "on"
+
+
 def popup_style(base=None):
-    """Preserve caller accents while overriding toolkit popup surfaces."""
-    return merge_styles([base, POPUP_STYLE] if base is not None else [POPUP_STYLE])
+    """Let the caller theme highlights, but keep popup surfaces terminal-native."""
+    styles = [POPUP_ACCENTS]
+    if base is not None:
+        styles.append(base)
+    return merge_styles([*styles, POPUP_STYLE])
 
 
 def _list_page(listing) -> int:
@@ -90,10 +110,11 @@ def fuzzy_match(term: str, text: str) -> bool:
 
 
 def bind_list_paging(keys, listing, filter) -> None:
-    """Ctrl+U/Ctrl+D move a TextArea list's selection by half a page.
+    """Ctrl+U/Ctrl+D move a TextArea's cursor, a list's selection, by half a page.
 
-    The same keys half-page the detail pane, so a browser with both feels the
-    same whichever split has focus.
+    Every popup pane half-pages with these keys, so a browser feels the same
+    whichever split has focus. ↑/↓ and PageUp/PageDown come from the TextArea
+    itself (full-screen apps load prompt_toolkit's page navigation).
     """
 
     def half() -> int:

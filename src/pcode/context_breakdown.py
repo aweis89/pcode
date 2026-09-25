@@ -31,6 +31,7 @@ SOURCE_LABELS = {
     REPO_CONTEXT: "Repository context",
     "code_mode": "Code mode",
     "file_tools": "File tools",
+    "mcp_servers": "MCP servers",
     "planning": "Planning tool",
     "sub_agents": "Sub-agents",
     "tool_output_limits": "Tool output limits",

@@ -137,17 +137,81 @@ def test_query_restores_terminal(monkeypatch, respond):
         os.close(slave)
 
 
+def test_query_does_not_consume_an_unfinished_canonical_line(monkeypatch):
+    master, slave = pty.openpty()
+    monkeypatch.setenv("TERM", "xterm-256color")
+    try:
+        with os.fdopen(os.dup(slave), "r") as stdin, os.fdopen(os.dup(slave), "w") as stdout:
+            monkeypatch.setattr(sys, "stdin", stdin)
+            monkeypatch.setattr(sys, "stdout", stdout)
+            os.write(master, b"early draft")
+            assert not select.select([slave], [], [], 0)[0]  # No newline yet.
+            assert theme._query_background() is None
+            from prompt_toolkit.input.vt100 import raw_mode
+
+            with raw_mode(slave):
+                assert select.select([slave], [], [], 1)[0]
+                assert os.read(slave, 1024) == b"early draft"
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+@pytest.mark.parametrize("reply", [b"", b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\"])
+@pytest.mark.parametrize("draft", [b"early ", b"x" * 256])
+def test_typing_during_query_is_replayed_with_split_utf8(monkeypatch, reply, draft):
+    from types import SimpleNamespace
+
+    from prompt_toolkit.input.vt100 import Vt100Input
+
+    master, slave = pty.openpty()
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr(theme, "_pending_input", bytearray())
+    monkeypatch.setattr(theme, "_awaiting_reply", False)
+
+    def terminal():
+        if select.select([master], [], [], 2)[0]:
+            os.read(master, 1024)
+            os.write(master, draft + reply + b"\xc3")
+
+    worker = threading.Thread(target=terminal)
+    try:
+        with os.fdopen(os.dup(slave), "r") as stdin, os.fdopen(os.dup(slave), "w") as stdout:
+            monkeypatch.setattr(sys, "stdin", stdin)
+            monkeypatch.setattr(sys, "stdout", stdout)
+            worker.start()
+            assert theme._query_background(0.2) == ("light" if reply else None)
+            worker.join(2)
+            keys = []
+            terminal_input = Vt100Input(stdin)
+            app = SimpleNamespace(input=terminal_input)
+            theme.replay_pending_input(app)
+            with app.input.raw_mode():
+                keys.extend(app.input.read_keys())
+                os.write(master, b"\xa9")
+                assert select.select([slave], [], [], 1)[0]
+                keys.extend(app.input.read_keys())
+            assert "".join(key.data for key in keys) == draft.decode() + "é"
+            assert not theme._pending_input
+    finally:
+        worker.join(2)
+        os.close(master)
+        os.close(slave)
+
+
 def test_auto_palette_and_syntax(monkeypatch):
     monkeypatch.setattr("pcode.ui.detect_theme", lambda: "light")
     transcript = Transcript(Console(file=StringIO()), "auto")
     assert transcript.theme == "auto"
     assert transcript.palette == PALETTES["light"]
-    assert transcript.code_theme == SETTINGS["syntax_light"].default
-    transcript.color_style = "terminal"
+    # The default `terminal` syntax renders code with the ANSI style for the palette.
+    assert SETTINGS["syntax_light"].default == "terminal"
     assert transcript.code_theme == "ansi_light"
     transcript.theme = "dark"
     assert transcript.palette == PALETTES["dark"]
     assert transcript.code_theme == "ansi_dark"
+    transcript.syntax_themes["dark"] = "gruvbox-dark"
+    assert transcript.code_theme == "gruvbox-dark"
 
 
 def test_auto_setting_persists_and_toggle_uses_resolved_theme(monkeypatch):
@@ -174,7 +238,8 @@ def test_saved_syntax_themes_apply_per_palette(monkeypatch):
 def test_invalid_saved_syntax_theme_falls_back_to_default():
     save_preferences(syntax_dark="no-such-style")
     transcript = Transcript(Console(file=StringIO()), "dark")
-    assert transcript.code_theme == SETTINGS["syntax_dark"].default
+    assert transcript.syntax_themes["dark"] == SETTINGS["syntax_dark"].default
+    assert transcript.code_theme == "ansi_dark"
 
 
 def test_syntax_command_persists_the_resolved_palette_only():
@@ -183,7 +248,8 @@ def test_syntax_command_persists_the_resolved_palette_only():
     assert app.transcript.code_theme == "dracula"
     assert load_preferences() == {"syntax_dark": "dracula"}
     app.transcript.theme = "light"
-    assert app.transcript.code_theme == SETTINGS["syntax_light"].default
+    assert app.transcript.syntax_themes["light"] == SETTINGS["syntax_light"].default
+    assert app.transcript.code_theme == "ansi_light"
     app.syntax("")
     assert "Syntax (light)" in app.transcript.console.file.getvalue()
 

@@ -1,8 +1,9 @@
-"""Opt-in, process-owned Meridian 1.71.1 instances (not a shared daemon)."""
+"""Process-owned Meridian instances (not a shared daemon)."""
 
 import atexit
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -16,17 +17,89 @@ import httpx2
 
 from pcode.preferences import load_preferences
 
-SUPPORTED_VERSION = "1.71.1"
+# Oldest release whose configuration contract this module relies on
+# (`sdk-features.json`, `/settings/api/features`, the MERIDIAN_* variables below).
+# Newer releases start as long as they pass the same readiness checks.
+MINIMUM_VERSION = "1.71.1"
+MODES = ("auto", "on", "off")
+WATCH_INTERVAL_SECONDS = 1.0
+# A crash loop is not worth chasing: stop after this many restarts in the window.
+MAX_RESTARTS = 3
+RESTART_WINDOW_SECONDS = 300.0
 _lock = threading.Lock()
 _instance = None
+
+
+def version_tuple(text: str | None) -> tuple[int, ...] | None:
+    match = re.search(r"\d+(?:\.\d+)+", text or "")
+    return tuple(int(part) for part in match.group().split(".")) if match else None
+
+
+def supported(version: str | None) -> bool:
+    found = version_tuple(version)
+    return found is not None and found >= version_tuple(MINIMUM_VERSION)
+
+
+def meridian_config_dir() -> Path:
+    """The user's own Meridian configuration (profiles, settings)."""
+    return Path(os.environ.get("MERIDIAN_CONFIG_DIR") or Path.home() / ".config" / "meridian")
+
+
+def meridian_profiles() -> list[dict]:
+    """Account profiles from the user's `profiles.json`; tokens are never read out."""
+    try:
+        data = json.loads((meridian_config_dir() / "profiles.json").read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [p for p in data if isinstance(p, dict) and isinstance(p.get("id"), str)]
+
+
+def profile_dir(profile: dict) -> str:
+    """The Claude config directory whose login a profile uses."""
+    configured = profile.get("claudeConfigDir")
+    if isinstance(configured, str) and configured:
+        return configured
+    return str(meridian_config_dir() / "profiles" / profile["id"])
+
+
+def default_profile() -> dict | None:
+    """The profile a managed instance uses: the saved active one, else the first."""
+    profiles = meridian_profiles()
+    try:
+        settings = json.loads((meridian_config_dir() / "settings.json").read_text())
+        saved = settings.get("activeProfile") if isinstance(settings, dict) else None
+    except (OSError, ValueError):
+        saved = None
+    return next((p for p in profiles if p["id"] == saved), profiles[0] if profiles else None)
+
+
+def session_store_dir() -> Path:
+    """Meridian's session store, kept across pcode runs so resumes stay warm.
+
+    With a temporary store a restarted Meridian no longer recognises the
+    conversation and replays its whole history as flattened text. Meridian locks
+    the store, so concurrent pcode processes can share it.
+    """
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    return state / "pcode" / "meridian" / "sessions"
 
 
 class ManagedMeridian:
     def __init__(self):
         self.process = None
         self.directory = None
+        self.executable = None
+        self.port = None
         self.base_url = ""
         self.api_key = secrets.token_urlsafe(32)
+        self.profile: str | None = None
+        self.restarts: list[float] = []
+        self.failure: str | None = None
+        self._lock = threading.RLock()
+        self._stopped = threading.Event()
+        self._watchdog = None
 
     def start(self):
         executable = shutil.which("meridian")
@@ -38,11 +111,12 @@ class ManagedMeridian:
             ).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             raise ValueError("Could not verify the installed Meridian version.") from None
-        if version != SUPPORTED_VERSION:
+        if not supported(version):
             raise ValueError(
-                f"Managed Meridian supports verified version {SUPPORTED_VERSION}; "
-                "use an external PCODE_MERIDIAN_BASE_URL for other versions."
+                f"Managed Meridian needs {MINIMUM_VERSION} or newer "
+                f"(found {version or 'unknown'}). Run `pcode --upgrade-meridian`."
             )
+        self.executable = executable
         self.directory = tempfile.TemporaryDirectory(prefix="pcode-meridian-")
         root = Path(self.directory.name)
         (root / "sdk-features.json").write_text(
@@ -50,10 +124,37 @@ class ManagedMeridian:
         )
         (root / "plugins").mkdir()
         (root / "plugins.json").write_text("[]")
+        profile = default_profile()
+        if profile is not None:
+            # 1.72 reads profiles from ~/.config/meridian whatever MERIDIAN_CONFIG_DIR
+            # says, while 1.76 reads them from the config directory. Link them in
+            # (never copy: a profile can hold a token) so every release sees the
+            # same ones, and name the profile so /login meridian targets its login.
+            for name in ("profiles.json", "profiles"):
+                source = meridian_config_dir() / name
+                if source.exists():
+                    (root / name).symlink_to(source)
+            self.profile = profile["id"]
+        session_store_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
-            port = sock.getsockname()[1]
-        self.base_url = f"http://127.0.0.1:{port}"
+            self.port = sock.getsockname()[1]
+        # The port and key stay fixed across restarts, so clients built against
+        # this instance keep working after the watchdog replaces the process.
+        self.base_url = f"http://127.0.0.1:{self.port}"
+        try:
+            self._spawn()
+        except BaseException:
+            self.close()
+            raise
+        self._watchdog = threading.Thread(
+            target=self._watch, name="pcode-meridian-watchdog", daemon=True
+        )
+        self._watchdog.start()
+        return self
+
+    def _spawn(self):
+        root = Path(self.directory.name)
         # Do not inherit shared proxy routing, plugins, or administrative settings.
         # HOME and Claude credentials remain unchanged: Meridian owns upstream auth.
         env = {
@@ -62,10 +163,10 @@ class ManagedMeridian:
         env.update(
             {
                 "MERIDIAN_HOST": "127.0.0.1",
-                "MERIDIAN_PORT": str(port),
+                "MERIDIAN_PORT": str(self.port),
                 "MERIDIAN_API_KEY": self.api_key,
                 "MERIDIAN_CONFIG_DIR": str(root),
-                "MERIDIAN_SESSION_DIR": str(root / "sessions"),
+                "MERIDIAN_SESSION_DIR": str(session_store_dir()),
                 "MERIDIAN_PLUGIN_DIR": str(root / "plugins"),
                 "MERIDIAN_PLUGIN_CONFIG": str(root / "plugins.json"),
                 "MERIDIAN_DESIGN_TOKEN_PATH": str(root / "design-token.json"),
@@ -74,20 +175,21 @@ class ManagedMeridian:
                 "MERIDIAN_PASSTHROUGH": "1",
             }
         )
+        if self.profile:
+            env["MERIDIAN_DEFAULT_PROFILE"] = self.profile
+        # Never let server output corrupt the terminal or expose credentials.
+        self.process = subprocess.Popen(
+            [self.executable],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         try:
-            # Never let server output corrupt the terminal or expose credentials.
-            self.process = subprocess.Popen(
-                [executable],
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
             self.wait_ready()
         except BaseException:
-            self.close()
+            self._stop_process()
             raise
-        return self
 
     def wait_ready(self):
         deadline = time.monotonic() + 30
@@ -101,11 +203,10 @@ class ManagedMeridian:
                     headers = {"x-api-key": self.api_key}
                     health = client.get(self.base_url + "/health", headers=headers).json()
                     if health.get("auth", {}).get("loggedIn") is False:
-                        raise ValueError("Meridian is not logged in. Run claude login, then retry.")
-                    if (
-                        health.get("status") == "healthy"
-                        and health.get("version") == SUPPORTED_VERSION
-                    ):
+                        raise ValueError(
+                            "Meridian is not logged in. Run /login meridian, then retry."
+                        )
+                    if health.get("status") == "healthy" and supported(health.get("version")):
                         response = client.get(
                             self.base_url + "/settings/api/features", headers=headers
                         )
@@ -123,7 +224,37 @@ class ManagedMeridian:
                 time.sleep(0.1)
         raise ValueError("Managed Meridian was not ready within 30 seconds; check Claude login.")
 
-    def close(self):
+    def ensure_running(self):
+        """Replace an exited process on the same port, within the restart budget."""
+        with self._lock:
+            if self.failure:
+                raise ValueError(self.failure)
+            if self._stopped.is_set():
+                raise ValueError("Managed Meridian was stopped. Restart pcode.")
+            if self.process is not None and self.process.poll() is None:
+                return
+            now = time.monotonic()
+            self.restarts = [t for t in self.restarts if now - t < RESTART_WINDOW_SECONDS]
+            if len(self.restarts) >= MAX_RESTARTS:
+                self.failure = (
+                    "Managed Meridian keeps exiting. Run `meridian` in a terminal to see why, "
+                    "then restart pcode."
+                )
+                raise ValueError(self.failure)
+            self.restarts.append(now)
+            self._spawn()
+
+    def _watch(self):
+        # Requests in flight when the process died are not replayed; the
+        # runtime's own retry, or the next prompt, reaches the replacement.
+        while not self._stopped.wait(WATCH_INTERVAL_SECONDS):
+            try:
+                self.ensure_running()
+            except ValueError:
+                if self.failure:
+                    return
+
+    def _stop_process(self):
         if self.process is not None:
             if self.process.poll() is None:
                 self.process.terminate()
@@ -133,28 +264,67 @@ class ManagedMeridian:
                     self.process.kill()
                     self.process.wait(timeout=5)
             self.process = None
-        if self.directory is not None:
-            self.directory.cleanup()
-            self.directory = None
+
+    def close(self):
+        self._stopped.set()
+        with self._lock:
+            self._stop_process()
+            if self.directory is not None:
+                self.directory.cleanup()
+                self.directory = None
+
+
+def managed_mode() -> str:
+    """`on`, `off`, or `auto`; `PCODE_MERIDIAN_MANAGED` overrides the saved choice."""
+    override = os.environ.get("PCODE_MERIDIAN_MANAGED", "").strip()
+    if override:
+        if override not in {"0", "1"}:
+            raise ValueError("PCODE_MERIDIAN_MANAGED must be 0 or 1.")
+        return "on" if override == "1" else "off"
+    mode = load_preferences().get("meridian_managed", "auto")
+    return mode if mode in MODES else "auto"
+
+
+def external_proxy_running(base_url: str) -> bool:
+    """True when something that looks like Meridian answers at `base_url`."""
+    try:
+        response = httpx2.get(base_url + "/health", timeout=1, trust_env=False)
+    except httpx2.HTTPError:
+        return False
+    if response.status_code in (401, 403):
+        return True  # A key-protected proxy still counts as the user's own.
+    try:
+        return "status" in response.json()
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def managed_base_url() -> str | None:
+    """The owned instance's URL, if this process started one."""
+    instance = _instance
+    return instance.base_url if instance is not None else None
 
 
 def managed_endpoint():
-    """Return private connection details, or None for externally managed mode."""
+    """Return private connection details, or None to use an external proxy.
+
+    `auto` prefers a proxy already answering at the default address, then starts
+    a private instance when `meridian` is installed.
+    """
     if os.environ.get("PCODE_MERIDIAN_BASE_URL", "").strip():
         return None
-    override = os.environ.get("PCODE_MERIDIAN_MANAGED", "").strip()
-    if override and override not in {"0", "1"}:
-        raise ValueError("PCODE_MERIDIAN_MANAGED must be 0 or 1.")
-    enabled = (
-        override == "1" if override else load_preferences().get("meridian_managed", "off") == "on"
-    )
-    if not enabled:
+    mode = managed_mode()
+    if mode == "off":
         return None
     global _instance
     with _lock:
         if _instance is None:
+            if mode == "auto":
+                from pcode.meridian import DEFAULT_BASE_URL
+
+                if shutil.which("meridian") is None or external_proxy_running(DEFAULT_BASE_URL):
+                    return None
             _instance = ManagedMeridian().start()
             atexit.register(_instance.close)
-        elif _instance.process is None or _instance.process.poll() is not None:
-            raise ValueError("Managed Meridian stopped. Restart pcode; requests are not replayed.")
+        _instance.ensure_running()
         return _instance.base_url, _instance.api_key

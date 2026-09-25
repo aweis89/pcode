@@ -14,7 +14,10 @@ from pcode.transcript_log import CHAR_BUDGET
 
 # Every Pygments style installed here, including any added by a plugin package.
 # The scan costs a few milliseconds once; Rich imports Pygments regardless.
-SYNTAX_THEMES = tuple(sorted(get_all_styles()))
+# `terminal` is not a Pygments style: it hands every color, code included, to
+# the terminal's own ANSI palette, so pcode matches whatever scheme it runs in.
+TERMINAL_SYNTAX = "terminal"
+SYNTAX_THEMES = (TERMINAL_SYNTAX, *sorted(get_all_styles()))
 
 EFFORTS = ("low", "medium", "high", "xhigh", "default")
 OPENAI_PROVIDERS = ("openai", "openai-chat", "openai-responses", "openai-codex")
@@ -31,6 +34,8 @@ class Setting:
     path_list: bool = False
     # A comma-separated list of names; empty meaning depends on the setting.
     name_list: bool = False
+    # Terminal rows as a whole number, or a share of the screen below 1 (0.5).
+    height: bool = False
     # One line shown beside the key in /config completions.
     description: str = ""
 
@@ -52,6 +57,12 @@ class Setting:
                 } - PROVIDERS.keys()
                 if unknown:
                     raise ValueError(f"Unknown model providers: {', '.join(sorted(unknown))}")
+        elif self.height:
+            if parse_height(value) is None:
+                raise ValueError(
+                    f"{key} must be a whole number of rows or a fraction of the screen "
+                    "between 0 and 1 (0.5 is half)."
+                )
         elif self.positive_integer or self.whole_number:
             floor = 0 if self.whole_number else 1
             if not value.isascii() or not value.isdecimal() or int(value) < floor:
@@ -65,6 +76,19 @@ class Setting:
                 raise ValueError(f"{key} must be one of: {', '.join(self.choices)}")
         elif not value or any(char.isspace() for char in value):
             raise ValueError(f"{key} must be a non-empty model name without whitespace.")
+
+
+def parse_height(value: str | None) -> float | None:
+    """Whole rows (12), or a share of the screen below 1 (0.5); None if invalid."""
+    if not value:
+        return None
+    try:
+        height = float(value)
+    except ValueError:
+        return None
+    if height >= 1:
+        return height if value.isascii() and value.isdecimal() else None
+    return height if height > 0 else None
 
 
 SEND_MODES = ("steering", "queue", "interrupt")
@@ -94,9 +118,12 @@ SETTINGS = {
         description="Anthropic credential /login selected; env PCODE_ANTHROPIC_AUTH overrides",
     ),
     "meridian_managed": Setting(
-        "off",
-        ("on", "off"),
-        description="Launch a process-owned Meridian instance instead of using a shared one",
+        "auto",
+        ("auto", "on", "off"),
+        description=(
+            "Meridian: auto uses a running proxy, else starts a private one; "
+            "on always starts one; off uses the shared proxy only"
+        ),
     ),
     "repo_context_walk_up": Setting(
         "on",
@@ -253,7 +280,15 @@ SETTINGS = {
         "on", ("on", "off"), description="Show the model's plan as a pinned task list"
     ),
     "autohide_tasks": Setting(
-        "on", ("on", "off"), description="Hide the task list once every step is done"
+        "off", ("on", "off"), description="Hide the task list when a turn ends"
+    ),
+    "attach_tasks": Setting(
+        "off", ("on", "off"), description="Draw the task list inside the editor box"
+    ),
+    "tasks_max_height": Setting(
+        None,
+        height=True,
+        description="Max height of the task list plus editor: rows, or 0.5 for half the screen",
     ),
     "show_thinking": Setting(
         "off", ("on", "off"), description="Stream the model's thinking into the transcript"
@@ -267,21 +302,28 @@ SETTINGS = {
         description="Palette for the terminal background; auto detects it",
     ),
     # Chosen per palette so `theme auto` keeps highlighting legible on either
-    # background. `/colors terminal` overrides both with the ANSI styles.
+    # background. `terminal` uses the terminal's ANSI colors for everything.
     "syntax_dark": Setting(
-        "gruvbox-dark",
+        TERMINAL_SYNTAX,
         SYNTAX_THEMES,
-        description="Pygments style for fenced code on the dark palette (/theme previews)",
+        description="terminal (ANSI colors) or a Pygments style, for the dark palette",
     ),
     "syntax_light": Setting(
-        "gruvbox-light",
+        TERMINAL_SYNTAX,
         SYNTAX_THEMES,
-        description="Pygments style for fenced code on the light palette (/theme previews)",
+        description="terminal (ANSI colors) or a Pygments style, for the light palette",
     ),
     "autocompact": Setting(
         "on",
         ("on", "off"),
         description="Compact the conversation automatically as the context window fills",
+    ),
+    # On by default so the wheel scrolls popups; plain drag-to-select then needs
+    # a modifier. Read when a popup opens, so no restart is needed.
+    "popup_mouse": Setting(
+        "on",
+        ("on", "off"),
+        description="Mouse clicks and wheel scrolling in popups; off keeps native text selection",
     ),
     # Read when a side answer settles, so `/config set` applies without a restart.
     "btw_auto_open": Setting(

@@ -5,10 +5,64 @@ API-key access uses ordinary Pydantic AI construction. Subscription access
 requires the wire markers defined here.
 """
 
+import os
+import re
+import shutil
+import subprocess
+from functools import cache
+
 # Compatibility markers used by Claude subscription OAuth traffic, not API keys.
 OAUTH_BETAS = {"claude-code-20250219", "oauth-2025-04-20"}
 OAUTH_PREAMBLE = "You are Claude Code, Anthropic's official CLI for Claude."
-OAUTH_USER_AGENT = "claude-cli/2.1.251"
+# The endpoint gates newer models on the advertised version: below a model's
+# floor the request fails with `claude_code_version_too_old`, not a
+# model-not-found. Each new model raises its floor, so prefer the locally
+# installed Claude Code and keep this as the fallback for hosts without one.
+OAUTH_VERSION = "2.1.280"
+VERSION_TIMEOUT_SECONDS = 5.0
+VERSION_PATTERN = re.compile(r"\d+(?:\.\d+)+")
+
+
+def _parse_version(text: str) -> tuple[int, ...] | None:
+    match = VERSION_PATTERN.search(text)
+    return tuple(int(part) for part in match.group().split(".")) if match else None
+
+
+def oauth_version() -> str:
+    """Fallback Claude Code version, overridable without a release."""
+    value = os.environ.get("PCODE_CLAUDE_VERSION", "").strip()
+    if not value:
+        return OAUTH_VERSION
+    if not VERSION_PATTERN.fullmatch(value):
+        raise LoginError("PCODE_CLAUDE_VERSION must be a dotted version such as 2.1.280.")
+    return value
+
+
+@cache
+def oauth_user_agent() -> str:
+    """Claude Code identity to advertise, never older than `oauth_version()`.
+
+    Spoofing a version that was never released risks rejection, so the local
+    install is the only source of anything newer than the fallback.
+    """
+    version = oauth_version()
+    executable = shutil.which("claude")
+    if executable:
+        try:
+            result = subprocess.run(
+                [executable, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=VERSION_TIMEOUT_SECONDS,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        else:
+            local = _parse_version(result.stdout)
+            if local and local > (_parse_version(version) or ()):
+                version = ".".join(str(part) for part in local)
+    return f"claude-cli/{version}"
 
 
 class LoginError(ValueError):
@@ -43,7 +97,7 @@ class SubscriptionOAuthWire:
         betas, headers = super()._get_betas_and_extra_headers(*args, **kwargs)
         if self._subscription_oauth:
             betas.update(OAUTH_BETAS)
-            headers.update({"User-Agent": OAUTH_USER_AGENT, "x-app": "cli"})
+            headers.update({"User-Agent": oauth_user_agent(), "x-app": "cli"})
         return betas, headers
 
 

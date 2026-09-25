@@ -47,10 +47,13 @@ Repository MCP files are **not** loaded automatically. The JSON uses an
   and `cwd`. Commands are executed directly, not through a shell. Relative paths
   are resolved from pcode's launch directory; prefer absolute paths.
 - **Remote HTTP/SSE:** `url` and optional `headers` (string map). Transport is
-  inferred from the URL by the MCP client. Add `"auth": "oauth"` for browser sign-in.
+  inferred from the URL by the MCP client. Add `"auth": "oauth"` for browser sign-in,
+  plus `client_id` and `client_secret` when the service needs a
+  [pre-registered client](#pre-registered-clients).
 
-Either transport also accepts `"enabled": true` (on for every conversation) and
-`"direct": true` (see tool search below).
+Either transport also accepts `"enabled": true` (on for every conversation),
+`"direct": true` (see tool search below), and a `"description"` string (see
+[what the model is told](#what-the-model-is-told)).
 
 Server names start with a letter and contain letters, digits, `_`, or `-` (up to
 32 characters). Unsupported server fields are rejected on enable rather than
@@ -90,8 +93,9 @@ no headless/device-code login command.
 
 - Pydantic AI's `MCPToolset(auth="oauth")` delegates PKCE, dynamic client registration,
   callback/state validation, token refresh, and authenticated requests to FastMCP
-  and the MCP SDK. Servers must support that client flow; pre-registered client IDs,
-  custom scopes, and fixed callback ports are not exposed in pcode's config yet.
+  and the MCP SDK. Servers without dynamic client registration need a
+  [pre-registered client](#pre-registered-clients); custom scopes and fixed
+  callback ports are not exposed in pcode's config yet.
 - **Sign-ins are saved.** Tokens and the client registration are written to
   `~/.config/pcode/mcp-credentials.json` (owner-readable only, next to the
   Anthropic sign-in), keyed by server URL. Disable/re-enable, `/new`, resume, and
@@ -109,6 +113,35 @@ no headless/device-code login command.
 - `/mcp logout NAME` deletes the saved credentials for that server and disables
   it. Neither that nor `/mcp disable` revokes the server-side grant; revoke access
   through the service if needed.
+
+### Pre-registered clients
+
+Some services, Google's Workspace MCP servers among them, offer no dynamic client
+registration. Create an OAuth client with the provider and give pcode its ID and
+secret, keeping the secret in the environment:
+
+```json
+{
+  "mcpServers": {
+    "gdrive": {
+      "url": "https://drivemcp.googleapis.com/mcp/v1",
+      "auth": "oauth",
+      "client_id": "${GOOGLE_MCP_CLIENT_ID}",
+      "client_secret": "${GOOGLE_MCP_CLIENT_SECRET}"
+    }
+  }
+}
+```
+
+`client_id` requires `"auth": "oauth"`, and `client_secret` requires `client_id`.
+The sign-in redirects to `http://127.0.0.1:PORT/callback` on a free port chosen
+each time, so the client must accept any loopback port. For Google, create a
+**Desktop app** client (Google Auth Platform > Clients), which does; a Web
+application client only accepts the exact redirect URIs listed on it. Google's
+[Drive MCP setup](https://developers.google.com/workspace/drive/api/guides/configure-mcp-server)
+also needs the Drive API and Drive MCP API enabled on that project and the Drive
+scopes added to its consent screen. Without a client ID, sign-in fails with
+`Registration failed: 400`.
 
 ## Default-on servers
 
@@ -163,8 +196,62 @@ searched servers can be enabled together.
 Discovery is handled by Pydantic AI's auto-injected `ToolSearch` capability:
 natively by the provider where supported (recent Anthropic and OpenAI models),
 otherwise by a local `search_tools` tool that pcode shows as **Find tools**.
+Meridian always uses the local tool, because the Claude Agent SDK behind it
+cannot run Anthropic's server-side search.
 Either way the revealed tools keep their `mcp_NAME_TOOL` names, and the search
 exchange is appended to history, so the prompt cache prefix stays intact.
+
+If a provider rejects a request that hides schemas behind its own tool search,
+pcode stops deferring for the rest of the session, says so, and sends the turn
+again with every tool declared up front, as `"direct": true` would. The tools
+stay usable at their full prompt cost rather than the session failing every
+request.
+
+## What the model is told
+
+Hidden tools only help if the model thinks to search for them, so pcode tells
+it which servers are enabled, in two parts:
+
+- **A fixed instruction**, present whenever `mcp.json` configures at least one
+  server. It says where the list of enabled servers is, that their tools are
+  named `mcp_NAME_TOOL`, and to search for them before deciding an integration
+  is unavailable. It names no server, so it never changes during a session.
+- **The list itself**, added to the conversation with the next request whenever
+  it changes: at the start of a conversation with servers enabled, after
+  `/mcp enable` or `/mcp disable`, and again after compaction drops it. Turning
+  the last server off sends "no MCP servers are enabled", so the model stops
+  looking for tools that are gone.
+
+```text
+<mcp-servers>
+Enabled MCP servers (replaces any earlier list):
+- gdrive
+- cs: CodeSignal assessments and candidates
+</mcp-servers>
+```
+
+Because the list is appended rather than written into the instructions, changing
+it never rewrites earlier messages or the instructions, so the list does not
+invalidate the prompt cache by itself. Enabling the first searchable server
+still does, since that adds the search tool to the request. A delegated worker
+sees the same list, because it shares the parent's enabled servers; side
+questions (`/btw`) get neither the tools nor the list.
+
+The name is often enough. Add a `description` when it is not:
+
+```json
+{
+  "mcpServers": {
+    "cs": {
+      "command": "cs-mcp",
+      "description": "CodeSignal assessments and candidates"
+    }
+  }
+}
+```
+
+Keep it to a short phrase. It is read when the server is enabled, so after
+editing it, disable and enable the server again.
 
 ## Activation and token usage
 
@@ -173,6 +260,10 @@ exchange is appended to history, so the prompt cache prefix stays intact.
   Switching models keeps the selection. Repeating `enable` is a no-op.
 - OAuth servers connect during `/mcp enable`, then disconnect while retaining
   their tokens. Non-OAuth servers still connect only on the next turn.
+  Sign-in is challenge-driven: a server that answers `initialize` and
+  `tools/list` without credentials and only rejects the tool calls themselves
+  never triggers the browser flow at enable time, so `/mcp enable` succeeds
+  silently and the first authentication error arrives mid-turn.
   All enabled servers reconnect for each turn and close afterward, including on
   failure or cancellation; local subprocesses do not stay running between turns.
 - `/mcp disable NAME` removes those tools from subsequent model requests. MCP

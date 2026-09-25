@@ -32,6 +32,7 @@ nav = [
     { "Conversation tree" = "conversation-tree.md" },
     { "Profiling" = "profiling.md" },
     { "Dependencies" = "dependencies.md" },
+    { "Anthropic provider options" = "anthropic-providers.md" },
     { "Meridian validation" = "meridian-validation.md" },
     { "Resize experiment" = "resize-experiment.md" },
   ] },

@@ -66,6 +66,42 @@ def test_unrelated_error_keeps_generic_guidance():
     assert "Check the model string" in error_message(RuntimeError("unrelated"))
 
 
+def _mcp_error(module, name="McpError"):
+    return type(name, (Exception,), {"__module__": module})("private-body")
+
+
+def _raised_from(cause):
+    try:
+        raise RuntimeError("wrapper") from cause
+    except RuntimeError as error:
+        return error
+
+
+@pytest.mark.parametrize(
+    ("make", "expected"),
+    [
+        # The SDK rejected Google's authorization server metadata mid-turn.
+        (lambda: _mcp_error("mcp.client.auth.exceptions", "OAuthFlowError"), "sign-in failed"),
+        (lambda: _mcp_error("fastmcp.client.auth.oauth", "ClientNotFoundError"), "sign-in failed"),
+        (lambda: __import__("pcode.mcp_oauth").mcp_oauth.SignInRequired(), "sign-in failed"),
+        (lambda: _raised_from(_mcp_error("mcp.client.auth.exceptions")), "sign-in failed"),
+        (lambda: _mcp_error("mcp.shared.exceptions"), "server request failed"),
+        (lambda: _mcp_error("fastmcp.exceptions", "ToolError"), "server request failed"),
+        (lambda: _mcp_error("pydantic_ai.mcp", "MCPError"), "server request failed"),
+    ],
+)
+def test_mcp_failures_do_not_blame_the_model(make, expected):
+    message = error_message(make())
+    assert expected in message
+    assert "/mcp" in message
+    assert "Check the model string" not in message
+    assert "private-body" not in message
+
+
+def test_mcp_match_is_by_package_not_prefix():
+    assert "Check the model string" in error_message(_mcp_error("mcpx.errors"))
+
+
 def test_failed_turn_records_configured_route(tmp_path):
     async def fail(messages, info):
         raise RuntimeError("failure")

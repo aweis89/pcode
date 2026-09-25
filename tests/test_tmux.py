@@ -76,10 +76,15 @@ def pane(request):
             "32",
             "-c",
             os.getcwd(),
+            # This checkout's committed .pcode/preferences.json turns worktrees
+            # on, so every main() launch would otherwise check out a real
+            # .worktrees/<session> here and wait on its setup script before
+            # drawing the prompt. `-c SCRIPT ARG` puts ARG in sys.argv, so this
+            # reaches the scripts that call main() too; the rest ignore it.
             shlex.join(
-                [sys.executable, "-c", request.param]
+                [sys.executable, "-c", request.param, "--no-worktree"]
                 if hasattr(request, "param")
-                else [sys.executable, "-m", "pcode.app"]
+                else [sys.executable, "-m", "pcode.app", "--no-worktree"]
             ),
         )
         yield command
@@ -98,6 +103,24 @@ def pane(request):
         reaper.wait(timeout=5)
 
 
+# The spinner row leads with a `dots` frame, or a `line` frame for system work.
+BUSY_FRAMES = tuple(" " + frame + " " for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏-\\|/")
+
+# The footer always names the mode the next Enter sends with.
+SEND_MODES = ("steering", "queue", "interrupt")
+
+
+def busy(lines):
+    """Whether the spinner row sits in the block directly above the editor."""
+    top = max((i for i, line in enumerate(lines) if line.startswith("┌")), default=0)
+    for line in reversed(lines[:top]):
+        if not line.strip():
+            return False
+        if line.startswith(BUSY_FRAMES):
+            return True
+    return False
+
+
 def capture(pane, expected, *, running=False, columns=None):
     """Allow asynchronous completion and resize paints to settle, with a deadline."""
     deadline = time.monotonic() + 3
@@ -109,13 +132,28 @@ def capture(pane, expected, *, running=False, columns=None):
             and len(lines) >= 2
             and lines[-2].startswith("└")
             and (columns is None or len(lines[-2]) == columns)
-            and "Enter:" in lines[-1]
-            # Mode and activity have priority even in narrow real-CPR panes.
-            and (("working" in lines[-1]) == running)
+            and any(mode in lines[-1] for mode in SEND_MODES)
+            and busy(lines) == running
         ):
             return screen
         time.sleep(0.05)
     pytest.fail(f"Prompt did not settle with {expected!r}:\n{screen}")
+
+
+def settle(pane, ready, *, running=False):
+    """The first settled screen that satisfies ``ready``, else the last one.
+
+    The live status row repaints as soon as an event lands, but scrollback
+    commits wait for the next flush handoff, so a status-row marker can show a
+    frame or two before the rows written above it. Callers assert on the
+    returned screen, so a timeout still fails with the screen in the message.
+    """
+    deadline = time.monotonic() + 3
+    while True:
+        screen = capture(pane, "", running=running)
+        if ready(screen) or time.monotonic() > deadline:
+            return screen
+        time.sleep(0.05)
 
 
 # The last row `/theme-preview` writes: everything above it can scroll away.
@@ -133,13 +171,14 @@ def scrollback(pane):
 
 
 # The status row is indented one column so the spinner lines up with the task
-# rows inside the frame below it instead of hugging the terminal edge.
-SPINNER_ROW = tuple(" " + frame for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+# rows inside the frame below it instead of hugging the terminal edge. Running
+# tools and pcode's own work (compaction) draw the `line` frames, not `dots`.
+SPINNER_ROW = BUSY_FRAMES
 
 
 def input_rows(screen):
     lines = screen.splitlines()
-    assert "Enter:" in lines[-1], screen
+    assert any(mode in lines[-1] for mode in SEND_MODES), screen
     assert lines[-2].startswith("└"), screen
     cursor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
     top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("┌"))
@@ -149,10 +188,10 @@ def input_rows(screen):
 
 def test_footer_theme_switch_keeps_editor_compact(pane):
     assert input_rows(capture(pane, "❯")) == 1
-    for colors in ("terminal", "palette"):
-        pane("send-keys", "-t", "preview:0.0", "-l", f"/colors {colors}")
+    for syntax in ("terminal", "gruvbox-dark"):
+        pane("send-keys", "-t", "preview:0.0", "-l", f"/syntax {syntax}")
         pane("send-keys", "-t", "preview:0.0", "Enter")
-        assert input_rows(capture(pane, f"Colors: {colors}.")) == 1
+        assert input_rows(capture(pane, f"): {syntax}.")) == 1
         for theme in ("light", "dark", "auto"):
             pane("send-keys", "-t", "preview:0.0", "-l", f"/theme {theme}")
             pane("send-keys", "-t", "preview:0.0", "Enter")
@@ -190,11 +229,17 @@ def test_input_only_grows_for_text(pane, split):
 
     pane("send-keys", "-t", "preview:0.0", "C-c")
     pane("send-keys", "-t", "preview:0.0", "-l", "/")
-    screen = capture(pane, "\n /help ")
+    # Match the menu row, not the banner's "/help for keys". The menu can fill
+    # a short split to its top row, so there is no newline to anchor on, and a
+    # narrow split truncates the description.
+    screen = capture(pane, "List commands")
     assert input_rows(screen) == 1
-    # The menu shows at most six commands, so assert on one that is always in
-    # view rather than a lower entry that a new command can push off the list.
-    assert screen.index("\n /help ") < screen.rindex("┌")  # Menu above the fixed frame.
+    # Assert on the first command, which is always in view, rather than a
+    # lower entry that a new command can push off the list.
+    lines = screen.splitlines()
+    help_row = next(i for i, line in enumerate(lines) if line.startswith(" /help "))
+    top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
+    assert help_row < top  # Menu above the fixed frame.
 
     pane("send-keys", "-t", "preview:0.0", "C-c")
     text = "x" * 120 + "END"
@@ -446,7 +491,11 @@ def test_cursor_is_hidden_while_committing_stream_and_returns_to_draft(pane):
         if "CURSOR_LINE_" in screen and not any(line.startswith("│❯") for line in lines):
             samples += 1
             assert not visible, snapshot
-        if "CURSOR_STREAM_DONE" in screen and "Enter:" in lines[-1] and "working" not in lines[-1]:
+        if (
+            "CURSOR_STREAM_DONE" in screen
+            and any(mode in lines[-1] for mode in SEND_MODES)
+            and not busy(lines)
+        ):
             assert visible, snapshot
             assert lines[y].startswith("│❯ draft text"), snapshot
             assert x == 9, snapshot  # Three-cell prompt plus 'draft '.
@@ -763,6 +812,60 @@ def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
     assert "Run · " not in screen
 
 
+def attached_box(screen):
+    """The editor box's rows: heading, tasks, divider, text, footer, all one frame."""
+    lines = screen.splitlines()
+    cursor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
+    top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("┌"))
+    divider = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("├"))
+    bottom = next(i for i, line in enumerate(lines[cursor:], cursor) if line.startswith("└"))
+    assert top < divider < cursor, screen
+    assert lines[divider].endswith("┤"), screen
+    return lines[top], lines[top + 1 : divider], bottom - divider - 1
+
+
+@pytest.mark.parametrize(
+    "pane",
+    [TOOLS_SCRIPT.replace("app.run()", "app.activity.attach_tasks = True\napp.run()")],
+    indirect=True,
+)
+def test_attached_tasks_share_the_editor_box(pane):
+    initial = capture(pane, "A task")
+    heading, tasks, text_rows = attached_box(initial)
+    assert heading.startswith("┌─ Tasks 0/1 ─")
+    assert len(tasks) == 1 and "A task" in tasks[0]
+    assert text_rows == 1
+    assert initial.count("┌") == initial.count("└") == 1
+
+    pane("send-keys", "-t", "preview:0.0", "-l", "/attach-tasks off")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    detached = capture(pane, "Tasks inside the editor box: off")
+    assert "├" not in detached and detached.count("┌") == 2
+    assert input_rows(detached) == 1
+    pane("send-keys", "-t", "preview:0.0", "-l", "/attach-tasks on")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    capture(pane, "Tasks inside the editor box: on")
+
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
+    for width, height in ((40, 14), (100, 32), (40, 20)):
+        pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
+        deadline = time.monotonic() + 3
+        while True:
+            screen = capture(pane, "keep draft", running=True, columns=width)
+            if screen.count("├") == 1:
+                break
+            assert time.monotonic() < deadline, screen
+            time.sleep(0.05)
+        heading, tasks, text_rows = attached_box(screen)
+        assert heading.startswith("┌─ Tasks 0/1")
+        assert len(tasks) == 1 and tasks[0][1] in "◜◠◝◞◡◟"
+        assert text_rows == 1
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+    capture(pane, "! Run cancelled")
+
+
 RESIZE_TRANSCRIPT_SCRIPT = TOOLS_SCRIPT.replace(
     'yield TextDelta("MODEL CONVERSATION ONLY\\n\\n")',
     'yield TextDelta("".join(f"RESIZE_TRANSCRIPT_{i:03d}\\n\\n" for i in range(40)))',
@@ -840,13 +943,14 @@ def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
 @pytest.mark.parametrize("mode", ["queue", "steering"])
 def test_queued_messages_stay_directly_above_editor(pane, mode):
     capture(pane, "❯")
-    if mode == "queue":
-        pane("send-keys", "-t", "preview:0.0", "C-s")
     label = "Queued" if mode == "queue" else "Steering (next model request)"
     pane("send-keys", "-t", "preview:0.0", "-l", "active prompt")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     capture(pane, "COMMITTED MARKER", running=True)
     for text in ("first queued message " * 10, "second queued message"):
+        if mode == "queue":
+            # Ctrl+S picks the mode for one send only.
+            pane("send-keys", "-t", "preview:0.0", "C-s")
         pane("send-keys", "-t", "preview:0.0", "-l", text)
         pane("send-keys", "-t", "preview:0.0", "Enter")
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
@@ -855,9 +959,9 @@ def test_queued_messages_stay_directly_above_editor(pane, mode):
         screen = capture(pane, "│❯ keep draft", running=True, columns=width)
         lines = screen.splitlines()
         editor_top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
-        assert lines[editor_top - 2].startswith(f"{label}: first")
+        assert lines[editor_top - 2].startswith(f" {label}: first")
         assert lines[editor_top - 2].endswith("…")
-        assert lines[editor_top - 1].startswith(f"{label}: second")
+        assert lines[editor_top - 1].startswith(f" {label}: second")
         assert lines[editor_top - 3].startswith(SPINNER_ROW)
         assert "active prompt" not in lines[editor_top - 3]
         assert "│❯ keep draft" in screen
@@ -916,7 +1020,8 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    screen = capture(pane, "SLOW_FILE", running=True)
+    capture(pane, "SLOW_FILE", running=True)
+    screen = settle(pane, lambda screen: "file_30.py" in screen, running=True)
     lines = screen.splitlines()
     status = next(i for i, line in enumerate(lines) if "SLOW_FILE" in line)
     assert lines[status].startswith(SPINNER_ROW)
@@ -948,7 +1053,11 @@ def test_scrollback_quote_is_committed_on_send_with_a_blank_line_after_it(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "-l", "sent prompt")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    waiting = capture(pane, "WAITING FOR FIRST MESSAGE", running=True)
+    capture(pane, "WAITING FOR FIRST MESSAGE", running=True)
+    # The runtime withholds the rest of the first message for two seconds, so
+    # the quote must land well before it.
+    waiting = settle(pane, lambda screen: "▌ sent prompt" in screen, running=True)
+    assert "WAITING FOR FIRST MESSAGE" in waiting
     assert "▌ sent prompt" in waiting
     assert "FIRST MODEL" not in waiting
     assert input_rows(waiting) == 1

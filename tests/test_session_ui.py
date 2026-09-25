@@ -67,7 +67,6 @@ def test_browser_keyboard(tmp_path, keys, expected):
     async def run():
         with create_pipe_input() as pipe:
             app, ids = browser(tmp_path, input=pipe)
-            assert app.app.mouse_support()
             task = asyncio.create_task(app.run())
             await asyncio.sleep(0.05)
             pipe.send_text(keys)
@@ -75,6 +74,46 @@ def test_browser_keyboard(tmp_path, keys, expected):
             assert result == (ids[expected] if expected else None)
 
     asyncio.run(run())
+
+
+def test_browser_deletes_after_confirmation(tmp_path):
+    async def run():
+        with create_pipe_input() as pipe:
+            app, ids = browser(tmp_path, input=pipe, active_id=None)
+            root = app.root
+            task = asyncio.create_task(app.run())
+            await asyncio.sleep(0.05)
+            pipe.send_text("d")
+            await asyncio.sleep(0.05)
+            assert (root / ids["newest"]).is_dir()
+            assert "Press d again" in app.status
+            pipe.send_text("d")
+            await asyncio.sleep(0.05)
+            assert not (root / ids["newest"]).exists()
+            assert [info.id for info in app.visible] == [ids["older"]]
+            pipe.send_text("\r")
+            assert await asyncio.wait_for(task, 2) == ids["older"]
+            assert (root / ids["older"]).is_dir()
+
+    asyncio.run(run())
+
+
+def test_browser_refuses_to_delete_active_or_open_session(tmp_path):
+    with create_pipe_input() as pipe:
+        app, ids = browser(tmp_path, input=pipe)
+        app.active_id = ids["newest"]
+        app.delete_selected()
+        assert "active" in app.status
+        assert (app.root / ids["newest"]).is_dir()
+    held = SavedSession.open(ids["older"], app.root, tmp_path)
+    try:
+        with pytest.raises(SessionError, match="open in another process"):
+            from pcode.sessions import delete_session
+
+            delete_session(ids["older"], app.root)
+    finally:
+        held.close()
+    assert (app.root / ids["older"]).is_dir()
 
 
 def test_browser_scopes_searches_and_shows_turns(tmp_path):
@@ -190,8 +229,7 @@ def test_tool_calls_appear_between_the_text_they_ran_between(tmp_path):
         "  Looking now.",
         "",
         "  ✓ Read · src/pcode/ui.py → 40 lines · 0.2s",
-        "  ✗ Run · ls → failed",
-        "    ls /nope … [1 more lines]",
+        "  ✗ Run · ls → failed · ls /nope … [1 more lines]",
         "",
         "  All done.",
     ]
@@ -214,9 +252,8 @@ def test_scrollback_and_browser_share_one_tool_line(tmp_path):
     (line,) = tool_summary_lines("read_file", " · src/x.py → 40 lines", elapsed_seconds=0.25)
     assert line.plain == "✓ Read · src/x.py → 40 lines · 0.2s"
     assert line.style == "pcode.thinking"
-    failed, preview = tool_summary_lines("shell", "", failed=True, command="rm -rf /\nmore")
-    assert failed.plain == "✗ Run"
-    assert preview.plain == "  rm -rf / … [1 more lines]"
+    (failed,) = tool_summary_lines("shell", "", failed=True, command="rm -rf /\nmore")
+    assert failed.plain == "✗ Run · rm -rf / … [1 more lines]"
     # A width truncates rather than wraps, as the scrollback line does.
     (narrow,) = tool_summary_lines("read_file", " · " + "x" * 200, width=20)
     assert len(narrow.plain) == 20 and narrow.plain.endswith("…")

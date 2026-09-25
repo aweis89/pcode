@@ -77,18 +77,20 @@ def profile_dir() -> Path:
 
 
 def _chrome_profile_dirs() -> list[Path]:
-    """Where the everyday Chrome keeps `DevToolsActivePort` once remote debugging is on."""
+    """Where Chrome, Chromium, and Edge keep their debugging port files."""
     home = Path.home()
     return [
         home / "Library" / "Application Support" / "Google" / "Chrome",
         home / "Library" / "Application Support" / "Chromium",
         home / ".config" / "google-chrome",
         home / ".config" / "chromium",
+        home / "Library" / "Application Support" / "Microsoft Edge",
+        home / ".config" / "microsoft-edge",
     ]
 
 
 def running_chrome_url() -> str | None:
-    """The CDP endpoint of the user's own Chrome, if it has remote debugging on.
+    """The CDP endpoint of a user's Chromium-based browser with remote debugging on.
 
     `PCODE_BROWSER_CDP_URL` wins. Otherwise Chrome writes `DevToolsActivePort`
     (port, then the browser websocket path) into its profile when started with
@@ -193,6 +195,25 @@ def _session_class():
             self.pages.append(page)
             self.page = page
 
+        async def list_tabs(self) -> list[tuple[str, str]]:
+            """Read browser targets over CDP, without evaluating possibly hung pages.
+
+            A browser's debugging switch can expose only a WebSocket, with no
+            HTTP `/json/list` endpoint. Reuse Playwright's connection instead.
+            """
+            await self.ensure_page()
+            assert self._browser is not None
+            cdp = await self._bounded(self._browser.new_browser_cdp_session())
+            try:
+                result = await self._bounded(cdp.send("Target.getTargets"))
+            finally:
+                await self._bounded(cdp.detach())
+            return [
+                (target.get("title", ""), target.get("url", ""))
+                for target in result["targetInfos"]
+                if target.get("type") == "page"
+            ]
+
         async def __aexit__(self, exc_type, *rest) -> None:
             for page in list(self.pages):
                 try:
@@ -234,8 +255,10 @@ class BrowserState:
                 self.cdp_url = running_chrome_url()
                 if self.cdp_url is None:
                     raise ValueError(
-                        "No running Chrome with remote debugging found. Turn it on at "
-                        "chrome://inspect/#remote-debugging, or set PCODE_BROWSER_CDP_URL."
+                        "No running Chrome, Chromium, or Edge with remote debugging found. "
+                        "Enable remote debugging in your browser "
+                        "(chrome://inspect/#remote-debugging in Chrome), "
+                        "or set PCODE_BROWSER_CDP_URL."
                     )
             elif chrome_executable():
                 # The port is chosen now so the session can be built before the
@@ -342,21 +365,10 @@ class BrowserState:
                     process.kill()
 
     async def list_tabs(self) -> list[tuple[str, str]]:
-        """Every tab as (title, url), the user's included, without touching the pages.
-
-        Asks Chrome's `/json/list` endpoint rather than each page: a tab Chrome
-        has discarded or that is otherwise unresponsive never answers a page
-        evaluation, and `page.title()` has no timeout. Empty in the Chromium
-        fallback, which exposes no endpoint.
-        """
-        if self.cdp_url is None:
+        """Every tab as (title, url), the user's included, without evaluating pages."""
+        if self.session is None:
             return []
-        import httpx
-
-        base = self.cdp_url.replace("ws://", "http://", 1).split("/devtools/", 1)[0].rstrip("/")
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            targets = (await client.get(base + "/json/list")).json()
-        return [(t.get("title", ""), t.get("url", "")) for t in targets if t.get("type") == "page"]
+        return await self.session.list_tabs()
 
     @property
     def launched(self) -> bool:
@@ -369,7 +381,7 @@ class BrowserState:
         if self.cdp_url is None:
             how = "Playwright's Chromium (no Chrome found; Google sign-in will refuse it)"
         elif self.attached:
-            how = f"attached to your Chrome at {self.cdp_url}"
+            how = f"attached to your browser at {self.cdp_url}"
         else:
             how = f"own Chrome on {self.cdp_url}, profile {profile_dir()}" + (
                 "" if self.process is not None and self.process.poll() is None else " (not started)"

@@ -3,11 +3,11 @@
 from pathlib import Path
 
 import pytest
-from prompt_toolkit.styles import merge_styles
+from prompt_toolkit.styles import DynamicStyle, merge_styles
 from prompt_toolkit.styles.defaults import default_ui_style
 
 from pcode.popup_ui import popup_style
-from pcode.ui import PALETTES
+from pcode.ui import PALETTES, Transcript
 
 
 @pytest.mark.parametrize("theme", [None, "dark", "light"])
@@ -25,8 +25,6 @@ from pcode.ui import PALETTES
         "text-area",
         "frame.border",
         "frame.label",
-        "dialog dialog.body scrollbar.background",
-        "scrollbar.background",
     ],
 )
 def test_popup_surfaces_use_terminal_defaults(theme, classes):
@@ -58,16 +56,87 @@ def test_popup_selection_is_highlighted(classes):
     assert attrs.bgcolor == attrs.color == "default"
 
 
-@pytest.mark.parametrize("kind", ["sessions", "tree", "models", "tools"])
+@pytest.mark.parametrize("theme", ["dark", "light"])
+@pytest.mark.parametrize(
+    "classes", ["selected", "dialog dialog.body selected", "text-area cursor-line"]
+)
+def test_popup_selection_uses_theme_colors(theme, classes):
+    palette = PALETTES[theme]
+    style = merge_styles([default_ui_style(), popup_style(palette.prompt_style())])
+    attrs = style.get_attrs_for_style_str(
+        "class:popup " + " ".join(f"class:{c}" for c in classes.split())
+    )
+    assert attrs.bgcolor == palette.selected.lstrip("#")
+    assert attrs.color == palette.accent.lstrip("#")
+    assert not attrs.reverse
+    assert not attrs.underline
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+@pytest.mark.parametrize("prefix", ["", "class:dialog class:dialog.body "])
+def test_popup_scrollbars_use_theme_colors(theme, prefix):
+    palette = PALETTES[theme]
+    style = merge_styles([default_ui_style(), popup_style(palette.prompt_style())])
+    for part, background, foreground in (
+        ("background", palette.surface, "default"),
+        ("button", palette.accent, "default"),
+        ("arrow", "default", palette.accent),
+    ):
+        attrs = style.get_attrs_for_style_str(f"class:popup {prefix}class:scrollbar.{part}")
+        assert attrs.bgcolor == background.lstrip("#")
+        assert attrs.color == foreground.lstrip("#")
+        assert not attrs.reverse
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_popup_colors_follow_syntax_and_theme_changes(theme):
+    from rich.console import Console
+
+    transcript = Transcript(Console(), theme, preferences={}, detected_theme=theme)
+    style = merge_styles([default_ui_style(), popup_style(DynamicStyle(transcript.prompt_style))])
+    for name in ("monokai", "solarized-light", "terminal", "dracula"):
+        transcript.syntax_themes[theme] = name
+        palette = transcript.menu_palette
+        for part in ("selected", "cursor-line"):
+            attrs = style.get_attrs_for_style_str(f"class:popup class:{part}")
+            assert attrs.color == palette.accent.lstrip("#")
+            assert attrs.bgcolor == (
+                "default" if name == "terminal" else palette.selected.lstrip("#")
+            )
+            assert attrs.reverse == (name == "terminal")
+        thumb = style.get_attrs_for_style_str("class:popup class:scrollbar.button")
+        assert thumb.bgcolor == palette.accent.lstrip("#")
+        assert not thumb.reverse
+        surface = style.get_attrs_for_style_str("class:popup class:text-area")
+        assert surface.bgcolor == surface.color == "default"
+
+
+def test_popup_colors_follow_appearance_changes():
+    palette = PALETTES["dark"]
+    style = popup_style(DynamicStyle(lambda: palette.prompt_style()))
+    for theme in ("dark", "light", "dark"):
+        palette = PALETTES[theme]
+        attrs = style.get_attrs_for_style_str("class:popup class:cursor-line")
+        assert attrs.bgcolor == palette.selected.lstrip("#")
+        assert attrs.color == palette.accent.lstrip("#")
+
+
+@pytest.mark.parametrize(
+    "kind", ["sessions", "tree", "models", "tools", "edits", "links", "asides", "status"]
+)
 def test_all_popups_share_style_scope(kind):
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.output import DummyOutput
 
+    from pcode.aside import Asides
+    from pcode.aside_ui import AsideBrowser
     from pcode.conversation_tree import ConversationTree
+    from pcode.edit_ui import EditBrowser
     from pcode.inspection import ToolArchive
     from pcode.inspector_ui import ToolInspector
+    from pcode.links_ui import links_dialog
     from pcode.model_ui import ModelPicker
-    from pcode.session_ui import SessionBrowser
+    from pcode.session_ui import SessionBrowser, session_info_dialog
     from pcode.tree_ui import tree_dialog
 
     with create_pipe_input() as pipe:
@@ -78,8 +147,23 @@ def test_all_popups_share_style_scope(kind):
             app = tree_dialog(ConversationTree(), **options)
         elif kind == "models":
             app = ModelPicker(["test:model"], {"test"}, **options).app
-        else:
+        elif kind == "tools":
             app = ToolInspector(ToolArchive(), **options).app
+        elif kind == "edits":
+            app = EditBrowser([], **options).app
+        elif kind == "links":
+            app = links_dialog([], **options)
+        elif kind == "asides":
+            app = AsideBrowser(Asides(), **options).app
+        else:
+            app = session_info_dialog([], **options)
+        for part in ("selected", "cursor-line"):
+            attrs = app.style.get_attrs_for_style_str(f"class:popup class:{part}")
+            assert attrs.bgcolor == PALETTES["dark"].selected.lstrip("#")
+            assert attrs.color == PALETTES["dark"].accent.lstrip("#")
+            assert not attrs.reverse
+        thumb = app.style.get_attrs_for_style_str("class:popup class:scrollbar.button")
+        assert thumb.bgcolor == PALETTES["dark"].accent.lstrip("#")
         assert app.layout.container.style == "class:popup"
         attrs = app.style.get_attrs_for_style_str("class:popup class:dialog.body")
         assert attrs.bgcolor == attrs.color == "default"

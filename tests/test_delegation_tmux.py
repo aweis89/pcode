@@ -19,7 +19,8 @@ class Runtime:
 
     async def stream(self, prompt):
         yield ToolStarted("delegate_task", "explorer · investigate authentication", "parent",
-                          activity="Working")
+                          activity="Working", agent="explorer",
+                          task="investigate authentication")
         for i in range(20):
             yield ToolStarted("read_file", f"chatter-{i}", str(i))
             yield ToolSummary("read_file", f"chatter-{i}", call_id=str(i))
@@ -37,7 +38,7 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "src/auth.py", running=True)
-    assert "explorer" in screen
+    assert "Explorer" in screen
     # The newest child owns the status row; the delegate and its other child stay boxed.
     assert "│    ⟳ Search" in screen
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
@@ -46,7 +47,7 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
         screen = capture(pane, "src/auth.py", running=True, columns=width)
         lines = screen.splitlines()
         top = max(i for i, line in enumerate(lines) if line.startswith("┌─ Tools"))
-        assert "⟳ Delegate" in lines[top + 1]
+        assert "⟳ ✦ Explorer" in lines[top + 1]
         assert lines[top + 2].startswith("│    ⟳ Search")
         assert lines[top + 3].startswith("└")
         assert input_rows(screen) == 1

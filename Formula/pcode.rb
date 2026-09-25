@@ -5,6 +5,7 @@ class Pcode < Formula
 
   depends_on "uv" => :build
   depends_on "python@3.13"
+  depends_on "shfmt"
 
   # This upstream tap uses uv.lock rather than duplicating its dependency tree
   # as Homebrew resources. Dependency downloads require network access at build time.

@@ -159,6 +159,10 @@ resolved there, never in the mainline checkout) and then fast-forwards the
 mainline, `/worktree finish` does that and then removes the worktree and its
 branch and quits, `/worktree remove` deletes the directory once it is merged
 and clean, and `/worktree list` shows every worktree. Nothing is ever forced.
+`/worktree merge` also works while a turn is running, so work the model has
+already committed can land without waiting; it refuses a worktree with
+uncommitted changes, so it never runs over edits still in flight. The other
+actions that change the worktree wait for the turn to finish.
 `/resume` can pick a session from another worktree of the repository and move
 this session there; see [sessions](sessions.md).
 

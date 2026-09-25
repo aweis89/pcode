@@ -15,6 +15,9 @@ from pcode.sessions import SavedSession
 from pcode.tool_display import command_error
 from pcode.ui import Transcript
 
+# Painted code blocks belong to a Pygments style, not the default terminal colors.
+PALETTE_SYNTAX = {"syntax_dark": "gruvbox-dark", "syntax_light": "gruvbox-light"}
+
 
 @pytest.mark.parametrize(
     "content,expected",
@@ -246,8 +249,7 @@ def test_mirrored_command_failures_keep_only_their_summary_line_by_default():
     )
     transcript.tool_result(event)
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
-        "✗ Run · exit 1",
-        "  pytest",
+        "✗ Run · exit 1 · pytest",
     ]
 
 
@@ -274,7 +276,10 @@ def test_legacy_error_visibility_is_ignored_and_hidden_commands_keep_events():
 
 def test_error_body_uses_markdown_code_block_without_interpreting_markup():
     stream = StringIO()
-    transcript = Transcript(Console(file=stream, force_terminal=True, color_system="truecolor"))
+    transcript = Transcript(
+        Console(file=stream, force_terminal=True, color_system="truecolor"),
+        preferences=PALETTE_SYNTAX,
+    )
     transcript.error("[bold]literal[/bold] code=123 False")
     body = stream.getvalue().splitlines()[2]
     assert "[bold]" in Text.from_ansi(body).plain
@@ -319,7 +324,8 @@ def test_error_code_block_handles_narrow_panes(width):
 def test_error_code_block_background_starts_at_left_edge_and_keeps_inner_indent():
     stream = StringIO()
     transcript = Transcript(
-        Console(file=stream, width=40, force_terminal=True, color_system="truecolor")
+        Console(file=stream, width=40, force_terminal=True, color_system="truecolor"),
+        preferences=PALETTE_SYNTAX,
     )
     transcript.error("unindented\n    indented")
     rows = stream.getvalue().splitlines()[1:]

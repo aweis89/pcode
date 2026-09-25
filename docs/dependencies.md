@@ -194,6 +194,12 @@ be installed there, and `SavedSession.recover()` must skip runs with a
 Child tool IDs are scoped by parent call ID, and persisted tool events retain
 `parent_call_id` for replay. The panel pins active delegates within its existing
 row budget; keep `tests/test_delegation_tmux.py` exercising real CPR and resize.
+A sub-agent's plan stays in Harness's default per-run store, private to its run.
+`IdentifiedPlanning` announces the whole plan as a `PlanSnapshot` capability event
+after each planning call; the child stream handler forwards changes as
+display-only `ChildPlan` events, which are never journaled. Harness's own
+per-item plan events cannot replace it: `write_plan` emits nothing for a pure
+reorder, so a plan rebuilt from them can show steps in the wrong order.
 
 ### MCP integration
 
@@ -224,7 +230,7 @@ FastMCP resolves it to `fastmcp.client.auth.OAuth`. Consult
 `mcp/client/auth/oauth2.py`. In 4.0.4, default storage is **in-memory**, not disk;
 the helper manages browser authorization, PKCE, callback validation, and refresh.
 Do not assume older FastMCP documentation about persistent token caches applies.
-Pcode intentionally uses that default rather than adding a credential store. The slim install omits `websockets`, but FastMCP 4.0.4's
+Pcode passes its own file-backed `CredentialStore` (see `mcp_oauth.py`) instead. The slim install omits `websockets`, but FastMCP 4.0.4's
 callback server explicitly selects Uvicorn's `websockets-sansio` implementation.
 Pcode adds `websockets>=15.0.1,<17` (verified with 16.1.1) so browser callbacks
 actually start; mocked OAuth exchange tests alone would miss this dependency.
@@ -239,7 +245,16 @@ If a previously registered redirect port is occupied, pcode fails normally with
 instructions to disable/re-enable rather than silently changing a registered URI.
 The adapter uses FastMCP's `token_storage_adapter`, the SDK's
 `context.client_metadata.redirect_uris`, and Uvicorn's `capture_signals` hook;
-recheck these installed-source APIs on upgrades. OAuth protocol handling, PKCE,
+recheck these installed-source APIs on upgrades. A pre-registered `client_id`
+(FastMCP's static client) never pins the callback port; only a dynamic
+registration does. The module also replaces
+`mcp.client.auth.oauth2.validate_metadata_issuer` so a root issuer matches with
+or without its trailing slash (the SDK's own `issuers_match`). `mcp` 2.2.0
+compares strictly when protected resource metadata names the server, and
+Google's MCP servers name `https://accounts.google.com/` while Google's metadata
+says `https://accounts.google.com`. Drop the patch once upstream relaxes that
+check; the Google-shaped tests in `tests/test_mcp_oauth.py` fail if the SDK
+renames the function out from under it. OAuth protocol handling, PKCE,
 state validation, token exchange, and refresh remain in FastMCP/the MCP SDK.
 Keep mocked-provider tests, real loopback success/cancellation tests, deliberate
 port-collision tests, and the full MCP-client startup-failure subprocess test in
@@ -250,6 +265,30 @@ to `False` so turn cleanup closes subprocesses. Keep the real-stdio tests in
 `tests/test_mcp.py` for success, failure, cancellation, and reconnection. Filtering
 schemas alone is insufficient to prevent disabled servers from connecting;
 disabled servers must not enter the agent's toolset collection at all.
+
+Deferral is only half a contract: a model whose profile claims `ToolSearchTool`
+but no `tool_deferral_mode` sends `tool_search` on the wire and withholds the
+deferred schemas instead of declaring them, which OpenAI Responses rejects with
+`400 tools.tool_search requires at least one deferred tool` — for every request
+of that session, not just the one. `openai_codex_model_profile` inherits the
+first from `openai_model_profile` and the second only from
+`OpenAIProvider.model_profile`, so `agent.codex_model` supplies the deferral and
+addition modes itself; keep them if that profile is revisited on an upgrade.
+`AgentRuntime.stream` also treats such a 400 as a request shape rather than a
+history: `MCPState.undefer()` rebuilds the wrappers around the *same*
+`MCPToolset` (keeping its connection and OAuth tokens) without the
+`DeferredLoadingToolset` layer and the turn is sent again. Both are pinned by
+`tests/test_codex_profile.py` and `tests/test_mcp.py`.
+
+Meridian breaks the same contract without a 400. It re-registers client tools
+with the Agent SDK, which ignores `defer_loading`, `tool_reference`, and the
+`tool_search_tool_bm25` server tool. The model therefore sees every deferred
+schema and calls tools directly, and Pydantic AI refuses each call as "not
+available yet" because no search ever landed in history. `MeridianModel.profile`
+drops `ToolSearchTool` and clears both deferral and addition modes. Hidden tools
+are then withheld, found through the local `search_tools`, and sent in full.
+`tests/test_meridian.py` pins the wire shape; this was verified live against
+Meridian 1.76.2.
 
 ### Codex sign-in
 
@@ -567,6 +606,17 @@ and HTTP clients, including during parallel delegation. Non-Meridian requests
 must remain untouched. `tests/test_meridian.py` exercises HTTP serialization,
 tool loops, resume from history, and parallel child identity separation.
 
+Compaction must change the identity. Meridian's `verifyLineage` classifies a
+history whose first messages changed but whose tail still matches as
+`compaction`, resumes the old CLI session, and sends only the messages after the
+matching tail, so pcode's summary never reaches the model. Reproduced live on
+1.72.0 (the model could not recall a fact only the summary held, while reading
+the full uncompacted prefix from cache); 1.76.1 has the same code.
+`session_identity` therefore appends a digest of the summary when the first
+message starts with `SUMMARY_PREFIX`, and leaves uncompacted conversations on the
+plain conversation ID so upgrading pcode does not cold-start every existing
+session.
+
 Meridian 1.71.1's passthrough transform does not advertise `supportsThinking`;
 its stream path strips thinking blocks unless `thinkingPassthrough` is enabled.
 The default is false. Inspect the running proxy's effective settings with a
@@ -716,6 +766,15 @@ and keyed by that identity. They do not add model calls. Planning and SubAgents
 are no longer in Coder and must be composed explicitly. `ClearToolResults` remains
 removed so pcode can summarize before discarding evidence.
 
+Pcode also replaces Coder's instruction-only `Capability` with the local
+`CODER_INSTRUCTIONS` in `agent.py`, before copying capabilities to the worker.
+It is upstream's prompt minus the paragraph telling the model to finish
+long-running work before responding and to poll status, which kept it waiting
+on jobs instead of answering steering. Do not add job workflow rules back there;
+the shell tool descriptions cover the mechanics. Recheck the copy when bumping
+the Harness pin. `test_parent_and_worker_replace_finish_before_responding_guidance`
+checks the resolved prompt for both agents.
+
 Why the replacement rather than the upstream tool: a command that outlives its
 call needs a name. Without one, a still-running command can only be handed back
 as a PID and two paths, so the model's only way to learn it finished is to poll
@@ -801,25 +860,56 @@ and clear them on cancellation/failure/reset. Preserve `tests/test_shell_streami
 `tests/test_jobs.py`, and the real-tmux command-height tests; no-CPR PTYs cannot
 prove compact height.
 
-### Managed Meridian isolation (verified installed 1.71.1)
+### Managed Meridian isolation (verified 1.71.1 to 1.76.1)
 
 Official reference: <https://github.com/rynfar/meridian/blob/main/docs/configuration.md>.
 Resolve `meridian` through the version-manager shim before inspecting its package.
-The installed `@rynfar/meridian/dist/cli-ryt69ryf.js` implements
-`MERIDIAN_CONFIG_DIR` / `sdk-features.json` (adapter-keyed objects),
-`MERIDIAN_SESSION_DIR`, `/health`, and `/settings/api/features`. A healthy response
-contains `status: healthy` and `version`; an unauthenticated response contains
-`auth.loggedIn: false`. The effective `passthrough.thinkingPassthrough` must be true.
-The managed launcher pins this contract to 1.71.1 rather than assuming newer
-website documentation matches the installed package.
+The contract the managed launcher relies on is `MERIDIAN_CONFIG_DIR` /
+`sdk-features.json` (adapter-keyed objects), `MERIDIAN_SESSION_DIR`,
+`MERIDIAN_DEFAULT_PROFILE`, `/health`, and `/settings/api/features`. A healthy
+response contains `status: healthy` and `version`; an unauthenticated response
+contains `auth.loggedIn: false`. The effective `passthrough.thinkingPassthrough`
+must be true. It was verified in the 1.71.1 bundle, run live on 1.72.0, and read
+in the 1.76.1 bundle, so the launcher accepts 1.71.1 or newer and keeps the
+readiness checks as the real guard. Re-read the bundle before raising the floor.
 
-Config-directory isolation alone is insufficient: disk profiles and default
-telemetry/plugin/update paths can still resolve under the real home. The managed
-launcher explicitly isolates plugins and design-token state and disables persisted
-telemetry/update checks. Existing disk profiles and Claude authentication remain
-shared intentionally; do not describe this mode as a credential sandbox. A local
-smoke check started a private instance, verified health and effective settings,
-and terminated it without making any model request.
+Config-directory isolation alone is insufficient: telemetry, plugin, and update
+paths can still resolve under the real home, so the launcher isolates plugins and
+design-token state and disables persisted telemetry and update checks. Profiles
+are the trap: 1.72 reads `profiles.json` from `~/.config/meridian` whatever
+`MERIDIAN_CONFIG_DIR` says, while 1.76 reads it from the config directory, so a
+private config directory meant the user's profiles on one release and Claude
+Code's default login on the other. The launcher symlinks the user's
+`profiles.json` and `profiles/` into its private directory (never copies: a
+profile can hold a `setup-token` token) and names the profile with
+`MERIDIAN_DEFAULT_PROFILE`, so `/login meridian` knows which login to refresh.
+Claude authentication is shared intentionally; do not describe this mode as a
+credential sandbox.
+
+The session store is deliberately not private. With a per-process store a
+restarted Meridian no longer recognises the conversation (lineage `new`) and
+replays the whole history as flattened text; with the store in pcode's state
+directory a new instance continued the conversation warm. Meridian locks the
+store, so pcode processes can share it, but a SIGKILLed Meridian leaves its lock
+behind: the replacement answered `503 overloaded_error` ("a bookkeeping lock is
+busy") for about a minute before the lock was treated as stale. A normal
+`terminate()` releases it. `meridian_managed` defaults to `auto`, which probes
+the developer's real proxy and can start a real Meridian, so `tests/conftest.py`
+sets `PCODE_MERIDIAN_MANAGED=0`; lifecycle tests clear it and mock the process.
+
+`claude auth login` without a TTY still opens the browser and waits on its
+localhost callback, but it also prints a paste-a-code fallback URL wrapped in
+OSC 8 escapes and then `Paste code here if prompted > ` with no newline, so the
+next message lands on the same line. `/login meridian` strips escapes and the
+prompt rather than dropping lines, and replaces the fallback URL with the command
+to run in a terminal. Meridian's own `meridian profile login NAME` is that same
+command with `CLAUDE_CONFIG_DIR` set to the profile's directory.
+
+`pcode --upgrade-meridian` cannot trust `which meridian`: a launchd-run proxy can
+come from a different Node installation than the shell's version-manager shim
+(this machine had Homebrew's and asdf's, both 1.72.0). It upgrades the `PATH`
+install with the `PATH` npm and the proxy's own install, found from `/health`'s
+`claudeExecutable.path` inside the package, with the npm in that prefix.
 
 
 ### Completed file diffs (verified pinned Harness revision)

@@ -12,6 +12,8 @@ from rich.console import Console
 from rich.text import Text
 
 from pcode.app import PreviewApp
+from pcode.jobs import Job, JobRegistry
+from pcode.preferences import save_preferences
 from pcode.runtime import (
     EditCompleted,
     Message,
@@ -109,6 +111,49 @@ def test_print_streams_reply_to_stdout_and_activity_to_transcript():
     assert "Two" not in printed
 
 
+@pytest.mark.parametrize("failed_turn", [False, True])
+def test_print_reports_background_completion_without_repeating_job_inspection(
+    tmp_path, failed_turn
+):
+    jobs = JobRegistry()
+    jobs.jobs["j14"] = Job(
+        id="j14",
+        command="make test",
+        directory=tmp_path,
+        supervisor_pid=0,
+        started_at=1.0,
+        ended_at=2.0,
+        exit_code=2,
+        background=True,
+    )
+
+    class Runtime:
+        session = None
+        recovery_blocked = ""
+
+        async def stream(self, text):
+            yield ToolSummary("wait_for_job", "j14 · exit 2", failed=True, outcome="success")
+            # The exit is written where the model collected it, not after the answer.
+            assert transcript.getvalue().count("✗ Run · j14 · exit 2") == 1
+            yield ToolSummary("job_output", "j14 · exit 2", failed=True, outcome="success")
+            if failed_turn:
+                raise RuntimeError("turn failed")
+            yield Message("done")
+
+    transcript = StringIO()
+    runtime = Runtime()
+    runtime.jobs = jobs
+    app = PreviewApp(
+        model="test:local",
+        runtime=runtime,
+        console=Console(file=transcript, color_system=None, width=100),
+    )
+    assert asyncio.run(app.run_print_async("go", stdout=StringIO())) is not failed_turn
+    printed = transcript.getvalue()
+    assert printed.count("✗ Run · j14 · exit 2 · 1.0s") == 1
+    assert "wait_for_job" not in printed and "job_output" not in printed
+
+
 def test_print_reports_failure_on_transcript_and_returns_false():
     class Runtime:
         session = None
@@ -193,6 +238,7 @@ def test_print_rendering_follows_the_resolved_light_or_dark_profile(monkeypatch)
         assert asyncio.run(app.run_print_async("what changed?", stdout=stdout))
         return stdout.getvalue()
 
+    save_preferences(syntax_dark="gruvbox-dark", syntax_light="gruvbox-light")
     for theme in ("light", "dark"):
         output = rendered(theme)
         accent = ";".join(Color.parse(PALETTES[theme].accent).get_ansi_codes())

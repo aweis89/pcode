@@ -43,6 +43,46 @@ def test_disabled_mirroring_still_leaves_a_summary_line():
     assert "2 passed" not in output
 
 
+@pytest.mark.parametrize("name", ["wait_for_job", "job_output"])
+@pytest.mark.parametrize("status", ["running", "exit 0", "exit 2", "stopped"])
+@pytest.mark.parametrize("show_commands", ["off", "on"])
+def test_job_inspection_results_stay_out_of_scrollback(name, status, show_commands):
+    save_preferences(show_commands=show_commands, tool_error_scrollback="on")
+    view, stream = transcript()
+    event = ToolSummary(
+        name,
+        f"j14 · {status}",
+        failed=status == "exit 2",
+        outcome="success",
+        result=f"test output\n[j14 · {status} · 26.4s]",
+    )
+    assert not view.writes_tool_result(event)
+    view.tool_result(event)
+    assert stream.getvalue() == ""
+    assert view.replay() == []
+    # Presentation suppression does not discard the retained tool result.
+    assert view.log.entries[-1].args == (event,)
+
+
+@pytest.mark.parametrize("name", ["wait_for_job", "job_output"])
+@pytest.mark.parametrize("outcome", ["error", "retry"])
+@pytest.mark.parametrize("tool_error_scrollback", ["off", "on"])
+def test_job_inspection_errors_still_reach_scrollback(name, outcome, tool_error_scrollback):
+    save_preferences(tool_error_scrollback=tool_error_scrollback)
+    view, stream = transcript()
+    event = ToolSummary(
+        name,
+        "j99 → Failed · No job 'j99'",
+        failed=True,
+        outcome=outcome,
+        result="No job 'j99'",
+    )
+    assert view.writes_tool_result(event)
+    view.tool_result(event)
+    assert name in stream.getvalue()
+    assert "No job 'j99'" in stream.getvalue()
+
+
 def test_enabled_option_mirrors_command_and_output():
     save_preferences(show_commands="on")
     view, stream = transcript()

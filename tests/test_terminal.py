@@ -16,12 +16,14 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Unix PTY requir
 @pytest.mark.parametrize("columns", [40, 100])
 def test_terminal_completion_resize_interrupt_and_exit(columns):
     # The child runs from this checkout, which ships .pcode/worktree-setup;
-    # trust it up front or the launch prompt blocks the PTY.
+    # trust it up front or the launch prompt blocks the PTY. Its committed
+    # .pcode/preferences.json turns worktrees on; without --no-worktree every
+    # run checks out a real .worktrees/<session> and waits on its setup.
     save_preferences(project_extensions="on")
     log = StringIO()
     child = pexpect.spawn(
         sys.executable,
-        ["-m", "pcode.app"],
+        ["-m", "pcode.app", "--no-worktree"],
         env={**os.environ, "TERM": "xterm-256color", "PROMPT_TOOLKIT_NO_CPR": "1"},
         dimensions=(30, columns),
         encoding="utf-8",

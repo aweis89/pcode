@@ -312,7 +312,11 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         that is over has nothing to come back to, and repeating a PID and two
         paths on every `ls` both wastes context and teaches the model that
         every command is something to be managed.
+
+        Handing over the result is the model's report of the exit, so it gets
+        no second notice at its next request and no wake-up turn for it.
         """
+        job.announced.add("model")
         output, truncated = self._jobs.read_output(job)
         lines = [output.rstrip("\n")] if output.strip() else []
         status = f"[{job.id} · {job.outcome()} · {format_duration(job.elapsed)}]"

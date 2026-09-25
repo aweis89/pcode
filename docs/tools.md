@@ -157,6 +157,9 @@ is what makes the rest of the behaviour describable.
 
 Job exits are **delivered**, not polled for: a finished job is reported to the
 model before its next request, and printed to the terminal while you are idle.
+A job whose result the model already collected with `wait_for_job` or
+`job_output` is not reported again: its exit is printed where that call
+settled, and the model gets no second notice.
 A failed job's notice carries the last 2 KB of its output, so the model can
 usually act without a `job_output` round trip. The model is instructed never
 to `sleep` waiting for a command.
@@ -169,13 +172,20 @@ stopped or one adopted from an earlier pcode. `pcode config set job_wake off`
 turns it off; the model then hears at your next message instead.
 
 While a job runs with nothing waiting on it, a row under the spinner (or under
-the editor, while idle) shows it: `⟳ j3 · running the e2e suite · 1m42s`. A
-job that ended mid-turn shows there as `✓`/`✗` until the turn ends and
-scrollback gets its line. Only three rows fit: running jobs come first and
-exits are folded into a `… N more jobs (/jobs)` line, since scrollback reports
-an exit anyway. `/jobs watch j3` pins the job's output tail into the
-command preview, whatever `show_commands` says; `/jobs unwatch` releases it,
-and it clears itself when the job ends.
+the editor, while idle) shows it: `⟳ j3 · running the e2e suite · 1m42s`. The
+row disappears when the job finishes, including failures. Its completion goes
+to scrollback at the end of the turn, or immediately while idle, using the
+normal `Run` presentation with a `background` label, job id, and elapsed time.
+The same `show_commands` and `tool_error_scrollback` settings control captured
+output as for foreground commands. Only three live rows fit; additional running
+jobs fold into a `… N more jobs (/jobs)` line. `/jobs watch j3` pins the job's
+output tail into the command preview, whatever `show_commands` says;
+`/jobs unwatch` releases it, and it clears itself when the job ends.
+
+Routine `wait_for_job` and `job_output` results stay in `/tools`, not scrollback:
+they inspect an existing job rather than run another command. This includes a
+wait that returns early and a read that reports a nonzero command exit. Errors
+in the helper itself, such as an unknown job id, still appear in scrollback.
 
 A follow-up you type while the model waits on a command ends the wait, not the
 command; the job keeps running under its id. In send mode `steering` the tool
@@ -185,6 +195,10 @@ is cancelled and the wait abandoned the same way. Ctrl+C means stop working,
 so it also stops the command the turn was waiting on. A job the model
 explicitly backgrounded survives all of these, because nothing was waiting on
 it.
+
+Nothing in the prompt makes the model finish a job before replying, so a
+follow-up such as “write the release notes in the meantime” can steer the same
+turn into other work while a build continues, without `/btw`.
 
 Jobs outlive the turn, the conversation, and pcode itself. Use
 [`/jobs`](commands.md#offline-preview-and-commands) to see what is still running, and
@@ -221,7 +235,7 @@ documentation needs the fetch either way. Each picks the best backend available:
 
 | | Search | Fetch a URL |
 | --- | --- | --- |
-| Model has a native tool (Anthropic, OpenAI) | provider runs it server-side | Anthropic runs it server-side |
+| Model has a native tool (Anthropic, OpenAI; not Meridian) | provider runs it server-side | Anthropic runs it server-side |
 | `EXA_API_KEY` set | Exa `web_search` | Exa `get_page` |
 | Otherwise | DuckDuckGo `web_search` | HTTP fetch `get_page`, converted to Markdown |
 
@@ -266,23 +280,29 @@ the directory to forget everything. Set `PCODE_BROWSER_CHROME` to pick the
 binary. With no Chrome installed it falls back to Playwright's Chromium,
 downloaded on first use.
 
-`/browser attach` joins the Chrome you already have open instead, logins
-included, so nothing needs signing in to. The model works in a tab of its own,
+`/browser attach` joins Chrome, Chromium, or Microsoft Edge you already have
+open instead, logins included, so nothing needs signing in to. The model works in a tab of its own,
 and `browser_tabs()` shows it what you have open, so "check my email" finds the
 mail tab and opens that site rather than guessing. Chrome only exposes itself
 once remote debugging is on: the first `/browser attach` opens
 `chrome://inspect/#remote-debugging` in your Chrome for you to flip the switch,
 then run it again. (Starting Chrome with `--remote-debugging-port` works too.)
-pcode finds the port from Chrome's `DevToolsActivePort` file, or from
-`PCODE_BROWSER_CDP_URL` / `PCODE_BROWSER_PORT_FILE`. pcode opens its own tab
-there and closes it on `/browser off`, never quitting your Chrome. This is the
-higher-risk mode: the model can act as every account that browser is signed in
-to.
+pcode searches the standard Chrome, Chromium, and Edge profile directories on
+macOS and Linux for `DevToolsActivePort`. For Edge, enable remote debugging in
+Edge before attaching; the automatic setup-page shortcut still opens Chrome.
+Set `PCODE_BROWSER_CDP_URL` to choose a specific endpoint, or
+`PCODE_BROWSER_PORT_FILE` for a custom profile's port file. These overrides take
+precedence over discovery. Tab listing uses the browser's CDP connection, so it
+also works when the debugging endpoint has no HTTP `/json/list` route. Tab-listing
+connection failures are reported as a tool result rather than aborting the turn.
+pcode opens its own tab there and closes it on `/browser off`, never quitting
+your browser. This is the higher-risk mode: the model can act as every account
+that browser is signed in to.
 
 | `/browser …` | Does |
 | --- | --- |
 | `launch` | Open pcode's own Chrome window, with its own persistent logins |
-| `attach` | Join the Chrome you have open, your logins included |
+| `attach` | Join Chrome, Chromium, or Edge you have open, your logins included |
 | `off` | Close the browser (or pcode's tab in yours) and remove the tools |
 | `status` | Show which browser is in use and where it is |
 

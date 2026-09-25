@@ -64,7 +64,8 @@ from pcode.filesystem import FileChangeEvent
 from pcode.inspection import ToolArchive, capture
 from pcode.job_notices import JobNotices
 from pcode.jobs import registry as job_registry
-from pcode.mcp import MCPState
+from pcode.mcp import MCPState, deferred_schemas_rejected
+from pcode.mcp_notice import enabled_servers
 from pcode.native_results import drop_unreadable_results, unreadable_native_results
 from pcode.plan_preview import StreamingPlanPreview
 from pcode.preferences import SETTINGS, load_preferences
@@ -72,6 +73,7 @@ from pcode.profiling import activity as profiled_activity
 from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
     CacheBust,
+    ChildPlan,
     CommandOutput,
     EditPreview,
     Event,
@@ -92,10 +94,11 @@ from pcode.steering import Steering
 from pcode.token_accounting import TokenAccounting, TokenTotals
 from pcode.tool_display import (
     COMMAND_TOOLS,
+    assignment,
     command_error,
-    command_text,
     delegation_detail,
     execution_mode,
+    invocation,
     job_status,
     label,
     native_result_detail,
@@ -535,6 +538,7 @@ class AgentRuntime:
                     self.history = self.history[:-1]
         attempt = 0
         repaired = False
+        undeferred = False
         while True:
             try:
                 with profiled_activity("turn"):
@@ -542,6 +546,27 @@ class AgentRuntime:
                         async for event in turn:
                             yield event
             except Exception as error:
+                # Deferred MCP schemas are this request's shape, not its history:
+                # a provider that rejects them rejects the next turn too, and the
+                # session is stuck until they are sent in full. Repairing before
+                # the checkpoint guard is what keeps a failed *first* request
+                # recoverable, since there is no history to continue from yet.
+                if (
+                    not undeferred
+                    and not self.recovery_blocked
+                    and deferred_schemas_rejected(error)
+                ):
+                    if servers := self.mcp.undefer():
+                        undeferred = True
+                        if self.context.checkpoint.messages is not None:
+                            send = None
+                        listed = ", ".join(servers)
+                        self.retry_notice(
+                            "This model rejected hidden MCP tool schemas, so "
+                            f"{listed} now {'sends' if len(servers) == 1 else 'send'} "
+                            "every tool up front. Retrying…"
+                        )
+                        continue
                 if self.recovery_blocked or self.context.checkpoint.messages is None:
                     raise
                 # Results the current login cannot decrypt fail identically on
@@ -616,8 +641,9 @@ class AgentRuntime:
                 async for event in stream:
                     if isinstance(event, ToolStarted):
                         tools_started = True
-                    if isinstance(event, (PlanPreview, CommandOutput, EditPreview)):
-                        # Unexecuted arguments must never enter replay/tree history.
+                    if isinstance(event, (PlanPreview, ChildPlan, CommandOutput, EditPreview)):
+                        # Unexecuted arguments and a sub-agent's transient plan
+                        # must never enter replay/tree history.
                         yield event
                         continue
                     if saved:
@@ -772,6 +798,7 @@ class AgentRuntime:
         async with (
             self.agent,
             worker_toolsets(self.mcp.toolsets()),
+            enabled_servers(self.mcp.servers()),
             self.agent.run_stream_events(
                 prompt,
                 message_history=context.messages(),
@@ -839,6 +866,8 @@ class AgentRuntime:
                             start = replace(start, activity=event.activity)
                             delegates[event.tool_call_id] = start
                             yield start
+                        if event.plan is not None:
+                            yield ChildPlan(event.tool_call_id, event.plan)
                         if event.child is not None:
                             if isinstance(event.child, ToolStarted):
                                 child_tools[event.child.call_id] = event.child
@@ -898,6 +927,7 @@ class AgentRuntime:
                         except (ValueError, TypeError):
                             args = {}
                         tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
+                        agent, task = assignment(event.part.tool_name, args)
                         yield ToolStarted(
                             event.part.tool_name,
                             target(event.part.tool_name, args),
@@ -905,6 +935,8 @@ class AgentRuntime:
                             arguments=capture(args if args else event.part.args),
                             run_id=run_id,
                             started_at=datetime.now(timezone.utc).isoformat(),
+                            agent=agent,
+                            task=task,
                         )
                         yield activity()
                 elif isinstance(event, FunctionToolCallEvent):
@@ -913,6 +945,7 @@ class AgentRuntime:
                     except (ValueError, TypeError):
                         args = {}
                     tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
+                    agent, task = assignment(event.part.tool_name, args)
                     start = ToolStarted(
                         event.part.tool_name,
                         target(event.part.tool_name, args),
@@ -921,12 +954,11 @@ class AgentRuntime:
                         run_id=run_id,
                         started_at=datetime.now(timezone.utc).isoformat(),
                         process_id=capture(args.get("command_id", "")),
-                        command=command_text(args["command"])
-                        if event.part.tool_name in {"shell", "run_command", "start_command"}
-                        and isinstance(args.get("command"), str)
-                        else "",
+                        command=invocation(event.part.tool_name, args),
                         purpose=stated_purpose(args),
                         execution=execution_mode(event.part.tool_name, args),
+                        agent=agent,
+                        task=task,
                     )
                     if event.part.tool_name == "delegate_task":
                         delegates[event.part.tool_call_id] = start
@@ -995,10 +1027,7 @@ class AgentRuntime:
                             else capture(args.get("command_id", ""))
                         ),
                         elapsed_seconds=max(0, monotonic() - started),
-                        command=command_text(args["command"])
-                        if name in {"shell", "run_command", "start_command"}
-                        and isinstance(args.get("command"), str)
-                        else "",
+                        command=invocation(name, args),
                         purpose=stated_purpose(args),
                         error=command_error(display_content)
                         if failed and name in COMMAND_TOOLS
@@ -1068,11 +1097,40 @@ def retry_ceiling(error: Exception) -> str | None:
 
 CODEX_LOGIN_HINT = "Run `/login openai-codex` (or `codex login`, then restart pcode)."
 
+# Packages whose exceptions mean an MCP server failed, not the model or provider.
+_MCP_AUTH_PACKAGES = ("mcp.client.auth", "fastmcp.client.auth", "pcode.mcp_oauth")
+_MCP_PACKAGES = ("mcp", "fastmcp", "pydantic_ai.mcp", "pcode.mcp", *_MCP_AUTH_PACKAGES)
 
-def error_message(error: Exception) -> str:
-    """Don't print raw provider bodies/validation inputs; they can contain secrets."""
+
+def _mcp_failure(error: BaseException) -> str | None:
+    """`"auth"` or `"server"` when an MCP client raised the error or its explicit cause.
+
+    Recognized by the raising package, never by message text: an MCP tool call
+    that fails mid-turn otherwise reaches the generic guess, which blames the
+    model and provider.
+    """
+    found = None
+    for _ in range(8):
+        module = type(error).__module__
+        if any(module == pkg or module.startswith(f"{pkg}.") for pkg in _MCP_AUTH_PACKAGES):
+            return "auth"
+        if any(module == pkg or module.startswith(f"{pkg}.") for pkg in _MCP_PACKAGES):
+            found = "server"
+        if error.__cause__ is None:
+            break
+        error = error.__cause__
+    return found
+
+
+def error_message(error: Exception, *, unexpected: str | None = None) -> str:
+    """Don't print raw provider bodies/validation inputs; they can contain secrets.
+
+    `unexpected` replaces the closing guess for an unrecognized error, which
+    otherwise blames the model or provider: right for a turn, wrong for a
+    slash command that never reached one.
+    """
     if isinstance(error, BaseExceptionGroup) and error.exceptions:
-        return error_message(error.exceptions[0])
+        return error_message(error.exceptions[0], unexpected=unexpected)
     from pcode.auth import LoginError
     from pcode.compaction import CompactionError
     from pcode.workspace import WorkspaceGoneError
@@ -1085,6 +1143,23 @@ def error_message(error: Exception) -> str:
     if isinstance(error, (SessionError, LoginError)):
         # LoginError contains only fixed, sanitized setup/refresh guidance.
         return str(error)
+    if (mcp := _mcp_failure(error)) is not None:
+        # SDK messages can carry token-endpoint bodies; the diagnostics log has them.
+        if mcp == "auth":
+            return (
+                f"MCP server sign-in failed ({name}), not the model or provider. "
+                "Retry with `/mcp enable NAME`, or `/mcp logout NAME` to start over. "
+                "See the saved session diagnostics."
+            )
+        return (
+            f"MCP server request failed ({name}), not the model or provider. "
+            "Check it with `/mcp list`, or turn it off with `/mcp disable NAME`. "
+            "See the saved session diagnostics."
+        )
+    from pcode.meridian import failure_hint
+
+    if (hint := failure_hint(error)) is not None:
+        return hint
     if name == "UserError" and "Codex CLI credentials" in str(error):
         return f"Provider login missing or invalid. {CODEX_LOGIN_HINT}"
     if name == "UserError" and "ANTHROPIC_API_KEY" in str(error):
@@ -1136,4 +1211,6 @@ def error_message(error: Exception) -> str:
             "Check network/proxy settings and provider availability, then retry when ready. "
             "See the saved session diagnostics."
         )
+    if unexpected is not None:
+        return f"{unexpected} ({name})."
     return f"Run failed ({name}). Check the model string, provider credentials, and connectivity."

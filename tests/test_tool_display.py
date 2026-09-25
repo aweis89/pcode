@@ -330,7 +330,62 @@ def test_long_command_is_compact_without_numbers_or_details_hint():
     assert "exit 0" not in output
     assert "/tool" not in output
     assert "#" not in output
-    assert len(output.splitlines()) == 2
+    assert len(output.splitlines()) == 1
+    assert output.startswith("✓ Run · pytest ")
+    assert len(output.rstrip()) == 60
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_command_summary_keeps_timing_and_preview_on_one_line(failed):
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=80, color_system=None))
+    transcript.command_summary(
+        ToolSummary(
+            "shell",
+            "echo hello → exit 1" if failed else "echo hello",
+            failed=failed,
+            elapsed_seconds=0.8,
+            command="echo hello",
+        )
+    )
+    heading = "✗ Run · exit 1" if failed else "✓ Run"
+    assert stream.getvalue().splitlines() == [f"{heading} · 0.8s · echo hello"]
+
+
+@pytest.mark.parametrize("failed, outcome", [(False, "exit 0"), (True, "exit 2")])
+@pytest.mark.parametrize("show_commands", [False, True])
+def test_background_completion_has_compact_job_label(failed, outcome, show_commands):
+    from pcode.runtime import JobFinished
+
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=100, color_system=None))
+    transcript.command_scrollback = show_commands
+    transcript.tool_error_scrollback = True
+    transcript.tool_result(
+        JobFinished(
+            "shell",
+            f"make test → j12 · {outcome}",
+            failed=failed,
+            elapsed_seconds=0.8,
+            command="make test",
+            result=f"test output\n[j12 · {outcome} · 0.8s]",
+        )
+    )
+    output = stream.getvalue()
+    marker = "✗" if failed else "✓"
+    heading = f"{marker} Run · j12 · {outcome} · 0.8s"
+    assert output.startswith(heading)
+    assert output.count("j12") == 1
+    assert "background" not in output
+    if not show_commands:
+        assert output.splitlines() == [f"{heading} · make test"]
+
+
+def test_background_heading_matches_other_command_lines():
+    from pcode.tool_display import tool_summary_lines
+
+    (line,) = tool_summary_lines("shell", " · j3 · stopped", command="make test")
+    assert line.plain == "✓ Run · j3 · stopped · make test"
 
 
 def test_multiline_command_preview_is_compact_and_sanitized():
