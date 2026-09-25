@@ -55,7 +55,7 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
         screen = capture(pane, "src/auth.py", running=True, columns=width)
         lines = screen.splitlines()
         top = max(i for i, line in enumerate(lines) if line.startswith("┌─ Tools"))
-        assert "⟳ ✦ Explorer" in lines[top + 1]
+        assert "✦ Explorer" in lines[top + 1]
         assert lines[top + 2].startswith("│└── ⟳ Search")
         assert lines[top + 3].startswith("├")
         assert input_rows(screen) == 1
@@ -83,7 +83,7 @@ def test_task_tree_guides_survive_resize_at_each_depth(pane):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
         screen = capture(pane, "src/auth.py", running=True, columns=width)
         assert "Main task" in screen
-        assert "│└── ⟳ ✦ Explorer" in screen
+        assert "│└── ✦ Explorer" in screen
         assert "│    ├── ✓ Inspect" in screen
         assert "│    │   └── ⟳ Search" in screen
         assert "│    └── ○ Validate" in screen
