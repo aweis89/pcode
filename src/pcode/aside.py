@@ -22,8 +22,8 @@ from pcode.preferences import EFFORTS
 # worth of tokens in the background where nobody is watching it.
 ASIDE_REQUEST_LIMIT = 12
 ASIDE_TIMEOUT_SECONDS = 300
-# Side questions accumulate over a long session; keep the recent ones readable
-# rather than growing the viewer without bound.
+# Side questions accumulate over a long session; keep the recent threads
+# readable rather than growing the viewer without bound.
 ASIDE_HISTORY = 20
 # `/btw $a $b QUESTION` fans out one side question per model. Each one sends
 # the whole conversation, uncached on any model but the conversation's own.
@@ -46,9 +46,41 @@ ASIDE_FRAMING = (
 )
 
 
+# The first question's framing is already in the history a follow-up re-sends,
+# so this only has to say the same rules still hold.
+FOLLOW_UP_FRAMING = (
+    "[Side question follow-up] The user is following up on their side question above. "
+    "The same rules apply: answer only this, briefly; it is not added to the conversation."
+)
+
+
 def framed(question: str) -> str:
     """The user message a side question is sent as."""
     return f"{ASIDE_FRAMING}\n\nQuestion: {question}"
+
+
+def framed_follow_up(question: str) -> str:
+    """The user message a follow-up to a side answer is sent as."""
+    return f"{FOLLOW_UP_FRAMING}\n\nQuestion: {question}"
+
+
+@dataclass(frozen=True)
+class SideReply:
+    """A side answer, and what a follow-up needs to continue from it.
+
+    `messages` is the run's whole history, conversation context included, so a
+    follow-up re-sends exactly the prefix this run just cached. `agent`,
+    `model` and `settings` are what it ran with, opaque here: a follow-up asks
+    the same model the same way even after /model or /effort changed the
+    conversation's.
+    """
+
+    answer: str
+    messages: list = field(default_factory=list, repr=False)
+    conversation_id: str = ""
+    agent: object = field(default=None, repr=False)
+    model: object = None
+    settings: object = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +249,14 @@ class Aside:
     finished: float | None = None
     # Whether the answer has been opened in the viewer since it settled.
     read: bool = False
+    # The id of the thread's first question; a follow-up shares it.
+    thread: str = ""
+    # What a follow-up continues from, once answered. Only a thread's newest
+    # answer keeps one: each holds a copy of the conversation.
+    reply: SideReply | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        self.thread = self.thread or self.id
 
     @property
     def running(self) -> bool:
@@ -238,7 +278,12 @@ class Aside:
 
 
 class Asides:
-    """Every side question this session asked, oldest first."""
+    """Every side question this session asked, oldest first.
+
+    A follow-up asked in the viewer is a side question of its own, sharing its
+    thread with the question it follows; the viewer shows each thread as one
+    conversation.
+    """
 
     def __init__(self) -> None:
         self.items: list[Aside] = []
@@ -264,26 +309,67 @@ class Asides:
         unread = [aside for aside in self.items if not aside.running and not aside.read]
         return (unread or self.items or [None])[-1]
 
+    def threads(self) -> list[list[Aside]]:
+        """Each thread's questions in order, threads in the order they began."""
+        threads: dict[str, list[Aside]] = {}
+        for aside in self.items:
+            threads.setdefault(aside.thread, []).append(aside)
+        return list(threads.values())
+
+    def thread(self, thread: str) -> list[Aside]:
+        return [aside for aside in self.items if aside.thread == thread]
+
+    def follows(self, thread: str) -> Aside:
+        """The answer a follow-up in `thread` continues from.
+
+        Raises `ValueError` saying why when there is none to continue: the
+        newest question is still running, or no answer in it arrived.
+        """
+        asked = self.thread(thread)
+        if not asked:
+            raise ValueError("That side question is gone; ask again with /btw")
+        if asked[-1].running:
+            raise ValueError("Wait for this answer first")
+        for aside in reversed(asked):
+            if aside.reply is not None:
+                return aside
+        raise ValueError("No answer to follow up on; ask again with /btw")
+
     def start(
         self,
         question: str,
-        work: Callable[[Aside], Awaitable[None]],
+        work: Callable[[Aside], Awaitable[SideReply | None]],
         *,
         model: str = "",
         label: str = "",
         effort: str = "",
+        thread: str = "",
     ) -> Aside:
-        """Register a side question and run `work` for it in the background."""
-        aside = Aside(question=question, model=model, label=label, effort=effort)
+        """Register a side question and run `work` for it in the background.
+
+        `work` returns the reply a follow-up would continue from. `thread`
+        makes it a follow-up in that thread rather than a new one.
+        """
+        aside = Aside(question=question, model=model, label=label, effort=effort, thread=thread)
         self.items.append(aside)
-        # Trim settled records only: a running question owns a live task.
-        while len(self.items) > ASIDE_HISTORY:
-            stale = next((item for item in self.items if not item.running), None)
-            if stale is None:
-                break
-            self.items.remove(stale)
+        self._trim()
         self._tasks[aside.id] = asyncio.create_task(self._run(aside, work))
         return aside
+
+    def _trim(self) -> None:
+        """Drop the oldest settled threads beyond `ASIDE_HISTORY`, whole.
+
+        A running question owns a live task, so its thread stays; a thread
+        loses no single question, or its conversation would read wrong.
+        """
+        threads = self.threads()
+        excess = len(threads) - ASIDE_HISTORY
+        for asked in threads:
+            if excess <= 0:
+                break
+            if not any(aside.running for aside in asked):
+                self.items = [aside for aside in self.items if aside.thread != asked[0].thread]
+                excess -= 1
 
     def cancel(self) -> int:
         """Stop every running side question; returns how many were stopped."""
@@ -309,7 +395,7 @@ class Asides:
 
         try:
             async with asyncio.timeout(ASIDE_TIMEOUT_SECONDS):
-                await work(aside)
+                reply = await work(aside)
         except TimeoutError as error:
             aside.settle("timed out", error=f"No answer within {ASIDE_TIMEOUT_SECONDS}s.")
             self._failed(aside, error)
@@ -321,6 +407,13 @@ class Asides:
             self._failed(aside, error)
         else:
             aside.settle("answered")
+            if reply is not None:
+                aside.reply = reply
+                # Follow-ups continue from the newest answer; an older one
+                # would only hold another copy of the conversation.
+                for older in self.thread(aside.thread):
+                    if older is not aside:
+                        older.reply = None
         finally:
             self._tasks.pop(aside.id, None)
             self.on_settle(aside)

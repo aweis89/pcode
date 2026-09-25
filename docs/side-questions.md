@@ -24,9 +24,11 @@ side question is reading the answer while the turn is still running. A bare
 streams it.
 
 - **↑ / ↓:** move through the questions, or scroll the answer when it has focus.
-- **Tab:** switch between the question list and the answer pane.
-- **c:** copy the selected answer to the clipboard as raw markdown (also
-  works mid-stream, taking what has arrived so far).
+- **Tab:** move between the question list, the answer pane and the follow-up
+  editor.
+- **r:** type a [follow-up](#following-up) to the selected answer.
+- **c:** copy the selected thread's newest answer to the clipboard as raw
+  markdown (also works mid-stream, taking what has arrived so far).
 - **Ctrl+K:** stop every running side question, keeping the records.
 - **Enter / Escape / Ctrl+C:** close the popup and restore the editor draft.
 
@@ -45,6 +47,38 @@ The footer counts side questions that are `running` and answers that are
 `ready` (settled but not yet opened). Ctrl+C at the prompt stops running side
 questions only when nothing else is in flight, so an interrupt aimed at the turn
 never throws away the side question as well.
+
+## Following up
+
+The viewer has an editor under the answer for asking a follow-up, so a side
+question can become a short back-and-forth without leaving the popup. Press
+**r** (or Tab to it), type, and press **Enter** to send; **Ctrl+J** (or
+Shift+Enter, where the terminal reports it) adds a line. The draft grows to six
+rows before it scrolls, and **PgUp / PgDn** scroll the answer while you type.
+**Escape** steps back to the list and keeps the draft; a second Escape closes
+the viewer. The viewer always opens on the list, never in the editor, because
+it can open by itself while you are typing at the main prompt.
+
+A follow-up joins the selected question's **thread**. The list shows one row per
+thread, with a follow-up count, and the answer pane shows the whole exchange in
+order, opening on the newest question. Each follow-up:
+
+- **continues the thread, not the conversation.** It is sent as the history the
+  previous answer ran with, plus that answer, plus the new question. The prefix
+  is exactly what the last request sent, so the provider cache covers all of it;
+  what the main turn did since does not reach the thread.
+- **runs where the thread began:** the same model, effort and conversation id,
+  even if `/model` or `/effort` has changed the conversation's since. A thread
+  started with `$MODEL` or `+LEVEL` keeps them; a `/btw` that fanned out to
+  several models is one thread per model.
+- **waits for the answer before it.** Sending while the newest answer is still
+  arriving is refused in the editor's title, and the draft stays. If a
+  follow-up fails, the next one continues from the last answer that arrived; a
+  thread with no answer at all cannot be followed up, so ask again with `/btw`.
+
+Follow-ups are side questions in every other way: same limits, same refused
+tools, same footer counts and ready notices, and nothing joins the conversation.
+Up to 20 threads are kept; the oldest settled thread is dropped whole.
 
 ## What a side question can and cannot do
 

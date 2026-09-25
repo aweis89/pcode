@@ -2125,19 +2125,10 @@ class PreviewApp:
             settings = with_effort(self.model, agent.model, agent.model_settings, target.effort)
             return {"settings": settings}
 
-        def work_on(options: dict):
-            async def work(aside) -> None:
-                def report(answer: str, activity: str) -> None:
-                    self.asides.update(aside, answer=answer, activity=activity)
-
-                await self.runtime.aside(question, report=report, **options)
-
-            return work
-
         for target in models:
             self.asides.start(
                 question,
-                work_on(options_for(target)),
+                self._aside_work(question, options_for(target)),
                 model=target.model,
                 label=labels[target],
                 effort=target.effort,
@@ -2155,6 +2146,34 @@ class PreviewApp:
                 "Asking beside the conversation: the turn keeps running and "
                 "this question does not join it. /btw opens the answer."
             )
+
+    def _aside_work(self, question: str, options: dict):
+        """The background run for one side question, streaming into its record."""
+
+        async def work(aside):
+            def report(answer: str, activity: str) -> None:
+                self.asides.update(aside, answer=answer, activity=activity)
+
+            return await self.runtime.aside(question, report=report, **options)
+
+        return work
+
+    def follow_up_aside(self, thread: str, question: str) -> None:
+        """Ask `question` as a follow-up in a side question's thread.
+
+        It continues from the thread's newest answer, on the model and effort
+        that answered it; see `AgentRuntime.aside`. Raises `ValueError` when
+        there is nothing to continue yet, which the viewer shows as is.
+        """
+        follows = self.asides.follows(thread)
+        self.asides.start(
+            question,
+            self._aside_work(question, {"after": follows.reply}),
+            model=follows.model,
+            label=follows.label,
+            effort=follows.effort,
+            thread=thread,
+        )
 
     def aside_completions(self, argument: str):
         """Complete a `$MODEL` word in `/btw` arguments from the /model catalog.
@@ -2236,6 +2255,7 @@ class PreviewApp:
             async with self.popup(output, session) as modal_input:
                 browser = AsideBrowser(
                     self.asides,
+                    ask=self.follow_up_aside,
                     selected=latest.id if latest else None,
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,

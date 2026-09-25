@@ -48,6 +48,7 @@ from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEve
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.agent import SideModel, worker_toolsets
+from pcode.aside import SideReply
 from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, ContextTracking, summarize
 from pcode.conversation_tree import ConversationTree
@@ -363,8 +364,12 @@ class AgentRuntime:
         report=None,
         model: SideModel | None = None,
         settings: dict | None = None,
-    ) -> str:
+        after: SideReply | None = None,
+    ) -> SideReply:
         """Answer `question` beside the conversation, recording nothing.
+
+        Returns the answer with the run's messages, conversation id, model and
+        settings: everything `after` needs to ask a follow-up to it.
 
         Nothing here touches conversation state: no journal record, no tree
         node, no plan, and `self.history` is only read. The run is billed to the
@@ -390,19 +395,31 @@ class AgentRuntime:
         alone, which is how `/btw +EFFORT` asks the conversation's own model at
         another effort. It keeps the conversation id: the cache may not match
         at a different effort, but the user asked for that trade.
+
+        `after` asks a follow-up to that earlier reply instead, continuing its
+        messages rather than the conversation's newest context, on the agent,
+        model, settings and conversation id it ran with. Its history is exactly
+        what that run sent plus what it answered, so the follow-up reuses its
+        cache, even after /model replaced the conversation's agent.
         """
-        from pcode.aside import ASIDE_REQUEST_LIMIT, framed
+        from pcode.aside import ASIDE_REQUEST_LIMIT, framed, framed_follow_up
         from pcode.aside_guard import AsideGuard
 
         agent = self.agent
-        messages = self.aside_context()
+        if after is not None:
+            agent = agent if after.agent is None else after.agent
+            model = after.model
+            settings = after.settings
+            messages = list(after.messages)
+        else:
+            messages = self.aside_context()
         # A turn in flight ends on a user-role request: its new prompt, or the
         # tool results it is working through. A second user message after one of
         # those is what providers reject as non-alternating roles, so the
         # question joins that request the way steering does, and the run
         # continues from history instead of adding a message of its own.
         joined = bool(messages) and isinstance(messages[-1], ModelRequest)
-        pending = [framed(question)]
+        pending = [framed_follow_up(question) if after is not None else framed(question)]
         capabilities = [AsideGuard(), TokenAccounting(record=self.totals.add)]
         if joined:
             capabilities.append(Steering(lambda: [pending.pop()] if pending else []))
@@ -416,6 +433,9 @@ class AgentRuntime:
             override = agent.override(model_settings=settings)
         else:
             override = nullcontext()
+        if after is not None:
+            # A follow-up belongs to its thread's session, not a fresh one.
+            conversation_id = after.conversation_id
         with override:
             async with (
                 agent,
@@ -432,10 +452,19 @@ class AgentRuntime:
                     **other,
                 ) as events,
             ):
-                return await self._aside_answer(events, report)
+                answer, messages = await self._aside_answer(events, report)
+        return SideReply(
+            answer=answer,
+            messages=messages,
+            conversation_id=conversation_id,
+            agent=agent,
+            model=model,
+            settings=settings,
+        )
 
-    async def _aside_answer(self, events, report) -> str:
-        """Collect a side question's answer from its event stream, reporting progress."""
+    async def _aside_answer(self, events, report) -> tuple[str, list[ModelMessage]]:
+        """Collect a side question's answer and its run's messages, reporting progress."""
+        messages: list[ModelMessage] = []
         blocks: list[str] = []
         partial = ""
         activity = "Waiting for model…"
@@ -465,6 +494,9 @@ class AgentRuntime:
             elif isinstance(event, FunctionToolResultEvent):
                 tools.pop(event.tool_call_id, None)
                 activity = "Waiting for model…" if not tools else activity
+            elif isinstance(event, AgentRunResultEvent):
+                messages = event.result.all_messages()
+                continue
             else:
                 continue
             publish()
@@ -473,7 +505,7 @@ class AgentRuntime:
             partial = ""
         activity = ""
         publish()
-        return "\n\n".join(blocks)
+        return "\n\n".join(blocks), messages
 
     async def compact(self, focus: str = ""):
         """Persist a new branch-local context checkpoint before publishing it."""
