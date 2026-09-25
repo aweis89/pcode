@@ -234,7 +234,7 @@ def test_concurrent_tools_follow_active_task_without_headers_or_empty_rows():
     ]
     text = [text for _, text in task_panel_rows(items, history, 10, "⟳")]
     assert text[:2] == ["✓ Inspect", "⟳ Implement"]
-    assert text[2].startswith("    ⟳ Read") and text[2].endswith("example.py")
+    assert text[2].startswith("└── ⟳ Read") and text[2].endswith("example.py")
     assert text[3] == "○ Validate"
     items[1]["status"] = "completed"
     items[2]["status"] = "in_progress"
@@ -269,7 +269,10 @@ def test_shared_task_tool_budget_keeps_active_item_and_oldest_calls_visible(budg
     active = text.index("⟳ Task 8")
     count = min(3, budget - 1)
     assert sum("Read ·" in line for line in text) == count
-    assert all(line.startswith("    ⟳ Read") for line in text[active + 1 : active + 1 + count])
+    children = text[active + 1 : active + 1 + count]
+    assert all(line.startswith("├── ⟳ Read") for line in children[:-1])
+    if children:
+        assert children[-1].startswith("└── ⟳ Read")
     if count:
         assert text[active + 1].endswith("file_0.py")
     assert all("Tasks ·" not in line and "Tools" not in line for line in text)
