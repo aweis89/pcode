@@ -19,7 +19,6 @@ from pydantic_ai_harness.filesystem._toolset import (
     _apply_replacements,
     _content_hash,
     _is_binary,
-    _read_canonical_text,
     _recoverable,
     _write_content,
 )
@@ -185,15 +184,13 @@ class DisplayFileSystemToolset(WorkspaceFileSystemToolset):
         if not resolved.is_file():
             raise FileNotFoundError(f"File not found: {path}")
 
-        with resolved.open("rb") as source:
-            if _is_binary(source.read(8192)):
+        with self.open_read(resolved) as source:
+            head = source.read(8192)
+            if _is_binary(head):
                 raise ValueError(f"{path} is a binary file; edit_file only edits text files.")
-
-        # Reading and writing with `newline=''` disables universal-newline
-        # translation, so the text is the canonical bytes-on-disk view that
-        # `read_file` hashes, and the replacement preserves `\r\n` exactly
-        # instead of writing `\r\r\n` through a translating writer on Windows.
-        text = _read_canonical_text(resolved)
+            # Decoded from bytes, with no universal-newline translation, so the
+            # text is the view `read_file` hashes and `\r\n` survives the edit.
+            text = (head + source.read()).decode("utf-8")
         current_hash = _content_hash(text)
 
         # Optimistic concurrency check
@@ -209,7 +206,10 @@ class DisplayFileSystemToolset(WorkspaceFileSystemToolset):
         )
         if (refusal := await self._request(ctx, change, path=path, resolved=resolved)) is not None:
             return refusal
-        _write_content(resolved, path, new_content, expected_hash=current_hash, create=False)
+        # The write re-checks the hash: a listener (an approval prompt) may have
+        # held the edit long enough for the file to change underneath it.
+        source, created = self.open_write(resolved, read_back=True, create=False)
+        _write_content(source, path, new_content, expected_hash=current_hash, created=created)
         if ctx is not None:
             await self._emit_change(ctx, display_path, text, new_content)
         new_hash = _content_hash(new_content)
