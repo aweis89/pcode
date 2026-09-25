@@ -185,7 +185,7 @@ def test_active_delegations_are_pinned_and_children_share_the_row_budget():
         assert "Explorer" in rows[0][1]
         assert len(panel_fragments(rows, 20)) == len(rows)
     rows = history.rows(3)
-    assert all(row[1].startswith("    ") for row in rows[1:])
+    assert rows[1][1].startswith("└── ⟳ Read")
     assert "child.py" in rows[1][1]
     # Finishing the plan must not hide a still-running child agent.
     assert any(
@@ -207,7 +207,7 @@ def test_a_settled_child_row_lingers_long_enough_to_read(monkeypatch):
     rows = history.rows(3)
     assert "child.py" in rows[1][1]
     # Settled, so it reads as finished rather than still spinning.
-    assert rows[1][1].lstrip().startswith("✓") and rows[1][0] == "class:plan"
+    assert rows[1][1].startswith("└── ✓") and rows[1][0] == "class:plan"
     assert history.rows(3)[1][1] == rows[1][1]  # Its duration stops ticking.
     # And it never takes over the status row, which only reports running work.
     assert history.active is not None and history.active.event.call_id == "status-row"
@@ -430,7 +430,7 @@ def test_a_finished_delegate_stays_listed_until_the_next_turn(failed, monkeypatc
     icon, state = ("!", "Failed") if failed else ("✓", "Done")
     assert re.fullmatch(rf"{icon} ✦ Explorer · \d+\.\ds · {state} · investigate", rows[0])
     # Its sub-tasks stay with it; its calls do not.
-    assert rows[1:] == ["    ✓ Look"]
+    assert rows[1:] == ["└── ✓ Look"]
     assert not history.animating  # A finished row never keeps the idle screen redrawing.
     history.clear()
     assert task_panel_rows([], history, 10, "○") == []
@@ -599,23 +599,23 @@ def test_a_delegate_shows_its_plan_with_its_calls_under_the_active_task():
     rows = [text for _, text in task_panel_rows([], history, 10, "*")]
     assert rows[0].startswith("⟳ ✦ Worker · ") and " · Starting · fix it" in rows[0]
     assert rows[1:] == [
-        "    ✓ Read the code",
-        "    * Fix the bug",
+        "├── ✓ Read the code",
+        "├── * Fix the bug",
         rows[3],
-        "    ○ Run the tests",
+        "└── ○ Run the tests",
     ]
-    assert rows[3].startswith("        ⟳ Read") and "child.py" in rows[3]
+    assert rows[3].startswith("│   └── ⟳ Read") and "child.py" in rows[3]
     # The plan stays while the delegate itself holds the status row.
     history.record(ToolSummary("read_file", "child.py", call_id="parent:child"))
     history.record(ToolSummary("grep", "newest", call_id="status-row"))
     history.prune()
     assert history.active.event.call_id == "parent"
-    assert "    * Fix the bug" in [text for _, text in task_panel_rows([], history, 10, "*")]
+    assert "├── * Fix the bug" in [text for _, text in task_panel_rows([], history, 10, "*")]
     # And stays with it once it finishes.
     history.record(ToolSummary("delegate_task", "worker → Completed", call_id="parent"))
     rows = [text for _, text in task_panel_rows([], history, 10, "*")]
     assert rows[0].startswith("✓ ✦ Worker") and " · Done · " in rows[0]
-    assert "    * Fix the bug" in rows
+    assert "├── * Fix the bug" in rows
 
 
 def test_a_short_panel_keeps_the_delegate_before_its_plan():
@@ -623,7 +623,9 @@ def test_a_short_panel_keeps_the_delegate_before_its_plan():
     history.record(delegate_started("worker", "fix it", "parent"))
     history.record_plan("parent", [{"content": f"step {i}", "status": "pending"} for i in range(5)])
     rows = task_panel_rows([{"content": "Parent task", "status": "in_progress"}], history, 3, "*")
-    assert [text.strip()[:10] for _, text in rows] == ["* Parent t", "⟳ ✦ Worker", "○ step 0"]
+    assert rows[0] == ("class:plan.active", "* Parent task")
+    assert rows[1][1].startswith("└── ⟳ ✦ Worker")
+    assert rows[2] == ("class:plan", "    └── ○ step 0")
 
 
 def test_an_extension_delegate_opts_in_to_showing_its_plan():
