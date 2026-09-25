@@ -1557,7 +1557,7 @@ def create_prompt(
     @per_render
     def notice_rows():
         """Freeze the expiring notice for this render so height matches content."""
-        return activity.notice_rows(session.app.output.get_size().columns)
+        return activity.notice_rows(session.app.output.get_size().columns - 1)
 
     @per_render
     def job_rows():
@@ -1620,9 +1620,9 @@ def create_prompt(
         return panel_fragments(plan_rows(), session.app.output.get_size().columns - 2)
 
     def spinner_rows(fragments, height) -> VSplit:
-        """Rows that lead with a spinner or status icon.
+        """Chrome rows outside a frame: spinners, notices and queued prompts.
 
-        One column of left padding so every icon lines up with the task rows
+        One column of left padding so every row lines up with the task rows
         inside the frame below instead of sitting against the terminal edge.
         """
         return VSplit(
@@ -1732,14 +1732,9 @@ def create_prompt(
     # Directly above the spinner: a notice answers the keystroke that caused it
     # without ever reaching scrollback, and vanishes on its own.
     notice = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: panel_fragments(notice_rows(), session.app.output.get_size().columns),
-                show_cursor=False,
-            ),
-            height=lambda: len(notice_rows()),
-            wrap_lines=False,
-            dont_extend_height=True,
+        spinner_rows(
+            lambda: panel_fragments(notice_rows(), session.app.output.get_size().columns - 1),
+            lambda: len(notice_rows()),
         ),
         filter=Condition(lambda: bool(notice_rows())),
     )
@@ -1769,14 +1764,9 @@ def create_prompt(
         return activity.queue_rows(budget)
 
     queued = ConditionalContainer(
-        Window(
-            FormattedTextControl(
-                lambda: panel_fragments(queue_rows(), session.app.output.get_size().columns),
-                show_cursor=False,
-            ),
-            height=lambda: len(queue_rows()),
-            wrap_lines=False,
-            dont_extend_height=True,
+        spinner_rows(
+            lambda: panel_fragments(queue_rows(), session.app.output.get_size().columns - 1),
+            lambda: len(queue_rows()),
         ),
         filter=Condition(lambda: bool(activity.queued_prompts)),
     )
