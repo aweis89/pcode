@@ -611,18 +611,30 @@ class SavedSession:
         data["run_id"] = data.get("run_id") or run_id
         self.append(type(event).__name__, **data)
 
-    def records(self):
-        """Read intact records; a hard kill may leave a torn final append."""
-        with (self.directory / "transcript.jsonl").open(encoding="utf-8", errors="replace") as file:
+    def journal_size(self) -> int:
+        """Where the next record will start; `end` for records written before now."""
+        return (self.directory / "transcript.jsonl").stat().st_size
+
+    def records(self, end: int | None = None):
+        """Read intact records; a hard kill may leave a torn final append.
+
+        `end` stops at a `journal_size()` taken earlier, so a turn still being
+        written can be left out of what is read.
+        """
+        with (self.directory / "transcript.jsonl").open("rb") as file:
+            consumed = 0
             for line in file:
+                consumed += len(line)
+                if end is not None and consumed > end:
+                    return
                 try:
-                    record = json.loads(line)
+                    record = json.loads(line.decode("utf-8", errors="replace"))
                 except ValueError:
                     continue
                 if isinstance(record, dict):
                     yield record
 
-    def active_records(self):
+    def active_records(self, end: int | None = None):
         """Records on the selected branch, by the turn each one names.
 
         `recording` is the pre-run-id fallback: in an older journal a record
@@ -631,7 +643,7 @@ class SavedSession:
         """
         selected = set(self.tree.path(self.tree.active))
         recording = None
-        for record in self.records():
+        for record in self.records(end):
             if record.get("kind") == "turn_started":
                 recording = record.get("run_id")
             if not self.tree.nodes or (record.get("run_id") or recording) in selected:
@@ -695,7 +707,7 @@ class SavedSession:
             }:
                 yield record
 
-    def transcript_records(self):
+    def transcript_records(self, end: int | None = None):
         """Stream active-path display records; Transcript owns the retention budget.
 
         Only unfinished text is buffered. Flush thinking before interleaved display
@@ -704,7 +716,7 @@ class SavedSession:
         partial = ""
         thinking = ""
         thinking_streamed = False
-        for record in self.active_records():
+        for record in self.active_records(end):
             kind = record.get("kind")
             if kind == "ThinkingDelta":
                 thinking += record["text"]

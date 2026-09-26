@@ -313,7 +313,7 @@ def test_tree_navigation_replaces_abandoned_output_and_can_clear_root(tmp_path, 
 def test_incomplete_thinking_does_not_buffer_interleaved_history():
     consumed = []
 
-    def records():
+    def records(end=None):
         yield {"kind": "ThinkingDelta", "text": "thought"}
         for index in range(1000):
             consumed.append(index)

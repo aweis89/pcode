@@ -195,6 +195,11 @@ SETTINGS = {
         description="Concurrent worker cap; 0 is unlimited (reload to apply)",
     ),
     # An untouched worktree is always removed; uncommitted changes are always kept.
+    "session_host": Setting(
+        "off",
+        ("on", "off"),
+        description="Run each session in a background host that outlives the terminal (/switch)",
+    ),
     "worktree_exit": Setting(
         "ask",
         ("ask", "merge", "keep"),
@@ -595,6 +600,14 @@ def effort_setting(model: str | None) -> str | None:
     if provider in ("anthropic", "meridian"):
         return "anthropic_effort"
     return None
+
+
+def current_effort(agent, model: str) -> str:
+    """The effort `agent` will request next, as /effort names it."""
+    settings = getattr(getattr(agent, "model", None), "settings", None) or {}
+    settings = {**settings, **(getattr(agent, "model_settings", None) or {})}
+    effort = settings.get(effort_setting(model), "default")
+    return "xhigh" if effort == "max" else effort
 
 
 def apply_effort(agent, model: str, effort: str | None) -> None:

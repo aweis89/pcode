@@ -139,6 +139,7 @@ is only sensible on a machine where you wrote all of them.
 | `worktree` | `off` | `on`, `off` (start new sessions in `.worktrees/` git worktrees; does not enable worker isolation on its own) |
 | `worker_isolation` | `off` | `on`, `off` (opt in to isolated built-in worker tasks; also requires effective `worktree=on`, not just the CLI launch override; checked at each delegation) |
 | `worker_concurrency` | `0` | `0` means unlimited; a positive integer caps concurrent built-in workers per session; `/reload` to apply |
+| `session_host` | `off` | `on`, `off` (run sessions in a [background host](background-sessions.md) that outlives the terminal; `--host`/`--no-host` override it once) |
 | `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `project_extensions` | `off` | `on`, `off` (`on` trusts every repository's `.pcode/extensions` and `worktree-setup`) |
 | `trusted_projects` | `` | `:`-separated repository paths whose shipped code may run; the launch prompt appends here |
