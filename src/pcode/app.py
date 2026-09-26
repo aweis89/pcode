@@ -147,7 +147,7 @@ class PreviewApp:
         )
         self.preview = PreviewRuntime()
         # The conversation itself, with this terminal as its view.
-        self.controller = SessionController(self, self, self.activity, runtime or self.preview)
+        self.controller = SessionController(self, self.activity, runtime or self.preview)
         self.send_mode = load_preferences().get("send_mode", "steering")
         # Ctrl+S picks a mode for the next prompt only; the saved default stands.
         self.send_mode_once: str | None = None
@@ -184,7 +184,6 @@ class PreviewApp:
         # Set by run_async, which owns the prompt queue and the running turn.
         self._follow_turn: Callable[[str, bool], None] | None = None
         self._detach_turn: Callable[[], Awaitable[None]] | None = None
-        self._startup_error: Exception | None = None
         agent = getattr(self.runtime, "agent", None)
         if agent is not None and model:
             apply_effort(agent, model, effort_for(model))
@@ -384,6 +383,9 @@ class PreviewApp:
     pending_model = _controller_attribute("pending_model")
     extensions = _controller_attribute("extensions")
     asides = _controller_attribute("asides")
+    running = _controller_attribute("running")
+    _startup_pending = _controller_attribute("startup_pending")
+    _startup_error = _controller_attribute("startup_error")
     skill_command_names = _controller_attribute("skill_command_names")
     _session_id = _controller_attribute("_session_id")
     _saved_session = _controller_attribute("_saved_session")
@@ -450,6 +452,10 @@ class PreviewApp:
 
     def replay_conversation(self) -> None:
         self.replay()
+
+    def preview_reply(self, text: str) -> None:
+        """No model: answer from the canned preview runtime."""
+        self.handle(text)
 
     def show_events(self, events) -> None:
         self.transcript.events(tuple(events))
@@ -1530,18 +1536,6 @@ class PreviewApp:
         self.transcript.user(text)
         self.present_events(self.preview.reply(text))
         return False
-
-    def command_failed(self, name: str, error: Exception) -> None:
-        """Report a slash command that raised, with frames saved for diagnosis."""
-        from pcode.diagnostics import stale_install
-        from pcode.live import error_message
-
-        self.transcript.error(error_message(error, unexpected=f"{name} failed"))
-        if hint := stale_install():
-            self.transcript.warning(hint)
-        saved = getattr(self.runtime, "session", None)
-        if saved is not None and (path := saved.record_error(error, run_id=name)):
-            self.transcript.note(f"Session and diagnostics: {path}")
 
     async def run_live(
         self,

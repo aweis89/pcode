@@ -312,6 +312,7 @@ class SessionView(Protocol):
     def conversation_reset(self, title: str) -> None: ...
     def replay_conversation(self) -> None: ...
     def show_branch(self) -> None: ...
+    def preview_reply(self, text: str) -> None: ...
     def show_events(self, events) -> None: ...
 
     # A side question's answer moved (it streams), or it arrived.
@@ -357,11 +358,15 @@ class SessionController:
     refactor removes uses of it; the host can run a controller once none remain.
     """
 
-    def __init__(self, app, view: SessionView, activity, runtime=None) -> None:
-        self.app = app
+    def __init__(self, view: SessionView, activity, runtime=None) -> None:
         self.view = view
         self.activity = activity
         self.runtime = runtime
+        # False once the owner (the terminal, or the host) is done with it.
+        self.running = True
+        # Building the runtime has not finished yet, or failed with this.
+        self.startup_pending = False
+        self.startup_error: Exception | None = None
         self.model: str | None = None
         self.workspace = Path.cwd()
         # Where saved sessions live, and whether this one is saved.
@@ -806,8 +811,7 @@ class SessionController:
 
     async def consume_commands(self) -> None:
         """Run slash commands one at a time, in the order they were sent."""
-        app = self.app
-        while app.running:
+        while self.running:
             generation, text, submitted_idle, tag = await self.commands.get()
             name = text.split(maxsplit=1)[0]
             try:
@@ -819,13 +823,13 @@ class SessionController:
                         continue
                     if generation != self.prompts.generation:
                         continue
-                    if app._startup_error is not None:
+                    if self.startup_error is not None:
                         self.view.warning("Agent startup failed; restart pcode to retry.")
                         continue
                 self.command_started(text)
                 await self.dispatch(text, idle=submitted_idle, tag=tag)
             except Exception as error:
-                app.command_failed(name, error)
+                self.command_failed(name, error)
             finally:
                 self.command_finished()
             await self.view.after_command()
@@ -878,11 +882,11 @@ class SessionController:
             prompt, self.skill_requested = self.skill_requested, None
             # Queued like a typed message so send mode, steering, and
             # cancellation keep their usual meaning.
-            self.prompts.put(prompt, self.app.send_mode)
+            self.prompts.put(prompt, load_preferences().get("send_mode", "steering"))
             self.activity.busy = True
         if self.mcp_defaults_requested:
             self.start_mcp_defaults()
-        if not self.app.running:
+        if not self.running:
             self.cancel()
             if active := self.tasks():
                 await asyncio.gather(*active, return_exceptions=True)
@@ -923,19 +927,18 @@ class SessionController:
         """Run queued messages one at a time, each once nothing holds the queue."""
         from pcode.live import error_message
 
-        app = self.app
         await self.ready.wait()
-        while app.running:
+        while self.running:
             await self.idle()
             item = await self.prompts.get()
             _generation, text, mode = item
-            if app._startup_error is not None:
+            if self.startup_error is not None:
                 self.clear_queue()
                 self.activity.busy = False
                 self.view.warning("Agent startup failed; restart pcode to retry.")
                 continue
             await self.idle()
-            if not app.running:
+            if not self.running:
                 return
             if not self.prompts.current(item):
                 continue  # Cancelled while waiting for a command/modal.
@@ -955,7 +958,9 @@ class SessionController:
                         if self.closing():
                             return
                         success = False
-                elif resend or mode in FOLLOW_MODES or app.handle(text):
+                elif not (resend or mode in FOLLOW_MODES or self.model):
+                    self.view.preview_reply(text)
+                else:
                     wake = mode == "wake"
                     if wake:
                         label, detail = wake_row(text)
@@ -2348,7 +2353,7 @@ class SessionController:
             def finish() -> list[str]:
                 result = worktree.finish(linked)
                 self._leave_worktree(linked)
-                self.app.running = False
+                self.running = False
                 return [result]
 
             self.defer("Finishing worktree", linked.branch, finish)
@@ -2606,7 +2611,7 @@ class SessionController:
             return
         if not self.model:
             raise ValueError("/btw needs a model; this is a local UI preview.")
-        if self.app._startup_pending or self.app._startup_error is not None:
+        if self.startup_pending or self.startup_error is not None:
             raise ValueError("/btw is unavailable until the agent has started.")
         # Refused the way /effort refuses it, before anything starts, rather
         # than asking at an effort the provider would silently ignore.
@@ -2837,3 +2842,15 @@ class SessionController:
             "are not undone."
         )
         return draft
+
+    def command_failed(self, name: str, error: Exception) -> None:
+        """Report a slash command that raised, with frames saved for diagnosis."""
+        from pcode.diagnostics import stale_install
+        from pcode.live import error_message
+
+        self.view.error(error_message(error, unexpected=f"{name} failed"))
+        if hint := stale_install():
+            self.view.warning(hint)
+        saved = getattr(self.runtime, "session", None)
+        if saved is not None and (path := saved.record_error(error, run_id=name)):
+            self.view.note(f"Session and diagnostics: {path}")

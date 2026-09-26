@@ -210,7 +210,7 @@ def test_failed_slash_command_blames_the_command_not_the_provider(tmp_path, monk
         output = StringIO()
         console = Console(file=output, width=500)
         app = PreviewApp(model="test:local", runtime=runtime, console=console)
-        app.command_failed("/diffs", KeyError("popup_mouse"))
+        app.controller.command_failed("/diffs", KeyError("popup_mouse"))
         rendered = StringIO()
         console = Console(file=rendered, width=200, theme=app.transcript.rich_theme)
         for objects, end, _ in app.transcript.replay():
