@@ -2704,18 +2704,18 @@ class PreviewApp:
             identity = await browser.run()
         if identity is None:
             return
-        if self.hosted:
-            # Resumed in a host of its own, or shown where it already runs.
-            from pcode.host_protocol import list_hosts
+        from pcode.host_protocol import list_hosts
 
-            if identity == active_id:
-                self.transcript.note("This session is already active.")
-            elif running := [e for e in list_hosts() if e.session_id == identity]:
-                await self.attach_host(running[0])
-            else:
-                await self.start_host_session(resume=identity)
-            return
-        await self.resume_session(identity)
+        running = [entry for entry in list_hosts() if entry.session_id == identity]
+        if identity == active_id:
+            self.transcript.note("This session is already active.")
+        elif running:
+            # Shown where it runs: resuming the saved session would continue a copy.
+            await self.attach_host(running[0])
+        elif self.hosted:
+            await self.start_host_session(resume=identity)
+        else:
+            await self.resume_session(identity)
 
     async def show_session_info(self, output: TerminalOutput, session) -> None:
         from pcode.session_ui import session_info_dialog
@@ -3175,8 +3175,10 @@ class PreviewApp:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         self.transcript.welcome(self.model, str(self.workspace))
+        from pcode.controller import PromptQueue
+
         ready = asyncio.Event()
-        queue = asyncio.Queue()
+        prompts = PromptQueue(self.activity)
         commands = asyncio.Queue()
         startup_commands = []
         command_idle = asyncio.Event()
@@ -3189,7 +3191,6 @@ class PreviewApp:
         pending_model_command = 0
         mcp_idle = asyncio.Event()
         mcp_idle.set()
-        queue_generation = 0
         pending_mcp = 0
         interrupt_pending = False
 
@@ -3247,8 +3248,7 @@ class PreviewApp:
                 session.app.invalidate()
 
         def clear_queue():
-            nonlocal queue_generation, pending_mcp, pending_model_command
-            queue_generation += 1
+            nonlocal pending_mcp, pending_model_command
             startup_commands.clear()
             if commands.empty():
                 command_idle.set()
@@ -3258,13 +3258,7 @@ class PreviewApp:
             if pending_model_command:
                 self.transcript.warning("Pending model command cancelled.")
                 pending_model_command = 0
-            count = len(self.activity.queued_prompts)
-            while not queue.empty():
-                queue.get_nowait()
-            self.activity.queued_prompts.clear()
-            self.activity.queued_modes.clear()
-            self.activity.queued = 0
-            if count:
+            if count := prompts.clear():
                 self.transcript.note(f"Cleared {count} queued message(s).")
 
         def cancel():
@@ -3293,39 +3287,17 @@ class PreviewApp:
                 self.transcript.cancelled()
 
         def take_steering():
-            pending = []
-            messages = []
-            while not queue.empty():
-                generation, text, mode = queue.get_nowait()
-                if generation == queue_generation and mode == "steering":
-                    messages.append(text)
-                    index = next(
-                        i
-                        for i, item in enumerate(
-                            zip(self.activity.queued_prompts, self.activity.queued_modes)
-                        )
-                        if item == (text, mode)
-                    )
-                    self.activity.queued_prompts.pop(index)
-                    self.activity.queued_modes.pop(index)
-                    self.activity.start_prompt(text)
-                    self.transcript.user(text)
-                else:
-                    pending.append((generation, text, mode))
-            for item in pending:
-                queue.put_nowait(item)
-            self.activity.queued = len(self.activity.queued_prompts)
+            messages = prompts.take_steering()
+            for text in messages:
+                self.activity.start_prompt(text)
+                self.transcript.user(text)
             if messages:
                 session.app.invalidate()
             return messages
 
         def follow_turn(prompt: str, echo: bool = True) -> None:
             """Show a turn the host started, in order with anything typed here."""
-            mode = "follow" if echo else "follow-quiet"
-            queue.put_nowait((queue_generation, prompt, mode))
-            self.activity.queued_prompts.append(prompt)
-            self.activity.queued_modes.append(mode)
-            self.activity.queued = len(self.activity.queued_prompts)
+            prompts.put(prompt, "follow" if echo else "follow-quiet")
             self.activity.busy = True
             session.app.invalidate()
 
@@ -3385,7 +3357,7 @@ class PreviewApp:
             if text.startswith("/"):
                 commands.put_nowait(
                     (
-                        queue_generation,
+                        prompts.generation,
                         text,
                         not self.activity.busy and not self.activity.queued_prompts,
                         self._popup_generation,
@@ -3403,10 +3375,7 @@ class PreviewApp:
             elif shell_command(text) is not None:
                 # Runs in turn, never as steering: its result rides the next
                 # request rather than being spliced into a running one.
-                queue.put_nowait((queue_generation, text, "shell"))
-                self.activity.queued_prompts.append(text)
-                self.activity.queued_modes.append("shell")
-                self.activity.queued = len(self.activity.queued_prompts)
+                prompts.put(text, "shell")
                 self.activity.busy = True
             elif text:
                 # One send consumes a Ctrl+S pick; the saved default returns.
@@ -3421,10 +3390,7 @@ class PreviewApp:
                     self.set_cancel_policy("detach")
                     if not live_task.cancelling():
                         live_task.cancel()
-                queue.put_nowait((queue_generation, text, mode))
-                self.activity.queued_prompts.append(text)
-                self.activity.queued_modes.append(mode)
-                self.activity.queued = len(self.activity.queued_prompts)
+                prompts.put(text, mode)
                 # Set immediately so Enter + Ctrl+C in one input batch cancels
                 # the pending request rather than clearing the user's draft.
                 self.activity.busy = True
@@ -3651,13 +3617,13 @@ class PreviewApp:
                                 (generation, text, submitted_idle, popup_generation)
                             )
                             continue
-                        if generation != queue_generation:
+                        if generation != prompts.generation:
                             continue
                         if self._startup_error is not None:
                             self.transcript.warning("Agent startup failed; restart pcode to retry.")
                             continue
                     if text.split()[0] in {"/compact", "/resend"}:
-                        if generation != queue_generation:
+                        if generation != prompts.generation:
                             continue
                         pending_model_command -= 1
                         self.activity.busy = bool(self.activity.queued_prompts) or any(
@@ -3665,7 +3631,7 @@ class PreviewApp:
                             for task in (live_task, mcp_task, compact_task)
                         )
                     if text.split()[:2] == ["/mcp", "enable"]:
-                        if generation != queue_generation:
+                        if generation != prompts.generation:
                             continue
                         pending_mcp -= 1
                         self.activity.busy = bool(self.activity.queued_prompts) or any(
@@ -3717,15 +3683,7 @@ class PreviewApp:
                             previous = self.runtime.resend_prompt()
                             # This command was submitted idle, before any prompts
                             # now queued behind it. Preserve that submission order.
-                            following = []
-                            while not queue.empty():
-                                following.append(queue.get_nowait())
-                            queue.put_nowait((queue_generation, previous, "resend"))
-                            for item in following:
-                                queue.put_nowait(item)
-                            self.activity.queued_prompts.insert(0, previous)
-                            self.activity.queued_modes.insert(0, "resend")
-                            self.activity.queued = len(self.activity.queued_prompts)
+                            prompts.put(previous, "resend", first=True)
                             self.activity.start_prompt(previous)
                             self.activity.busy = True
                         if self.skill_requested is not None:
@@ -3739,10 +3697,7 @@ class PreviewApp:
                             self.skill_requested = None
                             # Queue it like a typed message so send mode, steering,
                             # and cancellation keep their usual meaning.
-                            queue.put_nowait((queue_generation, prompt, self.send_mode))
-                            self.activity.queued_prompts.append(prompt)
-                            self.activity.queued_modes.append(self.send_mode)
-                            self.activity.queued = len(self.activity.queued_prompts)
+                            prompts.put(prompt, self.send_mode)
                             self.activity.busy = True
                         if self.compact_requested is not None:
                             focus = self.compact_requested
@@ -3825,7 +3780,8 @@ class PreviewApp:
                 await command_idle.wait()
                 await mcp_idle.wait()
                 await compact_idle.wait()
-                generation, text, _mode = await queue.get()
+                item = await prompts.get()
+                _generation, text, _mode = item
                 if self._startup_error is not None:
                     clear_queue()
                     self.activity.busy = False
@@ -3836,11 +3792,9 @@ class PreviewApp:
                 await compact_idle.wait()
                 if not self.running:
                     return
-                if generation != queue_generation:
+                if not prompts.current(item):
                     continue  # Cancelled while waiting for a command/modal.
-                self.activity.queued_prompts.pop(0)
-                self.activity.queued_modes.pop(0)
-                self.activity.queued = len(self.activity.queued_prompts)
+                prompts.taken()
                 # A model chosen mid-run takes effect here, before the request
                 # that follows it is sent.
                 if self.pending_model is not None:
@@ -3957,10 +3911,7 @@ class PreviewApp:
                     changed = bool(self.report_finished_jobs())
                     prompt = self.wake_prompt() if live_task is None else None
                     if prompt is not None:
-                        queue.put_nowait((queue_generation, prompt, "wake"))
-                        self.activity.queued_prompts.append(prompt)
-                        self.activity.queued_modes.append("wake")
-                        self.activity.queued = len(self.activity.queued_prompts)
+                        prompts.put(prompt, "wake")
                         self.activity.busy = True
                 # Refresh even while busy so completed jobs leave the live panel.
                 if self.refresh_jobs() or changed:
@@ -3988,7 +3939,7 @@ class PreviewApp:
                 # popup or command is already using it instead of racing it.
                 opening = self.auto_open_asides()
                 if opening:
-                    commands.put_nowait((queue_generation, "/btw", False, self._popup_generation))
+                    commands.put_nowait((prompts.generation, "/btw", False, self._popup_generation))
                 on = f"{aside.label}: " if aside.label else ""
                 self.transcript.note(
                     f"Side answer ready ({on}{plain(aside.question, 60)}). "
@@ -4594,6 +4545,23 @@ def _pick_host(selector: str, workspace: Path):
     return (here or entries)[0]
 
 
+def _running_host(selector: str, session_dir: Path | None, workspace: Path):
+    """The host already running this session, if any.
+
+    Continuing a session that is open elsewhere makes a copy of it, which is
+    right for one open in another terminal's own process, but a host exists to
+    be attached to: going there keeps one conversation instead of two.
+    """
+    from pcode.host_protocol import list_hosts
+    from pcode.sessions import SessionError, resolve_session
+
+    try:
+        identity = resolve_session(selector, session_dir, workspace).name
+    except SessionError:
+        return None  # The usual resume path reports it.
+    return next((entry for entry in list_hosts() if entry.session_id == identity), None)
+
+
 def _run_hosted(args: argparse.Namespace) -> None:
     """Run this terminal against a session host: a new one, or one already running.
 
@@ -4601,7 +4569,6 @@ def _run_hosted(args: argparse.Namespace) -> None:
     the terminal then only renders it. Trust is asked here too, since the host
     has nobody to ask. The host makes the worktree, as the process that works in it.
     """
-    from pcode.host_protocol import list_hosts
     from pcode.remote import HostLaunch, spawn_host
 
     if args.attach is not None:
@@ -4625,27 +4592,22 @@ def _run_hosted(args: argparse.Namespace) -> None:
         prompt_trust(workspace, ask=ask)
         model = args.model or load_preferences().get("model")
         resume = None
-        running = []
         if args.resume:
+            # One already running in a host was routed to --attach by the caller.
             path = resolve_session(args.resume, args.session_dir, workspace)
             resume, model = path.name, read_info(path).model
-            running = [entry for entry in list_hosts() if entry.session_id == resume]
         if not model:
             raise ValueError("A session host needs a model: pass -m or set a default with /model.")
-        if running:
-            # Already running in a host: show it rather than start a copy.
-            launch, workspace = HostLaunch.running(running[0]), Path(running[0].workspace)
-        else:
-            identity, process, log = spawn_host(
-                model=model,
-                workspace=workspace,
-                resume=resume,
-                session_dir=args.session_dir,
-                no_save=args.no_save,
-                worktree=args.worktree,
-                no_worktree=args.no_worktree,
-            )
-            launch = HostLaunch(identity, process, log)
+        identity, process, log = spawn_host(
+            model=model,
+            workspace=workspace,
+            resume=resume,
+            session_dir=args.session_dir,
+            no_save=args.no_save,
+            worktree=args.worktree,
+            no_worktree=args.no_worktree,
+        )
+        launch = HostLaunch(identity, process, log)
     app = PreviewApp(
         theme=args.theme,
         model=model,
@@ -4721,6 +4683,15 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     hosted = args.attach is not None or (
         args.host if args.host is not None else load_preferences().get("session_host") == "on"
     )
+    if args.resume and args.attach is None and not args.print:
+        running = _running_host(args.resume, args.session_dir, args.workspace or Path.cwd())
+        if running is not None:
+            print(
+                f"pcode: session {running.session_id[:8]} is running in background host "
+                f"{running.id}; attaching to it.",
+                file=sys.stderr,
+            )
+            args.attach, hosted = running.id, True
     if hosted and not args.print and not args.theme_preview:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             parser.error("attaching to a session host needs a terminal")
