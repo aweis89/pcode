@@ -510,7 +510,7 @@ def test_thinking_completion_does_not_repeat_deltas_across_interleaved_tool_reco
         {"kind": "ThinkingDelta", "text": "interrupted"},
         {"kind": "turn_cancelled"},
     ]
-    saved = SimpleNamespace(active_records=lambda: iter(records))
+    saved = SimpleNamespace(active_records=lambda end=None: iter(records))
     assert list(SavedSession.transcript_records(saved)) == [
         {"kind": "thinking_partial", "text": "first"},
         {"kind": "ToolSummary", "name": "read_file"},
