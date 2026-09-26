@@ -23,9 +23,10 @@ Phase 0 is done: the spike and an opt-in demo (`pcode --host`, `/switch`,
 `/stop`, `--attach`, `--hosts`). See [what works](background-sessions.md#what-works-in-a-hosted-session).
 The small items below are done except a previous-session key and job wake-ups,
 which wait for Phase 1. Phase 1 is under way: `controller.SessionController` owns
-the prompt and command queues, send modes, cancel, steering, and busy accounting.
-`run_async` still runs the loops (`consume`, `consume_commands`) against it; the
-turn loop is next.
+the runtime, the prompt and command queues, send modes, cancel, steering, busy
+accounting, and the turn loop (`consume`, `run_turn`, `run_shell`), showing
+everything through `PreviewApp`'s `SessionView` methods. `consume_commands` and
+the background tasks (MCP, compaction) still run in `run_async`.
 In the demo the terminal still runs all session logic itself, against
 `RemoteRuntime`, a stand-in that forwards `stream` to the host. That is why a
 dozen commands are refused there, and it is what the refactor replaces.
@@ -53,6 +54,24 @@ terminal (pcode)                          session host (python -m pcode.host)
   implements it directly; in a host it serializes to the socket and the
   terminal applies each update to its own `Transcript` and `Activity`.
 
+Decisions made while building it:
+
+- Event rendering stays in the terminal. The controller calls `turn_started`,
+  `turn_event` (one runtime event), `turn_retry`, `turn_ended`; the terminal owns
+  the event-derived panel state (tools, workers, plan, previews). The controller
+  owns the session fields of `Activity` (busy, status, queue, prompt row, jobs
+  rows); in a host those assignments are mirrored to the terminals in order.
+- The terminal calls the controller in three ways only: fire-and-forget intents
+  (`submit`, `command`, `cancel`), and awaited `call(name, ...)` for popup data
+  and small immediate actions (stop a job from the jobs browser). Anything else
+  is a command. The controller calls the view fire-and-forget, except dialogs,
+  which it awaits (`await view.choose_model(options)`).
+- Every slash command goes through the controller's command queue, so commands
+  and prompts keep today's order. A command the controller does not own is
+  handed back to the terminal that sent it and awaited.
+- `SessionController.app` is the terminal, for what has not moved yet. The host
+  can run a controller once nothing uses it.
+
 ## Phases
 
 ### Phase 1: controller in-process (no behavior change)
@@ -68,7 +87,9 @@ Move what `run_async`'s nested functions do today into `pcode.controller.Session
 - [x] Send modes (steering, queue, interrupt) and `submit`: `SessionController.submit`,
       `command`
 - [x] `clear_queue`, `cancel`, busy accounting (`refresh_busy`, `turn_ended`)
-- [ ] Turn loop (`consume`), `run_live`, shell `!commands` (`run_shell`)
+- [x] Turn loop (`consume`), `run_live`, shell `!commands` (`run_shell`), job
+      exit reporting and wake prompts. `PreviewApp.run_live` stays as a thin
+      wrapper for tests that drive one turn.
 - [ ] History tasks (`/compact`, side-thread summary) and MCP tasks
 - [ ] Job watching and wake-ups (`watch_jobs`)
 - [ ] Side questions (`/btw`) lifecycle

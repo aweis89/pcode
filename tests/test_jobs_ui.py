@@ -63,7 +63,7 @@ def test_browser_lists_running_first_follows_the_log_and_stops_and_watches(tmp_p
         assert not live.running and live.outcome() == "stopped"
         assert browser.notice == f"stopped {live.id}"
         # The stop was reported in scrollback, so the idle watcher stays quiet.
-        assert app.report_finished_jobs() == []
+        assert app.controller.report_finished_jobs() == []
 
         # Stopped, it sorts after the older finished job; the selection follows it.
         assert browser.list.text.splitlines()[1].startswith(f"✗ {live.id} · stopped")

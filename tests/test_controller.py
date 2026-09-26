@@ -62,7 +62,10 @@ def test_clear_starts_a_generation_that_makes_fetched_items_stale():
 
 
 class Session:
-    """A controller with every hook recorded, and a view that keeps what it was told."""
+    """A controller over a stand-in job registry, shown on a view that keeps what it was told.
+
+    It is also the controller's `app`, for the side questions Ctrl+C stops.
+    """
 
     def __init__(self, asides: int = 0) -> None:
         self.shown: list[tuple[str, str]] = []
@@ -70,14 +73,22 @@ class Session:
         self.released = 0
         self.redraws = 0
         self.activity = Activity()
-        self.controller = SessionController(
-            self.activity,
-            self,
-            cancel_policy=self.policies.append,
-            release_waits=self.release,
-            stop_asides=lambda: asides,
-            changed=self.redraw,
-        )
+        self.asides = SimpleNamespace(cancel=lambda: asides)
+        jobs = self
+
+        class Jobs:
+            @property
+            def cancel_policy(self):
+                return jobs.policies[-1] if jobs.policies else "detach"
+
+            @cancel_policy.setter
+            def cancel_policy(self, policy):
+                jobs.policies.append(policy)
+
+            def release_waits(self):
+                jobs.release()
+
+        self.controller = SessionController(self, self, self.activity, SimpleNamespace(jobs=Jobs()))
 
     def release(self) -> None:
         self.released += 1

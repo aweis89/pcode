@@ -208,9 +208,9 @@ def test_app_runs_command_shows_output_and_queues_it_for_the_model(tmp_path):
                 app.registry, activity=app.activity, input=pipe, output=DummyOutput()
             )
             writer = TerminalOutput(app.transcript.console, session.app)
-            app.transcript.output = writer
+            app.transcript.output = app.output = writer
             assert await asyncio.wait_for(
-                app.run_shell(writer, "!printf 'shell mode output'; exit 2"), timeout=10
+                app.controller.run_shell("!printf 'shell mode output'; exit 2"), timeout=10
             )
             await writer.flush()
             assert not app.activity.user_command

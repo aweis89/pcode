@@ -41,6 +41,7 @@ from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_argument_descriptions, config_arguments, configure
+from pcode.controller import MODEL_COMMANDS, SessionController, delivered_job
 from pcode.jobs import OUTPUT_TAIL_BYTES, format_duration
 from pcode.preferences import (
     EFFORTS,
@@ -61,7 +62,6 @@ from pcode.runtime import (
     ChildText,
     CommandOutput,
     EditCompleted,
-    JobFinished,
     Message,
     PlanPreview,
     PlanUpdated,
@@ -72,10 +72,10 @@ from pcode.runtime import (
     ThinkingDelta,
     ToolSummary,
 )
-from pcode.shell_mode import execute, shell_command
+from pcode.shell_mode import shell_command
 from pcode.stream_display import present_events, present_stream_event
 from pcode.theme import THEMES, replay_pending_input
-from pcode.tool_display import command_text, plain
+from pcode.tool_display import plain
 from pcode.ui import (
     SYSTEM_COMMAND_LABELS,
     WATCHED_PREFIX,
@@ -115,7 +115,6 @@ BRANCH_POLL_SECONDS = 30
 # Queue modes for a turn a session host started without this terminal asking:
 # another terminal's, steering that arrived too late, or the one running at
 # attach. "follow-quiet" is one whose prompt is already in scrollback.
-FOLLOW_MODES = ("follow", "follow-quiet")
 
 HOST_POLL_SECONDS = 2
 """How often an attached terminal looks at the other hosts, for the footer and notices."""
@@ -195,8 +194,19 @@ class PreviewApp:
         self.workspace = (workspace or Path.cwd()).resolve()
         self.branch = ""
         self.session_dir = saved_session.directory.parent if saved_session else session_dir
+        self.activity = Activity(
+            show_tasks=load_preferences().get("show_tasks", "on") == "on",
+            autohide_tasks=load_preferences().get("autohide_tasks", "off") == "on",
+            attach_tasks=load_preferences().get("attach_tasks", SETTINGS["attach_tasks"].default)
+            == "on",
+            tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
+            show_thinking=load_preferences().get("show_thinking") == "on",
+        )
         self.preview = PreviewRuntime()
-        self.runtime = runtime or self.preview
+        # The conversation itself, with this terminal as its view.
+        self.controller = SessionController(self, self, self.activity, runtime or self.preview)
+        # Where turns stream; set once the prompt exists (or by `run_live`).
+        self.output: TerminalOutput | None = None
         self._saved_session = saved_session
         # A `pcode.remote.HostLaunch`: the conversation runs in a session host
         # and this terminal attaches to it once its event loop is up.
@@ -222,14 +232,6 @@ class PreviewApp:
         agent = getattr(self.runtime, "agent", None)
         if agent is not None and model:
             apply_effort(agent, model, effort_for(model))
-        self.activity = Activity(
-            show_tasks=load_preferences().get("show_tasks", "on") == "on",
-            autohide_tasks=load_preferences().get("autohide_tasks", "off") == "on",
-            attach_tasks=load_preferences().get("attach_tasks", SETTINGS["attach_tasks"].default)
-            == "on",
-            tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
-            show_thinking=load_preferences().get("show_thinking") == "on",
-        )
         if agent is not None and model:
             apply_thinking(agent, model, self.activity.show_thinking)
         self.transcript = Transcript(
@@ -539,6 +541,105 @@ class PreviewApp:
             self.registry.register(command)
         self.register_skills()
 
+    @property
+    def runtime(self):
+        return self.controller.runtime
+
+    @runtime.setter
+    def runtime(self, runtime) -> None:
+        self.controller.runtime = runtime
+
+    # SessionView: what the controller shows. See pcode.controller.SessionView.
+
+    def user(self, text: str) -> None:
+        self.transcript.user(text)
+
+    def note(self, text: str) -> None:
+        self.transcript.note(text)
+
+    def warning(self, text: str) -> None:
+        self.transcript.warning(text)
+
+    def error(self, text: str, *, title: str = "Error") -> None:
+        self.transcript.error(text, title=title)
+
+    def cancelled(self) -> None:
+        self.transcript.cancelled()
+
+    def tool_result(self, event) -> None:
+        self.transcript.tool_result(event)
+
+    def shell_result(
+        self, command: str, output: str, *, failed: bool, elapsed_seconds: float
+    ) -> None:
+        self.transcript.shell_result(
+            command, output, failed=failed, elapsed_seconds=elapsed_seconds
+        )
+
+    def redraw(self) -> None:
+        if self.output is not None:
+            self.output.app.invalidate()
+
+    def turn_started(self, text: str, *, echo: bool) -> None:
+        # The last turn's finished delegates stay listed only until this one.
+        self.activity.tools.clear()
+        if echo:
+            self.output.begin_turn(text)
+        if self._emulator is not None:
+            from pcode.terminal_notify import progress
+
+            # A busy tab is visible from the other tabs.
+            self._emulator(progress(True))
+
+    def turn_event(self, event) -> None:
+        present_stream_event(
+            event,
+            output=self.output,
+            transcript=self.transcript,
+            activity=self.activity,
+            present=self.present_events,
+        )
+
+    def turn_retry(self, text: str) -> None:
+        # Separate abandoned partial text/thinking from the next attempt.
+        self.output.finish_thinking()
+        self.output.finish()
+        self.activity.plan_preview = None
+        self.activity.edit_previews.clear()
+        self.transcript.note(text)
+        self.output.app.invalidate()
+
+    def turn_ended(self) -> None:
+        if self._emulator is not None:
+            from pcode.terminal_notify import progress
+
+            self._emulator(progress(False))
+        self.activity.edit_previews.clear()
+        # A watched job is not the turn's; its preview stays pinned.
+        for key in [k for k in self.activity.command_outputs if not k.startswith(WATCHED_PREFIX)]:
+            del self.activity.command_outputs[key]
+        self.activity.plan_preview = None
+        self.output.end_turn()
+        self.activity.tools.end_turn()
+        self.activity.workers.end_turn()
+
+    def finish_text(self) -> None:
+        if self.output is not None:
+            self.output.finish()
+
+    def drop_output(self, call_id: str) -> None:
+        self.activity.command_outputs.pop(call_id, None)
+        self.redraw()
+
+    async def after_turn(self) -> None:
+        await self.output.flush()
+        if not self.running:
+            self.output.app.exit()
+        # A turn (or a shell command) is the usual reason the branch moved, so
+        # read it here rather than polling fast enough to catch one.
+        elif await asyncio.to_thread(self.refresh_branch):
+            self.output.app.invalidate()
+
     def register_skills(self) -> None:
         """Expose discovered SKILL.md assets as commands, skipping any collision."""
         from pcode.skills import discover_skills, skill_commands
@@ -770,97 +871,6 @@ class PreviewApp:
             raise ValueError("/resend is unavailable while working. Cancel or wait, then retry.")
         self.runtime.resend_prompt()
         self.resend_requested = True
-
-    def set_cancel_policy(self, policy: str) -> None:
-        """Say what an abandoned shell wait should do to its command.
-
-        Set before cancelling, because by the time the tool call sees
-        `CancelledError` there is nothing left to tell it apart from any other
-        cancellation. Reset to the safe default once the turn is over.
-        """
-        registry = getattr(self.runtime, "jobs", None)
-        if registry is not None:
-            registry.cancel_policy = policy
-        elif self.hosted:
-            # Sent with the cancel, for the host's own registry.
-            self.runtime.cancel_policy = policy
-
-    def release_shell_waits(self) -> None:
-        """Hand any foreground shell wait back to the model as a job handle.
-
-        Steering is delivered at the next model request, and a wait on a slow
-        command is what stands between now and that request. Ending the wait
-        gets the message there promptly; the command itself is untouched.
-        """
-        registry = getattr(self.runtime, "jobs", None)
-        if registry is not None:
-            registry.release_waits()
-        elif self.hosted:
-            # The host pulls steering at its next request like a local runtime
-            # does, but it can only take what has been sent to it: send it now.
-            self.runtime.release_waits()
-
-    def report_finished_jobs(self, job_id: str | None = None) -> list:
-        """Announce job exits in scrollback, each one once. Returns those announced."""
-        registry = getattr(self.runtime, "jobs", None)
-        if registry is None:
-            return []
-        from pcode.shell import REDUCED_SHELL_OUTPUT, result_projection
-
-        finished = registry.take_announcements("ui", job_id)
-        for job in finished:
-            output, truncated = registry.read_output(job)
-            if truncated:
-                output = REDUCED_SHELL_OUTPUT + "\n" + output
-            result = output + f"\n[{job.id} · {job.outcome()} · {format_duration(job.elapsed)}]"
-            event = JobFinished(
-                "shell",
-                f"{command_text(job.label())} → {job.id} · {job.outcome()}",
-                failed=job.stopped or job.exit_code != 0,
-                elapsed_seconds=job.elapsed,
-                command=command_text(job.command),
-                result=command_text(result_projection(result)),
-                purpose=command_text(job.purpose),
-            )
-            saved = getattr(self.runtime, "session", None)
-            if saved is not None:
-                saved.event(event, run_id=saved.tree.active or "")
-            self.transcript.tool_result(event)
-        return finished
-
-    def wake_prompt(self) -> str | None:
-        """The turn a finished job starts on its own, or None when nothing should.
-
-        Only a job the model launched and expects to hear about wakes it: one
-        it backgrounded, or was handed a handle for when a wait ended early.
-        An adopted job belongs to a model that is gone. The text is exactly
-        the notice the model would have received at its next request, so
-        waking costs a request, never a different conversation. Called while
-        idle: a job that ended mid-turn after the last request is included,
-        because nothing else is going to deliver it.
-        """
-        registry = getattr(self.runtime, "jobs", None)
-        if registry is None or not self.model:
-            return None
-        wakeable = [
-            job
-            for job in registry.jobs.values()
-            if not job.running
-            # A stop is the user's or the model's own doing, not news to act on.
-            and not job.stopped
-            and not job.adopted
-            and "model" not in job.announced
-            and registry.announceable(job)
-        ]
-        if not wakeable:
-            return None
-        if load_preferences().get("job_wake", SETTINGS["job_wake"].default) != "on":
-            return None
-        from pcode.job_notices import notice_for
-
-        for job in wakeable:
-            job.announced.add("model")
-        return "\n\n".join(notice_for(registry, job) for job in wakeable)
 
     def refresh_jobs(self) -> bool:
         """Recompute the jobs rows and the watched tail. Returns whether they changed.
@@ -1599,31 +1609,6 @@ class PreviewApp:
 
     def present_events(self, events) -> None:
         present_events(events, activity=self.activity, transcript=self.transcript, edits=self.edits)
-        for event in events:
-            if (
-                isinstance(event, ToolSummary)
-                and event.name in {"wait_for_job", "job_output"}
-                and not event.parent_call_id
-            ):
-                self.report_delivered_job(event.detail.partition(" ")[0])
-
-    def report_delivered_job(self, job_id: str) -> None:
-        """Write a job's exit where the call that collected it settled.
-
-        The call's own row is left out of scrollback because the exit notice
-        says the same thing. Holding that notice until idle would print it
-        after the final answer, long after the model acted on the result.
-        A job that is still running, or was already reported, prints nothing.
-        """
-        registry = getattr(self.runtime, "jobs", None)
-        job = registry.get(job_id) if registry is not None else None
-        if job is None or job.running or "ui" in job.announced:
-            return
-        # A suppressed row does not commit streamed prose; the notice must not
-        # land ahead of text the model wrote before making the call.
-        if self.transcript.output is not None:
-            self.transcript.output.finish()
-        self.report_finished_jobs(job_id)
 
     def theme_preview(self, argument: str) -> None:
         self.present_events(self.preview.demo())
@@ -2999,10 +2984,6 @@ class PreviewApp:
         if saved is not None and (path := saved.record_error(error, run_id=name)):
             self.transcript.note(f"Session and diagnostics: {path}")
 
-    def wake_row(self, text: str) -> tuple[str, str]:
-        """The live row for a turn a finished job started: a badge, not an echo."""
-        return "Job finished", text.partition("\n")[0].partition(" Read ")[0]
-
     async def run_live(
         self,
         output: TerminalOutput,
@@ -3013,189 +2994,11 @@ class PreviewApp:
         follow: bool = False,
         echo: bool = True,
     ) -> bool:
-        """Run a turn, or with `follow` show one a session host started on its own.
-
-        `echo` False leaves the prompt out of scrollback: steering this terminal
-        forwarded to a host is already there.
-        """
-        from pcode.live import error_message
-
-        if follow and getattr(self.runtime, "pending_turn", None) is None:
-            # Already shown: a prompt sent from here caught up with it first.
-            self.activity.finish_prompt("done")
-            return True
-        # The last turn's finished delegates stay listed only until this one.
-        self.activity.tools.clear()
-        if wake:
-            # Scrollback already carries the job's summary line; the prompt is
-            # pcode's, so it is labelled as system work rather than quoted.
-            label, detail = self.wake_row(text)
-            self.activity.start_prompt(label, kind="system", detail=detail)
-        else:
-            if echo:
-                output.begin_turn(text)
-            self.activity.start_prompt(text)
-        self.activity.status = "Waiting for model…"
-        if self._emulator is not None:
-            from pcode.terminal_notify import progress
-
-            # A busy tab is visible from the other tabs.
-            self._emulator(progress(True))
-
-        def compaction_notice(text):
-            self.activity.status = text
-            self.transcript.note(text)
-
-        self.runtime.compaction_notice = compaction_notice
-
-        def retry_notice(text):
-            # Separate abandoned partial text/thinking from the next attempt.
-            output.finish_thinking()
-            output.finish()
-            self.activity.plan_preview = None
-            self.activity.edit_previews.clear()
-            self.activity.status = text
-            self.transcript.note(text)
-            output.app.invalidate()
-
-        if hasattr(self.runtime, "retry_notice"):
-            self.runtime.retry_notice = retry_notice
-        if hasattr(self.runtime, "warning_notice"):
-            self.runtime.warning_notice = self.transcript.warning
-        failure = None
-        cancelled = False
-        source = self.runtime.follow() if follow else self.runtime.stream(None if resend else text)
-        try:
-            async with aclosing(source) as stream:
-                async for event in stream:
-                    present_stream_event(
-                        event,
-                        output=output,
-                        transcript=self.transcript,
-                        activity=self.activity,
-                        present=self.present_events,
-                    )
-        except asyncio.CancelledError:
-            cancelled = True
-        except Exception as error:
-            # Another terminal cancelled the host's turn this one was showing.
-            cancelled = type(error).__name__ == "HostTurnCancelled"
-            failure = None if cancelled else error
-        finally:
-            if self._emulator is not None:
-                from pcode.terminal_notify import progress
-
-                self._emulator(progress(False))
-            self.activity.edit_previews.clear()
-            # A watched job is not the turn's; its preview stays pinned.
-            for key in [
-                k for k in self.activity.command_outputs if not k.startswith(WATCHED_PREFIX)
-            ]:
-                del self.activity.command_outputs[key]
-            self.activity.plan_preview = None
-            output.end_turn()
-            self.activity.tools.end_turn()
-            self.activity.workers.end_turn()
-            self.activity.status = ""
-        if cancelled and getattr(self.runtime, "detaching", False) is True:
-            # Switched away: the turn carries on in its host, unannounced here.
-            self.activity.finish_prompt("done")
-            return False
-        # Abandoning a wait is the exception, not the rule: restore the safe
-        # default so the next Ctrl+C-free cancellation cannot kill a command.
-        self.set_cancel_policy("detach")
-        self.activity.finish_prompt("cancelled" if cancelled else "failed" if failure else "done")
-        self.report_finished_jobs()
-        output.app.invalidate()
-        if cancelled:
-            self.transcript.cancelled()
-            # A cancelled turn used to take its commands with it. Say plainly
-            # what survived, so "still running" is never a surprise.
-            registry = getattr(self.runtime, "jobs", None)
-            running = registry.running() if registry is not None else []
-            if running:
-                self.transcript.note(
-                    f"{len(running)} command(s) still running: "
-                    + ", ".join(f"[{job.id}] {job.label()}" for job in running[:3])
-                    + ". Use /jobs to list or stop them."
-                )
-        elif failure:
-            from pcode.diagnostics import stale_install
-
-            self.transcript.error(error_message(failure), title="Agent failed")
-            if hint := stale_install():
-                self.transcript.warning(hint)
-        if (cancelled or failure) and self.runtime.session:
-            directory = self.runtime.session.directory
-            # Name the traceback file rather than the directory it sits in: the
-            # frames are the point of looking, and a cancelled turn writes none.
-            errors = directory / "errors.log"
-            target = errors if failure and errors.exists() else directory
-            self.transcript.note(f"Session and diagnostics: {target}")
-            if self.runtime.recovery_blocked:
-                self.transcript.warning(self.runtime.recovery_blocked)
-        return not (cancelled or failure)
-
-    async def run_shell(self, output: TerminalOutput, text: str) -> bool:
-        """Run a `!command` the user typed and hand its result to the runtime.
-
-        Output streams into the live command panel while it runs and is
-        mirrored to scrollback when it ends. The model sees it on the next
-        prompt, as a `shell` tool call, so ask a follow-up to discuss it.
-        """
-        # Lazy: pcode.shell pulls in the agent stack, which startup avoids.
-        from pcode.shell import preview_text
-
-        command = shell_command(text)
-        assert command is not None
-        call_id = f"shell_mode_{id(self):x}"
-        cwd, env = (
-            self.runtime.shell_environment()
-            if hasattr(self.runtime, "shell_environment")
-            else (self.workspace, None)
+        """Run one turn shown through `output`: the controller's turn, this terminal its view."""
+        self.output = output
+        return await self.controller.run_turn(
+            text, resend=resend, wake=wake, follow=follow, echo=echo
         )
-        self.transcript.user(text)
-        self.activity.start_prompt(text)
-        self.activity.user_command = True
-        self.activity.status = "Running command…"
-        buffered = ""
-
-        def show(chunk: str) -> None:
-            nonlocal buffered
-            buffered += chunk
-            self.present_events((CommandOutput(call_id, command, preview_text(buffered)),))
-            output.app.invalidate()
-
-        run = None
-        try:
-            run = await execute(command, cwd=cwd, env=env, on_output=show)
-        except asyncio.CancelledError:
-            pass
-        except OSError as error:
-            self.transcript.error(str(error), title="Command failed to start")
-        finally:
-            self.activity.command_outputs.pop(call_id, None)
-            self.activity.user_command = False
-            self.activity.status = ""
-        if run is None:
-            self.activity.finish_prompt("cancelled")
-            self.transcript.warning("Command cancelled; the model was not told about it.")
-            output.app.invalidate()
-            return False
-        self.transcript.shell_result(
-            command, run.output, failed=run.failed, elapsed_seconds=run.elapsed_seconds
-        )
-        if hasattr(self.runtime, "record_shell"):
-            visible = await self.runtime.record_shell(run)
-            reduced = not isinstance(visible, str) or visible != run.tool_result()
-            self.transcript.note(
-                "The model sees this command and its "
-                + ("reduced output" if reduced else "output")
-                + " with your next message."
-            )
-        self.activity.finish_prompt("done")
-        output.app.invalidate()
-        return True
 
     def show_startup_context(self) -> None:
         """Report repository instructions and skills, each line only once.
@@ -3251,16 +3054,7 @@ class PreviewApp:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         self.transcript.welcome(self.model, str(self.workspace))
-        from pcode.controller import MODEL_COMMANDS, SessionController
-
-        controller = SessionController(
-            self.activity,
-            self.transcript,
-            cancel_policy=self.set_cancel_policy,
-            release_waits=self.release_shell_waits,
-            stop_asides=self.asides.cancel,
-            changed=lambda: session.app.invalidate(),
-        )
+        controller = self.controller
         prompts = controller.prompts
         commands = controller.commands
         clear_queue = controller.clear_queue
@@ -3732,88 +3526,6 @@ class PreviewApp:
                 if not self.running and session.app.is_running:
                     session.app.exit()
 
-        async def consume():
-            await controller.ready.wait()
-            while self.running:
-                await controller.idle()
-                item = await prompts.get()
-                _generation, text, _mode = item
-                if self._startup_error is not None:
-                    clear_queue()
-                    self.activity.busy = False
-                    self.transcript.warning("Agent startup failed; restart pcode to retry.")
-                    continue
-                await controller.idle()
-                if not self.running:
-                    return
-                if not prompts.current(item):
-                    continue  # Cancelled while waiting for a command/modal.
-                prompts.taken()
-                # A model chosen mid-run takes effect here, before the request
-                # that follows it is sent.
-                if self.pending_model is not None:
-                    await self.apply_pending_model()
-                success = True
-                try:
-                    resend = _mode == "resend"
-                    if _mode == "shell":
-                        controller.live_task = asyncio.create_task(self.run_shell(output, text))
-                        try:
-                            success = await controller.live_task
-                        except asyncio.CancelledError:
-                            if not session.app.is_running:
-                                return
-                            success = False
-                    elif resend or _mode in FOLLOW_MODES or self.handle(text):
-                        wake = _mode == "wake"
-                        if wake:
-                            label, detail = self.wake_row(text)
-                            self.activity.start_prompt(label, kind="system", detail=detail)
-                        else:
-                            self.activity.start_prompt(text)
-                        self.runtime.take_steering = controller.take_steering
-                        controller.live_task = asyncio.create_task(
-                            self.run_live(
-                                output,
-                                text,
-                                resend=resend,
-                                wake=wake,
-                                follow=_mode in FOLLOW_MODES,
-                                echo=_mode != "follow-quiet",
-                            )
-                        )
-                        try:
-                            success = await controller.live_task
-                        except asyncio.CancelledError:
-                            # Cancellation before run_live's first instruction.
-                            if not session.app.is_running:
-                                return
-                            success = False
-                            self.activity.finish_prompt("cancelled")
-                            self.transcript.cancelled()
-                except Exception as error:
-                    from pcode.live import error_message
-
-                    self.transcript.error(error_message(error), title="Agent failed")
-                    success = False
-                finally:
-                    controller.live_task = None
-                if not session.app.is_running:
-                    return
-                controller.turn_ended(success)
-                # Adopt it as soon as the turn ends so the footer and /status
-                # agree with what the next request will use.
-                if self.pending_model is not None:
-                    await self.apply_pending_model()
-                await output.flush()
-                if not self.running:
-                    session.app.exit()
-                # A turn (or a shell command) is the usual reason the branch
-                # moved, so read it here rather than polling fast enough to
-                # catch one.
-                elif await asyncio.to_thread(self.refresh_branch):
-                    session.app.invalidate()
-
         session = create_prompt(
             self.registry,
             activity=self.activity,
@@ -3837,6 +3549,8 @@ class PreviewApp:
             rich_theme=lambda: self.transcript.rich_theme,
         )
         self.transcript.output = output
+        self.output = output
+        controller.closing = lambda: not session.app.is_running
         session.app.style = DynamicStyle(lambda: self.transcript.prompt_style())
 
         async def watch_jobs():
@@ -3855,8 +3569,8 @@ class PreviewApp:
             while True:
                 changed = False
                 if not self.activity.busy and not self.activity.queued_prompts:
-                    changed = bool(self.report_finished_jobs())
-                    prompt = self.wake_prompt() if controller.live_task is None else None
+                    changed = bool(controller.report_finished_jobs())
+                    prompt = controller.wake_prompt() if controller.live_task is None else None
                     if prompt is not None:
                         controller.submit(prompt, "wake")
                 # Refresh even while busy so completed jobs leave the live panel.
@@ -3913,7 +3627,7 @@ class PreviewApp:
             session.app.create_background_task(watch_branch())
             session.app.create_background_task(watch_jobs())
             session.app.create_background_task(output.run())
-            session.app.create_background_task(consume())
+            session.app.create_background_task(controller.consume())
             session.app.create_background_task(consume_commands())
             if self.initial_prompt:
                 # Queued like a typed message: it waits for the backend the same
@@ -4045,10 +3759,12 @@ class PreviewApp:
                         continue
                     else:
                         self.present_events((event,))
+                        if (job_id := delivered_job(event)) is not None:
+                            self.controller.report_delivered_job(job_id)
         except Exception as error:
             if block:
                 write_reply(block, streamed=console is None)
-            self.report_finished_jobs()
+            self.controller.report_finished_jobs()
             self.transcript.error(error_message(error), title="Agent failed")
             saved = getattr(self.runtime, "session", None)
             if saved is not None:
@@ -4056,7 +3772,7 @@ class PreviewApp:
             return False
         if block:
             write_reply(block, streamed=console is None)
-        self.report_finished_jobs()
+        self.controller.report_finished_jobs()
         self.print_resume_hint()
         return True
 
