@@ -157,8 +157,11 @@ class HostEntry:
         return self.title or "(no prompt yet)"
 
     def stale(self, current: str | None = None) -> bool:
-        """Running code older than what is installed now (an editable install moves)."""
-        return bool(self.code) and self.code != (current or code_fingerprint())
+        """Running code older than what is installed now (an editable install moves).
+
+        A host with no fingerprint predates fingerprints, so it is older too.
+        """
+        return self.code != (current or code_fingerprint())
 
 
 def code_fingerprint() -> str:

@@ -564,7 +564,10 @@ def test_picker_puts_unseen_sessions_first_and_flags_old_code():
     old = HostEntry("old00000", 1, "m", "/w/d", title="old", state="idle", code="1")
     assert host_row(old, None, now=0, code="2").endswith("old code")
     assert "✓ new" in host_row(fresh, None, now=1, code="2")
-    assert not host_row(fresh, None, now=1, code="2").endswith("old code")
+    # No fingerprint at all: a host from before fingerprints, so older still.
+    assert host_row(fresh, None, now=1, code="2").endswith("old code")
+    current = HostEntry("cur00000", 1, "m", "/w/e", title="current", code="2")
+    assert not host_row(current, None, now=1, code="2").endswith("old code")
 
 
 def test_restart_stops_keeping_the_worktree_and_resumes_the_session(tmp_path):
