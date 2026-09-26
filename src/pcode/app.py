@@ -250,11 +250,6 @@ class PreviewApp:
         self.skill_requested: str | None = None
         # The MCP servers that skill declares, enabled before its prompt runs.
         self.skill_mcp_requested: tuple[str, tuple[str, ...]] | None = None
-        self.mcp_enable_requested: str | None = None
-        # Servers marked enabled in mcp.json, enabled without a browser after a
-        # conversation starts (startup, /new, resume).
-        self.mcp_defaults_requested = False
-        self.mcp_logout_requested: str | None = None
         # A slow command (git work, for example) handed off so the terminal can
         # show a labelled system row while it runs off the event loop.
         self.job_requested: tuple[str, str, Callable[[], list[str]]] | None = None
@@ -344,15 +339,7 @@ class PreviewApp:
                 ("low", "medium", "high", "xhigh", "default"),
                 group="Model",
             ),
-            Command(
-                "/mcp",
-                "Manage MCP servers: list / enable NAME / disable NAME / logout NAME",
-                self.mcp,
-                ("list", "enable", "disable"),
-                free_arguments=True,
-                argument_provider=self.mcp_arguments,
-                group="Model",
-            ),
+            self.controller.registry.find("/mcp"),
             Command(
                 "/login",
                 "Sign in to Anthropic, OpenAI Codex, or Claude for Meridian in a browser",
@@ -1750,135 +1737,6 @@ class PreviewApp:
         except OSError:
             pass
 
-    def mcp_arguments(self) -> tuple[str, ...]:
-        from pcode.mcp import configured_servers
-
-        state = getattr(self.runtime, "mcp", None)
-        enabled = state.enabled if state else {}
-        try:
-            names = configured_servers()
-        except ValueError:
-            names = {}
-        oauth = [
-            name
-            for name, raw in sorted(names.items())
-            if isinstance(raw, dict) and raw.get("auth") == "oauth"
-        ]
-        return (
-            "list",
-            *(f"enable {name}" for name in sorted(names)),
-            *(f"disable {name}" for name in sorted(enabled)),
-            *(f"logout {name}" for name in oauth),
-        )
-
-    def mcp(self, argument: str) -> None:
-        from pcode.mcp import config_path, configured_servers
-
-        parts = argument.split()
-        state = getattr(self.runtime, "mcp", None)
-        enabled = state.enabled if state else {}
-        if not parts or parts == ["list"]:
-            self.transcript.note(f"MCP config: {config_path()}")
-            try:
-                names = configured_servers()
-            except ValueError as error:
-                self.transcript.error(str(error))
-                names = {}
-            for name in sorted(names.keys() | enabled.keys()):
-                status = "enabled" if name in enabled else "off"
-                raw = names.get(name)
-                if isinstance(raw, dict) and raw.get("enabled") is True:
-                    status += " (default on)"
-                self.transcript.note(f"{name}: {status}")
-            if not names and not enabled:
-                self.transcript.note("No MCP servers configured. Add an mcpServers object here.")
-            self.transcript.note(
-                'MCP defaults to off unless a server sets "enabled": true. '
-                "Use /mcp enable NAME, /mcp disable NAME, or /mcp logout NAME."
-            )
-            return
-        if len(parts) != 2 or parts[0] not in {"enable", "disable", "logout"}:
-            raise ValueError(
-                "Usage: /mcp list | /mcp enable NAME | /mcp disable NAME | /mcp logout NAME"
-            )
-        # Slash commands precede queued (not yet running) prompts. In particular,
-        # an enable + prompt submitted in one input batch must authenticate first.
-        if self.controller.mcp_enabling or (
-            self.activity.busy
-            and (self.activity.prompt_state == "running" or not self.activity.queued)
-        ):
-            raise ValueError("MCP cannot be changed while working. Cancel or wait, then retry.")
-        if state is None:
-            raise ValueError("MCP requires a live model. Start pcode with -m PROVIDER:MODEL.")
-        action, name = parts
-        if action == "enable":
-            if name in enabled:
-                self.transcript.note(f"MCP '{name}' is already enabled.")
-            else:
-                self.mcp_enable_requested = name
-        elif action == "logout":
-            self.mcp_logout_requested = name
-        else:
-            state.disable(name)
-            self.transcript.note(f"MCP '{name}' disabled. Earlier results remain in history.")
-
-    async def enable_mcp(self, name: str) -> None:
-        """Authorize outside the model loop; publish only a successfully enabled server."""
-        await self.runtime.mcp.enable(name)
-        self.transcript.note(
-            f"MCP '{name}' enabled for this conversation. "
-            "Its tools can perform actions with the server's permissions. "
-            "OAuth sign-ins are saved for future sessions; /mcp logout NAME forgets one."
-        )
-
-    def report_mcp_error(self, name: str, error: Exception) -> None:
-        """Keep MCP setup tracebacks even though no model turn was started."""
-        from pcode.diagnostics import error_report
-        from pcode.mcp import error_message
-
-        self.transcript.error(f"MCP '{name}' remains off: {error_message(error)}")
-        saved = getattr(self.runtime, "session", None)
-        path = saved.record_error(error, run_id=f"mcp:{name}") if saved else None
-        if path is not None:
-            self.transcript.note(f"MCP diagnostics: {path}")
-        else:
-            # --no-save and failed writes still need actionable frames, but must
-            # not create a session or silently persist a separate diagnostics file.
-            self.transcript.note(error_report(error))
-
-    async def enable_skill_mcp(self, skill: str, names: list[str]) -> None:
-        """Enable a skill's servers in order; one that fails stays off, the rest proceed."""
-        for name in names:
-            try:
-                await self.runtime.mcp.enable(name)
-            except Exception as error:
-                self.report_mcp_error(name, error)
-            else:
-                self.transcript.note(f"MCP '{name}' enabled for the {skill} skill.")
-
-    async def enable_mcp_defaults(self, names: list[str]) -> None:
-        """Enable `"enabled": true` servers, using saved sign-ins but never a browser."""
-        from pcode.mcp_oauth import SignInRequired
-
-        for name in names:
-            try:
-                await self.runtime.mcp.enable(name, interactive=False)
-            except SignInRequired:
-                self.transcript.warning(
-                    f"MCP '{name}' needs a browser sign-in; run /mcp enable {name}."
-                )
-            except Exception as error:
-                self.report_mcp_error(name, error)
-            else:
-                self.transcript.note(f"MCP '{name}' enabled (default on).")
-
-    async def logout_mcp(self, name: str) -> None:
-        await self.runtime.mcp.forget(name)
-        self.transcript.note(
-            f"MCP '{name}' signed out and disabled. The next /mcp enable {name} opens a "
-            "browser. This does not revoke the server-side grant."
-        )
-
     def new(self, argument: str) -> None:
         self.runtime.reset()
         self.activity.reset()
@@ -1891,7 +1749,7 @@ class PreviewApp:
         )
         if self.model and self.runtime.session:
             self.transcript.note(f"Saving session: {self.runtime.session.info.id}")
-        self.mcp_defaults_requested = True
+        self.controller.mcp_defaults_requested = True
 
     def select_session(self, argument: str) -> None:
         self.session_requested = True
@@ -2169,7 +2027,7 @@ class PreviewApp:
         self.activity.prompt_kind = "user"
         self.activity.prompt_detail = ""
         self.replay()
-        self.mcp_defaults_requested = True
+        self.controller.mcp_defaults_requested = True
 
     def _resume_workspace(self, info) -> Path:
         """Where a resumed session works: its own directory, if this repository's.
@@ -2969,15 +2827,7 @@ class PreviewApp:
                     focus = self.compact_requested
                     self.compact_requested = None
                     controller.start_compact(focus)
-                if self.mcp_enable_requested is not None:
-                    name = self.mcp_enable_requested
-                    self.mcp_enable_requested = None
-                    controller.start_mcp_enable(name)
-                if self.mcp_logout_requested is not None:
-                    name = self.mcp_logout_requested
-                    self.mcp_logout_requested = None
-                    controller.start_mcp_logout(name)
-                if self.mcp_defaults_requested:
+                if controller.mcp_defaults_requested:
                     controller.start_mcp_defaults()
                 if not self.running:
                     controller.cancel()

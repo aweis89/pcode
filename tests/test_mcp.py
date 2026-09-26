@@ -142,15 +142,18 @@ def make_app(tmp_path):
 
 
 def handle_command(app, text):
-    result = app.handle(text)
-    if app.mcp_enable_requested is not None:
-        name = app.mcp_enable_requested
-        app.mcp_enable_requested = None
-        try:
-            asyncio.run(app.enable_mcp(name))
-        except Exception as error:
-            app.transcript.note(str(error))
-    return result
+    """Run a slash command where it runs in the app, and wait for any MCP work it starts."""
+    controller = app.controller
+
+    async def run():
+        if controller.registry.find(text.split()[0]) is None:
+            app.handle(text)
+        else:
+            await controller.run_command(text)
+        if controller.mcp_task is not None:
+            await asyncio.gather(controller.mcp_task, return_exceptions=True)
+
+    asyncio.run(run())
 
 
 def test_commands_completion_reset_and_model_switch(tmp_path):
@@ -169,7 +172,7 @@ def test_commands_completion_reset_and_model_switch(tmp_path):
     assert completions("/mcp en") == ["enable docs", "enable other"]
     assert completions("/mcp disable ") == ["disable docs"]
     assert completions("/mcp enable d") == ["enable docs"]
-    assert handle_command(app, "/mcp enable missing") is False
+    handle_command(app, "/mcp enable missing")
     assert "Unknown MCP server" in output.getvalue()
     handle_command(app, "/mcp once docs")
     assert "Usage: /mcp" in output.getvalue()
@@ -202,7 +205,7 @@ def test_list_and_disable_survive_broken_config(tmp_path):
     handle_command(app, "/mcp list")
     assert "Cannot read MCP configuration" in output.getvalue()
     assert "docs: enabled" in output.getvalue()
-    assert app.mcp_arguments() == ("list", "disable docs")
+    assert app.controller.mcp_arguments() == ("list", "disable docs")
     handle_command(app, "/mcp disable docs")
     assert app.runtime.mcp.toolsets() == []
 
