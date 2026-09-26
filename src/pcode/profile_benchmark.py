@@ -280,37 +280,38 @@ def _live(args, parser):
     runtime = JournalRuntime(turns, speed=args.speed)
     stats = dict(turns=len(turns), speed=args.speed, renders=0, flushes=0)
 
-    class LiveReplayApp(PreviewApp):
-        """Play every journaled turn through the real turn path, then quit."""
-
-        async def run_live(self, output, text, *, resend=False):
-            app = output.app
-            if stats["renders"] == 0:
-                render, flush = app.renderer.render, output.flush
-
-                def counted_render(*a, **kw):
-                    stats["renders"] += 1
-                    return render(*a, **kw)
-
-                async def counted_flush():
-                    if output.pending or output.rows or output._regenerate is not None:
-                        stats["flushes"] += 1
-                    await flush()
-
-                app.renderer.render, output.flush = counted_render, counted_flush
-                stats["started"] = time.perf_counter()
-                stats["rusage"] = resource.getrusage(resource.RUSAGE_SELF)
-            for turn in runtime.turns[:]:
-                await super().run_live(output, turn.prompt)
-            self.running = False
-            return True
-
-    app = LiveReplayApp(
+    app = PreviewApp(
         model="journal-replay",
         runtime=runtime,
         initial_prompt=turns[0].prompt or "replay",
         console=Console(),
     )
+    run_turn = app.controller.run_turn
+
+    async def replay_turns(text, **options):
+        """Play every journaled turn through the real turn path, then quit."""
+        output = app.output
+        if stats["renders"] == 0:
+            render, flush = output.app.renderer.render, output.flush
+
+            def counted_render(*a, **kw):
+                stats["renders"] += 1
+                return render(*a, **kw)
+
+            async def counted_flush():
+                if output.pending or output.rows or output._regenerate is not None:
+                    stats["flushes"] += 1
+                await flush()
+
+            output.app.renderer.render, output.flush = counted_render, counted_flush
+            stats["started"] = time.perf_counter()
+            stats["rusage"] = resource.getrusage(resource.RUSAGE_SELF)
+        for turn in runtime.turns[:]:
+            await run_turn(turn.prompt)
+        app.running = False
+        return True
+
+    app.controller.run_turn = replay_turns
     app.activity.show_thinking = args.show_thinking
     app.transcript.command_scrollback = args.command_scrollback
     with capture(args, args.profile):

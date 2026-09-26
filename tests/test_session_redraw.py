@@ -131,8 +131,8 @@ def test_background_completion_survives_reopening_without_retaining_unsafe_tails
             runtime=SimpleNamespace(session=saved, jobs=jobs),
             console=Console(file=StringIO()),
         )
-        assert app.report_finished_jobs() == [job]
-        assert app.report_finished_jobs() == []
+        assert app.controller.report_finished_jobs() == [job]
+        assert app.controller.report_finished_jobs() == []
         records = list(saved.transcript_records())
         completions = [r for r in records if r["kind"] == "JobFinished"]
         assert len(completions) == 1

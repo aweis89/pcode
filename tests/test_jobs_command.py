@@ -52,7 +52,7 @@ def test_jobs_stop_all_reports_each_stop_once(tmp_path):
     app.jobs("stop all")
     assert not live.running and live.outcome() == "stopped"
     # Stopping reported it, so the idle watcher must not say it again.
-    assert app.report_finished_jobs() == []
+    assert app.controller.report_finished_jobs() == []
 
 
 def test_jobs_arguments_offer_running_ids_for_stop_and_watch(tmp_path):
@@ -80,15 +80,15 @@ def test_jobs_rejects_unknown_actions_and_ids(tmp_path):
 
 def test_cancel_policy_is_set_for_the_registry_and_survives_a_bare_runtime():
     app, jobs = app_with_jobs()
-    app.set_cancel_policy("stop")
+    app.controller.set_cancel_policy("stop")
     assert jobs.cancel_policy == "stop"
-    app.set_cancel_policy("detach")
+    app.controller.set_cancel_policy("detach")
     assert jobs.cancel_policy == "detach"
     # A preview app without a live runtime has no registry; this must not raise.
-    PreviewApp().set_cancel_policy("stop")
-    assert PreviewApp().report_finished_jobs() == []
+    PreviewApp().controller.set_cancel_policy("stop")
+    assert PreviewApp().controller.report_finished_jobs() == []
     assert PreviewApp().refresh_jobs() is False
-    assert PreviewApp().wake_prompt() is None
+    assert PreviewApp().controller.wake_prompt() is None
 
 
 def until_finished(jobs, *watched):
@@ -117,7 +117,7 @@ def test_jobs_rows_show_only_running_background_work(tmp_path):
     assert [text[:17] for _, text in app.activity.jobs] == ["\u27f3 j1 \u00b7 serving \u00b7 "]
     # Hiding the completed job must not consume its deferred completion notice.
     assert "ui" not in failed.announced
-    assert [job.id for job in app.report_finished_jobs()] == ["j2"]
+    assert [job.id for job in app.controller.report_finished_jobs()] == ["j2"]
     app.refresh_jobs()
     assert [text[:17] for _, text in app.activity.jobs] == ["\u27f3 j1 \u00b7 serving \u00b7 "]
     jobs.stop(live)
@@ -176,7 +176,7 @@ def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
 
     # The turn-end/idle reporter, not the live-row refresh, owns the completion.
     app.activity.busy = False
-    assert app.report_finished_jobs() == [job]
+    assert app.controller.report_finished_jobs() == [job]
     printed = stream.getvalue()
     marker = "✓" if outcome == "success" else "✗"
     assert f"{marker} Run · j12 · " in printed
@@ -189,7 +189,7 @@ def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
         assert "test output" in printed
     else:
         assert "test output" not in printed
-    assert app.report_finished_jobs() == []
+    assert app.controller.report_finished_jobs() == []
     assert stream.getvalue() == printed
     # Completion uses the retained command renderer, so redraws keep it too.
     stream.seek(0)
@@ -203,6 +203,7 @@ def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
 
 def test_collected_job_exit_prints_where_the_wait_settled(tmp_path):
     """Not after the final answer, minutes after the model already acted on it."""
+    from pcode.controller import delivered_job
     from pcode.runtime import ToolSummary
 
     stream = StringIO()
@@ -215,15 +216,21 @@ def test_collected_job_exit_prints_where_the_wait_settled(tmp_path):
     jobs = app.runtime.jobs
     done = jobs.launch(command("pass"), cwd=tmp_path, background=True)
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path, background=True)
+
+    def settle(event):
+        # What the turn loop does with each event it shows.
+        app.present_events((event,))
+        app.controller.report_delivered_job(delivered_job(event))
+
     try:
         until_finished(jobs, done)
-        app.present_events((ToolSummary("wait_for_job", "j2 · still running", outcome="success"),))
+        settle(ToolSummary("wait_for_job", "j2 · still running", outcome="success"))
         assert stream.getvalue() == ""
-        app.present_events((ToolSummary("wait_for_job", "j1", outcome="success"),))
+        settle(ToolSummary("wait_for_job", "j1", outcome="success"))
         assert stream.getvalue().startswith("✓ Run · j1 · exit 0 · ")
         # Reported once: neither a second read nor the idle reporter repeats it.
-        app.present_events((ToolSummary("job_output", "j1", outcome="success"),))
-        assert app.report_finished_jobs() == []
+        settle(ToolSummary("job_output", "j1", outcome="success"))
+        assert app.controller.report_finished_jobs() == []
         assert stream.getvalue().count("j1") == 1
     finally:
         jobs.stop(live)
@@ -236,23 +243,23 @@ def test_wake_prompt_is_the_notice_for_jobs_the_model_launched(tmp_path, monkeyp
     )
     foreground = jobs.launch(command("pass"), cwd=tmp_path)
     until_finished(jobs, background, foreground)
-    prompt = app.wake_prompt()
+    prompt = app.controller.wake_prompt()
     # The failed background job wakes the model with its tail; the foreground
     # command reported itself inside its own call and is nobody's news.
     assert prompt is not None and "[j1]" in prompt and "boom" in prompt and "j2" not in prompt
     # Waking is delivery: the next request must not repeat it.
-    assert app.wake_prompt() is None
+    assert app.controller.wake_prompt() is None
     assert [job.id for job in jobs.take_announcements("model")] == []
     adopted = jobs.launch(command("pass"), cwd=tmp_path, background=True)
     adopted.adopted = True
     stopped = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path, background=True)
     until_finished(jobs, adopted)
     jobs.stop(stopped)
-    assert app.wake_prompt() is None
+    assert app.controller.wake_prompt() is None
     fresh = jobs.launch(command("pass"), cwd=tmp_path, background=True)
     until_finished(jobs, fresh)
-    monkeypatch.setattr("pcode.app.load_preferences", lambda: {"job_wake": "off"})
-    assert app.wake_prompt() is None
+    monkeypatch.setattr("pcode.controller.load_preferences", lambda: {"job_wake": "off"})
+    assert app.controller.wake_prompt() is None
 
 
 def test_jobs_watch_pins_the_tail_until_the_job_ends(tmp_path):
