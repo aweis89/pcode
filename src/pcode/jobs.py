@@ -52,6 +52,11 @@ STOP_GRACE_SECONDS = 2.0
 _SUPERVISOR = Path(__file__).with_name("_job_supervisor.py")
 
 
+# Command-preview keys for a watched job (`/jobs watch`), so the preview can
+# be shown for it even when the model's own commands are hidden.
+WATCHED_PREFIX = "job:"
+
+
 def jobs_root() -> Path:
     """Where every pcode process keeps its job logs and registry record."""
     state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")

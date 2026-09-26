@@ -45,6 +45,7 @@ from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
 from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
 from pcode.input_keys import configure_newline_keys
+from pcode.jobs import WATCHED_PREFIX
 from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN, PastedText
 from pcode.preferences import SETTINGS, SYNTAX_THEMES, TERMINAL_SYNTAX, load_preferences
@@ -299,9 +300,6 @@ NOTICE_ROWS = 6
 JOB_ROWS = 3
 # Running side questions likewise; `/btw` has the full list.
 ASIDE_ROWS = 3
-# Command-preview keys for a watched job, so the preview can be shown for it
-# even when the model's own commands are hidden.
-WATCHED_PREFIX = "job:"
 
 
 @dataclass

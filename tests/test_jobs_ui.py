@@ -37,8 +37,8 @@ def test_browser_lists_running_first_follows_the_log_and_stops_and_watches(tmp_p
     with create_pipe_input() as pipe:
         browser = JobBrowser(
             jobs,
-            stop=lambda job: app.stop_jobs([job]),
-            watch=app.watch_job,
+            stop=lambda job: app.controller.stop_jobs([job.id]),
+            watch=lambda job: app.controller.watch_job(job.id if job else None),
             watched=lambda: app.activity.watched_job,
             input=pipe,
             output=DummyOutput(),
