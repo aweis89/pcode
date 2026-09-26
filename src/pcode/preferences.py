@@ -200,6 +200,16 @@ SETTINGS = {
         ("on", "off"),
         description="Run each session in a background host that outlives the terminal (/switch)",
     ),
+    "session_host_idle_minutes": Setting(
+        "60",
+        whole_number=True,
+        description="Stop a background session idle this long with no terminal; 0 never stops",
+    ),
+    "desktop_notifications": Setting(
+        "on",
+        ("on", "off"),
+        description="Desktop notification when a background session finishes (OSC 9)",
+    ),
     "worktree_exit": Setting(
         "ask",
         ("ask", "merge", "keep"),

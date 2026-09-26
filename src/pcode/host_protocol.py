@@ -139,6 +139,15 @@ class HostEntry:
     started: float = field(default_factory=time.time)
     updated: float = field(default_factory=time.time)
     log: str = ""
+    # Finished turns, so a watcher polling every few seconds cannot miss a
+    # short one; and how the last of them ended.
+    turns: int = 0
+    outcome: str = ""
+    # Terminals showing it now, and whether a turn finished with none watching.
+    attached: int = 0
+    unseen: bool = False
+    # `code_fingerprint()` when the host started, to spot hosts on older code.
+    code: str = ""
 
     @property
     def socket(self) -> Path:
@@ -146,6 +155,29 @@ class HostEntry:
 
     def label(self) -> str:
         return self.title or "(no prompt yet)"
+
+    def stale(self, current: str | None = None) -> bool:
+        """Running code older than what is installed now (an editable install moves)."""
+        return bool(self.code) and self.code != (current or code_fingerprint())
+
+
+def code_fingerprint() -> str:
+    """Changes whenever pcode's source on disk does: the newest source mtime."""
+    package = Path(__file__).parent
+    newest = max((path.stat().st_mtime_ns for path in package.rglob("*.py")), default=0)
+    return str(newest)
+
+
+def claim(name: str, directory: Path | None = None) -> bool:
+    """True for exactly one caller per `name`, across processes (one notification per turn)."""
+    directory = directory or host_dir()
+    try:
+        os.close(os.open(directory / f"{name}.claim", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    return True
 
 
 def write_entry(entry: HostEntry, directory: Path | None = None) -> None:
@@ -162,9 +194,10 @@ def write_entry(entry: HostEntry, directory: Path | None = None) -> None:
 
 def remove_entry(identity: str, directory: Path | None = None) -> None:
     directory = directory or host_dir()
-    for suffix in (".json", ".sock", ".json.tmp"):
+    paths = [directory / f"{identity}{suffix}" for suffix in (".json", ".sock", ".json.tmp")]
+    for path in [*paths, *directory.glob(f"{identity}-*.claim")]:
         try:
-            (directory / f"{identity}{suffix}").unlink()
+            path.unlink()
         except FileNotFoundError:
             pass
 

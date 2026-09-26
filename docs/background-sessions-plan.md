@@ -88,15 +88,16 @@ Move what `run_async`'s nested functions do today into `pcode.controller.Session
 
 ### Small items (any time)
 
-- [ ] macOS notifications (OSC 9) when a background session finishes, fails, or needs
-      input; one notification per event even with several terminals open
-- [ ] "Finished, not yet seen" state; sort it first in `/switch`; count it in the footer
-- [ ] `/switch -` or a key for the previous session
-- [ ] Idle stop (`session_host_idle_minutes`), shown in `--hosts`
-- [ ] `/restart`: stop the host and resume the same session on current code
-- [ ] Mark hosts running older code in `/switch` and `--hosts`; `--hosts --stop` for all or stale
-- [ ] `/stop` asks about merging the worktree in the terminal, as a local exit does
-- [ ] Tab progress (OSC 9;4) while the attached session works
+- [x] macOS notifications (OSC 9) when a background session finishes, fails, or needs
+      input; one notification per event even with several terminals open. "Needs
+      input" waits for something that asks for it (none of pcode's tools do yet).
+- [x] "Finished, not yet seen" state; sort it first in `/switch`; count it in the footer
+- [x] `/switch -` for the previous session (a key is still open)
+- [x] Idle stop (`session_host_idle_minutes`, default 60)
+- [x] `/restart`: stop the host and resume the same session on current code
+- [x] Mark hosts running older code in `/switch` and `--hosts`; `--stop-hosts all|stale`
+- [x] `/stop` asks about merging the worktree in the terminal, as a local exit does
+- [x] Tab progress (OSC 9;4) while a turn runs (any session, local or hosted)
 - [ ] Background job wake-ups in hosts (falls out of Phase 1)
 
 ## Traps found so far
