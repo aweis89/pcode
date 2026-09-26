@@ -57,7 +57,8 @@ Move what `run_async`'s nested functions do today into `pcode.controller.Session
 
 - [ ] Define `SessionView`: the transcript and activity calls session logic makes, with
       serializable arguments only.
-- [ ] Prompt queue, generations, send modes (steering, queue, interrupt), `take_steering`
+- [x] Prompt queue, generations, and its live-panel mirror: `controller.PromptQueue`
+- [ ] Send modes (steering, queue, interrupt) and `submit`
 - [ ] `clear_queue`, `cancel`, busy accounting
 - [ ] Turn loop (`consume`), `run_live`, shell `!commands` (`run_shell`)
 - [ ] History tasks (`/compact`, side-thread summary) and MCP tasks
