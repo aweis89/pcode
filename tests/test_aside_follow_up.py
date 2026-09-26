@@ -238,11 +238,11 @@ def test_the_app_asks_a_follow_up_in_the_thread_on_its_model():
             await asyncio.sleep(0.01)
 
     async def run():
-        await app.start_aside("why?")
+        await app.controller.start_aside("why?")
         root = app.asides.items[0]
         root.model, root.label, root.effort = "q:other", "other · low", "low"
         await settled()
-        app.follow_up_aside(root.thread, "and then?")
+        app.controller.follow_up_aside(root.thread, "and then?")
         follow = app.asides.items[-1]
         assert (follow.thread, follow.model, follow.label, follow.effort) == (
             root.thread,
@@ -251,7 +251,7 @@ def test_the_app_asks_a_follow_up_in_the_thread_on_its_model():
             "low",
         )
         with pytest.raises(ValueError, match="Wait for this answer first"):
-            app.follow_up_aside(root.thread, "too soon?")
+            app.controller.follow_up_aside(root.thread, "too soon?")
         await settled()
         assert follow.answer == "answer to and then?"
 

@@ -20,20 +20,6 @@ from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.text import Text
 
-from pcode.aside import (
-    EFFORT_MARK,
-    MODEL_MARK,
-    Aside,
-    Asides,
-    Bridge,
-    SideTarget,
-    effort_fragment,
-    exchanges,
-    model_fragment,
-    model_labels,
-    parse_models,
-    summary_request,
-)
 from pcode.cli import ask, restore_stdin
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
@@ -46,13 +32,11 @@ from pcode.controller import (
     meridian_thinking_note,
 )
 from pcode.preferences import (
-    EFFORTS,
     SETTINGS,
     SYNTAX_THEMES,
     apply_effort,
     apply_thinking,
     effort_for,
-    effort_setting,
     load_preferences,
     parse_height,
     save_preferences,
@@ -222,18 +206,6 @@ class PreviewApp:
         self.session_requested = False
         self.session_info_requested = False
         self.tree_requested = False
-        # Side questions run beside the conversation instead of in it, so they
-        # keep their own records and never enter the queue.
-        self.asides = Asides()
-        # The live panel spins a row per running question; share the list so
-        # it needs no refresh hook of its own.
-        self.activity.asides = self.asides.items
-        self.asides.on_failure = self.record_aside_failure
-        self.aside_requested: tuple[list[SideTarget], str] | None = None
-        self._model_suggestions: tuple[str | None, float, list[str]] | None = None
-        self.aside_view_requested = False
-        # A side thread the viewer asked to bring into the conversation.
-        self.bridge_requested: Bridge | None = None
         self.worker_view_requested = False
         # The viewer follows answers that settle while it is open, so auto-open
         # has nothing to do then.
@@ -289,16 +261,7 @@ class PreviewApp:
                 self.select_tree,
                 group="Inspect",
             ),
-            Command(
-                "/btw",
-                "Ask a side question beside the running turn ($MODEL ... picks models, "
-                "+EFFORT the effort); "
-                "bare opens the answers",
-                self.aside,
-                free_arguments=True,
-                argument_completer=self.aside_completions,
-                group="Inspect",
-            ),
+            self.controller.registry.find("/btw"),
             Command(
                 "/workers",
                 "Follow delegated workers' own output, live and read-only",
@@ -420,6 +383,7 @@ class PreviewApp:
     resuming = _controller_attribute("resuming")
     pending_model = _controller_attribute("pending_model")
     extensions = _controller_attribute("extensions")
+    asides = _controller_attribute("asides")
     skill_command_names = _controller_attribute("skill_command_names")
     _session_id = _controller_attribute("_session_id")
     _saved_session = _controller_attribute("_saved_session")
@@ -486,6 +450,46 @@ class PreviewApp:
 
     def replay_conversation(self) -> None:
         self.replay()
+
+    def show_events(self, events) -> None:
+        self.transcript.events(tuple(events))
+
+    def show_branch(self) -> None:
+        """Redraw the conversation after /tree moved it to another branch."""
+        self.activity.reset()
+        if self.runtime.session:
+            self.replay()
+            return
+        from pcode.diagnostics import redact
+
+        tree = self.runtime.tree
+        with self.transcript.restore():
+            for node_id in tree.path(tree.active):
+                node = tree.nodes[node_id]
+                self.transcript.user(redact(node.prompt))
+                if node.response:
+                    self.transcript.events((Message(redact(node.response)),))
+        self.activity.plan = tree.nodes[tree.active].plan if tree.active else []
+
+    def aside_changed(self, aside) -> None:
+        # The footer counts side questions, and an open viewer follows the
+        # answer as it streams, so both only need to know that something moved.
+        self.redraw()
+
+    def aside_answered(self, aside) -> None:
+        """Say a side answer is ready, opening it when that is the preference."""
+        # Queued as a command rather than opened here: the command consumer owns
+        # the terminal, so the viewer waits for whatever popup or command is
+        # already using it instead of racing it.
+        opening = self.auto_open_asides()
+        if opening:
+            self.controller.command("/btw", self._popup_generation)
+        on = f"{aside.label}: " if aside.label else ""
+        self.transcript.note(
+            f"Side answer ready ({on}{plain(aside.question, 60)}). "
+            + ("Opening it." if opening else "/btw opens it.")
+        )
+        self.redraw()
 
     def redraw(self) -> None:
         if self.output is not None:
@@ -1188,243 +1192,6 @@ class PreviewApp:
     def select_tree(self, argument: str) -> None:
         self.tree_requested = True
 
-    def aside(self, argument: str) -> None:
-        """`/btw [$MODEL[+EFFORT] | +EFFORT ...] QUESTION` asks beside the turn.
-
-        Bare `/btw` reads the answers.
-        """
-        models, question = parse_models(argument)
-        if not question:
-            if not self.asides.items:
-                raise ValueError(
-                    "No side questions yet. Ask one with /btw QUESTION; "
-                    "it runs beside the conversation without interrupting it."
-                )
-            self.aside_view_requested = True
-            return
-        if not self.model:
-            raise ValueError("/btw needs a model; this is a local UI preview.")
-        if self._startup_pending or self._startup_error is not None:
-            raise ValueError("/btw is unavailable until the agent has started.")
-        # Refused the way /effort refuses it, before anything starts, rather
-        # than asking at an effort the provider would silently ignore.
-        for target in models:
-            name = target.model or self.model
-            if target.effort and effort_setting(name) is None:
-                raise ValueError(
-                    f"Effort control requires an OpenAI/Codex, Anthropic, or Meridian model; "
-                    f"{name} is not one."
-                )
-        self.aside_requested = (models, question)
-
-    async def start_aside(self, question: str, models: list[SideTarget] | None = None) -> None:
-        """Run a side question in the background, on the context available now.
-
-        With `models`, one side question starts per target. The conversation's
-        own model takes the default path, which shares its prompt cache; every
-        other one is resolved first, so a bad name fails the command before
-        anything starts. An effort on the conversation's own model stays on
-        that path, with the effort applied to its settings for that question.
-        """
-        from pcode.agent import side_model, with_effort
-
-        models = models or [SideTarget()]
-        others = [target for target in models if target.model not in ("", self.model)]
-        resolved = {}
-        if others:
-            chosen = await asyncio.to_thread(
-                lambda: [side_model(target.model, target.effort) for target in others]
-            )
-            resolved = dict(zip(others, chosen))
-        labels = model_labels(models)
-
-        def options_for(target: SideTarget) -> dict:
-            if target in resolved:
-                return {"model": resolved[target]}
-            if not target.effort:
-                return {}
-            # Taken now, like the context: a later /effort must not reach it.
-            agent = self.runtime.agent
-            settings = with_effort(self.model, agent.model, agent.model_settings, target.effort)
-            return {"settings": settings}
-
-        tree = getattr(self.runtime, "tree", None)
-        for target in models:
-            self.asides.start(
-                question,
-                self._aside_work(question, options_for(target)),
-                model=target.model,
-                label=labels[target],
-                effort=target.effort,
-                conversation=getattr(self.runtime, "conversation_id", ""),
-                base=tree.active if tree is not None else None,
-            )
-        if others:
-            names = ", ".join(dict.fromkeys(target.model for target in others))
-            self.transcript.note(
-                f"Asking beside the conversation on {names}: the turn keeps running and "
-                "this question does not join it. Another model starts without the "
-                "conversation's prompt cache, so it pays for the whole prompt. "
-                "/btw opens the answers."
-            )
-        else:
-            self.transcript.note(
-                "Asking beside the conversation: the turn keeps running and "
-                "this question does not join it. /btw opens the answer."
-            )
-
-    def _aside_work(self, question: str, options: dict):
-        """The background run for one side question, streaming into its record."""
-
-        async def work(aside):
-            def report(answer: str, activity: str) -> None:
-                self.asides.update(aside, answer=answer, activity=activity)
-
-            return await self.runtime.aside(question, report=report, **options)
-
-        return work
-
-    def follow_up_aside(self, thread: str, question: str) -> None:
-        """Ask `question` as a follow-up in a side question's thread.
-
-        It continues from the thread's newest answer, on the model and effort
-        that answered it; see `AgentRuntime.aside`. Raises `ValueError` when
-        there is nothing to continue yet, which the viewer shows as is.
-        """
-        follows = self.asides.follows(thread)
-        self.asides.start(
-            question,
-            self._aside_work(question, {"after": follows.reply}),
-            model=follows.model,
-            label=follows.label,
-            effort=follows.effort,
-            thread=thread,
-        )
-
-    def check_bridge(self, thread: str) -> Aside:
-        """The answer a thread would be brought into the conversation from.
-
-        Raises `ValueError` saying why it cannot be yet: like forking in
-        /tree, changing the conversation waits for the running turn, and a
-        thread from another conversation has nowhere here to go.
-        """
-        if self.activity.busy or self.activity.queued:
-            raise ValueError("Adding to the conversation waits for the running turn")
-        follows = self.asides.follows(thread)
-        root = self.asides.thread(thread)[0]
-        tree = getattr(self.runtime, "tree", None)
-        if (
-            tree is None
-            or root.conversation != getattr(self.runtime, "conversation_id", None)
-            or (root.base is not None and root.base not in tree.nodes)
-        ):
-            raise ValueError("This thread was asked in another conversation")
-        return follows
-
-    async def merge_thread(self, thread: str) -> None:
-        """Add a side thread to the conversation tree where it was asked."""
-        from pcode.diagnostics import redact
-
-        follows = self.check_bridge(thread)
-        asked = self.asides.thread(thread)
-        messages = follows.reply.messages
-        steps = [
-            (aside.question, aside.answer, messages[:end])
-            for aside, end in exchanges(asked, messages)
-        ]
-        if not steps:
-            raise ValueError("Nothing in that side thread to merge.")
-        moved = await self.runtime.merge_aside(steps, asked[0].base)
-        follows.bridged = "merged"
-        count = f"{len(steps)} side question{'s' if len(steps) > 1 else ''}"
-        if moved:
-            for question, answer, _ in steps:
-                self.transcript.user(redact(question))
-                self.transcript.events((Message(redact(answer)),))
-            self.transcript.note(
-                f"Merged {count} into the conversation, which continues from the last answer."
-            )
-        else:
-            self.transcript.note(
-                f"Merged {count} into /tree as a branch where the thread was asked; the "
-                "conversation stays where it is. /tree switches to it."
-            )
-
-    async def summarize_thread(self, follows: Aside, instructions: str) -> None:
-        """Add a summary of `follows`'s thread to the conversation, and show it."""
-        from pcode.diagnostics import redact
-
-        asked = self.asides.thread(follows.thread)
-        questions = [aside.question for aside, _ in exchanges(asked, follows.reply.messages)]
-        request = summary_request(questions, instructions)
-        summary = await self.runtime.summarize_aside(follows.reply, request, instructions)
-        follows.bridged = "summarized"
-        self.transcript.user(redact(request))
-        self.transcript.events((Message(redact(summary)),))
-
-    def aside_completions(self, argument: str):
-        """Complete a `$MODEL` word in `/btw` arguments from the /model catalog.
-
-        After a `+`, bare or ending a `$MODEL` word, the /effort levels complete.
-        """
-        from prompt_toolkit.completion import Completion
-
-        effort = effort_fragment(argument)
-        if effort is not None:
-            for level in EFFORTS:
-                if level.startswith(effort.casefold()):
-                    yield Completion(
-                        level, start_position=-len(effort), display=EFFORT_MARK + level
-                    )
-            return
-        fragment = model_fragment(argument)
-        if fragment is None:
-            return
-        needle = fragment.casefold()
-        for model in self.model_suggestions():
-            if needle in model.casefold():
-                yield Completion(
-                    MODEL_MARK + model,
-                    start_position=-(len(fragment) + len(MODEL_MARK)),
-                    display=model,
-                )
-
-    def model_suggestions(self) -> list[str]:
-        """The /model picker's catalog, kept briefly so typing does not re-scan it."""
-        from time import monotonic
-
-        from pcode.models import active_providers, model_catalog
-
-        cached = self._model_suggestions
-        if cached is None or cached[0] != self.model or monotonic() - cached[1] > 30:
-            models = model_catalog(active_providers(self.model), self.model)
-            cached = self._model_suggestions = (self.model, monotonic(), models)
-        return cached[2]
-
-    def record_aside_failure(self, aside, error: BaseException) -> None:
-        """Keep a failed side question's frames beside the session's turn failures.
-
-        The viewer shows only the error summary, and nothing about a side
-        question is journaled, so without this its traceback is simply lost.
-        """
-        from pcode.diagnostics import provider_context
-
-        saved = getattr(self.runtime, "session", None)
-        if saved is None:
-            return
-        agent = getattr(self.runtime, "agent", None)
-        saved.record_error(
-            error,
-            run_id=f"aside {aside.id}",
-            provider_context=(
-                provider_context(aside.model or agent.model) if agent is not None else None
-            ),
-            detail=f"Side question ({aside.status}"
-            + (f" on {aside.model}" if aside.model else "")
-            + (f" at {aside.effort} effort" if aside.effort else "")
-            + f"): {aside.question}",
-        )
-
     def auto_open_asides(self) -> bool:
         """Whether a settled side answer should open the viewer by itself."""
         if self.aside_view_open:
@@ -1432,18 +1199,19 @@ class PreviewApp:
         default = SETTINGS["btw_auto_open"].default
         return load_preferences().get("btw_auto_open", default) == "on"
 
-    async def read_asides(self, output: TerminalOutput, session) -> None:
+    async def read_asides(self):
+        """The side-answer viewer; returns a thread to bring into the conversation, if any."""
         from pcode.aside_ui import AsideBrowser
 
-        self.aside_view_requested = False
+        output, session = self.output, self.prompt_session
         latest = self.asides.latest()
         self.aside_view_open = True
         try:
             async with self.popup(output, session) as modal_input:
                 browser = AsideBrowser(
                     self.asides,
-                    ask=self.follow_up_aside,
-                    check_bridge=self.check_bridge,
+                    ask=self.controller.follow_up_aside,
+                    check_bridge=self.controller.check_bridge,
                     selected=latest.id if latest else None,
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,
@@ -1452,7 +1220,9 @@ class PreviewApp:
                     output=session.app.output,
                     style=session.app.style,
                 )
-                self.bridge_requested = await browser.run()
+                return await browser.run()
+        except _PopupSuperseded:
+            return None
         finally:
             self.aside_view_open = False
 
@@ -1478,30 +1248,6 @@ class PreviewApp:
                 style=session.app.style,
             )
             await browser.run()
-
-    async def navigate_tree(self, identity: str | None, *, edit: bool = False) -> str:
-        if self.activity.busy or self.activity.queued:
-            raise ValueError("/tree is unavailable while working or messages are queued.")
-        draft = await self.runtime.navigate(identity, edit=edit)
-        self.activity.reset()
-        if self.runtime.session:
-            self.replay()
-        else:
-            from pcode.diagnostics import redact
-
-            tree = self.runtime.tree
-            with self.transcript.restore():
-                for node_id in tree.path(tree.active):
-                    node = tree.nodes[node_id]
-                    self.transcript.user(redact(node.prompt))
-                    if node.response:
-                        self.transcript.events((Message(redact(node.response)),))
-            self.activity.plan = tree.nodes[tree.active].plan if tree.active else []
-        self.transcript.note(
-            "Context switched; previous branches are kept. File changes and tool effects "
-            "are not undone."
-        )
-        return draft
 
     async def choose_tree(self, output: TerminalOutput, session) -> None:
         from pcode.tree_ui import tree_dialog
@@ -1529,7 +1275,7 @@ class PreviewApp:
             selection = await dialog.run_async()
         if selection is not None:
             identity, edit = selection
-            draft = await self.navigate_tree(identity, edit=edit)
+            draft = await self.controller.navigate_tree(identity, edit=edit)
             # A cancelled picker leaves the editor alone. Only user selection prefills it.
             if edit:
                 session.default_buffer.text = draft
@@ -1819,22 +1565,10 @@ class PreviewApp:
         `idle` says whether the session was idle when it was sent, and `tag`
         is the popup generation it was sent in (see `popup`).
         """
-        controller = self.controller
         output, session = self.output, self.prompt_session
         self._command_popup_generation = tag
         try:
             self.handle(text)
-            if self.aside_requested is not None:
-                (models, question), self.aside_requested = self.aside_requested, None
-                await self.start_aside(question, models)
-            if self.aside_view_requested:
-                await self.read_asides(output, session)
-            if self.bridge_requested is not None:
-                request, self.bridge_requested = self.bridge_requested, None
-                if request.action == "merge":
-                    await self.merge_thread(request.thread)
-                else:
-                    controller.start_summary(request)
             if self.worker_view_requested:
                 await self.read_workers(output, session)
             if self.tree_requested:
@@ -2045,34 +1779,6 @@ class PreviewApp:
                     session.app.invalidate()
                 await asyncio.sleep(BRANCH_POLL_SECONDS)
 
-        def aside_settled(aside):
-            if aside.status == "answered":
-                # Queued as a command rather than opened here: the command
-                # consumer owns the terminal, so the viewer waits for whatever
-                # popup or command is already using it instead of racing it.
-                opening = self.auto_open_asides()
-                if opening:
-                    commands.put_nowait((prompts.generation, "/btw", False, self._popup_generation))
-                on = f"{aside.label}: " if aside.label else ""
-                self.transcript.note(
-                    f"Side answer ready ({on}{plain(aside.question, 60)}). "
-                    + ("Opening it." if opening else "/btw opens it.")
-                )
-            elif aside.status == "cancelled":
-                self.transcript.note("Side question stopped.")
-            else:
-                on = f" on {aside.label}" if aside.label else ""
-                self.transcript.warning(f"Side question{on} {aside.status}. {aside.error}".strip())
-                saved = getattr(self.runtime, "session", None)
-                if saved is not None and (saved.directory / "errors.log").exists():
-                    self.transcript.note(f"Diagnostics: {saved.directory / 'errors.log'}")
-            session.app.invalidate()
-
-        # The footer counts side questions, and an open viewer follows the answer
-        # as it streams, so both only need to know that something moved.
-        self.asides.on_update = lambda aside: session.app.invalidate()
-        self.asides.on_settle = aside_settled
-
         def start():
             restore_stdin()
             replay_pending_input(session.app)
@@ -2095,7 +1801,7 @@ class PreviewApp:
                 # reads as this terminal detaching, not the host dying.
                 self.runtime.close()
             # Side questions outlive turns, not the terminal.
-            await self.asides.close()
+            await controller.asides.close()
             for task in (controller.compact_task, controller.mcp_task):
                 if task is not None:
                     if not task.done() and not task.cancelling():

@@ -2,6 +2,7 @@
 
 import asyncio
 from io import StringIO
+from unittest.mock import AsyncMock
 
 import pytest
 from prompt_toolkit.completion import CompleteEvent
@@ -133,7 +134,7 @@ def test_labels_carry_the_effort():
 def test_dollar_completes_models_only_among_leading_btw_words(monkeypatch):
     app = PreviewApp(console=Console(file=StringIO()))
     monkeypatch.setattr(
-        app, "model_suggestions", lambda: ["anthropic:claude-opus", "openai-codex:gpt-6"]
+        app.controller, "model_suggestions", lambda: ["anthropic:claude-opus", "openai-codex:gpt-6"]
     )
     completer = SlashCompleter(app.registry)
 
@@ -161,7 +162,7 @@ def test_dollar_completes_models_only_among_leading_btw_words(monkeypatch):
 
 def test_plus_completes_effort_levels_among_leading_btw_words(monkeypatch):
     app = PreviewApp(console=Console(file=StringIO()))
-    monkeypatch.setattr(app, "model_suggestions", lambda: ["anthropic:claude-opus"])
+    monkeypatch.setattr(app.controller, "model_suggestions", lambda: ["anthropic:claude-opus"])
     completer = SlashCompleter(app.registry)
 
     def complete(text):
@@ -197,11 +198,11 @@ def test_model_suggestions_come_from_the_model_picker_catalog(monkeypatch):
         return {"meridian"}
 
     monkeypatch.setattr(models, "active_providers", providers)
-    first = app.model_suggestions()
+    first = app.controller.model_suggestions()
     assert first == models.model_catalog({"meridian"}, "test:local")
     assert first and all(name.startswith("meridian:") for name in first)
     # Typing does not rescan providers on every keystroke.
-    assert app.model_suggestions() is first
+    assert app.controller.model_suggestions() is first
     assert calls == ["test:local"]
 
 
@@ -336,9 +337,11 @@ def test_an_effort_reaches_the_request_on_the_conversations_model_and_another(
 
     async def run():
         [event async for event in runtime.stream("Main task")]
-        await app.start_aside("low?", [SideTarget(effort="low"), SideTarget("openai:x", "xhigh")])
+        await app.controller.start_aside(
+            "low?", [SideTarget(effort="low"), SideTarget("openai:x", "xhigh")]
+        )
         await settled()
-        await app.start_aside("default?", [SideTarget(effort="default")])
+        await app.controller.start_aside("default?", [SideTarget(effort="default")])
         await settled()
         [event async for event in runtime.stream("Next")]
 
@@ -372,15 +375,20 @@ def test_btw_refuses_an_effort_on_a_model_without_effort_control():
         runtime=AgentRuntime(Agent(TestModel())),
         console=Console(file=StringIO()),
     )
+    start = app.controller.start_aside = AsyncMock()
+
+    def btw(argument):
+        asyncio.run(app.controller.aside(argument))
+
     with pytest.raises(ValueError, match="Effort control requires.*test:local is not one"):
-        app.registry.dispatch("/btw +low why?")
+        btw("+low why?")
     with pytest.raises(ValueError, match="nowhere:model is not one"):
-        app.registry.dispatch("/btw $nowhere:model+high why?")
-    assert app.aside_requested is None
+        btw("$nowhere:model+high why?")
+    start.assert_not_awaited()
     # Without an effort, any model goes, as before.
-    assert app.registry.dispatch("/btw $nowhere:model why?")
-    assert app.registry.dispatch("/btw $openai:gpt-5+high why?")
-    assert app.aside_requested == ([SideTarget("openai:gpt-5", "high")], "why?")
+    btw("$nowhere:model why?")
+    btw("$openai:gpt-5+high why?")
+    start.assert_awaited_with("why?", [SideTarget("openai:gpt-5", "high")])
 
 
 class FanOutRuntime:
@@ -422,7 +430,9 @@ def test_several_models_run_in_parallel_and_fail_independently(monkeypatch):
     app.asides.on_failure = lambda aside, error: failures.append(aside.model)
 
     async def run():
-        await app.start_aside("second opinions?", targets("p:own", "p:broken", "q:other"))
+        await app.controller.start_aside(
+            "second opinions?", targets("p:own", "p:broken", "q:other")
+        )
         await asyncio.sleep(0)
         # One side question per model, all running at once.
         assert app.asides.running == 3
@@ -452,7 +462,7 @@ def test_the_conversations_model_named_explicitly_is_the_default_path(monkeypatc
     app, output = fan_out_app(monkeypatch, runtime)
 
     async def run():
-        await app.start_aside("why?", targets("p:own"))
+        await app.controller.start_aside("why?", targets("p:own"))
         await asyncio.sleep(0)
         runtime.release.set()
         await app.asides.close()
@@ -475,7 +485,7 @@ def test_an_unusable_model_fails_the_command_before_anything_starts(monkeypatch)
 
     async def run():
         with pytest.raises(ValueError, match="Cannot use bad:model"):
-            await app.start_aside("why?", targets("q:fine", "bad:model"))
+            await app.controller.start_aside("why?", targets("q:fine", "bad:model"))
 
     asyncio.run(run())
     assert app.asides.items == []
@@ -487,16 +497,17 @@ def test_btw_command_parses_models_and_explains_its_syntax():
         runtime=AgentRuntime(Agent(TestModel())),
         console=Console(file=StringIO()),
     )
-    assert app.registry.dispatch("/btw $a:x $b:y $a:x is it right?")
-    assert app.aside_requested == ([SideTarget("a:x"), SideTarget("b:y")], "is it right?")
+    start = app.controller.start_aside = AsyncMock()
+    app.read_asides = AsyncMock(return_value=None)
+    asyncio.run(app.controller.aside("$a:x $b:y $a:x is it right?"))
+    start.assert_awaited_once_with("is it right?", [SideTarget("a:x"), SideTarget("b:y")])
     with pytest.raises(ValueError, match=r"Usage: /btw \[\$PROVIDER:MODEL\[\+EFFORT\]"):
-        app.registry.dispatch("/btw $a:x")
+        asyncio.run(app.controller.aside("$a:x"))
     # Bare /btw still opens the viewer.
     app.asides.items.append(Aside(question="earlier"))
-    app.aside_requested = None
-    assert app.registry.dispatch("/btw")
-    assert app.aside_view_requested
-    assert app.aside_requested is None
+    asyncio.run(app.controller.aside(""))
+    app.read_asides.assert_awaited_once()
+    assert start.await_count == 1
 
 
 def test_the_model_labels_running_rows_and_the_viewer():

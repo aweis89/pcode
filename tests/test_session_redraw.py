@@ -297,12 +297,12 @@ def test_tree_navigation_replaces_abandoned_output_and_can_clear_root(tmp_path, 
             ancestor = runtime.tree.active
             _ = [event async for event in runtime.stream("ABANDONED")]
             app.transcript.user("ABANDONED")
-            await app.navigate_tree(ancestor)
+            await app.controller.navigate_tree(ancestor)
             assert rendered(app.transcript).count("ANCESTOR") == 1
             assert "ABANDONED" not in rendered(app.transcript)
-            await app.navigate_tree(ancestor)
+            await app.controller.navigate_tree(ancestor)
             assert rendered(app.transcript).count("ANCESTOR") == 1
-            await app.navigate_tree(None)
+            await app.controller.navigate_tree(None)
             assert "ANCESTOR" not in rendered(app.transcript)
         finally:
             runtime.close()

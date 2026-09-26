@@ -332,12 +332,12 @@ def test_app_navigation_and_busy_guard():
         app.select_tree("")
         assert app.tree_requested
         with pytest.raises(ValueError, match="queued"):
-            await app.navigate_tree(a, edit=True)
+            await app.controller.navigate_tree(a, edit=True)
         app.activity.queued = 0
         app.tree_requested = False
         assert app.registry.dispatch("/tree")
         assert app.tree_requested
-        assert await app.navigate_tree(a, edit=True) == "original prompt"
+        assert await app.controller.navigate_tree(a, edit=True) == "original prompt"
         assert runtime.history == []
         assert "are not undone" in " ".join(output.getvalue().split())
         assert len(runtime.tree.nodes) == 1

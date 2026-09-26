@@ -26,10 +26,14 @@ which wait for Phase 1. Phase 1 is under way: `controller.SessionController` own
 the runtime, the prompt and command queues, send modes, cancel, steering, busy
 accounting, the turn loop (`consume`, `run_turn`, `run_shell`), the command loop
 (`consume_commands`), and the MCP and history tasks, showing everything through
-`PreviewApp`'s `SessionView` methods. Session commands live in
-`SessionController.registry` (so far `/jobs`, `/mcp`, `/compact`, `/autocompact`,
-`/resend`); the controller hands the rest back through `view.run_command`. Next:
-the remaining areas (model and effort, side questions, session lifecycle).
+`PreviewApp`'s `SessionView` methods. The session's state (model, workspace,
+extensions, skills, side questions) and its commands live in the controller too
+(`/model`, `/effort`, `/login`, `/logout`, `/extensions`, `/reload`, `/new`,
+`/worktree`, `/btw`, `/jobs`, `/mcp`, `/compact`, `/autocompact`, `/resend`, skills,
+extension commands); PreviewApp reads the state through properties, and the
+controller hands terminal commands (`TERMINAL_COMMANDS`) back through
+`view.run_command`. Popups a session command needs are view methods it awaits.
+Next: Phase 3, the controller in the host.
 In the demo the terminal still runs all session logic itself, against
 `RemoteRuntime`, a stand-in that forwards `stream` to the host. That is why a
 dozen commands are refused there, and it is what the refactor replaces.
@@ -82,7 +86,7 @@ Decisions made while building it:
 Move what `run_async`'s nested functions do today into `pcode.controller.SessionController`, with
 `PreviewApp` as its view. Land it in slices, each keeping `make test-all` green.
 
-- [ ] Define `SessionView`: the transcript and activity calls session logic makes, with
+- [x] Define `SessionView`: the transcript and activity calls session logic makes, with
       serializable arguments only. Started: it lists what the controller calls so far and
       grows with each slice. The controller reaches what has not moved yet (shell-wait
       policy, side questions, redraw) through callables passed to it.
@@ -96,17 +100,18 @@ Move what `run_async`'s nested functions do today into `pcode.controller.Session
 - [x] History tasks (`/compact`, side-thread summary) and MCP tasks
 - [x] The command loop (`consume_commands`); the terminal runs what it hands back
 - [x] Job watching and wake-ups (`watch_jobs`), and `/jobs`
-- [ ] Side questions (`/btw`) lifecycle
+- [x] Side questions (`/btw`) lifecycle
 
 ### Phase 2: session commands and popup data in the controller
 
 - [x] `/compact`, `/autocompact`, `/resend` (`/new` goes with the session lifecycle)
-- [ ] `/model`, `/effort` (the picker stays in the terminal; the choice is an intent)
+- [x] `/model`, `/effort` (the picker is a view method the controller awaits)
 - [x] `/mcp` and skill MCP enabling
-- [ ] `/login`, `/logout`
-- [ ] `/tree` navigation, `/btw` and its viewer, `/workers`, `/jobs`, `/tools`, `/links`, `/diffs`
-- [ ] `/reload` and extension commands (their handlers run where the extension is loaded)
-- [ ] `/worktree`
+- [x] `/login`, `/logout`, `/new`, in-process `/resume`
+- [x] `/tree` navigation, `/btw` and its viewer, `/jobs`. `/workers`, `/tools`, `/links`,
+      `/diffs` stay in the terminal: they read what it rendered.
+- [x] `/reload`, `/extensions`, extension commands and skills
+- [x] `/worktree`
 
 ### Phase 3: controller over the socket
 

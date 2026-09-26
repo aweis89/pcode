@@ -455,7 +455,8 @@ class Asides:
             if excess <= 0:
                 break
             if not any(aside.running for aside in asked):
-                self.items = [aside for aside in self.items if aside.thread != asked[0].thread]
+                # In place: the live panel shares this list.
+                self.items[:] = [aside for aside in self.items if aside.thread != asked[0].thread]
                 excess -= 1
 
     def cancel(self) -> int:

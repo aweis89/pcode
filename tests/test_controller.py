@@ -64,7 +64,7 @@ def test_clear_starts_a_generation_that_makes_fetched_items_stale():
 class Session:
     """A controller over a stand-in job registry, shown on a view that keeps what it was told.
 
-    It is also the controller's `app`, for the side questions Ctrl+C stops.
+    It is also the controller's `app`.
     """
 
     def __init__(self, asides: int = 0) -> None:
@@ -73,7 +73,6 @@ class Session:
         self.released = 0
         self.redraws = 0
         self.activity = Activity()
-        self.asides = SimpleNamespace(cancel=lambda: asides)
         jobs = self
 
         class Jobs:
@@ -89,6 +88,7 @@ class Session:
                 jobs.release()
 
         self.controller = SessionController(self, self, self.activity, SimpleNamespace(jobs=Jobs()))
+        self.controller.asides.cancel = lambda: asides
 
     def release(self) -> None:
         self.released += 1
