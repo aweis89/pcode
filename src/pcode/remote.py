@@ -310,6 +310,8 @@ class RemoteController:
             return None
         if name == "host_closed":
             return None
+        if name == "read_asides":
+            return self._read_asides()
         if name in ("turn_ended", "replay_conversation", "show_branch") and self.runtime:
             self.runtime.refresh()
         return getattr(self.view, name)(*args, **kwargs)
@@ -373,10 +375,21 @@ class RemoteController:
                 setattr(aside, name, state[name])
         # The reply lives in the host; a follow-up only needs to know there is one.
         aside.reply = True if state.get("replied") else None
+        # Read here and not yet reported stays read.
+        aside.read = aside.read or bool(state.get("read"))
         if new:
             # The host dropped its oldest settled threads the same way.
             self.asides._trim()
         return aside
+
+    async def _read_asides(self):
+        """The viewer; then the host learns what was read, so no terminal shows it as ready."""
+        try:
+            return await self.view.read_asides()
+        finally:
+            read = [aside.id for aside in self.asides.items if aside.read]
+            if read and self.peer is not None:
+                self.peer.notify("asides_read", read)
 
     # What the terminal asks for
 

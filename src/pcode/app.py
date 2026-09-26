@@ -180,6 +180,8 @@ class PreviewApp:
         self.host_stopped = False
         # The host this terminal showed before the current one, for `/switch -`.
         self.previous_host: str | None = None
+        # How this terminal came to show its host ("Switched to session …").
+        self._attach_note: str | None = None
         # Writes an escape to the terminal emulator (notifications, tab progress).
         self._emulator: Callable[[str], None] | None = None
         # The in-process controller's loops, while this terminal runs them.
@@ -454,7 +456,9 @@ class PreviewApp:
         self.transcript.print(Rule(title, style="pcode.muted"))
 
     def replay_conversation(self) -> None:
-        self.replay()
+        # A host that loaded its conversation after this terminal attached
+        # draws it now, under the note that said how it got here.
+        self.replay(note=self._attach_note if self.hosted else None)
 
     def preview_reply(self, text: str) -> None:
         """No model: answer from the canned preview runtime."""
@@ -1178,6 +1182,7 @@ class PreviewApp:
         controller.on_closed = self.host_closed
         if forked := welcome.get("forked_from"):
             note += f" · continuing a copy of {forked}, which was open elsewhere"
+        self._attach_note = note
         self.activity.reset()
         self.edits.clear()
         for name, value in welcome["activity"].items():

@@ -19,12 +19,12 @@ same commit as the change.
 
 ## Status
 
-Phases 1 to 3 are done, and Phase 4 but for the docs: every interactive session
-with a model runs in a host. `SessionController` owns the whole session (queues,
-send modes, turns, commands, MCP, side questions, jobs) and runs in the host
-behind `HostView`; the terminal attaches over protocol 2 with a `RemoteController`
-and runs only its own commands (`TERMINAL_COMMANDS`). `--no-host` and `--print`
-still run a controller in-process, with `PreviewApp` as its view.
+All four phases are done: every interactive session with a model runs in a
+host. `SessionController` owns the whole session (queues, send modes, turns,
+commands, MCP, side questions, jobs) and runs in the host behind `HostView`;
+the terminal attaches over protocol 2 with a `RemoteController` and runs only
+its own commands (`TERMINAL_COMMANDS`). `--no-host` and `--print` still run a
+controller in-process, with `PreviewApp` as its view.
 
 The app-level tests run both ways: `make test` in-process, `make test-socket`
 with each session moved into a host over a real socket (`tests/socket_transport.py`).
@@ -35,6 +35,16 @@ during host startup not dropping typed-ahead prompts and commands, and terminal
 commands typed then (`/theme`) not running; side questions not showing until their
 first streamed word, nor as summarized or merged; `/tools` not listing the calls
 still running.
+
+Driving the real terminal against a real model (a private tmux, the user's settings
+copied, `tmp/host-spike-e1d54951/ui_drive.py`) checked every popup over a live host:
+`/status`, `/model` and Ctrl+L, `/btw $MODEL` completion and the viewer opening
+itself, `/jobs` reading the host's jobs and stopping one, `/tree`, `/switch new`,
+Ctrl+^ both ways (vi normal mode too), Ctrl+D then `--attach`, `/restart`, `/stop`.
+It found three more: an answer read in the viewer showed as ready again after
+switching back (the host now keeps `read`); `/restart` drew the conversation under
+"Resumed …" instead of its own note; and stopping an idle host told its terminals
+"Run cancelled".
 
 Left: merge the user docs into [Sessions and recovery](sessions.md).
 
