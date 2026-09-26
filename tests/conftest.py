@@ -141,6 +141,16 @@ def isolated_preferences(monkeypatch, tmp_path):
         set_root(None if own else path)
 
     monkeypatch.setattr(preferences, "set_project_root", set_project_root)
+    # Interactive sessions run in a background host by default. Tests that drive
+    # main() in-process cover the in-process session, which `--no-host` keeps;
+    # hosts have their own tests (test_session_host.py).
+    from dataclasses import replace as replace_setting
+
+    monkeypatch.setitem(
+        preferences.SETTINGS,
+        "session_host",
+        replace_setting(preferences.SETTINGS["session_host"], default="off"),
+    )
 
 
 @pytest.fixture(autouse=True)

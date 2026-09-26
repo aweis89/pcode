@@ -196,9 +196,10 @@ SETTINGS = {
     ),
     # An untouched worktree is always removed; uncommitted changes are always kept.
     "session_host": Setting(
-        "off",
+        "on",
         ("on", "off"),
-        description="Run each session in a background host that outlives the terminal (/switch)",
+        description="Run each session in a background host that outlives the terminal (/switch); "
+        "off runs it inside the terminal",
     ),
     "session_host_idle_minutes": Setting(
         "60",

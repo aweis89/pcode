@@ -34,7 +34,7 @@ app.toolbar()
 PreviewApp.run = lambda self: None
 sys.stdin.isatty = lambda: True
 sys.stdout.isatty = lambda: True
-sys.argv = ['pcode', '-m', 'test:local']
+sys.argv = ['pcode', '-m', 'test:local', '--no-host']
 main()
 for name in ('pcode.sessions', 'pcode.agent', 'pcode.live', 'pydantic_ai'):
     assert name not in sys.modules, name

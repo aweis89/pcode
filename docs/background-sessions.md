@@ -1,14 +1,14 @@
 # Background sessions
 
-A session can run in a *session host*: a headless pcode process that owns the
-conversation (the agent, its tools, the journal) while the terminal only draws
-it. The terminal can then leave, switch to another session, or close, and the
-work carries on. This is a preview: the core loop works, and a number of
-commands are not wired through yet (see [what works](#what-works-in-a-hosted-session)).
+Every interactive session runs in a *session host*: a headless pcode process
+that owns the conversation (the agent, its tools, the journal) while the
+terminal only draws it. The terminal can then leave, switch to another session,
+or close, and the work carries on. `--no-host` (or `session_host off`) runs a
+session inside the terminal instead, as `--print` always does.
 
 ```sh
-pcode --host                     # start this session in a host and attach to it
-pcode config set session_host on # make that the default
+pcode                            # start a session in a host and attach to it
+pcode --no-host                  # run this one inside the terminal instead
 pcode --hosts                    # list running hosts
 pcode --attach                   # reattach to the newest host in this repository
 pcode --attach 3f9c              # ...or to one by host or session ID prefix
@@ -69,15 +69,13 @@ is limited to about 100 bytes, so keep it short).
 
 ## What works in a hosted session
 
-Prompts, streaming, tools, edits, the plan, steering, Ctrl+C, skills, and
-`/status`, `/diffs`, `/help`, `/config`, and the display commands
-(`/theme`, `/syntax`, `/redraw`, `/show-*`) all work.
-
-Not yet: `/model`, `/effort`, `/compact`, `/resend`, `/tree`, `/btw`, `/mcp`,
-`/jobs`, `/workers`, `/tools`, `/links`, `/new` (use `/switch new`), `/worktree`,
-and extension commands. They are refused with a note rather than acting on nothing.
-MCP servers marked enabled start in the host with their saved sign-ins; one that
-needs a browser sign-in cannot be enabled from a hosted session yet.
+Everything. The host runs the session's commands (`/model`, `/effort`, `/compact`,
+`/resend`, `/new`, `/tree`, `/btw`, `/mcp`, `/jobs`, `/worktree`, `/login`,
+`/reload`, skills, and extension commands), and opens their pickers in the
+terminal that typed them. The terminal runs its own (`/switch`, `/resume`,
+`/status`, `/tools`, `/diffs`, `/links`, `/workers`, `/help`, `/config`, and the
+display commands), reading the conversation from the host's journal on disk.
+MCP sign-ins that need a browser open it from the host, on the same machine.
 
 A host started by an older pcode keeps running that code until it stops. A
 terminal on a different protocol version is refused with a message saying so.
