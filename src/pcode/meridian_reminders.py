@@ -7,6 +7,8 @@ from dataclasses import replace
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai_harness.compaction import WarnNearLimits
 
+from pcode.model_metadata import ContextWindowError, context_window, refresh_context
+
 PLAN_TAG = "<plan-reminder>"
 LIMITS_TAG = "[WarnNearLimits]"
 
@@ -57,19 +59,39 @@ def _decile_key(text: str) -> str:
 
 
 class MeridianLimitWarnings(WarnNearLimits):
-    """Keep upstream warning calculation, but never remove sent Meridian text."""
+    """Warn against pcode's resolved window, and never remove sent Meridian text."""
+
+    async def _for_model(self, model) -> WarnNearLimits:
+        """This capability, bound to the window the footer and compaction use.
+
+        Harness resolves windows from genai-prices, which knows no `meridian:` ids
+        and silently assumes 200k (a 1M Meridian session was told it was 90% full
+        at 162k), and gives `openai-codex:` the direct API's window by model name
+        (1.05M where Codex serves 272k). Explicit windows and models pcode cannot
+        resolve keep Harness's own resolution.
+        """
+        if self.max_context_fraction is None or self.context_window is not None:
+            return self
+        await refresh_context(model)
+        try:
+            window = context_window(model)
+        except ContextWindowError:
+            # Compaction reports the actionable configuration error.
+            window = None
+        return self if window is None else replace(self, context_window=window)
 
     async def before_model_request(self, ctx, request_context):
+        warnings = await self._for_model(request_context.model)
         if request_context.model.system != "meridian":
-            return await super().before_model_request(ctx, request_context)
+            return await WarnNearLimits.before_model_request(warnings, ctx, request_context)
         original = request_context.messages
         if not original or not isinstance(original[-1], ModelRequest):
             return request_context
         # Upstream strips prior warnings and appends exactly one request when a
         # threshold fires. Evaluate on a disposable list; retain the real history.
         clean_count = len(self._strip_old_warnings(original))
-        candidate = await super().before_model_request(
-            ctx, replace(request_context, messages=list(original))
+        candidate = await WarnNearLimits.before_model_request(
+            warnings, ctx, replace(request_context, messages=list(original))
         )
         if len(candidate.messages) > clean_count:
             # Warn at percentage deciles rather than on every token increase.

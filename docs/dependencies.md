@@ -397,12 +397,20 @@ requests or authentication.
 
 ### Context indicator
 
-`src/pcode/model_metadata.py` resolves context limits; `context_usage.py` and
-`compaction.py` share its synchronous memory-only lookup. Refreshes run outside
-rendering. Preserve input, output, default context, opt-in maximum, source, and
-fetch timestamp separately. Unknown deployments must not inherit a familiar
-model name's direct-API limit. An explicit `PCODE_CONTEXT_WINDOW` applies to both
-consumers and is capped by known input/maximum limits.
+`src/pcode/model_metadata.py` resolves context limits; `context_usage.py`,
+`compaction.py` and `MeridianLimitWarnings` share its synchronous memory-only
+lookup. Refreshes run outside rendering. Preserve input, output, default context,
+opt-in maximum, source, and fetch timestamp separately. Unknown deployments must
+not inherit a familiar model name's direct-API limit. An explicit
+`PCODE_CONTEXT_WINDOW` applies to every consumer and is capped by known
+input/maximum limits.
+
+Harness capabilities that take a `max_*_fraction` resolve the window from
+genai-prices instead. It knows no `meridian:` ids and silently assumes 200k, and
+it gives `openai-codex:` ids the direct API's window by model name (1.05M for a
+model Codex serves at 272k). Pass them pcode's window (`context_window=`), or a
+1M Meridian session gets told it is nearly full at 160k and starts cutting work
+short.
 
 - Public catalog: [Models.dev JSON](https://models.dev/api.json) and
   [schema](https://github.com/anomalyco/models.dev/blob/dev/README.md).
@@ -536,7 +544,7 @@ For every provider, pcode's `IdentifiedPlanning` appends durable plan snapshots 
 when the rendered plan changes (including clearing it), without moving explicit
 cache markers. `MeridianLimitWarnings` retains old warnings and appends updates at
 percentage deciles or severity changes only on Meridian; other providers' limit
-warnings are unchanged. Both use `before_model_request`, whose messages Pydantic AI
+warnings keep Harness's replace-in-place behavior. Both use `before_model_request`, whose messages Pydantic AI
 persists, not the ephemeral `wrap_model_request` boundary. Deduplication compares
 the text of the last reminder in the current history, so saved resume, retry, and
 branch selection do not depend on process-local state. Do not store the dedup key
