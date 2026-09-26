@@ -78,6 +78,9 @@ activity and errors go to stderr, and the exit status reports whether the turn
 succeeded. On a terminal the reply is rendered Markdown, block by block as each
 response settles; redirected to a file or a pipe it is the Markdown source,
 streamed as it arrives. Without a prompt argument, `--print` reads one from stdin.
+With `--attach`, it sends the prompt (or a slash command such as `/stop`) to a
+running background session instead; see
+[Scripting a running host](sessions.md#scripting-a-running-host).
 
 ```sh
 pcode "Summarize the open TODOs in this repo"          # first message, then interactive

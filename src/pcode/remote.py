@@ -283,6 +283,12 @@ class RemoteController:
             self.peer.on_close = None
             self.peer.close()
 
+    async def detach(self) -> None:
+        """`close`, then wait until what was sent has gone out."""
+        self.close()
+        if self._serving is not None:
+            await asyncio.gather(self._serving, return_exceptions=True)
+
     def _closed(self) -> None:
         if self.runtime is not None:
             self.runtime.lost = True

@@ -1,5 +1,8 @@
 """Presentation-only event routing, shared by live streaming and offline benchmarks."""
 
+from rich.console import Console
+from rich.markdown import Markdown
+
 from pcode.runtime import (
     CacheBust,
     ChildPlan,
@@ -44,6 +47,68 @@ def present_events(events, *, activity, transcript, edits) -> None:
                 transcript.tool_result(event)
         else:
             transcript.events((event,))
+
+
+class PrintedReply:
+    """`--print`'s output: the reply on `stdout`, every other event through `present`.
+
+    The transcript is expected to be on stderr, so a pipe reading stdout sees
+    the reply alone. A terminal gets rendered Markdown; a pipe gets its source,
+    which is what a reader downstream can work with.
+    """
+
+    # Live-panel state, with no live panel to show it.
+    SKIPPED = (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated, ChildPlan, ChildText)
+
+    def __init__(self, stdout, *, transcript, present) -> None:
+        self.stdout = stdout
+        self.transcript = transcript
+        self.present = present
+        reply = Console(file=stdout, theme=transcript.rich_theme)
+        # Rendering replaces token-by-token output with settled blocks, so it
+        # must not be chosen for a destination that cannot display it.
+        self.console = reply if reply.is_terminal else None
+        # Text streamed since the last settled message, so a turn that ends
+        # mid-block still prints what arrived.
+        self.block = ""
+
+    def write(self, markdown: str, *, streamed: bool = False) -> None:
+        """Settle one block of reply text; `streamed` means its source is already out."""
+        if self.console is not None:
+            self.console.print(Markdown(markdown, code_theme=self.transcript.code_theme))
+            self.console.print()
+            return
+        if not streamed:
+            self.stdout.write(markdown)
+        if not markdown.endswith("\n"):
+            self.stdout.write("\n")
+        self.stdout.write("\n")
+        self.stdout.flush()
+
+    def event(self, event) -> None:
+        if isinstance(event, TextDelta):
+            self.block += event.text
+            if self.console is None:
+                self.stdout.write(event.text)
+                self.stdout.flush()
+        elif isinstance(event, Message):
+            # Deltas usually carried this text already; a message without them
+            # (a structured result) is written whole.
+            self.write(
+                event.markdown or self.block,
+                streamed=self.console is None and bool(self.block),
+            )
+            self.block = ""
+        elif isinstance(event, Thinking):
+            self.transcript.events((event,))
+        elif not isinstance(event, self.SKIPPED):
+            self.present((event,))
+
+    def settle(self) -> None:
+        """Write out a block the turn ended (or failed, or retried) in the middle of."""
+        if self.block:
+            self.write(self.block, streamed=self.console is None)
+            self.block = ""
 
 
 def present_stream_event(event, *, output, transcript, activity, present) -> None:
