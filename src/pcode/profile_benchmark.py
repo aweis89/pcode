@@ -298,10 +298,10 @@ def _live(args, parser):
                 stats["renders"] += 1
                 return render(*a, **kw)
 
-            async def counted_flush():
+            async def counted_flush(**options):
                 if output.pending or output.rows or output._regenerate is not None:
                     stats["flushes"] += 1
-                await flush()
+                await flush(**options)
 
             output.app.renderer.render, output.flush = counted_render, counted_flush
             stats["started"] = time.perf_counter()
