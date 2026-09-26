@@ -318,6 +318,13 @@ def test_resend_uses_send_pipeline_and_original_prompt_spinner(following):
                     )
                     pipe.send_text("/resend\r" + ("next message\r" if following else ""))
                     await asyncio.wait_for(started.wait(), 5)
+                    queued = ["next message"] if following else []
+                    await wait(
+                        lambda: (
+                            app.activity.prompt_state == "running"
+                            and app.activity.queued_prompts == queued
+                        )
+                    )
                     assert app.activity.busy
                     assert app.activity.prompt == "make the requested change"
                     assert app.activity.prompt_kind == "user"

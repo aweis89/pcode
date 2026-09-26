@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test test-tmux test-all lint fmt docs docs-serve cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall
+.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall
 
 HARNESS_DIR := tmp/pydantic-ai-harness
 HARNESS_URL := https://github.com/pydantic/pydantic-ai-harness.git
@@ -23,10 +23,13 @@ run: ## Run from source without installing (make run ARGS="--theme-preview")
 test: ## Run the fast suite in parallel (real-tmux regressions skipped)
 	uv run pytest -n auto
 
+test-socket: ## Run the fast suite with each session in a host over a socket (tests/socket_transport.py)
+	uv run pytest -n auto --transport socket
+
 test-tmux: ## Run only the real-tmux regressions, in parallel
 	uv run pytest --tmux -m tmux -n auto
 
-test-all: test test-tmux ## Run everything: the fast suite, then the tmux regressions, each in parallel
+test-all: test test-socket test-tmux ## Run everything: the fast suite in-process and hosted, then the tmux regressions
 
 lint: ## Check formatting and lint rules
 	uv run ruff check .

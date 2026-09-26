@@ -270,6 +270,66 @@ def test_terminal_sees_a_turn_the_host_runs(tmp_path, host_dir):
     asyncio.run(run())
 
 
+def test_a_resumed_conversation_is_drawn_once_the_host_has_loaded_it(tmp_path, host_dir):
+    """`pcode --continue` and /restart attach while the host is still reading the journal."""
+
+    async def run():
+        script = Script()
+        first = await start_host("aaaa1111", tmp_path, script)
+        terminal, view, _ = await attach(first)
+        terminal.submit("remember the parser", "queue")
+        await until(lambda: view.count("after_turn"))
+        identity = first.controller.runtime.session.info.id
+        terminal.close()
+        await stop_host(first)
+
+        entry = HostEntry(
+            id="bbbb2222", pid=os.getpid(), model="function:script", workspace=str(tmp_path)
+        )
+        host = SessionHost(entry)
+        controller = host.controller
+        controller.model = "function:script"
+        controller.workspace = tmp_path
+        saved = SavedSession.open(identity, tmp_path / "sessions", tmp_path)
+        controller._saved_session = saved
+        controller.resuming = controller._needs_runtime = controller.startup_pending = True
+        controller._create_runtime = lambda: AgentRuntime(
+            Agent(FunctionModel(stream_function=script.model)), saved
+        )
+        await host.serve()
+        output = StringIO()
+        app = PreviewApp(
+            model="function:script",
+            workspace=tmp_path,
+            host=HostLaunch("bbbb2222"),
+            console=Console(file=output, color_system=None, width=140),
+        )
+        booting = None
+        try:
+            with create_pipe_input() as pipe:
+
+                def prompt(*args, **kwargs):
+                    return create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+
+                async def drive():
+                    nonlocal booting
+                    await until(lambda: "Attached to session host bbbb2222" in output.getvalue())
+                    assert "remember the parser" not in output.getvalue()
+                    booting = asyncio.create_task(host.boot())
+                    await until(lambda: "Echo: remember the parser" in output.getvalue())
+                    pipe.send_text("/quit\r")
+
+                with patch("pcode.app.create_prompt", prompt):
+                    await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=20)
+            assert output.getvalue().count("Echo: remember the parser") == 1
+        finally:
+            if booting is not None:
+                await booting
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
 def test_a_terminal_attaching_mid_turn_catches_up_exactly(tmp_path, host_dir):
     async def run():
         script = Script()

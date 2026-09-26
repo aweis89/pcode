@@ -26,6 +26,7 @@ from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_argument_descriptions, config_arguments, configure
 from pcode.controller import (
+    MODEL_COMMANDS,
     TERMINAL_COMMANDS,
     SessionController,
     delivered_job,
@@ -802,6 +803,8 @@ class PreviewApp:
             archive = deepcopy(getattr(self.runtime, "inspections", None) or ToolArchive())
             if saved is not None:
                 await asyncio.to_thread(archive.update, saved.directory / "transcript.jsonl")
+            if self.hosted:
+                self.add_running_tools(archive)
         else:
             archive = ToolArchive()
             for call in self.activity.tools.calls:
@@ -823,6 +826,16 @@ class PreviewApp:
                 style=session.app.style,
             )
             await inspector.run()
+
+    def add_running_tools(self, archive) -> None:
+        """A host's journal says what finished; this terminal's panel, what runs now."""
+        running = [call.event for call in self.activity.tools.calls if call.settled is None]
+        listed = {call.call_id: call for call in archive.calls}
+        for event in running:
+            if (call := listed.get(event.call_id)) is None:
+                archive.event(event)
+            elif call.state == "unknown":
+                call.state = "running"
 
     def diffs(self, argument: str) -> None:
         if argument:
@@ -1704,10 +1717,29 @@ class PreviewApp:
                 await self.after_command()
 
         def command(text, tag):
-            if self.hosted and text.split(maxsplit=1)[0] in TERMINAL_COMMANDS:
+            # A host's terminal runs its own commands itself, even before the
+            # host answers; in-process they keep their place in the session's queue.
+            hosted = self.hosted or early is not None
+            if hosted and text.split(maxsplit=1)[0] in TERMINAL_COMMANDS:
                 local.put_nowait((text, tag))
             else:
                 self.controller.command(text, tag)
+
+        def cancel():
+            """Ctrl+C. Before the host answers, it drops what was typed ahead for it."""
+            if not early:
+                self.cancel()
+                return
+            commands = [text for kind, text, _ in early if kind == "command"]
+            prompts = len(early) - len(commands)
+            early.clear()
+            if any(text.split()[:2] == ["/mcp", "enable"] for text in commands):
+                self.transcript.warning("Pending MCP enable command cancelled.")
+            if any(text.split()[0] in MODEL_COMMANDS for text in commands):
+                self.transcript.warning("Pending model command cancelled.")
+            if prompts:
+                self.transcript.note(f"Cleared {prompts} queued message(s).")
+            self.activity.busy = False
 
         def submit(text):
             text = text.strip()
@@ -1718,8 +1750,12 @@ class PreviewApp:
                 session.app.exit()
                 return
             if text.startswith("/"):
-                if early is not None and text.split(maxsplit=1)[0] not in TERMINAL_COMMANDS:
+                name = text.split(maxsplit=1)[0]
+                if early is not None and name not in TERMINAL_COMMANDS:
                     early.append(("command", text, self._popup_generation))
+                    if name in MODEL_COMMANDS or text.split()[:2] == ["/mcp", "enable"]:
+                        # As in-process: Ctrl+C now cancels it, not the draft.
+                        self.activity.busy = True
                 else:
                     command(text, self._popup_generation)
                 return
@@ -1743,7 +1779,7 @@ class PreviewApp:
             transcript=self.transcript,
             workspace=self.workspace,
             on_submit=submit,
-            on_cancel=lambda: self.cancel(),
+            on_cancel=cancel,
             on_tasks=self.set_show_tasks,
             on_thinking=self.set_show_thinking,
             on_commands=lambda: self.show_commands(""),

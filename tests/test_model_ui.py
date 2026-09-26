@@ -350,6 +350,7 @@ def test_picker_shortcut_uses_serialized_command_flow(command, busy, monkeypatch
     asyncio.run(run())
 
 
+@pytest.mark.in_process("stubs the controller's activate_model with one setting the terminal's")
 def test_model_chosen_mid_run_applies_before_the_next_request(monkeypatch):
     """The turn in flight keeps its model; the queued prompt uses the new one."""
     monkeypatch.setattr("pcode.models.active_providers", lambda _: PROVIDERS)

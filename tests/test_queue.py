@@ -74,7 +74,8 @@ def test_edit_and_queue_during_generation(outcome):
                     pipe.send_text("second\rdraft text\x1b[D\x1b[D\x1b[D\x1b[D")
                     await wait_for(lambda: session.default_buffer.text == "draft text")
                     assert session.default_buffer.cursor_position == 6
-                    assert app.activity.queued == 1
+                    # A host reports the queue back a moment after the send.
+                    await wait_for(lambda: app.activity.queued == 1)
                     assert app.activity.queued_prompts == ["second"]
                     assert calls == ["first"]
                     assert app.activity.prompt == "first"
@@ -292,7 +293,8 @@ def test_commands_run_while_model_waits(inspector_command):
         from pcode.runtime import ToolStarted, ToolSummary
 
         archive = ToolArchive()
-        archive.event(ToolStarted("read_file", "example.py", "call-1"))
+        call = ToolStarted("read_file", "example.py", "call-1")
+        archive.event(call)
 
         class Runtime:
             session = None
@@ -301,6 +303,7 @@ def test_commands_run_while_model_waits(inspector_command):
 
             async def stream(self, text):
                 calls.append(text)
+                yield call
                 started.set()
                 await finish.wait()
                 archive.event(ToolSummary("read_file", "done", call_id="call-1"))
@@ -342,13 +345,22 @@ def test_commands_run_while_model_waits(inspector_command):
                     await wait_for(lambda: session is not None and session.app.is_running)
                     pipe.send_text("first\r")
                     await asyncio.wait_for(started.wait(), 5)
+                    # The prompt's own echo, which a host sends as its turn starts.
+                    await wait_for(lambda: user.called)
                     user.reset_mock()
                     pipe.send_text("/theme light\r/help\r/new\r/resume\r/nope\r/theme invalid\r")
-                    await wait_for(lambda: "Usage: /theme" in printed.getvalue())
+                    # With a host, the terminal's own commands do not wait behind
+                    # the session's, so wait for every answer rather than the last.
+                    expected = [
+                        "Usage: /theme",
+                        "Unknown command",
+                        "/new is unavailable while working",
+                    ]
+                    if not app.hosted:
+                        # A hosted terminal resumes elsewhere, leaving this session working.
+                        expected.append("/resume is unavailable while working")
+                    await wait_for(lambda: all(text in printed.getvalue() for text in expected))
                     assert app.transcript.theme == "light"
-                    assert "Unknown command" in printed.getvalue()
-                    assert "/new is unavailable while working" in printed.getvalue()
-                    assert "/resume is unavailable while working" in printed.getvalue()
                     user.assert_not_called()
                     assert app.activity.busy
                     assert app.activity.queued_prompts == []
@@ -378,6 +390,7 @@ def test_commands_run_while_model_waits(inspector_command):
     asyncio.run(run())
 
 
+@pytest.mark.in_process("a hosted /quit detaches; the turn carries on in the host")
 @pytest.mark.parametrize("command", ["/quit", "/exit"])
 def test_quit_cancels_active_run(command):
     async def run():

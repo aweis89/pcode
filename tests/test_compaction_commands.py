@@ -83,12 +83,16 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
                     + ("continue after summary\r" if outcome == "burst" else "")
                 )
                 await started.wait()
-                assert app.activity.prompt == "Compacting context"
+                await wait_for(lambda: app.activity.prompt == "Compacting context")
                 assert app.activity.prompt_kind == "system"
                 assert app.activity.prompt_detail == "keep {tests}"
                 assert app.activity.prompt_state == "running"
                 pipe.send_text("/new\r/resume\r/compact again\r")
-                await wait_for(lambda: "/resume is unavailable" in output.getvalue())
+                await wait_for(lambda: "/compact is unavailable" in output.getvalue())
+                assert "/new is unavailable" in output.getvalue()
+                # A hosted terminal resumes another session in a host of its own,
+                # leaving this one working; in-process that would replace it.
+                assert ("/resume is unavailable" in output.getvalue()) != app.hosted
                 assert calls == [("compact", "keep {tests}")]
                 if outcome == "quit":
                     pipe.send_text("/quit\r")
@@ -127,6 +131,9 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
             assert "Nothing to compact" in text
         elif outcome == "failure":
             assert "Compaction failed" in text
+        elif outcome == "quit" and app.hosted:
+            # Quitting only detached; the host's compaction was still running.
+            assert "keeps running in the background" in text
         else:
             assert "Compaction cancelled" in text
 

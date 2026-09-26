@@ -350,7 +350,8 @@ class RemoteController:
 
     def apply_aside(self, state: dict) -> Aside:
         aside = next((item for item in self.asides.items if item.id == state["id"]), None)
-        if aside is None:
+        new = aside is None
+        if new:
             aside = Aside(question=state["question"], id=state["id"])
             self.asides.items.append(aside)
         for name in (
@@ -372,6 +373,9 @@ class RemoteController:
                 setattr(aside, name, state[name])
         # The reply lives in the host; a follow-up only needs to know there is one.
         aside.reply = True if state.get("replied") else None
+        if new:
+            # The host dropped its oldest settled threads the same way.
+            self.asides._trim()
         return aside
 
     # What the terminal asks for
