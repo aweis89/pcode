@@ -5,6 +5,7 @@ from collections.abc import Callable
 from io import StringIO
 
 from prompt_toolkit.data_structures import Point
+from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, Filter, has_focus
 from prompt_toolkit.formatted_text import ANSI, AnyFormattedText, to_formatted_text
 from prompt_toolkit.formatted_text.utils import fragment_list_to_text, split_lines
@@ -358,6 +359,10 @@ class PopupInput:
     Focus it with ``open``. A popup should not open with focus here: one that
     appears on its own could swallow keystrokes meant for the main prompt, and
     Enter would then send them.
+
+    ``prompt`` borrows the editor to ask for one value, e.g. instructions for
+    an action, with its own title and ``submit``; the draft set aside comes
+    back once that is sent or Esc cancels it.
     """
 
     def __init__(
@@ -375,7 +380,13 @@ class PopupInput:
         # Where Esc returns focus: the popup's list, usually.
         self.home = home
         self.title = title
+        self.placeholder = placeholder
+        # Whether Enter sends an empty draft; a prompt can treat it as a default.
+        self.allow_empty = False
         self.notice = ""
+        # What `prompt` set aside: the draft, title, placeholder, submit and
+        # whether empty was allowed.
+        self._saved: tuple | None = None
         self.area = TextArea(
             multiline=True,
             wrap_lines=True,
@@ -384,7 +395,7 @@ class PopupInput:
             height=self.rows,
             input_processors=[
                 ConditionalProcessor(
-                    AfterInput(placeholder, style="class:placeholder"),
+                    AfterInput(lambda: self.placeholder, style="class:placeholder"),
                     Condition(lambda: not self.area.text),
                 )
             ],
@@ -405,6 +416,8 @@ class PopupInput:
         @keys.add("escape", eager=True)
         def leave(event):
             # The draft stays: Esc steps out to browse, it does not discard.
+            # From a prompt it cancels that, bringing the draft back.
+            self._restore()
             event.app.layout.focus(self.home)
 
         frame = Frame(self.area, title=self._title)
@@ -417,13 +430,35 @@ class PopupInput:
     def text(self) -> str:
         return self.area.text
 
+    @property
+    def prompting(self) -> bool:
+        return self._saved is not None
+
     def open(self, app) -> None:
         app.layout.focus(self.area)
+
+    def prompt(
+        self,
+        app,
+        *,
+        title: AnyFormattedText,
+        placeholder: str,
+        submit: Callable[[str], None],
+        allow_empty: bool = True,
+    ) -> None:
+        """Ask for one value in the editor, setting the current draft aside."""
+        self._restore()
+        self._saved = (self.area.text, self.title, self.placeholder, self.submit, self.allow_empty)
+        self.title, self.placeholder, self.submit = title, placeholder, submit
+        self.allow_empty = allow_empty
+        self.area.buffer.reset()
+        self.notice = ""
+        self.open(app)
 
     def send(self) -> bool:
         """Hand the draft to ``submit``; whether it was accepted."""
         text = self.area.text.strip()
-        if not text:
+        if not text and not self.allow_empty:
             return False
         try:
             self.submit(text)
@@ -431,8 +466,17 @@ class PopupInput:
             self.notice = str(error)
             return False
         self.area.buffer.reset()
+        self._restore()
         self.notice = ""
         return True
+
+    def _restore(self) -> None:
+        """End a prompt, bringing back the draft and settings it set aside."""
+        if self._saved is None:
+            return
+        text, self.title, self.placeholder, self.submit, self.allow_empty = self._saved
+        self._saved = None
+        self.area.buffer.set_document(Document(text, len(text)))
 
     def rows(self) -> Dimension:
         """Exactly as tall as the draft, up to ``INPUT_ROWS_MAX``, then it scrolls.
