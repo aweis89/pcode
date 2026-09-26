@@ -25,6 +25,10 @@ class SessionError(ValueError):
     pass
 
 
+class SessionBusy(SessionError):
+    """Another process holds the session's lock."""
+
+
 class SessionInfo(BaseModel):
     version: Literal[1] = 1
     id: str
@@ -86,6 +90,34 @@ def list_sessions(root: Path | None = None) -> list[SessionInfo]:
                 except SessionError:
                     continue
     return sorted(result, key=lambda info: info.updated, reverse=True)
+
+
+def is_open(directory: Path) -> bool:
+    """Whether a process holds this session, probed without keeping the lock."""
+    lock = FileLock(directory / ".lock", mode=0o600)
+    try:
+        lock.acquire(timeout=0)
+    except Timeout:
+        return True
+    except OSError:
+        return False  # Deleted since it was listed; nothing can hold it now.
+    lock.release()
+    return False
+
+
+def open_in(workspace: Path, root: Path | None = None, exclude: str | None = None) -> list[str]:
+    """IDs of sessions working in `workspace` that are open, other than `exclude`.
+
+    A session copied because its original was busy shares that original's
+    directory, so tidying a worktree on the way out has to ask this first.
+    """
+    root = root or session_root()
+    home = str(workspace.resolve())
+    return [
+        info.id
+        for info in list_sessions(root)
+        if info.workspace == home and info.id != exclude and is_open(root / info.id)
+    ]
 
 
 def delete_session(identity: str, root: Path | None = None) -> None:
@@ -371,11 +403,13 @@ class SavedSession:
         self.directory = directory
         directory.chmod(0o700)
         self.info = info
+        # The session this one was copied from because that one was open.
+        self.forked_from: str | None = None
         self.lock = FileLock(directory / ".lock", mode=0o600)
         try:
             self.lock.acquire(timeout=0)
         except Timeout:
-            raise SessionError("This session is already open in another process.") from None
+            raise SessionBusy("This session is already open in another process.") from None
         try:
             for name in ("steps.sqlite3", "transcript.jsonl", "session.json"):
                 private_file(directory / name)
@@ -421,9 +455,83 @@ class SavedSession:
         return session
 
     @classmethod
-    def open(cls, selector: str, root: Path | None = None, workspace: Path | None = None):
+    def open(
+        cls,
+        selector: str,
+        root: Path | None = None,
+        workspace: Path | None = None,
+        *,
+        fork_if_open: bool = False,
+    ):
+        """Open a session; `fork_if_open` continues a copy of one open elsewhere."""
         path = resolve_session(selector, root, workspace)
-        return cls(path, read_info(path))
+        try:
+            return cls(path, read_info(path))
+        except SessionBusy:
+            if not fork_if_open:
+                raise
+        return cls.fork(path)
+
+    @classmethod
+    def fork(cls, source: Path):
+        """Copy a session that another process may be writing, to continue it separately.
+
+        Nothing here takes the source's lock or writes to its directory. The
+        journal is copied before the step store, so every turn the copied
+        journal calls finished already has its checkpoint in the copied store,
+        and the store may be a step ahead of the journal but never behind it. A
+        torn final journal line is skipped on read, as after a crash.
+
+        A turn still running in the source is copied the way a crash leaves
+        one: recovery continues from its last settled step, or from the turn
+        before it when it has settled none, and `/resend` carries it on.
+        """
+        for name in ("session.json", "transcript.jsonl", "steps.sqlite3"):
+            if (source / name).is_symlink() or not (source / name).is_file():
+                raise SessionError("The session to copy is missing or symlinked.")
+        info = read_info(source)
+        identity = str(uuid4())
+        directory = source.parent / identity
+        directory.mkdir(mode=0o700)
+        try:
+            for name in ("transcript.jsonl", "steps.sqlite3"):
+                private_file(directory / name)
+            shutil.copyfile(source / "transcript.jsonl", directory / "transcript.jsonl")
+            # The backup API reads one consistent snapshot of a WAL store that
+            # its owner keeps writing; a file copy could tear it.
+            origin = sqlite3.connect(source / "steps.sqlite3")
+            try:
+                copy = sqlite3.connect(directory / "steps.sqlite3")
+                try:
+                    origin.backup(copy)
+                finally:
+                    copy.close()
+            finally:
+                origin.close()
+            stamp = now()
+            info = info.model_copy(
+                update={"id": identity, "created": stamp, "updated": stamp, "packages": versions()}
+            )
+            session = cls(directory, info)
+        except BaseException:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
+        session.forked_from = source.name
+        try:
+            # Written last: until the manifest exists, listings skip the copy.
+            session.save_info()
+        except BaseException:
+            session.abandon()
+            raise
+        return session
+
+    def abandon(self) -> None:
+        """Close after a resume that did not go ahead; a copy made for it is removed."""
+        try:
+            if self.forked_from:
+                shutil.rmtree(self.directory, ignore_errors=True)
+        finally:
+            self.close()
 
     def save_info(self) -> None:
         self.info.updated = now()

@@ -21,21 +21,26 @@ def command(source):
     return f"{shlex.quote(sys.executable)} -u -c {shlex.quote(source)}"
 
 
+async def eventually(predicate, timeout=10):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.02)
+
+
 def wait_for(predicate, timeout=10):
-    async def poll():
-        async with asyncio.timeout(timeout):
-            while not predicate():
-                await asyncio.sleep(0.02)
-
-    asyncio.run(poll())
+    asyncio.run(eventually(predicate, timeout))
 
 
-def until_finished(jobs, *watched):
+def exited(jobs, *watched):
     def done():
         jobs.refresh()
         return all(not job.running for job in watched)
 
-    wait_for(done)
+    return done
+
+
+def until_finished(jobs, *watched):
+    wait_for(exited(jobs, *watched))
 
 
 def test_registry_reports_exit_without_anyone_waiting(tmp_path):
@@ -446,7 +451,10 @@ def test_completed_job_is_reported_to_the_model_at_the_next_request(tmp_path):
                 )
             }
         elif step == 2:
-            # Independent work while the job runs; by the next request it is done.
+            # Independent work while the job runs. Its exit is settled here, not
+            # raced: the third request is the last, so a job still starting
+            # under a loaded machine would never be announced at all.
+            await eventually(exited(runtime.jobs, runtime.jobs.get("j1")))
             yield {0: DeltaToolCall(name="list_jobs", json_args="{}")}
         else:
             yield "Done."
@@ -456,11 +464,11 @@ def test_completed_job_is_reported_to_the_model_at_the_next_request(tmp_path):
     )
 
     async def run():
-        # Let the command finish while the model is between requests.
-        async for event in runtime.stream("go"):
-            await asyncio.sleep(0.05)
+        async for _ in runtime.stream("go"):
+            pass
 
     asyncio.run(run())
+    assert len(prompts) == 3
     delivered = [p.content for turn in prompts for p in turn]
     assert any("j1" in text and "exit 0" in text for text in delivered), delivered
     assert not any("sleep" in text for text in delivered)

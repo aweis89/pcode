@@ -11,9 +11,9 @@ misses come from planning or that stable requests guarantee server-side hits.
 
 There are two upstream designs to distinguish. When investigated, the
 [public Planning documentation](https://pydantic.dev/docs/ai/harness/planning/)
-described a breakpoint after the reminder's stable opening tag. Our pinned
-Harness source at `12bce878da99bca61a5d8d798bff0a3bc93bd153` already included a
-correction to that design. Treat the versioned source, not the live website, as
+described a breakpoint after the reminder's stable opening tag. The Harness
+source pinned at the time, `12bce878da99bca61a5d8d798bff0a3bc93bd153`, already
+included a correction to that design. Treat the versioned source, not the live website, as
 the description of what this installation does.
 
 ### Earlier design: a breakpoint after a moving tag
@@ -125,8 +125,8 @@ Regression coverage checks request structure, not simulated cache-hit counts:
 Live confirmation requires observing cache reads advance with the conversation
 while writes mostly track new content, rather than repeatedly tracking the whole
 tail since the last user prompt. A passing wire test does not prove provider-side
-reuse. See the [cache diagnostics](context.md#prompt-cache-warnings)
-for fingerprint dumps and warning interpretation.
+reuse. See [prompt cache notices](context.md#prompt-cache-notices)
+for what the transcript reports and how to read fingerprint dumps.
 
 ## Delegated runs
 
