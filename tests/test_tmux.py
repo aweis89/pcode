@@ -390,7 +390,7 @@ def test_draft_and_cursor_survive_stream_completion_and_width_resize(pane, relea
     pane("send-keys", "-t", "preview:0.0", "-l", "draft text")
     pane("send-keys", "-t", "preview:0.0", "Left", "Left", "Left", "Left")
     capture(pane, "❯ draft text", running=True)
-    pane("split-window", "-h", "-t", "preview:0.0", "cat")
+    resize(pane, "split-window", "-h", "-t", "preview:0.0", "cat")
     capture(pane, "❯ draft text", running=True)
     release()
     screen = capture(pane, "LIVE ANSWER COMPLETE")
