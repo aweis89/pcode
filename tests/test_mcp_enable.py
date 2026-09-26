@@ -153,7 +153,8 @@ def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
                         + "draft text\x1b[D\x1b[D\x1b[D\x1b[D"
                     )
                     await wait_for(lambda: session.default_buffer.text == "draft text")
-                    assert app.activity.queued == 1
+                    # A host reports the queue back a moment after the send.
+                    await wait_for(lambda: app.activity.queued == 1)
                     assert calls == []
                     if outcome == "cancel":
                         # The draft absorbs the first Ctrl+C; the login keeps waiting.
@@ -163,9 +164,11 @@ def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
                         pipe.send_text("\x03")
                     else:
                         finish.set()
-                    await wait_for(lambda: not app.activity.busy)
+                    ran = ["queued question"] if outcome in {"success", "burst"} else []
+                    await wait_for(
+                        lambda: not app.activity.busy and not app.activity.queued and calls == ran
+                    )
                     assert cleaned.is_set()
-                    assert app.activity.queued == 0
                     if outcome == "cancel":
                         pipe.send_text("draft text\x1b[D\x1b[D\x1b[D\x1b[D")
                         await wait_for(lambda: session.default_buffer.text == "draft text")
