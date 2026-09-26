@@ -1339,6 +1339,9 @@ def error_message(error: Exception, *, unexpected: str | None = None) -> str:
     """
     if isinstance(error, BaseExceptionGroup) and error.exceptions:
         return error_message(error.exceptions[0], unexpected=unexpected)
+    if getattr(type(error), "sanitized", False):
+        # Already passed through here in the session host that raised it.
+        return str(error)
     from pcode.auth import LoginError
     from pcode.compaction import CompactionError
     from pcode.workspace import WorkspaceGoneError
