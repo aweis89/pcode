@@ -4,7 +4,7 @@ import shutil
 
 import pytest
 from test_inspector_tmux import modal
-from test_tmux import capture, input_rows
+from test_tmux import capture, input_rows, settle
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -59,10 +59,13 @@ def test_tree_cancel_edit_fork_and_resize(pane):
     assert input_rows(screen) == 1
     assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "0"
     pane("send-keys", "-t", "preview:0.0", "C-c", "Alternative question", "Enter")
-    capture(pane, "Answer for this branch", columns=80)
+    # The fork already shows an answer, so wait for the one after the new question:
+    # an idle prompt with the old answer on screen may predate the Enter.
+    settle(pane, lambda screen: "Answer" in screen.partition("Alternative question")[2])
     pane("send-keys", "-t", "preview:0.0", "/tree", "Enter")
-    screen = modal(pane, "Conversation tree")
-    assert "Alternative question" in screen
+    modal(pane, "Conversation tree")
+    # The header can be captured before the rows below it are painted.
+    screen = modal(pane, "Alternative question")
     assert "Second tree question" in screen
     assert "First tree question" in screen
     pane("send-keys", "-t", "preview:0.0", "Escape")

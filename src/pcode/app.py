@@ -3251,24 +3251,19 @@ class PreviewApp:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         self.transcript.welcome(self.model, str(self.workspace))
-        from pcode.controller import PromptQueue
+        from pcode.controller import MODEL_COMMANDS, SessionController
 
-        ready = asyncio.Event()
-        prompts = PromptQueue(self.activity)
-        commands = asyncio.Queue()
-        startup_commands = []
-        command_idle = asyncio.Event()
-        command_idle.set()
-        live_task = None
-        mcp_task = None
-        compact_task = None
-        compact_idle = asyncio.Event()
-        compact_idle.set()
-        pending_model_command = 0
-        mcp_idle = asyncio.Event()
-        mcp_idle.set()
-        pending_mcp = 0
-        interrupt_pending = False
+        controller = SessionController(
+            self.activity,
+            self.transcript,
+            cancel_policy=self.set_cancel_policy,
+            release_waits=self.release_shell_waits,
+            stop_asides=self.asides.cancel,
+            changed=lambda: session.app.invalidate(),
+        )
+        prompts = controller.prompts
+        commands = controller.commands
+        clear_queue = controller.clear_queue
 
         async def refresh_metadata():
             refresh = getattr(self.runtime, "refresh_context", None)
@@ -3317,59 +3312,11 @@ class PreviewApp:
                 start_mcp_defaults()
             finally:
                 self._startup_pending = False
-                ready.set()
-                for command in startup_commands:
+                controller.ready.set()
+                for command in controller.startup_commands:
                     commands.put_nowait(command)
-                startup_commands.clear()
+                controller.startup_commands.clear()
                 session.app.invalidate()
-
-        def clear_queue():
-            nonlocal pending_mcp, pending_model_command
-            startup_commands.clear()
-            if commands.empty():
-                command_idle.set()
-            if pending_mcp:
-                self.transcript.warning("Pending MCP enable command cancelled.")
-                pending_mcp = 0
-            if pending_model_command:
-                self.transcript.warning("Pending model command cancelled.")
-                pending_model_command = 0
-            if count := prompts.clear():
-                self.transcript.note(f"Cleared {count} queued message(s).")
-
-        def cancel():
-            nonlocal interrupt_pending
-            interrupt_pending = False
-            clear_queue()
-            active = [
-                task for task in (live_task, mcp_task, compact_task) if task and not task.done()
-            ]
-            # Ctrl+C means "stop working", so a command the turn is waiting on
-            # is stopped with it. A typed follow-up takes the other branch and
-            # only abandons the wait. Either way a job the model explicitly
-            # backgrounded keeps running: nothing is waiting on it to abandon.
-            self.set_cancel_policy("stop")
-            if active:
-                # Repeated interrupts must not interrupt persistence/auth cleanup.
-                # Side questions are deliberately parallel: an interrupt aimed at
-                # the turn must not also throw away work the turn is not doing.
-                for task in active:
-                    if not task.cancelling():
-                        task.cancel()
-            elif stopped := self.asides.cancel():
-                self.transcript.note(f"Stopped {stopped} side question(s).")
-            else:
-                self.activity.busy = False
-                self.transcript.cancelled()
-
-        def take_steering():
-            messages = prompts.take_steering()
-            for text in messages:
-                self.activity.start_prompt(text)
-                self.transcript.user(text)
-            if messages:
-                session.app.invalidate()
-            return messages
 
         def follow_turn(prompt: str, echo: bool = True) -> None:
             """Show a turn the host started, in order with anything typed here."""
@@ -3382,13 +3329,13 @@ class PreviewApp:
             if hasattr(self.runtime, "detaching"):
                 self.runtime.detaching = True
             clear_queue()
-            task = live_task
+            task = controller.live_task
             if task is not None and not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 # consume() clears its own state once the task ends; wait for it
                 # so that cleanup cannot drop the next host's queued turn.
-                while live_task is task:
+                while controller.live_task is task:
                     await asyncio.sleep(0.01)
             self.activity.busy = False
 
@@ -3432,68 +3379,30 @@ class PreviewApp:
         self._emulator = emulator
 
         def submit(text):
-            nonlocal pending_mcp, pending_model_command, interrupt_pending
             text = text.strip()
-            if not ready.is_set() and text in {"/quit", "/exit"}:
+            if not controller.ready.is_set() and text in {"/quit", "/exit"}:
                 # Do not strand exit behind a command waiting for initialization.
                 self.running = False
                 session.app.exit()
                 return
             if text.startswith("/"):
-                commands.put_nowait(
-                    (
-                        prompts.generation,
-                        text,
-                        not self.activity.busy and not self.activity.queued_prompts,
-                        self._popup_generation,
-                    )
-                )
-                command_idle.clear()
-                if text.split()[0] in {"/compact", "/resend"}:
-                    pending_model_command += 1
-                    self.activity.busy = True
-                if text.split()[:2] == ["/mcp", "enable"]:
-                    pending_mcp += 1
-                    # Enter + Ctrl+C in one input batch must cancel activation
-                    # before its command worker has had a chance to start OAuth.
-                    self.activity.busy = True
+                controller.command(text, self._popup_generation)
             elif shell_command(text) is not None:
-                # Runs in turn, never as steering: its result rides the next
-                # request rather than being spliced into a running one.
-                prompts.put(text, "shell")
-                self.activity.busy = True
+                controller.submit(text, "shell")
             elif text:
                 # One send consumes a Ctrl+S pick; the saved default returns.
                 mode = self.next_send_mode
                 self.send_mode_once = None
-                if mode == "interrupt" and live_task and not live_task.done():
-                    clear_queue()
-                    interrupt_pending = True
-                    # The user is redirecting the model, not cancelling its
-                    # work: an in-flight shell wait is abandoned, and its
-                    # command keeps running under its job id.
-                    self.set_cancel_policy("detach")
-                    if not live_task.cancelling():
-                        live_task.cancel()
-                prompts.put(text, mode)
-                # Set immediately so Enter + Ctrl+C in one input batch cancels
-                # the pending request rather than clearing the user's draft.
-                self.activity.busy = True
-                if mode == "steering" and live_task and not live_task.done():
-                    # Queued above, released here: the wait returns its handle
-                    # and the next model request carries this message.
-                    self.release_shell_waits()
+                controller.submit(text, mode)
 
         def start_mcp_task(name, coroutine, *, status, cancelled):
             """Run MCP work outside the model loop; queued prompts wait for it."""
-            nonlocal mcp_task
-            mcp_idle.clear()
+            controller.mcp_idle.clear()
             self.mcp_enabling = name
             self.activity.busy = True
             self.activity.status = status
 
             def finished(task):
-                nonlocal mcp_task
                 success = False
                 try:
                     task.result()
@@ -3505,20 +3414,16 @@ class PreviewApp:
                 finally:
                     if not success:
                         clear_queue()
-                    self.activity.busy = (
-                        bool(self.activity.queued_prompts)
-                        or bool(pending_mcp)
-                        or bool(pending_model_command)
-                    )
+                    controller.mcp_task = None
+                    controller.refresh_busy()
                     self.activity.status = ""
-                    mcp_task = None
                     self.mcp_enabling = None
-                    mcp_idle.set()
+                    controller.mcp_idle.set()
                     session.app.invalidate()
 
-            mcp_task = asyncio.create_task(coroutine)
+            controller.mcp_task = asyncio.create_task(coroutine)
             # A done callback also handles cancellation before the coroutine starts.
-            mcp_task.add_done_callback(finished)
+            controller.mcp_task.add_done_callback(finished)
 
         def start_mcp_enable(name):
             self.transcript.note(
@@ -3553,7 +3458,7 @@ class PreviewApp:
             if not wanted:
                 return
             # Same rule as /mcp enable: never swap toolsets under a running turn.
-            if mcp_task is not None or (live_task is not None and not live_task.done()):
+            if controller.mcp_task is not None or controller.turn_running():
                 listed = " ".join(f"`/mcp enable {name}`" for name in wanted)
                 self.transcript.warning(
                     f"The {skill} skill asks for MCP {', '.join(wanted)}, which cannot be "
@@ -3634,15 +3539,13 @@ class PreviewApp:
             turn would, so nothing reads the history while it changes. `done`
             turns the result into the closing note.
             """
-            nonlocal compact_task
-            compact_idle.clear()
+            controller.compact_idle.clear()
             self.activity.busy = True
             self.activity.status = status
             self.activity.start_prompt(label, kind="system", detail=detail)
             self.transcript.note(note)
 
             def finished(task):
-                nonlocal compact_task
                 success = False
                 try:
                     result = task.result()
@@ -3660,21 +3563,16 @@ class PreviewApp:
                 finally:
                     if not success:
                         clear_queue()
-                    compact_task = None
-                    self.activity.busy = (
-                        bool(self.activity.queued_prompts)
-                        or bool(pending_mcp)
-                        or bool(pending_model_command)
-                    )
+                    controller.compact_task = None
+                    controller.refresh_busy()
                     self.activity.status = ""
-                    compact_idle.set()
+                    controller.compact_idle.set()
                     session.app.invalidate()
 
-            compact_task = asyncio.create_task(work)
-            compact_task.add_done_callback(finished)
+            controller.compact_task = asyncio.create_task(work)
+            controller.compact_task.add_done_callback(finished)
 
         async def consume_commands():
-            nonlocal pending_mcp, pending_model_command
             while self.running:
                 generation, text, submitted_idle, popup_generation = await commands.get()
                 self._command_popup_generation = popup_generation
@@ -3695,10 +3593,10 @@ class PreviewApp:
                         "/redraw",
                         "/config",
                     }:
-                        if not ready.is_set():
+                        if not controller.ready.is_set():
                             # Keep consuming frontend-only commands while backend
                             # commands wait, preserving their order for readiness.
-                            startup_commands.append(
+                            controller.startup_commands.append(
                                 (generation, text, submitted_idle, popup_generation)
                             )
                             continue
@@ -3707,33 +3605,15 @@ class PreviewApp:
                         if self._startup_error is not None:
                             self.transcript.warning("Agent startup failed; restart pcode to retry.")
                             continue
-                    if text.split()[0] in {"/compact", "/resend"}:
-                        if generation != prompts.generation:
-                            continue
-                        pending_model_command -= 1
-                        self.activity.busy = bool(self.activity.queued_prompts) or any(
-                            task is not None and not task.done()
-                            for task in (live_task, mcp_task, compact_task)
-                        )
-                    if text.split()[:2] == ["/mcp", "enable"]:
-                        if generation != prompts.generation:
-                            continue
-                        pending_mcp -= 1
-                        self.activity.busy = bool(self.activity.queued_prompts) or any(
-                            task is not None and not task.done()
-                            for task in (live_task, mcp_task, compact_task)
-                        )
+                    controller.command_started(text)
                     command = self.registry.find(text.split(maxsplit=1)[0])
                     before_queue = (
                         command is not None
-                        and command.name in {"/compact", "/resend"}
+                        and command.name in MODEL_COMMANDS
                         # A host's conversation refuses both, in handle().
                         and not self.hosted
                         and submitted_idle
-                        and not any(
-                            task is not None and not task.done()
-                            for task in (live_task, mcp_task, compact_task)
-                        )
+                        and not controller.working()
                     )
                     if (
                         command
@@ -3799,13 +3679,8 @@ class PreviewApp:
                         if self.mcp_defaults_requested:
                             start_mcp_defaults()
                         if not self.running:
-                            cancel()
-                            active = [
-                                task
-                                for task in (live_task, mcp_task, compact_task)
-                                if task is not None
-                            ]
-                            if active:
+                            controller.cancel()
+                            if active := controller.tasks():
                                 await asyncio.gather(*active, return_exceptions=True)
                         if self.model_requested:
                             await self.choose_model(output, session)
@@ -3852,21 +3727,15 @@ class PreviewApp:
                     self.command_failed(text.split(maxsplit=1)[0], error)
                 finally:
                     self._command_popup_generation = None
-                    if pending_mcp or pending_model_command:
-                        self.activity.busy = True
-                    if commands.empty() and not startup_commands:
-                        command_idle.set()
+                    controller.command_finished()
                 await output.flush()
                 if not self.running and session.app.is_running:
                     session.app.exit()
 
         async def consume():
-            nonlocal live_task, interrupt_pending
-            await ready.wait()
+            await controller.ready.wait()
             while self.running:
-                await command_idle.wait()
-                await mcp_idle.wait()
-                await compact_idle.wait()
+                await controller.idle()
                 item = await prompts.get()
                 _generation, text, _mode = item
                 if self._startup_error is not None:
@@ -3874,9 +3743,7 @@ class PreviewApp:
                     self.activity.busy = False
                     self.transcript.warning("Agent startup failed; restart pcode to retry.")
                     continue
-                await command_idle.wait()
-                await mcp_idle.wait()
-                await compact_idle.wait()
+                await controller.idle()
                 if not self.running:
                     return
                 if not prompts.current(item):
@@ -3890,9 +3757,9 @@ class PreviewApp:
                 try:
                     resend = _mode == "resend"
                     if _mode == "shell":
-                        live_task = asyncio.create_task(self.run_shell(output, text))
+                        controller.live_task = asyncio.create_task(self.run_shell(output, text))
                         try:
-                            success = await live_task
+                            success = await controller.live_task
                         except asyncio.CancelledError:
                             if not session.app.is_running:
                                 return
@@ -3904,8 +3771,8 @@ class PreviewApp:
                             self.activity.start_prompt(label, kind="system", detail=detail)
                         else:
                             self.activity.start_prompt(text)
-                        self.runtime.take_steering = take_steering
-                        live_task = asyncio.create_task(
+                        self.runtime.take_steering = controller.take_steering
+                        controller.live_task = asyncio.create_task(
                             self.run_live(
                                 output,
                                 text,
@@ -3916,7 +3783,7 @@ class PreviewApp:
                             )
                         )
                         try:
-                            success = await live_task
+                            success = await controller.live_task
                         except asyncio.CancelledError:
                             # Cancellation before run_live's first instruction.
                             if not session.app.is_running:
@@ -3930,17 +3797,10 @@ class PreviewApp:
                     self.transcript.error(error_message(error), title="Agent failed")
                     success = False
                 finally:
-                    live_task = None
+                    controller.live_task = None
                 if not session.app.is_running:
                     return
-                if not success and not interrupt_pending:
-                    clear_queue()
-                interrupt_pending = False
-                self.activity.busy = (
-                    bool(self.activity.queued_prompts)
-                    or bool(pending_mcp)
-                    or bool(pending_model_command)
-                )
+                controller.turn_ended(success)
                 # Adopt it as soon as the turn ends so the footer and /status
                 # agree with what the next request will use.
                 if self.pending_model is not None:
@@ -3960,7 +3820,7 @@ class PreviewApp:
             transcript=self.transcript,
             workspace=self.workspace,
             on_submit=submit,
-            on_cancel=cancel,
+            on_cancel=controller.cancel,
             on_tasks=self.set_show_tasks,
             on_thinking=self.set_show_thinking,
             on_commands=lambda: self.show_commands(""),
@@ -3990,16 +3850,15 @@ class PreviewApp:
             Polling here costs one small file read per running job and
             replaces the model doing the same thing with `sleep`.
             """
-            await ready.wait()
+            await controller.ready.wait()
             self.adopt_jobs()
             while True:
                 changed = False
                 if not self.activity.busy and not self.activity.queued_prompts:
                     changed = bool(self.report_finished_jobs())
-                    prompt = self.wake_prompt() if live_task is None else None
+                    prompt = self.wake_prompt() if controller.live_task is None else None
                     if prompt is not None:
-                        prompts.put(prompt, "wake")
-                        self.activity.busy = True
+                        controller.submit(prompt, "wake")
                 # Refresh even while busy so completed jobs leave the live panel.
                 if self.refresh_jobs() or changed:
                     session.app.invalidate()
@@ -4070,14 +3929,11 @@ class PreviewApp:
                 self.runtime.close()
             # Side questions outlive turns, not the terminal.
             await self.asides.close()
-            if compact_task is not None:
-                if not compact_task.done() and not compact_task.cancelling():
-                    compact_task.cancel()
-                await asyncio.gather(compact_task, return_exceptions=True)
-            if mcp_task is not None:
-                if not mcp_task.done() and not mcp_task.cancelling():
-                    mcp_task.cancel()
-                await asyncio.gather(mcp_task, return_exceptions=True)
+            for task in (controller.compact_task, controller.mcp_task):
+                if task is not None:
+                    if not task.done() and not task.cancelling():
+                        task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
             if self.extensions is not None:
                 await self.extensions.close()
             await output.flush(drain=True)
