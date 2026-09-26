@@ -64,12 +64,12 @@ def test_mcp_failure_reports_redacted_frames(tmp_path, monkeypatch, storage, sta
 
     async def run():
         if startup:
-            await app.enable_mcp_defaults(["remote"])
+            await app.controller.enable_mcp_defaults(["remote"])
         else:
             try:
-                await app.enable_mcp("remote")
+                await app.controller.enable_mcp("remote")
             except Exception as error:
-                app.report_mcp_error("remote", error)
+                app.controller.report_mcp_error("remote", error)
 
     try:
         asyncio.run(run())
