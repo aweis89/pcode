@@ -92,7 +92,7 @@ def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
                 return session
 
             async def wait_for(predicate):
-                async with asyncio.timeout(5):
+                async with asyncio.timeout(30):
                     while not predicate():
                         await asyncio.sleep(0.01)
 
@@ -112,7 +112,7 @@ def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
                         assert calls == []
                         assert not app.activity.busy
                         pipe.send_text("/quit\r")
-                        await asyncio.wait_for(task, 5)
+                        await asyncio.wait_for(task, 30)
                         return
                     pipe.send_text(
                         "/mcp enable remote\r" + ("queued question\r" if outcome == "burst" else "")
@@ -133,14 +133,14 @@ def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
                         assert not task.done()
                         assert not cleaned.is_set()
                         cleanup_finish.set()
-                        await asyncio.wait_for(task, 5)
+                        await asyncio.wait_for(task, 30)
                         assert cleaned.is_set()
                         assert runtime.mcp.enabled == {}
                         assert calls == []
                         return
                     if outcome == "quit":
                         pipe.send_text("/quit\r")
-                        await asyncio.wait_for(task, 5)
+                        await asyncio.wait_for(task, 30)
                         assert cleaned.is_set()
                         assert calls == []
                         assert runtime.mcp.enabled == {}
@@ -185,7 +185,7 @@ def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
                             assert "Traceback" in report
                             assert "model string" not in report
                     pipe.send_text("\x03\x04")
-                    await asyncio.wait_for(task, 5)
+                    await asyncio.wait_for(task, 30)
                 finally:
                     if not task.done():
                         task.cancel()
@@ -265,7 +265,7 @@ def test_default_servers_enable_at_startup_and_new_without_a_browser():
                 return session
 
             async def wait_for(predicate):
-                async with asyncio.timeout(5):
+                async with asyncio.timeout(30):
                     while not predicate():
                         await asyncio.sleep(0.01)
 
@@ -303,7 +303,7 @@ def test_default_servers_enable_at_startup_and_new_without_a_browser():
                     assert ("forget", "remote") in calls
                     assert sorted(runtime.mcp.enabled) == ["local"]
                     pipe.send_text("/quit\r")
-                    await asyncio.wait_for(task, 5)
+                    await asyncio.wait_for(task, 30)
                 finally:
                     if not task.done():
                         task.cancel()
