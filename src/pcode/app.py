@@ -41,8 +41,7 @@ from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_argument_descriptions, config_arguments, configure
-from pcode.controller import MODEL_COMMANDS, SessionController, delivered_job
-from pcode.jobs import OUTPUT_TAIL_BYTES, format_duration
+from pcode.controller import HOSTED_COMMANDS, MODEL_COMMANDS, SessionController, delivered_job
 from pcode.preferences import (
     EFFORTS,
     SETTINGS,
@@ -60,7 +59,6 @@ from pcode.runtime import (
     CacheBust,
     ChildPlan,
     ChildText,
-    CommandOutput,
     EditCompleted,
     Message,
     PlanPreview,
@@ -117,30 +115,6 @@ BRANCH_POLL_SECONDS = 30
 
 HOST_POLL_SECONDS = 2
 """How often an attached terminal looks at the other hosts, for the footer and notices."""
-
-# What works while the conversation runs in a session host. Everything else
-# reaches into a runtime this process does not have, so it is refused rather
-# than acting on nothing. Skills are prompts and always work.
-HOSTED_COMMANDS = {
-    "/help",
-    "/config",
-    "/quit",
-    "/status",
-    "/diffs",
-    "/switch",
-    "/stop",
-    "/restart",
-    "/resume",
-    "/show-tasks",
-    "/autohide-tasks",
-    "/show-thinking",
-    "/show-edits",
-    "/show-commands",
-    "/theme",
-    "/syntax",
-    "/theme-preview",
-    "/redraw",
-}
 
 
 class _PopupSuperseded(Exception):
@@ -263,7 +237,6 @@ class PreviewApp:
         # A side thread the viewer asked to bring into the conversation.
         self.bridge_requested: Bridge | None = None
         self.worker_view_requested = False
-        self.jobs_view_requested = False
         # The viewer follows answers that settle while it is open, so auto-open
         # has nothing to do then.
         self.aside_view_open = False
@@ -452,14 +425,7 @@ class PreviewApp:
                 ("on", "off"),
                 group="Session",
             ),
-            Command(
-                "/jobs",
-                "Browse shell jobs and their output; stop ID / stop all / watch ID / unwatch",
-                self.jobs,
-                free_arguments=True,
-                argument_provider=self.jobs_arguments,
-                group="Session",
-            ),
+            self.controller.registry.find("/jobs"),
             Command(
                 "/resend",
                 "Ask the model again from the last checkpoint, without a new message",
@@ -625,6 +591,10 @@ class PreviewApp:
     def finish_text(self) -> None:
         if self.output is not None:
             self.output.finish()
+
+    def show_output(self, event) -> None:
+        self.activity.command_outputs.pop(event.call_id, None)
+        self.activity.command_outputs[event.call_id] = event
 
     def drop_output(self, call_id: str) -> None:
         self.activity.command_outputs.pop(call_id, None)
@@ -871,138 +841,15 @@ class PreviewApp:
         self.runtime.resend_prompt()
         self.resend_requested = True
 
-    def refresh_jobs(self) -> bool:
-        """Recompute the jobs rows and the watched tail. Returns whether they changed.
-
-        Only running jobs belong here. Completion notices stay pending until
-        the turn ends (or the idle watcher reports them) without keeping a row.
-        """
-        registry = getattr(self.runtime, "jobs", None)
-        if registry is None:
-            return False
-        registry.refresh()
-        rows = []
-        for job in sorted(registry.jobs.values(), key=lambda job: job.started_at):
-            elapsed = format_duration(job.elapsed)
-            if job.running and not job.waiting:
-                rows.append(
-                    ("class:activity.job", f"\u27f3 {job.id} \u00b7 {job.label()} \u00b7 {elapsed}")
-                )
-        changed = rows != self.activity.jobs
-        self.activity.jobs = rows
-        return self._refresh_watched(registry) or changed
-
-    def _refresh_watched(self, registry) -> bool:
-        from pcode.shell import preview_text
-
-        key = WATCHED_PREFIX + self.activity.watched_job
-        job = registry.get(self.activity.watched_job) if self.activity.watched_job else None
-        if job is None or not job.running:
-            self.activity.watched_job = ""
-            return self.activity.command_outputs.pop(key, None) is not None
-        tail, _ = registry.read_output(job, max_bytes=OUTPUT_TAIL_BYTES // 2)
-        event = CommandOutput(key, job.command, preview_text(tail, final=True))
-        if self.activity.command_outputs.get(key) == event:
-            return False
-        self.activity.command_outputs.pop(key, None)
-        self.activity.command_outputs[key] = event
-        return True
-
-    def adopt_jobs(self) -> None:
-        """Take over what an earlier pcode left running, and say so."""
-        registry = getattr(self.runtime, "jobs", None)
-        adopted = registry.adopt_orphans() if registry is not None else []
-        if adopted:
-            self.transcript.note(
-                f"Adopted {len(adopted)} job{'s' if len(adopted) != 1 else ''} "
-                "still running from an earlier pcode; /jobs lists them."
-            )
-            for job in adopted:
-                self.transcript.note(job.summary())
-
-    def jobs_arguments(self) -> tuple[str, ...]:
-        """Complete `stop`/`watch` against jobs still running this session knows about."""
-        registry = getattr(self.runtime, "jobs", None)
-        if registry is None:
-            return ()
-        registry.refresh()
-        running = sorted(
-            (job for job in registry.jobs.values() if job.running), key=lambda job: job.started_at
-        )
-        return (
-            "unwatch",
-            "stop all",
-            *(f"stop {job.id}" for job in running),
-            *(f"watch {job.id}" for job in running),
-        )
-
-    def jobs(self, argument: str) -> None:
-        """Browse, watch, or stop the shell jobs this session started.
-
-        Jobs outlive the turn that started them and, deliberately, the session
-        itself, so the only way to know what is still running is to ask. Bare
-        `/jobs` opens the browser; the subcommands act without it.
-        """
-        registry = getattr(self.runtime, "jobs", None)
-        if registry is None:
-            raise ValueError("/jobs requires a live model session.")
-        registry.refresh()
-        action, _, target = argument.partition(" ")
-        # `list` predates the browser; it still opens it rather than failing.
-        if not action or action == "list":
-            if not registry.jobs:
-                self.transcript.note("No jobs have been started.")
-                return
-            self.jobs_view_requested = True
-            return
-        if action == "unwatch":
-            self.watch_job(None)
-            return
-        if action == "watch":
-            job = registry.get(target.strip())
-            if job is None:
-                raise ValueError(f"No job {target.strip()!r}. Run /jobs to browse them.")
-            if not job.running:
-                raise ValueError(f"[{job.id}] has finished; nothing to watch.")
-            self.watch_job(job)
-            self.transcript.note(f"Watching [{job.id}] {job.label()}; /jobs unwatch hides it.")
-            return
-        if action != "stop":
-            raise ValueError("/jobs takes stop ID, stop all, watch ID, or unwatch.")
-        target = target.strip()
-        if target == "all":
-            self.stop_jobs(None)
-        elif job := registry.get(target):
-            self.stop_jobs([job])
-        else:
-            raise ValueError(f"No job {target!r}. Run /jobs to browse them.")
-
-    def watch_job(self, job) -> None:
-        """Pin a running job's output tail into the preview, or unpin with None."""
-        self.activity.watched_job = job.id if job is not None else ""
-        self.refresh_jobs()
-
-    def stop_jobs(self, jobs) -> None:
-        """Stop these jobs, or every running one for None, and say so in scrollback."""
-        stopped = self.runtime.jobs.stop_all(jobs)
-        for job in stopped:
-            # Printed here, so the idle watcher does not repeat it.
-            job.announced.add("ui")
-            self.transcript.note(f"Stopped [{job.id}] {job.label()}")
-        if not stopped:
-            self.transcript.note("Nothing was running.")
-        # Now, not at the watcher's next tick: the rows answer this command.
-        self.refresh_jobs()
-
-    async def browse_jobs(self, output: TerminalOutput, session) -> None:
+    async def browse_jobs(self) -> None:
         from pcode.jobs_ui import JobBrowser
 
-        self.jobs_view_requested = False
+        output, session = self.output, self.prompt_session
         async with self.popup(output, session) as modal_input:
             browser = JobBrowser(
                 self.runtime.jobs,
-                stop=lambda job: self.stop_jobs([job]),
-                watch=self.watch_job,
+                stop=lambda job: self.controller.stop_jobs([job.id]),
+                watch=lambda job: self.controller.watch_job(job.id if job else None),
                 watched=lambda: self.activity.watched_job,
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
@@ -3157,8 +3004,6 @@ class PreviewApp:
                         controller.start_summary(request)
                 if self.worker_view_requested:
                     await self.read_workers(output, session)
-                if self.jobs_view_requested:
-                    await self.browse_jobs(output, session)
                 if self.tree_requested:
                     await self.choose_tree(output, session)
                 if self.session_requested:
@@ -3352,31 +3197,6 @@ class PreviewApp:
         controller.closing = lambda: not session.app.is_running
         session.app.style = DynamicStyle(lambda: self.transcript.prompt_style())
 
-        async def watch_jobs():
-            """Keep the jobs rows current, and report exits once the turn is over.
-
-            Running rows update busy or idle and disappear on completion.
-            Scrollback waits for idle, because a completion written mid-turn
-            would land inside the model's streaming text.
-            The model is told separately, at its next request, unless nothing
-            is going to make one: then the job's notice starts the turn itself.
-            Polling here costs one small file read per running job and
-            replaces the model doing the same thing with `sleep`.
-            """
-            await controller.ready.wait()
-            self.adopt_jobs()
-            while True:
-                changed = False
-                if not self.activity.busy and not self.activity.queued_prompts:
-                    changed = bool(controller.report_finished_jobs())
-                    prompt = controller.wake_prompt() if controller.live_task is None else None
-                    if prompt is not None:
-                        controller.submit(prompt, "wake")
-                # Refresh even while busy so completed jobs leave the live panel.
-                if self.refresh_jobs() or changed:
-                    session.app.invalidate()
-                await asyncio.sleep(1)
-
         async def watch_branch():
             """Keep the footer's branch current without a Git process every 2 s.
 
@@ -3424,7 +3244,7 @@ class PreviewApp:
             replay_pending_input(session.app)
             session.app.create_background_task(initialize())
             session.app.create_background_task(watch_branch())
-            session.app.create_background_task(watch_jobs())
+            session.app.create_background_task(controller.watch_jobs())
             session.app.create_background_task(output.run())
             session.app.create_background_task(controller.consume())
             session.app.create_background_task(controller.consume_commands())

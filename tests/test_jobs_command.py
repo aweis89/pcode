@@ -1,9 +1,11 @@
 """`/jobs`, and the terminal's side of job reporting."""
 
+import asyncio
 import shlex
 import sys
 import time
 from io import StringIO
+from unittest.mock import AsyncMock
 
 import pytest
 from rich.console import Console
@@ -32,24 +34,29 @@ def app_with_jobs():
     return app, app.runtime.jobs
 
 
+def run_jobs(app, argument):
+    """Run `/jobs ARGUMENT` the way the controller does."""
+    asyncio.run(app.controller.jobs(argument))
+
+
 def test_bare_jobs_opens_the_browser_only_when_there_is_something_to_browse(tmp_path):
-    app, jobs = app_with_jobs()
-    app.jobs("")
-    assert not app.jobs_view_requested
-    jobs.launch(command("pass"), cwd=tmp_path)
-    app.jobs("")
-    assert app.jobs_view_requested
-    app.jobs_view_requested = False
+    app, registry = app_with_jobs()
+    app.browse_jobs = AsyncMock()
+    run_jobs(app, "")
+    app.browse_jobs.assert_not_awaited()
+    registry.launch(command("pass"), cwd=tmp_path)
+    run_jobs(app, "")
+    app.browse_jobs.assert_awaited_once()
     # `list` predates the browser and still opens it.
-    app.jobs("list")
-    assert app.jobs_view_requested
+    run_jobs(app, "list")
+    assert app.browse_jobs.await_count == 2
 
 
 def test_jobs_stop_all_reports_each_stop_once(tmp_path):
     app, jobs = app_with_jobs()
     jobs.launch(command("pass"), cwd=tmp_path)
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
-    app.jobs("stop all")
+    run_jobs(app, "stop all")
     assert not live.running and live.outcome() == "stopped"
     # Stopping reported it, so the idle watcher must not say it again.
     assert app.controller.report_finished_jobs() == []
@@ -57,11 +64,11 @@ def test_jobs_stop_all_reports_each_stop_once(tmp_path):
 
 def test_jobs_arguments_offer_running_ids_for_stop_and_watch(tmp_path):
     app, jobs = app_with_jobs()
-    assert app.jobs_arguments() == ("unwatch", "stop all")
+    assert app.controller.jobs_arguments() == ("unwatch", "stop all")
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
     done = jobs.launch(command("pass"), cwd=tmp_path)
     until_finished(jobs, done)
-    assert app.jobs_arguments() == (
+    assert app.controller.jobs_arguments() == (
         "unwatch",
         "stop all",
         f"stop {live.id}",
@@ -73,9 +80,9 @@ def test_jobs_arguments_offer_running_ids_for_stop_and_watch(tmp_path):
 def test_jobs_rejects_unknown_actions_and_ids(tmp_path):
     app, jobs = app_with_jobs()
     with pytest.raises(ValueError, match="stop ID, stop all, watch ID, or unwatch"):
-        app.jobs("burn")
+        run_jobs(app, "burn")
     with pytest.raises(ValueError, match="No job 'j9'"):
-        app.jobs("stop j9")
+        run_jobs(app, "stop j9")
 
 
 def test_cancel_policy_is_set_for_the_registry_and_survives_a_bare_runtime():
@@ -87,7 +94,7 @@ def test_cancel_policy_is_set_for_the_registry_and_survives_a_bare_runtime():
     # A preview app without a live runtime has no registry; this must not raise.
     PreviewApp().controller.set_cancel_policy("stop")
     assert PreviewApp().controller.report_finished_jobs() == []
-    assert PreviewApp().refresh_jobs() is False
+    assert PreviewApp().controller.refresh_jobs() is False
     assert PreviewApp().controller.wake_prompt() is None
 
 
@@ -104,21 +111,21 @@ def until_finished(jobs, *watched):
 def test_jobs_rows_show_only_running_background_work(tmp_path):
     app, jobs = app_with_jobs()
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path, purpose="serving")
-    assert app.refresh_jobs() is True
+    assert app.controller.refresh_jobs() is True
     assert [text[:17] for _, text in app.activity.jobs] == ["\u27f3 j1 \u00b7 serving \u00b7 "]
     # A tool call blocking on it is already the spinner row's business.
     live.waiting = True
-    app.refresh_jobs()
+    app.controller.refresh_jobs()
     assert app.activity.jobs == []
     live.waiting = False
     failed = jobs.launch(command("import sys; sys.exit(2)"), cwd=tmp_path, background=True)
     until_finished(jobs, failed)
-    app.refresh_jobs()
+    app.controller.refresh_jobs()
     assert [text[:17] for _, text in app.activity.jobs] == ["\u27f3 j1 \u00b7 serving \u00b7 "]
     # Hiding the completed job must not consume its deferred completion notice.
     assert "ui" not in failed.announced
     assert [job.id for job in app.controller.report_finished_jobs()] == ["j2"]
-    app.refresh_jobs()
+    app.controller.refresh_jobs()
     assert [text[:17] for _, text in app.activity.jobs] == ["\u27f3 j1 \u00b7 serving \u00b7 "]
     jobs.stop(live)
 
@@ -128,7 +135,7 @@ def test_jobs_rows_exclude_older_exits(tmp_path):
     done = jobs.launch(command("import sys; sys.exit(3)"), cwd=tmp_path, background=True)
     until_finished(jobs, done)
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path, purpose="serving")
-    app.refresh_jobs()
+    app.controller.refresh_jobs()
     # Finished jobs must not occupy even an overflow row.
     assert [text.split(" \u00b7 ")[0] for _, text in app.activity.jobs] == [f"\u27f3 {live.id}"]
     assert app.activity.job_rows(1) == app.activity.jobs
@@ -161,18 +168,18 @@ def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
     )
     jobs.jobs[job.id] = job
     job.output_path.write_text("test output\n")
-    assert app.refresh_jobs() is True
+    assert app.controller.refresh_jobs() is True
     assert len(app.activity.jobs) == 1
 
     job.ended_at = job.started_at + 8.8
     job.stopped = outcome == "stopped"
     job.exit_code = None if job.stopped else 0 if outcome == "success" else 2
-    assert app.refresh_jobs() is True
+    assert app.controller.refresh_jobs() is True
     assert app.activity.jobs == []
     assert app.activity.job_rows(3) == []
     assert job.announced == set()
     assert stream.getvalue() == ""
-    assert app.refresh_jobs() is False
+    assert app.controller.refresh_jobs() is False
 
     # The turn-end/idle reporter, not the live-row refresh, owns the completion.
     app.activity.busy = False
@@ -268,12 +275,12 @@ def test_jobs_watch_pins_the_tail_until_the_job_ends(tmp_path):
         command("import time; print('serving on 8000', flush=True); time.sleep(60)"), cwd=tmp_path
     )
     with pytest.raises(ValueError, match="No job 'j9'"):
-        app.jobs("watch j9")
-    app.jobs("watch j1")
+        run_jobs(app, "watch j9")
+    run_jobs(app, "watch j1")
     assert app.activity.watched_job == "j1"
 
     def pinned():
-        app.refresh_jobs()
+        app.controller.refresh_jobs()
         preview = app.activity.command_outputs.get("job:j1")
         return preview is not None and "serving on 8000" in preview.output
 
@@ -282,7 +289,7 @@ def test_jobs_watch_pins_the_tail_until_the_job_ends(tmp_path):
         time.sleep(0.02)
     assert pinned()
     jobs.stop(live)
-    app.refresh_jobs()
+    app.controller.refresh_jobs()
     assert app.activity.watched_job == "" and "job:j1" not in app.activity.command_outputs
     with pytest.raises(ValueError, match="has finished"):
-        app.jobs("watch j1")
+        run_jobs(app, "watch j1")
