@@ -22,8 +22,10 @@ same commit as the change.
 Phase 0 is done: the spike and an opt-in demo (`pcode --host`, `/switch`,
 `/stop`, `--attach`, `--hosts`). See [what works](background-sessions.md#what-works-in-a-hosted-session).
 The small items below are done except a previous-session key and job wake-ups,
-which wait for Phase 1. Phase 1 has started: the prompt queue is out of
-`run_async`; the rest of the turn loop is next.
+which wait for Phase 1. Phase 1 is under way: `controller.SessionController` owns
+the prompt and command queues, send modes, cancel, steering, and busy accounting.
+`run_async` still runs the loops (`consume`, `consume_commands`) against it; the
+turn loop is next.
 In the demo the terminal still runs all session logic itself, against
 `RemoteRuntime`, a stand-in that forwards `stream` to the host. That is why a
 dozen commands are refused there, and it is what the refactor replaces.
@@ -59,10 +61,13 @@ Move what `run_async`'s nested functions do today into `pcode.controller.Session
 `PreviewApp` as its view. Land it in slices, each keeping `make test-all` green.
 
 - [ ] Define `SessionView`: the transcript and activity calls session logic makes, with
-      serializable arguments only.
+      serializable arguments only. Started: it lists what the controller calls so far and
+      grows with each slice. The controller reaches what has not moved yet (shell-wait
+      policy, side questions, redraw) through callables passed to it.
 - [x] Prompt queue, generations, and its live-panel mirror: `controller.PromptQueue`
-- [ ] Send modes (steering, queue, interrupt) and `submit`
-- [ ] `clear_queue`, `cancel`, busy accounting
+- [x] Send modes (steering, queue, interrupt) and `submit`: `SessionController.submit`,
+      `command`
+- [x] `clear_queue`, `cancel`, busy accounting (`refresh_busy`, `turn_ended`)
 - [ ] Turn loop (`consume`), `run_live`, shell `!commands` (`run_shell`)
 - [ ] History tasks (`/compact`, side-thread summary) and MCP tasks
 - [ ] Job watching and wake-ups (`watch_jobs`)

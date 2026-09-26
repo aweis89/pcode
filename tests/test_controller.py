@@ -3,7 +3,8 @@
 import asyncio
 from types import SimpleNamespace
 
-from pcode.controller import PromptQueue
+from pcode.controller import PromptQueue, SessionController
+from pcode.ui import Activity
 
 
 def panel():
@@ -56,5 +57,149 @@ def test_clear_starts_a_generation_that_makes_fetched_items_stale():
         prompts.put("after", "steering")
         # Steering from before a clear is never delivered.
         assert prompts.take_steering() == ["after"]
+
+    asyncio.run(run())
+
+
+class Session:
+    """A controller with every hook recorded, and a view that keeps what it was told."""
+
+    def __init__(self, asides: int = 0) -> None:
+        self.shown: list[tuple[str, str]] = []
+        self.policies: list[str] = []
+        self.released = 0
+        self.redraws = 0
+        self.activity = Activity()
+        self.controller = SessionController(
+            self.activity,
+            self,
+            cancel_policy=self.policies.append,
+            release_waits=self.release,
+            stop_asides=lambda: asides,
+            changed=self.redraw,
+        )
+
+    def release(self) -> None:
+        self.released += 1
+
+    def redraw(self) -> None:
+        self.redraws += 1
+
+    def user(self, text: str) -> None:
+        self.shown.append(("user", text))
+
+    def note(self, text: str) -> None:
+        self.shown.append(("note", text))
+
+    def warning(self, text: str) -> None:
+        self.shown.append(("warning", text))
+
+    def cancelled(self) -> None:
+        self.shown.append(("cancelled", ""))
+
+
+async def turn(controller: SessionController) -> asyncio.Event:
+    """Start a stand-in turn that runs until cancelled or released."""
+    release = asyncio.Event()
+    controller.live_task = asyncio.create_task(release.wait())
+    await asyncio.sleep(0)
+    return release
+
+
+def test_interrupt_cancels_the_turn_but_keeps_its_own_message():
+    async def run():
+        session = Session()
+        controller = session.controller
+        await turn(controller)
+        controller.submit("waiting behind the turn", "queue")
+        controller.submit("do this instead", "interrupt")
+        # The shell wait is abandoned, not killed: the model is being redirected.
+        assert session.policies == ["detach"]
+        assert controller.live_task.cancelling()
+        assert ("note", "Cleared 1 queued message(s).") in session.shown
+        assert session.activity.queued_prompts == ["do this instead"]
+        await asyncio.gather(controller.live_task, return_exceptions=True)
+        controller.live_task = None
+        controller.turn_ended(False)
+        assert session.activity.queued_prompts == ["do this instead"]
+        assert session.activity.busy and not controller.interrupt_pending
+
+    asyncio.run(run())
+
+
+def test_a_failed_turn_drops_what_was_queued_behind_it():
+    async def run():
+        session = Session()
+        controller = session.controller
+        controller.submit("next", "queue")
+        controller.turn_ended(False)
+        assert session.activity.queued_prompts == [] and not session.activity.busy
+        controller.submit("next", "queue")
+        controller.turn_ended(True)
+        assert session.activity.queued_prompts == ["next"] and session.activity.busy
+
+    asyncio.run(run())
+
+
+def test_steering_releases_a_shell_wait_only_while_a_turn_runs():
+    async def run():
+        session = Session()
+        controller = session.controller
+        controller.submit("idle, so it just queues", "steering")
+        assert session.released == 0
+        release = await turn(controller)
+        controller.submit("look at this", "steering")
+        assert session.released == 1
+        assert controller.take_steering() == ["idle, so it just queues", "look at this"]
+        assert session.shown == [("user", "idle, so it just queues"), ("user", "look at this")]
+        assert session.redraws == 1 and session.activity.prompt == "look at this"
+        release.set()
+
+    asyncio.run(run())
+
+
+def test_cancel_stops_work_then_side_questions_then_just_says_so():
+    async def run():
+        session = Session()
+        controller = session.controller
+        await turn(controller)
+        controller.submit("queued", "queue")
+        controller.cancel()
+        assert session.policies == ["stop"] and controller.live_task.cancelling()
+        assert session.shown == [("note", "Cleared 1 queued message(s).")]
+        await asyncio.gather(controller.live_task, return_exceptions=True)
+
+        session = Session(asides=2)
+        session.controller.cancel()
+        assert session.shown == [("note", "Stopped 2 side question(s).")]
+
+        session = Session()
+        session.activity.busy = True
+        session.controller.cancel()
+        assert session.shown == [("cancelled", "")] and not session.activity.busy
+
+    asyncio.run(run())
+
+
+def test_model_commands_hold_the_session_busy_until_they_start():
+    async def run():
+        session = Session()
+        controller = session.controller
+        controller.command("/compact keep the plan", tag="popup")
+        controller.command("/mcp enable docs")
+        assert session.activity.busy and not controller.command_idle.is_set()
+        generation, text, idle, tag = await controller.commands.get()
+        assert (generation, text, idle, tag) == (0, "/compact keep the plan", True, "popup")
+        controller.command_started(text)
+        # The MCP command behind it still holds the session.
+        assert session.activity.busy
+        controller.clear_queue()
+        assert session.shown == [("warning", "Pending MCP enable command cancelled.")]
+        assert not controller.commands_pending
+        await controller.commands.get()
+        controller.command_finished()
+        assert controller.command_idle.is_set()
+        controller.refresh_busy()
+        assert not session.activity.busy
 
     asyncio.run(run())
