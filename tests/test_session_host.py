@@ -528,6 +528,20 @@ def test_a_terminal_on_another_protocol_is_refused(tmp_path, host_dir):
     asyncio.run(run())
 
 
+def test_switch_says_what_it_cannot_switch_to(host_dir):
+    output = StringIO()
+    app = PreviewApp(model="function:script", console=Console(file=output, width=140))
+    with pytest.raises(ValueError, match="No previous session"):
+        app.switch("-")
+    app.switch("zzzz")
+    asyncio.run(app.switch_session(None, None))
+    assert "No running session host matches 'zzzz'" in output.getvalue()
+    app.previous_host = "gone1234"
+    app.switch("-")
+    asyncio.run(app.switch_session(None, None))
+    assert "The previous session (gone1234) is no longer running" in output.getvalue()
+
+
 def test_switch_leaves_a_running_turn_in_its_host_and_comes_back_to_it(tmp_path, host_dir):
     """The whole terminal: attach, switch away mid-turn, switch back, detach on quit."""
 
