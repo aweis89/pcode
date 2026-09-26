@@ -1324,7 +1324,16 @@ class PreviewApp:
         self.session_info_requested = False
         rows = await self.controller.query("session_overview")
         if self.hosted:
-            rows = [("Host", f"{self.runtime.id} (pid {self.runtime.pid})"), *rows]
+            from pcode.host_protocol import find_host
+            from pcode.host_ui import status_rows
+
+            try:
+                entry = await asyncio.to_thread(find_host, self.runtime.id)
+            except LookupError:
+                host = [("Host", f"{self.runtime.id} (pid {self.runtime.pid}) · not running")]
+            else:
+                host = status_rows(entry)
+            rows = [*host, *rows]
         async with self.popup(output, session) as modal_input:
             dialog = session_info_dialog(
                 rows,
@@ -1741,6 +1750,7 @@ class PreviewApp:
             on_effort=self.adjust_effort,
             on_send_mode=self.cycle_send_mode,
             on_model=lambda: submit("/model"),
+            on_previous_session=lambda: submit("/switch -"),
             bottom_toolbar=self.toolbar,
             vi_mode=load_preferences().get("editing_mode", "emacs") == "vi",
         )

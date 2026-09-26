@@ -377,6 +377,39 @@ def test_session_commands_run_in_the_host_and_ask_the_terminal_that_sent_them(
     asyncio.run(run())
 
 
+def test_btw_model_names_complete_as_soon_as_a_terminal_attaches(tmp_path, host_dir, monkeypatch):
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from pcode.commands import SlashCompleter
+
+    catalog = ["anthropic:claude-opus", "openai-codex:gpt-6"]
+    monkeypatch.setattr("pcode.models.active_providers", lambda model: {"anthropic"})
+    monkeypatch.setattr("pcode.models.model_catalog", lambda providers, current: list(catalog))
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            view = View()
+            # No await after connecting: the welcome carries the catalog.
+            controller, welcome = await RemoteController.connect(host.socket, view, Activity())
+            completer = SlashCompleter(controller.registry)
+            found = completer.get_completions(Document("/btw $opus"), CompleteEvent())
+            assert [item.text for item in found] == ["$anthropic:claude-opus"]
+            await controller.start(welcome)
+            # A new model changes the catalog; the terminal's follows with the state.
+            catalog.append("anthropic:claude-sonnet")
+            host.controller._model_suggestions = None
+            host.controller.model = "anthropic:claude-sonnet"
+            host.push_state()
+            await until(lambda: "anthropic:claude-sonnet" in controller.model_suggestions())
+            controller.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
 def test_a_terminal_on_another_protocol_is_refused(tmp_path, host_dir):
     async def run():
         host = await start_host("aaaa1111", tmp_path, Script())
@@ -431,7 +464,8 @@ def test_switch_leaves_a_running_turn_in_its_host_and_comes_back_to_it(tmp_path,
                     await until(lambda: [e.id for e in app.hosts] == ["aaaa1111"])
                     pipe.send_text("hello b\r")
                     await seen("Echo: hello b")
-                    pipe.send_text("/switch -\r")
+                    # Ctrl+^ is `/switch -`: back to the session shown before.
+                    pipe.send_text("\x1e")
                     await seen("Switched to session aaaa1111")
                     assert app.previous_host == "bbbb2222"
                     # Back mid-turn: the terminal shows A's turn again.
@@ -599,6 +633,20 @@ def test_picker_puts_unseen_sessions_first_and_flags_old_code():
     assert host_row(fresh, None, now=1, code="2").endswith("old code")
     current = HostEntry("cur00000", 1, "m", "/w/e", title="current", code="2")
     assert not host_row(current, None, now=1, code="2").endswith("old code")
+
+
+def test_status_describes_the_host_process():
+    from pcode.host_ui import status_rows
+
+    entry = HostEntry(
+        "abcd1234", 42, "m", "/w", started=0, attached=2, log="/h/abcd1234.log", code="1"
+    )
+    rows = dict(status_rows(entry, now=7200, code="1"))
+    assert rows["Host"] == "abcd1234 · pid 42 · started 2h ago"
+    assert rows["Attached"] == "2 terminals attached"
+    assert rows["Host log"] == "/h/abcd1234.log"
+    assert "Host code" not in rows
+    assert "/restart" in dict(status_rows(entry, now=0, code="newer"))["Host code"]
 
 
 def test_restart_stops_keeping_the_worktree_and_resumes_the_session(tmp_path):
