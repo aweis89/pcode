@@ -25,12 +25,16 @@ from rich.text import Text
 from pcode.aside import (
     EFFORT_MARK,
     MODEL_MARK,
+    Aside,
     Asides,
+    Bridge,
     SideTarget,
     effort_fragment,
+    exchanges,
     model_fragment,
     model_labels,
     parse_models,
+    summary_request,
 )
 from pcode.cli import ask, restore_stdin
 from pcode.commands import Command, CommandRegistry
@@ -204,6 +208,8 @@ class PreviewApp:
         self.aside_requested: tuple[list[SideTarget], str] | None = None
         self._model_suggestions: tuple[str | None, float, list[str]] | None = None
         self.aside_view_requested = False
+        # A side thread the viewer asked to bring into the conversation.
+        self.bridge_requested: Bridge | None = None
         self.worker_view_requested = False
         self.jobs_view_requested = False
         # The viewer follows answers that settle while it is open, so auto-open
@@ -2125,22 +2131,16 @@ class PreviewApp:
             settings = with_effort(self.model, agent.model, agent.model_settings, target.effort)
             return {"settings": settings}
 
-        def work_on(options: dict):
-            async def work(aside) -> None:
-                def report(answer: str, activity: str) -> None:
-                    self.asides.update(aside, answer=answer, activity=activity)
-
-                await self.runtime.aside(question, report=report, **options)
-
-            return work
-
+        tree = getattr(self.runtime, "tree", None)
         for target in models:
             self.asides.start(
                 question,
-                work_on(options_for(target)),
+                self._aside_work(question, options_for(target)),
                 model=target.model,
                 label=labels[target],
                 effort=target.effort,
+                conversation=getattr(self.runtime, "conversation_id", ""),
+                base=tree.active if tree is not None else None,
             )
         if others:
             names = ", ".join(dict.fromkeys(target.model for target in others))
@@ -2155,6 +2155,95 @@ class PreviewApp:
                 "Asking beside the conversation: the turn keeps running and "
                 "this question does not join it. /btw opens the answer."
             )
+
+    def _aside_work(self, question: str, options: dict):
+        """The background run for one side question, streaming into its record."""
+
+        async def work(aside):
+            def report(answer: str, activity: str) -> None:
+                self.asides.update(aside, answer=answer, activity=activity)
+
+            return await self.runtime.aside(question, report=report, **options)
+
+        return work
+
+    def follow_up_aside(self, thread: str, question: str) -> None:
+        """Ask `question` as a follow-up in a side question's thread.
+
+        It continues from the thread's newest answer, on the model and effort
+        that answered it; see `AgentRuntime.aside`. Raises `ValueError` when
+        there is nothing to continue yet, which the viewer shows as is.
+        """
+        follows = self.asides.follows(thread)
+        self.asides.start(
+            question,
+            self._aside_work(question, {"after": follows.reply}),
+            model=follows.model,
+            label=follows.label,
+            effort=follows.effort,
+            thread=thread,
+        )
+
+    def check_bridge(self, thread: str) -> Aside:
+        """The answer a thread would be brought into the conversation from.
+
+        Raises `ValueError` saying why it cannot be yet: like forking in
+        /tree, changing the conversation waits for the running turn, and a
+        thread from another conversation has nowhere here to go.
+        """
+        if self.activity.busy or self.activity.queued:
+            raise ValueError("Adding to the conversation waits for the running turn")
+        follows = self.asides.follows(thread)
+        root = self.asides.thread(thread)[0]
+        tree = getattr(self.runtime, "tree", None)
+        if (
+            tree is None
+            or root.conversation != getattr(self.runtime, "conversation_id", None)
+            or (root.base is not None and root.base not in tree.nodes)
+        ):
+            raise ValueError("This thread was asked in another conversation")
+        return follows
+
+    async def merge_thread(self, thread: str) -> None:
+        """Add a side thread to the conversation tree where it was asked."""
+        from pcode.diagnostics import redact
+
+        follows = self.check_bridge(thread)
+        asked = self.asides.thread(thread)
+        messages = follows.reply.messages
+        steps = [
+            (aside.question, aside.answer, messages[:end])
+            for aside, end in exchanges(asked, messages)
+        ]
+        if not steps:
+            raise ValueError("Nothing in that side thread to merge.")
+        moved = await self.runtime.merge_aside(steps, asked[0].base)
+        follows.bridged = "merged"
+        count = f"{len(steps)} side question{'s' if len(steps) > 1 else ''}"
+        if moved:
+            for question, answer, _ in steps:
+                self.transcript.user(redact(question))
+                self.transcript.events((Message(redact(answer)),))
+            self.transcript.note(
+                f"Merged {count} into the conversation, which continues from the last answer."
+            )
+        else:
+            self.transcript.note(
+                f"Merged {count} into /tree as a branch where the thread was asked; the "
+                "conversation stays where it is. /tree switches to it."
+            )
+
+    async def summarize_thread(self, follows: Aside, instructions: str) -> None:
+        """Add a summary of `follows`'s thread to the conversation, and show it."""
+        from pcode.diagnostics import redact
+
+        asked = self.asides.thread(follows.thread)
+        questions = [aside.question for aside, _ in exchanges(asked, follows.reply.messages)]
+        request = summary_request(questions, instructions)
+        summary = await self.runtime.summarize_aside(follows.reply, request, instructions)
+        follows.bridged = "summarized"
+        self.transcript.user(redact(request))
+        self.transcript.events((Message(redact(summary)),))
 
     def aside_completions(self, argument: str):
         """Complete a `$MODEL` word in `/btw` arguments from the /model catalog.
@@ -2236,6 +2325,8 @@ class PreviewApp:
             async with self.popup(output, session) as modal_input:
                 browser = AsideBrowser(
                     self.asides,
+                    ask=self.follow_up_aside,
+                    check_bridge=self.check_bridge,
                     selected=latest.id if latest else None,
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,
@@ -2244,7 +2335,7 @@ class PreviewApp:
                     output=session.app.output,
                     style=session.app.style,
                 )
-                await browser.run()
+                self.bridge_requested = await browser.run()
         finally:
             self.aside_view_open = False
 
@@ -3086,33 +3177,63 @@ class PreviewApp:
             )
 
         def start_compact(focus):
+            start_history_task(
+                self.runtime.compact(focus),
+                # Label the work instead of echoing "/compact <focus>", which
+                # reads like the command was typed as part of a prompt.
+                label=SYSTEM_COMMAND_LABELS["/compact"],
+                detail=focus,
+                status="Compacting context…",
+                note="Compacting context with the current model. Ctrl+C cancels.",
+                done=lambda result: result.description(),
+                cancelled="Compaction cancelled; history unchanged.",
+                failed="Compaction failed",
+            )
+
+        def start_summary(request: Bridge):
+            # Checked before the task marks the session busy, which would refuse it.
+            follows = self.check_bridge(request.thread)
+            start_history_task(
+                self.summarize_thread(follows, request.instructions),
+                label="Summarizing side thread",
+                detail=request.instructions,
+                status="Summarizing side thread…",
+                note="Summarizing the side thread into the conversation. Ctrl+C cancels.",
+                done=lambda result: "Side thread summary added to the conversation.",
+                cancelled="Summary cancelled; the conversation is unchanged.",
+                failed="Side thread summary failed",
+            )
+
+        def start_history_task(work, *, label, detail, status, note, done, cancelled, failed):
+            """Run work that rewrites the conversation's history, holding prompts back.
+
+            Prompts typed meanwhile queue behind it on `compact_idle`, the way a
+            turn would, so nothing reads the history while it changes. `done`
+            turns the result into the closing note.
+            """
             nonlocal compact_task
             compact_idle.clear()
             self.activity.busy = True
-            self.activity.status = "Compacting context…"
-            # Label the work instead of echoing "/compact <focus>", which reads
-            # like the command was typed as part of a prompt.
-            self.activity.start_prompt(
-                SYSTEM_COMMAND_LABELS["/compact"], kind="system", detail=focus
-            )
-            self.transcript.note("Compacting context with the current model. Ctrl+C cancels.")
+            self.activity.status = status
+            self.activity.start_prompt(label, kind="system", detail=detail)
+            self.transcript.note(note)
 
             def finished(task):
                 nonlocal compact_task
                 success = False
                 try:
                     result = task.result()
-                    self.transcript.note(result.description())
+                    self.transcript.note(done(result))
                     self.activity.finish_prompt("done")
                     success = True
                 except asyncio.CancelledError:
                     self.activity.finish_prompt("cancelled")
-                    self.transcript.warning("Compaction cancelled; history unchanged.")
+                    self.transcript.warning(cancelled)
                 except Exception as error:
                     from pcode.live import error_message
 
                     self.activity.finish_prompt("failed")
-                    self.transcript.error(error_message(error), title="Compaction failed")
+                    self.transcript.error(error_message(error), title=failed)
                 finally:
                     if not success:
                         clear_queue()
@@ -3126,7 +3247,7 @@ class PreviewApp:
                     compact_idle.set()
                     session.app.invalidate()
 
-            compact_task = asyncio.create_task(self.runtime.compact(focus))
+            compact_task = asyncio.create_task(work)
             compact_task.add_done_callback(finished)
 
         async def consume_commands():
@@ -3285,6 +3406,12 @@ class PreviewApp:
                             await self.start_aside(question, models)
                         if self.aside_view_requested:
                             await self.read_asides(output, session)
+                        if self.bridge_requested is not None:
+                            request, self.bridge_requested = self.bridge_requested, None
+                            if request.action == "merge":
+                                await self.merge_thread(request.thread)
+                            else:
+                                start_summary(request)
                         if self.worker_view_requested:
                             await self.read_workers(output, session)
                         if self.jobs_view_requested:

@@ -207,6 +207,8 @@ class TreeBrowser:
                 blocks.append(Text(""))
                 self._anchors[(identity, True)] = len(blocks)
                 blocks.append(TaskPrompt(literal(node.prompt)))
+                if node.kind == "aside":
+                    blocks.append(Text("  from a /btw side thread", style="dim"))
             blocks.append(Text(""))
             self._anchors[(identity, False)] = len(blocks)
             if node.kind == "compaction":

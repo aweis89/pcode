@@ -95,7 +95,7 @@ def test_a_side_question_repeats_the_turns_request_prefix_byte_for_byte(tmp_path
 
     async def run():
         [event async for event in runtime.stream("Main task")]
-        assert await runtime.aside("Why this file?") == "Side answer."
+        assert (await runtime.aside("Why this file?")).answer == "Side answer."
 
     asyncio.run(run())
     *main, side = requests
@@ -150,7 +150,7 @@ def test_a_side_question_cannot_change_the_plan_or_delegate_but_still_answers(tm
 
     async def run():
         await runtime.plan_store.set_items([PlanItem(content="Real plan", status="pending")])
-        assert await runtime.aside("What is left?") == "Answered anyway."
+        assert (await runtime.aside("What is left?")).answer == "Answered anyway."
         assert [item.content for item in await runtime.plan_store.get_items()] == ["Real plan"]
 
     asyncio.run(run())
@@ -280,14 +280,14 @@ def test_aside_answers_while_a_turn_runs_and_records_nothing(tmp_path):
         )
         released.set()
         events = await main
-        assert answer == "Answer: Why this file?"
+        assert answer.answer == "Answer: Why this file?"
         assert reports[-1] == ("Answer: Why this file?", "")
         assert Message("Main answer.") in events
         # Mid-turn the question joins the request in flight rather than following
         # it as a second user message, which providers reject.
         assert side_requests == [1]
         # Idle, the conversation ends on an answer, so it is asked normally.
-        assert await runtime.aside("And now?") == "Answer: And now?"
+        assert (await runtime.aside("And now?")).answer == "Answer: And now?"
         assert side_requests == [1, 3]
         # No node, no journal record, and the question never reaches history.
         assert len(runtime.tree.nodes) == 1
