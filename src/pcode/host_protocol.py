@@ -38,7 +38,7 @@ from pcode.runtime import (
 
 # Bumped on any incompatible message change. An editable install lets a host
 # outlive the code that started it, so a mismatch is refused, not guessed at.
-PROTOCOL = 1
+PROTOCOL = 2
 
 # asyncio's default line limit is 64 KiB, and one tool result or an attach
 # snapshot of a long conversation is far larger than that.

@@ -115,6 +115,25 @@ Move what `run_async`'s nested functions do today into `pcode.controller.Session
 
 ### Phase 3: controller over the socket
 
+How it works (protocol 2, `pcode.rpc` on the host socket):
+
+- The host runs a `SessionController` whose view is `HostView`. Fire-and-forget
+  view calls go to every attached terminal and into the attach buffer; popups and
+  handed-back commands are requests to the terminal whose command is running.
+- The host's `Activity` is a `MirroredActivity`: an assignment to a session field
+  sends `state(changes)`. `session_changed()` makes the host send
+  `session_state(...)` (model, effort, context, session directory, commands and
+  their completions) when it differs from what was last sent.
+- The terminal's controller is a `RemoteController`: intents are notifications,
+  data is `await query(name, ...)`. Its `runtime` is a `HostedSession` that reads
+  the host's journal with `SessionJournal.read`, so replay, `/tree`, `/tools`,
+  `/diffs` and `/links` work from the same files.
+- Attaching: `hello`, then `welcome` with the session state, the session fields
+  of `Activity`, the side questions, the journal offset where the running turn
+  began, and every view call since then. The terminal replays the journal to that
+  offset and applies the calls.
+
+
 - [ ] Protocol v2 carrying intents, queries, and updates; the host runs the controller
 - [ ] Terminal-side client replaces `RemoteRuntime`; delete `HOSTED_COMMANDS`
 - [ ] Run the app-level tests against both the in-process and socket transports

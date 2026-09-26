@@ -242,6 +242,10 @@ class JobRegistry:
         self._home.mkdir(parents=True, exist_ok=True)
         return self._home
 
+    def home(self) -> Path | None:
+        """Where this registry publishes its jobs (`registry.json`), or None when ephemeral."""
+        return self._directory()
+
     def _save(self) -> None:
         home = self._directory()
         if home is None:

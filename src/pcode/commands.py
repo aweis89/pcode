@@ -38,6 +38,17 @@ class CommandRegistry:
         self.commands.append(command)
         self._lookup.update((name, command) for name in names)
 
+    def replace(self, command: Command) -> None:
+        """Swap in `command` for the one registered under its name, keeping its place."""
+        current = self._lookup.get(command.name)
+        if current is None:
+            self.register(command)
+            return
+        self.commands[self.commands.index(current)] = command
+        for alias in (current.name, *current.aliases):
+            self._lookup.pop(alias, None)
+        self._lookup.update((name, command) for name in (command.name, *command.aliases))
+
     def unregister(self, name: str) -> None:
         """Remove a command and its aliases; unknown names are ignored."""
         command = self._lookup.get(name)
