@@ -9,7 +9,8 @@ Every interactive session runs in a *session host*: a headless pcode process
 that owns the conversation (the agent, its tools, the journal) while the
 terminal only draws it. The terminal can then leave, switch to another session,
 or close, and the work carries on. `--no-host` (or `session_host off`) runs a
-session inside the terminal instead, as `--print` always does.
+session inside the terminal instead, as `--print` does unless it is given
+`--attach` (see [Scripting a running host](#scripting-a-running-host)).
 
 ```sh
 pcode                            # start a session in a host and attach to it
@@ -40,6 +41,34 @@ Inside a hosted session:
 - `/stop` ends this session's host and quits, asking about the worktree the way a
   local exit does. Plain quitting (Ctrl+D, `/quit`, or closing the terminal)
   only detaches.
+
+### Scripting a running host
+
+`--attach` with `--print` sends one message or command to a running host
+without opening the editor, then detaches. The host keeps running, and any
+terminal attached to it sees the turn as usual.
+
+```sh
+pcode --attach 3f9c -p "Run the tests and summarize failures"   # reply on stdout
+pcode --attach -p /compact                                       # a session command
+pcode --attach 3f9c -p /stop                                     # end the host
+```
+
+- A message waits behind whatever the host is already doing, then runs as its
+  own turn. Only that turn is printed: the reply on stdout, tools and notes on
+  stderr, as for a local `--print`. The exit status says whether it succeeded,
+  and it fails if a Ctrl+C elsewhere clears it from the queue before it runs.
+- A session command (`/compact`, `/effort high`, `/model NAME`, ...) runs in the
+  host, and pcode exits once it has, compaction included. It exits non-zero if
+  the command reports an error or a warning, such as `/compact` refused while a
+  turn runs. A command that opens a picker (a bare `/model`) fails, since nobody
+  is there to pick. A skill command's turn is queued in the host but not waited
+  for.
+- `/stop` ends the host. It tidies its own worktree, keeping unmerged work,
+  because nobody is there to ask. Other terminal commands (`/tree`, `/switch`,
+  ...) need the editor and are refused.
+- Ctrl+C cancels the message's turn once it is running. Before that, it only
+  detaches and the message stays queued.
 
 The footer counts the other running sessions, how many are working, and how
 many finished while nobody was looking (*new*; the picker lists those first).

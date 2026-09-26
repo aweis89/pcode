@@ -16,7 +16,6 @@ from prompt_toolkit.input import create_input
 from prompt_toolkit.styles import DynamicStyle
 from rich.cells import cell_len
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.text import Text
 
@@ -44,21 +43,13 @@ from pcode.preferences import (
 )
 from pcode.runtime import (
     CacheBust,
-    ChildPlan,
-    ChildText,
     EditCompleted,
     Message,
-    PlanPreview,
-    PlanUpdated,
     PreviewRuntime,
-    RunStatus,
-    TextDelta,
-    Thinking,
-    ThinkingDelta,
     ToolSummary,
 )
 from pcode.shell_mode import shell_command
-from pcode.stream_display import present_events, present_stream_event
+from pcode.stream_display import PrintedReply, present_events, present_stream_event
 from pcode.theme import THEMES, replay_pending_input
 from pcode.tool_display import plain
 from pcode.ui import (
@@ -1588,7 +1579,7 @@ class PreviewApp:
         finally:
             self._command_popup_generation = None
 
-    async def after_command(self) -> None:
+    async def after_command(self, tag=None) -> None:
         await self.output.flush()
         if not self.running and self.prompt_session.app.is_running:
             self.prompt_session.app.exit()
@@ -1936,29 +1927,15 @@ class PreviewApp:
         from pcode.live import error_message
 
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
-        stdout = sys.stdout if stdout is None else stdout
-        reply = Console(file=stdout, theme=self.transcript.rich_theme)
-        # Rendering replaces token-by-token output with settled blocks, so it
-        # must not be chosen for a destination that cannot display it.
-        console = reply if reply.is_terminal else None
-
-        def write_reply(markdown: str, *, streamed: bool) -> None:
-            """Settle one block of reply text; `streamed` means its source is already out."""
-            if console is not None:
-                console.print(Markdown(markdown, code_theme=self.transcript.code_theme))
-                console.print()
-                return
-            if not streamed:
-                stdout.write(markdown)
-            if not markdown.endswith("\n"):
-                stdout.write("\n")
-            stdout.write("\n")
-            stdout.flush()
-
+        reply = PrintedReply(
+            sys.stdout if stdout is None else stdout,
+            transcript=self.transcript,
+            present=self.present_events,
+        )
         if not self.model:
             for event in self.preview.reply(prompt):
                 if isinstance(event, Message):
-                    write_reply(event.markdown, streamed=False)
+                    reply.write(event.markdown)
             return True
         try:
             await self._initialize_runtime()
@@ -1972,47 +1949,21 @@ class PreviewApp:
             self.runtime.retry_notice = self.transcript.note
         if hasattr(self.runtime, "warning_notice"):
             self.runtime.warning_notice = self.transcript.warning
-        # Text streamed since the last settled message, so a turn that ends
-        # mid-block still prints what arrived.
-        block = ""
         try:
             async with aclosing(self.runtime.stream(prompt)) as stream:
                 async for event in stream:
-                    if isinstance(event, TextDelta):
-                        block += event.text
-                        if console is None:
-                            stdout.write(event.text)
-                            stdout.flush()
-                    elif isinstance(event, Message):
-                        # Deltas usually carried this text already; a message
-                        # without them (a structured result) is written whole.
-                        write_reply(
-                            event.markdown or block,
-                            streamed=console is None and bool(block),
-                        )
-                        block = ""
-                    elif isinstance(event, Thinking):
-                        self.transcript.events((event,))
-                    elif isinstance(
-                        event,
-                        (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated, ChildPlan, ChildText),
-                    ):
-                        continue
-                    else:
-                        self.present_events((event,))
-                        if (job_id := delivered_job(event)) is not None:
-                            self.controller.report_delivered_job(job_id)
+                    reply.event(event)
+                    if (job_id := delivered_job(event)) is not None:
+                        self.controller.report_delivered_job(job_id)
         except Exception as error:
-            if block:
-                write_reply(block, streamed=console is None)
+            reply.settle()
             self.controller.report_finished_jobs()
             self.transcript.error(error_message(error), title="Agent failed")
             saved = getattr(self.runtime, "session", None)
             if saved is not None:
                 self.transcript.note(f"Session and diagnostics: {saved.directory}")
             return False
-        if block:
-            write_reply(block, streamed=console is None)
+        reply.settle()
         self.controller.report_finished_jobs()
         self.print_resume_hint()
         return True
@@ -2421,6 +2372,28 @@ def _run_hosted(args: argparse.Namespace) -> None:
         _tidy_stopped_host(app)
 
 
+def _print_hosted(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """`--attach --print`: one message or command for a running host, without the editor."""
+    from pcode.live import error_message
+    from pcode.remote import HostError
+    from pcode.remote_print import print_to_host
+
+    try:
+        entry = _pick_host(args.attach, args.workspace or Path.cwd())
+    except LookupError as error:
+        parser.exit(2, f"{error}\n")
+    # Stdout carries the reply alone, as for a local --print.
+    app = PreviewApp(theme=args.theme, console=Console(stderr=True))
+    try:
+        ok = asyncio.run(
+            print_to_host(entry, args.prompt, transcript=app.transcript, present=app.present_events)
+        )
+    except (HostError, OSError) as error:
+        parser.exit(2, error_message(error) + "\n")
+    if not ok:
+        parser.exit(1)
+
+
 def _tidy_stopped_host(app) -> None:
     """After `/stop`: the host kept its worktree so this terminal can ask, as a local exit does."""
     from pcode.remote import wait_for_exit_sync
@@ -2508,6 +2481,9 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             print(f"{entry.id}  {host_row(entry, None, code=code).strip()}")
         if not entries:
             print("No session hosts are running.")
+        return
+    if args.print and args.attach is not None:
+        _print_hosted(args, parser)
         return
     # Every interactive session with a model runs in a background host unless
     # asked not to; the canned preview (no model) has nothing to host.

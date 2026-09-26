@@ -312,9 +312,9 @@ class SessionView(Protocol):
     async def after_turn(self) -> None: ...
 
     # A command the controller does not handle itself, run by the terminal
-    # that sent it; `after_command` follows every command.
+    # that sent it; `after_command` follows every command, with its tag.
     async def run_command(self, text: str, *, idle: bool, tag: object) -> None: ...
-    async def after_command(self) -> None: ...
+    async def after_command(self, tag: object = None) -> None: ...
 
     # One of the session's own commands is running (`tag` as for run_command),
     # and has finished. Its popups, below, return None when dismissed.
@@ -909,24 +909,30 @@ class SessionController:
             generation, text, submitted_idle, tag = await self.commands.get()
             name = text.split(maxsplit=1)[0]
             try:
-                if name not in FRONTEND_COMMANDS:
-                    if not self.ready.is_set():
-                        # Keep consuming frontend-only commands while backend
-                        # commands wait, preserving their order for readiness.
-                        self.startup_commands.append((generation, text, submitted_idle, tag))
-                        continue
-                    if generation != self.prompts.generation:
-                        continue
-                    if self.startup_error is not None:
-                        self.view.warning("Agent startup failed; restart pcode to retry.")
-                        continue
-                self.command_started(text)
-                await self.dispatch(text, idle=submitted_idle, tag=tag)
+                if name not in FRONTEND_COMMANDS and not self.ready.is_set():
+                    # Keep consuming frontend-only commands while backend
+                    # commands wait, preserving their order for readiness.
+                    self.startup_commands.append((generation, text, submitted_idle, tag))
+                    continue
+                if name in FRONTEND_COMMANDS or self.dispatchable(generation):
+                    self.command_started(text)
+                    await self.dispatch(text, idle=submitted_idle, tag=tag)
             except Exception as error:
                 self.command_failed(name, error)
             finally:
                 self.command_finished()
-            await self.view.after_command()
+            # Every command taken off the queue reports here, dropped or not:
+            # a host's `run` caller waits for exactly this.
+            await self.view.after_command(tag)
+
+    def dispatchable(self, generation: int) -> bool:
+        """Whether a session command dequeued now should run; says why when it should not."""
+        if generation != self.prompts.generation:
+            return False  # Ctrl+C cleared the queue it was sent in.
+        if self.startup_error is not None:
+            self.view.warning("Agent startup failed; restart pcode to retry.")
+            return False
+        return True
 
     async def dispatch(self, text: str, *, idle: bool, tag: object = None) -> None:
         """Run one slash command: the session's own here, anything else in the terminal.

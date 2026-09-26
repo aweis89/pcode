@@ -53,7 +53,7 @@ SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 RESETS = {"conversation_reset", "replay_conversation", "show_branch"}
 
 # What a terminal may call besides the controller's intents.
-HOST_CALLS = frozenset({"attach", "query", "stop", "asides_read"})
+HOST_CALLS = frozenset({"attach", "query", "run", "stop", "asides_read"})
 
 _MISSING = object()
 
@@ -106,6 +106,24 @@ class _Client:
     def command(self, text: str, tag=None) -> None:
         self.host.touch(self)
         self.host.controller.command(text, (self.number, tag))
+
+    async def run(self, text: str) -> None:
+        """`command`, returning once it has run: for a caller with no editor to watch.
+
+        That includes work it left running in the background (compaction, MCP
+        sign-in), whose outcome is the point of sending, say, `/compact`.
+        """
+        tag = (self.number, f"run-{next(self.host.run_ids)}")
+        done = asyncio.get_running_loop().create_future()
+        self.host.runs[tag] = done
+        try:
+            self.command(text, tag[1])
+            await done
+        finally:
+            self.host.runs.pop(tag, None)
+        controller = self.host.controller
+        await controller.compact_idle.wait()
+        await controller.mcp_idle.wait()
 
     def cancel(self) -> None:
         self.host.controller.cancel()
@@ -179,8 +197,13 @@ class HostView:
         self._host.turn_finished()
         self._host.emit("after_turn", (), {})
 
-    async def after_command(self) -> None:
+    async def after_command(self, tag=None) -> None:
+        # Terminals get it untagged, as ever; a `run` caller is waiting for its own.
         self._host.emit("after_command", (), {})
+        # Only `run` tags are strings: a terminal's own tag may not even be hashable.
+        run = isinstance(tag, tuple) and len(tag) == 2 and isinstance(tag[1], str)
+        if run and (done := self._host.runs.get(tag)) and not done.done():
+            done.set_result(None)
         if not self._host.controller.running:
             self._host.stop()
 
@@ -254,6 +277,9 @@ class SessionHost:
         self._numbers = itertools.count(1)
         self._latest: _Client | None = None
         self.running_command: _Client | None = None
+        # Commands sent with `run`, by tag, until they have run.
+        self.runs: dict[tuple, asyncio.Future] = {}
+        self.run_ids = itertools.count(1)
         self.view = HostView(self)
         self.activity = MirroredActivity(lambda changes: self.emit("state", (changes,), {}))
         self.controller = SessionController(self.view, self.activity)
