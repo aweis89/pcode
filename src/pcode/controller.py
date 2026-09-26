@@ -20,6 +20,7 @@ from pcode.aside import (
     MODEL_MARK,
     Aside,
     Asides,
+    Bridge,
     SideTarget,
     effort_fragment,
     exchanges,
@@ -41,33 +42,10 @@ from pcode.preferences import (
     save_model_effort,
     save_preferences,
 )
+from pcode.rpc import transportable
 from pcode.runtime import CommandOutput, JobFinished, Message, ToolSummary
 from pcode.shell_mode import execute, shell_command
 from pcode.tool_display import command_text
-
-# What works while the conversation runs in a session host. Everything else
-# reaches into a runtime this process does not have, so it is refused rather
-# than acting on nothing. Skills are prompts and always work.
-HOSTED_COMMANDS = {
-    "/help",
-    "/config",
-    "/quit",
-    "/status",
-    "/diffs",
-    "/switch",
-    "/stop",
-    "/restart",
-    "/resume",
-    "/show-tasks",
-    "/autohide-tasks",
-    "/show-thinking",
-    "/show-edits",
-    "/show-commands",
-    "/theme",
-    "/syntax",
-    "/theme-preview",
-    "/redraw",
-}
 
 # What the terminal handles itself. A skill or extension command may not take
 # one of these names (nor a session command's): built-ins win.
@@ -127,6 +105,49 @@ def meridian_thinking_note(base: str | None, passthrough: bool | None) -> str:
     )
 
 
+# The fields of `Activity` the session sets. Everything else in it is derived
+# from the events the terminal renders (tools, workers, plan, previews).
+SESSION_FIELDS = (
+    "busy",
+    "status",
+    "queued",
+    "queued_prompts",
+    "queued_modes",
+    "prompt",
+    "prompt_state",
+    "prompt_kind",
+    "prompt_detail",
+    "user_command",
+    "jobs",
+    "watched_job",
+    "notice",
+    "notice_expires",
+)
+
+# What a terminal attached to a host may call on its controller. Intents are
+# sent without waiting; `query` names one of QUERIES and returns its value.
+INTENTS = frozenset(
+    {
+        "submit",
+        "command",
+        "cancel",
+        "set_thinking",
+        "adjust_effort",
+        "stop_jobs",
+        "watch_job",
+    }
+)
+QUERIES = frozenset(
+    {
+        "session_overview",
+        "meridian_thinking_state",
+        "follow_up_aside",
+        "check_bridge",
+        "navigate_tree",
+        "model_suggestions",
+    }
+)
+
 # Commands that change the conversation itself, refused while a turn runs or
 # prompts wait (bar /compact and /resend sent while idle, which go first).
 IDLE_COMMANDS = frozenset(
@@ -164,13 +185,8 @@ FRONTEND_COMMANDS = frozenset(
 # stamped on it.
 QueuedCommand = tuple[int, str, bool, object]
 
-# Modes of a turn a session host started on its own, which a terminal shows
-# rather than sends: "follow-quiet" leaves the prompt out of scrollback.
-FOLLOW_MODES = ("follow", "follow-quiet")
-
 # One queued message: the queue generation it was sent in, its text, and how
-# it is sent ("steering", "queue", "interrupt", "shell", "resend", "wake", and
-# the "follow" modes of a turn a host started on its own).
+# it is sent ("steering", "queue", "interrupt", "shell", "resend", "wake").
 Item = tuple[int, str, str]
 
 
@@ -307,8 +323,10 @@ class SessionView(Protocol):
     def command_finished(self) -> None: ...
 
     # The session's commands changed (skills, extension commands), or the
-    # conversation was replaced by a new one.
+    # conversation was replaced by a new one. `session_changed` says anything
+    # else in `session_state` may have (model, effort, context, completions).
     def commands_changed(self) -> None: ...
+    def session_changed(self) -> None: ...
     def conversation_reset(self, title: str) -> None: ...
     def replay_conversation(self) -> None: ...
     def show_branch(self) -> None: ...
@@ -323,6 +341,16 @@ class SessionView(Protocol):
     async def browse_jobs(self) -> None: ...
     async def choose_model(self, values, providers, current: str | None) -> str | None: ...
     async def read_asides(self): ...
+
+
+# What a host may call on an attached terminal: its view, and the mirrors of
+# the live panel (`state`), the session (`session_state`), and side questions.
+VIEW_CALLS = frozenset(
+    {name for name in vars(SessionView) if not name.startswith("_")}
+    | {"state", "session_state", "aside_changed", "aside_answered", "host_closed"}
+)
+
+transportable(Bridge)
 
 
 def _mcp_enable(text: str) -> bool:
@@ -549,10 +577,84 @@ class SessionController:
         ):
             self.registry.register(command)
 
-    @property
-    def hosted(self) -> bool:
-        # `is True`: a Mock runtime in tests answers every attribute.
-        return getattr(self.runtime, "remote", False) is True
+    def context_label(self) -> str:
+        """The footer's context usage: tokens used of the model's window."""
+        if not self.model or self.startup_pending or self.startup_error is not None:
+            return ""
+        from pcode.context_usage import context_label
+
+        resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
+        history = getattr(self.runtime, "context_history", None)
+        if history is None:
+            history = getattr(self.runtime, "history", ())
+        try:
+            return context_label(resolved or self.model, history)
+        except Exception:  # noqa: BLE001 - a footer label must not break anything.
+            return ""
+
+    def session_state(self) -> dict:
+        """What a terminal attached to a host shows of the session, beyond the live panel."""
+        from pcode.live import error_message
+
+        saved = getattr(self.runtime, "session", None)
+        commands = []
+        arguments = {}
+        for command in self.registry.commands:
+            commands.append(
+                {
+                    "name": command.name,
+                    "description": command.description,
+                    "arguments": list(command.arguments),
+                    "aliases": list(command.aliases),
+                    "free_arguments": command.free_arguments,
+                    "group": command.group,
+                    "argument_descriptions": dict(command.argument_descriptions or {}),
+                    "models": command.argument_completer is not None,
+                }
+            )
+            if command.argument_provider is not None:
+                try:
+                    arguments[command.name] = list(command.argument_provider())
+                except Exception:  # noqa: BLE001 - completion must not break anything.
+                    arguments[command.name] = []
+        return {
+            "model": self.model,
+            "pending_model": self.pending_model,
+            "effort": self.current_effort(),
+            "context": self.context_label(),
+            "workspace": str(self.workspace),
+            "session_id": saved.info.id if saved is not None else "",
+            "session_directory": str(saved.directory) if saved is not None else "",
+            "saving": saved is not None
+            or getattr(self.runtime, "session_factory", None) is not None,
+            "startup_pending": self.startup_pending,
+            "startup_error": error_message(self.startup_error) if self.startup_error else "",
+            "commands": commands,
+            "arguments": arguments,
+            "skills": list(self.skill_command_names),
+            "jobs_directory": str(self._jobs_home() or ""),
+        }
+
+    def _jobs_home(self):
+        registry = getattr(self.runtime, "jobs", None)
+        home = getattr(registry, "home", None)
+        return home() if callable(home) else None
+
+    def set_thinking(self, shown: bool) -> None:
+        """Ask the provider for readable thinking (or not) from the next request."""
+        self.activity.show_thinking = shown
+        agent = getattr(self.runtime, "agent", None)
+        if agent is not None and self.model:
+            apply_thinking(agent, self.model, shown)
+
+    async def query(self, name: str, *args):
+        """One of QUERIES, for a terminal that cannot call the controller directly."""
+        if name not in QUERIES:
+            raise ValueError(f"Unknown query {name!r}.")
+        result = getattr(self, name)(*args)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
 
     def command_taken(self, name: str) -> bool:
         return name in TERMINAL_COMMANDS or self.registry.find(name) is not None
@@ -595,9 +697,6 @@ class SessionController:
         registry = getattr(self.runtime, "jobs", None)
         if registry is not None:
             registry.cancel_policy = policy
-        elif self.hosted:
-            # Sent with the cancel, for the host's own registry.
-            self.runtime.cancel_policy = policy
 
     def release_shell_waits(self) -> None:
         """Hand any foreground shell wait back to the model as a job handle.
@@ -609,10 +708,6 @@ class SessionController:
         registry = getattr(self.runtime, "jobs", None)
         if registry is not None:
             registry.release_waits()
-        elif self.hosted:
-            # The host pulls steering at its next request like a local runtime
-            # does, but it can only take what has been sent to it: send it now.
-            self.runtime.release_waits()
 
     # Jobs
 
@@ -841,13 +936,7 @@ class SessionController:
         /resend sent then runs ahead of prompts queued behind it since.
         """
         name = text.split(maxsplit=1)[0]
-        before_queue = (
-            name in MODEL_COMMANDS
-            # A host's conversation refuses both, in run_command.
-            and not self.hosted
-            and idle
-            and not self.working()
-        )
+        before_queue = name in MODEL_COMMANDS and idle and not self.working()
         if (
             name in IDLE_COMMANDS
             and (self.activity.busy or self.activity.queued)
@@ -867,6 +956,7 @@ class SessionController:
             finally:
                 self.view.command_finished()
         await self.follow_up()
+        self.view.session_changed()
 
     async def follow_up(self) -> None:
         """Do what the command just handled asked for once its handler returned."""
@@ -901,12 +991,6 @@ class SessionController:
         """Run one of the session's own commands; a handler may be sync or async."""
         parts = text.strip().split(maxsplit=1)
         command = self.registry.find(parts[0])
-        if self.hosted and command.name not in HOSTED_COMMANDS:
-            self.view.error(
-                f"{command.name} is not available yet for a session running in a "
-                "session host. /switch, /resume, /stop, /status, and display commands are."
-            )
-            return
         argument = parts[1].strip() if len(parts) > 1 else ""
         try:
             if argument and not command.free_arguments and argument not in command.arguments:
@@ -958,7 +1042,7 @@ class SessionController:
                         if self.closing():
                             return
                         success = False
-                elif not (resend or mode in FOLLOW_MODES or self.model):
+                elif not (resend or self.model):
                     self.view.preview_reply(text)
                 else:
                     wake = mode == "wake"
@@ -973,8 +1057,6 @@ class SessionController:
                             text,
                             resend=resend,
                             wake=wake,
-                            follow=mode in FOLLOW_MODES,
-                            echo=mode != "follow-quiet",
                         )
                     )
                     try:
@@ -998,6 +1080,7 @@ class SessionController:
             # agree with what the next request will use.
             if self.pending_model is not None:
                 await self.apply_pending_model()
+            self.view.session_changed()
             await self.view.after_turn()
 
     async def run_turn(
@@ -1006,22 +1089,13 @@ class SessionController:
         *,
         resend: bool = False,
         wake: bool = False,
-        follow: bool = False,
-        echo: bool = True,
     ) -> bool:
-        """Run a turn, or with `follow` show one a session host started on its own.
-
-        `echo` False leaves the prompt out of scrollback: steering this terminal
-        forwarded to a host is already there.
-        """
+        """Run a turn: `resend` asks again from the last checkpoint, and `wake` is one
+        a finished job started, shown as a badge rather than as typed text."""
         from pcode.live import error_message
 
         runtime = self.runtime
-        if follow and getattr(runtime, "pending_turn", None) is None:
-            # Already shown: a prompt sent from here caught up with it first.
-            self.activity.finish_prompt("done")
-            return True
-        self.view.turn_started(text, echo=echo and not wake)
+        self.view.turn_started(text, echo=not wake)
         if wake:
             # Scrollback already carries the job's summary line; the prompt is
             # pcode's, so it is labelled as system work rather than quoted.
@@ -1048,7 +1122,7 @@ class SessionController:
             runtime.warning_notice = self.view.warning
         failure = None
         cancelled = False
-        source = runtime.follow() if follow else runtime.stream(None if resend else text)
+        source = runtime.stream(None if resend else text)
         try:
             async with aclosing(source) as stream:
                 async for event in stream:
@@ -1058,16 +1132,10 @@ class SessionController:
         except asyncio.CancelledError:
             cancelled = True
         except Exception as error:
-            # Another terminal cancelled the host's turn this one was showing.
-            cancelled = type(error).__name__ == "HostTurnCancelled"
-            failure = None if cancelled else error
+            failure = error
         finally:
             self.view.turn_ended()
             self.activity.status = ""
-        if cancelled and getattr(runtime, "detaching", False) is True:
-            # Switched away: the turn carries on in its host, unannounced here.
-            self.activity.finish_prompt("done")
-            return False
         # Abandoning a wait is the exception, not the rule: restore the safe
         # default so the next Ctrl+C-free cancellation cannot kill a command.
         self.set_cancel_policy("detach")
@@ -1190,6 +1258,7 @@ class SessionController:
                 self.mcp_enabling = None
                 self.mcp_idle.set()
                 self.view.redraw()
+                self.view.session_changed()
 
         self.mcp_task = asyncio.create_task(coroutine)
         # A done callback also handles cancellation before the coroutine starts.
@@ -1342,6 +1411,7 @@ class SessionController:
                 self.activity.status = ""
                 self.compact_idle.set()
                 self.view.redraw()
+                self.view.session_changed()
 
         self.compact_task = asyncio.create_task(work)
         self.compact_task.add_done_callback(finished)
@@ -2121,8 +2191,6 @@ class SessionController:
     def current_effort(self) -> str:
         if not self.model:
             return "n/a"
-        if self.hosted:
-            return self.runtime.effort
         from pcode.preferences import current_effort
 
         return current_effort(getattr(self.runtime, "agent", None), self.model)
@@ -2172,8 +2240,6 @@ class SessionController:
                 ("Preview turns", str(self.runtime.turns)),
                 ("Mode", "Canned replies only. Start with -m PROVIDER:MODEL for a real agent."),
             ]
-        if self.hosted:
-            return [*self.runtime.overview(), ("Effort", self.current_effort())]
         totals = self.runtime.totals
         rows = [
             ("Model", self.model),
@@ -2832,7 +2898,7 @@ class SessionController:
             + f"): {aside.question}",
         )
 
-    async def navigate_tree(self, identity: str | None, *, edit: bool = False) -> str:
+    async def navigate_tree(self, identity: str | None, edit: bool = False) -> str:
         if self.activity.busy or self.activity.queued:
             raise ValueError("/tree is unavailable while working or messages are queued.")
         draft = await self.runtime.navigate(identity, edit=edit)

@@ -1,9 +1,10 @@
 """Session hosts: the wire format, the host process's logic, and terminals attached to it.
 
-Hosts run in-process here, over a real Unix socket. The spike behind this
-feature ran them as separate processes; what that adds (environment
-inheritance, detaching from the terminal's session) is `spawn_host`'s, covered
-by its own test.
+Hosts run in-process here, over a real Unix socket: a `SessionHost` serving a
+`SessionController`, and terminals that are either a `RemoteController` with a
+recording view or a whole `PreviewApp`. What a separate process adds
+(environment inheritance, detaching from the terminal's session) is
+`spawn_host`'s, covered by its own test.
 """
 
 import asyncio
@@ -39,7 +40,7 @@ from pcode.host_protocol import (
     write_entry,
 )
 from pcode.live import AgentRuntime
-from pcode.remote import HostError, HostLaunch, RemoteRuntime, spawn_host
+from pcode.remote import HostError, HostLaunch, RemoteController, spawn_host
 from pcode.runtime import (
     CacheBust,
     ChildPlan,
@@ -59,7 +60,7 @@ from pcode.runtime import (
     ToolSummary,
 )
 from pcode.sessions import SavedSession
-from pcode.ui import create_prompt
+from pcode.ui import Activity, create_prompt
 
 SAMPLES = [
     Message("**done**"),
@@ -163,29 +164,73 @@ class Script:
 
 
 async def start_host(identity: str, workspace: Path, script: Script) -> SessionHost:
+    """A host serving a controller over a scripted model, as `pcode.host` sets one up."""
     (workspace / "sample.txt").write_text("a workspace marker\n")
-    runtime = AgentRuntime(
+    entry = HostEntry(
+        id=identity, pid=os.getpid(), model="function:script", workspace=str(workspace)
+    )
+    host = SessionHost(entry)
+    controller = host.controller
+    controller.model = "function:script"
+    controller.workspace = workspace
+    controller.runtime = AgentRuntime(
         Agent(FunctionModel(stream_function=script.model), capabilities=[create_coder(workspace)]),
         session_factory=lambda model=None: SavedSession.create(
             "function:script", workspace, workspace / "sessions"
         ),
     )
-    entry = HostEntry(
-        id=identity, pid=os.getpid(), model="function:script", workspace=str(workspace)
-    )
-    host = SessionHost(runtime, entry)
     await host.serve()
+    host.reset_buffer()
+    host.push_state()
+    host.start()
     return host
 
 
 async def stop_host(host: SessionHost) -> None:
     host.stop()
     await host.close()
-    host.runtime.close()
+    host.controller.runtime.close()
 
 
-async def collect(stream) -> list:
-    return [event async for event in stream]
+class View:
+    """A terminal's view that records every call the host makes to it."""
+
+    ASYNC = {"after_turn", "after_command", "run_command", "browse_jobs", "choose_model"}
+
+    def __init__(self):
+        self.calls: list[tuple[str, tuple, dict]] = []
+        self.answers = {"choose_model": None, "read_asides": None}
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def call(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            if name in self.ASYNC or name in self.answers:
+                return self._answer(name)
+            return None
+
+        return call
+
+    async def _answer(self, name):
+        return self.answers.get(name)
+
+    def names(self) -> list[str]:
+        return [name for name, _, _ in self.calls]
+
+    def count(self, name: str) -> int:
+        return self.names().count(name)
+
+    def events(self) -> list:
+        return [args[0] for name, args, _ in self.calls if name == "turn_event"]
+
+
+async def attach(host: SessionHost) -> tuple[RemoteController, View, dict]:
+    view = View()
+    controller, welcome = await RemoteController.connect(host.socket, view, Activity())
+    await controller.start(welcome)
+    return controller, view, welcome
 
 
 async def until(predicate, timeout=5.0):
@@ -198,20 +243,25 @@ def text_of(events) -> str:
     return "".join(event.text for event in events if isinstance(event, TextDelta))
 
 
-def test_terminal_streams_a_turn_the_host_runs(tmp_path, host_dir):
+def test_terminal_sees_a_turn_the_host_runs(tmp_path, host_dir):
     async def run():
-        script = Script()
-        host = await start_host("aaaa1111", tmp_path, script)
+        host = await start_host("aaaa1111", tmp_path, Script())
         try:
-            terminal = await RemoteRuntime.connect(host.socket)
-            events = await collect(terminal.stream("hello"))
-            assert Message("Echo: hello") in events
-            # The first turn creates the session; the host announces it.
-            assert terminal.session_id == host.runtime.session.info.id
+            terminal, view, _ = await attach(host)
+            terminal.submit("hello", "queue")
+            await until(lambda: view.count("after_turn"))
+            assert Message("Echo: hello") in view.events()
+            assert view.names()[:1] == ["state"] or "turn_started" in view.names()
+            # The first turn creates the session; the host says so.
+            saved = host.controller.runtime.session
+            await until(lambda: terminal.runtime.session_id == saved.info.id)
+            assert terminal.runtime.session.directory == saved.directory
             (entry,) = list_hosts()
             assert (entry.id, entry.state, entry.title) == ("aaaa1111", "idle", "hello")
-            assert entry.session_id == host.runtime.session.info.id
+            assert entry.session_id == saved.info.id
             assert find_host(entry.session_id[:8]).id == "aaaa1111"
+            # The live panel's session fields are mirrored as they change.
+            assert not terminal.activity.busy and terminal.activity.prompt_state == "done"
             terminal.close()
         finally:
             await stop_host(host)
@@ -225,21 +275,28 @@ def test_a_terminal_attaching_mid_turn_catches_up_exactly(tmp_path, host_dir):
         script = Script()
         host = await start_host("aaaa1111", tmp_path, script)
         try:
-            first = await RemoteRuntime.connect(host.socket)
-            await collect(first.stream("settled turn"))
-            running = asyncio.create_task(collect(first.stream("hang here")))
-            await until(lambda: host.buffer)
-            late = await RemoteRuntime.connect(host.socket)
+            first, first_view, _ = await attach(host)
+            first.submit("settled turn", "queue")
+            await until(lambda: first_view.count("after_turn") == 1)
+            first.submit("hang here", "queue")
+            await until(lambda: any(name == "turn_event" for name, _, _ in host.buffer))
+            view = View()
+            late, welcome = await RemoteController.connect(host.socket, view, Activity())
             # History is the journal up to the running turn; the turn itself
             # comes from the host's buffer, so nothing shows twice.
-            prompts = [r["prompt"] for r in late.snapshot["records"] if r["kind"] == "turn_started"]
+            journal = late.runtime.session
+            records = journal.transcript_records(welcome["settled_end"])
+            prompts = [record["prompt"] for record in records if record["kind"] == "turn_started"]
             assert prompts == ["settled turn"]
-            assert late.pending_turn == {"prompt": "hang here", "echo": True}
-            following = asyncio.create_task(collect(late.follow()))
-            await asyncio.sleep(0.05)
+            assert welcome["calls"][0][:2] == ["turn_started", ["hang here"]]
+            assert late.activity.busy and late.activity.prompt == "hang here"
+            await late.start(welcome)
             script.release("hang here")
-            early, caught_up = await asyncio.gather(running, following)
-            assert text_of(early) == text_of(caught_up) == "Started. Finished."
+            await until(lambda: view.count("after_turn") and first_view.count("after_turn") == 2)
+            second_turn = first_view.events()[
+                first_view.events().index(Message("Echo: settled turn")) + 1 :
+            ]
+            assert text_of(second_turn) == text_of(view.events()) == "Started. Finished."
             first.close()
             late.close()
         finally:
@@ -250,19 +307,16 @@ def test_a_terminal_attaching_mid_turn_catches_up_exactly(tmp_path, host_dir):
 
 def test_cancel_stops_the_host_turn_and_the_next_prompt_is_not_lost(tmp_path, host_dir):
     async def run():
-        script = Script()
-        host = await start_host("aaaa1111", tmp_path, script)
+        host = await start_host("aaaa1111", tmp_path, Script())
         try:
-            terminal = await RemoteRuntime.connect(host.socket)
-            task = asyncio.create_task(collect(terminal.stream("hang forever")))
+            terminal, view, _ = await attach(host)
+            terminal.submit("hang forever", "queue")
             await until(lambda: host.buffer)
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            terminal.cancel()
             # Sent while the cancelled turn is still unwinding in the host.
-            reply = await asyncio.wait_for(collect(terminal.stream("next")), 5)
-            assert [e.markdown for e in reply if isinstance(e, Message)] == ["Echo: next"]
-            journal = (host.runtime.session.directory / "transcript.jsonl").read_text()
-            assert '"turn_cancelled"' in journal
+            terminal.submit("next", "queue")
+            await until(lambda: Message("Echo: next") in view.events())
+            assert "cancelled" in view.names()
             terminal.close()
         finally:
             await stop_host(host)
@@ -275,43 +329,48 @@ def test_steering_reaches_the_hosts_next_model_request(tmp_path, host_dir):
         script = Script()
         host = await start_host("aaaa1111", tmp_path, script)
         try:
-            terminal = await RemoteRuntime.connect(host.socket)
-            turn = asyncio.create_task(collect(terminal.stream("read with steering")))
+            terminal, view, _ = await attach(host)
+            terminal.submit("read with steering", "queue")
             await until(lambda: host.buffer)
-            # The app hands over what was typed when it releases shell waits.
-            terminal.take_steering = lambda: ["also check the tests"]
-            terminal.release_waits()
-            await until(lambda: host.steering)
+            terminal.submit("also check the tests", "steering")
+            await until(lambda: terminal.activity.queued_modes == ["steering"])
             script.release("read with steering")
-            events = await turn
-            assert Message("Steering received.") in events
+            await until(lambda: Message("Steering received.") in view.events())
             assert "also check the tests" in user_texts(script.requests[-1])
+            # Shown when the model took it, like a local session's steering.
+            assert ("user", ("also check the tests",), {}) in view.calls
+            terminal.close()
         finally:
             await stop_host(host)
 
     asyncio.run(run())
 
 
-def test_steering_that_arrives_after_the_turn_starts_the_next_one(tmp_path, host_dir):
+def test_session_commands_run_in_the_host_and_ask_the_terminal_that_sent_them(
+    tmp_path, host_dir, monkeypatch
+):
     async def run():
-        script = Script()
-        host = await start_host("aaaa1111", tmp_path, script)
+        monkeypatch.setattr("pcode.models.active_providers", lambda model: {"anthropic"})
+        host = await start_host("aaaa1111", tmp_path, Script())
         try:
-            terminal = await RemoteRuntime.connect(host.socket)
-            started = []
-            terminal.on_turn = lambda prompt, echo: started.append((prompt, echo))
-            turn = asyncio.create_task(collect(terminal.stream("hang briefly")))
-            await until(lambda: host.buffer)
-            terminal.take_steering = lambda: ["and then this"]
-            terminal.release_waits()
-            await until(lambda: host.steering)
-            script.release("hang briefly")
-            await turn
-            await until(lambda: started)
-            # This terminal showed the message when it sent it: no second echo.
-            assert started == [("and then this", False)]
-            followed = await collect(terminal.follow())
-            assert Message("Echo: and then this") in followed
+            sender, view, _ = await attach(host)
+            watcher, other, _ = await attach(host)
+            sender.command("/model", 7)
+            await until(lambda: view.count("choose_model"))
+            # The picker opens only where the command was typed, with its tag.
+            assert ("command_started", (7,), {}) in view.calls
+            assert not other.count("choose_model")
+            await until(lambda: view.count("command_finished"))
+            sender.command("/effort")
+            await until(lambda: view.count("flash") and other.count("flash"))
+            # A command the terminal owns comes back to it, in order with the rest.
+            sender.command("/theme dark", 8)
+            await until(lambda: view.count("run_command"))
+            assert ("run_command", ("/theme dark",), {"idle": True, "tag": 8}) in view.calls
+            assert not other.count("run_command")
+            assert "/effort" in [command.name for command in sender.registry.commands]
+            sender.close()
+            watcher.close()
         finally:
             await stop_host(host)
 
@@ -324,62 +383,7 @@ def test_a_terminal_on_another_protocol_is_refused(tmp_path, host_dir):
         try:
             with patch("pcode.remote.PROTOCOL", PROTOCOL + 1):
                 with pytest.raises(HostError, match="protocol"):
-                    await RemoteRuntime.connect(host.socket)
-        finally:
-            await stop_host(host)
-
-    asyncio.run(run())
-
-
-def test_registry_forgets_hosts_whose_process_is_gone(host_dir):
-    process = subprocess.Popen([sys.executable, "-c", "pass"])
-    process.wait()
-    write_entry(HostEntry(id="dead0000", pid=process.pid, model="m", workspace="/"))
-    write_entry(HostEntry(id="live0000", pid=os.getpid(), model="m", workspace="/"))
-    assert [entry.id for entry in list_hosts()] == ["live0000"]
-    assert not (host_dir / "dead0000.json").exists()
-    with pytest.raises(LookupError):
-        find_host("nothing")
-
-
-def test_socket_paths_that_are_too_long_fail_with_advice(tmp_path):
-    with pytest.raises(OSError, match="PCODE_HOST_DIR"):
-        socket_path("abcd1234", tmp_path / ("x" * 120))
-
-
-def test_spawned_host_inherits_the_terminal_environment_and_its_own_session(host_dir, tmp_path):
-    """The host is started from the terminal, so direnv credentials follow it there."""
-    with patch("pcode.remote.subprocess.Popen") as popen:
-        with patch.dict(os.environ, {"PCODE_SPAWN_CHECK": "from-this-terminal"}):
-            identity, _, log = spawn_host(model="m", workspace=tmp_path, no_worktree=True)
-    options = popen.call_args.kwargs
-    assert options["env"]["PCODE_SPAWN_CHECK"] == "from-this-terminal"
-    assert options["start_new_session"] is True
-    assert options["cwd"] == tmp_path
-    argv = popen.call_args.args[0]
-    assert argv[:3] == [sys.executable, "-m", "pcode.host"]
-    assert "--no-worktree" in argv and identity in argv
-    assert log.parent == host_dir
-
-
-def test_hosted_terminal_refuses_commands_that_need_a_local_runtime(tmp_path, host_dir):
-    async def run():
-        host = await start_host("aaaa1111", tmp_path, Script())
-        try:
-            output = StringIO()
-            runtime = await RemoteRuntime.connect(host.socket)
-            app = PreviewApp(
-                model="function:script",
-                runtime=runtime,
-                console=Console(file=output, width=200),
-                workspace=tmp_path,
-            )
-            assert app.hosted
-            assert app.handle("/compact") is False
-            assert "/compact is not available yet" in output.getvalue()
-            rows = dict(app.controller.session_overview())
-            assert rows["Host"].startswith("aaaa1111")
-            runtime.close()
+                    await RemoteController.connect(host.socket, View(), Activity())
         finally:
             await stop_host(host)
 
@@ -430,7 +434,7 @@ def test_switch_leaves_a_running_turn_in_its_host_and_comes_back_to_it(tmp_path,
                     pipe.send_text("/switch -\r")
                     await seen("Switched to session aaaa1111")
                     assert app.previous_host == "bbbb2222"
-                    # Back mid-turn: the terminal follows A's turn again.
+                    # Back mid-turn: the terminal shows A's turn again.
                     await until(lambda: app.activity.busy)
                     script_a.release("hang in a")
                     await seen("Finished.")
@@ -455,12 +459,10 @@ def test_host_counts_turns_and_marks_ones_finished_unwatched_as_unseen(tmp_path,
         script = Script()
         host = await start_host("aaaa1111", tmp_path, script)
         try:
-            terminal = await RemoteRuntime.connect(host.socket)
+            terminal, _, _ = await attach(host)
             await until(lambda: list_hosts()[0].attached == 1)
-            turn = asyncio.create_task(collect(terminal.stream("hang unwatched")))
+            terminal.submit("hang unwatched", "queue")
             await until(lambda: host.buffer)
-            terminal.detaching = True  # Leave without cancelling, as /switch does.
-            turn.cancel()
             terminal.close()
             await until(lambda: list_hosts()[0].attached == 0)
             script.release("hang unwatched")
@@ -468,7 +470,7 @@ def test_host_counts_turns_and_marks_ones_finished_unwatched_as_unseen(tmp_path,
             (entry,) = list_hosts()
             assert (entry.outcome, entry.unseen, entry.state) == ("done", True, "idle")
             # Looking at it again is what clears it.
-            again = await RemoteRuntime.connect(host.socket)
+            again, _, _ = await attach(host)
             await until(lambda: not list_hosts()[0].unseen)
             again.close()
         finally:
@@ -482,11 +484,9 @@ def test_idle_host_stops_itself_and_a_busy_one_does_not(tmp_path, host_dir):
         script = Script()
         host = await start_host("aaaa1111", tmp_path, script)
         try:
-            terminal = await RemoteRuntime.connect(host.socket)
-            turn = asyncio.create_task(collect(terminal.stream("hang long")))
+            terminal, _, _ = await attach(host)
+            terminal.submit("hang long", "queue")
             await until(lambda: host.buffer)
-            terminal.detaching = True
-            turn.cancel()
             terminal.close()
             watcher = asyncio.create_task(host.stop_when_idle(0.0005, every=0.01))
             await asyncio.sleep(0.2)
@@ -504,14 +504,45 @@ def test_stop_can_leave_the_worktree_for_the_terminal(tmp_path, host_dir):
     async def run():
         host = await start_host("aaaa1111", tmp_path, Script())
         try:
-            terminal = await RemoteRuntime.connect(host.socket)
-            terminal.stop(keep_worktree=True)
+            terminal, _, _ = await attach(host)
+            terminal.runtime.stop(keep_worktree=True)
             await asyncio.wait_for(host.stopped.wait(), 5)
             assert host.keep_worktree
         finally:
             await stop_host(host)
 
     asyncio.run(run())
+
+
+def test_registry_forgets_hosts_whose_process_is_gone(host_dir):
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    write_entry(HostEntry(id="dead0000", pid=process.pid, model="m", workspace="/"))
+    write_entry(HostEntry(id="live0000", pid=os.getpid(), model="m", workspace="/"))
+    assert [entry.id for entry in list_hosts()] == ["live0000"]
+    assert not (host_dir / "dead0000.json").exists()
+    with pytest.raises(LookupError):
+        find_host("nothing")
+
+
+def test_socket_paths_that_are_too_long_fail_with_advice(tmp_path):
+    with pytest.raises(OSError, match="PCODE_HOST_DIR"):
+        socket_path("abcd1234", tmp_path / ("x" * 120))
+
+
+def test_spawned_host_inherits_the_terminal_environment_and_its_own_session(host_dir, tmp_path):
+    """The host is started from the terminal, so direnv credentials follow it there."""
+    with patch("pcode.remote.subprocess.Popen") as popen:
+        with patch.dict(os.environ, {"PCODE_SPAWN_CHECK": "from-this-terminal"}):
+            identity, _, log = spawn_host(model="m", workspace=tmp_path, no_worktree=True)
+    options = popen.call_args.kwargs
+    assert options["env"]["PCODE_SPAWN_CHECK"] == "from-this-terminal"
+    assert options["start_new_session"] is True
+    assert options["cwd"] == tmp_path
+    argv = popen.call_args.args[0]
+    assert argv[:3] == [sys.executable, "-m", "pcode.host"]
+    assert "--no-worktree" in argv and identity in argv
+    assert log.parent == host_dir
 
 
 def test_a_turn_is_announced_on_the_desktop_once_however_many_terminals_see_it(host_dir):

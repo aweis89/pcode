@@ -7,7 +7,7 @@ import re
 import shlex
 import subprocess
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from contextlib import ExitStack, aclosing, asynccontextmanager
 from pathlib import Path
 
@@ -26,7 +26,7 @@ from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_argument_descriptions, config_arguments, configure
 from pcode.controller import (
-    HOSTED_COMMANDS,
+    TERMINAL_COMMANDS,
     SessionController,
     delivered_job,
     meridian_thinking_note,
@@ -181,9 +181,8 @@ class PreviewApp:
         self.previous_host: str | None = None
         # Writes an escape to the terminal emulator (notifications, tab progress).
         self._emulator: Callable[[str], None] | None = None
-        # Set by run_async, which owns the prompt queue and the running turn.
-        self._follow_turn: Callable[[str, bool], None] | None = None
-        self._detach_turn: Callable[[], Awaitable[None]] | None = None
+        # The in-process controller's loops, while this terminal runs them.
+        self._loops: list = []
         agent = getattr(self.runtime, "agent", None)
         if agent is not None and model:
             apply_effort(agent, model, effort_for(model))
@@ -433,14 +432,17 @@ class PreviewApp:
             command, output, failed=failed, elapsed_seconds=elapsed_seconds
         )
 
+    def session_changed(self) -> None:
+        pass  # In this process the footer reads the controller directly.
+
     def commands_changed(self) -> None:
         """Mirror the session's commands (skills and extensions come and go) in the editor's."""
         owned = self.controller.registry
         for name in self._session_commands - {command.name for command in owned.commands}:
             self.registry.unregister(name)
         for command in owned.commands:
-            if self.registry.find(command.name) is None:
-                self.registry.register(command)
+            if self.registry.find(command.name) is not command:
+                self.registry.replace(command)
         self._session_commands = {command.name for command in owned.commands}
 
     def conversation_reset(self, title: str) -> None:
@@ -566,18 +568,6 @@ class PreviewApp:
             self.output.app.invalidate()
 
     async def _initialize_runtime(self) -> None:
-        if self._host_launch is not None:
-            launch, self._host_launch = self._host_launch, None
-            if launch.process is not None:
-                self.transcript.note(
-                    f"Starting session host {launch.id}; it keeps running when this terminal "
-                    f"closes. Log: {launch.log}"
-                )
-            self.runtime = await launch.connect()
-            self.model = self.runtime.model
-            if self.runtime.workspace != self.workspace:
-                self.controller._switch_workspace(self.runtime.workspace, None)
-            return
         await self.controller.initialize_runtime()
 
     def command_started(self, tag) -> None:
@@ -696,9 +686,7 @@ class PreviewApp:
 
     def set_show_thinking(self, shown: bool) -> None:
         self.activity.show_thinking = shown
-        agent = getattr(self.runtime, "agent", None)
-        if agent is not None and self.model:
-            apply_thinking(agent, self.model, shown)
+        self.controller.set_thinking(shown)
         self.persist_defaults(show_thinking="on" if shown else "off")
         self.transcript.regenerate()
         if self.transcript.output is not None:
@@ -996,24 +984,6 @@ class PreviewApp:
         self.host_stopped = True
         self.running = False
 
-    def show_host(self, note: str) -> None:
-        """Draw the attached host's conversation and follow its running turn, if any."""
-        from pcode.remote import HostView
-
-        runtime = self.runtime
-        runtime.on_turn = lambda prompt, echo: self._follow_turn and self._follow_turn(prompt, echo)
-        runtime.on_notice = self.transcript.note
-        runtime.on_closed = self.host_closed
-        if forked := runtime.snapshot.get("forked_from"):
-            note += f" · continuing a copy of {forked}, which was open elsewhere"
-        self.activity.reset()
-        self.edits.clear()
-        self.replay(HostView(runtime), note=note)
-        if runtime.pending_turn is not None and self._follow_turn is not None:
-            self._follow_turn(runtime.pending_turn["prompt"], runtime.pending_turn["echo"])
-        if self._host_watch is not None:
-            self._host_watch()
-
     def background_finished(self, entry) -> None:
         """A turn ended in a session this terminal is not showing: say so, here and on the desktop.
 
@@ -1055,16 +1025,6 @@ class PreviewApp:
             )
         else:
             await self.start_host_session("")
-
-    def host_closed(self) -> None:
-        session = (
-            f" pcode --continue {self.runtime.session_id} resumes it."
-            if self.runtime.session_id
-            else ""
-        )
-        self.transcript.warning(
-            f"The session host {self.runtime.id} has exited. /switch picks another;{session}"
-        )
 
     async def switch_session(self, output: TerminalOutput, session) -> None:
         """`/switch`: pick a running host (or start one) and show it in this terminal."""
@@ -1117,21 +1077,30 @@ class PreviewApp:
         else:
             await self.attach_host(entry)
 
+    def host_closed(self) -> None:
+        """The host this terminal was showing went away (stopped elsewhere, or crashed)."""
+        runtime = self.runtime
+        session = runtime.session_id and f" pcode --continue {runtime.session_id} resumes it."
+        self.transcript.warning(
+            f"The session host {runtime.id} has exited. /switch picks another;{session}"
+        )
+        self.activity.busy = False
+        self.redraw()
+
     async def stop_other_host(self, entry) -> None:
-        from pcode.remote import RemoteRuntime
+        from pcode.remote import stop_entry
 
         if self.hosted and entry.id == self.runtime.id:
             self.stop_host("")
             return
-        runtime = await RemoteRuntime.connect(entry.socket)
-        runtime.stop()
+        await stop_entry(entry)
         self.transcript.note(f"Stopped session {entry.id} ({entry.label()[:60]}).")
 
     async def attach_host(self, entry) -> None:
         from pcode.remote import HostLaunch
 
-        runtime = await HostLaunch.running(entry).connect()
-        await self.adopt_host(runtime, f"Switched to session {entry.id}")
+        controller, welcome = await HostLaunch.running(entry).connect(self, self.activity)
+        await self.adopt_controller(controller, welcome, f"Switched to session {entry.id}")
 
     async def start_host_session(
         self, prompt: str = "", *, resume: str | None = None, note: str | None = None
@@ -1156,9 +1125,11 @@ class PreviewApp:
             session_dir=self.session_dir,
         )
         self.transcript.note(f"Starting session {identity}… (log: {log})")
-        runtime = await wait_for_host(identity, process, log)
         if prompt:
-            await runtime.hand_off(prompt)
+            # Its state goes nowhere: this terminal stays on its own session.
+            controller, _ = await wait_for_host(identity, None, Activity(), process, log)
+            controller.submit(prompt, "queue")
+            controller.close()
             self.transcript.note(
                 f"Session {identity} is working on it in the background. "
                 "/switch shows it; this terminal stays here."
@@ -1166,34 +1137,50 @@ class PreviewApp:
             if self._host_watch is not None:
                 self._host_watch()
             return
+        controller, welcome = await wait_for_host(identity, self, self.activity, process, log)
         what = (
             f"Resumed {resume} in session host {identity}" if resume else f"New session {identity}"
         )
-        await self.adopt_host(runtime, f"{note} ({identity})" if note else what)
+        await self.adopt_controller(controller, welcome, f"{note} ({identity})" if note else what)
 
-    async def adopt_host(self, runtime, note: str) -> None:
-        """Make `runtime` this terminal's conversation, leaving the current one running."""
-        if self._detach_turn is not None:
-            await self._detach_turn()
-        previous = self.runtime
-        if getattr(previous, "remote", False) is True and not previous.lost:
-            self.previous_host = previous.id
-        if getattr(previous, "remote", False) is not True:
-            # A conversation that lives in this process ends here; its journal
-            # keeps it for /resume or `pcode -c`.
-            if saved := getattr(previous, "session", None):
+    async def adopt_controller(self, controller, welcome: dict, note: str) -> None:
+        """Show the host behind `controller` in this terminal, leaving the current session.
+
+        A session running in this process ends here (its journal keeps it for
+        /resume or `pcode -c`); another host keeps running.
+        """
+        previous = self.controller
+        if isinstance(previous, SessionController):
+            if saved := getattr(previous.runtime, "session", None):
                 note += f" · left {saved.info.id} (pcode --continue {saved.info.id[:8]} resumes it)"
-            if self.extensions is not None:
-                await self.extensions.close()
-                self.extensions = None
-        close = getattr(previous, "close", None)
-        if close is not None:
-            close()
-        self.runtime = runtime
-        self.model = runtime.model
-        if runtime.workspace != self.workspace:
-            self.controller._switch_workspace(runtime.workspace, None)
-        self.show_host(note)
+            await self.leave_controller(previous)
+            close = getattr(previous.runtime, "close", None)
+            if close is not None:
+                close()
+        else:
+            if not previous.runtime.lost:
+                self.previous_host = previous.id
+            previous.close()
+        self.controller = controller
+        controller.on_closed = self.host_closed
+        if forked := welcome.get("forked_from"):
+            note += f" · continuing a copy of {forked}, which was open elsewhere"
+        self.activity.reset()
+        self.edits.clear()
+        for name, value in welcome["activity"].items():
+            controller.apply_field(name, value)
+        self.commands_changed()
+        journal = controller.runtime.session
+        if journal is not None:
+            end = welcome["settled_end"] if welcome["settled_end"] is not None else 0
+            self.replay(journal, note=note, end=end)
+        else:
+            with self.transcript.restore():
+                self.transcript.retained_note(note)
+        await controller.start(welcome)
+        if self._host_watch is not None:
+            self._host_watch()
+        self.redraw()
 
     def select_tree(self, argument: str) -> None:
         self.tree_requested = True
@@ -1335,7 +1322,9 @@ class PreviewApp:
         from pcode.session_ui import session_info_dialog
 
         self.session_info_requested = False
-        rows = self.controller.session_overview()
+        rows = await self.controller.query("session_overview")
+        if self.hosted:
+            rows = [("Host", f"{self.runtime.id} (pid {self.runtime.pid})"), *rows]
         async with self.popup(output, session) as modal_input:
             dialog = session_info_dialog(
                 rows,
@@ -1345,8 +1334,11 @@ class PreviewApp:
             )
             await dialog.run_async()
 
-    def replay(self, saved=None, *, note: str | None = None) -> None:
-        """Redraw a saved conversation. `saved` names one the runtime does not hold yet."""
+    def replay(self, saved=None, *, note: str | None = None, end: int | None = None) -> None:
+        """Redraw a saved conversation. `saved` names one the runtime does not hold yet.
+
+        `end` stops at that journal offset: a host sends the rest as it happened.
+        """
         from pcode.diagnostics import redact
 
         saved = saved or self.runtime.session
@@ -1358,7 +1350,7 @@ class PreviewApp:
             self.transcript.retained_note(note or f"Resumed {saved.info.id}")
             if saved.forked_from:
                 self.transcript.retained_note(forked_note(saved))
-            for record in saved.transcript_records():
+            for record in saved.transcript_records(end):
                 kind = record["kind"]
                 if kind in ("turn_started", "steering"):
                     self.transcript.user(redact(record["prompt"]))
@@ -1461,18 +1453,7 @@ class PreviewApp:
                 label += f" ({', '.join(details)})"
             segments.extend([("sep", " · "), ("activity", label)])
         segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
-        context = ""
-        if self.hosted:
-            # The history is in the host, which sends the label with each turn.
-            context = self.runtime.context
-        elif self.model and not self._startup_pending and self._startup_error is None:
-            from pcode.context_usage import context_label
-
-            resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
-            history = getattr(self.runtime, "context_history", None)
-            if history is None:
-                history = getattr(self.runtime, "history", ())
-            context = context_label(resolved or self.model, history)
+        context = self.controller.context_label()
         # Colorize the token counts distinctly from the " · " and "/" around them.
         parts = re.split(r"(~?\d[\d.]*[a-z]?)", context)
         segments.extend(
@@ -1513,18 +1494,6 @@ class PreviewApp:
         if self.model and not text.startswith("/"):
             return True
         if text.startswith("/"):
-            command = self.registry.find(text.split(maxsplit=1)[0])
-            if (
-                self.hosted
-                and command is not None
-                and command.name not in HOSTED_COMMANDS
-                and command.name not in self.skill_command_names
-            ):
-                self.transcript.error(
-                    f"{command.name} is not available yet for a session running in a "
-                    "session host. /switch, /resume, /stop, /status, and display commands are."
-                )
-                return False
             try:
                 if not self.registry.dispatch(text):
                     self.transcript.warning(
@@ -1544,14 +1513,10 @@ class PreviewApp:
         *,
         resend: bool = False,
         wake: bool = False,
-        follow: bool = False,
-        echo: bool = True,
     ) -> bool:
         """Run one turn shown through `output`: the controller's turn, this terminal its view."""
         self.output = output
-        return await self.controller.run_turn(
-            text, resend=resend, wake=wake, follow=follow, echo=echo
-        )
+        return await self.controller.run_turn(text, resend=resend, wake=wake)
 
     async def run_command(self, text: str, *, idle: bool, tag) -> None:
         """Run a slash command the controller handed back to this terminal.
@@ -1595,10 +1560,8 @@ class PreviewApp:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         self.transcript.welcome(self.model, str(self.workspace))
-        controller = self.controller
-        prompts = controller.prompts
-        commands = controller.commands
-        clear_queue = controller.clear_queue
+        # Typed before a session host is attached; sent to it once it is.
+        early: list[tuple[str, str, object]] | None = [] if self._host_launch else None
 
         async def refresh_metadata():
             refresh = getattr(self.runtime, "refresh_context", None)
@@ -1611,21 +1574,48 @@ class PreviewApp:
                 finally:
                     session.app.invalidate()
 
+        async def initialize_host():
+            nonlocal early
+            launch, self._host_launch = self._host_launch, None
+            if launch.process is not None:
+                self.transcript.note(
+                    f"Starting session host {launch.id}; it keeps running when this terminal "
+                    f"closes. Log: {launch.log}"
+                )
+            try:
+                controller, welcome = await launch.connect(self, self.activity)
+            except Exception as error:
+                from pcode.live import error_message
+
+                self._startup_error = error
+                self._startup_pending = False
+                self.transcript.error(error_message(error), title="Session host failed")
+                early = None
+                session.app.invalidate()
+                return
+            note = f"Attached to session host {launch.id}"
+            await self.adopt_controller(controller, welcome, note)
+            waiting, early = early or [], None
+            for kind, text, detail in waiting:
+                if kind == "command":
+                    command(text, detail)
+                else:
+                    self.controller.submit(text, detail)
+
         async def initialize():
             # Replaying is a journal read of a few milliseconds, while the
             # provider stack below takes a second or two to import. Draw the
             # conversation first: waiting for a backend you have not used yet
             # to see what was already said is a wait for nothing.
+            controller = self.controller
             replayed = self.resuming and self._saved_session is not None
             if replayed:
                 self.replay(self._saved_session)
             try:
                 await self._initialize_runtime()
-                if self.hosted:
-                    self.show_host(f"Attached to session host {self.runtime.id}")
-                self.controller.show_startup_context()
-                self.controller.warn_without_credentials()
-                await self.controller.warn_meridian_thinking()
+                controller.show_startup_context()
+                controller.warn_without_credentials()
+                await controller.warn_meridian_thinking()
                 saved = getattr(self.runtime, "session", None)
                 if self.model and saved:
                     self.transcript.retained_note(f"Saving session: {saved.info.id}")
@@ -1640,7 +1630,7 @@ class PreviewApp:
                 except ImportError:
                     message = "Provider dependency missing. Reinstall pcode and try again."
                 self.transcript.error(message, title="Agent startup failed")
-                clear_queue()
+                controller.clear_queue()
                 self.activity.busy = False
             else:
                 session.app.create_background_task(refresh_metadata())
@@ -1649,30 +1639,9 @@ class PreviewApp:
                 self._startup_pending = False
                 controller.ready.set()
                 for command in controller.startup_commands:
-                    commands.put_nowait(command)
+                    controller.commands.put_nowait(command)
                 controller.startup_commands.clear()
                 session.app.invalidate()
-
-        def follow_turn(prompt: str, echo: bool = True) -> None:
-            """Show a turn the host started, in order with anything typed here."""
-            prompts.put(prompt, "follow" if echo else "follow-quiet")
-            self.activity.busy = True
-            session.app.invalidate()
-
-        async def detach_turn() -> None:
-            """Stop showing the host's running turn, without stopping the turn."""
-            if hasattr(self.runtime, "detaching"):
-                self.runtime.detaching = True
-            clear_queue()
-            task = controller.live_task
-            if task is not None and not task.done():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-                # consume() clears its own state once the task ends; wait for it
-                # so that cleanup cannot drop the next host's queued turn.
-                while controller.live_task is task:
-                    await asyncio.sleep(0.01)
-            self.activity.busy = False
 
         async def watch_hosts() -> None:
             """Keep the footer's count of other sessions current, and say when one finishes."""
@@ -1701,8 +1670,6 @@ class PreviewApp:
             if self._host_watch_task is None:
                 self._host_watch_task = session.app.create_background_task(watch_hosts())
 
-        self._follow_turn = follow_turn
-        self._detach_turn = detach_turn
         self._host_watch = start_host_watch
 
         def emulator(sequence: str) -> None:
@@ -1713,22 +1680,53 @@ class PreviewApp:
 
         self._emulator = emulator
 
+        local: asyncio.Queue = asyncio.Queue()
+
+        async def run_local_commands():
+            """In a hosted session, the terminal's own commands run here, not in the host."""
+            while True:
+                text, tag = await local.get()
+                try:
+                    await self.run_command(text, idle=True, tag=tag)
+                except Exception as error:
+                    from pcode.live import error_message
+
+                    self.transcript.error(error_message(error, unexpected=f"{text} failed"))
+                await self.after_command()
+
+        def command(text, tag):
+            if self.hosted and text.split(maxsplit=1)[0] in TERMINAL_COMMANDS:
+                local.put_nowait((text, tag))
+            else:
+                self.controller.command(text, tag)
+
         def submit(text):
             text = text.strip()
-            if not controller.ready.is_set() and text in {"/quit", "/exit"}:
+            ready = early is None and getattr(self.controller, "ready", None)
+            if (early is not None or (ready and not ready.is_set())) and text in {"/quit", "/exit"}:
                 # Do not strand exit behind a command waiting for initialization.
                 self.running = False
                 session.app.exit()
                 return
             if text.startswith("/"):
-                controller.command(text, self._popup_generation)
-            elif shell_command(text) is not None:
-                controller.submit(text, "shell")
+                if early is not None and text.split(maxsplit=1)[0] not in TERMINAL_COMMANDS:
+                    early.append(("command", text, self._popup_generation))
+                else:
+                    command(text, self._popup_generation)
+                return
+            if shell_command(text) is not None:
+                mode = "shell"
             elif text:
                 # One send consumes a Ctrl+S pick; the saved default returns.
                 mode = self.next_send_mode
                 self.send_mode_once = None
-                controller.submit(text, mode)
+            else:
+                return
+            if early is not None:
+                early.append(("submit", text, mode))
+                self.activity.busy = True
+            else:
+                self.controller.submit(text, mode)
 
         session = create_prompt(
             self.registry,
@@ -1736,7 +1734,7 @@ class PreviewApp:
             transcript=self.transcript,
             workspace=self.workspace,
             on_submit=submit,
-            on_cancel=controller.cancel,
+            on_cancel=lambda: self.cancel(),
             on_tasks=self.set_show_tasks,
             on_thinking=self.set_show_thinking,
             on_commands=lambda: self.show_commands(""),
@@ -1755,8 +1753,6 @@ class PreviewApp:
         self.transcript.output = output
         self.output = output
         self.prompt_session = session
-        controller.closing = lambda: not session.app.is_running
-        controller.interactive = True
         session.app.style = DynamicStyle(lambda: self.transcript.prompt_style())
 
         async def watch_branch():
@@ -1776,12 +1772,14 @@ class PreviewApp:
         def start():
             restore_stdin()
             replay_pending_input(session.app)
-            session.app.create_background_task(initialize())
             session.app.create_background_task(watch_branch())
-            session.app.create_background_task(controller.watch_jobs())
             session.app.create_background_task(output.run())
-            session.app.create_background_task(controller.consume())
-            session.app.create_background_task(controller.consume_commands())
+            session.app.create_background_task(run_local_commands())
+            if early is not None:
+                session.app.create_background_task(initialize_host())
+            else:
+                self.run_controller(self.controller)
+                session.app.create_background_task(initialize())
             if self.initial_prompt:
                 # Queued like a typed message: it waits for the backend the same
                 # way, and Ctrl+C clears it the same way.
@@ -1790,22 +1788,51 @@ class PreviewApp:
         try:
             await session.app.run_async(pre_run=start)
         finally:
-            if self.hosted:
-                # Leave before the loop shuts down, so the connection closing
-                # reads as this terminal detaching, not the host dying.
-                self.runtime.close()
-            # Side questions outlive turns, not the terminal.
-            await controller.asides.close()
-            for task in (controller.compact_task, controller.mcp_task):
-                if task is not None:
-                    if not task.done() and not task.cancelling():
-                        task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
-            if self.extensions is not None:
-                await self.extensions.close()
+            await self.leave_controller(self.controller)
             await output.flush(drain=True)
             self.transcript.output = None
         self.print_resume_hint()
+
+    def cancel(self) -> None:
+        """Ctrl+C, for whichever controller this terminal is showing now."""
+        self.controller.cancel()
+
+    def run_controller(self, controller: SessionController) -> None:
+        """Start an in-process controller's loops, which this terminal owns."""
+        app = self.prompt_session.app
+        controller.closing = lambda: not app.is_running
+        controller.interactive = True
+        self._loops = [
+            app.create_background_task(work)
+            for work in (
+                controller.watch_jobs(),
+                controller.consume(),
+                controller.consume_commands(),
+            )
+        ]
+
+    async def leave_controller(self, controller) -> None:
+        """Stop showing `controller`: detach from a host, or end an in-process session."""
+        if self.hosted and controller is self.controller:
+            # Leave before the loop shuts down, so the connection closing
+            # reads as this terminal detaching, not the host dying.
+            controller.close()
+            return
+        if not isinstance(controller, SessionController):
+            controller.close()
+            return
+        loops, self._loops = self._loops, []
+        for task in loops:
+            task.cancel()
+        # Side questions outlive turns, not the terminal.
+        await controller.asides.close()
+        for task in controller.tasks():
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        await asyncio.gather(*loops, *controller.tasks(), return_exceptions=True)
+        if controller.extensions is not None:
+            await controller.extensions.close()
+            controller.extensions = None
 
     def print_resume_hint(self) -> None:
         if self.hosted:
@@ -2348,7 +2375,7 @@ def _tidy_stopped_host(app) -> None:
             saved = None  # Open elsewhere again, or gone: leave the session to them.
     try:
         leave_worktree(
-            runtime.workspace, saved, ask=ask, notify=lambda text: print(text, file=sys.stderr)
+            app.workspace, saved, ask=ask, notify=lambda text: print(text, file=sys.stderr)
         )
     finally:
         if saved is not None:
