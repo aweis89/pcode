@@ -24,9 +24,12 @@ Phase 0 is done: the spike and an opt-in demo (`pcode --host`, `/switch`,
 The small items below are done except a previous-session key and job wake-ups,
 which wait for Phase 1. Phase 1 is under way: `controller.SessionController` owns
 the runtime, the prompt and command queues, send modes, cancel, steering, busy
-accounting, and the turn loop (`consume`, `run_turn`, `run_shell`), showing
-everything through `PreviewApp`'s `SessionView` methods. `consume_commands` and
-the background tasks (MCP, compaction) still run in `run_async`.
+accounting, the turn loop (`consume`, `run_turn`, `run_shell`), the command loop
+(`consume_commands`), and the MCP and history tasks, showing everything through
+`PreviewApp`'s `SessionView` methods. Commands still run in the terminal: the
+controller hands each one back through `view.run_command`. Next: move command
+handlers into the controller, one area at a time (jobs, MCP, history, model,
+side questions, session lifecycle).
 In the demo the terminal still runs all session logic itself, against
 `RemoteRuntime`, a stand-in that forwards `stream` to the host. That is why a
 dozen commands are refused there, and it is what the refactor replaces.
@@ -90,7 +93,8 @@ Move what `run_async`'s nested functions do today into `pcode.controller.Session
 - [x] Turn loop (`consume`), `run_live`, shell `!commands` (`run_shell`), job
       exit reporting and wake prompts. `PreviewApp.run_live` stays as a thin
       wrapper for tests that drive one turn.
-- [ ] History tasks (`/compact`, side-thread summary) and MCP tasks
+- [x] History tasks (`/compact`, side-thread summary) and MCP tasks
+- [x] The command loop (`consume_commands`); the terminal runs what it hands back
 - [ ] Job watching and wake-ups (`watch_jobs`)
 - [ ] Side questions (`/btw`) lifecycle
 

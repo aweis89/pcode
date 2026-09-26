@@ -77,7 +77,6 @@ from pcode.stream_display import present_events, present_stream_event
 from pcode.theme import THEMES, replay_pending_input
 from pcode.tool_display import plain
 from pcode.ui import (
-    SYSTEM_COMMAND_LABELS,
     WATCHED_PREFIX,
     Activity,
     TerminalOutput,
@@ -205,8 +204,9 @@ class PreviewApp:
         self.preview = PreviewRuntime()
         # The conversation itself, with this terminal as its view.
         self.controller = SessionController(self, self, self.activity, runtime or self.preview)
-        # Where turns stream; set once the prompt exists (or by `run_live`).
+        # Where turns stream, and the editor; set once the prompt exists.
         self.output: TerminalOutput | None = None
+        self.prompt_session = None
         self._saved_session = saved_session
         # A `pcode.remote.HostLaunch`: the conversation runs in a session host
         # and this terminal attaches to it once its event loop is up.
@@ -282,7 +282,6 @@ class PreviewApp:
         # conversation starts (startup, /new, resume).
         self.mcp_defaults_requested = False
         self.mcp_logout_requested: str | None = None
-        self.mcp_enabling: str | None = None
         # A slow command (git work, for example) handed off so the terminal can
         # show a labelled system row while it runs off the event loop.
         self.job_requested: tuple[str, str, Callable[[], list[str]]] | None = None
@@ -1957,7 +1956,7 @@ class PreviewApp:
             )
         # Slash commands precede queued (not yet running) prompts. In particular,
         # an enable + prompt submitted in one input batch must authenticate first.
-        if self.mcp_enabling or (
+        if self.controller.mcp_enabling or (
             self.activity.busy
             and (self.activity.prompt_state == "running" or not self.activity.queued)
         ):
@@ -3050,6 +3049,142 @@ class PreviewApp:
             "Run /login, or restart with ANTHROPIC_API_KEY set."
         )
 
+    async def run_command(self, text: str, *, idle: bool, tag) -> None:
+        """Run a slash command the controller handed back to this terminal.
+
+        `idle` says whether the session was idle when it was sent, and `tag`
+        is the popup generation it was sent in (see `popup`).
+        """
+        controller = self.controller
+        prompts = controller.prompts
+        output, session = self.output, self.prompt_session
+        self._command_popup_generation = tag
+        try:
+            command = self.registry.find(text.split(maxsplit=1)[0])
+            before_queue = (
+                command is not None
+                and command.name in MODEL_COMMANDS
+                # A host's conversation refuses both, in handle().
+                and not self.hosted
+                and idle
+                and not controller.working()
+            )
+            if (
+                command
+                and command.name
+                in {
+                    "/resend",
+                    "/new",
+                    "/resume",
+                    "/login",
+                    "/logout",
+                    "/compact",
+                    "/autocompact",
+                }
+                and (self.activity.busy or self.activity.queued)
+                and not before_queue
+            ):
+                self.transcript.warning(
+                    f"{command.name} is unavailable while working. "
+                    "Cancel with Ctrl+C or wait for the run to finish, then retry."
+                )
+            else:
+                if before_queue:
+                    parts = text.split(maxsplit=1)
+                    handler = self.resend if command.name == "/resend" else self.compact
+                    handler(parts[1] if len(parts) > 1 else "", before_queue=True)
+                else:
+                    self.handle(text)
+                if self.job_requested is not None:
+                    await self.perform_job()
+                if self.resend_requested:
+                    self.resend_requested = False
+                    previous = self.runtime.resend_prompt()
+                    # This command was submitted idle, before any prompts
+                    # now queued behind it. Preserve that submission order.
+                    prompts.put(previous, "resend", first=True)
+                    self.activity.start_prompt(previous)
+                    self.activity.busy = True
+                if self.skill_requested is not None:
+                    if self.skill_mcp_requested is not None:
+                        skill, names = self.skill_mcp_requested
+                        self.skill_mcp_requested = None
+                        # Started before the prompt is queued: the
+                        # consumer then waits for it on mcp_idle.
+                        controller.start_skill_mcp(skill, names)
+                    prompt = self.skill_requested
+                    self.skill_requested = None
+                    # Queue it like a typed message so send mode, steering,
+                    # and cancellation keep their usual meaning.
+                    prompts.put(prompt, self.send_mode)
+                    self.activity.busy = True
+                if self.compact_requested is not None:
+                    focus = self.compact_requested
+                    self.compact_requested = None
+                    controller.start_compact(focus)
+                if self.mcp_enable_requested is not None:
+                    name = self.mcp_enable_requested
+                    self.mcp_enable_requested = None
+                    controller.start_mcp_enable(name)
+                if self.mcp_logout_requested is not None:
+                    name = self.mcp_logout_requested
+                    self.mcp_logout_requested = None
+                    controller.start_mcp_logout(name)
+                if self.mcp_defaults_requested:
+                    controller.start_mcp_defaults()
+                if not self.running:
+                    controller.cancel()
+                    if active := controller.tasks():
+                        await asyncio.gather(*active, return_exceptions=True)
+                if self.model_requested:
+                    await self.choose_model(output, session)
+                if self.reload_requested:
+                    await self.reload_extensions()
+                if self.login_requested:
+                    await self.perform_login()
+                if self.logout_requested:
+                    await self.perform_logout()
+                if self.aside_requested is not None:
+                    (models, question), self.aside_requested = self.aside_requested, None
+                    await self.start_aside(question, models)
+                if self.aside_view_requested:
+                    await self.read_asides(output, session)
+                if self.bridge_requested is not None:
+                    request, self.bridge_requested = self.bridge_requested, None
+                    if request.action == "merge":
+                        await self.merge_thread(request.thread)
+                    else:
+                        controller.start_summary(request)
+                if self.worker_view_requested:
+                    await self.read_workers(output, session)
+                if self.jobs_view_requested:
+                    await self.browse_jobs(output, session)
+                if self.tree_requested:
+                    await self.choose_tree(output, session)
+                if self.session_requested:
+                    await self.choose_session(output, session)
+                if self.switch_requested is not None:
+                    await self.switch_session(output, session)
+                if self.restart_requested:
+                    await self.restart_host()
+                if self.session_info_requested:
+                    await self.show_session_info(output, session)
+                if self.inspector_requested is not None:
+                    await self.inspect_tools(output, session)
+                if self.diffs_requested:
+                    await self.browse_diffs(output, session)
+                if self.links_requested:
+                    await self.choose_link(output, session)
+        except _PopupSuperseded:
+            pass
+        finally:
+            self._command_popup_generation = None
+
+    async def after_command(self) -> None:
+        await self.output.flush()
+        if not self.running and self.prompt_session.app.is_running:
+            self.prompt_session.app.exit()
+
     async def run_async(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
@@ -3103,7 +3238,7 @@ class PreviewApp:
                 self.activity.busy = False
             else:
                 session.app.create_background_task(refresh_metadata())
-                start_mcp_defaults()
+                controller.start_mcp_defaults()
             finally:
                 self._startup_pending = False
                 controller.ready.set()
@@ -3189,343 +3324,6 @@ class PreviewApp:
                 self.send_mode_once = None
                 controller.submit(text, mode)
 
-        def start_mcp_task(name, coroutine, *, status, cancelled):
-            """Run MCP work outside the model loop; queued prompts wait for it."""
-            controller.mcp_idle.clear()
-            self.mcp_enabling = name
-            self.activity.busy = True
-            self.activity.status = status
-
-            def finished(task):
-                success = False
-                try:
-                    task.result()
-                    success = True
-                except asyncio.CancelledError:
-                    self.transcript.warning(cancelled)
-                except Exception as error:
-                    self.report_mcp_error(name, error)
-                finally:
-                    if not success:
-                        clear_queue()
-                    controller.mcp_task = None
-                    controller.refresh_busy()
-                    self.activity.status = ""
-                    self.mcp_enabling = None
-                    controller.mcp_idle.set()
-                    session.app.invalidate()
-
-            controller.mcp_task = asyncio.create_task(coroutine)
-            # A done callback also handles cancellation before the coroutine starts.
-            controller.mcp_task.add_done_callback(finished)
-
-        def start_mcp_enable(name):
-            self.transcript.note(
-                f"Enabling MCP '{name}'. OAuth sign-in happens now if needed; "
-                "Ctrl+C cancels. No model request is made."
-            )
-            start_mcp_task(
-                name,
-                self.enable_mcp(name),
-                status=f"Enabling MCP '{name}' — complete browser sign-in if prompted…",
-                cancelled=f"MCP '{name}' sign-in cancelled; server remains off.",
-            )
-
-        def start_skill_mcp(skill, names):
-            """Enable what `skill` declares before its prompt, which waits on MCP work."""
-            from pcode.mcp import config_path, configured_servers
-
-            state = getattr(self.runtime, "mcp", None)
-            if state is None:
-                return
-            try:
-                configured = configured_servers()
-            except ValueError as error:
-                self.transcript.error(str(error))
-                return
-            if unknown := [name for name in names if name not in configured]:
-                self.transcript.warning(
-                    f"The {skill} skill asks for MCP {', '.join(unknown)}, "
-                    f"not configured in {config_path()}."
-                )
-            wanted = [name for name in names if name in configured and name not in state.enabled]
-            if not wanted:
-                return
-            # Same rule as /mcp enable: never swap toolsets under a running turn.
-            if controller.mcp_task is not None or controller.turn_running():
-                listed = " ".join(f"`/mcp enable {name}`" for name in wanted)
-                self.transcript.warning(
-                    f"The {skill} skill asks for MCP {', '.join(wanted)}, which cannot be "
-                    f"enabled while working. Run {listed} after this turn."
-                )
-                return
-            self.transcript.note(
-                f"Enabling MCP {', '.join(wanted)} for the {skill} skill. "
-                "OAuth sign-in happens now if needed; Ctrl+C cancels."
-            )
-            start_mcp_task(
-                ", ".join(wanted),
-                self.enable_skill_mcp(skill, wanted),
-                status=f"Enabling MCP for the {skill} skill — complete sign-in if prompted…",
-                cancelled=f"MCP sign-in for the {skill} skill cancelled; its prompt was not sent.",
-            )
-
-        def start_mcp_defaults():
-            from pcode.mcp import default_servers
-
-            self.mcp_defaults_requested = False
-            if getattr(self.runtime, "mcp", None) is None:
-                return
-            try:
-                names = default_servers()
-            except ValueError as error:
-                self.transcript.error(str(error))
-                return
-            if not names:
-                return
-            start_mcp_task(
-                "defaults",
-                self.enable_mcp_defaults(names),
-                status="Enabling default MCP servers…",
-                cancelled="Default MCP enable cancelled; remaining servers stay off.",
-            )
-
-        def start_mcp_logout(name):
-            start_mcp_task(
-                name,
-                self.logout_mcp(name),
-                status=f"Signing out of MCP '{name}'…",
-                cancelled=f"MCP '{name}' sign-out cancelled.",
-            )
-
-        def start_compact(focus):
-            start_history_task(
-                self.runtime.compact(focus),
-                # Label the work instead of echoing "/compact <focus>", which
-                # reads like the command was typed as part of a prompt.
-                label=SYSTEM_COMMAND_LABELS["/compact"],
-                detail=focus,
-                status="Compacting context…",
-                note="Compacting context with the current model. Ctrl+C cancels.",
-                done=lambda result: result.description(),
-                cancelled="Compaction cancelled; history unchanged.",
-                failed="Compaction failed",
-            )
-
-        def start_summary(request: Bridge):
-            # Checked before the task marks the session busy, which would refuse it.
-            follows = self.check_bridge(request.thread)
-            start_history_task(
-                self.summarize_thread(follows, request.instructions),
-                label="Summarizing side thread",
-                detail=request.instructions,
-                status="Summarizing side thread…",
-                note="Summarizing the side thread into the conversation. Ctrl+C cancels.",
-                done=lambda result: "Side thread summary added to the conversation.",
-                cancelled="Summary cancelled; the conversation is unchanged.",
-                failed="Side thread summary failed",
-            )
-
-        def start_history_task(work, *, label, detail, status, note, done, cancelled, failed):
-            """Run work that rewrites the conversation's history, holding prompts back.
-
-            Prompts typed meanwhile queue behind it on `compact_idle`, the way a
-            turn would, so nothing reads the history while it changes. `done`
-            turns the result into the closing note.
-            """
-            controller.compact_idle.clear()
-            self.activity.busy = True
-            self.activity.status = status
-            self.activity.start_prompt(label, kind="system", detail=detail)
-            self.transcript.note(note)
-
-            def finished(task):
-                success = False
-                try:
-                    result = task.result()
-                    self.transcript.note(done(result))
-                    self.activity.finish_prompt("done")
-                    success = True
-                except asyncio.CancelledError:
-                    self.activity.finish_prompt("cancelled")
-                    self.transcript.warning(cancelled)
-                except Exception as error:
-                    from pcode.live import error_message
-
-                    self.activity.finish_prompt("failed")
-                    self.transcript.error(error_message(error), title=failed)
-                finally:
-                    if not success:
-                        clear_queue()
-                    controller.compact_task = None
-                    controller.refresh_busy()
-                    self.activity.status = ""
-                    controller.compact_idle.set()
-                    session.app.invalidate()
-
-            controller.compact_task = asyncio.create_task(work)
-            controller.compact_task.add_done_callback(finished)
-
-        async def consume_commands():
-            while self.running:
-                generation, text, submitted_idle, popup_generation = await commands.get()
-                self._command_popup_generation = popup_generation
-                try:
-                    if text.split()[0] not in {
-                        "/quit",
-                        "/exit",
-                        "/help",
-                        "/commands",
-                        "/theme",
-                        "/theme-preview",
-                        "/syntax",
-                        "/show-tasks",
-                        "/autohide-tasks",
-                        "/show-thinking",
-                        "/show-edits",
-                        "/show-commands",
-                        "/redraw",
-                        "/config",
-                    }:
-                        if not controller.ready.is_set():
-                            # Keep consuming frontend-only commands while backend
-                            # commands wait, preserving their order for readiness.
-                            controller.startup_commands.append(
-                                (generation, text, submitted_idle, popup_generation)
-                            )
-                            continue
-                        if generation != prompts.generation:
-                            continue
-                        if self._startup_error is not None:
-                            self.transcript.warning("Agent startup failed; restart pcode to retry.")
-                            continue
-                    controller.command_started(text)
-                    command = self.registry.find(text.split(maxsplit=1)[0])
-                    before_queue = (
-                        command is not None
-                        and command.name in MODEL_COMMANDS
-                        # A host's conversation refuses both, in handle().
-                        and not self.hosted
-                        and submitted_idle
-                        and not controller.working()
-                    )
-                    if (
-                        command
-                        and command.name
-                        in {
-                            "/resend",
-                            "/new",
-                            "/resume",
-                            "/login",
-                            "/logout",
-                            "/compact",
-                            "/autocompact",
-                        }
-                        and (self.activity.busy or self.activity.queued)
-                        and not before_queue
-                    ):
-                        self.transcript.warning(
-                            f"{command.name} is unavailable while working. "
-                            "Cancel with Ctrl+C or wait for the run to finish, then retry."
-                        )
-                    else:
-                        if before_queue:
-                            parts = text.split(maxsplit=1)
-                            handler = self.resend if command.name == "/resend" else self.compact
-                            handler(parts[1] if len(parts) > 1 else "", before_queue=True)
-                        else:
-                            self.handle(text)
-                        if self.job_requested is not None:
-                            await self.perform_job()
-                        if self.resend_requested:
-                            self.resend_requested = False
-                            previous = self.runtime.resend_prompt()
-                            # This command was submitted idle, before any prompts
-                            # now queued behind it. Preserve that submission order.
-                            prompts.put(previous, "resend", first=True)
-                            self.activity.start_prompt(previous)
-                            self.activity.busy = True
-                        if self.skill_requested is not None:
-                            if self.skill_mcp_requested is not None:
-                                skill, names = self.skill_mcp_requested
-                                self.skill_mcp_requested = None
-                                # Started before the prompt is queued: the
-                                # consumer then waits for it on mcp_idle.
-                                start_skill_mcp(skill, names)
-                            prompt = self.skill_requested
-                            self.skill_requested = None
-                            # Queue it like a typed message so send mode, steering,
-                            # and cancellation keep their usual meaning.
-                            prompts.put(prompt, self.send_mode)
-                            self.activity.busy = True
-                        if self.compact_requested is not None:
-                            focus = self.compact_requested
-                            self.compact_requested = None
-                            start_compact(focus)
-                        if self.mcp_enable_requested is not None:
-                            name = self.mcp_enable_requested
-                            self.mcp_enable_requested = None
-                            start_mcp_enable(name)
-                        if self.mcp_logout_requested is not None:
-                            name = self.mcp_logout_requested
-                            self.mcp_logout_requested = None
-                            start_mcp_logout(name)
-                        if self.mcp_defaults_requested:
-                            start_mcp_defaults()
-                        if not self.running:
-                            controller.cancel()
-                            if active := controller.tasks():
-                                await asyncio.gather(*active, return_exceptions=True)
-                        if self.model_requested:
-                            await self.choose_model(output, session)
-                        if self.reload_requested:
-                            await self.reload_extensions()
-                        if self.login_requested:
-                            await self.perform_login()
-                        if self.logout_requested:
-                            await self.perform_logout()
-                        if self.aside_requested is not None:
-                            (models, question), self.aside_requested = self.aside_requested, None
-                            await self.start_aside(question, models)
-                        if self.aside_view_requested:
-                            await self.read_asides(output, session)
-                        if self.bridge_requested is not None:
-                            request, self.bridge_requested = self.bridge_requested, None
-                            if request.action == "merge":
-                                await self.merge_thread(request.thread)
-                            else:
-                                start_summary(request)
-                        if self.worker_view_requested:
-                            await self.read_workers(output, session)
-                        if self.jobs_view_requested:
-                            await self.browse_jobs(output, session)
-                        if self.tree_requested:
-                            await self.choose_tree(output, session)
-                        if self.session_requested:
-                            await self.choose_session(output, session)
-                        if self.switch_requested is not None:
-                            await self.switch_session(output, session)
-                        if self.restart_requested:
-                            await self.restart_host()
-                        if self.session_info_requested:
-                            await self.show_session_info(output, session)
-                        if self.inspector_requested is not None:
-                            await self.inspect_tools(output, session)
-                        if self.diffs_requested:
-                            await self.browse_diffs(output, session)
-                        if self.links_requested:
-                            await self.choose_link(output, session)
-                except _PopupSuperseded:
-                    pass
-                except Exception as error:
-                    self.command_failed(text.split(maxsplit=1)[0], error)
-                finally:
-                    self._command_popup_generation = None
-                    controller.command_finished()
-                await output.flush()
-                if not self.running and session.app.is_running:
-                    session.app.exit()
-
         session = create_prompt(
             self.registry,
             activity=self.activity,
@@ -3550,6 +3348,7 @@ class PreviewApp:
         )
         self.transcript.output = output
         self.output = output
+        self.prompt_session = session
         controller.closing = lambda: not session.app.is_running
         session.app.style = DynamicStyle(lambda: self.transcript.prompt_style())
 
@@ -3628,7 +3427,7 @@ class PreviewApp:
             session.app.create_background_task(watch_jobs())
             session.app.create_background_task(output.run())
             session.app.create_background_task(controller.consume())
-            session.app.create_background_task(consume_commands())
+            session.app.create_background_task(controller.consume_commands())
             if self.initial_prompt:
                 # Queued like a typed message: it waits for the backend the same
                 # way, and Ctrl+C clears it the same way.
