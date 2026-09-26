@@ -252,8 +252,8 @@ def divergence(previous: RequestFingerprint, current: RequestFingerprint) -> str
     )
     gap = current.at - previous.at
     return (
-        f"Request fingerprints unchanged; {appended} messages appended (~{gap:.0f}s gap). "
-        f"Cache-miss cause unknown.{points}"
+        f"Request fingerprints unchanged; {appended} messages appended (~{gap:.0f}s gap), "
+        f"cause unknown.{points}"
     )
 
 

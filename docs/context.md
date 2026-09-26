@@ -177,49 +177,60 @@ projection when their clipped text no longer has reliable redaction context; the
 live preview remains separate. Store failures fall back to lossy truncation.
 LLM summarization, multiple size bands, and per-tool configuration are not exposed.
 
-## Prompt cache warnings
+## Prompt cache notices
 
 For the planning-specific cache issue and why reminders are now append-only, see
 [prompt caching and plan reminders](prompt-caching.md). `make cache-report`
 summarizes how prompt caching actually performed in saved sessions.
 
-Prompt-cache warnings and fingerprint collection are **off by default**. Enable
-`debug` for the main agent and sub-agents through the existing configuration:
-
-```sh
-pcode config set debug on   # Or /config set debug on inside pcode
-pcode config set debug off  # Default
-```
-
-Restart pcode or use `/reload` after changing this setting. With debug enabled,
-Harness's [cache-bust monitor](https://pydantic.dev/docs/ai/harness/warn-on-cache-busts/)
-shows a `Prompt cache miss` warning when cache reads drop below half of an
-established prefix of at least 1,024 tokens. It includes the model, token counts,
-and request fingerprint comparison, without guessing the provider-side cause.
-Warnings survive redraw and saved-session resume; turning debug off does not
-remove old warnings. They do not interrupt the run.
-
-The monitor compares requests within each agent run, not across chat turns or
-restarts. A sustained collapse warns once until cache reads recover. It stays
-quiet if the provider never reports an established cache. This is an observation,
-not proof of a prompt bug: compaction, prefix changes, or provider cache expiry
-can all cause a miss. No prompt contents are included in the warning.
-
-### Diagnosing a miss
-
-The token counts alone cannot say *why* a prefix stopped matching, so pcode
-fingerprints every model request and keeps a rolling window of the last few. When
-a miss fires, the warning gains a one-line diagnosis and the window is written to
-`~/.local/state/pcode/cache-diagnostics/` (`XDG_STATE_HOME` is honored):
+When a request reuses much less of the prompt cache than an earlier one had
+established, pcode adds a muted line to the transcript saying how much was reused:
 
 ```text
-! Prompt cache miss
-  provider/model: request 14: cached 3,712 vs ~10,752 established tokens.
-  Request fingerprints unchanged; 2 messages appended (~10s gap). Cache-miss cause unknown.
-  Request fingerprints: ~/.local/state/pcode/cache-diagnostics/20260919T035812-4821-step14.json
+Prompt cache: request 1 reused 0 of ~48,210 tokens cached in an earlier turn (anthropic/claude-sonnet-4-5).
 ```
 
-The comparison describes what pcode observed, not a proven cache-miss cause:
+This is information, not an error. Expect one after `/compact` (the summary
+replaces the history the cache held), after enabling an MCP server or extension
+(the tool list moves), or when you return after the provider's cache has
+expired. The notice says what was measured, never a guessed cause, and it does
+not interrupt the run. Notices survive redraw and saved-session resume.
+
+Notices are **on by default**, for the main agent and sub-agents. Turn them off
+with `cache_notices`, then restart pcode or use `/reload`:
+
+```sh
+pcode config set cache_notices off   # Or /config set cache_notices off inside pcode
+pcode config set cache_notices on    # Default
+```
+
+Turning them off does not remove notices already in a saved session.
+
+Harness's [cache monitor](https://pydantic.dev/docs/ai/harness/warn-on-cache-busts/)
+decides when to report: cache reads below half of an established prefix of at
+least 1,024 tokens. The first request of a turn is compared with what the previous
+turn cached, as long as the conversation has not been idle longer than the
+provider's ~5 minute cache lifetime; after that the old cache is gone anyway, so
+nothing is reported. A sustained drop is reported once until reads recover, and
+nothing is reported if the provider never reports an established cache. No prompt
+contents are included.
+
+### What moved the prefix
+
+The token counts alone cannot say *why* a prefix stopped matching, so pcode
+fingerprints every model request of a turn and keeps a rolling window of the last
+few. When a notice follows an earlier request in the same turn, it gains a
+one-line comparison. With `debug` on (`pcode config set debug on`), the window is
+also written to `~/.local/state/pcode/cache-diagnostics/` (`XDG_STATE_HOME` is
+honored) and the notice names the file:
+
+```text
+Prompt cache: request 14 reused 3,712 of ~10,752 previously cached tokens (provider/model).
+Request fingerprints unchanged; 2 messages appended (~10s gap), cause unknown.
+Request fingerprints: ~/.local/state/pcode/cache-diagnostics/20260919T035812-4821-step14.json
+```
+
+The comparison describes what pcode observed, not a proven cause:
 
 - **`Request fingerprints unchanged`** — the tracked instructions, tools,
   settings, and earlier messages match; new messages were appended. These are
@@ -234,5 +245,5 @@ The dump holds digests, sizes, part kinds, token counts and breakpoint positions
 for each request in the window — never prompt text, which would otherwise leak the
 file contents and command output the agent had read. Compare consecutive entries
 to see exactly which message moved. Set `PCODE_CACHE_DIAGNOSTICS=off` to disable
-the dumps, or to a directory path to write them elsewhere; the warning itself is
-unaffected.
+the dumps even with `debug` on, or to a directory path to write them elsewhere; the
+notice itself is unaffected.

@@ -75,6 +75,11 @@ would silently lose. Cancel with Ctrl+C or wait for completion to fork — or as
 the branch a [side question](side-questions.md) with `/btw`, which runs in
 parallel without touching the conversation.
 
+A `/btw` thread worth keeping can be
+[merged into the tree](side-questions.md#keeping-a-thread) from its viewer. Its
+questions appear as `btw:` rows forked where the thread was asked, and each is a
+checkpoint you can continue from like any turn.
+
 ## Persistence
 
 With normal session saving, branches and the selected position survive restart,

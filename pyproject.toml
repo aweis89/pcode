@@ -12,11 +12,11 @@ dependencies = [
     "yappi>=1.7.6,<2",
     # playwright backs the bundled browser extension (/browser on); Chromium
     # itself is downloaded on first use, not at install.
-    "pydantic-ai-harness[exa,coder,codemode,playwright] @ git+https://github.com/pydantic/pydantic-ai-harness.git@12bce878da99bca61a5d8d798bff0a3bc93bd153",
+    "pydantic-ai-harness[exa,coder,codemode,playwright] @ git+https://github.com/pydantic/pydantic-ai-harness.git@a7bbe89fd855138916d4f64060479f4ddb0ef9b0",
     # duckduckgo and web-fetch back the bundled web_research extension when no
     # provider-native search or Exa key is available.
     # google covers both google and google-cloud providers; bedrock pulls boto3.
-    "pydantic-ai-slim[anthropic,bedrock,duckduckgo,google,groq,mcp,openai,web-fetch,xai]>=2.44.0,<3",
+    "pydantic-ai-slim[anthropic,bedrock,duckduckgo,google,groq,mcp,openai,web-fetch,xai]>=2.49.0,<3",
     "rich>=14,<15",
     # FastMCP 4.x OAuth callback server selects Uvicorn's websockets-sansio protocol.
     "websockets>=15.0.1,<17",

@@ -117,6 +117,8 @@ is only sensible on a machine where you wrote all of them.
 | `syntax_dark` | `terminal` | `terminal` or a Pygments style, for the dark palette |
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
 | `autocompact` | `on` | `on`, `off` |
+| `cache_notices` | `on` | `on`, `off` (note in the transcript when a request reuses less of the prompt cache; see [prompt cache notices](context.md#prompt-cache-notices)) |
+| `debug` | `off` | `on`, `off` (also write request fingerprints to disk with each cache notice) |
 | `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
 | `paced_scrollback` | `on` | `on`, `off` (roll settled blocks into scrollback a few rows per frame; see [the transcript](transcript.md#paced-scrollback)) |
 | `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
