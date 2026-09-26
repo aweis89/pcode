@@ -56,6 +56,34 @@ def test_continue_restores_model_workspace_and_releases_lock(monkeypatch, tmp_pa
     reopened.close()
 
 
+def test_continue_copies_a_session_open_elsewhere(monkeypatch, tmp_path):
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    saved.append("turn_started", prompt="First question", run_id="r1", parent_id=None)
+    saved.append("turn_completed", run_id="r1")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    argv = ["pcode", "--continue", saved.info.id, "--session-dir", str(root)]
+    try:
+        monkeypatch.setattr(sys, "argv", argv)
+        with patch("pcode.app.PreviewApp") as app:
+            main()
+        copy = app.call_args.kwargs["saved_session"]
+        assert copy.forked_from == saved.info.id
+        assert app.call_args.kwargs["resume"] is True
+        assert app.call_args.kwargs["workspace"] == tmp_path
+        SavedSession.open(copy.info.id, root).close()  # Released on exit.
+
+        # A refused resume removes the copy it made rather than leaving it listed.
+        monkeypatch.setattr(sys, "argv", [*argv, "-m", "other:model"])
+        with pytest.raises(SystemExit) as raised:
+            main()
+        assert raised.value.code == 2
+        assert len(list(root.iterdir())) == 2
+    finally:
+        saved.close()
+
+
 def test_no_save_never_creates_session(monkeypatch, tmp_path):
     root = tmp_path / "sessions"
     monkeypatch.setenv("PCODE_SESSION_DIR", str(root))

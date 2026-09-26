@@ -23,7 +23,13 @@ from pydantic_ai_harness.step_persistence import ContinuableSnapshot, RunRecord,
 from pcode.diagnostics import error_details
 from pcode.live import AgentRuntime, error_message
 from pcode.runtime import Message
-from pcode.sessions import SavedSession, SessionError, list_sessions, resolve_session
+from pcode.sessions import (
+    SavedSession,
+    SessionBusy,
+    SessionError,
+    list_sessions,
+    resolve_session,
+)
 
 
 def test_round_trip_session_keeps_model_messages_and_transcript(tmp_path):
@@ -725,3 +731,113 @@ def test_sessions_compact_reports_space_and_needs_the_listing(tmp_path, monkeypa
     with pytest.raises(SystemExit) as raised:
         main()
     assert raised.value.code == 2
+
+
+def latest_prompt(messages) -> str:
+    return next(
+        part.content
+        for message in reversed(messages)
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    )
+
+
+def test_opening_a_busy_session_continues_a_copy_from_its_last_safe_step(tmp_path):
+    """`--continue` and `/resume` on a session mid-turn elsewhere get a copy, not a refusal."""
+    root = tmp_path / "sessions"
+    (tmp_path / "README.md").write_text("a test repository\n")
+    saved = SavedSession.create("test:local", tmp_path, root)
+    identity = saved.info.id
+    calls = []
+
+    async def run():
+        blocked, release = asyncio.Event(), asyncio.Event()
+
+        async def model(messages, info):
+            prompt = latest_prompt(messages)
+            returned = any(isinstance(part, ToolReturnPart) for part in messages[-1].parts)
+            calls.append((prompt, returned))
+            if prompt == "Second question" and not returned:
+                # A settled tool step, so the running turn has a mid-turn checkpoint.
+                yield {0: DeltaToolCall(name="read_file", json_args='{"path":"README.md"}')}
+                return
+            if prompt == "Second question" and not blocked.is_set():
+                blocked.set()  # Only the source blocks; the copy answers straight away.
+                await release.wait()
+            yield f"Answer to {prompt}."
+
+        agent = Agent(FunctionModel(stream_function=model), capabilities=[Coder(tmp_path)])
+        runtime = AgentRuntime(agent, saved)
+        _ = [event async for event in runtime.stream("First question")]
+        settled = deepcopy(runtime.history)
+        (first,) = runtime.tree.nodes
+
+        async def second():
+            return [event async for event in runtime.stream("Second question")]
+
+        running = asyncio.create_task(second())
+        await blocked.wait()
+        before = (saved.directory / "transcript.jsonl").read_bytes()
+
+        with pytest.raises(SessionBusy):
+            SavedSession.open(identity, root)
+        copy = SavedSession.open(identity[:8], root, fork_if_open=True)
+        try:
+            assert copy.forked_from == identity
+            assert copy.info.id != identity
+            assert copy.info.workspace == saved.info.workspace
+            assert {info.id for info in list_sessions(root)} == {identity, copy.info.id}
+            # The running turn is copied as a crash leaves it: active, from its
+            # last settled step, which is past the tool it already ran.
+            running_turn = copy.tree.active
+            assert copy.tree.nodes[running_turn].parent == first
+            assert copy.tree.nodes[running_turn].status == "interrupted"
+            recovered = await copy.recover()
+            assert recovered[: len(settled)] == settled
+            assert any(isinstance(part, ToolReturnPart) for part in recovered[-1].parts)
+
+            resumed = AgentRuntime(agent, copy)
+            await resumed.restore()
+            start = len(calls)
+            events = [event async for event in resumed.stream(None)]  # /resend
+            assert any(
+                isinstance(event, Message) and event.markdown == "Answer to Second question."
+                for event in events
+            )
+            # It carried on after the tool rather than running it again.
+            assert calls[start:] == [("Second question", True)]
+            # The last finished turn is still one /tree selection away.
+            await resumed.navigate(first)
+            assert resumed.history == settled
+        finally:
+            copy.close()
+
+        # The source was only read, never written.
+        assert (saved.directory / "transcript.jsonl").read_bytes() == before
+        release.set()
+        await running
+        runtime.close()
+        reopened = SavedSession.open(identity, root)
+        try:
+            assert len(reopened.tree.nodes) == 2  # Nothing from the copy.
+        finally:
+            reopened.close()
+
+    asyncio.run(run())
+
+
+def test_a_busy_first_turn_with_no_settled_step_copies_its_prompt_for_resend(tmp_path):
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    try:
+        saved.append("turn_started", prompt="Still running", run_id="r1", parent_id=None)
+        copy = SavedSession.open(saved.info.id, root, fork_if_open=True)
+        try:
+            assert asyncio.run(copy.recover()) == []
+            runtime = AgentRuntime(Agent("test"), copy)
+            assert runtime.resend_prompt() == "Still running"
+        finally:
+            copy.close()
+    finally:
+        saved.close()

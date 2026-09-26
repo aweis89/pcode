@@ -1983,7 +1983,7 @@ class PreviewApp:
         if current is not None and current.info.id == identity:
             self.transcript.note("This session is already active.")
             return
-        saved = SavedSession.open(identity, self.session_dir)
+        saved = SavedSession.open(identity, self.session_dir, fork_if_open=True)
         try:
             target = self._resume_workspace(saved.info)
             # A session from another worktree gets that worktree's extensions
@@ -2000,7 +2000,7 @@ class PreviewApp:
             await runtime.restore()
             await runtime.refresh_context()
         except BaseException:
-            saved.close()
+            saved.abandon()
             raise
         # Keep the current conversation intact until recovery has succeeded.
         if target != self.workspace:
@@ -2472,6 +2472,8 @@ class PreviewApp:
         self.activity.tools.clear()
         with self.transcript.restore():
             self.transcript.retained_note(f"Resumed {saved.info.id}")
+            if saved.forked_from:
+                self.transcript.retained_note(forked_note(saved))
             for record in saved.transcript_records():
                 kind = record["kind"]
                 if kind in ("turn_started", "steering"):
@@ -3712,6 +3714,8 @@ class PreviewApp:
         except Exception as error:
             self.transcript.error(error_message(error), title="Agent startup failed")
             return False
+        if self._saved_session is not None and self._saved_session.forked_from:
+            self.transcript.note(forked_note(self._saved_session))
         self.runtime.compaction_notice = self.transcript.note
         if hasattr(self.runtime, "retry_notice"):
             self.runtime.retry_notice = self.transcript.note
@@ -3865,7 +3869,10 @@ def main() -> None:
         nargs="?",
         const="latest",
         metavar="SESSION",
-        help="Continue a session ID/prefix; omit SESSION for this directory's latest",
+        help=(
+            "Continue a session ID/prefix, or a copy of it if it is open elsewhere; "
+            "omit SESSION for this directory's latest"
+        ),
     )
     parser.add_argument(
         "--session-dir", type=Path, help="Override the private session storage directory"
@@ -4045,6 +4052,17 @@ def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
         untouched = ours and worktree.is_untouched(linked)
     except worktree.WorktreeError:
         return False
+    if session is not None:
+        # A copied session shares its original's worktree; never pull it out
+        # from under whichever of the two is still working there. Only asked
+        # with a session, whose module is then already loaded: a bare exit
+        # must not import the agent stack.
+        from pcode.sessions import open_in
+
+        others = open_in(linked.path, session.directory.parent, exclude=session.info.id)
+        if others:
+            notify(f"worktree: kept; session {others[0]} is still open in {linked.path}")
+            return False
     resume = f"`pcode -C {linked.path} -c` resumes there"
 
     def repoint():
@@ -4090,6 +4108,15 @@ def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
     except (worktree.WorktreeError, OSError) as error:
         notify(f"worktree: {error}\nworktree: kept; {resume}")
     return False
+
+
+def forked_note(saved) -> str:
+    """Say where a copied session came from, and that the two share a workspace."""
+    note = f"Continuing a copy of session {saved.forked_from}, which is open in another process."
+    active = saved.tree.nodes.get(saved.tree.active) if saved.tree.active else None
+    if active is not None and active.status == "interrupted":
+        note += " Its running turn was copied up to its last safe step; /resend carries it on."
+    return note + f" Both sessions work in {saved.info.workspace}."
 
 
 def _session_scope(info) -> Path:
@@ -4189,22 +4216,29 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         if args.resume:
             from pcode.sessions import SavedSession, SessionError
 
-            saved = SavedSession.open(args.resume, args.session_dir, args.workspace or Path.cwd())
-            if args.model and args.model != saved.info.model:
-                raise SessionError(
-                    "Cannot change models when resuming; start a new session instead."
-                )
-            if args.workspace and str(args.workspace.resolve()) != saved.info.workspace:
-                # Another worktree of the same repository is fine: the session
-                # goes back to its own directory. Another repository is not.
-                from pcode.worktree import repo_scope
-
-                if repo_scope(args.workspace) != _session_scope(saved.info):
+            saved = SavedSession.open(
+                args.resume, args.session_dir, args.workspace or Path.cwd(), fork_if_open=True
+            )
+            try:
+                if args.model and args.model != saved.info.model:
                     raise SessionError(
-                        "Workspace differs from the saved session; refusing cross-repo resume."
+                        "Cannot change models when resuming; start a new session instead."
                     )
+                if args.workspace and str(args.workspace.resolve()) != saved.info.workspace:
+                    # Another worktree of the same repository is fine: the session
+                    # goes back to its own directory. Another repository is not.
+                    from pcode.worktree import repo_scope
+
+                    if repo_scope(args.workspace) != _session_scope(saved.info):
+                        raise SessionError(
+                            "Workspace differs from the saved session; refusing cross-repo resume."
+                        )
+                args.workspace = _resume_workspace(saved.info, args.workspace)
+            except BaseException:
+                saved.abandon()
+                saved = None  # Already closed; the `finally` below must not close it again.
+                raise
             args.model = saved.info.model
-            args.workspace = _resume_workspace(saved.info, args.workspace)
         if not args.resume and not args.model:
             args.model = load_preferences().get("model")
         workspace = args.workspace or Path.cwd()
