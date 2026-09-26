@@ -218,7 +218,6 @@ class RemoteController:
         self.startup_pending = False
         self.startup_error: Exception | None = None
         self.interactive = True
-        self._models: list[str] = []
         self._calls = _Calls(self)
         self._serving: asyncio.Task | None = None
         self.on_closed = lambda: None
@@ -257,7 +256,6 @@ class RemoteController:
             controller.apply_field(name, value)
         for state in welcome["asides"]:
             controller.apply_aside(state)
-        asyncio.create_task(controller._fetch_models())
         return controller, welcome
 
     async def start(self, welcome: dict) -> None:
@@ -289,12 +287,6 @@ class RemoteController:
         if self.runtime is not None:
             self.runtime.lost = True
         self.on_closed()
-
-    async def _fetch_models(self) -> None:
-        try:
-            self._models = list(await self.query("model_suggestions"))
-        except Exception:  # noqa: BLE001 - completion only.
-            self._models = []
 
     # What the host sends
 
@@ -420,7 +412,7 @@ class RemoteController:
         return self.state.get("context", "")
 
     def model_suggestions(self) -> list[str]:
-        return self._models
+        return self.state.get("models") or []
 
     def meridian_thinking_state(self) -> tuple[None, None]:
         return None, None  # Probed in the host, where the proxy is configured.

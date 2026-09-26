@@ -1170,6 +1170,7 @@ def create_prompt(
     on_thinking=None,
     on_commands=None,
     on_send_mode=None,
+    on_previous_session=None,
     **kwargs,
 ) -> PromptSession:
     configure_newline_keys()
@@ -1211,6 +1212,13 @@ def create_prompt(
         @keys.add("c-l", filter=~is_searching)
         def choose_model(event: KeyPressEvent) -> None:
             on_model()
+
+    if on_previous_session is not None:
+        # Vim's alternate-buffer key; terminals send it for Ctrl+6 as well.
+
+        @keys.add("c-^", filter=~is_searching)
+        def previous_session(event: KeyPressEvent) -> None:
+            on_previous_session()
 
     if on_effort is not None:
 
@@ -2467,6 +2475,7 @@ class Transcript:
         self.note("Enter accepts a selected completion; press again to send.")
         self.note("Ctrl+O tasks widget · Ctrl+T thinking · Ctrl+G command output (each redraws)")
         self.note("Ctrl+L choose model · Ctrl+N raise effort · Ctrl+P lower effort (next turn)")
+        self.note("Ctrl+^ (Ctrl+6) back to the previous session (/switch -)")
         self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note(
             "During a run: Enter sends · Ctrl+S picks steering/queue/interrupt for the next send. "

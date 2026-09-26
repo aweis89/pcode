@@ -21,7 +21,8 @@ Inside a hosted session:
   Enter shows that session in this terminal; `n` (or Ctrl+N) starts a new one;
   `x`, pressed twice, stops one. A turn you switch away from keeps running.
 - `/switch HOST` goes straight to one by host or session ID prefix, and
-  `/switch -` back to the one this terminal showed before.
+  `/switch -` (or Ctrl+^, which most terminals also send for Ctrl+6) back to the
+  one this terminal showed before. Pressed again, it flips back.
 - `/switch new` starts a new session and switches to it. `/switch new PROMPT`
   starts one working on PROMPT and leaves it in the background; this terminal
   stays where it is.

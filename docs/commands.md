@@ -136,6 +136,7 @@ candidate's size so that cost is visible before you pick.
 | Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
 | Ctrl+L | Choose a model (keeps the conversation; applies from the next request) |
+| Ctrl+^ (Ctrl+6) | Back to the session this terminal showed before (`/switch -`) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
 | Ctrl+R | Search this process's input history |
 | Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first) |

@@ -65,6 +65,19 @@ def host_row(
     return f"{marker} {state}  {title:<{_TITLE_WIDTH}}  {where} · {age(now - entry.updated)}{old}"
 
 
+def status_rows(entry: HostEntry, now: float | None = None, *, code: str | None = None):
+    """`/status` rows about the host itself, read from its status file."""
+    now = time.time() if now is None else now
+    terminals = f"{entry.attached} terminal{'s' if entry.attached != 1 else ''} attached"
+    rows = [("Host", f"{entry.id} · pid {entry.pid} · started {age(now - entry.started)}")]
+    rows.append(("Attached", terminals))
+    if entry.log:
+        rows.append(("Host log", entry.log))
+    if entry.stale(code):
+        rows.append(("Host code", "older than the pcode installed now; /restart updates it"))
+    return rows
+
+
 def hosts_dialog(
     entries: list[HostEntry], *, current: str | None, input=None, output=None, style=None
 ):
