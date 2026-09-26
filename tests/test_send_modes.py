@@ -71,7 +71,8 @@ def test_busy_send_modes(mode, editing_mode):
                         raise
                 yield Message("done")
 
-        app = PreviewApp(model="test:local", runtime=Runtime(), console=Console(file=StringIO()))
+        runtime = Runtime()
+        app = PreviewApp(model="test:local", runtime=runtime, console=Console(file=StringIO()))
         app.send_mode = mode
         with create_pipe_input() as pipe:
             session = None
@@ -106,7 +107,7 @@ def test_busy_send_modes(mode, editing_mode):
                         app.send_mode = mode
                         # Steering ends a foreground shell wait so the message
                         # reaches the model now; queue mode leaves it alone.
-                        released = app.runtime.jobs.release_generation
+                        released = runtime.jobs.release_generation
                         assert released == (1 if mode == "steering" else 0)
                         release.set()
                     await wait(lambda: not app.activity.busy)
@@ -183,6 +184,8 @@ def test_ctrl_s_mode_applies_to_one_send_only():
                     await wait(lambda: cancelled == ["first"])
                     assert app.next_send_mode == "steering"
                     assert app.send_mode_once is None
+                    # Idle again, so Ctrl+D exits rather than cancelling.
+                    await wait(lambda: not app.activity.busy)
                     pipe.send_text("\x03\x04")
                     await asyncio.wait_for(task, 5)
                 finally:

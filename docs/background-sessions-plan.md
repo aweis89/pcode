@@ -19,24 +19,24 @@ same commit as the change.
 
 ## Status
 
-Phase 0 is done: the spike and an opt-in demo (`pcode --host`, `/switch`,
-`/stop`, `--attach`, `--hosts`). See [what works](background-sessions.md#what-works-in-a-hosted-session).
-The small items below are done except a previous-session key and job wake-ups,
-which wait for Phase 1. Phase 1 is under way: `controller.SessionController` owns
-the runtime, the prompt and command queues, send modes, cancel, steering, busy
-accounting, the turn loop (`consume`, `run_turn`, `run_shell`), the command loop
-(`consume_commands`), and the MCP and history tasks, showing everything through
-`PreviewApp`'s `SessionView` methods. The session's state (model, workspace,
-extensions, skills, side questions) and its commands live in the controller too
-(`/model`, `/effort`, `/login`, `/logout`, `/extensions`, `/reload`, `/new`,
-`/worktree`, `/btw`, `/jobs`, `/mcp`, `/compact`, `/autocompact`, `/resend`, skills,
-extension commands); PreviewApp reads the state through properties, and the
-controller hands terminal commands (`TERMINAL_COMMANDS`) back through
-`view.run_command`. Popups a session command needs are view methods it awaits.
-Next: Phase 3, the controller in the host.
-In the demo the terminal still runs all session logic itself, against
-`RemoteRuntime`, a stand-in that forwards `stream` to the host. That is why a
-dozen commands are refused there, and it is what the refactor replaces.
+Phases 1 to 3 are done, and Phase 4 but for the docs: every interactive session
+with a model runs in a host. `SessionController` owns the whole session (queues,
+send modes, turns, commands, MCP, side questions, jobs) and runs in the host
+behind `HostView`; the terminal attaches over protocol 2 with a `RemoteController`
+and runs only its own commands (`TERMINAL_COMMANDS`). `--no-host` and `--print`
+still run a controller in-process, with `PreviewApp` as its view.
+
+The app-level tests run both ways: `make test` in-process, `make test-socket`
+with each session moved into a host over a real socket (`tests/socket_transport.py`).
+Running them hosted found and fixed: a resumed conversation that never reached a
+terminal attached while the host loaded it (`pcode --continue`, `/restart`); a
+hung context-metadata request that kept the host from starting its loops; Ctrl+C
+during host startup not dropping typed-ahead prompts and commands, and terminal
+commands typed then (`/theme`) not running; side questions not showing until their
+first streamed word, nor as summarized or merged; `/tools` not listing the calls
+still running.
+
+Left: merge the user docs into [Sessions and recovery](sessions.md).
 
 ## Target architecture
 
@@ -75,9 +75,11 @@ Decisions made while building it:
   which it awaits (`await view.choose_model(options)`).
 - Every slash command goes through the controller's command queue, so commands
   and prompts keep today's order. A command the controller does not own is
-  handed back to the terminal that sent it and awaited.
-- `SessionController.app` is the terminal, for what has not moved yet. The host
-  can run a controller once nothing uses it.
+  handed back to the terminal that sent it and awaited. A hosted terminal runs
+  its own commands (`TERMINAL_COMMANDS`) at once instead, so `/quit` and `/switch`
+  work while the host is busy or gone; they no longer wait behind the session's.
+- Hosted, `/quit` detaches and `/resume` opens the other session in a host of its
+  own, so neither is refused while a turn runs, as they are in-process.
 
 ## Phases
 
@@ -136,8 +138,9 @@ How it works (protocol 2, `pcode.rpc` on the host socket):
 
 - [x] Protocol v2 carrying intents, queries, and updates; the host runs the controller
 - [x] Terminal-side client replaces `RemoteRuntime`; delete `HOSTED_COMMANDS`
-- [ ] Run the app-level tests against both the in-process and socket transports (today
-      `tests/test_session_host.py` covers the socket path end to end)
+- [x] Run the app-level tests against both the in-process and socket transports
+      (`make test-socket`; tests whose hosted behavior differs on purpose are marked
+      `in_process`)
 
 ### Phase 4: background only
 
@@ -184,7 +187,11 @@ How it works (protocol 2, `pcode.rpc` on the host socket):
 
 - `tests/test_session_host.py`: wire format, host logic, and the terminal switching away
   mid-turn and back, all in-process over a real socket.
-- `make test-all` before merging anything that touches the turn loop, the footer, or the prompt.
+- `make test-socket`: the whole fast suite with each session in a host
+  (`--transport socket`). A test asserting on the terminal's `activity` right after
+  its fake runtime acts has to wait for the value there; see `AGENTS.md`.
+- `make test-all` (fast suite both ways, then tmux) before merging anything that touches
+  the turn loop, the footer, or the prompt.
 - End to end with the real model: `pcode --host`, a one-line prompt, `/switch new PROMPT`,
   Ctrl+D, `--hosts`, `--attach`, `/stop`. The spike scripts that did this live outside the
   repository, in the untracked `tmp/host-spike-e1d54951/`.

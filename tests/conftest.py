@@ -24,6 +24,7 @@ DEAD_TMUX_SOCKET_SECONDS = 60
 # then polls the pane. They stay in the suite (plain PTYs miss the frame bugs
 # they catch), but the edit/test loop should not pay for them on every run.
 TMUX_OPT_IN_ENV = "PCODE_TEST_TMUX"
+TRANSPORT_ENV = "PCODE_TEST_TRANSPORT"
 
 
 def pytest_addoption(parser):
@@ -32,6 +33,20 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help=f"Run the slow real-tmux regressions (also {TMUX_OPT_IN_ENV}=1).",
+    )
+    parser.addoption(
+        "--transport",
+        choices=("in-process", "socket"),
+        default=os.environ.get(TRANSPORT_ENV, "in-process"),
+        help=f"Where app-level tests run the session (also {TRANSPORT_ENV}); see "
+        "tests/socket_transport.py.",
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "in_process(reason): looks inside the in-process session; skipped with --transport socket",
     )
 
 
@@ -45,6 +60,11 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "tmux" in item.path.name:
             item.add_marker(tmux)
+    if config.getoption("--transport") == "socket":
+        for item in items:
+            if marker := item.get_closest_marker("in_process"):
+                reason = marker.args[0] if marker.args else "in-process session only"
+                item.add_marker(pytest.mark.skip(reason=f"in-process only: {reason}"))
     if (
         config.getoption("--tmux")
         or os.environ.get(TMUX_OPT_IN_ENV) == "1"
@@ -151,6 +171,24 @@ def isolated_preferences(monkeypatch, tmp_path):
         "session_host",
         replace_setting(preferences.SETTINGS["session_host"], default="off"),
     )
+
+
+@pytest.fixture(autouse=True)
+def session_transport(request, monkeypatch):
+    """With `--transport socket`, in-process sessions run in a host instead."""
+    if request.config.getoption("--transport") != "socket":
+        yield
+        return
+    import tempfile
+
+    from socket_transport import install
+
+    # macOS caps a Unix socket path at 104 bytes, and pytest's tmp_path is longer.
+    directory = Path(tempfile.mkdtemp(prefix="pch-", dir="/tmp"))
+    monkeypatch.setenv("PCODE_HOST_DIR", str(directory))
+    install(monkeypatch)
+    yield
+    shutil.rmtree(directory, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

@@ -329,9 +329,10 @@ def test_btw_summarizes_a_thread_into_the_conversation_from_the_viewer(tmp_path)
     """The whole path: the viewer returns a request, prompts wait, the summary lands."""
     requests = []
     app = settled_app(tmp_path, requests)
+    runtime = app.runtime
 
     async def run():
-        await turn(app.runtime, "Main task")
+        await turn(runtime, "Main task")
         await app.controller.start_aside("Why?")
         await settle(app)
         thread = app.asides.items[0].thread
@@ -362,7 +363,7 @@ def test_btw_summarizes_a_thread_into_the_conversation_from_the_viewer(tmp_path)
                 pipe.send_text("/btw\r")
                 printed = app.transcript.console.file
                 await wait_for(lambda: "summary added" in printed.getvalue())
-                node = app.runtime.tree.nodes[app.runtime.tree.active]
+                node = runtime.tree.nodes[runtime.tree.active]
                 assert node.kind == "aside"
                 assert node.response == "Summary: the parser is LL(1)."
                 assert app.asides.items[0].bridged == "summarized"

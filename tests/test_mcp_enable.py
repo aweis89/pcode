@@ -26,7 +26,10 @@ from pcode.ui import create_prompt
         "quit",
         "early-cancel",
         "early-cancel-queued",
-        "slow-cancel",
+        pytest.param(
+            "slow-cancel",
+            marks=pytest.mark.in_process("a hosted /quit detaches instead of waiting for cleanup"),
+        ),
     ],
 )
 def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
@@ -120,8 +123,8 @@ def test_enable_login_is_immediate_cancellable_and_gates_prompts(outcome):
                     await asyncio.wait_for(started.wait(), 5)
                     assert calls == []
                     assert runtime.mcp.enabled == {}
+                    await wait_for(lambda: "Enabling MCP" in app.activity.status)
                     assert app.activity.busy
-                    assert "Enabling MCP" in app.activity.status
                     # Slash commands remain responsive while a browser login waits.
                     pipe.send_text("/mcp list\r")
                     await wait_for(lambda: "remote: off" in output.getvalue())

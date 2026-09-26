@@ -284,6 +284,50 @@ class SessionHost:
         os.chmod(path, 0o600)
         self.update(state="idle")
 
+    async def boot(self) -> None:
+        """Build the runtime, say what a new session says, then start the loops.
+
+        Terminals may attach while this runs: they see the startup notes as
+        they come, and anything they send waits for the loops.
+        """
+        from pcode.live import error_message
+
+        controller = self.controller
+        try:
+            await controller.initialize_runtime()
+        except Exception as error:  # noqa: BLE001 - reported to the terminals.
+            controller.startup_error = error
+            self.view.error(error_message(error), title="Agent startup failed")
+            print(f"startup failed: {error_message(error)}", file=sys.stderr, flush=True)
+        finally:
+            controller.startup_pending = False
+        # A resumed conversation is in the journal already; what follows is not.
+        self.reset_buffer()
+        if controller.startup_error is None:
+            if controller.resuming:
+                # Terminals attached while it loaded draw it now (the state
+                # first, so they know which journal to read).
+                self.push_state()
+                self.view.replay_conversation()
+            controller.show_startup_context()
+            controller.warn_without_credentials()
+            await controller.warn_meridian_thinking()
+            # Optional, and it can hang; the session must not wait for it.
+            self.tasks.append(asyncio.create_task(self._refresh_context()))
+            controller.start_mcp_defaults()
+        self.push_state()
+        self.start()
+
+    async def _refresh_context(self) -> None:
+        refresh = getattr(self.controller.runtime, "refresh_context", None)
+        if refresh is None:
+            return
+        try:
+            await refresh()
+        except Exception as error:  # noqa: BLE001 - metadata only.
+            print(f"context metadata unavailable: {error}", file=sys.stderr, flush=True)
+        self.push_state()
+
     def start(self) -> None:
         """Run the controller's loops: turns, commands, and background jobs."""
         controller = self.controller
@@ -569,29 +613,7 @@ async def _serve(args: argparse.Namespace) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, host.stop)
     print(f"serving {host.socket}", file=sys.stderr, flush=True)
-    try:
-        await controller.initialize_runtime()
-    except Exception as error:  # noqa: BLE001 - reported to the terminals.
-        from pcode.live import error_message
-
-        controller.startup_error = error
-        host.view.error(error_message(error), title="Agent startup failed")
-        print(f"startup failed: {error_message(error)}", file=sys.stderr, flush=True)
-    finally:
-        controller.startup_pending = False
-    # A resumed conversation is in the journal already; what follows is not.
-    host.reset_buffer()
-    if controller.startup_error is None:
-        controller.show_startup_context()
-        controller.warn_without_credentials()
-        await controller.warn_meridian_thinking()
-        try:
-            await controller.runtime.refresh_context()
-        except Exception as error:  # noqa: BLE001 - metadata only.
-            print(f"context metadata unavailable: {error}", file=sys.stderr, flush=True)
-        controller.start_mcp_defaults()
-    host.push_state()
-    host.start()
+    await host.boot()
     idle_minutes = int(load_preferences().get("session_host_idle_minutes", "60") or 0)
     watcher = asyncio.create_task(host.stop_when_idle(idle_minutes)) if idle_minutes else None
     try:

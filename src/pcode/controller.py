@@ -378,11 +378,8 @@ class SessionController:
     Owns the runtime, the prompt and command queues, the tasks doing work (a
     turn, MCP work, a history rewrite), and whether the session reads as busy.
     Everything it shows goes through `view`; `activity` holds the live panel's
-    session state (busy, queue, prompt row), which the view paints.
-
-    `app` is the terminal, for the parts of the session that have not moved
-    here yet (docs/background-sessions-plan.md tracks them). Each slice of the
-    refactor removes uses of it; the host can run a controller once none remain.
+    session state (busy, queue, prompt row), which the view paints. The view is
+    the terminal in-process (`PreviewApp`), or `pcode.host.HostView` in a host.
     """
 
     def __init__(self, view: SessionView, activity, runtime=None) -> None:
@@ -2811,6 +2808,7 @@ class SessionController:
             raise ValueError("Nothing in that side thread to merge.")
         moved = await self.runtime.merge_aside(steps, asked[0].base)
         follows.bridged = "merged"
+        self.view.aside_changed(follows)
         count = f"{len(steps)} side question{'s' if len(steps) > 1 else ''}"
         if moved:
             for question, answer, _ in steps:
@@ -2834,6 +2832,7 @@ class SessionController:
         request = summary_request(questions, instructions)
         summary = await self.runtime.summarize_aside(follows.reply, request, instructions)
         follows.bridged = "summarized"
+        self.view.aside_changed(follows)
         self.view.user(redact(request))
         self.view.show_events((Message(redact(summary)),))
 

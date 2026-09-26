@@ -441,6 +441,8 @@ class Asides:
         self.items.append(aside)
         self._trim()
         self._tasks[aside.id] = asyncio.create_task(self._run(aside, work))
+        # Shown as asked, before the first word of an answer arrives.
+        self.on_update(aside)
         return aside
 
     def _trim(self) -> None:
