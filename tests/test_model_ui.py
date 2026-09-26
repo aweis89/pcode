@@ -256,7 +256,7 @@ def test_selection_while_working_is_deferred_to_the_next_request(monkeypatch, tm
     app = PreviewApp(model=MODELS[0], runtime=runtime, console=Console(file=buffer))
     created = Mock(return_value=Agent("test"))
     monkeypatch.setattr("pcode.agent.create_agent", created)
-    monkeypatch.setattr(app, "persist_defaults", Mock())
+    monkeypatch.setattr(app.controller, "persist_defaults", Mock())
 
     async def run():
         app.activity.busy = True
@@ -266,11 +266,11 @@ def test_selection_while_working_is_deferred_to_the_next_request(monkeypatch, tm
         assert app.model == MODELS[0]
         assert "next request" in buffer.getvalue()
         app.activity.busy = False
-        await app.apply_pending_model()
+        await app.controller.apply_pending_model()
         created.assert_called_once()
         assert app.pending_model is None
         assert app.model == MODELS[1]
-        app.persist_defaults.assert_called_once_with(model=MODELS[1])
+        app.controller.persist_defaults.assert_called_once_with(model=MODELS[1])
 
     asyncio.run(run())
 
@@ -285,7 +285,7 @@ def test_deferred_selection_that_fails_keeps_the_current_model(monkeypatch):
         app.activity.busy = True
         await app.switch_model(MODELS[1])
         app.activity.busy = False
-        await app.apply_pending_model()  # Reported, not raised: the turn already ended.
+        await app.controller.apply_pending_model()  # Reported, not raised: the turn already ended.
         assert app.pending_model is None
         assert app.model == MODELS[0]
         assert runtime.agent is not None
@@ -305,7 +305,7 @@ def test_selecting_the_current_model_while_working_clears_nothing(monkeypatch):
         await app.switch_model(MODELS[0])
         assert app.pending_model is None
         assert "Already using" in buffer.getvalue()
-        await app.apply_pending_model()
+        await app.controller.apply_pending_model()
         assert app.model == MODELS[0]
 
     asyncio.run(run())
@@ -313,12 +313,14 @@ def test_selecting_the_current_model_while_working_clears_nothing(monkeypatch):
 
 @pytest.mark.parametrize("command", ["/model\r", "\x0c"])
 @pytest.mark.parametrize("busy", [False, True])
-def test_picker_shortcut_uses_serialized_command_flow(command, busy):
+def test_picker_shortcut_uses_serialized_command_flow(command, busy, monkeypatch):
+    monkeypatch.setattr("pcode.models.active_providers", lambda _: PROVIDERS)
+
     async def run():
         output = StringIO()
         app = PreviewApp(console=Console(file=output))
         app.activity.busy = busy
-        choose = AsyncMock()
+        choose = AsyncMock(return_value=None)
         app.choose_model = choose
         session = None
         with create_pipe_input() as pipe:
@@ -348,8 +350,9 @@ def test_picker_shortcut_uses_serialized_command_flow(command, busy):
     asyncio.run(run())
 
 
-def test_model_chosen_mid_run_applies_before_the_next_request():
+def test_model_chosen_mid_run_applies_before_the_next_request(monkeypatch):
     """The turn in flight keeps its model; the queued prompt uses the new one."""
+    monkeypatch.setattr("pcode.models.active_providers", lambda _: PROVIDERS)
 
     async def run():
         from pcode.runtime import Message
@@ -376,9 +379,9 @@ def test_model_chosen_mid_run_applies_before_the_next_request():
             app.pending_model = None
 
         async def choose(*_):
-            await app.switch_model(MODELS[1])
+            return MODELS[1]
 
-        app.activate_model = activate
+        app.controller.activate_model = activate
         app.choose_model = choose
         session = None
         with create_pipe_input() as pipe:
@@ -420,9 +423,8 @@ def test_modal_result_is_applied_only_on_accept(monkeypatch, selection):
     from types import SimpleNamespace
 
     app = PreviewApp(model=MODELS[0], runtime=Mock(agent=None), console=Console(file=StringIO()))
-    app.model_requested = True
     switch = AsyncMock()
-    app.switch_model = switch
+    app.controller.switch_model = switch
     monkeypatch.setattr("pcode.models.active_providers", lambda _: PROVIDERS)
     picker = Mock(run=AsyncMock(return_value=selection))
     factory = Mock(return_value=picker)
@@ -435,10 +437,11 @@ def test_modal_result_is_applied_only_on_accept(monkeypatch, selection):
     monkeypatch.setattr("pcode.app.suspended_editor", terminal)
 
     async def run():
-        output = SimpleNamespace(lock=asyncio.Lock(), flush=AsyncMock())
-        session = SimpleNamespace(app=SimpleNamespace(input=object(), output=object(), style=None))
-        await app.choose_model(output, session)
-        assert not app.model_requested
+        app.output = SimpleNamespace(lock=asyncio.Lock(), flush=AsyncMock())
+        app.prompt_session = SimpleNamespace(
+            app=SimpleNamespace(input=object(), output=object(), style=None)
+        )
+        await app.controller.select_model("")
         if selection:
             switch.assert_awaited_once_with(selection)
         else:
@@ -454,9 +457,7 @@ def test_no_active_provider_does_not_open_modal(monkeypatch):
     monkeypatch.setattr("pcode.models.active_providers", lambda _: set())
     factory = Mock(side_effect=AssertionError("must not open"))
     monkeypatch.setattr("pcode.model_ui.ModelPicker", factory)
-    app.model_requested = True
-    asyncio.run(app.choose_model(None, None))
-    assert not app.model_requested
+    asyncio.run(app.controller.select_model(""))
     assert "No active model providers" in buffer.getvalue()
     factory.assert_not_called()
 

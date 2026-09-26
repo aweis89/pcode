@@ -569,10 +569,10 @@ def test_login_command_switches_the_running_model_and_reports_storage(store, mon
 
     monkeypatch.setattr(anthropic_oauth, "login", fake_login)
     app.handle("/login")
-    assert app.login_requested == "anthropic"
-    asyncio.run(app.perform_login())
+    assert app.controller.login_requested == "anthropic"
+    asyncio.run(app.controller.perform_login())
 
-    assert app.login_requested is None
+    assert app.controller.login_requested is None
     assert opened and isinstance(runtime.agent.model, AnthropicOAuthModel)
     assert runtime.history == ["existing"]
     output = buffer.getvalue()
@@ -593,7 +593,7 @@ def test_failed_login_keeps_the_previous_model(store, monkeypatch):
 
     monkeypatch.setattr(anthropic_oauth, "login", fail)
     app.handle("/login anthropic")
-    asyncio.run(app.perform_login())
+    asyncio.run(app.controller.perform_login())
     assert runtime.agent.model == "original"
     assert "timed out" in buffer.getvalue()
 

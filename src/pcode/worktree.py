@@ -524,3 +524,102 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Session worktrees pcode created itself; hand-made ones are never removed.
+SESSION_WORKTREE_PREFIX = "pcode-"
+
+
+def session_scope(info) -> Path:
+    """The repository a saved session belongs to, even once its worktree is gone.
+
+    `repo_scope` asks git inside the directory, which can answer nothing at all
+    after the directory is deleted; the recorded project checkout outlives it.
+    """
+    workspace = Path(info.workspace)
+    if workspace.is_dir():
+        return repo_scope(workspace)
+    return Path(info.project) if info.project else workspace
+
+
+def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
+    """Tidy a session worktree on the way out of it, never losing work.
+
+    Untouched (clean, nothing unmerged): removed with its branch, no question;
+    a session that never had a turn is deleted too, and True is returned.
+    Unmerged commits: per `worktree_exit`, ask (default yes), merge silently,
+    or keep. Uncommitted changes, refusals, and hand-made worktrees (no
+    `pcode-` prefix): kept, with a note on how to resume. `ask=None` means
+    nobody is there to answer. Used at process exit and when a live session
+    switches to another worktree of the same repository.
+    """
+    import shutil
+
+    try:
+        linked = describe(workspace)
+        if linked is None:
+            return False
+        ours = linked.branch.startswith(SESSION_WORKTREE_PREFIX)
+        dirty = is_dirty(linked.path)
+        unmerged = unmerged_commits(linked)
+        untouched = ours and is_untouched(linked)
+    except WorktreeError:
+        return False
+    if session is not None:
+        # A copied session shares its original's worktree; never pull it out
+        # from under whichever of the two is still working there. Only asked
+        # with a session, whose module is then already loaded: a bare exit
+        # must not import the agent stack.
+        from pcode.sessions import open_in
+
+        others = open_in(linked.path, session.directory.parent, exclude=session.info.id)
+        if others:
+            notify(f"worktree: kept; session {others[0]} is still open in {linked.path}")
+            return False
+    resume = f"`pcode -C {linked.path} -c` resumes there"
+
+    def repoint():
+        if session is not None:
+            session.info.workspace = str(linked.main)
+            session.save_info()
+
+    try:
+        if untouched:
+            remove(linked)
+            delete_branch(linked)
+            deleted = session is not None and session.info.turns == 0
+            if deleted:
+                session.close()
+                shutil.rmtree(session.directory, ignore_errors=True)
+            else:
+                repoint()
+            notify(f"worktree: removed untouched {linked.path}")
+            return deleted
+        if dirty or not ours or not unmerged:
+            state = "uncommitted changes" if dirty else f"{unmerged} unmerged commit(s)"
+            notify(f"worktree: {linked.path} ({linked.branch}) has {state}; {resume}")
+            return False
+        from pcode.preferences import load_preferences
+
+        mode = load_preferences().get("worktree_exit", "ask")
+        mainline = mainline_branch(linked.main)
+        if mode == "ask" and ask is not None:
+            notify(f"worktree: {linked.branch} has {unmerged} commit(s) not in {mainline}.")
+            try:
+                answer = ask("Merge and remove the worktree? [Y/n] ").strip().lower()
+            except (EOFError, OSError, KeyboardInterrupt):
+                answer = "n"
+            if answer not in ("", "y", "yes"):
+                notify(f"worktree: kept; {resume}")
+                return False
+        elif mode != "merge":
+            notify(
+                f"worktree: {linked.path} ({linked.branch}) has {unmerged} unmerged commit(s); "
+                f"{resume}"
+            )
+            return False
+        notify("worktree: " + finish(linked))
+        repoint()
+    except (WorktreeError, OSError) as error:
+        notify(f"worktree: {error}\nworktree: kept; {resume}")
+    return False

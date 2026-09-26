@@ -64,7 +64,7 @@ def test_shortcuts_clamp_and_default_baseline():
     app.adjust_effort(1)
     app.adjust_effort(1)
     assert app.current_effort() == "xhigh"
-    app.effort("default")
+    app.controller.effort("default")
     app.adjust_effort(-1)
     app.adjust_effort(-1)
     assert app.current_effort() == "low"
@@ -75,7 +75,7 @@ def test_real_keybindings_preserve_draft_and_cursor(busy):
     async def run():
         app, _ = make_app()
         app.activity.busy = busy
-        app.effort("medium")
+        app.controller.effort("medium")
         with create_pipe_input() as pipe:
             session = create_prompt(
                 app.registry,
@@ -135,7 +135,7 @@ def test_effort_changes_apply_to_next_turn_not_next_tool_step(provider, key):
 
     runtime = AgentRuntime(agent)
     app, _ = make_app(model=f"{provider}:test", runtime=runtime)
-    app.effort("low")
+    app.controller.effort("low")
 
     async def run():
         _ = [event async for event in runtime.stream("first")]
@@ -156,7 +156,7 @@ def test_anthropic_effort_settings_and_restore(provider, native_xhigh):
     agent = app.runtime.agent
     agent.model = SimpleNamespace(profile={"anthropic_supports_xhigh_effort": native_xhigh})
     original = agent.model_settings
-    app.effort("xhigh")
+    app.controller.effort("xhigh")
     assert agent.model_settings == {
         "temperature": 0.5,
         "anthropic_effort": "xhigh" if native_xhigh else "max",
@@ -168,7 +168,7 @@ def test_anthropic_effort_settings_and_restore(provider, native_xhigh):
     assert app.current_effort() == "xhigh"
     app.adjust_effort(-1)
     assert agent.model_settings == {"anthropic_effort": "high"}
-    app.effort("default")
+    app.controller.effort("default")
     assert agent.model_settings == {}
 
 
@@ -207,7 +207,7 @@ def test_anthropic_request_payload(provider, level):
             )
             agent = Agent(model)
             app, _ = make_app(f"{provider}:claude-opus-4-6", AgentRuntime(agent))
-            app.effort(level)
+            app.controller.effort(level)
             await agent.run("Hello")
 
     asyncio.run(run())

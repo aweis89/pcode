@@ -255,7 +255,7 @@ def test_resume_applies_current_thinking_preference(monkeypatch, tmp_path):
     )
 
     async def run():
-        await app.resume_session(identity)
+        await app.controller.resume_session(identity)
         try:
             assert app.runtime.agent.model_settings["anthropic_thinking"] == {
                 "type": "adaptive",

@@ -27,18 +27,18 @@ def make_app(model="openai-codex:test"):
 
 def test_effort_persists_per_model_and_restores():
     app = make_app()
-    app.effort("high")
+    app.controller.effort("high")
     assert load_preferences() == {"model": "openai-codex:test"}
     assert model_efforts() == {"openai-codex:test": "high"}
     assert make_app().current_effort() == "high"
     # Another model keeps its own effort: nothing saved means nothing applied.
     for provider in ("anthropic", "meridian"):
         assert make_app(f"{provider}:test").runtime.agent.model_settings is None
-    make_app("anthropic:test").effort("low")
+    make_app("anthropic:test").controller.effort("low")
     assert make_app("anthropic:test").runtime.agent.model_settings == {"anthropic_effort": "low"}
     assert make_app().current_effort() == "high"
     assert make_app("google:test").runtime.agent.model_settings is None
-    app.effort("default")
+    app.controller.effort("default")
     assert make_app().current_effort() == "default"
     assert make_app("anthropic:test").current_effort() == "low"
 
@@ -46,7 +46,7 @@ def test_effort_persists_per_model_and_restores():
 def test_shared_effort_default_applies_only_to_models_without_their_own():
     save_preferences(effort="medium")
     assert make_app().current_effort() == "medium"
-    make_app().effort("low")
+    make_app().controller.effort("low")
     assert make_app().current_effort() == "low"
     assert make_app("openai-codex:other").current_effort() == "medium"
 
@@ -88,8 +88,8 @@ def test_invalid_preferences_are_ignored(content):
 
 def test_save_failure_does_not_discard_selection():
     app = make_app()
-    with patch("pcode.app.save_preferences", side_effect=PermissionError):
-        app.effort("high")
+    with patch("pcode.controller.save_preferences", side_effect=PermissionError):
+        app.controller.effort("high")
     assert app.current_effort() == "high"
     assert "Could not save defaults" in app.transcript.console.file.getvalue()
 

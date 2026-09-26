@@ -332,7 +332,7 @@ def test_session_overview_reports_storage_and_feeds_context(tmp_path):
     app.model = "test:local"
     app.runtime = AgentRuntime(Agent("test"), saved)
     try:
-        rows = dict(app.session_overview())
+        rows = dict(app.controller.session_overview())
         assert rows["Model"] == "test:local"
         assert rows["Session"] == saved.info.id
         assert rows["Saved in"] == str(saved.directory)
@@ -357,7 +357,7 @@ def test_session_overview_attributes_prompt_overhead_after_a_request(tmp_path):
     app.runtime = AgentRuntime(Agent("test"), None)
     try:
         app.runtime.request_parameters = request_parameters(workspace)["parameters"]
-        rows = dict(app.session_overview())
+        rows = dict(app.controller.session_overview())
         assert "tokens" in rows["Prompt overhead"]
         assert rows["  Instructions"].startswith("~")
         assert "tools" in rows["  Tool schemas"]
@@ -438,7 +438,7 @@ def test_resume_continues_a_copy_of_a_session_open_elsewhere(tmp_path):
         _ = [event async for event in elsewhere.stream("First question")]
         app = PreviewApp(workspace=tmp_path, session_dir=root, console=Console(file=StringIO()))
         with patch("pcode.agent.create_agent", return_value=agent):
-            await app.resume_session(saved.info.id)
+            await app.controller.resume_session(saved.info.id)
         try:
             assert app.runtime.session.forked_from == saved.info.id
             assert app.runtime.session.info.id != saved.info.id
@@ -469,7 +469,7 @@ def test_resume_restores_before_replacing_runtime(tmp_path):
         app.handle("/resume")
         assert app.session_requested
         with patch("pcode.agent.create_agent", return_value=agent):
-            await app.resume_session(identity)
+            await app.controller.resume_session(identity)
         try:
             assert app.runtime.session.info.id == identity
             assert app.runtime.conversation_id == identity
@@ -477,14 +477,14 @@ def test_resume_restores_before_replacing_runtime(tmp_path):
             assert app.runtime.history == history
             assert app.runtime.turns == 1
             original = app.runtime
-            await app.resume_session(identity)
+            await app.controller.resume_session(identity)
             assert app.runtime is original
             (tmp_path / "other").mkdir()
             other = SavedSession.create("test:local", tmp_path / "other", root)
             other_id = other.info.id
             other.close()
             with pytest.raises(SessionError, match="cross-repo"):
-                await app.resume_session(other_id)
+                await app.controller.resume_session(other_id)
             assert app.runtime is original
             # The failed candidate's lock was released.
             reopened = SavedSession.open(other_id, root)
@@ -508,7 +508,7 @@ def test_failed_recovery_keeps_current_conversation(tmp_path):
             patch("pcode.live.AgentRuntime.restore", side_effect=SessionError("broken")),
             pytest.raises(SessionError, match="broken"),
         ):
-            await app.resume_session(identity)
+            await app.controller.resume_session(identity)
         assert app.runtime is original
         reopened = SavedSession.open(identity, root)
         reopened.close()

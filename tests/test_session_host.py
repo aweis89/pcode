@@ -377,7 +377,7 @@ def test_hosted_terminal_refuses_commands_that_need_a_local_runtime(tmp_path, ho
             assert app.hosted
             assert app.handle("/compact") is False
             assert "/compact is not available yet" in output.getvalue()
-            rows = dict(app.session_overview())
+            rows = dict(app.controller.session_overview())
             assert rows["Host"].startswith("aaaa1111")
             runtime.close()
         finally:

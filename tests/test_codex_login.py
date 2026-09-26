@@ -29,10 +29,10 @@ def test_login_command_rebuilds_a_codex_conversation_model(monkeypatch):
     monkeypatch.setattr(codex_login, "login", fake_login)
     monkeypatch.setattr("pcode.agent.codex_model", lambda model: f"rebuilt {model}")
     app.handle("/login openai-codex")
-    assert app.login_requested == "openai-codex"
-    asyncio.run(app.perform_login())
+    assert app.controller.login_requested == "openai-codex"
+    asyncio.run(app.controller.perform_login())
 
-    assert app.login_requested is None
+    assert app.controller.login_requested is None
     assert calls == ["login"]
     assert runtime.agent.model == "rebuilt openai-codex:test-model"
     assert runtime.history == ["existing"]
@@ -48,7 +48,7 @@ def test_login_keeps_a_non_codex_conversation_model(monkeypatch):
 
     monkeypatch.setattr(codex_login, "login", fake_login)
     app.handle("/login openai-codex")
-    asyncio.run(app.perform_login())
+    asyncio.run(app.controller.perform_login())
     assert runtime.agent.model == "original"
 
 
@@ -60,7 +60,7 @@ def test_failed_login_reports_without_touching_the_model(monkeypatch):
 
     monkeypatch.setattr(codex_login, "login", fail)
     app.handle("/login openai-codex")
-    asyncio.run(app.perform_login())
+    asyncio.run(app.controller.perform_login())
     assert runtime.agent.model == "original"
     assert "`codex` command was not found" in buffer.getvalue()
 
@@ -68,7 +68,7 @@ def test_failed_login_reports_without_touching_the_model(monkeypatch):
 def test_unknown_login_source_shows_usage():
     app, _, buffer = make_app("openai-codex:test-model")
     app.handle("/login gemini")
-    assert app.login_requested is None
+    assert app.controller.login_requested is None
     assert "Usage: /login [anthropic|openai-codex|meridian]" in buffer.getvalue()
 
 
@@ -80,7 +80,7 @@ def test_logout_preserves_cli_store(tmp_path, monkeypatch):
     codex_login.write_credentials(codex_login.credentials_path(), tokens())
     app, _, buffer = make_app("openai-codex:test-model")
     app.handle("/logout openai-codex")
-    asyncio.run(app.perform_logout())
+    asyncio.run(app.controller.perform_logout())
     assert not codex_login.have_credentials()
     assert cli.read_text() == "synthetic-cli"
     assert "Removed pcode's stored" in buffer.getvalue()

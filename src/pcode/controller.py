@@ -7,13 +7,26 @@ parts live here and `PreviewApp` drives them.
 
 import asyncio
 import inspect
+import os
+import threading
 from collections.abc import Callable
 from contextlib import aclosing
+from dataclasses import replace
+from pathlib import Path
 from typing import Protocol
 
 from pcode.commands import Command, CommandRegistry
 from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
-from pcode.preferences import SETTINGS, load_preferences, save_preferences
+from pcode.preferences import (
+    SETTINGS,
+    apply_effort,
+    apply_thinking,
+    effort_for,
+    effort_setting,
+    load_preferences,
+    save_model_effort,
+    save_preferences,
+)
 from pcode.runtime import CommandOutput, JobFinished, ToolSummary
 from pcode.shell_mode import execute, shell_command
 from pcode.tool_display import command_text
@@ -41,6 +54,65 @@ HOSTED_COMMANDS = {
     "/theme-preview",
     "/redraw",
 }
+
+# What the terminal handles itself. A skill or extension command may not take
+# one of these names (nor a session command's): built-ins win.
+TERMINAL_COMMANDS = frozenset(
+    {
+        "/help",
+        "/commands",
+        "/config",
+        "/quit",
+        "/exit",
+        "/status",
+        "/tools",
+        "/diffs",
+        "/links",
+        "/tree",
+        "/btw",
+        "/workers",
+        "/resume",
+        "/switch",
+        "/restart",
+        "/stop",
+        "/show-tasks",
+        "/autohide-tasks",
+        "/show-thinking",
+        "/show-edits",
+        "/show-commands",
+        "/theme",
+        "/syntax",
+        "/theme-preview",
+        "/redraw",
+    }
+)
+
+WORKTREE_ACTIONS = {
+    "status": "Branch, mainline, and what is unmerged",
+    "merge": "Merge the mainline into this branch, then fast-forward the mainline",
+    "resolve": "Ask the model to resolve the conflicts a merge stopped on",
+    "finish": "Merge, remove the worktree and its branch, and quit",
+    "remove": "Delete the merged worktree; the branch stays",
+    "list": "Every worktree of this repository",
+    "clean": "Delete every other worktree with nothing uncommitted or unmerged",
+}
+
+
+def meridian_thinking_note(base: str | None, passthrough: bool | None) -> str:
+    if passthrough:
+        return "Meridian forwards readable thinking, so it appears in scrollback."
+    if passthrough is False:
+        return (
+            f"The Meridian proxy at {base} is not forwarding thinking, so none will appear. "
+            f"Turn on passthrough → Thinking Passthrough at {base}/settings "
+            "(this changes it for every client of that proxy)."
+        )
+    return (
+        "Meridian must forward readable thinking for scrollback. Managed Meridian does; "
+        "for an external proxy, check passthrough → Thinking Passthrough in its /settings "
+        "page. This toggle only changes pcode's display."
+    )
+
 
 # Commands that change the conversation itself, refused while a turn runs or
 # prompts wait (bar /compact and /resend sent while idle, which go first).
@@ -187,6 +259,7 @@ class SessionView(Protocol):
     # Scrollback
     def user(self, text: str) -> None: ...
     def note(self, text: str) -> None: ...
+    def retained_note(self, text: str) -> None: ...
     def flash(self, text: str) -> None: ...
     def warning(self, text: str) -> None: ...
     def error(self, text: str, *, title: str = "Error") -> None: ...
@@ -215,8 +288,20 @@ class SessionView(Protocol):
     async def run_command(self, text: str, *, idle: bool, tag: object) -> None: ...
     async def after_command(self) -> None: ...
 
+    # One of the session's own commands is running (`tag` as for run_command),
+    # and has finished. Its popups, below, return None when dismissed.
+    def command_started(self, tag: object) -> None: ...
+    def command_finished(self) -> None: ...
+
+    # The session's commands changed (skills, extension commands), or the
+    # conversation was replaced by a new one.
+    def commands_changed(self) -> None: ...
+    def conversation_reset(self, title: str) -> None: ...
+    def replay_conversation(self) -> None: ...
+
     # Popups the session's commands open, in the terminal that sent them.
     async def browse_jobs(self) -> None: ...
+    async def choose_model(self, values, providers, current: str | None) -> str | None: ...
 
 
 def _mcp_enable(text: str) -> bool:
@@ -257,6 +342,38 @@ class SessionController:
         self.view = view
         self.activity = activity
         self.runtime = runtime
+        self.model: str | None = None
+        self.workspace = Path.cwd()
+        # Where saved sessions live, and whether this one is saved.
+        self.session_dir: Path | None = None
+        self.save_sessions = False
+        # Consumed by the first saved session so it shares its ID with the
+        # worktree created for it; later `/new` sessions get their own.
+        self._session_id: str | None = None
+        self._saved_session = None
+        self.resuming = False
+        # The runtime is built once the event loop is up (see initialize_runtime).
+        self._needs_runtime = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        # A model chosen mid-run, adopted before the next request.
+        self.pending_model: str | None = None
+        # User extensions load with the runtime; their commands register once it exists.
+        self.extensions = None
+        self.extension_command_names: list[str] = []
+        self.skill_command_names: list[str] = []
+        self._startup_context_shown: set[str] = set()
+        self._meridian_thinking_warned = False
+        # Whether commands run through the command loop (a terminal or a host),
+        # so slow ones can show a row; without one, a job runs inline.
+        self.interactive = False
+        # Work a command asked for, done once its handler returns: a slow job
+        # under a system row, a skill's prompt, an extension reload, a sign-in.
+        self.job_requested: tuple[str, str, Callable[[], list[str]]] | None = None
+        self.skill_requested: str | None = None
+        self.skill_mcp_requested: tuple[str, tuple[str, ...]] | None = None
+        self.reload_requested = False
+        self.login_requested: str | None = None
+        self.logout_requested: str | None = None
         # Whether the owner is shutting down, so a cancelled turn is not a Ctrl+C.
         self.closing: Callable[[], bool] = lambda: False
         self.prompts = PromptQueue(activity)
@@ -293,6 +410,60 @@ class SessionController:
 
     def register_commands(self) -> None:
         for command in (
+            Command(
+                "/model",
+                "Choose a model; keeps the conversation (Ctrl+L)",
+                self.select_model,
+                group="Model",
+            ),
+            Command(
+                "/effort",
+                "Set reasoning effort: low / medium / high / xhigh / default (Ctrl+N / Ctrl+P)",
+                self.effort,
+                ("low", "medium", "high", "xhigh", "default"),
+                group="Model",
+            ),
+            Command(
+                "/login",
+                "Sign in to Anthropic, OpenAI Codex, or Claude for Meridian in a browser",
+                self.login,
+                ("anthropic", "openai-codex", "meridian"),
+                group="Model",
+            ),
+            Command(
+                "/logout",
+                "Remove a stored login (anthropic or openai-codex)",
+                self.logout,
+                ("anthropic", "openai-codex"),
+                group="Model",
+            ),
+            Command(
+                "/extensions",
+                "Extensions: list / on NAME / off NAME",
+                self.manage_extensions,
+                ("list", "on", "off"),
+                free_arguments=True,
+                argument_provider=self.extension_arguments,
+                group="Model",
+            ),
+            Command(
+                "/reload",
+                "Reload extensions; keeps the conversation",
+                self.reload,
+                group="Model",
+            ),
+            Command(
+                "/new", "Start a new conversation; clears the screen", self.new, group="Session"
+            ),
+            Command(
+                "/worktree",
+                "This session's git worktree: status / merge / resolve / finish / remove"
+                " / list / clean",
+                self.worktree,
+                tuple(WORKTREE_ACTIONS),
+                group="Session",
+                argument_descriptions=WORKTREE_ACTIONS,
+            ),
             Command(
                 "/compact",
                 "Summarize older context now; optional FOCUS steers the summary",
@@ -337,6 +508,9 @@ class SessionController:
     def hosted(self) -> bool:
         # `is True`: a Mock runtime in tests answers every attribute.
         return getattr(self.runtime, "remote", False) is True
+
+    def command_taken(self, name: str) -> bool:
+        return name in TERMINAL_COMMANDS or self.registry.find(name) is not None
 
     def tasks(self) -> list[asyncio.Task]:
         return [task for task in (self.live_task, self.mcp_task, self.compact_task) if task]
@@ -454,7 +628,7 @@ class SessionController:
         because nothing else is going to deliver it.
         """
         registry = getattr(self.runtime, "jobs", None)
-        if registry is None or not self.app.model:
+        if registry is None or not self.model:
             return None
         wakeable = [
             job
@@ -642,7 +816,42 @@ class SessionController:
         elif self.registry.find(name) is None:
             await self.view.run_command(text, idle=idle, tag=tag)
         else:
-            await self.run_command(text, before_queue=before_queue)
+            # The terminal needs the tag for any popup the command opens.
+            self.view.command_started(tag)
+            try:
+                await self.run_command(text, before_queue=before_queue)
+            finally:
+                self.view.command_finished()
+        await self.follow_up()
+
+    async def follow_up(self) -> None:
+        """Do what the command just handled asked for once its handler returned."""
+        if self.job_requested is not None:
+            await self.perform_job()
+        if self.skill_requested is not None:
+            if self.skill_mcp_requested is not None:
+                skill, names = self.skill_mcp_requested
+                self.skill_mcp_requested = None
+                # Started before the prompt is queued: the consumer then waits
+                # for it on mcp_idle.
+                self.start_skill_mcp(skill, names)
+            prompt, self.skill_requested = self.skill_requested, None
+            # Queued like a typed message so send mode, steering, and
+            # cancellation keep their usual meaning.
+            self.prompts.put(prompt, self.app.send_mode)
+            self.activity.busy = True
+        if self.mcp_defaults_requested:
+            self.start_mcp_defaults()
+        if not self.app.running:
+            self.cancel()
+            if active := self.tasks():
+                await asyncio.gather(*active, return_exceptions=True)
+        if self.reload_requested:
+            await self.reload_extensions()
+        if self.login_requested:
+            await self.perform_login()
+        if self.logout_requested:
+            await self.perform_logout()
 
     async def run_command(self, text: str, *, before_queue: bool = False) -> None:
         """Run one of the session's own commands; a handler may be sync or async."""
@@ -693,8 +902,8 @@ class SessionController:
             self.prompts.taken()
             # A model chosen mid-run takes effect here, before the request
             # that follows it is sent.
-            if app.pending_model is not None:
-                await app.apply_pending_model()
+            if self.pending_model is not None:
+                await self.apply_pending_model()
             success = True
             try:
                 resend = mode == "resend"
@@ -742,8 +951,8 @@ class SessionController:
             self.turn_ended(success)
             # Adopt it as soon as the turn ends so the footer and /status
             # agree with what the next request will use.
-            if app.pending_model is not None:
-                await app.apply_pending_model()
+            if self.pending_model is not None:
+                await self.apply_pending_model()
             await self.view.after_turn()
 
     async def run_turn(
@@ -865,7 +1074,7 @@ class SessionController:
         cwd, env = (
             self.runtime.shell_environment()
             if hasattr(self.runtime, "shell_environment")
-            else (self.app.workspace, None)
+            else (self.workspace, None)
         )
         self.view.user(text)
         self.activity.start_prompt(text)
@@ -1400,14 +1609,14 @@ class SessionController:
     # History: compaction and resending
 
     def compact(self, argument: str, *, before_queue: bool = False) -> None:
-        if not self.app.model or not hasattr(self.runtime, "compact"):
+        if not self.model or not hasattr(self.runtime, "compact"):
             raise ValueError("/compact requires a live model session.")
         if not before_queue and (self.activity.busy or self.activity.queued_prompts):
             raise ValueError("/compact is unavailable while working. Cancel or wait, then retry.")
         self.start_compact(argument)
 
     def autocompact(self, argument: str) -> None:
-        if not self.app.model or not hasattr(self.runtime, "auto_compact"):
+        if not self.model or not hasattr(self.runtime, "auto_compact"):
             raise ValueError("/autocompact requires a live model session.")
         if argument:
             if self.activity.busy or self.activity.queued_prompts:
@@ -1429,7 +1638,7 @@ class SessionController:
         """Ask again from the settled checkpoint instead of typing "continue"."""
         if argument:
             raise ValueError("/resend takes no arguments.")
-        if not self.app.model or not hasattr(self.runtime, "resend_prompt"):
+        if not self.model or not hasattr(self.runtime, "resend_prompt"):
             raise ValueError("/resend requires a live model session.")
         if not before_queue and (self.activity.busy or self.activity.queued_prompts):
             raise ValueError("/resend is unavailable while working. Cancel or wait, then retry.")
@@ -1438,3 +1647,883 @@ class SessionController:
         self.prompts.put(previous, "resend", first=True)
         self.activity.start_prompt(previous)
         self.activity.busy = True
+
+    # The session: its runtime, model, effort, extensions, skills, and sign-ins
+
+    def register_skills(self) -> None:
+        """Expose discovered SKILL.md assets as commands, skipping any collision."""
+        from pcode.skills import discover_skills, skill_commands
+
+        self.skill_command_names: list[str] = []
+        for command in skill_commands(discover_skills(self.workspace), self.run_skill):
+            names = (command.name, *command.aliases)
+            # Bare names can collide with a built-in command; built-ins win, and
+            # the prefixed form still reaches the skill.
+            taken = [name for name in names if self.command_taken(name)]
+            if command.name in taken:
+                continue
+            if taken:
+                command = replace(
+                    command, aliases=tuple(name for name in command.aliases if name not in taken)
+                )
+            self.registry.register(command)
+            self.skill_command_names.append(command.name)
+
+    def run_skill(self, skill, argument: str) -> None:
+        from pcode.skills import skill_prompt
+
+        if not self.model:
+            raise ValueError(f"/skill:{skill.name} requires a live model session.")
+        self.skill_requested = skill_prompt(skill, argument)
+        if skill.mcp_servers:
+            self.skill_mcp_requested = (skill.name, skill.mcp_servers)
+
+    def register_extension_commands(self) -> None:
+        """Expose extension commands, replacing the previous load's; built-ins win."""
+        for name in self.extension_command_names:
+            self.registry.unregister(name)
+        self.extension_command_names = []
+        if self.extensions is None:
+            return
+        for extension in self.extensions.extensions:
+            for command in extension.commands:
+                names = (command.name, *command.aliases)
+                if taken := [name for name in names if self.command_taken(name)]:
+                    self.view.warning(
+                        f"Extension {extension.name}: {', '.join(taken)} already exists; skipped."
+                    )
+                    continue
+                self.registry.register(command)
+                self.extension_command_names.append(command.name)
+        self.view.commands_changed()
+
+    def extension_arguments(self) -> tuple[str, ...]:
+        """Complete `on`/`off` against the extensions this workspace discovered."""
+        found = self.extensions.extensions if self.extensions else ()
+        return (
+            "list",
+            *(f"on {e.name}" for e in found if not e.enabled),
+            *(f"off {e.name}" for e in found if e.enabled),
+        )
+
+    def manage_extensions(self, argument: str) -> None:
+        """`/extensions` lists what loaded; `on NAME` / `off NAME` change it and reload."""
+        from pcode.ext import PROJECT_DIR, set_enabled, user_extension_dir
+        from pcode.project_trust import is_trusted
+
+        if not self.model:
+            raise ValueError("/extensions requires a live model session.")
+        parts = argument.split()
+        if parts and parts != ["list"]:
+            if len(parts) != 2 or parts[0] not in {"on", "off"}:
+                raise ValueError("Usage: /extensions [list] | /extensions on|off NAME")
+            action, name = parts
+            known = {e.name for e in self.extensions.extensions} if self.extensions else set()
+            if name not in known:
+                listing = f" Known: {', '.join(sorted(known))}" if known else ""
+                raise ValueError(f"Unknown extension '{name}'.{listing}")
+            # Refuse before writing, so the preference cannot drift from the session.
+            self.reload("")
+            set_enabled(name, action == "on")
+            self.view.note(f"Extension '{name}' turned {action}; reloading.")
+            return
+        lines = self.extensions.report(self.workspace) if self.extensions else []
+        if not lines:
+            lines = ["No extensions found."]
+        lines.append(f"User extensions: {user_extension_dir()}")
+        lines.append(
+            f"Project extensions ({PROJECT_DIR}): "
+            + (
+                "on (repository trusted)"
+                if is_trusted(self.workspace)
+                else "off; answer the launch prompt or /config set project_extensions on"
+            )
+        )
+        lines.append("Turn one on or off with /extensions on|off NAME. Ask pcode to write one.")
+        self.view.note("\n".join(lines))
+
+    def reload(self, argument: str) -> None:
+        if argument:
+            raise ValueError("/reload takes no arguments.")
+        if not self.model or not hasattr(self.runtime, "replace_agent"):
+            raise ValueError("/reload requires a live model session.")
+        if self.activity.busy or self.activity.queued_prompts:
+            raise ValueError("/reload is unavailable while working. Cancel or wait, then retry.")
+        self.reload_requested = True
+
+    async def reload_extensions(self) -> None:
+        """Re-import every extension and rebuild the agent around the same conversation."""
+        from pcode.agent import create_agent
+
+        self.reload_requested = False
+        loaded = await asyncio.to_thread(self._load_extensions)
+        # Construct first, so a failure leaves the previous agent in place.
+        agent = await asyncio.to_thread(
+            create_agent, self.model, self.workspace, loaded.capabilities, loaded.subagents
+        )
+        apply_effort(agent, self.model, effort_for(self.model))
+        apply_thinking(agent, self.model, self.activity.show_thinking)
+        self.extensions = loaded
+        self.runtime.replace_agent(agent)
+        await self.runtime.refresh_context()
+        self.register_extension_commands()
+        count = len(loaded.extensions) - len(loaded.failed) - len(loaded.disabled)
+        summary = f"Reloaded {count} extension{'s' if count != 1 else ''}"
+        if loaded.disabled:
+            summary += f", {len(loaded.disabled)} off"
+        if loaded.failed:
+            summary += f", {len(loaded.failed)} failed"
+        # A changed tool list or instruction invalidates the cached prompt prefix.
+        self.view.note(f"{summary}. The next request rebuilds the prompt cache.")
+        for line in loaded.report(self.workspace):
+            self.view.note("Extension " + line)
+
+    def _extension_notice(self, text: str, level: str) -> None:
+        """Route an extension's notice to the transcript from any thread."""
+        show = {"warning": self.view.warning, "error": self.view.error}.get(level, self.view.note)
+        loop = self._loop
+        if (
+            loop is not None
+            and loop.is_running()
+            and threading.current_thread() is not threading.main_thread()
+        ):
+            loop.call_soon_threadsafe(show, text)
+        else:
+            show(text)
+
+    def _load_extensions(self, workspace: Path | None = None):
+        from pcode.ext import ExtensionUI, load_extensions
+
+        return load_extensions(
+            workspace or self.workspace,
+            ExtensionUI(self._extension_notice, lambda: self.reload("")),
+            session_dir=self.session_dir,
+        )
+
+    def _create_runtime(self):
+        """Import and construct the backend off the terminal's event loop."""
+        from pcode.agent import create_agent
+        from pcode.live import AgentRuntime
+
+        self.extensions = self._load_extensions()
+        return AgentRuntime(
+            create_agent(
+                self.model,
+                self.workspace,
+                self.extensions.capabilities,
+                self.extensions.subagents,
+            ),
+            self._saved_session,
+            session_factory=self._create_session if self.save_sessions else None,
+        )
+
+    def _create_session(self, model: str | None = None):
+        from pcode.sessions import SavedSession
+
+        identity, self._session_id = self._session_id, None
+        return SavedSession.create(
+            model or self.model, self.workspace, self.session_dir, identity=identity
+        )
+
+    def meridian_thinking_state(self) -> tuple[str | None, bool | None]:
+        """(proxy URL, whether it forwards thinking) for the current Meridian model."""
+        model = getattr(getattr(self.runtime, "agent", None), "model", None)
+        if getattr(model, "system", None) != "meridian":
+            return None, None
+        from pcode.meridian import thinking_passthrough
+
+        base = str(model.base_url).rstrip("/")
+        return base, thinking_passthrough(base, getattr(model.client, "api_key", None))
+
+    async def warn_meridian_thinking(self) -> None:
+        """Say once when thinking display is on but the proxy drops thinking."""
+        if self._meridian_thinking_warned or not self.activity.show_thinking:
+            return
+        if not (self.model or "").startswith("meridian:"):
+            return
+        base, passthrough = await asyncio.to_thread(self.meridian_thinking_state)
+        if passthrough is False:
+            self._meridian_thinking_warned = True
+            self.view.warning(meridian_thinking_note(base, passthrough))
+
+    async def switch_model(self, model: str) -> None:
+        """Adopt a model now, or record it for the next request while working."""
+        if self.activity.busy or self.activity.queued_prompts:
+            # Replacing the agent mid-run would change the model of a request
+            # that is already in flight. Defer like /effort instead of refusing.
+            if model == self.model:
+                self.pending_model = None
+                self.persist_defaults(model=model)
+                self.view.note(f"Already using {model}.")
+                return
+            self.pending_model = model
+            self.view.note(
+                f"Model: {model} (next request). This turn finishes on {self.model or 'preview'}."
+            )
+            return
+        await self.activate_model(model)
+
+    async def apply_pending_model(self) -> None:
+        """Adopt a model chosen mid-run, now that no request is in flight."""
+        model, self.pending_model = self.pending_model, None
+        if model is None:
+            return
+        try:
+            await self.activate_model(model)
+        except Exception as error:
+            from pcode.live import error_message
+
+            self.view.error(error_message(error), title="Model unchanged")
+
+    async def activate_model(self, model: str) -> None:
+        from pcode.agent import create_agent
+        from pcode.live import AgentRuntime
+
+        self.pending_model = None
+        if model == self.model:
+            self.persist_defaults(model=model)
+            self.view.note(f"Already using {model}.")
+            return
+        # Construct first: a missing provider/login must leave the old session intact.
+        capabilities = self.extensions.capabilities if self.extensions else ()
+        subagents = self.extensions.subagents if self.extensions else ()
+        agent = await asyncio.to_thread(
+            create_agent, model, self.workspace, capabilities, subagents
+        )
+        apply_effort(agent, model, effort_for(model))
+        apply_thinking(agent, model, self.activity.show_thinking)
+        save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
+        factory = (lambda: self._create_session(model)) if save else None
+        if isinstance(self.runtime, AgentRuntime):
+            saved = self.runtime.session
+            if saved is not None:
+                previous_model = saved.info.model
+                saved.info.model = model
+                try:
+                    saved.save_info()
+                except OSError:
+                    saved.info.model = previous_model
+                    raise
+            self.runtime.replace_agent(agent)
+            self.runtime.session_factory = factory
+        else:
+            self.runtime = AgentRuntime(agent, session_factory=factory)
+        self.model = model
+        await self.runtime.refresh_context()
+        self.persist_defaults(model=model)
+        self.save_sessions = save
+        self.view.note(f"Model: {model}. Continuing the current conversation.")
+        self.show_startup_context()
+        self.warn_without_credentials()
+        await self.warn_meridian_thinking()
+
+    def login(self, argument: str) -> None:
+        # Signing in stores a credential; it does not require the conversation to
+        # already be on Anthropic. A non-Anthropic session keeps its own model.
+        source = argument.strip() or "anthropic"
+        if source not in {"anthropic", "openai-codex", "meridian"}:
+            self.view.note("Usage: /login [anthropic|openai-codex|meridian]")
+            return
+        self.login_requested = source
+
+    def logout(self, argument: str) -> None:
+        source = argument.strip() or "anthropic"
+        if source == "openai-codex":
+            self.logout_requested = source
+            return
+        if source != "anthropic":
+            self.view.note("Usage: /logout [anthropic|openai-codex]")
+            return
+        self.logout_anthropic()
+
+    def logout_anthropic(self) -> None:
+        from pcode.anthropic_oauth import credentials_path, delete_tokens
+        from pcode.auth import LoginError
+
+        try:
+            removed = delete_tokens(credentials_path())
+        except LoginError as error:
+            self.view.error(str(error))
+            return
+        if os.environ.get("PCODE_ANTHROPIC_AUTH", "").strip() == "oauth":
+            del os.environ["PCODE_ANTHROPIC_AUTH"]
+        # The stored sign-in is gone; a saved "oauth" choice would now resolve
+        # to a credential that no longer exists.
+        if load_preferences().get("anthropic_auth") == "oauth":
+            self.forget_defaults("anthropic_auth")
+        if not removed:
+            self.view.note("No stored Anthropic login to remove.")
+            return
+        self.view.note(
+            "Removed pcode's stored Anthropic login. This conversation keeps its current "
+            "model until the token expires; use /login again or set ANTHROPIC_API_KEY."
+        )
+
+    async def perform_login(self) -> None:
+        source = self.login_requested
+        self.login_requested = None
+        if source == "openai-codex":
+            await self.login_codex()
+        elif source == "meridian":
+            await self.login_meridian()
+        else:
+            await self.login_anthropic()
+
+    async def login_meridian(self) -> None:
+        """Run Claude Code's own sign-in for the Meridian this session uses."""
+        from pcode.auth import LoginError
+        from pcode.meridian_setup import claude_login, login_target
+
+        try:
+            target = await asyncio.to_thread(login_target)
+            self.view.note(
+                f"Signing in to Claude for Meridian ({target.label}) with `claude auth login`. "
+                "Finish in the browser (Ctrl+C cancels)."
+            )
+            status = await claude_login(self.view.note, target)
+            plan = status.get("subscriptionType")
+            self.view.note(
+                f"Signed in to Claude ({target.label}"
+                + (f", {plan} plan" if plan else "")
+                + "). Meridian uses it from its next request; pcode stores nothing."
+            )
+        except asyncio.CancelledError:
+            self.view.note("Claude sign-in cancelled.")
+            raise
+        except LoginError as error:
+            self.view.error(str(error))
+        except Exception:
+            self.view.error("Claude sign-in failed. No credential details were logged.")
+
+    async def login_codex(self) -> None:
+        from pcode.agent import codex_model
+        from pcode.auth import LoginError
+        from pcode.codex_login import credentials_path, login
+
+        self.view.note(
+            "Sign in with your ChatGPT account in the browser. "
+            "If no browser opens, visit this URL (Ctrl+C cancels):"
+        )
+        try:
+            await login(notify=self.view.note)
+            # Codex credentials are read when the model is built, so a Codex
+            # conversation must rebuild its model to adopt the new sign-in.
+            if self.model and self.model.startswith("openai-codex:"):
+                self.runtime.agent.model = await asyncio.to_thread(codex_model, self.model)
+            self.view.note(
+                f"Signed in to OpenAI Codex. Credentials are stored in {credentials_path()} "
+                "(owner-only) and refreshed automatically; /logout openai-codex removes them."
+            )
+        except asyncio.CancelledError:
+            self.view.note("OpenAI Codex sign-in cancelled.")
+            raise
+        except LoginError as error:
+            self.view.error(str(error))
+        except Exception:
+            self.view.error("OpenAI Codex sign-in failed. No credential details were logged.")
+
+    async def perform_logout(self) -> None:
+        from pcode.auth import LoginError
+        from pcode.codex_login import credentials_path, delete_credentials
+
+        self.logout_requested = None
+        try:
+            removed = await asyncio.to_thread(delete_credentials, credentials_path())
+        except LoginError as error:
+            self.view.error(str(error))
+            return
+        self.view.note(
+            "Removed pcode's stored OpenAI Codex login. "
+            "New models fall back to the CLI login, if present; that login was not removed. "
+            "The current model retains its in-memory token until it expires."
+            if removed
+            else "No stored pcode OpenAI Codex login to remove. CLI login is unchanged."
+        )
+
+    async def login_anthropic(self) -> None:
+        from pcode.anthropic_oauth import AnthropicOAuthModel, credentials_path, login
+        from pcode.auth import LoginError
+
+        self.login_requested = None
+        self.view.note(
+            "Opening claude.ai to sign in with your Anthropic account. "
+            "If no browser opens, visit this URL (Ctrl+C cancels):"
+        )
+        try:
+            await login(notify=self.view.note)
+            # Only an Anthropic conversation adopts the new credential; a Codex
+            # or Meridian session keeps its own model and provider.
+            if self.model and self.model.startswith("anthropic:"):
+                self.runtime.agent.model = await asyncio.to_thread(AnthropicOAuthModel, self.model)
+            os.environ["PCODE_ANTHROPIC_AUTH"] = "oauth"
+            self.persist_defaults(anthropic_auth="oauth")
+            self.view.note(
+                f"Signed in to Anthropic. Credentials are stored in {credentials_path()} "
+                "(owner-only) and refreshed automatically; /logout removes them."
+            )
+            self.view.note(
+                "Future launches use this login automatically. "
+                "Set PCODE_ANTHROPIC_AUTH=api-key to use ANTHROPIC_API_KEY instead."
+            )
+        except asyncio.CancelledError:
+            self.view.note("Anthropic sign-in cancelled.")
+            raise
+        except LoginError as error:
+            self.view.error(str(error))
+        except Exception:
+            self.view.error("Anthropic sign-in failed. No credential details were logged.")
+
+    def current_effort(self) -> str:
+        if not self.model:
+            return "n/a"
+        if self.hosted:
+            return self.runtime.effort
+        from pcode.preferences import current_effort
+
+        return current_effort(getattr(self.runtime, "agent", None), self.model)
+
+    def effort(self, argument: str) -> None:
+        value = argument.strip().lower()
+        if not value:
+            self.view.flash(
+                f"Effort: {self.current_effort()}. Usage: /effort low|medium|high|xhigh|default"
+            )
+            return
+        if value not in ("low", "medium", "high", "xhigh", "default"):
+            self.view.flash("Usage: /effort low|medium|high|xhigh|default")
+            return
+        agent = getattr(self.runtime, "agent", None)
+        if agent is None or effort_setting(self.model) is None:
+            self.view.flash(
+                "Effort control requires an OpenAI/Codex, Anthropic, or Meridian model."
+            )
+            return
+        # Replace rather than mutate: an active run keeps its captured settings.
+        apply_effort(agent, self.model, value)
+        self.persist_defaults(model=self.model)
+        # Per model: raising effort on one model must not raise it on the next.
+        try:
+            save_model_effort(self.model, value)
+        except (OSError, ValueError):
+            self.view.warning("Could not save defaults; this selection applies only here.")
+        self.view.flash(f"Effort: {self.current_effort()} (next turn).")
+
+    def adjust_effort(self, direction: int) -> None:
+        levels = ("low", "medium", "high", "xhigh")
+        current = self.current_effort()
+        # The provider default is unspecified; use medium as the starting point.
+        index = levels.index(current) if current in levels else 1
+        self.effort(levels[max(0, min(len(levels) - 1, index + direction))])
+
+    def session_overview(self) -> list[tuple[str, str]]:
+        """Label/value rows describing the live conversation.
+
+        One source for the `/status` notes and popup, so the
+        two can never drift into describing the same session differently.
+        """
+        if not self.model:
+            return [
+                ("Model", "none · tools: none · network: none"),
+                ("Preview turns", str(self.runtime.turns)),
+                ("Mode", "Canned replies only. Start with -m PROVIDER:MODEL for a real agent."),
+            ]
+        if self.hosted:
+            return [*self.runtime.overview(), ("Effort", self.current_effort())]
+        totals = self.runtime.totals
+        rows = [
+            ("Model", self.model),
+            ("Effort", self.current_effort()),
+            ("Workspace", str(self.workspace)),
+            ("Turns", str(self.runtime.turns)),
+            ("Tokens in/out", f"{self.runtime.input_tokens}/{self.runtime.output_tokens}"),
+            # A cache read costs a fraction of an uncached token and a write costs
+            # more than one, so the split is the part worth watching.
+            (
+                "Input cached read/write",
+                f"{totals.cache_read}/{totals.cache_write} (uncached {totals.uncached_input})",
+            ),
+            ("Tools", "Coder tools enabled; no sandbox."),
+            *self.overhead_overview(),
+            (
+                "Automatic compaction",
+                ("on" if getattr(self.runtime, "auto_compact", False) else "off")
+                + " · /compact [focus] · /autocompact on|off",
+            ),
+        ]
+        saved = self.runtime.session
+        if saved:
+            rows += [
+                ("Session", saved.info.id),
+                ("Saved in", str(saved.directory)),
+                ("Started", saved.info.created[:16]),
+                ("Updated", saved.info.updated[:16]),
+            ]
+        elif self.runtime.session_factory is not None:
+            rows.append(("Session", "Will be saved after your first prompt."))
+        else:
+            rows.append(("Session", "Saving disabled; in memory only."))
+        tree = getattr(self.runtime, "tree", None)
+        if tree and tree.nodes:
+            rows.append(("Branches", f"{len(tree.nodes)} turns in /tree"))
+        mcp = getattr(self.runtime, "mcp", None)
+        if enabled := sorted(getattr(mcp, "enabled", ()) or ()):
+            rows.append(("MCP", ", ".join(enabled)))
+        return rows
+
+    def overhead_overview(self) -> list[tuple[str, str]]:
+        """Attribute the fixed part of the prompt: instructions, assets, tool schemas.
+
+        Read from the last request rather than re-derived, so the rows describe
+        what the provider was actually sent. Nothing is available before the
+        first request, where the alternative would be a parallel guess at a
+        system prompt only the agent flow can resolve.
+        """
+        from pcode.context_breakdown import overhead_rows
+        from pcode.context_usage import context_window
+        from pcode.model_metadata import ContextWindowError
+
+        parameters = getattr(self.runtime, "request_parameters", None)
+        if parameters is None:
+            return [("Prompt overhead", "Measured on the first model request.")]
+        try:
+            resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
+            window = context_window(resolved or self.model)
+        except ContextWindowError:
+            window = None
+        return overhead_rows(parameters, window=window)
+
+    def defer(self, label: str, detail: str, job: Callable[[], list[str]]) -> None:
+        """Run a slow command's work under a system badge, or inline without a terminal.
+
+        Handlers run on the terminal's event loop, so a job that takes seconds
+        would freeze the screen with nothing to show for it. With a live
+        terminal the work is picked up by the command loop, which paints a
+        `◈ label ▸ detail` row (distinct from a model turn) and runs the job
+        in a thread. The job returns lines for the transcript; a ValueError
+        becomes the usual command error. A job started mid-turn leaves the
+        turn's live row alone and says what it is doing in a notice instead.
+        """
+        if not self.interactive:
+            for line in job():
+                self.view.note(line)
+            return
+        self.job_requested = (label, detail, job)
+
+    async def perform_job(self) -> None:
+        assert self.job_requested is not None
+        label, detail, job = self.job_requested
+        self.job_requested = None
+        if self.activity.prompt_state == "running":
+            await self._perform_job_alongside(label, detail, job)
+            return
+        self.activity.busy = True
+        self.activity.start_prompt(label, kind="system", detail=detail)
+        self.view.redraw()
+        state = "failed"
+        try:
+            lines = await asyncio.to_thread(job)
+            state = "done"
+        except ValueError as error:
+            self.view.error(str(error))
+        else:
+            for line in lines:
+                self.view.note(line)
+        finally:
+            self.activity.finish_prompt(state)
+            self.activity.busy = bool(self.activity.queued_prompts)
+            self.view.redraw()
+
+    async def _perform_job_alongside(
+        self, label: str, detail: str, job: Callable[[], list[str]]
+    ) -> None:
+        """Run a job beside a live turn without taking over or ending its row."""
+        self.activity.flash(f"{label} \u25b8 {detail}\u2026" if detail else f"{label}\u2026")
+        try:
+            lines = await asyncio.to_thread(job)
+        except ValueError as error:
+            self.view.error(str(error))
+        else:
+            for line in lines:
+                self.view.note(line)
+        finally:
+            self.activity.notice = ""
+            self.view.redraw()
+
+    def worktree(self, argument: str) -> None:
+        from pcode import worktree
+
+        action = argument or "status"
+        if action == "list":
+            self.view.note(worktree.listing(self.workspace) or "Not a git repository.")
+            return
+        if action == "clean":
+            # Works from the mainline too, where the leftovers are most visible.
+            self.defer("Cleaning worktrees", "", lambda: worktree.clean(self.workspace))
+            return
+        linked = worktree.describe(self.workspace)
+        if linked is None:
+            self.view.note(
+                f"{self.workspace} is not a linked worktree. Start one with "
+                "`pcode --worktree` or `/config set worktree on`."
+            )
+            return
+        if action == "status":
+            dirty = worktree.is_dirty(linked.path)
+            count = worktree.unmerged_commits(linked)
+            self.view.note(f"Worktree: {linked.path} (branch {linked.branch})")
+            mainline = worktree.mainline_branch(linked.main)
+            self.view.note(f"Mainline: {linked.main} ({mainline})")
+            self.view.note(
+                f"{count} unmerged commit{'s' if count != 1 else ''}"
+                + (", uncommitted changes" if dirty else "")
+            )
+            return
+        if action == "merge":
+            # Allowed mid-turn: merge refuses a dirty tree, so it never runs
+            # over uncommitted edits the model has in flight.
+            self.defer("Merging worktree", linked.branch, lambda: [worktree.merge(linked)])
+            return
+        if self.activity.busy:
+            raise ValueError("Wait for the current turn to finish before changing the worktree.")
+        if action == "resolve":
+            if not self.model:
+                raise ValueError("/worktree resolve needs a live model session.")
+            files = worktree.conflicted_files(linked.path)
+            if not files:
+                raise ValueError("No merge conflicts to resolve; run /worktree merge first.")
+            # A prompt in command clothing, dispatched like a skill.
+            self.skill_requested = worktree.resolve_prompt(linked, files)
+        elif action == "remove":
+            if worktree.unmerged_commits(linked):
+                raise ValueError("Branch has unmerged commits; /worktree merge first.")
+
+            def remove() -> list[str]:
+                result = worktree.remove(linked)
+                self._leave_worktree(linked)
+                return [result, "This session's workspace no longer exists; /quit."]
+
+            self.defer("Removing worktree", linked.branch, remove)
+        elif action == "finish":
+            # Refusals raise before anything is deleted, so the session stays put.
+            def finish() -> list[str]:
+                result = worktree.finish(linked)
+                self._leave_worktree(linked)
+                self.app.running = False
+                return [result]
+
+            self.defer("Finishing worktree", linked.branch, finish)
+
+    def _leave_worktree(self, linked) -> None:
+        """Point the saved session at the mainline so `pcode -c` still finds a directory."""
+        session = getattr(self.runtime, "session", None)
+        if session is None:
+            return
+        session.info.workspace = str(linked.main)
+        try:
+            session.save_info()
+        except OSError:
+            pass
+
+    def show_startup_context(self) -> None:
+        """Report repository instructions and skills, each line only once.
+
+        A model switch re-runs this because starting without a model leaves
+        nothing to report until a runtime exists. Repeating lines the
+        transcript already carries is just noise, so only new ones print.
+        """
+        lines = []
+        summary = getattr(self.runtime, "startup_context", None)
+        if summary is not None:
+            lines.extend(summary())
+        if self.skill_command_names:
+            lines.append("Skill commands: " + ", ".join(self.skill_command_names))
+        warnings = []
+        if self.extensions is not None:
+            for extension, line in zip(
+                self.extensions.extensions, self.extensions.report(self.workspace), strict=True
+            ):
+                # Shipped defaults, and extensions the user turned off, are not news
+                # at every launch; /extensions lists them.
+                if not extension.enabled or (extension.loaded and extension.scope == "bundled"):
+                    continue
+                (lines if extension.loaded else warnings).append("Extension " + line)
+        for line in lines + warnings:
+            if line in self._startup_context_shown:
+                continue
+            self._startup_context_shown.add(line)
+            if line in warnings:
+                self.view.warning(line)
+            else:
+                self.view.retained_note(line)
+
+    def warn_without_credentials(self) -> None:
+        """Say so at startup, not on the first prompt.
+
+        An `anthropic:` model with no selected credential is built with
+        `defer_model_check`, so its agent keeps the unresolved model string and
+        the terminal opens looking healthy. Report it while /login is still the
+        obvious next step.
+        """
+        if not (self.model or "").startswith("anthropic:"):
+            return
+        agent = getattr(self.runtime, "agent", None)
+        if agent is None or not isinstance(getattr(agent, "model", None), str):
+            return
+        self.view.warning(
+            "No Anthropic credential is selected, so prompts will fail. "
+            "Run /login, or restart with ANTHROPIC_API_KEY set."
+        )
+
+    def new(self, argument: str) -> None:
+        self.runtime.reset()
+        self.view.conversation_reset("New conversation")
+        self.view.note(
+            "Context reset; MCP servers are off unless marked enabled. Screen cleared; "
+            "input history is unchanged."
+        )
+        if self.model and self.runtime.session:
+            self.view.note(f"Saving session: {self.runtime.session.info.id}")
+        self.mcp_defaults_requested = True
+
+    async def select_model(self, argument: str) -> None:
+        """Pick a model in the terminal from the providers this session can reach."""
+        from pcode.models import active_providers, model_catalog
+
+        providers = await asyncio.to_thread(active_providers, self.model)
+        if not providers:
+            self.view.note(
+                "No active model providers. Use /login to sign in to Anthropic, "
+                "set ANTHROPIC_API_KEY, run codex login, or export another "
+                "provider's API key (see docs/providers.md). "
+                "If model_providers is set, check that it allows an active provider."
+            )
+            return
+        values = model_catalog(providers, self.model)
+        model = await self.view.choose_model(values, providers, self.model)
+        if model is not None:
+            await self.switch_model(model)
+
+    async def initialize_runtime(self) -> None:
+        """Build the agent (off the event loop) and restore a resumed conversation."""
+        self._loop = asyncio.get_running_loop()
+        if self._needs_runtime:
+            # A cancelled to_thread await does not stop its thread. Keep ownership
+            # until it finishes so a late-created runtime cannot leak on exit.
+            task = asyncio.create_task(asyncio.to_thread(self._create_runtime))
+            try:
+                runtime = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                try:
+                    runtime = await task
+                except Exception:
+                    pass
+                else:
+                    runtime.close()
+                raise
+            self.runtime = runtime
+            self._needs_runtime = False
+            agent = getattr(runtime, "agent", None)
+            if agent is not None:
+                apply_effort(agent, self.model, effort_for(self.model))
+                apply_thinking(agent, self.model, self.activity.show_thinking)
+            self.register_extension_commands()
+        if self.resuming:
+            await self.runtime.restore()
+
+    # Resuming another saved conversation in this process
+
+    async def resume_session(self, identity: str) -> None:
+        from pcode.agent import create_agent
+        from pcode.live import AgentRuntime
+        from pcode.sessions import SavedSession
+        from pcode.worktree import leave_worktree
+
+        current = getattr(self.runtime, "session", None)
+        if current is not None and current.info.id == identity:
+            self.view.note("This session is already active.")
+            return
+        saved = SavedSession.open(identity, self.session_dir, fork_if_open=True)
+        try:
+            target = self._resume_workspace(saved.info)
+            # A session from another worktree gets that worktree's extensions
+            # and skills; the same workspace keeps what is already loaded.
+            extensions = self.extensions
+            if target != self.workspace:
+                extensions = await asyncio.to_thread(self._load_extensions, target)
+            capabilities = extensions.capabilities if extensions else ()
+            subagents = extensions.subagents if extensions else ()
+            agent = create_agent(saved.info.model, target, capabilities, subagents)
+            apply_effort(agent, saved.info.model, effort_for(saved.info.model))
+            apply_thinking(agent, saved.info.model, self.activity.show_thinking)
+            runtime = AgentRuntime(agent, saved)
+            await runtime.restore()
+            await runtime.refresh_context()
+        except BaseException:
+            saved.abandon()
+            raise
+        # Keep the current conversation intact until recovery has succeeded.
+        if target != self.workspace:
+            # The worktree being left is tidied like at exit, but nobody is
+            # asked: unmerged work stays put with a note on how to get back.
+            leave_worktree(self.workspace, current, ask=None, notify=self.view.note)
+        close = getattr(self.runtime, "close", None)
+        if close is not None:
+            close()
+        if target != self.workspace:
+            self._switch_workspace(target, extensions)
+        self.runtime = runtime
+        self.model = saved.info.model
+        self.session_dir = saved.directory.parent
+        self.activity.prompt = ""
+        self.activity.prompt_kind = "user"
+        self.activity.prompt_detail = ""
+        self.view.replay_conversation()
+        self.mcp_defaults_requested = True
+
+    def _resume_workspace(self, info) -> Path:
+        """Where a resumed session works: its own directory, if this repository's.
+
+        Another worktree of the same repository is fine (the session browser
+        lists them), another repository is not: the conversation's paths,
+        instructions, and extensions would all be wrong there.
+
+        A worktree removed from outside the session that owned it leaves no
+        directory to go back to. The conversation is still worth resuming, so
+        continue it here when this is the same repository.
+        """
+        from pcode.sessions import SessionError
+        from pcode.worktree import repo_scope, session_scope
+
+        target = Path(info.workspace).resolve()
+        if target == self.workspace:
+            return target
+        if not target.is_dir():
+            if session_scope(info) != repo_scope(self.workspace):
+                raise SessionError(
+                    f"Session workspace no longer exists: {target}. It belonged to another "
+                    "repository, so this one cannot continue it."
+                )
+            self.view.note(
+                f"Session workspace {target} no longer exists; continuing in {self.workspace}."
+            )
+            return self.workspace
+        if repo_scope(target) != repo_scope(self.workspace):
+            raise SessionError("Workspace differs; refusing cross-repo resume.")
+        return target
+
+    def _switch_workspace(self, workspace: Path, extensions) -> None:
+        """Rebind everything keyed on the workspace to another worktree.
+
+        The agent is the caller's to replace; this covers what the app itself
+        derives from the path: extension commands, skill commands, and the
+        status line (whose branch watcher picks the new path up on its own).
+        Project preferences and trust are per repository, so they stay.
+        """
+        self.workspace = workspace
+        self.extensions = extensions
+        self.register_extension_commands()
+        for name in self.skill_command_names:
+            self.registry.unregister(name)
+        self.register_skills()
+        self.view.commands_changed()
+        self.view.note(f"Workspace: {workspace}")

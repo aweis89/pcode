@@ -122,7 +122,7 @@ def test_plan_survives_turns_resume_and_reset(tmp_path):
         app = PreviewApp(model="test:local", runtime=restored, console=Console(file=StringIO()))
         app.replay()
         assert app.activity.plan[0]["content"] == "Persistent task"
-        app.new("")
+        app.controller.new("")
         assert app.activity.plan == []
         assert await restored.plan_store.get_items() == []
 

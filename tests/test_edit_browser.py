@@ -253,5 +253,5 @@ def test_slash_command_dispatches_and_collects_changes():
     edit = change("kept.py")
     app.present_events((edit,))
     assert app.recorded_edits() == [edit]
-    app.new("")
+    app.controller.new("")
     assert app.recorded_edits() == []

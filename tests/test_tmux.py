@@ -1325,16 +1325,17 @@ class Runtime:
     def close(self):
         pass
 
-class App(PreviewApp):
-    def _create_runtime(self):
-        deadline = time.monotonic() + 60
-        while not (root / 'release-startup').exists():
-            if time.monotonic() > deadline:
-                raise RuntimeError('test did not release initialization')
-            time.sleep(0.01)
-        return Runtime()
+def create_runtime():
+    deadline = time.monotonic() + 60
+    while not (root / 'release-startup').exists():
+        if time.monotonic() > deadline:
+            raise RuntimeError('test did not release initialization')
+        time.sleep(0.01)
+    return Runtime()
 
-App(model='test:local').run()
+app = PreviewApp(model='test:local')
+app.controller._create_runtime = create_runtime
+app.run()
 """
 
 

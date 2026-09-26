@@ -214,3 +214,19 @@ def test_model_commands_hold_the_session_busy_until_they_start():
         assert not session.activity.busy
 
     asyncio.run(run())
+
+
+def test_the_terminal_owns_exactly_the_commands_it_reserves():
+    """Skills and extension commands may not take a terminal command's name."""
+    from pcode.app import PreviewApp
+    from pcode.controller import TERMINAL_COMMANDS
+
+    app = PreviewApp()
+    owned = {command.name for command in app.controller.registry.commands}
+    terminal = {
+        name
+        for command in app.registry.commands
+        if command.name not in owned
+        for name in (command.name, *command.aliases)
+    }
+    assert terminal == TERMINAL_COMMANDS

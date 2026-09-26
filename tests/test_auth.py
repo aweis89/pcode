@@ -23,7 +23,7 @@ def test_anthropic_can_start_without_key(tmp_path):
     app = PreviewApp(model="anthropic:test-model", workspace=tmp_path)
     asyncio.run(app._initialize_runtime())
     assert app.handle("/login") is False
-    assert app.login_requested == "anthropic"
+    assert app.controller.login_requested == "anthropic"
     app.runtime.close()
 
 
@@ -46,19 +46,19 @@ def test_login_works_from_a_non_anthropic_session():
     buffer = StringIO()
     app = PreviewApp(model="openai-codex:test", runtime=Mock(), console=Console(file=buffer))
     app.handle("/login anthropic")
-    assert app.login_requested == "anthropic"
+    assert app.controller.login_requested == "anthropic"
     assert "Anthropic only" not in buffer.getvalue()
 
 
 def test_preview_login_requests_browser_sign_in():
     app = PreviewApp(console=Console(file=StringIO()))
     app.handle("/login")
-    assert app.login_requested == "anthropic"
+    assert app.controller.login_requested == "anthropic"
 
 
 def test_unknown_login_source_is_rejected():
     buffer = StringIO()
     app = PreviewApp(console=Console(file=buffer))
     app.handle("/login codex")
-    assert app.login_requested is None
+    assert app.controller.login_requested is None
     assert "Usage: /login" in buffer.getvalue()
