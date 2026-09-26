@@ -70,7 +70,12 @@ def test_worker_inherits_tools_instructions_guards_and_reports_edits(tmp_path):
                 assert "Worker complete" in str(returns(messages)[-1].content)
                 yield "Done"
             return
-        assert names == parent_names - {"delegate_task"}
+        assert names == parent_names - {
+            "delegate_task",
+            "integrate_task",
+            "discard_task",
+            "list_task_worktrees",
+        }
         assert {"write_file", "edit_file", "shell", "write_plan", "extension_tool"} <= names
         assert "EXTENSION_GUIDANCE" in info.instructions
         assert "REPOSITORY_GUIDANCE" in info.instructions
@@ -123,7 +128,10 @@ def test_worker_inherits_native_and_local_web_policy(tmp_path, monkeypatch, mode
         names = {tool.name for tool in info.function_tools}
         native = [tool.kind for tool in info.model_request_parameters.native_tools]
         if "delegate_task" in names:
-            parent_shape = (names - {"delegate_task"}, native)
+            parent_shape = (
+                names - {"delegate_task", "integrate_task", "discard_task", "list_task_worktrees"},
+                native,
+            )
             if not returns(messages):
                 yield tool_call("delegate_task", {"agent_name": "worker", "task": "Research"})
             else:

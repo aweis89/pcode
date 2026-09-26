@@ -9,7 +9,7 @@ from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.runtime import Message, TextDelta, ToolStarted, ToolSummary
-from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
+from pcode.tool_panel import ToolCall, ToolHistory, panel_fragments, task_panel_rows
 from pcode.ui import CursorSafeOutput, TerminalOutput
 
 
@@ -59,6 +59,21 @@ def test_a_command_that_finishes_instantly_still_holds_the_status_row(monkeypatc
     monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 0.0)
     assert history.active is None
     assert history.recent is None
+
+
+def test_a_wait_row_names_its_job_and_the_command_that_job_runs():
+    def line(event):
+        return ToolCall(event, started=0.0, settled=45.2).line()
+
+    known = ToolStarted(
+        "wait_for_job", "j3", "one", command="make e2e", purpose="running the suite"
+    )
+    assert line(known) == "⧗ Wait · 45.2s · j3 · running the suite · make e2e"
+    # A job the runtime could not name still says which one is being waited on.
+    assert line(ToolStarted("wait_for_job", "j9", "two")) == "⧗ Wait · 45.2s · j9"
+    # Reading a job is not waiting on it, but names the job the same way.
+    output = ToolStarted("job_output", "j3", "three", command="make e2e")
+    assert line(output) == "Job output · 45.2s · j3 · make e2e"
 
 
 @pytest.mark.parametrize("width", [1, 8, 24, 80])
@@ -234,7 +249,7 @@ def test_concurrent_tools_follow_active_task_without_headers_or_empty_rows():
     ]
     text = [text for _, text in task_panel_rows(items, history, 10, "⟳")]
     assert text[:2] == ["✓ Inspect", "⟳ Implement"]
-    assert text[2].startswith("    ⟳ Read") and text[2].endswith("example.py")
+    assert text[2].startswith("└── ⟳ Read") and text[2].endswith("example.py")
     assert text[3] == "○ Validate"
     items[1]["status"] = "completed"
     items[2]["status"] = "in_progress"
@@ -269,7 +284,10 @@ def test_shared_task_tool_budget_keeps_active_item_and_oldest_calls_visible(budg
     active = text.index("⟳ Task 8")
     count = min(3, budget - 1)
     assert sum("Read ·" in line for line in text) == count
-    assert all(line.startswith("    ⟳ Read") for line in text[active + 1 : active + 1 + count])
+    children = text[active + 1 : active + 1 + count]
+    assert all(line.startswith("├── ⟳ Read") for line in children[:-1])
+    if children:
+        assert children[-1].startswith("└── ⟳ Read")
     if count:
         assert text[active + 1].endswith("file_0.py")
     assert all("Tasks ·" not in line and "Tools" not in line for line in text)

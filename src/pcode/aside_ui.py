@@ -33,9 +33,10 @@ REFRESH_SECONDS = 0.3
 
 
 def row(aside: Aside, width: int = 90) -> str:
-    """One list line: the question, then how the answer is doing."""
+    """One list line: the model if one was named, the question, then its state."""
     question = plain(" ".join(aside.question.split()), width)
-    return f"{question}  ({aside.state()})"
+    model = f"[{aside.label}] " if aside.label else ""
+    return f"{model}{question}  ({aside.state()})"
 
 
 class AsideBrowser:
@@ -192,7 +193,18 @@ class AsideBrowser:
     def details(self, aside: Aside | None) -> list:
         if aside is None:
             return [Text("Ask one with /btw <question>.", style="dim")]
-        blocks: list = [TaskPrompt(literal(aside.question)), Text("")]
+        blocks: list = [TaskPrompt(literal(aside.question))]
+        where = " ".join(
+            part
+            for part in (
+                f"on {aside.model}" if aside.model else "",
+                f"at {aside.effort} effort" if aside.effort else "",
+            )
+            if part
+        )
+        if where:
+            blocks.append(Text(f"  {where}", style="dim"))
+        blocks.append(Text(""))
         if answer := literal(aside.answer):
             blocks.append(Markdown(answer, code_theme=self.code_theme))
         if aside.running:

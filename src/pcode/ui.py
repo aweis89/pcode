@@ -69,6 +69,7 @@ from pcode.tool_panel import TASK_ROWS, ToolHistory, panel_fragments, task_panel
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
+from pcode.workers import Workers
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,9 @@ class Palette:
                 "plan": self.muted,
                 "plan.heading": f"nodim {self.task_heading} bold",
                 "plan.active": f"nodim {self.accent} bold",
+                # A running sub-agent's row: its own shade, so it never reads
+                # as one of the tasks it sits among.
+                "plan.agent": f"nodim {self.task_heading}",
                 "prompt": f"{self.accent} bold",
                 "activity.prompt": self.muted,
                 # System work is pcode's own, so it gets the accent colour and
@@ -307,7 +311,7 @@ class Activity:
     # user wants it shown while the model works.
     autohide_tasks: bool = False
     # Draw the widget as the top section of the editor box instead of its own box.
-    attach_tasks: bool = False
+    attach_tasks: bool = True
     # Cap on the task widget plus the editor box: whole rows, or a share of the
     # screen below 1 (0.5 is half). None keeps the default layout.
     tasks_max_height: float | None = None
@@ -329,6 +333,7 @@ class Activity:
     plan: list[dict] = field(default_factory=list)
     plan_preview: list[dict] | None = None
     tools: ToolHistory = field(default_factory=ToolHistory)
+    workers: Workers = field(default_factory=Workers)
     command_outputs: dict[str, CommandOutput] = field(default_factory=dict)
     edit_previews: dict = field(default_factory=dict)
     notice: str = ""
@@ -356,6 +361,8 @@ class Activity:
         rows = []
         for aside in shown:
             parts = [f"{spinner} btw", plain(aside.question, limit=None)]
+            if aside.label:
+                parts.insert(1, aside.label)
             if aside.activity:
                 parts.append(plain(aside.activity, limit=None))
             parts.append(f"{aside.elapsed:.0f}s")
@@ -413,6 +420,7 @@ class Activity:
         self.plan = []
         self.plan_preview = None
         self.tools.clear()
+        self.workers = Workers()
         self.prompt = ""
         self.prompt_state = ""
         self.prompt_kind = "user"
@@ -558,7 +566,7 @@ def command_heading(activity: Activity, event: CommandOutput) -> str:
     marker differs, because nothing has finished yet. A watched job and a
     `!command` typed at the prompt have no live tool call to name them.
     """
-    call = next((c for c in activity.tools.visible if c.event.call_id == event.call_id), None)
+    call = next((c for c in activity.tools.calls if c.event.call_id == event.call_id), None)
     if call is not None:
         purpose = plain(call.event.purpose, limit=60) if call.event.purpose else ""
         name = label(call.event.name)

@@ -56,11 +56,13 @@ def browser(tmp_path, **options):
         ("\r", "newest"),
         ("\x1b[B\r", "older"),
         ("\x1b", None),
-        # Search narrows the list to the matching session; Enter resumes it while typing.
-        ("/cache warn\r", "older"),
+        # It opens in the search line, which narrows the list; Enter resumes while typing.
+        ("cache warn\r", "older"),
         # Arrows steer the list while typing; Enter does nothing with no match.
-        ("/a\x1b[B\r", "older"),
-        ("/nothing-matches\r\x1b", None),
+        ("a\x1b[B\r", "older"),
+        ("nothing-matches\r\x1b", None),
+        # `/` in the list returns to the search.
+        ("\t/cache warn\r", "older"),
     ],
 )
 def test_browser_keyboard(tmp_path, keys, expected):
@@ -83,7 +85,11 @@ def test_browser_deletes_after_confirmation(tmp_path):
             root = app.root
             task = asyncio.create_task(app.run())
             await asyncio.sleep(0.05)
-            pipe.send_text("d")
+            # Typed on open, `d` searches: only the list's `d` deletes.
+            pipe.send_text("dd")
+            await asyncio.sleep(0.05)
+            assert app.query.text == "dd" and not app.status
+            pipe.send_text("\x7f\x7f\td")
             await asyncio.sleep(0.05)
             assert (root / ids["newest"]).is_dir()
             assert "Press d again" in app.status
@@ -417,6 +423,32 @@ def test_session_turns_pairs_prompts_with_final_responses(tmp_path):
     missing = saved.info.model_copy(update={"id": "nope"})
     assert session_turns(missing, root) is None
     assert first_prompt(missing, root) == "(Prompt unavailable)"
+
+
+def test_resume_continues_a_copy_of_a_session_open_elsewhere(tmp_path):
+    async def run():
+        root = tmp_path / "sessions"
+        saved = SavedSession.create("test:local", tmp_path, root)
+
+        async def model(messages, info):
+            yield "Saved answer"
+
+        agent = Agent(FunctionModel(stream_function=model))
+        elsewhere = AgentRuntime(agent, saved)  # Still open, as in another process.
+        _ = [event async for event in elsewhere.stream("First question")]
+        app = PreviewApp(workspace=tmp_path, session_dir=root, console=Console(file=StringIO()))
+        with patch("pcode.agent.create_agent", return_value=agent):
+            await app.resume_session(saved.info.id)
+        try:
+            assert app.runtime.session.forked_from == saved.info.id
+            assert app.runtime.session.info.id != saved.info.id
+            assert app.runtime.history == elsewhere.history
+            assert "open in another process" in repr(app.transcript.replay())
+        finally:
+            app.runtime.close()
+            elsewhere.close()
+
+    asyncio.run(run())
 
 
 def test_resume_restores_before_replacing_runtime(tmp_path):

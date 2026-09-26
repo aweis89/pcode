@@ -125,14 +125,17 @@ def test_links_dialog_search_and_tool_filter():
     ]
 
     async def run():
+        # The picker opens in the search line: Tab reaches the list's `t` toggle.
         cases = (
-            ("t\r", "https://old.test/path"),
-            ("tt\r", "https://old.test/path"),  # Retain selection after toggling.
-            ("/REFERENCE\r\r", "https://old.test/path"),
-            ("/old.test/path\r\r", "https://old.test/path"),
-            ("/SHELL\r\r", "https://new.test"),
-            ("/missing\r\r\x03", None),  # Empty matches cannot open a stale URL.
-            ("/missing\x1b", "https://new.test"),
+            ("\tt\r", "https://old.test/path"),
+            ("\ttt\r", "https://old.test/path"),  # Retain selection after toggling.
+            ("REFERENCE\r", "https://old.test/path"),
+            ("old.test/path\r", "https://old.test/path"),
+            ("SHELL\r", "https://new.test"),
+            ("t\r", "https://new.test"),  # Typed `t` searches; it does not hide tools.
+            ("missing\r\x03", None),  # Empty matches cannot open a stale URL.
+            ("\t/missing\r\x03", None),  # `/` in the list returns to the search.
+            ("missing\x1b", "https://new.test"),  # Esc clears the search first.
         )
         for keys, expected in cases:
             with create_pipe_input() as pipe:
@@ -156,7 +159,7 @@ def test_links_dialog_can_recover_when_tools_are_only_links():
             )
             task = asyncio.create_task(dialog.run_async())
             await asyncio.sleep(0.05)
-            pipe.send_text("t\rtt\rt\r")
+            pipe.send_text("\tt\rtt\rt\r")
             assert await asyncio.wait_for(task, 2) == "https://tool.test"
 
     asyncio.run(run())
@@ -208,7 +211,7 @@ def test_link_recency_follows_interleaved_events_and_preserves_message_links():
             dialog = links_dialog(links, message_links=messages, input=pipe, output=DummyOutput())
             task = asyncio.create_task(dialog.run_async())
             await asyncio.sleep(0.05)
-            pipe.send_text("t\r")
+            pipe.send_text("\tt\r")
             assert await asyncio.wait_for(task, 2) == "https://a.test"
 
     asyncio.run(run())

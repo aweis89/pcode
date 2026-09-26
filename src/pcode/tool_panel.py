@@ -6,23 +6,21 @@ from time import monotonic
 from rich.text import Text
 
 from pcode.runtime import ToolStarted, ToolSummary
-from pcode.tool_display import PLAN_TOOLS, command_preview, label, plain
+from pcode.tool_display import JOB_HANDLE_TOOLS, PLAN_TOOLS, command_preview, label, plain
 
 # Delegates outlive their own chatter, so they keep the panel's first rows.
 DELEGATE = "delegate_task"
 # Marks a row as a sub-agent rather than a tool. One terminal cell wide in
 # common fonts, unlike emoji, so the panel's width math still holds.
 AGENT_ICON = "✦"
-# A sub-agent's quick tools (a read, a grep) settle in milliseconds. Dropping
-# their row the instant the result lands makes it flash unreadably and reflows
-# the prompt, so a settled child row lingers long enough to be read.
-CHILD_DWELL = 0.8
+# Marks a wait on a job an earlier call started, so it never reads as a fresh
+# run of the command it names. One cell wide, for the same reason.
+WAIT_ICON = "⧗"
 # The status row has the same problem, worse: a command that finishes in
 # milliseconds appears and vanishes before it can be read, and the row snaps
 # back to "Working…". The finished call keeps the row until it has been up this
 # long, unless real work starts first.
 STATUS_DWELL = 2.5
-CHILD_INDENT = "    "
 # A sub-agent's plan is a window around its active task, like the parent's, but
 # shorter: several delegates share the panel with the parent's own tasks.
 CHILD_PLAN_ROWS = 3
@@ -40,6 +38,25 @@ PLAN_ICONS = {
 
 
 @dataclass
+class _PanelNode:
+    row: tuple[str, str]
+    children: list["_PanelNode"] = field(default_factory=list)
+
+
+def _tree_rows(nodes: list[_PanelNode], prefix: str | None = None) -> list[tuple[str, str]]:
+    """Draw guides for the visible tree, leaving unparented roots undecorated."""
+    rows = []
+    for index, node in enumerate(nodes):
+        last = index == len(nodes) - 1
+        style, text = node.row
+        branch = "" if prefix is None else prefix + ("└── " if last else "├── ")
+        rows.append((style, branch + text))
+        stem = "" if prefix is None else prefix + ("    " if last else "│   ")
+        rows.extend(_tree_rows(node.children, stem))
+    return rows
+
+
+@dataclass
 class ToolCall:
     event: ToolStarted
     started: float = field(default_factory=monotonic)
@@ -51,15 +68,6 @@ class ToolCall:
         """A settled delegate stays listed, with its plan, like a completed task."""
         return self.event.name == DELEGATE and self.settled is not None
 
-    @property
-    def expired(self) -> bool:
-        """A settled row has said its piece and no longer belongs on screen."""
-        return (
-            self.settled is not None
-            and not self.finished_delegate
-            and monotonic() - self.settled >= CHILD_DWELL
-        )
-
     def line(self) -> str:
         """The call without a status icon; each surface supplies its own."""
         event = self.event
@@ -69,15 +77,23 @@ class ToolCall:
             return self._delegate_line(elapsed)
         # A stated purpose is what this row is for: the widget is the one place
         # that shows a job while it runs, when the command has not paid off yet.
-        detail = (
+        command = (
             f"{event.purpose} · {command_preview(event.command)}"
             if event.command and event.purpose
             else command_preview(event.command)
             if event.command
-            else plain(event.detail, limit=None)
+            else ""
         )
+        detail = plain(event.detail, limit=None)
+        if event.name in JOB_HANDLE_TOOLS:
+            # The id matches the job's own row and notices; the command says
+            # what it runs. Neither is enough alone.
+            detail = " · ".join(part for part in (detail, command) if part)
+        else:
+            detail = command or detail
+        icon = f"{WAIT_ICON} " if event.name == "wait_for_job" else ""
         state = f" · {plain(event.activity)}" if event.activity else ""
-        return f"{label(event.name)}{state} · {elapsed:.1f}s · {detail}"
+        return f"{icon}{label(event.name)}{state} · {elapsed:.1f}s · {detail}"
 
     def _delegate_line(self, elapsed: float) -> str:
         """`✦ Worker · 5.5s · Thinking · <task>`: the agent is what tells delegates apart.
@@ -101,7 +117,8 @@ class ToolHistory:
     """Calls still in flight, oldest first. A result removes its call.
 
     Delegates are the exception: a finished one stays, with its plan, until
-    the next turn starts, the way the parent's completed tasks stay listed.
+    the parent moves to another task or the next turn starts, the way the
+    parent's completed tasks stay listed.
     """
 
     calls: list[ToolCall] = field(default_factory=list)
@@ -119,7 +136,6 @@ class ToolHistory:
         # live view regardless of whether they need a scrollback entry.
         if event.name in PLAN_TOOLS:
             return
-        self.prune()
         existing = next(
             (c for c in self.calls if event.call_id and c.event.call_id == event.call_id), None
         )
@@ -127,38 +143,23 @@ class ToolHistory:
             if existing is None:
                 return
             existing.failed = event.failed
+            existing.settled = monotonic()
+            self.recent = existing
             if existing.event.name == DELEGATE:
                 # Its own calls are done; the delegate and its plan stay listed.
-                existing.settled = monotonic()
-                self.recent = existing
                 self.calls = [
                     c for c in self.calls if c.event.parent_call_id != existing.event.call_id
                 ]
-                return
-            # A child's row is the only trace of the sub-agent's step, so let it
-            # dwell; anything else leaves as soon as it settles.
-            if existing.event.parent_call_id and existing.settled is None:
-                existing.settled = monotonic()
             else:
-                existing.settled = monotonic()
-                self.recent = existing
-                self._drop(existing)
+                # A sub-agent's calls leave the way the parent's do: scrollback
+                # keeps them under their delegate. Held here instead, a row
+                # would appear only once its call had finished, then vanish.
+                self.calls.remove(existing)
         elif existing is not None:
             # A restated start carries fresh progress, not a new invocation.
             existing.event = event
         else:
             self.calls.append(ToolCall(event))
-
-    def _drop(self, call: ToolCall) -> None:
-        """A settled call leaves, and takes any child row still waiting out its dwell."""
-        self.plans.pop(call.event.call_id, None)
-        self.calls = [
-            c for c in self.calls if c is not call and c.event.parent_call_id != call.event.call_id
-        ]
-
-    def prune(self) -> None:
-        """Forget dwelt-out rows, so the animation loop can stop once nothing runs."""
-        self.calls = [c for c in self.calls if not c.expired]
 
     def clear(self) -> None:
         self.calls.clear()
@@ -167,20 +168,27 @@ class ToolHistory:
 
     def end_turn(self) -> None:
         """Drop whatever the turn left running; finished delegates stay listed."""
-        self.calls = [c for c in self.calls if c.finished_delegate]
+        self._keep(lambda c: c.finished_delegate)
+        self.recent = None
+
+    def retire_finished(self) -> None:
+        """The parent moved to another task, so finished delegates leave.
+
+        Every row hangs under the task active now, so a delegate that finished
+        under an earlier one would otherwise read as part of the new one.
+        """
+        self._keep(lambda c: not c.finished_delegate)
+
+    def _keep(self, keep) -> None:
+        """Keep only the calls `keep` accepts, and the plans of those still here."""
+        self.calls = [c for c in self.calls if keep(c)]
         kept = {c.event.call_id for c in self.calls}
         self.plans = {k: v for k, v in self.plans.items() if k in kept}
-        self.recent = None
 
     @property
     def animating(self) -> bool:
-        """Something on the panel still ticks or has a dwell to wait out."""
+        """Something on the panel still ticks; a finished delegate's row is frozen."""
         return any(not c.finished_delegate for c in self.calls)
-
-    @property
-    def visible(self) -> list[ToolCall]:
-        """Calls worth a row: in flight, or settled within the dwell window."""
-        return [c for c in self.calls if not c.expired]
 
     @property
     def active(self) -> ToolCall | None:
@@ -190,7 +198,7 @@ class ToolHistory:
         long as its dwell lasts. Anything that starts meanwhile wins the row:
         holding a stale line over live work would be the worse lie.
         """
-        running = next((c for c in reversed(self.visible) if c.settled is None), None)
+        running = next((c for c in reversed(self.calls) if c.settled is None), None)
         if running is not None:
             return running
         held = self.recent
@@ -203,7 +211,7 @@ class ToolHistory:
     def background(self) -> list[ToolCall]:
         """Everything the status row does not already show."""
         active = self.active
-        return [c for c in self.visible if c is not active]
+        return [c for c in self.calls if c is not active]
 
     def _delegates(self) -> list[ToolCall]:
         """Delegates that get a panel row.
@@ -216,7 +224,7 @@ class ToolHistory:
         active = self.active
         return [
             c
-            for c in self.visible
+            for c in self.calls
             if c.event.name == DELEGATE
             and (c.settled is not None or c is not active or self.plans.get(c.event.call_id))
         ]
@@ -241,42 +249,60 @@ class ToolHistory:
         return len(self._delegates()) + len(others) + self.plan_rows()
 
     def rows(self, count: int, *, nested: bool = False, icon: str = "⟳"):
+        return _tree_rows(self._nodes(count, icon), "" if nested else None)
+
+    def _nodes(self, count: int, icon: str) -> list[_PanelNode]:
         """Delegates first: a running sub-agent must stay addressable and visible.
 
         Beneath each goes its plan, then its own calls, nested under its active
         task the way the parent's calls sit under the parent's. Both are bounded
         so several delegates cannot crowd each other out.
         """
+        if count <= 0:
+            return []
         calls = self.background
-        base = "    " if nested else ""
         delegates = self._shown_delegates(count)
         remaining = count - len(delegates)
-        lines = []
+        nodes = []
         for parent in delegates:
-            lines.append(_call_row(parent, base))
+            node = _PanelNode(_call_row(parent))
+            nodes.append(node)
             plan = self.plans.get(parent.event.call_id, [])
             steps, active = plan_window(plan, min(CHILD_PLAN_ROWS, len(plan), remaining))
             remaining -= len(steps)
             children = [c for c in calls if c.event.parent_call_id == parent.event.call_id]
             children = children[-min(2, remaining) :] if remaining else []
             remaining -= len(children)
+            child_nodes = [_PanelNode(_call_row(c)) for c in children]
             for index in steps:
-                lines.append(plan_row(plan[index], icon, base + CHILD_INDENT))
+                step = _PanelNode(plan_row(plan[index], icon))
+                node.children.append(step)
                 if index == active:
-                    lines.extend(_call_row(c, base + CHILD_INDENT * 2) for c in children)
+                    step.children = child_nodes
             if active is None or active not in steps:
-                lines.extend(_call_row(c, base + CHILD_INDENT) for c in children)
+                node.children.extend(child_nodes)
         if remaining:
             other = [c for c in calls if not c.event.parent_call_id and c.event.name != DELEGATE]
-            lines.extend(_call_row(c, base) for c in other[:remaining])
-        return lines
+            nodes.extend(_PanelNode(_call_row(c)) for c in other[:remaining])
+        return nodes
 
 
-def _call_row(call: ToolCall, indent: str) -> tuple[str, str]:
-    done = call.settled is not None
-    style = "class:plan" if done else "class:plan.active"
-    icon = PLAN_ICONS["blocked"] if call.failed else "✓" if done else "⟳"
-    return style, f"{indent}{icon} {call.line()}"
+def _call_row(call: ToolCall) -> tuple[str, str]:
+    """A running call's row, or a delegate's in either state.
+
+    A delegate's `✦` stands in for the status icon, and it has a colour of
+    its own while it runs: with a task's icon in front, a sub-agent would read
+    as one of the parent's tasks, and as a child of whichever task names it.
+    Nothing else settles here, since a finished call leaves the panel.
+    """
+    if call.event.name == DELEGATE:
+        return ("class:plan" if call.settled is not None else "class:plan.agent"), call.line()
+    return "class:plan.active", f"⟳ {call.line()}"
+
+
+def active_step(items: list[dict]) -> str | None:
+    """The id of the task in progress, or None between tasks."""
+    return next((item.get("id") for item in items if item.get("status") == "in_progress"), None)
 
 
 def plan_window(items: list[dict], count: int) -> tuple[range, int | None]:
@@ -287,11 +313,11 @@ def plan_window(items: list[dict], count: int) -> tuple[range, int | None]:
     return range(start, start + count), active
 
 
-def plan_row(item: dict, active_icon: str, indent: str = "") -> tuple[str, str]:
+def plan_row(item: dict, active_icon: str) -> tuple[str, str]:
     status = item["status"]
     style = "class:plan.active" if status == "in_progress" else "class:plan"
     icon = active_icon if status == "in_progress" else PLAN_ICONS.get(status, "○")
-    return style, f"{indent}{icon} {plain(item['content'], limit=None)}"
+    return style, f"{icon} {plain(item['content'], limit=None)}"
 
 
 def task_panel_rows(
@@ -307,23 +333,21 @@ def task_panel_rows(
     running alongside it: delegates (with their own plans) and other parallel
     calls. Keep at least one task visible, even on short panes, and never add
     headers or empty rows.
-
-    Rendering is also when dwelt-out rows are forgotten, so the animation loop
-    stops once the last settled row has left.
     """
-    tools.prune()
     if budget <= 0:
         return []
     tool_count = min(TOOL_ROWS + tools.plan_rows(), tools.wanted(), max(0, budget - bool(items)))
     steps, active = plan_window(items, min(max_tasks, len(items), budget - tool_count))
-    lines = []
+    nodes = []
+    tool_nodes = tools._nodes(tool_count, active_icon)
     for index in steps:
-        lines.append(plan_row(items[index], active_icon))
+        node = _PanelNode(plan_row(items[index], active_icon))
+        nodes.append(node)
         if index == active:
-            lines.extend(tools.rows(tool_count, nested=True, icon=active_icon))
+            node.children = tool_nodes
     if active is None or active not in steps:
-        lines.extend(tools.rows(tool_count, icon=active_icon))
-    return lines
+        nodes.extend(tool_nodes)
+    return _tree_rows(nodes)
 
 
 def panel_fragments(lines: list[tuple[str, str]], width: int):

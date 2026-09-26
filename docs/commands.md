@@ -58,6 +58,10 @@ candidate's size so that cost is visible before you pick.
 - Session, conversation-tree, model, and tool popups share terminal-default
   backgrounds and text, with reverse-video selection highlights. They follow your
   terminal background automatically, independently of `/theme` and `/syntax`.
+  Opening a popup cancels other popup requests already waiting, so pressing
+  Ctrl+L twice quickly opens one picker, not a second one after dismissal.
+  Queued messages and non-popup commands are kept; a fresh request after closing
+  the popup opens it normally.
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
 - `/login [anthropic|openai-codex|meridian]`: sign in in a browser. Anthropic is pcode's own flow;
   `openai-codex` uses Pydantic AI's OAuth flow (no CLI required); `meridian` runs
@@ -67,16 +71,17 @@ candidate's size so that cost is visible before you pick.
   applies from the next request when chosen mid-run).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed`: open the same inspector filtered to failures.
-- `/diffs`: browse this conversation's file diffs in a full-screen popup.
+- `/diffs`: review the session's work as a git diff, one entry per file, in a
+  full-screen popup (see [Diff browser](#diff-browser)).
 - `/links`: pick a URL from the active conversation branch (your prompts, tool
   arguments and captured results, or the assistant's replies, last appearance first).
   Tool links show the tool name; duplicate URLs appear once, at their most recent
-  position. Press `t` to show/hide tool links (shown by default); URLs also present
-  in prompts or replies remain when tools are hidden. Press `/` to search URLs,
-  labels, and sources, case-insensitively. Search filters as you type; `↑`/`↓`
-  move the selection, `Enter` returns to the list with the filter applied, and
-  `Esc` clears the search and returns to the list. In the list, `Enter` opens the
-  selected URL and `Esc` closes the picker. Filters reset when you reopen `/links`.
+  position. The picker opens in its search line: typing searches URLs, labels, and
+  sources, case-insensitively, filtering as you type, while `↑`/`↓` move the
+  selection. `Enter` opens the selected URL. `Esc` clears the search, or closes the
+  picker when the search is empty. Tab moves to the list, where `t` shows/hides tool
+  links (shown by default; URLs also present in prompts or replies remain when tools
+  are hidden) and `/` returns to the search. Filters reset when you reopen `/links`.
   Output omitted by truncation or stored only in a spill file is not searched. Open the selection
   in the default browser via
   `open` (macOS), `xdg-open` (Linux), or the shell association (Windows). Useful
@@ -86,8 +91,10 @@ candidate's size so that cost is visible before you pick.
   [Where the fixed prompt goes](context.md#where-the-fixed-prompt-goes). Opens a popup in the
   interactive editor; prints inline when there is no editor.
 - `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
-- `/jobs [list|stop ID|stop all|watch ID|unwatch]`: shell commands still running, how to stop
-  them, and pinning one's output tail into the command preview. Jobs outlive the turn that
+- `/jobs [stop ID|stop all|watch ID|unwatch]`: bare `/jobs` opens a popup listing this
+  session's shell jobs, running first, beside the selected job's command and live output log.
+  **W** pins or unpins its output tail in the command preview, **Ctrl+K** stops it, and
+  Enter/Esc closes. The subcommands do the same without the popup. Jobs outlive the turn that
   started them — see [Shell jobs](tools.md#shell-jobs).
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
 - `/autocompact on|off`: toggle automatic LLM compaction (saved user preference; default on).
@@ -99,6 +106,14 @@ candidate's size so that cost is visible before you pick.
 - `/btw QUESTION`: [ask a side question](side-questions.md) against the context the model is
   working with right now, without interrupting or queueing it. The answer opens in a popup
   when it is ready (`btw_auto_open`); a bare `/btw` opens the answers at any time.
+  `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks on other models instead, one
+  side question per model ([choosing the model](side-questions.md#choosing-the-model)).
+  A `+EFFORT` suffix (`$openai:gpt-5+high`), or a bare `+EFFORT` word for the
+  conversation's model, picks that question's reasoning effort from the `/effort` levels.
+- `/workers`: follow delegated workers in a popup, live and read-only: each worker's
+  assignment, plan, prose and tool calls, which the transcript only summarizes under its
+  delegate row. Works while the turn runs. `T` shows or hides reasoning. Workers are kept in
+  memory for the session, so a resumed session starts with none.
 - `/skill:NAME [text]`: run a discovered skill; see
   [Skills as slash commands](workspace.md#skills-as-slash-commands) for naming and configuration.
 - `/quit` (alias `/exit`): exit.
@@ -126,18 +141,20 @@ widget without stopping work or clearing task/tool history. The current prompt
 and queue remain visible. Visibility is saved across launches (default: on);
 use `pcode config set show_tasks off` to set the default from the shell.
 
-Delegated sub-agents are listed in the widget like tasks. A finished delegate
-stays with a ✓ (or `!` if it failed), along with its own task list, until the
-next turn starts.
+Delegated sub-agents are listed in the widget beneath your active task. A
+finished delegate stays, reading `Done` (or `Failed`), along with its own task
+list, until you move to another task or the next turn starts.
 
 `/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
 as soon as the model finishes a turn, keeping the idle prompt compact; it
 returns on the next turn, and Ctrl+O brings it back immediately. Default: off.
 
-`/attach-tasks on` (or `pcode config set attach_tasks on`) draws the widget as
-the top of the editor box instead of a separate box above it: its heading
-becomes the editor's top border and a divider separates the tasks from your
-draft. Queued prompts then sit above the combined box. Default: off.
+The widget sits at the top of the editor box by default (`attach_tasks=on`):
+its heading becomes the editor's top border and a divider separates the tasks
+from your draft. Queued prompts sit above the combined box. Use
+`/config set attach_tasks off` to draw it in a separate box above the editor,
+or `/config set attach_tasks on` to attach it again. Both apply immediately
+and save the preference; `pcode config set attach_tasks off` sets it from the shell.
 Ctrl+O replaces the editor’s insert-newline binding; Ctrl+J still inserts a newline.
 
 `pcode config set tasks_max_height 0.5` caps the widget and the editor box
@@ -235,35 +252,38 @@ next row whole, instead of being cut in half. The buffer text is unchanged — t
 padding is display only, so editing positions, selection, and what gets sent are
 all unaffected. A single word wider than the pane still has to be split.
 
-Tasks and recent tool activity share one compact, headerless widget above the
-editor. Task rows show status icons and keep the active item visible. Up to five
-recent tool calls appear as indented subitems immediately below the active task;
-this rolling view follows the currently active item, rather than recording
-historical task ownership. When there is no active task (including no plan),
-tools appear as unparented rows in the same widget instead of beneath a completed
-or pending task. There is no separate Tools panel or Tasks heading.
+Tasks and concurrent tool activity share one compact widget above the editor.
+Task rows show status icons and keep the active item visible. Background tool
+calls appear beneath the active task with tree guides (`├──`, `└──`, `│`) that
+make parent/child relationships clear. This view follows the currently active
+item, rather than recording historical task ownership. The newest running call
+appears in the status row above the widget instead of being repeated inside it.
+When there is no active task (including no plan), background tools appear as
+unparented rows rather than beneath a completed or pending task.
 
 A running `delegate_task` keeps its own row, and a sub-agent that plans shows up
 to three of its tasks indented beneath it, centred on its active task, with its
 current tool calls nested under that task the same way. The sub-agent's plan is
 separate from yours: it is never saved and never merged into your plan. A
-finished delegate stays listed with its plan until the next turn starts. The
-built-in worker always plans this way; an extension's delegate opts in by giving
+finished delegate stays listed with its plan until your active task changes or
+the next turn starts. The built-in worker always plans this way; an extension's delegate opts in by giving
 its agent `IdentifiedPlanning()` from `pcode.planning` (see "Sub-agents" in
 `src/pcode/extension_guide.md`).
 
-A delegate's row is marked `✦` and reads agent, elapsed time, phase, then its
-assignment. While it runs, the phase is `Waiting for model`, `Thinking`,
+A delegate's row starts with `✦` instead of a status icon, and has its own colour
+while it runs, so it never reads as one of your tasks. It reads agent, elapsed
+time, phase, then the purpose the model gave `delegate_task` (or, without one,
+the opening of its assignment). While it runs, the phase is `Waiting for model`, `Thinking`,
 `Working` (one of its tools is running), or `Responding` (writing its answer);
 once it settles, the phase becomes `Done` or `Failed`.
 
 ```text
 * Fix the flaky login test
-    ⟳ ✦ Worker · 12.4s · Working · Investigate the retry path
-        ✓ Read the retry code
-        * Reproduce the failure
-            ⟳ Run · 1.2s · pytest -q tests/test_login.py
-        ○ Report back
+└── ⟳ ✦ Worker · 12.4s · Working · Investigate the retry path
+    ├── ✓ Read the retry code
+    ├── * Reproduce the failure
+    │   └── ⟳ Run · 1.2s · pytest -q tests/test_login.py
+    └── ○ Report back
 ```
 
 The shared height budget shrinks in small panes, preserving the active task and
@@ -389,6 +409,11 @@ acting on whichever pane has focus:
 Ctrl+D never closes a popup; it always half-pages. A list with a search line
 keeps these keys working while you type, so the query stays where it is.
 
+Popups with a search line (`/tools`, `/resume`, `/diffs`, `/links`) open with
+the cursor in it, so you can type to filter straight away. Their one-letter
+shortcuts (such as `t` for the tool filter in `/tools`) act only once Tab or
+Enter has moved focus out of the search line.
+
 Selected rows and scrollbars follow the active theme and syntax colors, like
 completion menus. Popup bodies keep the terminal's default background. With
 terminal syntax colors, selections use reverse video in the terminal's accent
@@ -408,13 +433,38 @@ Terminals that support alternate scroll mode still turn the wheel into ↑/↓
 then, moving the selection or the pane a line at a time. The setting is read as each popup opens, so no restart
 is needed.
 
-## Edit diff browser
+## Diff browser
 
-`/diffs` opens a full-screen popup showing this conversation's completed file
-edits, using the same diff colors as scrollback. The diff fills most of the
-screen; a small file selector sits at the bottom. Keys are listed in the header:
+`/diffs` opens a full-screen popup showing one net git diff per file, however
+many times the file was edited, using the same diff colors as scrollback. The
+first line says what is being compared:
 
-- Up/Down in the file list selects a file, newest change first.
+- **In a linked worktree** (the default with `worktree on`): the whole branch
+  against its merge-base with the mainline branch, including uncommitted and
+  untracked files. That is what a merge would bring in, whichever tool made the
+  change (file tools, the shell, a formatter, a worker). Merging mainline into
+  the branch moves the merge-base, so mainline's own changes never show up here.
+- **In any other checkout**: uncommitted changes against `HEAD`, limited to the
+  files this session's file tools edited, since anything else dirty may be
+  yours. Those files show all of their changes, including ones made before the
+  session or by hand. Files changed only through the shell are not listed.
+- **Outside git**, or when git cannot produce the diff (no commits yet, a
+  detached mainline): the individual tool edits, newest first, with the reason
+  in the title.
+
+Untracked files are included without touching your staging area: the working
+tree is recorded into a throwaway copy of the index, which is deleted
+afterwards. Untracked files that look sensitive (`.env`, keys, credentials) are
+listed but never read, and tracked ones show only their line counts. Secrets in
+other diffs are redacted as in scrollback. A file's diff is clipped at 2,000
+lines, and one over 1 MB shows only its counts.
+
+The diff fills most of the screen; a small file selector sits at the bottom.
+Keys are listed in the header:
+
+- The browser opens in the search line, searching paths (see `/` below). Enter
+  moves to the file list.
+- Up/Down in the file list selects a file.
 - Tab/Shift+Tab switch between the file list and the diff. The
   [popup keys](#popup-keys) act on whichever has focus; Ctrl+Home/Ctrl+End jump
   to the first or last line of the diff.
@@ -428,10 +478,9 @@ screen; a small file selector sits at the bottom. Keys are listed in the header:
 - `n`/`N` in either pane jump to the next/previous matching diff line.
 - Escape or Ctrl+C closes the popup and restores the editor draft.
 
-Saved sessions read their changes back from the journal on the active branch, so
-resumed and branched conversations show the diffs that belong to them. Redaction
-and size limits are the same as the scrollback blocks; nothing is re-read from
-disk and no edit is re-applied.
+The tool-edit fallback reads saved sessions back from the journal on the active
+branch, so resumed and branched conversations show the edits that belong to
+them; nothing is re-read from disk and no edit is re-applied.
 
 ## Tool-call inspector
 
@@ -440,8 +489,9 @@ The inspector shows a snapshot of the calls available when opened; reopen it to
 see newer results. The model keeps running while the inspector is open, and
 terminal output is buffered until it closes. Inspection never reruns a tool.
 
-- Calls are newest first. Use arrows to select and Tab/Shift+Tab to move between
-  the call list, detail pane, and search field.
+- Calls are newest first. The inspector opens in the search field, so typing
+  filters straight away while arrows move the selection; Enter moves to the call
+  list. Tab/Shift+Tab move between the search field, call list, and detail pane.
 - In the call list or details, **c** copies the selected call's command (its whole
   arguments payload when it has no command) and **o** copies the returned output.
   Copying uses `pbcopy`/`wl-copy`/`xclip` when one is installed and OSC 52

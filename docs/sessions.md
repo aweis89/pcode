@@ -23,13 +23,15 @@ the terminal's screen and scrollback, just like `/redraw`. See
 A different explicit `-m` is rejected on resume, as is a `-C` in another
 repository; `-C` pointing at another worktree of the same repository is fine and
 the session goes back to its own directory. Only one process may open
-a session for writing. `/resume` opens a full-screen browser of saved conversations
+a session for writing; continuing one that is already open
+[continues a copy](#continuing-a-session-that-is-open-elsewhere). `/resume` opens a full-screen browser of saved conversations
 in the current repository, including its linked worktrees (newest first, labeled
 by their first prompt), or the exact workspace outside Git, with every
-prompt and a truncated, rendered response for the selected session alongside. `/`
-searches prompts across sessions (space-separated words are all required) and ↑/↓
-move the selection while you type (Ctrl+U/Ctrl+D by half a page); `r` includes
-responses, `w` includes every workspace. Tab focuses the content pane, where arrows
+prompt and a truncated, rendered response for the selected session alongside. It
+opens in the search line: typing searches prompts across sessions (space-separated
+words are all required) and ↑/↓ move the selection while you type (Ctrl+U/Ctrl+D by
+half a page). Tab moves to the session list, where `/` returns to the search, `r`
+includes responses, and `w` includes every workspace. Tab again focuses the content pane, where arrows
 scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page. Enter resumes the selected
 session in place, Esc cancels. `d` (or Delete) in the session list, pressed twice,
 permanently removes the selected session's directory; the active session and one
@@ -39,6 +41,24 @@ that worktree: file tools, the shell, extensions, and skill commands are rebuilt
 there, and the worktree being left is tidied as on exit (an untouched `pcode-`
 worktree is removed; unmerged work is kept with a note). Sessions from another
 repository are refused.
+
+### Continuing a session that is open elsewhere
+
+`--continue` or `/resume` on a session that another pcode process has open,
+even one in the middle of a turn, continues a copy of it instead of refusing.
+The copy is a new session with its own ID, and the transcript opens with a note
+naming the original. The original is only read, never written, and keeps
+running undisturbed.
+
+A turn still running in the original is copied the way a crash would leave it:
+the copy picks up from that turn's last settled step (or from the turn before,
+if it has not settled one yet). `/resend` carries the turn on from there, a new
+message starts from the same point, and `/tree` can go back to the last
+finished turn instead.
+
+The copy works in the same directory as the original, so if both edit files
+their changes land in one checkout. Quitting either one does not remove or
+merge a shared `pcode-` worktree while the other is still open in it.
 
 ### When the workspace was deleted
 

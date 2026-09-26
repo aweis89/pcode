@@ -1,7 +1,8 @@
 """Defaults commands, shared by the CLI and interactive terminal.
 
 Editing defaults deliberately does not mutate a running conversation. In-session
-shortcuts remain the way to change both the active setting and its saved default.
+shortcuts change both the active setting and its saved default; the terminal also
+applies layout-only settings (`attach_tasks` and `tasks_max_height`) immediately.
 
 `config project ...` edits the workspace's `.pcode/preferences.json`, which is
 layered over the user file at launch (except for `USER_ONLY` keys).

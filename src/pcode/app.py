@@ -22,7 +22,16 @@ from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.text import Text
 
-from pcode.aside import Asides
+from pcode.aside import (
+    EFFORT_MARK,
+    MODEL_MARK,
+    Asides,
+    SideTarget,
+    effort_fragment,
+    model_fragment,
+    model_labels,
+    parse_models,
+)
 from pcode.cli import ask, restore_stdin
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
@@ -30,6 +39,7 @@ from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_argument_descriptions, config_arguments, configure
 from pcode.jobs import OUTPUT_TAIL_BYTES, format_duration
 from pcode.preferences import (
+    EFFORTS,
     SETTINGS,
     SYNTAX_THEMES,
     apply_effort,
@@ -44,6 +54,7 @@ from pcode.preferences import (
 from pcode.runtime import (
     CacheBust,
     ChildPlan,
+    ChildText,
     CommandOutput,
     EditCompleted,
     JobFinished,
@@ -96,6 +107,10 @@ def location_label(workspace: Path, branch: str) -> str:
 
 BRANCH_POLL_SECONDS = 30
 """Safety net for a checkout made outside this session; turns refresh it directly."""
+
+
+class _PopupSuperseded(Exception):
+    """Another popup opened after this command was queued."""
 
 
 def meridian_thinking_note(base: str | None, passthrough: bool | None) -> str:
@@ -156,7 +171,8 @@ class PreviewApp:
         self.activity = Activity(
             show_tasks=load_preferences().get("show_tasks", "on") == "on",
             autohide_tasks=load_preferences().get("autohide_tasks", "off") == "on",
-            attach_tasks=load_preferences().get("attach_tasks") == "on",
+            attach_tasks=load_preferences().get("attach_tasks", SETTINGS["attach_tasks"].default)
+            == "on",
             tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
             show_thinking=load_preferences().get("show_thinking") == "on",
         )
@@ -168,6 +184,8 @@ class PreviewApp:
             activity=self.activity,
         )
         self.running = True
+        self._popup_generation = 0
+        self._command_popup_generation: int | None = None
         self.inspector_requested: str | None = None
         self.diffs_requested = False
         self.links_requested = False
@@ -182,8 +200,12 @@ class PreviewApp:
         # The live panel spins a row per running question; share the list so
         # it needs no refresh hook of its own.
         self.activity.asides = self.asides.items
-        self.aside_requested: str | None = None
+        self.asides.on_failure = self.record_aside_failure
+        self.aside_requested: tuple[list[SideTarget], str] | None = None
+        self._model_suggestions: tuple[str | None, float, list[str]] | None = None
         self.aside_view_requested = False
+        self.worker_view_requested = False
+        self.jobs_view_requested = False
         # The viewer follows answers that settle while it is open, so auto-open
         # has nothing to do then.
         self.aside_view_open = False
@@ -195,6 +217,8 @@ class PreviewApp:
         self.resend_requested = False
         # A skill command is a prompt in disguise; it leaves the command path too.
         self.skill_requested: str | None = None
+        # The MCP servers that skill declares, enabled before its prompt runs.
+        self.skill_mcp_requested: tuple[str, tuple[str, ...]] | None = None
         self.mcp_enable_requested: str | None = None
         # Servers marked enabled in mcp.json, enabled without a browser after a
         # conversation starts (startup, /new, resume).
@@ -243,7 +267,12 @@ class PreviewApp:
                 ("failed",),
                 group="Inspect",
             ),
-            Command("/diffs", "Browse this conversation's file diffs", self.diffs, group="Inspect"),
+            Command(
+                "/diffs",
+                "Git diff of this worktree's branch, or of files edited this session",
+                self.diffs,
+                group="Inspect",
+            ),
             Command(
                 "/links",
                 "Pick a URL from this conversation and open it in the browser",
@@ -258,9 +287,18 @@ class PreviewApp:
             ),
             Command(
                 "/btw",
-                "Ask a side question beside the running turn; bare opens the answers",
+                "Ask a side question beside the running turn ($MODEL ... picks models, "
+                "+EFFORT the effort); "
+                "bare opens the answers",
                 self.aside,
                 free_arguments=True,
+                argument_completer=self.aside_completions,
+                group="Inspect",
+            ),
+            Command(
+                "/workers",
+                "Follow delegated workers' own output, live and read-only",
+                self.workers,
                 group="Inspect",
             ),
             Command(
@@ -339,7 +377,7 @@ class PreviewApp:
             ),
             Command(
                 "/jobs",
-                "Shell commands still running: list / stop ID / stop all / watch ID / unwatch",
+                "Browse shell jobs and their output; stop ID / stop all / watch ID / unwatch",
                 self.jobs,
                 free_arguments=True,
                 argument_provider=self.jobs_arguments,
@@ -371,13 +409,6 @@ class PreviewApp:
                 "/autohide-tasks",
                 "Hide the Tasks/Tools widget when a turn ends: on / off; bare toggles",
                 self.autohide_tasks,
-                ("on", "off"),
-                group="Display",
-            ),
-            Command(
-                "/attach-tasks",
-                "Draw the Tasks/Tools widget inside the editor box: on / off; bare toggles",
-                self.attach_tasks,
                 ("on", "off"),
                 group="Display",
             ),
@@ -457,6 +488,8 @@ class PreviewApp:
         if not self.model:
             raise ValueError(f"/skill:{skill.name} requires a live model session.")
         self.skill_requested = skill_prompt(skill, argument)
+        if skill.mcp_servers:
+            self.skill_mcp_requested = (skill.name, skill.mcp_servers)
 
     def register_extension_commands(self) -> None:
         """Expose extension commands, replacing the previous load's; built-ins win."""
@@ -793,7 +826,6 @@ class PreviewApp:
             (job for job in registry.jobs.values() if job.running), key=lambda job: job.started_at
         )
         return (
-            "list",
             "unwatch",
             "stop all",
             *(f"stop {job.id}" for job in running),
@@ -801,46 +833,54 @@ class PreviewApp:
         )
 
     def jobs(self, argument: str) -> None:
-        """Show, watch, or stop the shell jobs this session started.
+        """Browse, watch, or stop the shell jobs this session started.
 
         Jobs outlive the turn that started them and, deliberately, the session
-        itself, so the only way to know what is still running is to ask.
+        itself, so the only way to know what is still running is to ask. Bare
+        `/jobs` opens the browser; the subcommands act without it.
         """
         registry = getattr(self.runtime, "jobs", None)
         if registry is None:
             raise ValueError("/jobs requires a live model session.")
         registry.refresh()
         action, _, target = argument.partition(" ")
+        # `list` predates the browser; it still opens it rather than failing.
         if not action or action == "list":
-            listing = sorted(
-                registry.jobs.values(), key=lambda job: (not job.running, job.started_at)
-            )
-            for line in listing or ["No jobs have been started."]:
-                self.transcript.note(line if isinstance(line, str) else line.summary())
+            if not registry.jobs:
+                self.transcript.note("No jobs have been started.")
+                return
+            self.jobs_view_requested = True
             return
         if action == "unwatch":
-            self.activity.watched_job = ""
-            self.refresh_jobs()
+            self.watch_job(None)
             return
         if action == "watch":
             job = registry.get(target.strip())
             if job is None:
-                raise ValueError(f"No job {target.strip()!r}. Run /jobs to list them.")
+                raise ValueError(f"No job {target.strip()!r}. Run /jobs to browse them.")
             if not job.running:
                 raise ValueError(f"[{job.id}] has finished; nothing to watch.")
-            self.activity.watched_job = job.id
-            self.refresh_jobs()
+            self.watch_job(job)
             self.transcript.note(f"Watching [{job.id}] {job.label()}; /jobs unwatch hides it.")
             return
         if action != "stop":
-            raise ValueError("/jobs takes list, stop ID, stop all, watch ID, or unwatch.")
+            raise ValueError("/jobs takes stop ID, stop all, watch ID, or unwatch.")
         target = target.strip()
         if target == "all":
-            stopped = registry.stop_all()
+            self.stop_jobs(None)
         elif job := registry.get(target):
-            stopped = registry.stop_all([job])
+            self.stop_jobs([job])
         else:
-            raise ValueError(f"No job {target!r}. Run /jobs to list them.")
+            raise ValueError(f"No job {target!r}. Run /jobs to browse them.")
+
+    def watch_job(self, job) -> None:
+        """Pin a running job's output tail into the preview, or unpin with None."""
+        self.activity.watched_job = job.id if job is not None else ""
+        self.refresh_jobs()
+
+    def stop_jobs(self, jobs) -> None:
+        """Stop these jobs, or every running one for None, and say so in scrollback."""
+        stopped = self.runtime.jobs.stop_all(jobs)
         for job in stopped:
             # Printed here, so the idle watcher does not repeat it.
             job.announced.add("ui")
@@ -849,6 +889,25 @@ class PreviewApp:
             self.transcript.note("Nothing was running.")
         # Now, not at the watcher's next tick: the rows answer this command.
         self.refresh_jobs()
+
+    async def browse_jobs(self, output: TerminalOutput, session) -> None:
+        from pcode.jobs_ui import JobBrowser
+
+        self.jobs_view_requested = False
+        async with self.popup(output, session) as modal_input:
+            browser = JobBrowser(
+                self.runtime.jobs,
+                stop=lambda job: self.stop_jobs([job]),
+                watch=self.watch_job,
+                watched=lambda: self.activity.watched_job,
+                rich_theme=self.transcript.rich_theme,
+                code_theme=self.transcript.code_theme,
+                color_system=self.transcript.console.color_system,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            await browser.run()
 
     def autocompact(self, argument: str) -> None:
         if not self.model or not hasattr(self.runtime, "auto_compact"):
@@ -870,12 +929,26 @@ class PreviewApp:
         self.transcript.flash(f"Automatic compaction: {state}. Usage: /autocompact on|off")
 
     def config(self, argument: str) -> None:
+        args = shlex.split(argument)
         try:
-            result = configure(shlex.split(argument))
+            result = configure(args)
         except OSError as error:
             raise ValueError(f"Could not access global defaults: {error}") from None
-        # Layout-only, so it can apply at once rather than on the next launch.
-        self.activity.tasks_max_height = parse_height(load_preferences().get("tasks_max_height"))
+        # Layout-only settings apply at once rather than on the next launch.
+        preferences = load_preferences()
+        self.activity.attach_tasks = (
+            preferences.get("attach_tasks", SETTINGS["attach_tasks"].default) == "on"
+        )
+        self.activity.tasks_max_height = parse_height(preferences.get("tasks_max_height"))
+        if self.transcript.output is not None:
+            self.transcript.output.app.invalidate()
+        edits = args[1:] if args[:1] == ["project"] else args
+        if (
+            len(edits) >= 2
+            and edits[0] in ("set", "unset")
+            and edits[1] in ("attach_tasks", "tasks_max_height")
+        ):
+            result = result.replace("Applies on next launch.", "Layout settings apply immediately.")
         self.transcript.note(result)
 
     def set_show_tasks(self, shown: bool) -> None:
@@ -909,17 +982,6 @@ class PreviewApp:
         state = "on" if enabled else "off"
         self.transcript.flash(
             f"Auto-hide tasks after each turn: {state}. Usage: /autohide-tasks [on|off]"
-        )
-
-    def attach_tasks(self, argument: str) -> None:
-        enabled = self.toggle_argument("/attach-tasks", argument, self.activity.attach_tasks)
-        self.activity.attach_tasks = enabled
-        self.persist_defaults(attach_tasks="on" if enabled else "off")
-        if self.transcript.output is not None:
-            self.transcript.output.app.invalidate()
-        state = "on" if enabled else "off"
-        self.transcript.flash(
-            f"Tasks inside the editor box: {state}. Usage: /attach-tasks [on|off]"
         )
 
     def show_edits(self, argument: str) -> None:
@@ -1097,7 +1159,12 @@ class PreviewApp:
 
     @asynccontextmanager
     async def popup(self, output: TerminalOutput, session):
-        """Give a modal exclusive terminal ownership, then restore the transcript."""
+        """Give a modal exclusive terminal ownership, superseding pending popups."""
+        if (
+            self._command_popup_generation is not None
+            and self._command_popup_generation != self._popup_generation
+        ):
+            raise _PopupSuperseded
         await output.flush(drain=True)
         try:
             async with output.lock:
@@ -1109,6 +1176,11 @@ class PreviewApp:
                         create_input(stdin=stdin) if stdin is not None else session.app.input
                     )
                     try:
+                        # Include requests queued during preparation and terminal
+                        # handoff, not just those waiting when this command began.
+                        self._popup_generation += 1
+                        if self._command_popup_generation is not None:
+                            self._command_popup_generation = self._popup_generation
                         yield modal_input
                     finally:
                         if modal_input is not session.app.input:
@@ -1395,14 +1467,31 @@ class PreviewApp:
             if record.get("kind") == "EditCompleted"
         ]
 
+    def diff_view(self):
+        """The git view of this session's work, or its tool edits where git has none."""
+        from pcode.edit_ui import EMPTY
+        from pcode.git_diff import DiffView, GitDiffError, session_diff
+
+        edits = self.recorded_edits()
+        reason = ""
+        try:
+            view = session_diff(self.workspace, [edit.path for edit in edits])
+        except GitDiffError as error:
+            view, reason = None, f" · git diff unavailable: {plain(str(error), limit=160)}"
+        if view is not None:
+            return view
+        return DiffView(f"Tool edits, newest first{reason}", list(reversed(edits)), EMPTY)
+
     async def browse_diffs(self, output: TerminalOutput, session) -> None:
         from pcode.edit_ui import EditBrowser
 
         self.diffs_requested = False
-        changes = await asyncio.to_thread(self.recorded_edits)
+        view = await asyncio.to_thread(self.diff_view)
         async with self.popup(output, session) as modal_input:
             browser = EditBrowser(
-                changes,
+                view.changes,
+                title=view.title,
+                empty=view.empty,
                 code_theme=self.transcript.code_theme,
                 input=modal_input,
                 output=session.app.output,
@@ -1829,6 +1918,16 @@ class PreviewApp:
             # not create a session or silently persist a separate diagnostics file.
             self.transcript.note(error_report(error))
 
+    async def enable_skill_mcp(self, skill: str, names: list[str]) -> None:
+        """Enable a skill's servers in order; one that fails stays off, the rest proceed."""
+        for name in names:
+            try:
+                await self.runtime.mcp.enable(name)
+            except Exception as error:
+                self.report_mcp_error(name, error)
+            else:
+                self.transcript.note(f"MCP '{name}' enabled for the {skill} skill.")
+
     async def enable_mcp_defaults(self, names: list[str]) -> None:
         """Enable `"enabled": true` servers, using saved sign-ins but never a browser."""
         from pcode.mcp_oauth import SignInRequired
@@ -1878,7 +1977,7 @@ class PreviewApp:
         if current is not None and current.info.id == identity:
             self.transcript.note("This session is already active.")
             return
-        saved = SavedSession.open(identity, self.session_dir)
+        saved = SavedSession.open(identity, self.session_dir, fork_if_open=True)
         try:
             target = self._resume_workspace(saved.info)
             # A session from another worktree gets that worktree's extensions
@@ -1895,7 +1994,7 @@ class PreviewApp:
             await runtime.restore()
             await runtime.refresh_context()
         except BaseException:
-            saved.close()
+            saved.abandon()
             raise
         # Keep the current conversation intact until recovery has succeeded.
         if target != self.workspace:
@@ -1967,8 +2066,11 @@ class PreviewApp:
         self.tree_requested = True
 
     def aside(self, argument: str) -> None:
-        """`/btw QUESTION` asks beside the turn; bare `/btw` reads the answers."""
-        question = argument.strip()
+        """`/btw [$MODEL[+EFFORT] | +EFFORT ...] QUESTION` asks beside the turn.
+
+        Bare `/btw` reads the answers.
+        """
+        models, question = parse_models(argument)
         if not question:
             if not self.asides.items:
                 raise ValueError(
@@ -1981,21 +2083,140 @@ class PreviewApp:
             raise ValueError("/btw needs a model; this is a local UI preview.")
         if self._startup_pending or self._startup_error is not None:
             raise ValueError("/btw is unavailable until the agent has started.")
-        self.aside_requested = question
+        # Refused the way /effort refuses it, before anything starts, rather
+        # than asking at an effort the provider would silently ignore.
+        for target in models:
+            name = target.model or self.model
+            if target.effort and effort_setting(name) is None:
+                raise ValueError(
+                    f"Effort control requires an OpenAI/Codex, Anthropic, or Meridian model; "
+                    f"{name} is not one."
+                )
+        self.aside_requested = (models, question)
 
-    def start_aside(self, question: str) -> None:
-        """Run a side question in the background, on the context available now."""
+    async def start_aside(self, question: str, models: list[SideTarget] | None = None) -> None:
+        """Run a side question in the background, on the context available now.
 
-        async def work(aside) -> None:
-            def report(answer: str, activity: str) -> None:
-                self.asides.update(aside, answer=answer, activity=activity)
+        With `models`, one side question starts per target. The conversation's
+        own model takes the default path, which shares its prompt cache; every
+        other one is resolved first, so a bad name fails the command before
+        anything starts. An effort on the conversation's own model stays on
+        that path, with the effort applied to its settings for that question.
+        """
+        from pcode.agent import side_model, with_effort
 
-            await self.runtime.aside(question, report=report)
+        models = models or [SideTarget()]
+        others = [target for target in models if target.model not in ("", self.model)]
+        resolved = {}
+        if others:
+            chosen = await asyncio.to_thread(
+                lambda: [side_model(target.model, target.effort) for target in others]
+            )
+            resolved = dict(zip(others, chosen))
+        labels = model_labels(models)
 
-        self.asides.start(question, work)
-        self.transcript.note(
-            "Asking beside the conversation, read-only: the turn keeps running and "
-            "this question does not join it. /btw opens the answer."
+        def options_for(target: SideTarget) -> dict:
+            if target in resolved:
+                return {"model": resolved[target]}
+            if not target.effort:
+                return {}
+            # Taken now, like the context: a later /effort must not reach it.
+            agent = self.runtime.agent
+            settings = with_effort(self.model, agent.model, agent.model_settings, target.effort)
+            return {"settings": settings}
+
+        def work_on(options: dict):
+            async def work(aside) -> None:
+                def report(answer: str, activity: str) -> None:
+                    self.asides.update(aside, answer=answer, activity=activity)
+
+                await self.runtime.aside(question, report=report, **options)
+
+            return work
+
+        for target in models:
+            self.asides.start(
+                question,
+                work_on(options_for(target)),
+                model=target.model,
+                label=labels[target],
+                effort=target.effort,
+            )
+        if others:
+            names = ", ".join(dict.fromkeys(target.model for target in others))
+            self.transcript.note(
+                f"Asking beside the conversation on {names}: the turn keeps running and "
+                "this question does not join it. Another model starts without the "
+                "conversation's prompt cache, so it pays for the whole prompt. "
+                "/btw opens the answers."
+            )
+        else:
+            self.transcript.note(
+                "Asking beside the conversation: the turn keeps running and "
+                "this question does not join it. /btw opens the answer."
+            )
+
+    def aside_completions(self, argument: str):
+        """Complete a `$MODEL` word in `/btw` arguments from the /model catalog.
+
+        After a `+`, bare or ending a `$MODEL` word, the /effort levels complete.
+        """
+        from prompt_toolkit.completion import Completion
+
+        effort = effort_fragment(argument)
+        if effort is not None:
+            for level in EFFORTS:
+                if level.startswith(effort.casefold()):
+                    yield Completion(
+                        level, start_position=-len(effort), display=EFFORT_MARK + level
+                    )
+            return
+        fragment = model_fragment(argument)
+        if fragment is None:
+            return
+        needle = fragment.casefold()
+        for model in self.model_suggestions():
+            if needle in model.casefold():
+                yield Completion(
+                    MODEL_MARK + model,
+                    start_position=-(len(fragment) + len(MODEL_MARK)),
+                    display=model,
+                )
+
+    def model_suggestions(self) -> list[str]:
+        """The /model picker's catalog, kept briefly so typing does not re-scan it."""
+        from time import monotonic
+
+        from pcode.models import active_providers, model_catalog
+
+        cached = self._model_suggestions
+        if cached is None or cached[0] != self.model or monotonic() - cached[1] > 30:
+            models = model_catalog(active_providers(self.model), self.model)
+            cached = self._model_suggestions = (self.model, monotonic(), models)
+        return cached[2]
+
+    def record_aside_failure(self, aside, error: BaseException) -> None:
+        """Keep a failed side question's frames beside the session's turn failures.
+
+        The viewer shows only the error summary, and nothing about a side
+        question is journaled, so without this its traceback is simply lost.
+        """
+        from pcode.diagnostics import provider_context
+
+        saved = getattr(self.runtime, "session", None)
+        if saved is None:
+            return
+        agent = getattr(self.runtime, "agent", None)
+        saved.record_error(
+            error,
+            run_id=f"aside {aside.id}",
+            provider_context=(
+                provider_context(aside.model or agent.model) if agent is not None else None
+            ),
+            detail=f"Side question ({aside.status}"
+            + (f" on {aside.model}" if aside.model else "")
+            + (f" at {aside.effort} effort" if aside.effort else "")
+            + f"): {aside.question}",
         )
 
     def auto_open_asides(self) -> bool:
@@ -2026,6 +2247,29 @@ class PreviewApp:
                 await browser.run()
         finally:
             self.aside_view_open = False
+
+    def workers(self, argument: str) -> None:
+        if not self.activity.workers.items:
+            self.transcript.note("No workers yet. They appear once the model delegates a task.")
+            return
+        self.worker_view_requested = True
+
+    async def read_workers(self, output: TerminalOutput, session) -> None:
+        from pcode.worker_ui import WorkerBrowser
+
+        self.worker_view_requested = False
+        async with self.popup(output, session) as modal_input:
+            browser = WorkerBrowser(
+                self.activity.workers,
+                rich_theme=self.transcript.rich_theme,
+                code_theme=self.transcript.code_theme,
+                color_system=self.transcript.console.color_system,
+                show_thinking=self.activity.show_thinking,
+                input=modal_input,
+                output=session.app.output,
+                style=session.app.style,
+            )
+            await browser.run()
 
     async def navigate_tree(self, identity: str | None, *, edit: bool = False) -> str:
         if self.activity.busy or self.activity.queued:
@@ -2137,6 +2381,8 @@ class PreviewApp:
         self.activity.tools.clear()
         with self.transcript.restore():
             self.transcript.retained_note(f"Resumed {saved.info.id}")
+            if saved.forked_from:
+                self.transcript.retained_note(forked_note(saved))
             for record in saved.transcript_records():
                 kind = record["kind"]
                 if kind in ("turn_started", "steering"):
@@ -2343,6 +2589,8 @@ class PreviewApp:
 
         if hasattr(self.runtime, "retry_notice"):
             self.runtime.retry_notice = retry_notice
+        if hasattr(self.runtime, "warning_notice"):
+            self.runtime.warning_notice = self.transcript.warning
         failure = None
         cancelled = False
         try:
@@ -2369,6 +2617,7 @@ class PreviewApp:
             self.activity.plan_preview = None
             output.end_turn()
             self.activity.tools.end_turn()
+            self.activity.workers.end_turn()
             self.activity.status = ""
         # Abandoning a wait is the exception, not the rule: restore the safe
         # default so the next Ctrl+C-free cancellation cannot kill a command.
@@ -2676,6 +2925,7 @@ class PreviewApp:
                         queue_generation,
                         text,
                         not self.activity.busy and not self.activity.queued_prompts,
+                        self._popup_generation,
                     )
                 )
                 command_idle.clear()
@@ -2768,6 +3018,45 @@ class PreviewApp:
                 cancelled=f"MCP '{name}' sign-in cancelled; server remains off.",
             )
 
+        def start_skill_mcp(skill, names):
+            """Enable what `skill` declares before its prompt, which waits on MCP work."""
+            from pcode.mcp import config_path, configured_servers
+
+            state = getattr(self.runtime, "mcp", None)
+            if state is None:
+                return
+            try:
+                configured = configured_servers()
+            except ValueError as error:
+                self.transcript.error(str(error))
+                return
+            if unknown := [name for name in names if name not in configured]:
+                self.transcript.warning(
+                    f"The {skill} skill asks for MCP {', '.join(unknown)}, "
+                    f"not configured in {config_path()}."
+                )
+            wanted = [name for name in names if name in configured and name not in state.enabled]
+            if not wanted:
+                return
+            # Same rule as /mcp enable: never swap toolsets under a running turn.
+            if mcp_task is not None or (live_task is not None and not live_task.done()):
+                listed = " ".join(f"`/mcp enable {name}`" for name in wanted)
+                self.transcript.warning(
+                    f"The {skill} skill asks for MCP {', '.join(wanted)}, which cannot be "
+                    f"enabled while working. Run {listed} after this turn."
+                )
+                return
+            self.transcript.note(
+                f"Enabling MCP {', '.join(wanted)} for the {skill} skill. "
+                "OAuth sign-in happens now if needed; Ctrl+C cancels."
+            )
+            start_mcp_task(
+                ", ".join(wanted),
+                self.enable_skill_mcp(skill, wanted),
+                status=f"Enabling MCP for the {skill} skill — complete sign-in if prompted…",
+                cancelled=f"MCP sign-in for the {skill} skill cancelled; its prompt was not sent.",
+            )
+
         def start_mcp_defaults():
             from pcode.mcp import default_servers
 
@@ -2843,7 +3132,8 @@ class PreviewApp:
         async def consume_commands():
             nonlocal pending_mcp, pending_model_command
             while self.running:
-                generation, text, submitted_idle = await commands.get()
+                generation, text, submitted_idle, popup_generation = await commands.get()
+                self._command_popup_generation = popup_generation
                 try:
                     if text.split()[0] not in {
                         "/quit",
@@ -2864,7 +3154,9 @@ class PreviewApp:
                         if not ready.is_set():
                             # Keep consuming frontend-only commands while backend
                             # commands wait, preserving their order for readiness.
-                            startup_commands.append((generation, text, submitted_idle))
+                            startup_commands.append(
+                                (generation, text, submitted_idle, popup_generation)
+                            )
                             continue
                         if generation != queue_generation:
                             continue
@@ -2942,6 +3234,12 @@ class PreviewApp:
                             self.activity.start_prompt(previous)
                             self.activity.busy = True
                         if self.skill_requested is not None:
+                            if self.skill_mcp_requested is not None:
+                                skill, names = self.skill_mcp_requested
+                                self.skill_mcp_requested = None
+                                # Started before the prompt is queued: the
+                                # consumer then waits for it on mcp_idle.
+                                start_skill_mcp(skill, names)
                             prompt = self.skill_requested
                             self.skill_requested = None
                             # Queue it like a typed message so send mode, steering,
@@ -2983,10 +3281,14 @@ class PreviewApp:
                         if self.logout_requested:
                             await self.perform_logout()
                         if self.aside_requested is not None:
-                            question, self.aside_requested = self.aside_requested, None
-                            self.start_aside(question)
+                            (models, question), self.aside_requested = self.aside_requested, None
+                            await self.start_aside(question, models)
                         if self.aside_view_requested:
                             await self.read_asides(output, session)
+                        if self.worker_view_requested:
+                            await self.read_workers(output, session)
+                        if self.jobs_view_requested:
+                            await self.browse_jobs(output, session)
                         if self.tree_requested:
                             await self.choose_tree(output, session)
                         if self.session_requested:
@@ -2999,9 +3301,12 @@ class PreviewApp:
                             await self.browse_diffs(output, session)
                         if self.links_requested:
                             await self.choose_link(output, session)
+                except _PopupSuperseded:
+                    pass
                 except Exception as error:
                     self.command_failed(text.split(maxsplit=1)[0], error)
                 finally:
+                    self._command_popup_generation = None
                     if pending_mcp or pending_model_command:
                         self.activity.busy = True
                     if commands.empty() and not startup_commands:
@@ -3173,15 +3478,20 @@ class PreviewApp:
                 # popup or command is already using it instead of racing it.
                 opening = self.auto_open_asides()
                 if opening:
-                    commands.put_nowait((queue_generation, "/btw", False))
+                    commands.put_nowait((queue_generation, "/btw", False, self._popup_generation))
+                on = f"{aside.label}: " if aside.label else ""
                 self.transcript.note(
-                    f"Side answer ready ({plain(aside.question, 60)}). "
+                    f"Side answer ready ({on}{plain(aside.question, 60)}). "
                     + ("Opening it." if opening else "/btw opens it.")
                 )
             elif aside.status == "cancelled":
-                self.transcript.note("Side question stopped; nothing was changed.")
+                self.transcript.note("Side question stopped.")
             else:
-                self.transcript.warning(f"Side question {aside.status}. {aside.error}".strip())
+                on = f" on {aside.label}" if aside.label else ""
+                self.transcript.warning(f"Side question{on} {aside.status}. {aside.error}".strip())
+                saved = getattr(self.runtime, "session", None)
+                if saved is not None and (saved.directory / "errors.log").exists():
+                    self.transcript.note(f"Diagnostics: {saved.directory / 'errors.log'}")
             session.app.invalidate()
 
         # The footer counts side questions, and an open viewer follows the answer
@@ -3277,9 +3587,13 @@ class PreviewApp:
         except Exception as error:
             self.transcript.error(error_message(error), title="Agent startup failed")
             return False
+        if self._saved_session is not None and self._saved_session.forked_from:
+            self.transcript.note(forked_note(self._saved_session))
         self.runtime.compaction_notice = self.transcript.note
         if hasattr(self.runtime, "retry_notice"):
             self.runtime.retry_notice = self.transcript.note
+        if hasattr(self.runtime, "warning_notice"):
+            self.runtime.warning_notice = self.transcript.warning
         # Text streamed since the last settled message, so a turn that ends
         # mid-block still prints what arrived.
         block = ""
@@ -3302,7 +3616,8 @@ class PreviewApp:
                     elif isinstance(event, Thinking):
                         self.transcript.events((event,))
                     elif isinstance(
-                        event, (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated, ChildPlan)
+                        event,
+                        (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated, ChildPlan, ChildText),
                     ):
                         continue
                     else:
@@ -3427,7 +3742,10 @@ def main() -> None:
         nargs="?",
         const="latest",
         metavar="SESSION",
-        help="Continue a session ID/prefix; omit SESSION for this directory's latest",
+        help=(
+            "Continue a session ID/prefix, or a copy of it if it is open elsewhere; "
+            "omit SESSION for this directory's latest"
+        ),
     )
     parser.add_argument(
         "--session-dir", type=Path, help="Override the private session storage directory"
@@ -3607,6 +3925,17 @@ def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
         untouched = ours and worktree.is_untouched(linked)
     except worktree.WorktreeError:
         return False
+    if session is not None:
+        # A copied session shares its original's worktree; never pull it out
+        # from under whichever of the two is still working there. Only asked
+        # with a session, whose module is then already loaded: a bare exit
+        # must not import the agent stack.
+        from pcode.sessions import open_in
+
+        others = open_in(linked.path, session.directory.parent, exclude=session.info.id)
+        if others:
+            notify(f"worktree: kept; session {others[0]} is still open in {linked.path}")
+            return False
     resume = f"`pcode -C {linked.path} -c` resumes there"
 
     def repoint():
@@ -3652,6 +3981,15 @@ def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
     except (worktree.WorktreeError, OSError) as error:
         notify(f"worktree: {error}\nworktree: kept; {resume}")
     return False
+
+
+def forked_note(saved) -> str:
+    """Say where a copied session came from, and that the two share a workspace."""
+    note = f"Continuing a copy of session {saved.forked_from}, which is open in another process."
+    active = saved.tree.nodes.get(saved.tree.active) if saved.tree.active else None
+    if active is not None and active.status == "interrupted":
+        note += " Its running turn was copied up to its last safe step; /resend carries it on."
+    return note + f" Both sessions work in {saved.info.workspace}."
 
 
 def _session_scope(info) -> Path:
@@ -3751,22 +4089,29 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         if args.resume:
             from pcode.sessions import SavedSession, SessionError
 
-            saved = SavedSession.open(args.resume, args.session_dir, args.workspace or Path.cwd())
-            if args.model and args.model != saved.info.model:
-                raise SessionError(
-                    "Cannot change models when resuming; start a new session instead."
-                )
-            if args.workspace and str(args.workspace.resolve()) != saved.info.workspace:
-                # Another worktree of the same repository is fine: the session
-                # goes back to its own directory. Another repository is not.
-                from pcode.worktree import repo_scope
-
-                if repo_scope(args.workspace) != _session_scope(saved.info):
+            saved = SavedSession.open(
+                args.resume, args.session_dir, args.workspace or Path.cwd(), fork_if_open=True
+            )
+            try:
+                if args.model and args.model != saved.info.model:
                     raise SessionError(
-                        "Workspace differs from the saved session; refusing cross-repo resume."
+                        "Cannot change models when resuming; start a new session instead."
                     )
+                if args.workspace and str(args.workspace.resolve()) != saved.info.workspace:
+                    # Another worktree of the same repository is fine: the session
+                    # goes back to its own directory. Another repository is not.
+                    from pcode.worktree import repo_scope
+
+                    if repo_scope(args.workspace) != _session_scope(saved.info):
+                        raise SessionError(
+                            "Workspace differs from the saved session; refusing cross-repo resume."
+                        )
+                args.workspace = _resume_workspace(saved.info, args.workspace)
+            except BaseException:
+                saved.abandon()
+                saved = None  # Already closed; the `finally` below must not close it again.
+                raise
             args.model = saved.info.model
-            args.workspace = _resume_workspace(saved.info, args.workspace)
         if not args.resume and not args.model:
             args.model = load_preferences().get("model")
         workspace = args.workspace or Path.cwd()

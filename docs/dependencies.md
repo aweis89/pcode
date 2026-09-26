@@ -159,6 +159,20 @@ with real filesystem tools on both main and worker agents when upgrading.
 
 ### Delegation activity
 
+`WorkspaceSubAgents` in `src/pcode/isolated_delegation.py` subclasses the pinned
+Harness `SubAgents` and `SubAgentToolset`. New isolated workers require both effective
+`worker_isolation=on` (default off) and `worktree=on`, checked at each delegation;
+otherwise auto delegation keeps the shared workspace and job registry. Task recovery
+and lifecycle protections remain available when isolation is disabled. It changes
+the tool schema and constructs a per-call worker for isolated workspaces, but reuses
+`_run_delegation` and `_settle` for model selection, budgets, lifecycle events, and
+usage accounting.
+These are private upstream interfaces: keep the isolated delegation, limits,
+cache, and persistence tests when upgrading. A shared toolset must not mutate its
+agent roster for a child; concurrent calls select independent worker instances.
+Creation/finalization wait on per-parent locks in joined threads, so cancellation
+cannot abandon a record update. Integration remains nonblocking on contention.
+
 `src/pcode/delegation.py` bridges Harness 0.31.0's `SubAgents.event_stream_handler`
 into the parent's event stream. The handler receives a **child** `RunContext`,
 not the parent tool identity; `DelegationReporting.wrap_tool_execute` binds the
@@ -173,8 +187,9 @@ successful tool strings. A max-calls refusal emits no lifecycle events; cancella
 and uncontained errors may omit the end event, so keep turn-end interruption cleanup.
 
 Do not add `DelegationEndEvent.usage` to session totals. `SubAgent.usage_limits`
-isolates a child's *request count* (that is what bounds a runaway child and turns
-exhaustion into a steering message rather than a raised limit), but its tokens
+isolates a child's *request count* (so a long child cannot trip the parent's
+limit, and a delegate with a set cap gets a steering message rather than a
+raised limit), but its tokens
 still arrive in the parent's `result.usage`, so adding them again doubles every
 delegated token. Verified against the installed `_toolset.py` and a delegated run.
 Sub-agents also receive only `shared_capabilities`, never the per-run capabilities
@@ -250,6 +265,15 @@ Keep mocked-provider tests, real loopback success/cancellation tests, deliberate
 port-collision tests, and the full MCP-client startup-failure subprocess test in
 `tests/test_mcp_oauth.py`. Tests must not open the real browser, contact a real
 service, or read real credential stores.
+`mcp` 2.2.0's streamable HTTP client turns every failed response except a 404
+into a bare `MCPError("Server returned an error response")`, dropping the status.
+Streamable HTTP servers therefore get a `StreamableHttpTransport` subclass that
+extends FastMCP's private `_capture_session_id` response hook (registered on
+every client it builds, including the test factories) to record the endpoint's
+last HTTP error, and every server gets an innermost wrapper that turns a failed
+connection into `MCPConnectError`: the server name, the status, and a fixed hint.
+SSE URLs keep Pydantic AI's own transport and report no status. Recheck the hook
+name on FastMCP upgrades; `tests/test_mcp_diagnostics.py` fails if it stops firing.
 FastMCP defaults `StdioTransport.keep_alive` to `True`: pcode explicitly sets it
 to `False` so turn cleanup closes subprocesses. Keep the real-stdio tests in
 `tests/test_mcp.py` for success, failure, cancellation, and reconnection. Filtering
@@ -377,12 +401,20 @@ requests or authentication.
 
 ### Context indicator
 
-`src/pcode/model_metadata.py` resolves context limits; `context_usage.py` and
-`compaction.py` share its synchronous memory-only lookup. Refreshes run outside
-rendering. Preserve input, output, default context, opt-in maximum, source, and
-fetch timestamp separately. Unknown deployments must not inherit a familiar
-model name's direct-API limit. An explicit `PCODE_CONTEXT_WINDOW` applies to both
-consumers and is capped by known input/maximum limits.
+`src/pcode/model_metadata.py` resolves context limits; `context_usage.py`,
+`compaction.py` and `MeridianLimitWarnings` share its synchronous memory-only
+lookup. Refreshes run outside rendering. Preserve input, output, default context,
+opt-in maximum, source, and fetch timestamp separately. Unknown deployments must
+not inherit a familiar model name's direct-API limit. An explicit
+`PCODE_CONTEXT_WINDOW` applies to every consumer and is capped by known
+input/maximum limits.
+
+Harness capabilities that take a `max_*_fraction` resolve the window from
+genai-prices instead. It knows no `meridian:` ids and silently assumes 200k, and
+it gives `openai-codex:` ids the direct API's window by model name (1.05M for a
+model Codex serves at 272k). Pass them pcode's window (`context_window=`), or a
+1M Meridian session gets told it is nearly full at 160k and starts cutting work
+short.
 
 - Public catalog: [Models.dev JSON](https://models.dev/api.json) and
   [schema](https://github.com/anomalyco/models.dev/blob/dev/README.md).
@@ -516,7 +548,7 @@ For every provider, pcode's `IdentifiedPlanning` appends durable plan snapshots 
 when the rendered plan changes (including clearing it), without moving explicit
 cache markers. `MeridianLimitWarnings` retains old warnings and appends updates at
 percentage deciles or severity changes only on Meridian; other providers' limit
-warnings are unchanged. Both use `before_model_request`, whose messages Pydantic AI
+warnings keep Harness's replace-in-place behavior. Both use `before_model_request`, whose messages Pydantic AI
 persists, not the ephemeral `wrap_model_request` boundary. Deduplication compares
 the text of the last reminder in the current history, so saved resume, retry, and
 branch selection do not depend on process-local state. Do not store the dedup key
@@ -785,10 +817,12 @@ the model supplying one; `Job.summary()` and `tool_display.target` keep the
 command alongside it, because a stated intention is not evidence of what is
 running.
 
-`pcode.jobs.registry()` is process-wide and deliberately not per-run: a run is
-exactly the scope a job escapes, and the worker sub-agent shares it. Tests must
-call `registry().reset()` (the `isolated_jobs` autouse fixture does). The
-process-wide registry persists under `jobs_root()/<pid>/` (job dirs plus
+`pcode.jobs.registry()` is process-wide for the parent and shared-workspace workers:
+a run is exactly the scope a job escapes. Isolated workers instead bind a context-local
+registry, with their own `JobNotices` capability, and stop its jobs on teardown.
+The parent's per-run `JobNotices` cannot reach those jobs and is not inherited by
+sub-agents. Tests must call `registry().reset()` (the `isolated_jobs` autouse fixture
+does). The process-wide registry persists under `jobs_root()/<pid>/` (job dirs plus
 `registry.json`, resolved lazily so the test env's `XDG_STATE_HOME` applies);
 `JobRegistry()` with no `state` is ephemeral and uses temp dirs. `adopt_orphans`
 treats a record whose `owner_pid` is dead as up for grabs and skips its own

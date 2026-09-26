@@ -2,6 +2,7 @@ import asyncio
 import re
 from dataclasses import asdict
 from io import StringIO
+from types import SimpleNamespace
 
 import pytest
 from pydantic_ai import Agent, ModelRetry
@@ -10,7 +11,7 @@ from rich.console import Console
 
 from pcode.live import AgentRuntime
 from pcode.runtime import RunStatus, ToolSummary
-from pcode.tool_display import label, result_detail, target
+from pcode.tool_display import label, result_detail, subject, target
 from pcode.ui import Transcript
 
 
@@ -302,6 +303,22 @@ def test_retry_feedback_and_actual_success_have_separate_summaries():
 )
 def test_search_targets_include_patterns(name, args, expected):
     assert target(name, args) == expected
+
+
+def test_a_job_tool_is_about_the_command_its_job_runs_with_credentials_redacted():
+    jobs = {"j1": SimpleNamespace(command="deploy --token hunter2", purpose="  shipping\n it ")}
+    assert subject("wait_for_job", {"job_id": "j1"}, jobs) == (
+        "deploy --token [redacted]",
+        "shipping it",
+    )
+    assert subject("stop_job", {"job_id": "j2"}, jobs) == ("", "")
+    assert subject("job_output", {}, jobs) == ("", "")
+    # Every other call is about its own arguments, never a job's.
+    assert subject("shell", {"command": "ls", "purpose": "look", "job_id": "j1"}, jobs) == (
+        "ls",
+        "look",
+    )
+    assert subject("read_file", {"path": "a.py"}, jobs) == ("", "")
 
 
 def test_command_credential_options_redacted_without_hiding_ordinary_arguments(monkeypatch):

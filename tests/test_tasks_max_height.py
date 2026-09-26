@@ -20,7 +20,7 @@ from pcode.ui import Activity, Transcript, create_prompt
 ROWS = 40
 
 
-def render(cap: float | None, *, attach: bool = False) -> tuple[int, int]:
+def render(cap: float | None, *, attach: bool = True) -> tuple[int, int]:
     """Task rows shown and editor text rows, for a long plan and a long draft."""
 
     async def run():

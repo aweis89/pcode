@@ -14,7 +14,7 @@ from pcode.agent import create_coder
 from pcode.job_notices import notice, notice_for
 from pcode.jobs import JobRegistry, format_duration, registry
 from pcode.live import AgentRuntime
-from pcode.runtime import Message, ToolSummary
+from pcode.runtime import Message, ToolStarted, ToolSummary
 
 
 def command(source):
@@ -271,6 +271,26 @@ def test_purpose_from_the_model_reaches_the_row_and_the_registry(tmp_path):
     (started,) = [e for e in results_of(runtime) if e.name == "shell"]
     assert started.detail.startswith("checking the build · ")
     assert runtime.jobs.get("j1").purpose == "checking the build"
+
+
+def test_a_wait_names_the_command_and_purpose_of_the_job_it_waits_on(tmp_path):
+    source = command("print('done')")
+    runtime = runtime_with(
+        [
+            ("shell", {"command": source, "background": True, "purpose": "checking the build"}),
+            ("wait_for_job", {"job_id": "j1"}),
+            ("wait_for_job", {"job_id": "j99"}),
+        ],
+        tmp_path,
+    )
+
+    async def run():
+        return [e async for e in runtime.stream("go") if isinstance(e, ToolStarted)]
+
+    _, known, unknown = asyncio.run(run())
+    assert (known.detail, known.command, known.purpose) == ("j1", source, "checking the build")
+    # An id nobody launched says only what the model asked for.
+    assert (unknown.detail, unknown.command, unknown.purpose) == ("j99", "", "")
 
 
 def test_until_output_returns_at_readiness_for_a_server_that_never_exits(tmp_path):

@@ -167,12 +167,17 @@ class SessionBrowser:
                 self.query,
                 body,
                 Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label("Enter Resume · d Delete (twice) · Tab Focus · Esc Cancel"),
-                Label("In Sessions: / Search (↑↓ select while typing) · r Responses too · w All"),
+                Label(
+                    "Type to search (↑↓ select while typing) · Enter Resume · Tab Focus · "
+                    "Esc Cancel"
+                ),
+                Label("In Sessions: / Search · r Responses too · w All · d Delete (twice)"),
             ]
         )
         self.app = Application(
-            layout=Layout(popup_container(root_container), focused_element=self.list),
+            # Open in the search line, so typing filters instead of reaching the
+            # list's one-key shortcuts (`d` arms a delete).
+            layout=Layout(popup_container(root_container), focused_element=self.query),
             key_bindings=keys,
             full_screen=True,
             mouse_support=popup_mouse(),
