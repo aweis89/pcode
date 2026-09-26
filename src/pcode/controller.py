@@ -21,6 +21,27 @@ from pcode.tool_display import command_text
 # input batch cancels it instead of clearing the draft.
 MODEL_COMMANDS = frozenset({"/compact", "/resend"})
 
+# Commands that only change the display. They run even before the runtime is
+# ready and are never dropped by a Ctrl+C clearing the queue.
+FRONTEND_COMMANDS = frozenset(
+    {
+        "/quit",
+        "/exit",
+        "/help",
+        "/commands",
+        "/theme",
+        "/theme-preview",
+        "/syntax",
+        "/show-tasks",
+        "/autohide-tasks",
+        "/show-thinking",
+        "/show-edits",
+        "/show-commands",
+        "/redraw",
+        "/config",
+    }
+)
+
 # One queued command: the queue generation it was sent in, its text, whether
 # the session was idle when it was sent, and the popup generation the terminal
 # stamped on it.
@@ -155,6 +176,11 @@ class SessionView(Protocol):
     def drop_output(self, call_id: str) -> None: ...
     async def after_turn(self) -> None: ...
 
+    # A command the controller does not handle itself, run by the terminal
+    # that sent it; `after_command` follows every command.
+    async def run_command(self, text: str, *, idle: bool, tag: object) -> None: ...
+    async def after_command(self) -> None: ...
+
 
 def _mcp_enable(text: str) -> bool:
     return text.split()[:2] == ["/mcp", "enable"]
@@ -217,6 +243,8 @@ class SessionController:
         # The running turn is being cancelled to make way for an "interrupt"
         # message, so its failure must not clear the queue that message is in.
         self.interrupt_pending = False
+        # The MCP server (or "defaults") being enabled or signed out of.
+        self.mcp_enabling: str | None = None
 
     @property
     def hosted(self) -> bool:
@@ -475,6 +503,32 @@ class SessionController:
         self.interrupt_pending = False
         self.refresh_busy()
 
+    async def consume_commands(self) -> None:
+        """Run slash commands one at a time, in the order they were sent."""
+        app = self.app
+        while app.running:
+            generation, text, submitted_idle, tag = await self.commands.get()
+            name = text.split(maxsplit=1)[0]
+            try:
+                if name not in FRONTEND_COMMANDS:
+                    if not self.ready.is_set():
+                        # Keep consuming frontend-only commands while backend
+                        # commands wait, preserving their order for readiness.
+                        self.startup_commands.append((generation, text, submitted_idle, tag))
+                        continue
+                    if generation != self.prompts.generation:
+                        continue
+                    if app._startup_error is not None:
+                        self.view.warning("Agent startup failed; restart pcode to retry.")
+                        continue
+                self.command_started(text)
+                await self.view.run_command(text, idle=submitted_idle, tag=tag)
+            except Exception as error:
+                app.command_failed(name, error)
+            finally:
+                self.command_finished()
+            await self.view.after_command()
+
     # Turns
 
     async def consume(self) -> None:
@@ -715,3 +769,186 @@ class SessionController:
         self.activity.finish_prompt("done")
         self.view.redraw()
         return True
+
+    # Work beside the turn loop that holds queued prompts back
+
+    def start_mcp_task(self, name, coroutine, *, status: str, cancelled: str) -> None:
+        """Run MCP work outside the model loop; queued prompts wait for it."""
+        self.mcp_idle.clear()
+        self.mcp_enabling = name
+        self.activity.busy = True
+        self.activity.status = status
+
+        def finished(task):
+            success = False
+            try:
+                task.result()
+                success = True
+            except asyncio.CancelledError:
+                self.view.warning(cancelled)
+            except Exception as error:
+                self.app.report_mcp_error(name, error)
+            finally:
+                if not success:
+                    self.clear_queue()
+                self.mcp_task = None
+                self.refresh_busy()
+                self.activity.status = ""
+                self.mcp_enabling = None
+                self.mcp_idle.set()
+                self.view.redraw()
+
+        self.mcp_task = asyncio.create_task(coroutine)
+        # A done callback also handles cancellation before the coroutine starts.
+        self.mcp_task.add_done_callback(finished)
+
+    def start_mcp_enable(self, name: str) -> None:
+        self.view.note(
+            f"Enabling MCP '{name}'. OAuth sign-in happens now if needed; "
+            "Ctrl+C cancels. No model request is made."
+        )
+        self.start_mcp_task(
+            name,
+            self.app.enable_mcp(name),
+            status=f"Enabling MCP '{name}' — complete browser sign-in if prompted…",
+            cancelled=f"MCP '{name}' sign-in cancelled; server remains off.",
+        )
+
+    def start_skill_mcp(self, skill: str, names) -> None:
+        """Enable what `skill` declares before its prompt, which waits on MCP work."""
+        from pcode.mcp import config_path, configured_servers
+
+        state = getattr(self.runtime, "mcp", None)
+        if state is None:
+            return
+        try:
+            configured = configured_servers()
+        except ValueError as error:
+            self.view.error(str(error))
+            return
+        if unknown := [name for name in names if name not in configured]:
+            self.view.warning(
+                f"The {skill} skill asks for MCP {', '.join(unknown)}, "
+                f"not configured in {config_path()}."
+            )
+        wanted = [name for name in names if name in configured and name not in state.enabled]
+        if not wanted:
+            return
+        # Same rule as /mcp enable: never swap toolsets under a running turn.
+        if self.mcp_task is not None or self.turn_running():
+            listed = " ".join(f"`/mcp enable {name}`" for name in wanted)
+            self.view.warning(
+                f"The {skill} skill asks for MCP {', '.join(wanted)}, which cannot be "
+                f"enabled while working. Run {listed} after this turn."
+            )
+            return
+        self.view.note(
+            f"Enabling MCP {', '.join(wanted)} for the {skill} skill. "
+            "OAuth sign-in happens now if needed; Ctrl+C cancels."
+        )
+        self.start_mcp_task(
+            ", ".join(wanted),
+            self.app.enable_skill_mcp(skill, wanted),
+            status=f"Enabling MCP for the {skill} skill — complete sign-in if prompted…",
+            cancelled=f"MCP sign-in for the {skill} skill cancelled; its prompt was not sent.",
+        )
+
+    def start_mcp_defaults(self) -> None:
+        from pcode.mcp import default_servers
+
+        self.app.mcp_defaults_requested = False
+        if getattr(self.runtime, "mcp", None) is None:
+            return
+        try:
+            names = default_servers()
+        except ValueError as error:
+            self.view.error(str(error))
+            return
+        if not names:
+            return
+        self.start_mcp_task(
+            "defaults",
+            self.app.enable_mcp_defaults(names),
+            status="Enabling default MCP servers…",
+            cancelled="Default MCP enable cancelled; remaining servers stay off.",
+        )
+
+    def start_mcp_logout(self, name: str) -> None:
+        self.start_mcp_task(
+            name,
+            self.app.logout_mcp(name),
+            status=f"Signing out of MCP '{name}'…",
+            cancelled=f"MCP '{name}' sign-out cancelled.",
+        )
+
+    def start_compact(self, focus: str) -> None:
+        from pcode.ui import SYSTEM_COMMAND_LABELS
+
+        self.start_history_task(
+            self.runtime.compact(focus),
+            # Label the work instead of echoing "/compact <focus>", which
+            # reads like the command was typed as part of a prompt.
+            label=SYSTEM_COMMAND_LABELS["/compact"],
+            detail=focus,
+            status="Compacting context…",
+            note="Compacting context with the current model. Ctrl+C cancels.",
+            done=lambda result: result.description(),
+            cancelled="Compaction cancelled; history unchanged.",
+            failed="Compaction failed",
+        )
+
+    def start_summary(self, request) -> None:
+        # Checked before the task marks the session busy, which would refuse it.
+        follows = self.app.check_bridge(request.thread)
+        self.start_history_task(
+            self.app.summarize_thread(follows, request.instructions),
+            label="Summarizing side thread",
+            detail=request.instructions,
+            status="Summarizing side thread…",
+            note="Summarizing the side thread into the conversation. Ctrl+C cancels.",
+            done=lambda result: "Side thread summary added to the conversation.",
+            cancelled="Summary cancelled; the conversation is unchanged.",
+            failed="Side thread summary failed",
+        )
+
+    def start_history_task(
+        self, work, *, label, detail, status, note, done, cancelled, failed
+    ) -> None:
+        """Run work that rewrites the conversation's history, holding prompts back.
+
+        Prompts typed meanwhile queue behind it on `compact_idle`, the way a
+        turn would, so nothing reads the history while it changes. `done`
+        turns the result into the closing note.
+        """
+        self.compact_idle.clear()
+        self.activity.busy = True
+        self.activity.status = status
+        self.activity.start_prompt(label, kind="system", detail=detail)
+        self.view.note(note)
+
+        def finished(task):
+            success = False
+            try:
+                result = task.result()
+                self.view.note(done(result))
+                self.activity.finish_prompt("done")
+                success = True
+            except asyncio.CancelledError:
+                self.activity.finish_prompt("cancelled")
+                self.view.warning(cancelled)
+            except Exception as error:
+                from pcode.live import error_message
+
+                self.activity.finish_prompt("failed")
+                self.view.error(error_message(error), title=failed)
+            finally:
+                if not success:
+                    self.clear_queue()
+                self.compact_task = None
+                self.refresh_busy()
+                self.activity.status = ""
+                self.compact_idle.set()
+                self.view.redraw()
+
+        self.compact_task = asyncio.create_task(work)
+        self.compact_task.add_done_callback(finished)
