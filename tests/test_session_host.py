@@ -322,6 +322,8 @@ def test_a_resumed_conversation_is_drawn_once_the_host_has_loaded_it(tmp_path, h
                 with patch("pcode.app.create_prompt", prompt):
                     await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=20)
             assert output.getvalue().count("Echo: remember the parser") == 1
+            # Drawn under the note that said how this terminal got here.
+            assert f"Resumed {identity}" not in output.getvalue()
         finally:
             if booting is not None:
                 await booting
@@ -466,6 +468,49 @@ def test_btw_model_names_complete_as_soon_as_a_terminal_attaches(tmp_path, host_
             controller.close()
         finally:
             await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_an_answer_read_in_one_terminal_is_read_in_every_terminal(tmp_path, host_dir):
+    from pcode.aside import Aside
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            answered = Aside(question="why?", status="answered", answer="because")
+            host.controller.asides.items.append(answered)
+            reader, view, _ = await attach(host)
+            other, _, _ = await attach(host)
+            assert reader.asides.unread == other.asides.unread == 1
+
+            async def read_asides():
+                for aside in reader.asides.items:
+                    aside.read = True
+
+            view.read_asides = read_asides
+            reader.command("/btw")
+            await until(lambda: answered.read and other.asides.unread == 0)
+            late, _, _ = await attach(host)
+            assert late.asides.unread == 0
+            for terminal in (reader, other, late):
+                terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_stopping_an_idle_host_tells_terminals_it_closed_and_nothing_else(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        terminal, view, _ = await attach(host)
+        closed = asyncio.Event()
+        terminal.on_closed = closed.set
+        await stop_host(host)
+        await asyncio.wait_for(closed.wait(), 5)
+        # Not a "Run cancelled" for a turn nobody was running.
+        assert not view.count("cancelled")
 
     asyncio.run(run())
 

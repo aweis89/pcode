@@ -53,7 +53,7 @@ SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 RESETS = {"conversation_reset", "replay_conversation", "show_branch"}
 
 # What a terminal may call besides the controller's intents.
-HOST_CALLS = frozenset({"attach", "query", "stop"})
+HOST_CALLS = frozenset({"attach", "query", "stop", "asides_read"})
 
 _MISSING = object()
 
@@ -135,6 +135,13 @@ class _Client:
 
     async def query(self, name: str, *args):
         return await self.host.controller.query(name, *args)
+
+    def asides_read(self, identities) -> None:
+        """The terminal showed these answers; no terminal needs telling they are ready."""
+        for aside in self.host.controller.asides.items:
+            if aside.id in identities and not aside.read:
+                aside.read = True
+                self.host.emit_aside(aside)
 
     def stop(self, keep_worktree: bool = False) -> None:
         self.host.keep_worktree = bool(keep_worktree)
@@ -467,6 +474,7 @@ class SessionHost:
             "base": aside.base,
             "bridged": aside.bridged,
             "replied": aside.reply is not None,
+            "read": aside.read,
         }
 
     def emit_aside(self, aside) -> None:
@@ -532,14 +540,17 @@ class SessionHost:
     async def close(self) -> None:
         controller = self.controller
         controller.running = False
+        # Terminals hear that the host is going, not the teardown after it
+        # (a "Run cancelled" for a host stopped while idle).
+        clients, self.clients = list(self.clients.values()), {}
+        for client in clients:
+            client.peer.notify("host_closed")
+            client.peer.close()
         controller.cancel()
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, *controller.tasks(), return_exceptions=True)
         await controller.asides.close()
-        for client in list(self.clients.values()):
-            client.peer.notify("host_closed")
-            client.peer.close()
         if self.server is not None:
             self.server.close()
         if controller.extensions is not None:
