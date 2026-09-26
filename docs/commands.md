@@ -106,7 +106,9 @@ candidate's size so that cost is visible before you pick.
 - `/btw QUESTION`: [ask a side question](side-questions.md) against the context the model is
   working with right now, without interrupting or queueing it. The answer opens in a popup
   when it is ready (`btw_auto_open`); a bare `/btw` opens the answers at any time, and
-  `r` there [asks a follow-up](side-questions.md#following-up) to the selected answer.
+  `r` there [asks a follow-up](side-questions.md#following-up) to the selected answer;
+  `s` and `m` [keep a thread](side-questions.md#keeping-a-thread) as a summary or a
+  merged `/tree` branch.
   `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks on other models instead, one
   side question per model ([choosing the model](side-questions.md#choosing-the-model)).
   A `+EFFORT` suffix (`$openai:gpt-5+high`), or a bare `+EFFORT` word for the

@@ -59,7 +59,9 @@ def conversation_links(tree, *, include_tools: bool = True) -> list[Link]:
     found: dict[str, Link] = {}
     for identity in tree.path(tree.active):
         node = tree.nodes[identity]
-        if node.kind != "turn":
+        # A compaction's summary restates links it already listed; a merged
+        # side answer is part of the conversation like any reply.
+        if node.kind == "compaction":
             continue
         links = node.links if include_tools else node.message_links
         for link in links.values():

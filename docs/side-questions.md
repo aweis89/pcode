@@ -27,6 +27,8 @@ streams it.
 - **Tab:** move between the question list, the answer pane and the follow-up
   editor.
 - **r:** type a [follow-up](#following-up) to the selected answer.
+- **s / m:** [bring the thread into the conversation](#keeping-a-thread), as a
+  summary or merged whole.
 - **c:** copy the selected thread's newest answer to the clipboard as raw
   markdown (also works mid-stream, taking what has arrived so far).
 - **Ctrl+K:** stop every running side question, keeping the records.
@@ -77,8 +79,50 @@ order, opening on the newest question. Each follow-up:
   thread with no answer at all cannot be followed up, so ask again with `/btw`.
 
 Follow-ups are side questions in every other way: same limits, same refused
-tools, same footer counts and ready notices, and nothing joins the conversation.
-Up to 20 threads are kept; the oldest settled thread is dropped whole.
+tools, same footer counts and ready notices, and nothing joins the conversation
+until you [keep the thread](#keeping-a-thread). Up to 20 threads are kept; the
+oldest settled thread is dropped whole.
+
+## Keeping a thread
+
+A thread that turned up something worth keeping can be brought into the
+conversation from the viewer, in two ways. Both close the viewer, and both wait
+for the running turn the way forking in `/tree` does: the conversation's history
+cannot change under a turn that is about to write it back. Pressing either key
+mid-turn says so in the header and does nothing else.
+
+**s: Summarize into the conversation.** The editor asks for optional
+instructions ("keep only the decisions", "what should change in the plan?");
+press **Enter** with nothing typed to summarize as is, or **Escape** to cancel
+and get your follow-up draft back. The summary is asked *in the thread*, on its
+model and after its last answer, so it reuses the thread's cache. It is then
+added to the conversation's current branch as one exchange: a message naming the
+thread's questions (and your instructions), answered by the summary. The next
+turn reads it like any earlier reply, and the rest of the history is untouched,
+so the conversation's cache still covers everything before it. While the summary
+runs, the footer shows it like `/compact`, prompts you send wait behind it, and
+Ctrl+C cancels it with the conversation unchanged.
+
+**m: Merge into `/tree`.** Every answered question in the thread becomes a node
+in the [conversation tree](conversation-tree.md), marked `btw:`, forked from the
+point where the thread was asked. Each one is a checkpoint like a turn's:
+selecting it in `/tree` continues from that answer, and it survives resuming the
+session. Where the conversation ends up depends on what happened since:
+
+- **Nothing:** the thread was asked while idle and the conversation has not
+  moved, so the thread is simply its continuation. The conversation switches to
+  its last answer and the transcript shows the questions and answers.
+- **Anything else** (the thread was asked mid-turn, or turns, `/compact` or a
+  `/tree` switch came after): the thread is a branch, and the conversation stays
+  where it is. Open `/tree` to switch to it. Moving there automatically would
+  drop whatever the conversation did after the question was asked.
+
+Merged history is the thread's exactly, framing included, so the model can
+tell those exchanges were side questions. `/resend` refuses on a merged
+question or a summary, since resending would answer it again as a real turn;
+send a message instead. A thread asked before `/new` or `/resume` belongs to
+that other conversation and cannot be kept here. The viewer's list marks a kept
+thread `merged` or `summarized`; keeping it again adds it again.
 
 ## What a side question can and cannot do
 
@@ -106,6 +150,9 @@ Nothing about a side question joins the conversation:
 - no conversation-tree node, so `/tree`, `/resend` and forking never see it;
 - no session-journal record, so resuming the session does not replay it;
 - no change to the model's history, so the next real turn is unaffected.
+
+That holds until you [keep the thread](#keeping-a-thread), which is the one
+deliberate way in.
 
 What it does share is the context it was asked against and the session's token
 totals: the request really happened, so `/status` counts it.

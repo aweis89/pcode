@@ -33,6 +33,7 @@ from pydantic_ai.messages import (
     NativeToolCallPart,
     NativeToolReturnPart,
     RetryPromptPart,
+    UserPromptPart,
 )
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.filesystem import FileSystem
@@ -365,6 +366,7 @@ class AgentRuntime:
         model: SideModel | None = None,
         settings: dict | None = None,
         after: SideReply | None = None,
+        framing: Callable[[str], str] | None = None,
     ) -> SideReply:
         """Answer `question` beside the conversation, recording nothing.
 
@@ -401,6 +403,9 @@ class AgentRuntime:
         model, settings and conversation id it ran with. Its history is exactly
         what that run sent plus what it answered, so the follow-up reuses its
         cache, even after /model replaced the conversation's agent.
+
+        `framing` turns `question` into the message sent, in place of the side
+        question or follow-up framing; a thread's summary is asked that way.
         """
         from pcode.aside import ASIDE_REQUEST_LIMIT, framed, framed_follow_up
         from pcode.aside_guard import AsideGuard
@@ -419,7 +424,8 @@ class AgentRuntime:
         # question joins that request the way steering does, and the run
         # continues from history instead of adding a message of its own.
         joined = bool(messages) and isinstance(messages[-1], ModelRequest)
-        pending = [framed_follow_up(question) if after is not None else framed(question)]
+        frame = framing or (framed_follow_up if after is not None else framed)
+        pending = [frame(question)]
         capabilities = [AsideGuard(), TokenAccounting(record=self.totals.add)]
         if joined:
             capabilities.append(Steering(lambda: [pending.pop()] if pending else []))
@@ -507,6 +513,105 @@ class AgentRuntime:
         publish()
         return "\n\n".join(blocks), messages
 
+    async def merge_aside(self, steps: list[tuple[str, str, list]], parent: str | None) -> bool:
+        """Add a side thread to the tree under `parent`; whether the conversation moved onto it.
+
+        `steps` holds each answered question as `(question, answer, history)`,
+        the history being what that answer ended with. When the thread extends
+        the conversation exactly -- asked at the active node, with nothing
+        since -- the conversation continues from its last answer. Otherwise it
+        is a branch to check out from /tree, and the active node stays put:
+        moving there would drop what the conversation did after it was asked.
+        """
+        if self.recovery_blocked:
+            raise SessionError(self.recovery_blocked)
+        self._open_session()
+        previous = self.tree.active
+        final = steps[-1][2]
+        extends = parent == previous and final[: len(self.history)] == self.history
+        await self._add_aside_nodes(steps, parent)
+        if extends:
+            self.history = deepcopy(final)
+        elif self.session:
+            self.session.append("tree_selected", node_id=previous, sync=True)
+        else:
+            self.tree.active = previous
+        return extends
+
+    async def summarize_aside(
+        self, reply: SideReply, request: str, instructions: str = "", *, report=None
+    ) -> str:
+        """Add a summary of a side thread to the active branch; returns the summary.
+
+        The summary is asked in the thread, after `reply`, where the questions
+        and answers are and its cache is warm. The conversation records it as
+        one exchange: `request`, which names the questions, and the summary as
+        its answer, so the next turn reads it like any earlier reply.
+        """
+        from pcode.aside import framed_summary
+
+        if self.recovery_blocked:
+            raise SessionError(self.recovery_blocked)
+        if self.history and not isinstance(self.history[-1], ModelResponse):
+            # Two requests in a row is what providers reject as non-alternating.
+            raise SessionError(
+                "The conversation stopped mid-turn; send a message or /resend first."
+            )
+        summary = await self.aside(instructions, report=report, after=reply, framing=framed_summary)
+        history = [
+            *self.history,
+            ModelRequest([UserPromptPart(request)]),
+            ModelResponse([TextPart(summary.answer)]),
+        ]
+        self._open_session()
+        await self._add_aside_nodes([(request, summary.answer, history)], self.tree.active)
+        self.history = history
+        return summary.answer
+
+    async def _add_aside_nodes(self, steps: list[tuple[str, str, list]], parent: str | None):
+        """Record side-thread exchanges as completed nodes, each a child of the last.
+
+        They are ordinary turn records flagged `aside`, with the history to
+        continue from saved the way a turn saves its own, so checkout, resume,
+        replay and /tree treat them like any turn. The tree's active node ends
+        on the last one.
+        """
+        for prompt, answer, history in steps:
+            identity = str(uuid4())
+            started = {
+                "prompt": prompt,
+                "run_id": identity,
+                "parent_id": parent,
+                "continuation": False,
+                "aside": True,
+            }
+            if self.session:
+                self.session.append("turn_started", sync=True, **started)
+                self.session.event(Message(answer), run_id=identity)
+                await self.session.store.save_snapshot(
+                    ContinuableSnapshot(
+                        run_id=identity,
+                        step_index=0,
+                        messages=history,
+                        conversation_id=self.conversation_id,
+                    )
+                )
+                self.session.append("turn_completed", run_id=identity, sync=True)
+            else:
+                self.tree.consume({"kind": "turn_started", **started})
+                self.tree.consume({"kind": "Message", "run_id": identity, "markdown": answer})
+                self.tree.consume({"kind": "turn_completed", "run_id": identity})
+                self.tree.nodes[identity].history = deepcopy(history)
+            parent = identity
+
+    def _open_session(self) -> SavedSession | None:
+        """The session to record in, created on first use as a turn creates it."""
+        if self.session is None and self.session_factory is not None:
+            self.session = self.session_factory()
+            self.conversation_id = self.session.info.id
+            self.tree = self.session.tree
+        return self.session
+
     async def compact(self, focus: str = ""):
         """Persist a new branch-local context checkpoint before publishing it."""
         if self.recovery_blocked:
@@ -585,6 +690,12 @@ class AgentRuntime:
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
         active = self.tree.nodes.get(self.tree.active)
+        if active and active.kind == "aside":
+            # Regenerating it here would answer a side question, or a summary
+            # of a thread this history does not hold, as a conversation turn.
+            raise SessionError(
+                "The last exchange came from a side thread; send a message instead of /resend."
+            )
         if active and active.resend_blocked:
             raise SessionError(
                 "The interrupted turn may have changed files or run commands. "
@@ -695,11 +806,7 @@ class AgentRuntime:
         # active branch's context; a second turn would be given its own.
         context = self.context
         context.checkpoint = RequestCheckpoint()
-        if self.session is None and self.session_factory is not None:
-            self.session = self.session_factory()
-            self.conversation_id = self.session.info.id
-            self.tree = self.session.tree
-        saved = self.session
+        saved = self._open_session()
         run_id = str(uuid4())
         if saved:
             saved.append(

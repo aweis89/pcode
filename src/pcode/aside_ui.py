@@ -1,7 +1,8 @@
 """Popup reader for side questions, with an editor for follow-ups.
 
 The browser never sends a request itself: a follow-up is handed to the `ask`
-callback, which starts it the way `/btw` starts a question.
+callback, which starts it the way `/btw` starts a question, and bringing a
+thread into the conversation is returned as a `Bridge` for the app to run.
 """
 
 import asyncio
@@ -19,7 +20,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 from rich.theme import Theme
 
-from pcode.aside import Aside, Asides
+from pcode.aside import Aside, Asides, Bridge
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.popup_ui import (
     PopupInput,
@@ -45,7 +46,9 @@ def row(thread: list[Aside], width: int = 90) -> str:
     model = f"[{first.label}] " if first.label else ""
     more = len(thread) - 1
     follow_ups = f" · {more} follow-up{'s' if more > 1 else ''}" if more else ""
-    return f"{model}{question}  ({newest.state()}{follow_ups})"
+    bridged = next((aside.bridged for aside in reversed(thread) if aside.bridged), "")
+    kept = f" · {bridged}" if bridged else ""
+    return f"{model}{question}  ({newest.state()}{follow_ups}{kept})"
 
 
 def exchange(aside: Aside, *, code_theme: str, first: bool = True) -> list:
@@ -84,6 +87,11 @@ class AsideBrowser:
 
     With `ask`, an editor under the pane sends follow-ups: `ask(thread,
     question)` starts one, or raises `ValueError` saying why it cannot yet.
+
+    With `check_bridge`, `m` merges the selected thread into the conversation
+    tree and `s` summarizes it into the conversation, after asking for optional
+    instructions in the editor. Either closes the viewer, returning a `Bridge`
+    from `run`; `check_bridge(thread)` raises `ValueError` when it cannot yet.
     """
 
     def __init__(
@@ -91,6 +99,7 @@ class AsideBrowser:
         asides: Asides,
         *,
         ask: Callable[[str, str], None] | None = None,
+        check_bridge: Callable[[str], object] | None = None,
         selected: str | None = None,
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
@@ -99,6 +108,7 @@ class AsideBrowser:
     ) -> None:
         self.asides = asides
         self.ask = ask
+        self.check_bridge = check_bridge
         self.code_theme = code_theme
         self.threads = asides.threads()
         # `selected` names a question; the list selects the thread it is in.
@@ -122,7 +132,7 @@ class AsideBrowser:
                 title=self.input_title,
                 placeholder="Ask a follow-up about this answer…",
             )
-            if ask is not None
+            if ask is not None or check_bridge is not None
             else None
         )
         # One-letter keys would otherwise fire instead of typing in the editor.
@@ -151,6 +161,24 @@ class AsideBrowser:
             @keys.add("r", filter=browsing)
             def reply(event):
                 self.input.open(event.app)
+
+        if self.check_bridge is not None:
+
+            @keys.add("m", filter=browsing)
+            def merge(event):
+                if self.bridgeable():
+                    self.finish(Bridge(self.selected, "merge"))
+
+            @keys.add("s", filter=browsing)
+            def summarize(event):
+                if self.bridgeable():
+                    thread = self.selected
+                    self.input.prompt(
+                        event.app,
+                        title="Summarize into the conversation · optional focus",
+                        placeholder="Enter summarizes as is, or say what to keep…",
+                        submit=lambda text: self.finish(Bridge(thread, "summary", text)),
+                    )
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
@@ -186,6 +214,7 @@ class AsideBrowser:
                 *([self.input] if self.input else []),
                 Label(self.hints),
                 Label(self.shortcuts),
+                *([Label(self.bridging)] if self.check_bridge else []),
             ]
         )
         self.app = Application(
@@ -204,15 +233,38 @@ class AsideBrowser:
         return self.input is not None and self.app.layout.has_focus(self.input.area)
 
     def hints(self) -> str:
+        if self.editing() and self.input.prompting:
+            return "Enter Summarize (empty: as is) · Ctrl+J Newline · PgUp/PgDn Scroll answer"
         if self.editing():
             return "Enter Send · Ctrl+J Newline · PgUp/PgDn Scroll answer"
         return "↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"
 
     def shortcuts(self) -> str:
+        if self.editing() and self.input.prompting:
+            return "Esc Cancel (brings the follow-up draft back) · Tab Focus"
         if self.editing():
             return "Esc Back to the list (keeps the draft) · Tab Focus · Ctrl+K Stop running"
-        reply = "R Follow up · " if self.input else ""
+        reply = "R Follow up · " if self.ask else ""
         return f"Tab Focus · {reply}C Copy answer · Ctrl+K Stop running · Enter/Esc Close"
+
+    def bridging(self) -> str:
+        return "S Summarize into the conversation · M Merge into /tree"
+
+    def bridgeable(self) -> bool:
+        """Whether the selected thread can join the conversation now; says why not."""
+        if not self.selected:
+            self.notice = "No side question to bring into the conversation"
+            return False
+        try:
+            self.check_bridge(self.selected)
+        except ValueError as error:
+            self.notice = str(error)
+            return False
+        self.notice = ""
+        return True
+
+    def finish(self, request: Bridge) -> None:
+        self.app.exit(result=request)
 
     def input_title(self) -> str:
         thread = self.current()
@@ -300,7 +352,9 @@ class AsideBrowser:
             blocks.extend(exchange(aside, code_theme=self.code_theme, first=not number))
         return blocks, newest
 
-    async def run(self) -> None:
+    async def run(self) -> Bridge | None:
+        """Show the viewer until it closes; the thread to bring into the conversation, if any."""
+
         async def follow():
             # Poll rather than subscribe: the records are plain data, and a
             # timer keeps elapsed times and the running count moving too.
@@ -319,7 +373,7 @@ class AsideBrowser:
         def start():
             self.app.create_background_task(follow())
 
-        await self.app.run_async(pre_run=start)
+        return await self.app.run_async(pre_run=start)
 
 
 def aside_dialog(asides, **options) -> Application:

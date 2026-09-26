@@ -64,6 +64,49 @@ def framed_follow_up(question: str) -> str:
     return f"{FOLLOW_UP_FRAMING}\n\nQuestion: {question}"
 
 
+# Asked in the thread, where its questions and answers are, so the summary
+# reuses the thread's cache; `summary_request` is what the conversation records.
+SUMMARY_FRAMING = (
+    "[Side thread summary] Summarize this side discussion for the main conversation, "
+    "which never saw it: what was asked, what was found, and anything that should change "
+    "the ongoing work. Be brief and concrete, with no preamble, and do not use tools."
+)
+
+
+def framed_summary(instructions: str) -> str:
+    """The user message asking a thread to summarize itself, with the user's focus if any."""
+    return SUMMARY_FRAMING + (f"\n\nFocus: {instructions}" if instructions else "")
+
+
+def summary_request(questions: list[str], instructions: str = "") -> str:
+    """The user message a thread's summary is recorded under in the conversation.
+
+    The conversation never saw the thread, so this names its questions rather
+    than pointing at a discussion "above" that is not there.
+    """
+    lines = [
+        "[Side thread summary] Beside this conversation I asked side questions it did not see:"
+    ]
+    lines += [f"- {' '.join(question.split())}" for question in questions]
+    lines.append("Summarize what came of them for the rest of this conversation.")
+    if instructions:
+        lines.append(f"Focus: {instructions}")
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class Bridge:
+    """A request to bring a side thread into the conversation.
+
+    `merge` adds the thread to the conversation tree as it is; `summary` adds a
+    summary of it to the active branch, focused by `instructions` when given.
+    """
+
+    thread: str
+    action: str
+    instructions: str = ""
+
+
 @dataclass(frozen=True)
 class SideReply:
     """A side answer, and what a follow-up needs to continue from it.
@@ -194,6 +237,33 @@ def model_labels(models: list[SideTarget]) -> dict[SideTarget, str]:
     return labels
 
 
+def exchanges(thread: list["Aside"], messages: list) -> list[tuple["Aside", int]]:
+    """The thread's questions that `messages` answered, each with where its answer ends.
+
+    `messages` is the history the thread's newest answer ran with, so it holds
+    every question the chain answered; a failed or stopped follow-up never
+    joined it and is skipped. A question starts at the request carrying its
+    framed text, and its answer runs to the next one's start, or to the end.
+    """
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    def asks(message, text: str) -> bool:
+        return isinstance(message, ModelRequest) and any(
+            isinstance(part, UserPromptPart) and part.content == text for part in message.parts
+        )
+
+    starts: list[tuple[Aside, int]] = []
+    index = 0
+    for number, aside in enumerate(thread):
+        text = framed_follow_up(aside.question) if number else framed(aside.question)
+        found = next((i for i in range(index, len(messages)) if asks(messages[i], text)), None)
+        if found is not None:
+            starts.append((aside, found))
+            index = found + 1
+    ends = [start for _, start in starts[1:]] + [len(messages)]
+    return [(aside, end) for (aside, _), end in zip(starts, ends)]
+
+
 def settled_context(messages: list) -> list:
     """The longest prefix of `messages` whose tool calls all have results.
 
@@ -251,6 +321,12 @@ class Aside:
     read: bool = False
     # The id of the thread's first question; a follow-up shares it.
     thread: str = ""
+    # Where a thread's first question was asked: the conversation, and its tree
+    # node active then. Merging forks the thread from that node.
+    conversation: str = ""
+    base: str | None = None
+    # How the thread was brought into the conversation, e.g. "merged".
+    bridged: str = ""
     # What a follow-up continues from, once answered. Only a thread's newest
     # answer keeps one: each holds a copy of the conversation.
     reply: SideReply | None = field(default=None, repr=False)
@@ -344,13 +420,24 @@ class Asides:
         label: str = "",
         effort: str = "",
         thread: str = "",
+        conversation: str = "",
+        base: str | None = None,
     ) -> Aside:
         """Register a side question and run `work` for it in the background.
 
         `work` returns the reply a follow-up would continue from. `thread`
-        makes it a follow-up in that thread rather than a new one.
+        makes it a follow-up in that thread rather than a new one;
+        `conversation` and `base` say where a new one was asked.
         """
-        aside = Aside(question=question, model=model, label=label, effort=effort, thread=thread)
+        aside = Aside(
+            question=question,
+            model=model,
+            label=label,
+            effort=effort,
+            thread=thread,
+            conversation=conversation,
+            base=base,
+        )
         self.items.append(aside)
         self._trim()
         self._tasks[aside.id] = asyncio.create_task(self._run(aside, work))
