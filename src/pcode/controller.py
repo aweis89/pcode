@@ -13,7 +13,7 @@ from typing import Protocol
 
 from pcode.commands import Command, CommandRegistry
 from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
-from pcode.preferences import SETTINGS, load_preferences
+from pcode.preferences import SETTINGS, load_preferences, save_preferences
 from pcode.runtime import CommandOutput, JobFinished, ToolSummary
 from pcode.shell_mode import execute, shell_command
 from pcode.tool_display import command_text
@@ -41,6 +41,12 @@ HOSTED_COMMANDS = {
     "/theme-preview",
     "/redraw",
 }
+
+# Commands that change the conversation itself, refused while a turn runs or
+# prompts wait (bar /compact and /resend sent while idle, which go first).
+IDLE_COMMANDS = frozenset(
+    {"/resend", "/new", "/resume", "/login", "/logout", "/compact", "/autocompact"}
+)
 
 # Commands that make a model request or change the toolset. Each holds the
 # session busy from Enter until its handler starts, so a Ctrl+C in the same
@@ -181,6 +187,7 @@ class SessionView(Protocol):
     # Scrollback
     def user(self, text: str) -> None: ...
     def note(self, text: str) -> None: ...
+    def flash(self, text: str) -> None: ...
     def warning(self, text: str) -> None: ...
     def error(self, text: str, *, title: str = "Error") -> None: ...
     def cancelled(self) -> None: ...
@@ -286,6 +293,26 @@ class SessionController:
 
     def register_commands(self) -> None:
         for command in (
+            Command(
+                "/compact",
+                "Summarize older context now; optional FOCUS steers the summary",
+                self.compact,
+                free_arguments=True,
+                group="Session",
+            ),
+            Command(
+                "/autocompact",
+                "Compact automatically near the context limit: on / off",
+                self.autocompact,
+                ("on", "off"),
+                group="Session",
+            ),
+            Command(
+                "/resend",
+                "Ask the model again from the last checkpoint, without a new message",
+                self.resend,
+                group="Session",
+            ),
             Command(
                 "/mcp",
                 "Manage MCP servers: list / enable NAME / disable NAME / logout NAME",
@@ -582,17 +609,42 @@ class SessionController:
                         self.view.warning("Agent startup failed; restart pcode to retry.")
                         continue
                 self.command_started(text)
-                if self.registry.find(name) is None:
-                    await self.view.run_command(text, idle=submitted_idle, tag=tag)
-                else:
-                    await self.run_command(text)
+                await self.dispatch(text, idle=submitted_idle, tag=tag)
             except Exception as error:
                 app.command_failed(name, error)
             finally:
                 self.command_finished()
             await self.view.after_command()
 
-    async def run_command(self, text: str) -> None:
+    async def dispatch(self, text: str, *, idle: bool, tag: object = None) -> None:
+        """Run one slash command: the session's own here, anything else in the terminal.
+
+        `idle` says whether the session was idle when it was sent: /compact or
+        /resend sent then runs ahead of prompts queued behind it since.
+        """
+        name = text.split(maxsplit=1)[0]
+        before_queue = (
+            name in MODEL_COMMANDS
+            # A host's conversation refuses both, in run_command.
+            and not self.hosted
+            and idle
+            and not self.working()
+        )
+        if (
+            name in IDLE_COMMANDS
+            and (self.activity.busy or self.activity.queued)
+            and not before_queue
+        ):
+            self.view.warning(
+                f"{name} is unavailable while working. "
+                "Cancel with Ctrl+C or wait for the run to finish, then retry."
+            )
+        elif self.registry.find(name) is None:
+            await self.view.run_command(text, idle=idle, tag=tag)
+        else:
+            await self.run_command(text, before_queue=before_queue)
+
+    async def run_command(self, text: str, *, before_queue: bool = False) -> None:
         """Run one of the session's own commands; a handler may be sync or async."""
         parts = text.strip().split(maxsplit=1)
         command = self.registry.find(parts[0])
@@ -607,7 +659,10 @@ class SessionController:
             if argument and not command.free_arguments and argument not in command.arguments:
                 usage = "|".join(command.arguments)
                 raise ValueError(f"Usage: {command.name}" + (f" [{usage}]" if usage else ""))
-            result = command.handler(argument)
+            if before_queue:
+                result = command.handler(argument, before_queue=True)
+            else:
+                result = command.handler(argument)
             if inspect.isawaitable(result):
                 await result
         except ValueError as error:
@@ -1325,3 +1380,61 @@ class SessionController:
             f"MCP '{name}' signed out and disabled. The next /mcp enable {name} opens a "
             "browser. This does not revoke the server-side grant."
         )
+
+    # Preferences the session saves (model, effort, autocompact)
+
+    def persist_defaults(self, **updates: str) -> None:
+        try:
+            save_preferences(**updates)
+        except (OSError, ValueError):
+            self.view.warning("Could not save defaults; this selection applies only here.")
+
+    def forget_defaults(self, *keys: str) -> None:
+        from pcode.preferences import update_preferences
+
+        try:
+            update_preferences({}, remove=keys)
+        except (OSError, ValueError):
+            self.view.warning("Could not update defaults; this change applies only here.")
+
+    # History: compaction and resending
+
+    def compact(self, argument: str, *, before_queue: bool = False) -> None:
+        if not self.app.model or not hasattr(self.runtime, "compact"):
+            raise ValueError("/compact requires a live model session.")
+        if not before_queue and (self.activity.busy or self.activity.queued_prompts):
+            raise ValueError("/compact is unavailable while working. Cancel or wait, then retry.")
+        self.start_compact(argument)
+
+    def autocompact(self, argument: str) -> None:
+        if not self.app.model or not hasattr(self.runtime, "auto_compact"):
+            raise ValueError("/autocompact requires a live model session.")
+        if argument:
+            if self.activity.busy or self.activity.queued_prompts:
+                raise ValueError("Change /autocompact while idle.")
+            from pcode.compaction import effective_window
+
+            window = effective_window(self.runtime.agent.model)
+            if argument == "on" and window is None:
+                raise ValueError(
+                    "Unknown context window. Set PCODE_CONTEXT_WINDOW to the deployment's "
+                    "token limit before enabling automatic compaction."
+                )
+            self.runtime.auto_compact = argument == "on"
+            self.persist_defaults(autocompact=argument)
+        state = "on" if self.runtime.auto_compact else "off"
+        self.view.flash(f"Automatic compaction: {state}. Usage: /autocompact on|off")
+
+    def resend(self, argument: str, *, before_queue: bool = False) -> None:
+        """Ask again from the settled checkpoint instead of typing "continue"."""
+        if argument:
+            raise ValueError("/resend takes no arguments.")
+        if not self.app.model or not hasattr(self.runtime, "resend_prompt"):
+            raise ValueError("/resend requires a live model session.")
+        if not before_queue and (self.activity.busy or self.activity.queued_prompts):
+            raise ValueError("/resend is unavailable while working. Cancel or wait, then retry.")
+        previous = self.runtime.resend_prompt()
+        # Sent idle, before any prompts now queued behind it: keep that order.
+        self.prompts.put(previous, "resend", first=True)
+        self.activity.start_prompt(previous)
+        self.activity.busy = True

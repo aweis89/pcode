@@ -41,7 +41,7 @@ from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_argument_descriptions, config_arguments, configure
-from pcode.controller import HOSTED_COMMANDS, MODEL_COMMANDS, SessionController, delivered_job
+from pcode.controller import HOSTED_COMMANDS, SessionController, delivered_job
 from pcode.preferences import (
     EFFORTS,
     SETTINGS,
@@ -243,9 +243,6 @@ class PreviewApp:
         self.login_requested: str | None = None
         self._meridian_thinking_warned = False
         self.logout_requested: str | None = None
-        self.compact_requested: str | None = None
-        # /resend produces a model request, so it leaves the command path here.
-        self.resend_requested = False
         # A skill command is a prompt in disguise; it leaves the command path too.
         self.skill_requested: str | None = None
         # The MCP servers that skill declares, enabled before its prompt runs.
@@ -398,27 +395,10 @@ class PreviewApp:
                 self.stop_host,
                 group="Session",
             ),
-            Command(
-                "/compact",
-                "Summarize older context now; optional FOCUS steers the summary",
-                self.compact,
-                free_arguments=True,
-                group="Session",
-            ),
-            Command(
-                "/autocompact",
-                "Compact automatically near the context limit: on / off",
-                self.autocompact,
-                ("on", "off"),
-                group="Session",
-            ),
+            self.controller.registry.find("/compact"),
+            self.controller.registry.find("/autocompact"),
             self.controller.registry.find("/jobs"),
-            Command(
-                "/resend",
-                "Ask the model again from the last checkpoint, without a new message",
-                self.resend,
-                group="Session",
-            ),
+            self.controller.registry.find("/resend"),
             Command(
                 "/worktree",
                 "This session's git worktree: status / merge / resolve / finish / remove"
@@ -508,6 +488,9 @@ class PreviewApp:
 
     def note(self, text: str) -> None:
         self.transcript.note(text)
+
+    def flash(self, text: str) -> None:
+        self.transcript.flash(text)
 
     def warning(self, text: str) -> None:
         self.transcript.warning(text)
@@ -810,24 +793,6 @@ class PreviewApp:
         if self.resuming:
             await self.runtime.restore()
 
-    def compact(self, argument: str, *, before_queue: bool = False) -> None:
-        if not self.model or not hasattr(self.runtime, "compact"):
-            raise ValueError("/compact requires a live model session.")
-        if not before_queue and (self.activity.busy or self.activity.queued_prompts):
-            raise ValueError("/compact is unavailable while working. Cancel or wait, then retry.")
-        self.compact_requested = argument
-
-    def resend(self, argument: str, *, before_queue: bool = False) -> None:
-        """Ask again from the settled checkpoint instead of typing "continue"."""
-        if argument:
-            raise ValueError("/resend takes no arguments.")
-        if not self.model or not hasattr(self.runtime, "resend_prompt"):
-            raise ValueError("/resend requires a live model session.")
-        if not before_queue and (self.activity.busy or self.activity.queued_prompts):
-            raise ValueError("/resend is unavailable while working. Cancel or wait, then retry.")
-        self.runtime.resend_prompt()
-        self.resend_requested = True
-
     async def browse_jobs(self) -> None:
         from pcode.jobs_ui import JobBrowser
 
@@ -846,25 +811,6 @@ class PreviewApp:
                 style=session.app.style,
             )
             await browser.run()
-
-    def autocompact(self, argument: str) -> None:
-        if not self.model or not hasattr(self.runtime, "auto_compact"):
-            raise ValueError("/autocompact requires a live model session.")
-        if argument:
-            if self.activity.busy or self.activity.queued_prompts:
-                raise ValueError("Change /autocompact while idle.")
-            from pcode.compaction import effective_window
-
-            window = effective_window(self.runtime.agent.model)
-            if argument == "on" and window is None:
-                raise ValueError(
-                    "Unknown context window. Set PCODE_CONTEXT_WINDOW to the deployment's "
-                    "token limit before enabling automatic compaction."
-                )
-            self.runtime.auto_compact = argument == "on"
-            self.persist_defaults(autocompact=argument)
-        state = "on" if self.runtime.auto_compact else "off"
-        self.transcript.flash(f"Automatic compaction: {state}. Usage: /autocompact on|off")
 
     def config(self, argument: str) -> None:
         args = shlex.split(argument)
@@ -2765,111 +2711,65 @@ class PreviewApp:
         output, session = self.output, self.prompt_session
         self._command_popup_generation = tag
         try:
-            command = self.registry.find(text.split(maxsplit=1)[0])
-            before_queue = (
-                command is not None
-                and command.name in MODEL_COMMANDS
-                # A host's conversation refuses both, in handle().
-                and not self.hosted
-                and idle
-                and not controller.working()
-            )
-            if (
-                command
-                and command.name
-                in {
-                    "/resend",
-                    "/new",
-                    "/resume",
-                    "/login",
-                    "/logout",
-                    "/compact",
-                    "/autocompact",
-                }
-                and (self.activity.busy or self.activity.queued)
-                and not before_queue
-            ):
-                self.transcript.warning(
-                    f"{command.name} is unavailable while working. "
-                    "Cancel with Ctrl+C or wait for the run to finish, then retry."
-                )
-            else:
-                if before_queue:
-                    parts = text.split(maxsplit=1)
-                    handler = self.resend if command.name == "/resend" else self.compact
-                    handler(parts[1] if len(parts) > 1 else "", before_queue=True)
+            self.handle(text)
+            if self.job_requested is not None:
+                await self.perform_job()
+            if self.skill_requested is not None:
+                if self.skill_mcp_requested is not None:
+                    skill, names = self.skill_mcp_requested
+                    self.skill_mcp_requested = None
+                    # Started before the prompt is queued: the
+                    # consumer then waits for it on mcp_idle.
+                    controller.start_skill_mcp(skill, names)
+                prompt = self.skill_requested
+                self.skill_requested = None
+                # Queue it like a typed message so send mode, steering,
+                # and cancellation keep their usual meaning.
+                prompts.put(prompt, self.send_mode)
+                self.activity.busy = True
+            if controller.mcp_defaults_requested:
+                controller.start_mcp_defaults()
+            if not self.running:
+                controller.cancel()
+                if active := controller.tasks():
+                    await asyncio.gather(*active, return_exceptions=True)
+            if self.model_requested:
+                await self.choose_model(output, session)
+            if self.reload_requested:
+                await self.reload_extensions()
+            if self.login_requested:
+                await self.perform_login()
+            if self.logout_requested:
+                await self.perform_logout()
+            if self.aside_requested is not None:
+                (models, question), self.aside_requested = self.aside_requested, None
+                await self.start_aside(question, models)
+            if self.aside_view_requested:
+                await self.read_asides(output, session)
+            if self.bridge_requested is not None:
+                request, self.bridge_requested = self.bridge_requested, None
+                if request.action == "merge":
+                    await self.merge_thread(request.thread)
                 else:
-                    self.handle(text)
-                if self.job_requested is not None:
-                    await self.perform_job()
-                if self.resend_requested:
-                    self.resend_requested = False
-                    previous = self.runtime.resend_prompt()
-                    # This command was submitted idle, before any prompts
-                    # now queued behind it. Preserve that submission order.
-                    prompts.put(previous, "resend", first=True)
-                    self.activity.start_prompt(previous)
-                    self.activity.busy = True
-                if self.skill_requested is not None:
-                    if self.skill_mcp_requested is not None:
-                        skill, names = self.skill_mcp_requested
-                        self.skill_mcp_requested = None
-                        # Started before the prompt is queued: the
-                        # consumer then waits for it on mcp_idle.
-                        controller.start_skill_mcp(skill, names)
-                    prompt = self.skill_requested
-                    self.skill_requested = None
-                    # Queue it like a typed message so send mode, steering,
-                    # and cancellation keep their usual meaning.
-                    prompts.put(prompt, self.send_mode)
-                    self.activity.busy = True
-                if self.compact_requested is not None:
-                    focus = self.compact_requested
-                    self.compact_requested = None
-                    controller.start_compact(focus)
-                if controller.mcp_defaults_requested:
-                    controller.start_mcp_defaults()
-                if not self.running:
-                    controller.cancel()
-                    if active := controller.tasks():
-                        await asyncio.gather(*active, return_exceptions=True)
-                if self.model_requested:
-                    await self.choose_model(output, session)
-                if self.reload_requested:
-                    await self.reload_extensions()
-                if self.login_requested:
-                    await self.perform_login()
-                if self.logout_requested:
-                    await self.perform_logout()
-                if self.aside_requested is not None:
-                    (models, question), self.aside_requested = self.aside_requested, None
-                    await self.start_aside(question, models)
-                if self.aside_view_requested:
-                    await self.read_asides(output, session)
-                if self.bridge_requested is not None:
-                    request, self.bridge_requested = self.bridge_requested, None
-                    if request.action == "merge":
-                        await self.merge_thread(request.thread)
-                    else:
-                        controller.start_summary(request)
-                if self.worker_view_requested:
-                    await self.read_workers(output, session)
-                if self.tree_requested:
-                    await self.choose_tree(output, session)
-                if self.session_requested:
-                    await self.choose_session(output, session)
-                if self.switch_requested is not None:
-                    await self.switch_session(output, session)
-                if self.restart_requested:
-                    await self.restart_host()
-                if self.session_info_requested:
-                    await self.show_session_info(output, session)
-                if self.inspector_requested is not None:
-                    await self.inspect_tools(output, session)
-                if self.diffs_requested:
-                    await self.browse_diffs(output, session)
-                if self.links_requested:
-                    await self.choose_link(output, session)
+                    controller.start_summary(request)
+            if self.worker_view_requested:
+                await self.read_workers(output, session)
+            if self.tree_requested:
+                await self.choose_tree(output, session)
+            if self.session_requested:
+                await self.choose_session(output, session)
+            if self.switch_requested is not None:
+                await self.switch_session(output, session)
+            if self.restart_requested:
+                await self.restart_host()
+            if self.session_info_requested:
+                await self.show_session_info(output, session)
+            if self.inspector_requested is not None:
+                await self.inspect_tools(output, session)
+            if self.diffs_requested:
+                await self.browse_diffs(output, session)
+            if self.links_requested:
+                await self.choose_link(output, session)
         except _PopupSuperseded:
             pass
         finally:
