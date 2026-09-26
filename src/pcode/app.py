@@ -2077,7 +2077,7 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Run the conversation in a background session host that outlives this terminal "
-        "(default: the session_host setting)",
+        "(the default); --no-host runs it inside this terminal",
     )
     parser.add_argument(
         "--attach",
@@ -2274,7 +2274,7 @@ def _pick_host(selector: str, workspace: Path):
         return find_host(selector)
     entries = list_hosts()
     if not entries:
-        raise LookupError("No session hosts are running; start one with pcode --host.")
+        raise LookupError("No session hosts are running; start one with pcode.")
     scope = repo_scope(workspace)
     here = [entry for entry in entries if repo_scope(Path(entry.workspace)) == scope]
     return (here or entries)[0]
@@ -2448,8 +2448,16 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         if not entries:
             print("No session hosts are running.")
         return
+    # Every interactive session with a model runs in a background host unless
+    # asked not to; the canned preview (no model) has nothing to host.
+    has_model = bool(args.model or args.resume or load_preferences().get("model"))
     hosted = args.attach is not None or (
-        args.host if args.host is not None else load_preferences().get("session_host") == "on"
+        has_model
+        and (
+            args.host
+            if args.host is not None
+            else load_preferences().get("session_host", SETTINGS["session_host"].default) == "on"
+        )
     )
     if args.resume and args.attach is None and not args.print:
         running = _running_host(args.resume, args.session_dir, args.workspace or Path.cwd())

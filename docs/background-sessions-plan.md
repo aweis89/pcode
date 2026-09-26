@@ -134,14 +134,17 @@ How it works (protocol 2, `pcode.rpc` on the host socket):
   offset and applies the calls.
 
 
-- [ ] Protocol v2 carrying intents, queries, and updates; the host runs the controller
-- [ ] Terminal-side client replaces `RemoteRuntime`; delete `HOSTED_COMMANDS`
-- [ ] Run the app-level tests against both the in-process and socket transports
+- [x] Protocol v2 carrying intents, queries, and updates; the host runs the controller
+- [x] Terminal-side client replaces `RemoteRuntime`; delete `HOSTED_COMMANDS`
+- [ ] Run the app-level tests against both the in-process and socket transports (today
+      `tests/test_session_host.py` covers the socket path end to end)
 
 ### Phase 4: background only
 
-- [ ] Every interactive launch spawns a host; drop `--host`, `--no-host`, `session_host`
-- [ ] `--print` decision (in-process or host)
+- [x] Every interactive launch with a model spawns a host (`session_host` now defaults
+      on). `--no-host` stays as the escape hatch; the suite defaults it off for tests
+      that drive `main()` in-process.
+- [x] `--print` stays in-process: one prompt, no terminal to come back to
 - [ ] Merge the docs into [Sessions and recovery](sessions.md)
 
 ### Small items (any time)
@@ -156,7 +159,7 @@ How it works (protocol 2, `pcode.rpc` on the host socket):
 - [x] Mark hosts running older code in `/switch` and `--hosts`; `--stop-hosts all|stale`
 - [x] `/stop` asks about merging the worktree in the terminal, as a local exit does
 - [x] Tab progress (OSC 9;4) while a turn runs (any session, local or hosted)
-- [ ] Background job wake-ups in hosts (falls out of Phase 1)
+- [x] Background job wake-ups in hosts (the host runs `watch_jobs`)
 
 ## Traps found so far
 
