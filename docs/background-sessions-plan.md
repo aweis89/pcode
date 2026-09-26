@@ -26,10 +26,10 @@ which wait for Phase 1. Phase 1 is under way: `controller.SessionController` own
 the runtime, the prompt and command queues, send modes, cancel, steering, busy
 accounting, the turn loop (`consume`, `run_turn`, `run_shell`), the command loop
 (`consume_commands`), and the MCP and history tasks, showing everything through
-`PreviewApp`'s `SessionView` methods. Commands still run in the terminal: the
-controller hands each one back through `view.run_command`. Next: move command
-handlers into the controller, one area at a time (jobs, MCP, history, model,
-side questions, session lifecycle).
+`PreviewApp`'s `SessionView` methods. Session commands live in
+`SessionController.registry` (so far `/jobs`, `/mcp`, `/compact`, `/autocompact`,
+`/resend`); the controller hands the rest back through `view.run_command`. Next:
+the remaining areas (model and effort, side questions, session lifecycle).
 In the demo the terminal still runs all session logic itself, against
 `RemoteRuntime`, a stand-in that forwards `stream` to the host. That is why a
 dozen commands are refused there, and it is what the refactor replaces.
@@ -95,14 +95,15 @@ Move what `run_async`'s nested functions do today into `pcode.controller.Session
       wrapper for tests that drive one turn.
 - [x] History tasks (`/compact`, side-thread summary) and MCP tasks
 - [x] The command loop (`consume_commands`); the terminal runs what it hands back
-- [ ] Job watching and wake-ups (`watch_jobs`)
+- [x] Job watching and wake-ups (`watch_jobs`), and `/jobs`
 - [ ] Side questions (`/btw`) lifecycle
 
 ### Phase 2: session commands and popup data in the controller
 
-- [ ] `/compact`, `/autocompact`, `/resend`, `/new`
+- [x] `/compact`, `/autocompact`, `/resend` (`/new` goes with the session lifecycle)
 - [ ] `/model`, `/effort` (the picker stays in the terminal; the choice is an intent)
-- [ ] `/mcp`, skill MCP enabling, `/login`, `/logout`
+- [x] `/mcp` and skill MCP enabling
+- [ ] `/login`, `/logout`
 - [ ] `/tree` navigation, `/btw` and its viewer, `/workers`, `/jobs`, `/tools`, `/links`, `/diffs`
 - [ ] `/reload` and extension commands (their handlers run where the extension is loaded)
 - [ ] `/worktree`

@@ -172,7 +172,8 @@ def preview(history):
 def test_resend_routes_to_a_live_run():
     app = preview(["earlier turn"])
     assert app.handle("/resend") is False
-    assert app.resend_requested
+    assert app.activity.queued_prompts == ["earlier prompt"]
+    assert app.activity.queued_modes == ["resend"]
 
 
 def test_resend_is_refused_without_history_or_with_arguments():
@@ -181,10 +182,10 @@ def test_resend_is_refused_without_history_or_with_arguments():
         model="test:local", runtime=StubRuntime([]), console=Console(file=output, width=160)
     )
     assert app.handle("/resend") is False
-    assert not app.resend_requested
+    assert not app.activity.queued_prompts
     app.runtime.history = ["earlier turn"]
     assert app.handle("/resend now") is False
-    assert not app.resend_requested
+    assert not app.activity.queued_prompts
     assert "no earlier prompt" in output.getvalue()
     assert "Usage: /resend" in output.getvalue()
 

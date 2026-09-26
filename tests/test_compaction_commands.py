@@ -2,7 +2,7 @@
 
 import asyncio
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from prompt_toolkit.input import create_pipe_input
@@ -136,24 +136,25 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
 def test_manual_command_preview_rejection_and_autocompact_preference(monkeypatch):
     preview = PreviewApp(console=Console(file=StringIO()))
     with pytest.raises(ValueError, match="live model"):
-        preview.compact("focus")
+        preview.controller.compact("focus")
     runtime = AgentRuntime(Agent(TestModel()))
     app = PreviewApp(model="test:local", runtime=runtime, console=Console(file=StringIO()))
     assert runtime.auto_compact
     monkeypatch.delenv("PCODE_CONTEXT_WINDOW", raising=False)
     with pytest.raises(ValueError, match="Unknown context window"):
-        app.autocompact("on")
+        app.controller.autocompact("on")
     assert load_preferences().get("autocompact") is None
     monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "128000")
-    app.autocompact("on")
+    app.controller.autocompact("on")
     assert runtime.auto_compact
     assert load_preferences()["autocompact"] == "on"
     assert AgentRuntime(Agent(TestModel())).auto_compact
-    app.autocompact("off")
+    app.controller.autocompact("off")
     assert not runtime.auto_compact
     assert load_preferences()["autocompact"] == "off"
+    app.controller.start_compact = Mock()
     app.registry.dispatch("/compact retain exact {identifiers}")
-    assert app.compact_requested == "retain exact {identifiers}"
+    app.controller.start_compact.assert_called_once_with("retain exact {identifiers}")
     app.activity.busy = True
     with pytest.raises(ValueError, match="idle"):
-        app.autocompact("on")
+        app.controller.autocompact("on")
