@@ -281,21 +281,21 @@ def test_the_app_refuses_a_bridge_it_cannot_make_yet(tmp_path):
 
     async def run():
         await turn(app.runtime, "Main task")
-        await app.start_aside("Why?")
+        await app.controller.start_aside("Why?")
         root = app.asides.items[0]
         assert root.base == app.runtime.tree.active
         assert root.conversation == app.runtime.conversation_id
         with pytest.raises(ValueError, match="Wait for this answer first"):
-            app.check_bridge(root.thread)
+            app.controller.check_bridge(root.thread)
         await settle(app)
-        assert app.check_bridge(root.thread) is root
+        assert app.controller.check_bridge(root.thread) is root
         app.activity.busy = True
         with pytest.raises(ValueError, match="waits for the running turn"):
-            app.check_bridge(root.thread)
+            app.controller.check_bridge(root.thread)
         app.activity.busy = False
         root.conversation = "another"
         with pytest.raises(ValueError, match="another conversation"):
-            app.check_bridge(root.thread)
+            app.controller.check_bridge(root.thread)
 
     asyncio.run(run())
 
@@ -305,12 +305,12 @@ def test_the_app_merges_a_thread_and_shows_it(tmp_path):
 
     async def run():
         await turn(app.runtime, "Main task")
-        await app.start_aside("Why?")
+        await app.controller.start_aside("Why?")
         await settle(app)
         root = app.asides.items[0]
-        app.follow_up_aside(root.thread, "And then?")
+        app.controller.follow_up_aside(root.thread, "And then?")
         await settle(app)
-        await app.merge_thread(root.thread)
+        await app.controller.merge_thread(root.thread)
         tree = app.runtime.tree
         assert [tree.nodes[i].prompt for i in tree.path(tree.active)] == [
             "Main task",
@@ -332,7 +332,7 @@ def test_btw_summarizes_a_thread_into_the_conversation_from_the_viewer(tmp_path)
 
     async def run():
         await turn(app.runtime, "Main task")
-        await app.start_aside("Why?")
+        await app.controller.start_aside("Why?")
         await settle(app)
         thread = app.asides.items[0].thread
 

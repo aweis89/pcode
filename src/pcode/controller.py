@@ -15,9 +15,23 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
+from pcode.aside import (
+    EFFORT_MARK,
+    MODEL_MARK,
+    Aside,
+    Asides,
+    SideTarget,
+    effort_fragment,
+    exchanges,
+    model_fragment,
+    model_labels,
+    parse_models,
+    summary_request,
+)
 from pcode.commands import Command, CommandRegistry
 from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
 from pcode.preferences import (
+    EFFORTS,
     SETTINGS,
     apply_effort,
     apply_thinking,
@@ -27,7 +41,7 @@ from pcode.preferences import (
     save_model_effort,
     save_preferences,
 )
-from pcode.runtime import CommandOutput, JobFinished, ToolSummary
+from pcode.runtime import CommandOutput, JobFinished, Message, ToolSummary
 from pcode.shell_mode import execute, shell_command
 from pcode.tool_display import command_text
 
@@ -69,7 +83,6 @@ TERMINAL_COMMANDS = frozenset(
         "/diffs",
         "/links",
         "/tree",
-        "/btw",
         "/workers",
         "/resume",
         "/switch",
@@ -298,10 +311,17 @@ class SessionView(Protocol):
     def commands_changed(self) -> None: ...
     def conversation_reset(self, title: str) -> None: ...
     def replay_conversation(self) -> None: ...
+    def show_branch(self) -> None: ...
+    def show_events(self, events) -> None: ...
+
+    # A side question's answer moved (it streams), or it arrived.
+    def aside_changed(self, aside) -> None: ...
+    def aside_answered(self, aside) -> None: ...
 
     # Popups the session's commands open, in the terminal that sent them.
     async def browse_jobs(self) -> None: ...
     async def choose_model(self, values, providers, current: str | None) -> str | None: ...
+    async def read_asides(self): ...
 
 
 def _mcp_enable(text: str) -> bool:
@@ -374,6 +394,16 @@ class SessionController:
         self.reload_requested = False
         self.login_requested: str | None = None
         self.logout_requested: str | None = None
+        # Side questions run beside the conversation instead of in it, so they
+        # keep their own records and never enter the queue.
+        self.asides = Asides()
+        # The live panel spins a row per running question; share the list so
+        # it needs no refresh hook of its own.
+        self.activity.asides = self.asides.items
+        self.asides.on_failure = self.record_aside_failure
+        self.asides.on_update = lambda aside: self.view.aside_changed(aside)
+        self.asides.on_settle = self.aside_settled
+        self._model_suggestions: tuple[str | None, float, list[str]] | None = None
         # Whether the owner is shutting down, so a cancelled turn is not a Ctrl+C.
         self.closing: Callable[[], bool] = lambda: False
         self.prompts = PromptQueue(activity)
@@ -410,6 +440,16 @@ class SessionController:
 
     def register_commands(self) -> None:
         for command in (
+            Command(
+                "/btw",
+                "Ask a side question beside the running turn ($MODEL ... picks models, "
+                "+EFFORT the effort); "
+                "bare opens the answers",
+                self.aside,
+                free_arguments=True,
+                argument_completer=self.aside_completions,
+                group="Inspect",
+            ),
             Command(
                 "/model",
                 "Choose a model; keeps the conversation (Ctrl+L)",
@@ -741,7 +781,7 @@ class SessionController:
             for task in active:
                 if not task.cancelling():
                     task.cancel()
-        elif stopped := self.app.asides.cancel():
+        elif stopped := self.asides.cancel():
             self.view.note(f"Stopped {stopped} side question(s).")
         else:
             self.activity.busy = False
@@ -1247,9 +1287,9 @@ class SessionController:
 
     def start_summary(self, request) -> None:
         # Checked before the task marks the session busy, which would refuse it.
-        follows = self.app.check_bridge(request.thread)
+        follows = self.check_bridge(request.thread)
         self.start_history_task(
-            self.app.summarize_thread(follows, request.instructions),
+            self.summarize_thread(follows, request.instructions),
             label="Summarizing side thread",
             detail=request.instructions,
             status="Summarizing side thread…",
@@ -2527,3 +2567,273 @@ class SessionController:
         self.register_skills()
         self.view.commands_changed()
         self.view.note(f"Workspace: {workspace}")
+
+    # Side questions (/btw) and conversation branches (/tree)
+
+    def aside_settled(self, aside) -> None:
+        if aside.status == "answered":
+            self.view.aside_answered(aside)
+            return
+        if aside.status == "cancelled":
+            self.view.note("Side question stopped.")
+        else:
+            on = f" on {aside.label}" if aside.label else ""
+            self.view.warning(f"Side question{on} {aside.status}. {aside.error}".strip())
+            saved = getattr(self.runtime, "session", None)
+            if saved is not None and (saved.directory / "errors.log").exists():
+                self.view.note(f"Diagnostics: {saved.directory / 'errors.log'}")
+        self.view.redraw()
+
+    async def aside(self, argument: str) -> None:
+        """`/btw [$MODEL[+EFFORT] | +EFFORT ...] QUESTION` asks beside the turn.
+
+        Bare `/btw` reads the answers.
+        """
+        models, question = parse_models(argument)
+        if not question:
+            if not self.asides.items:
+                raise ValueError(
+                    "No side questions yet. Ask one with /btw QUESTION; "
+                    "it runs beside the conversation without interrupting it."
+                )
+            request = await self.view.read_asides()
+            if request is None:
+                return
+            if request.action == "merge":
+                await self.merge_thread(request.thread)
+            else:
+                self.start_summary(request)
+            return
+        if not self.model:
+            raise ValueError("/btw needs a model; this is a local UI preview.")
+        if self.app._startup_pending or self.app._startup_error is not None:
+            raise ValueError("/btw is unavailable until the agent has started.")
+        # Refused the way /effort refuses it, before anything starts, rather
+        # than asking at an effort the provider would silently ignore.
+        for target in models:
+            name = target.model or self.model
+            if target.effort and effort_setting(name) is None:
+                raise ValueError(
+                    f"Effort control requires an OpenAI/Codex, Anthropic, or Meridian model; "
+                    f"{name} is not one."
+                )
+        await self.start_aside(question, models)
+
+    async def start_aside(self, question: str, models: list[SideTarget] | None = None) -> None:
+        """Run a side question in the background, on the context available now.
+
+        With `models`, one side question starts per target. The conversation's
+        own model takes the default path, which shares its prompt cache; every
+        other one is resolved first, so a bad name fails the command before
+        anything starts. An effort on the conversation's own model stays on
+        that path, with the effort applied to its settings for that question.
+        """
+        from pcode.agent import side_model, with_effort
+
+        models = models or [SideTarget()]
+        others = [target for target in models if target.model not in ("", self.model)]
+        resolved = {}
+        if others:
+            chosen = await asyncio.to_thread(
+                lambda: [side_model(target.model, target.effort) for target in others]
+            )
+            resolved = dict(zip(others, chosen))
+        labels = model_labels(models)
+
+        def options_for(target: SideTarget) -> dict:
+            if target in resolved:
+                return {"model": resolved[target]}
+            if not target.effort:
+                return {}
+            # Taken now, like the context: a later /effort must not reach it.
+            agent = self.runtime.agent
+            settings = with_effort(self.model, agent.model, agent.model_settings, target.effort)
+            return {"settings": settings}
+
+        tree = getattr(self.runtime, "tree", None)
+        for target in models:
+            self.asides.start(
+                question,
+                self._aside_work(question, options_for(target)),
+                model=target.model,
+                label=labels[target],
+                effort=target.effort,
+                conversation=getattr(self.runtime, "conversation_id", ""),
+                base=tree.active if tree is not None else None,
+            )
+        if others:
+            names = ", ".join(dict.fromkeys(target.model for target in others))
+            self.view.note(
+                f"Asking beside the conversation on {names}: the turn keeps running and "
+                "this question does not join it. Another model starts without the "
+                "conversation's prompt cache, so it pays for the whole prompt. "
+                "/btw opens the answers."
+            )
+        else:
+            self.view.note(
+                "Asking beside the conversation: the turn keeps running and "
+                "this question does not join it. /btw opens the answer."
+            )
+
+    def _aside_work(self, question: str, options: dict):
+        """The background run for one side question, streaming into its record."""
+
+        async def work(aside):
+            def report(answer: str, activity: str) -> None:
+                self.asides.update(aside, answer=answer, activity=activity)
+
+            return await self.runtime.aside(question, report=report, **options)
+
+        return work
+
+    def follow_up_aside(self, thread: str, question: str) -> None:
+        """Ask `question` as a follow-up in a side question's thread.
+
+        It continues from the thread's newest answer, on the model and effort
+        that answered it; see `AgentRuntime.aside`. Raises `ValueError` when
+        there is nothing to continue yet, which the viewer shows as is.
+        """
+        follows = self.asides.follows(thread)
+        self.asides.start(
+            question,
+            self._aside_work(question, {"after": follows.reply}),
+            model=follows.model,
+            label=follows.label,
+            effort=follows.effort,
+            thread=thread,
+        )
+
+    def check_bridge(self, thread: str) -> Aside:
+        """The answer a thread would be brought into the conversation from.
+
+        Raises `ValueError` saying why it cannot be yet: like forking in
+        /tree, changing the conversation waits for the running turn, and a
+        thread from another conversation has nowhere here to go.
+        """
+        if self.activity.busy or self.activity.queued:
+            raise ValueError("Adding to the conversation waits for the running turn")
+        follows = self.asides.follows(thread)
+        root = self.asides.thread(thread)[0]
+        tree = getattr(self.runtime, "tree", None)
+        if (
+            tree is None
+            or root.conversation != getattr(self.runtime, "conversation_id", None)
+            or (root.base is not None and root.base not in tree.nodes)
+        ):
+            raise ValueError("This thread was asked in another conversation")
+        return follows
+
+    async def merge_thread(self, thread: str) -> None:
+        """Add a side thread to the conversation tree where it was asked."""
+        from pcode.diagnostics import redact
+
+        follows = self.check_bridge(thread)
+        asked = self.asides.thread(thread)
+        messages = follows.reply.messages
+        steps = [
+            (aside.question, aside.answer, messages[:end])
+            for aside, end in exchanges(asked, messages)
+        ]
+        if not steps:
+            raise ValueError("Nothing in that side thread to merge.")
+        moved = await self.runtime.merge_aside(steps, asked[0].base)
+        follows.bridged = "merged"
+        count = f"{len(steps)} side question{'s' if len(steps) > 1 else ''}"
+        if moved:
+            for question, answer, _ in steps:
+                self.view.user(redact(question))
+                self.view.show_events((Message(redact(answer)),))
+            self.view.note(
+                f"Merged {count} into the conversation, which continues from the last answer."
+            )
+        else:
+            self.view.note(
+                f"Merged {count} into /tree as a branch where the thread was asked; the "
+                "conversation stays where it is. /tree switches to it."
+            )
+
+    async def summarize_thread(self, follows: Aside, instructions: str) -> None:
+        """Add a summary of `follows`'s thread to the conversation, and show it."""
+        from pcode.diagnostics import redact
+
+        asked = self.asides.thread(follows.thread)
+        questions = [aside.question for aside, _ in exchanges(asked, follows.reply.messages)]
+        request = summary_request(questions, instructions)
+        summary = await self.runtime.summarize_aside(follows.reply, request, instructions)
+        follows.bridged = "summarized"
+        self.view.user(redact(request))
+        self.view.show_events((Message(redact(summary)),))
+
+    def aside_completions(self, argument: str):
+        """Complete a `$MODEL` word in `/btw` arguments from the /model catalog.
+
+        After a `+`, bare or ending a `$MODEL` word, the /effort levels complete.
+        """
+        from prompt_toolkit.completion import Completion
+
+        effort = effort_fragment(argument)
+        if effort is not None:
+            for level in EFFORTS:
+                if level.startswith(effort.casefold()):
+                    yield Completion(
+                        level, start_position=-len(effort), display=EFFORT_MARK + level
+                    )
+            return
+        fragment = model_fragment(argument)
+        if fragment is None:
+            return
+        needle = fragment.casefold()
+        for model in self.model_suggestions():
+            if needle in model.casefold():
+                yield Completion(
+                    MODEL_MARK + model,
+                    start_position=-(len(fragment) + len(MODEL_MARK)),
+                    display=model,
+                )
+
+    def model_suggestions(self) -> list[str]:
+        """The /model picker's catalog, kept briefly so typing does not re-scan it."""
+        from time import monotonic
+
+        from pcode.models import active_providers, model_catalog
+
+        cached = self._model_suggestions
+        if cached is None or cached[0] != self.model or monotonic() - cached[1] > 30:
+            models = model_catalog(active_providers(self.model), self.model)
+            cached = self._model_suggestions = (self.model, monotonic(), models)
+        return cached[2]
+
+    def record_aside_failure(self, aside, error: BaseException) -> None:
+        """Keep a failed side question's frames beside the session's turn failures.
+
+        The viewer shows only the error summary, and nothing about a side
+        question is journaled, so without this its traceback is simply lost.
+        """
+        from pcode.diagnostics import provider_context
+
+        saved = getattr(self.runtime, "session", None)
+        if saved is None:
+            return
+        agent = getattr(self.runtime, "agent", None)
+        saved.record_error(
+            error,
+            run_id=f"aside {aside.id}",
+            provider_context=(
+                provider_context(aside.model or agent.model) if agent is not None else None
+            ),
+            detail=f"Side question ({aside.status}"
+            + (f" on {aside.model}" if aside.model else "")
+            + (f" at {aside.effort} effort" if aside.effort else "")
+            + f"): {aside.question}",
+        )
+
+    async def navigate_tree(self, identity: str | None, *, edit: bool = False) -> str:
+        if self.activity.busy or self.activity.queued:
+            raise ValueError("/tree is unavailable while working or messages are queued.")
+        draft = await self.runtime.navigate(identity, edit=edit)
+        self.view.show_branch()
+        self.view.note(
+            "Context switched; previous branches are kept. File changes and tool effects "
+            "are not undone."
+        )
+        return draft

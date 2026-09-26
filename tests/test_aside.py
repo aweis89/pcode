@@ -4,7 +4,7 @@ import asyncio
 from copy import deepcopy
 from io import StringIO
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from prompt_toolkit.formatted_text import to_formatted_text
@@ -212,7 +212,7 @@ def test_a_failed_side_question_writes_its_frames_to_errors_log(tmp_path):
     )
 
     async def run():
-        await app.start_aside("why this file?")
+        await app.controller.start_aside("why this file?")
         await asyncio.sleep(0.05)
         failed = app.asides.items[0]
         assert failed.status == "failed"
@@ -222,7 +222,7 @@ def test_a_failed_side_question_writes_its_frames_to_errors_log(tmp_path):
         assert "ValueError: provider refused" in log
         assert "Traceback" in log
         # Stopping on purpose is not a defect worth a traceback.
-        await app.start_aside("stop me")
+        await app.controller.start_aside("stop me")
         await asyncio.sleep(0)
         app.asides.cancel()
         await app.asides.close()
@@ -388,9 +388,9 @@ def test_running_side_questions_get_muted_spinner_rows_above_the_editor():
 def test_btw_command_requires_a_question_or_an_answer_to_read():
     preview = PreviewApp(console=Console(file=StringIO()))
     with pytest.raises(ValueError, match="No side questions yet"):
-        preview.registry.dispatch("/btw")
+        asyncio.run(preview.controller.aside(""))
     with pytest.raises(ValueError, match="local UI preview"):
-        preview.registry.dispatch("/btw why")
+        asyncio.run(preview.controller.aside("why"))
 
     app = PreviewApp(
         model="test:local",
@@ -400,11 +400,13 @@ def test_btw_command_requires_a_question_or_an_answer_to_read():
     # Unavailable commands are refused while working; this one is the exception.
     app.activity.busy = True
     app.activity.queued = 1
-    assert app.registry.dispatch("/btw  why this file?  ")
-    assert app.aside_requested == ([], "why this file?")
+    start = app.controller.start_aside = AsyncMock()
+    app.read_asides = AsyncMock(return_value=None)
+    asyncio.run(app.controller.dispatch("/btw  why this file?  ", idle=False))
+    start.assert_awaited_once_with("why this file?", [])
     app.asides.items.append(Aside(question="earlier"))
-    assert app.registry.dispatch("/btw")
-    assert app.aside_view_requested
+    asyncio.run(app.controller.dispatch("/btw", idle=False))
+    app.read_asides.assert_awaited_once()
 
 
 def test_btw_runs_in_the_background_and_reports_in_the_footer_and_transcript():
@@ -427,7 +429,7 @@ def test_btw_runs_in_the_background_and_reports_in_the_footer_and_transcript():
             runtime=Runtime(),
             console=Console(file=output, color_system=None, width=140),
         )
-        await app.start_aside("why")
+        await app.controller.start_aside("why")
         await asyncio.sleep(0)
         assert app.asides.running == 1
         # A side question is not "working": input and the queue stay untouched.
