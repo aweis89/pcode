@@ -11,7 +11,7 @@ from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit
 from prompt_toolkit.widgets import Dialog, Label, TextArea
 
-from pcode.host_protocol import HostEntry
+from pcode.host_protocol import HostEntry, code_fingerprint
 from pcode.popup_ui import (
     bind_list_paging,
     popup_container,
@@ -22,6 +22,22 @@ from pcode.popup_ui import (
 
 _TITLE_WIDTH = 40
 STATES = {"working": "● working", "idle": "○ idle   ", "starting": "◌ starting"}
+NEW = "✓ new    "
+
+
+def unseen(entry: HostEntry) -> bool:
+    """Finished while no terminal was showing it, and not looked at since."""
+    return entry.unseen and entry.state != "working"
+
+
+def ordered(entries: list[HostEntry]) -> list[HostEntry]:
+    """Finished-and-unseen first, then working, then the rest; newest activity first in each."""
+
+    def rank(entry: HostEntry) -> tuple[int, float]:
+        group = 0 if unseen(entry) else 1 if entry.state == "working" else 2
+        return group, -entry.updated
+
+    return sorted(entries, key=rank)
 
 
 def age(seconds: float) -> str:
@@ -34,21 +50,27 @@ def age(seconds: float) -> str:
     return f"{int(seconds // 86400)}d ago"
 
 
-def host_row(entry: HostEntry, current: str | None, now: float | None = None) -> str:
+def host_row(
+    entry: HostEntry, current: str | None, now: float | None = None, *, code: str | None = None
+) -> str:
+    """One line per host; `code` is the installed fingerprint, to flag hosts on older code."""
     now = time.time() if now is None else now
     title = " ".join(entry.label().split())
     if len(title) > _TITLE_WIDTH:
         title = title[: _TITLE_WIDTH - 1] + "…"
     marker = "▸" if entry.id == current else " "
-    state = STATES.get(entry.state, entry.state)
+    state = NEW if unseen(entry) else STATES.get(entry.state, entry.state)
     where = Path(entry.workspace).name
-    return f"{marker} {state}  {title:<{_TITLE_WIDTH}}  {where} · {age(now - entry.updated)}"
+    old = " · old code" if code is not None and entry.stale(code) else ""
+    return f"{marker} {state}  {title:<{_TITLE_WIDTH}}  {where} · {age(now - entry.updated)}{old}"
 
 
 def hosts_dialog(
     entries: list[HostEntry], *, current: str | None, input=None, output=None, style=None
 ):
     """Returns ("attach", id), ("stop", id), ("new", None), or None when cancelled."""
+    entries = ordered(entries)
+    code = code_fingerprint()
     visible: list[HostEntry] = []
     query = TextArea(height=1, prompt="Search: ", multiline=False)
     choices = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
@@ -70,7 +92,7 @@ def hosts_dialog(
             if term in f"{entry.title} {entry.last_prompt} {entry.workspace} {entry.id}".casefold()
         ]
         index = next((i for i, entry in enumerate(visible) if entry is previous), 0)
-        lines = [host_row(entry, current) for entry in visible]
+        lines = [host_row(entry, current, code=code) for entry in visible]
         position = sum(len(line) + 1 for line in lines[:index])
         choices.buffer.set_document(
             Document("\n".join(lines) or "No matching sessions.", position), bypass_readonly=True
@@ -122,12 +144,13 @@ def hosts_dialog(
         event.app.exit(result=None)
 
     working = sum(entry.state == "working" for entry in entries)
+    fresh = sum(unseen(entry) for entry in entries)
     dialog = Dialog(
         title="Sessions",
         body=HSplit(
             [
                 Label(
-                    f"{len(entries)} running · {working} working · ▸ this terminal",
+                    f"{len(entries)} running · {working} working · {fresh} new · ▸ this terminal",
                     dont_extend_height=True,
                 ),
                 query,

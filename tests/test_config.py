@@ -45,6 +45,8 @@ def test_defaults_and_path_do_not_create_files():
         "worker_isolation": "off",
         "worker_concurrency": "0",
         "session_host": "off",
+        "session_host_idle_minutes": "60",
+        "desktop_notifications": "on",
         "worktree_exit": "ask",
         "retry_attempts": "1",
         "tool_retries": "3",

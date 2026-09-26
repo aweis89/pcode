@@ -147,9 +147,13 @@ class RemoteRuntime:
         except (OSError, RuntimeError):
             pass
 
-    def stop(self) -> None:
-        """Ask the host to finish, then detach."""
-        self._send({"type": "stop"})
+    def stop(self, *, keep_worktree: bool = False) -> None:
+        """Ask the host to finish, then detach.
+
+        `keep_worktree` leaves the worktree for this terminal to tidy (asking
+        first) or for a restarted host to resume in.
+        """
+        self._send({"type": "stop", "keep_worktree": keep_worktree})
         self.close()
 
     async def hand_off(self, prompt: str) -> None:
@@ -458,3 +462,32 @@ def _exit_message(code: int, log: Path | None) -> str:
 
 def others(current: str | None, directory: Path | None = None) -> list[HostEntry]:
     return [entry for entry in list_hosts(directory) if entry.id != current]
+
+
+def _running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def wait_for_exit(pid: int, timeout: float = 30.0) -> None:
+    """Until the host has let go of its session: the next host can then open it."""
+    deadline = time.monotonic() + timeout
+    while _running(pid) and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+
+
+def wait_for_exit_sync(pid: int, timeout: float = 30.0) -> None:
+    deadline = time.monotonic() + timeout
+    while _running(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+async def stop_entry(entry: HostEntry) -> None:
+    runtime = await RemoteRuntime.connect(entry.socket)
+    runtime.stop()
+    await wait_for_exit(entry.pid)

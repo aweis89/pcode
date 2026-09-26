@@ -15,6 +15,7 @@ import asyncio
 import os
 import signal
 import sys
+import time
 from contextlib import aclosing
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from pcode.host_protocol import (
     LINE_LIMIT,
     PROTOCOL,
     HostEntry,
+    code_fingerprint,
     dumps,
     encode_event,
     host_dir,
@@ -80,7 +82,11 @@ class SessionHost:
         # Journal bytes that were settled before the running turn started.
         self.settled_end = 0
         self.stopped = asyncio.Event()
+        # A restart resumes this session in its worktree, so stopping must not tidy it away.
+        self.keep_worktree = False
         self.server: asyncio.AbstractServer | None = None
+        # When the host last had a terminal or a turn; the idle clock starts here.
+        self.active_at = time.monotonic()
         runtime.take_steering = self._take_steering
         # The level tells the terminal which of its own notice handlers to use.
         runtime.compaction_notice = lambda text: self.notice(text, "compaction")
@@ -147,12 +153,18 @@ class SessionHost:
             client.send(self.welcome())
             client.send(self.snapshot())
             self.clients.add(client)
+            # Shown now, so whatever finished while nobody watched has been seen.
+            self.update(attached=len(self.clients), unseen=False)
             while (message := await read_message(reader)) is not None:
                 self.handle(message)
         except (ValueError, ConnectionError):
             pass
         finally:
-            self.clients.discard(client)
+            if client in self.clients:
+                self.clients.discard(client)
+                self.active_at = time.monotonic()
+                if not self.stopped.is_set():
+                    self.update(attached=len(self.clients))
             client.close()
 
     def welcome(self) -> dict:
@@ -232,6 +244,7 @@ class SessionHost:
         elif kind == "cancel":
             self.cancel(str(message.get("policy") or "stop"))
         elif kind == "stop":
+            self.keep_worktree = bool(message.get("keep_worktree"))
             self.stop()
 
     # Turns
@@ -280,7 +293,13 @@ class SessionHost:
                 "context": self.context(),
             }
         )
-        self.update(state="idle")
+        self.active_at = time.monotonic()
+        self.update(
+            state="idle",
+            outcome=outcome,
+            turns=self.entry.turns + 1,
+            unseen=not self.clients,
+        )
         if outcome == "failed":
             # As a local terminal drops its queue when a turn fails.
             self.queue.clear()
@@ -345,6 +364,22 @@ class SessionHost:
     def notice(self, text: str, level: str = "note") -> None:
         self.emit({"type": "notice", "level": level, "text": str(text)})
 
+    def idle(self) -> bool:
+        """Nothing would be lost by stopping: no terminal, no turn, no running job."""
+        jobs = getattr(self.runtime, "jobs", None)
+        running = jobs.running() if jobs is not None else []
+        return not self.clients and not self.busy and not self.queue and not running
+
+    async def stop_when_idle(self, minutes: float, *, every: float = 30.0) -> None:
+        """Stop after `minutes` idle. The journal keeps the conversation for /resume."""
+        while not self.stopped.is_set():
+            await asyncio.sleep(every)
+            if not self.idle():
+                self.active_at = time.monotonic()
+            elif time.monotonic() - self.active_at >= minutes * 60:
+                print(f"idle for {minutes:g} min; stopping", file=sys.stderr, flush=True)
+                self.stop()
+
     def stop(self) -> None:
         self.cancel()
         self.stopped.set()
@@ -398,6 +433,7 @@ async def _serve(args: argparse.Namespace) -> None:
         model=args.model,
         workspace=str(workspace),
         log=os.environ.get("PCODE_HOST_LOG", ""),
+        code=code_fingerprint(),
     )
     write_entry(entry)
     set_project_root(workspace)
@@ -457,18 +493,24 @@ async def _serve(args: argparse.Namespace) -> None:
         loop.add_signal_handler(signum, host.stop)
     await _enable_default_mcp(runtime, host)
     print(f"serving {host.socket}", file=sys.stderr, flush=True)
+    idle_minutes = int(load_preferences().get("session_host_idle_minutes", "60") or 0)
+    watcher = asyncio.create_task(host.stop_when_idle(idle_minutes)) if idle_minutes else None
     try:
         await host.stopped.wait()
     finally:
+        if watcher is not None:
+            watcher.cancel()
         await host.close()
         runtime.close()
         await extensions.close()
-        leave_worktree(
-            workspace,
-            runtime.session,
-            ask=None,
-            notify=lambda text: print(text, file=sys.stderr, flush=True),
-        )
+        if not host.keep_worktree:
+            # A terminal that asked to keep it tidies it itself, and can ask first.
+            leave_worktree(
+                workspace,
+                runtime.session,
+                ask=None,
+                notify=lambda text: print(text, file=sys.stderr, flush=True),
+            )
         if saved is not None:
             saved.close()
 
