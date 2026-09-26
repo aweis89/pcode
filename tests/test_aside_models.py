@@ -275,9 +275,9 @@ def test_another_model_runs_with_its_settings_and_its_own_conversation_id(tmp_pa
 
     async def run():
         [event async for event in runtime.stream("Main task")]
-        assert await runtime.aside("same?") == "main"
-        assert await runtime.aside("other?", model=other) == "other"
-        assert await runtime.aside("again?", model=other) == "other"
+        assert (await runtime.aside("same?")).answer == "main"
+        assert (await runtime.aside("other?", model=other)).answer == "other"
+        assert (await runtime.aside("again?", model=other)).answer == "other"
         # The override ended with the run: the conversation keeps its settings.
         [event async for event in runtime.stream("Next")]
 
@@ -511,12 +511,12 @@ def test_the_model_labels_running_rows_and_the_viewer():
     rows = [text for _, text in activity.aside_rows("⠋", 80)]
     assert rows[0].startswith("⠋ btw · other · why? · Reading x · ")
     assert rows[1].startswith("⠋ btw · own? · ")
-    assert row(labeled).startswith("[other] why?")
-    assert row(asides.items[1]).startswith("own?")
+    assert row([labeled]).startswith("[other] why?")
+    assert row([asides.items[1]]).startswith("own?")
     browser = AsideBrowser(asides, selected=labeled.id, output=None, input=None)
     assert "on q:other" in browser.detail.text(80)
     quick = Aside(question="fast?", model="q:other", label="other \u00b7 low", effort="low")
     asides.items.append(quick)
-    assert row(quick).startswith("[other \u00b7 low] fast?")
+    assert row([quick]).startswith("[other \u00b7 low] fast?")
     browser = AsideBrowser(asides, selected=quick.id, output=None, input=None)
     assert "on q:other at low effort" in browser.detail.text(80)
