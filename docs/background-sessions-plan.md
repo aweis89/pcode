@@ -1,7 +1,7 @@
 # Background sessions: plan and status
 
 Working notes for moving every interactive session into a session host. The
-user-facing page is [Background sessions](background-sessions.md); this one
+user-facing page is [Background sessions](sessions.md#background-sessions); this one
 tracks where the work stands and what is left. Update the checklists in the
 same commit as the change.
 
@@ -46,7 +46,8 @@ switching back (the host now keeps `read`); `/restart` drew the conversation und
 "Resumed …" instead of its own note; and stopping an idle host told its terminals
 "Run cancelled".
 
-Left: merge the user docs into [Sessions and recovery](sessions.md).
+Nothing is left of the plan; the user docs are in
+[Sessions and recovery](sessions.md#background-sessions).
 
 ## Target architecture
 
@@ -158,7 +159,7 @@ How it works (protocol 2, `pcode.rpc` on the host socket):
       on). `--no-host` stays as the escape hatch; the suite defaults it off for tests
       that drive `main()` in-process.
 - [x] `--print` stays in-process: one prompt, no terminal to come back to
-- [ ] Merge the docs into [Sessions and recovery](sessions.md)
+- [x] Merge the docs into [Sessions and recovery](sessions.md#background-sessions)
 
 ### Small items (any time)
 

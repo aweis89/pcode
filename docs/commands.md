@@ -100,7 +100,7 @@ candidate's size so that cost is visible before you pick.
 - `/autocompact on|off`: toggle automatic LLM compaction (saved user preference; default on).
 - `/new`: start a new saved conversation; clears the screen and retained scrollback, keeps input history.
 - `/resume`: browse and search saved conversations by their prompts; resume one in place.
-- `/switch [HOST | - | new [PROMPT]]`: pick another running [background session](background-sessions.md)
+- `/switch [HOST | - | new [PROMPT]]`: pick another running [background session](sessions.md#background-sessions)
   and show it here, or start a new one; the session left keeps working.
 - `/restart`: restart this background session's host on the pcode installed now, keeping the conversation.
 - `/stop`: end this background session's host and quit (quitting normally leaves it running).
