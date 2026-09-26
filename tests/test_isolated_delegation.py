@@ -960,7 +960,9 @@ def test_worker_concurrency_limits_calls_in_one_response(repo, mode, configured_
             if active >= expected_limit:
                 slots_filled.set()
             try:
-                await asyncio.wait_for(slots_filled.wait(), 5)
+                # Isolated workers each check out a worktree first, which takes
+                # seconds on a busy machine; the timeout only stops a hang.
+                await asyncio.wait_for(slots_filled.wait(), 60)
                 await asyncio.sleep(0.1)
                 yield "Worker complete"
             finally:
