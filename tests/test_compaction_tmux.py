@@ -4,7 +4,7 @@ import shutil
 import time
 
 import pytest
-from test_tmux import SPINNER_ROW, capture, input_rows
+from test_tmux import SPINNER_ROW, TIMEOUT, capture, input_rows, resize
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -43,14 +43,14 @@ def test_compaction_keeps_editor_height_and_cancels_after_clearing_draft(pane):
     assert first.startswith(SPINNER_ROW)
     lines = screen.splitlines()
     assert lines[lines.index(first) + 1].startswith("┌─ Tasks")
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + TIMEOUT
     while prompt_row(screen) == first:
         assert time.monotonic() < deadline, "Compaction spinner did not animate"
         time.sleep(0.05)
         screen = capture(pane, "Compacting context", running=True)
     pane("send-keys", "-t", "preview:0.0", "-l", "keep this draft")
     for columns in (40, 100, 35):
-        pane("resize-window", "-t", "preview:0", "-x", str(columns))
+        resize(pane, "resize-window", "-t", "preview:0", "-x", str(columns))
         screen = capture(pane, "keep this draft", running=True, columns=columns)
         assert input_rows(screen) == 1
         assert prompt_row(screen).startswith(SPINNER_ROW)

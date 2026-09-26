@@ -4,7 +4,7 @@ import shutil
 import time
 
 import pytest
-from test_tmux import capture, input_rows
+from test_tmux import capture, input_rows, until
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -63,10 +63,9 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     assert "**REASONING" not in history(pane)
     pane("send-keys", "-t", "preview:0.0", "draft preserved")
     pane("send-keys", "-t", "preview:0.0", "C-t")
-    time.sleep(0.3)
+    until(lambda: "REASONING_" not in history(pane), lambda: history(pane))
     screen = capture(pane, "draft preserved", running=True)
     assert_compact(screen)
-    assert "REASONING_" not in history(pane)
     pane("send-keys", "-t", "preview:0.0", "C-t")
     capture(pane, "REASONING_29", running=True)
     assert history(pane).count("REASONING_00") == 1
@@ -79,8 +78,7 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     assert input_rows(screen) == 1
     # The same toggle works after the turn, rather than clearing thinking forever.
     pane("send-keys", "-t", "preview:0.0", "C-t")
-    time.sleep(0.3)
-    assert "REASONING_" not in history(pane)
+    until(lambda: "REASONING_" not in history(pane), lambda: history(pane))
     pane("send-keys", "-t", "preview:0.0", "C-t")
     capture(pane, "REASONING_29")
     assert history(pane).count("REASONING_00") == 1

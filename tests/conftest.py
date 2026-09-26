@@ -14,6 +14,10 @@ TMUX_SOCKET_PREFIXES = ("pcode-test-", "pcode-bench-")
 # A single tmux test lives for seconds; this is only long enough to never touch
 # a concurrent run's sockets.
 STALE_TMUX_SERVER_SECONDS = 15 * 60
+# A starting server binds its socket a moment before it listens, so a socket
+# that refuses connections may belong to a concurrent run that is just booting.
+# Unlinking it then would strand that server, so dead sockets wait this long.
+DEAD_TMUX_SOCKET_SECONDS = 60
 
 # The real-tmux regressions are 64 of ~1580 tests but three quarters of the
 # suite's wall clock: each boots a private tmux server plus a pcode process and
@@ -62,8 +66,9 @@ def tmux_socket_dir() -> Path:
 def sweep_tmux_servers(*, max_age_seconds: float) -> int:
     """Kill leaked test servers, and unlink sockets with no server behind them.
 
-    Only sockets older than ``max_age_seconds`` are killed, so a second pytest
-    process running at the same time keeps its own servers.
+    Only servers older than ``max_age_seconds`` are killed, and only sockets
+    older than DEAD_TMUX_SOCKET_SECONDS unlinked, so a concurrent pytest
+    process, in this worktree or another, keeps its own servers.
     """
     directory = tmux_socket_dir()
     if shutil.which("tmux") is None or not directory.is_dir():
@@ -76,10 +81,10 @@ def sweep_tmux_servers(*, max_age_seconds: float) -> int:
         base = ["tmux", "-L", socket.name, "-f", "/dev/null"]
         alive = subprocess.run([*base, "list-sessions"], capture_output=True).returncode == 0
         try:
-            expired = now - socket.stat().st_mtime > max_age_seconds
+            age = now - socket.stat().st_mtime
         except OSError:
             continue
-        if alive and not expired:
+        if age <= (max_age_seconds if alive else DEAD_TMUX_SOCKET_SECONDS):
             continue
         if alive:
             subprocess.run([*base, "kill-server"], capture_output=True)
@@ -93,7 +98,7 @@ def reap_leaked_tmux_servers():
     """Bound the damage from any earlier run that never reached its teardown."""
     sweep_tmux_servers(max_age_seconds=STALE_TMUX_SERVER_SECONDS)
     yield
-    # This run's own sockets are gone by now; clear the dead files they leave.
+    # This run's own servers are gone by now; clear dead files earlier runs left.
     sweep_tmux_servers(max_age_seconds=float("inf"))
 
 

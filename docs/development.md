@@ -14,9 +14,22 @@ runtime, so they are opt-in: `make test` skips them (each skip states why) and
 finishes in seconds, while `make test-all` runs them. Ad-hoc `pytest` invocations
 follow the same rule: `--tmux` or `PCODE_TEST_TMUX=1` enables them, and naming a
 tmux path (`uv run pytest tests/test_tmux.py -k resize`) counts as asking for
-them. They run serially on purpose: they assert on real pane paints within
-deadlines, and a loaded machine makes them fail spuriously. Run `make test-all`
-before pushing anything that touches layout, streaming, or the editor.
+them. They run in parallel like the rest, and beside other worktrees' runs,
+because each test boots a private tmux server and none of them races the clock.
+Keep new ones that way with the helpers in `tests/test_tmux.py`:
+
+- Wait with `capture`, `settle`, or `until`. They poll the pane and give up
+  only after a generous `TIMEOUT`, so load slows a test down instead of
+  failing it.
+- A scripted turn that the test inspects mid-flight holds on `await gate()`
+  until the test calls `release()`, never on a fixed `sleep` the test has to act
+  inside.
+- Resize through `resize(pane, ...)` before asserting on a transcript note. It
+  waits for the debounced scrollback replay, which erases notes already on
+  screen.
+
+Run `make test-all` before pushing anything that touches layout, streaming, or
+the editor.
 
 Tests require no API keys or paid model calls. They cover completion, keybindings,
 Unicode/narrow output, streaming, history/reset, cancellation, and actual Coder
