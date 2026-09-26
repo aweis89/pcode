@@ -21,6 +21,9 @@ same commit as the change.
 
 Phase 0 is done: the spike and an opt-in demo (`pcode --host`, `/switch`,
 `/stop`, `--attach`, `--hosts`). See [what works](background-sessions.md#what-works-in-a-hosted-session).
+The small items below are done except a previous-session key and job wake-ups,
+which wait for Phase 1. Phase 1 has started: the prompt queue is out of
+`run_async`; the rest of the turn loop is next.
 In the demo the terminal still runs all session logic itself, against
 `RemoteRuntime`, a stand-in that forwards `stream` to the host. That is why a
 dozen commands are refused there, and it is what the refactor replaces.
