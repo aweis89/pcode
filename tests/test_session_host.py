@@ -427,8 +427,9 @@ def test_switch_leaves_a_running_turn_in_its_host_and_comes_back_to_it(tmp_path,
                     await until(lambda: [e.id for e in app.hosts] == ["aaaa1111"])
                     pipe.send_text("hello b\r")
                     await seen("Echo: hello b")
-                    pipe.send_text("/switch aaaa1111\r")
+                    pipe.send_text("/switch -\r")
                     await seen("Switched to session aaaa1111")
+                    assert app.previous_host == "bbbb2222"
                     # Back mid-turn: the terminal follows A's turn again.
                     await until(lambda: app.activity.busy)
                     script_a.release("hang in a")
@@ -445,5 +446,151 @@ def test_switch_leaves_a_running_turn_in_its_host_and_comes_back_to_it(tmp_path,
         finally:
             await stop_host(host_a)
             await stop_host(host_b)
+
+    asyncio.run(run())
+
+
+def test_host_counts_turns_and_marks_ones_finished_unwatched_as_unseen(tmp_path, host_dir):
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        try:
+            terminal = await RemoteRuntime.connect(host.socket)
+            await until(lambda: list_hosts()[0].attached == 1)
+            turn = asyncio.create_task(collect(terminal.stream("hang unwatched")))
+            await until(lambda: host.buffer)
+            terminal.detaching = True  # Leave without cancelling, as /switch does.
+            turn.cancel()
+            terminal.close()
+            await until(lambda: list_hosts()[0].attached == 0)
+            script.release("hang unwatched")
+            await until(lambda: list_hosts()[0].turns == 1)
+            (entry,) = list_hosts()
+            assert (entry.outcome, entry.unseen, entry.state) == ("done", True, "idle")
+            # Looking at it again is what clears it.
+            again = await RemoteRuntime.connect(host.socket)
+            await until(lambda: not list_hosts()[0].unseen)
+            again.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_idle_host_stops_itself_and_a_busy_one_does_not(tmp_path, host_dir):
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        try:
+            terminal = await RemoteRuntime.connect(host.socket)
+            turn = asyncio.create_task(collect(terminal.stream("hang long")))
+            await until(lambda: host.buffer)
+            terminal.detaching = True
+            turn.cancel()
+            terminal.close()
+            watcher = asyncio.create_task(host.stop_when_idle(0.0005, every=0.01))
+            await asyncio.sleep(0.2)
+            assert not host.stopped.is_set(), "a running turn is not idle"
+            script.release("hang long")
+            await asyncio.wait_for(host.stopped.wait(), 5)
+            await watcher
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_stop_can_leave_the_worktree_for_the_terminal(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal = await RemoteRuntime.connect(host.socket)
+            terminal.stop(keep_worktree=True)
+            await asyncio.wait_for(host.stopped.wait(), 5)
+            assert host.keep_worktree
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_turn_is_announced_on_the_desktop_once_however_many_terminals_see_it(host_dir):
+    from pcode.host_protocol import claim
+
+    assert claim("aaaa1111-3")
+    assert not claim("aaaa1111-3")
+    assert claim("aaaa1111-4")
+    from pcode.host_protocol import remove_entry
+
+    remove_entry("aaaa1111")
+    assert not list(host_dir.glob("*.claim"))
+
+
+def test_background_finish_notes_and_notifies_only_unwatched_sessions(tmp_path, host_dir):
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output, width=200), workspace=tmp_path)
+    sent = []
+    app._emulator = sent.append
+    watched = HostEntry("aaaa1111", 1, "m", "/", title="fix auth", turns=1, attached=1)
+    unwatched = HostEntry("bbbb2222", 1, "m", "/", title="add tests", turns=2, outcome="failed")
+    app.background_finished(watched)
+    app.background_finished(unwatched)
+    app.background_finished(unwatched)  # Another terminal, or a second look: no repeat.
+    text = output.getvalue()
+    assert "Background session aaaa1111 finished: fix auth" in text
+    assert "Background session bbbb2222 failed: add tests" in text
+    assert sent == ["\x1b]9;pcode: add tests — failed\x07"]
+
+
+def test_notifications_cannot_break_out_of_their_escape(monkeypatch):
+    from pcode.terminal_notify import notification, progress
+
+    monkeypatch.delenv("TMUX", raising=False)
+    assert notification("done\x07\x1b]52;c;evil\x07") == "\x1b]9;done  ]52;c;evil\x07"
+    assert progress(True) == "\x1b]9;4;3\x07" and progress(False) == "\x1b]9;4;0\x07"
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1/default,1,0")
+    assert notification("hi") == "\x1bPtmux;\x1b\x1b]9;hi\x07\x1b\\"
+
+
+def test_picker_puts_unseen_sessions_first_and_flags_old_code():
+    from pcode.host_ui import host_row, ordered
+
+    idle = HostEntry("idle0000", 1, "m", "/w/a", title="idle", updated=3)
+    working = HostEntry("work0000", 1, "m", "/w/b", title="busy", state="working", updated=2)
+    fresh = HostEntry(
+        "new00000", 1, "m", "/w/c", title="done", state="idle", unseen=True, updated=1
+    )
+    assert [e.id for e in ordered([idle, working, fresh])] == ["new00000", "work0000", "idle0000"]
+    old = HostEntry("old00000", 1, "m", "/w/d", title="old", state="idle", code="1")
+    assert host_row(old, None, now=0, code="2").endswith("old code")
+    assert "✓ new" in host_row(fresh, None, now=1, code="2")
+    assert not host_row(fresh, None, now=1, code="2").endswith("old code")
+
+
+def test_restart_stops_keeping_the_worktree_and_resumes_the_session(tmp_path):
+    async def run():
+        class Host:
+            remote = True
+            id, pid, session_id, lost = "aaaa1111", 4242, "session-1", False
+            stopped_with = None
+
+            def stop(self, *, keep_worktree=False):
+                self.stopped_with = keep_worktree
+
+        runtime = Host()
+        app = PreviewApp(model="m", runtime=runtime, console=Console(file=StringIO()))
+        started = []
+
+        async def start_host_session(prompt="", *, resume=None, note=None):
+            started.append((prompt, resume, note))
+
+        app.start_host_session = start_host_session
+        app.restart("")
+        # An async function patches as an AsyncMock, awaitable as it is.
+        with patch("pcode.remote.wait_for_exit") as waited:
+            await app.restart_host()
+        waited.assert_awaited_once_with(4242)
+        assert runtime.stopped_with is True
+        assert started == [("", "session-1", "Restarted on the current pcode")]
 
     asyncio.run(run())

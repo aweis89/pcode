@@ -131,6 +131,7 @@ HOSTED_COMMANDS = {
     "/diffs",
     "/switch",
     "/stop",
+    "/restart",
     "/resume",
     "/show-tasks",
     "/autohide-tasks",
@@ -207,7 +208,12 @@ class PreviewApp:
         self._host_watch: Callable[[], None] | None = None
         self._host_watch_task = None
         self.switch_requested: str | None = None
+        self.restart_requested = False
         self.host_stopped = False
+        # The host this terminal showed before the current one, for `/switch -`.
+        self.previous_host: str | None = None
+        # Writes an escape to the terminal emulator (notifications, tab progress).
+        self._emulator: Callable[[str], None] | None = None
         # Set by run_async, which owns the prompt queue and the running turn.
         self._follow_turn: Callable[[str, bool], None] | None = None
         self._detach_turn: Callable[[], Awaitable[None]] | None = None
@@ -417,6 +423,12 @@ class PreviewApp:
                 self.switch,
                 ("new",),
                 free_arguments=True,
+                group="Session",
+            ),
+            Command(
+                "/restart",
+                "Restart this background session's host on the pcode installed now",
+                self.restart,
                 group="Session",
             ),
             Command(
@@ -2076,7 +2088,9 @@ class PreviewApp:
             raise ValueError("Usage: /stop")
         if not self.hosted:
             raise ValueError("/stop ends a session host; this session runs in this terminal.")
-        self.runtime.stop()
+        # The worktree is left for this terminal to tidy once it exits, asking
+        # the way a local session does; a host has nobody to ask.
+        self.runtime.stop(keep_worktree=True)
         self.host_stopped = True
         self.running = False
 
@@ -2098,6 +2112,48 @@ class PreviewApp:
         if self._host_watch is not None:
             self._host_watch()
 
+    def background_finished(self, entry) -> None:
+        """A turn ended in a session this terminal is not showing: say so, here and on the desktop.
+
+        The desktop notification is for sessions nobody is looking at, and is
+        sent once per turn however many terminals notice it.
+        """
+        from pcode.host_protocol import claim
+        from pcode.terminal_notify import notification
+
+        what = {"failed": "failed", "cancelled": "was cancelled"}.get(entry.outcome, "finished")
+        title = plain(entry.label(), 60)
+        self.transcript.note(f"Background session {entry.id} {what}: {title} · /switch shows it")
+        if entry.attached or self._emulator is None:
+            return
+        if claim(f"{entry.id}-{entry.turns}"):
+            self._emulator(notification(f"pcode: {title} — {what}"))
+
+    def restart(self, argument: str) -> None:
+        if argument:
+            raise ValueError("Usage: /restart")
+        if not self.hosted:
+            raise ValueError("/restart restarts a session host; quit and relaunch for new code.")
+        if self.activity.busy or self.activity.queued_prompts:
+            raise ValueError("/restart waits for the turn. Cancel with Ctrl+C or wait, then retry.")
+        self.restart_requested = True
+
+    async def restart_host(self) -> None:
+        """Stop this host and resume its conversation in a new one, on the code now installed."""
+        from pcode.remote import wait_for_exit
+
+        self.restart_requested = False
+        runtime = self.runtime
+        # Kept: the new host resumes in the same worktree.
+        runtime.stop(keep_worktree=True)
+        await wait_for_exit(runtime.pid)
+        if runtime.session_id:
+            await self.start_host_session(
+                resume=runtime.session_id, note="Restarted on the current pcode"
+            )
+        else:
+            await self.start_host_session("")
+
     def host_closed(self) -> None:
         session = (
             f" pcode --continue {self.runtime.session_id} resumes it."
@@ -2113,6 +2169,10 @@ class PreviewApp:
         from pcode.host_protocol import find_host, list_hosts
 
         argument, self.switch_requested = self.switch_requested or "", None
+        if argument == "-":
+            if self.previous_host is None:
+                raise ValueError("No previous session in this terminal yet.")
+            argument = self.previous_host
         if argument == "new" or argument.startswith("new "):
             await self.start_host_session(argument[3:].strip())
             return
@@ -2171,7 +2231,9 @@ class PreviewApp:
         runtime = await HostLaunch.running(entry).connect()
         await self.adopt_host(runtime, f"Switched to session {entry.id}")
 
-    async def start_host_session(self, prompt: str = "", *, resume: str | None = None) -> None:
+    async def start_host_session(
+        self, prompt: str = "", *, resume: str | None = None, note: str | None = None
+    ) -> None:
         """Start a host for a new (or resumed) conversation beside this one.
 
         A new one starts from the main checkout, so with the worktree setting on
@@ -2205,13 +2267,15 @@ class PreviewApp:
         what = (
             f"Resumed {resume} in session host {identity}" if resume else f"New session {identity}"
         )
-        await self.adopt_host(runtime, what)
+        await self.adopt_host(runtime, f"{note} ({identity})" if note else what)
 
     async def adopt_host(self, runtime, note: str) -> None:
         """Make `runtime` this terminal's conversation, leaving the current one running."""
         if self._detach_turn is not None:
             await self._detach_turn()
         previous = self.runtime
+        if getattr(previous, "remote", False) is True and not previous.lost:
+            self.previous_host = previous.id
         if getattr(previous, "remote", False) is not True:
             # A conversation that lives in this process ends here; its journal
             # keeps it for /resume or `pcode -c`.
@@ -2839,9 +2903,12 @@ class PreviewApp:
             segments.extend([("sep", " · "), ("activity", f"{unread} btw ready")])
         if self.hosts:
             working = sum(entry.state == "working" for entry in self.hosts)
+            from pcode.host_ui import unseen
+
+            new = sum(unseen(entry) for entry in self.hosts)
             label = f"{len(self.hosts)} other session{'s' if len(self.hosts) != 1 else ''}"
-            if working:
-                label += f" ({working} working)"
+            if details := [f"{working} working"] * bool(working) + [f"{new} new"] * bool(new):
+                label += f" ({', '.join(details)})"
             segments.extend([("sep", " · "), ("activity", label)])
         segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
         context = ""
@@ -2969,6 +3036,11 @@ class PreviewApp:
                 output.begin_turn(text)
             self.activity.start_prompt(text)
         self.activity.status = "Waiting for model…"
+        if self._emulator is not None:
+            from pcode.terminal_notify import progress
+
+            # A busy tab is visible from the other tabs.
+            self._emulator(progress(True))
 
         def compaction_notice(text):
             self.activity.status = text
@@ -3010,6 +3082,10 @@ class PreviewApp:
             cancelled = type(error).__name__ == "HostTurnCancelled"
             failure = None if cancelled else error
         finally:
+            if self._emulator is not None:
+                from pcode.terminal_notify import progress
+
+                self._emulator(progress(False))
             self.activity.edit_previews.clear()
             # A watched job is not the turn's; its preview stays pinned.
             for key in [
@@ -3320,19 +3396,20 @@ class PreviewApp:
             """Keep the footer's count of other sessions current, and say when one finishes."""
             from pcode.host_protocol import list_hosts
 
-            states: dict[str, str] = {}
+            # Finished-turn counts, not states: a turn shorter than the poll
+            # interval goes working-idle-working unseen but still counts.
+            turns: dict[str, int] = {}
             while self.running:
                 entries = await asyncio.to_thread(list_hosts)
                 current = self.runtime.id if self.hosted else None
                 for entry in entries:
-                    if entry.id != current and states.get(entry.id) == "working" != entry.state:
-                        self.transcript.note(
-                            f"Background session {entry.id} finished: "
-                            f"{plain(entry.label(), 60)} · /switch shows it"
-                        )
-                states = {entry.id: entry.state for entry in entries}
+                    seen = turns.get(entry.id)
+                    if entry.id != current and seen is not None and entry.turns > seen:
+                        self.background_finished(entry)
+                turns = {entry.id: entry.turns for entry in entries}
                 others = [entry for entry in entries if entry.id != current]
-                if [(e.id, e.state) for e in others] != [(e.id, e.state) for e in self.hosts]:
+                key = [(e.id, e.state, e.unseen) for e in others]
+                if key != [(e.id, e.state, e.unseen) for e in self.hosts]:
                     self.hosts = others
                     session.app.invalidate()
                 await asyncio.sleep(HOST_POLL_SECONDS)
@@ -3345,6 +3422,14 @@ class PreviewApp:
         self._follow_turn = follow_turn
         self._detach_turn = detach_turn
         self._host_watch = start_host_watch
+
+        def emulator(sequence: str) -> None:
+            from pcode.terminal_notify import send
+
+            if load_preferences().get("desktop_notifications", "on") == "on":
+                send(session.app.output, sequence)
+
+        self._emulator = emulator
 
         def submit(text):
             nonlocal pending_mcp, pending_model_command, interrupt_pending
@@ -3751,6 +3836,8 @@ class PreviewApp:
                             await self.choose_session(output, session)
                         if self.switch_requested is not None:
                             await self.switch_session(output, session)
+                        if self.restart_requested:
+                            await self.restart_host()
                         if self.session_info_requested:
                             await self.show_session_info(output, session)
                         if self.inspector_requested is not None:
@@ -4250,6 +4337,11 @@ def main() -> None:
     )
     parser.add_argument("--hosts", action="store_true", help="List running session hosts and exit")
     parser.add_argument(
+        "--stop-hosts",
+        choices=("all", "stale"),
+        help="Stop every session host, or those running older pcode code, and exit",
+    )
+    parser.add_argument(
         "--profile",
         type=Path,
         nargs="?",
@@ -4621,6 +4713,30 @@ def _run_hosted(args: argparse.Namespace) -> None:
     finally:
         if app.hosted:
             app.runtime.close()
+    if app.hosted and app.host_stopped:
+        _tidy_stopped_host(app)
+
+
+def _tidy_stopped_host(app) -> None:
+    """After `/stop`: the host kept its worktree so this terminal can ask, as a local exit does."""
+    from pcode.remote import wait_for_exit_sync
+    from pcode.sessions import SavedSession, SessionError
+
+    runtime = app.runtime
+    wait_for_exit_sync(runtime.pid)
+    saved = None
+    if runtime.session_id:
+        try:
+            saved = SavedSession.open(runtime.session_id, app.session_dir)
+        except SessionError:
+            saved = None  # Open elsewhere again, or gone: leave the session to them.
+    try:
+        leave_worktree(
+            runtime.workspace, saved, ask=ask, notify=lambda text: print(text, file=sys.stderr)
+        )
+    finally:
+        if saved is not None:
+            saved.close()
 
 
 def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
@@ -4670,13 +4786,22 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         app.transcript.events(app.preview.demo(), show_tools=True)
         app.transcript.syntax_gallery()
         return
-    if args.hosts:
-        from pcode.host_protocol import list_hosts
-        from pcode.host_ui import host_row
+    if args.hosts or args.stop_hosts:
+        from pcode.host_protocol import code_fingerprint, list_hosts
+        from pcode.host_ui import host_row, ordered
 
-        entries = list_hosts()
+        code = code_fingerprint()
+        entries = ordered(list_hosts())
+        if args.stop_hosts:
+            from pcode.remote import stop_entry
+
+            for entry in entries:
+                if args.stop_hosts == "all" or entry.stale(code):
+                    asyncio.run(stop_entry(entry))
+                    print(f"Stopped {entry.id}  {entry.label()}")
+            return
         for entry in entries:
-            print(f"{entry.id}  {host_row(entry, None).strip()}")
+            print(f"{entry.id}  {host_row(entry, None, code=code).strip()}")
         if not entries:
             print("No session hosts are running.")
         return
