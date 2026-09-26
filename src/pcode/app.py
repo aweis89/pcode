@@ -983,6 +983,8 @@ class PreviewApp:
     def switch(self, argument: str) -> None:
         if not self.model:
             raise ValueError("/switch needs a model; this is a local UI preview.")
+        if argument.strip() == "-" and self.previous_host is None:
+            raise ValueError("No previous session in this terminal yet; /switch lists them all.")
         if not self.hosted and (self.activity.busy or self.activity.queued_prompts):
             raise ValueError(
                 "This session runs in this terminal, so leaving it stops its turn. "
@@ -1048,16 +1050,24 @@ class PreviewApp:
         from pcode.host_protocol import find_host, list_hosts
 
         argument, self.switch_requested = self.switch_requested or "", None
-        if argument == "-":
-            if self.previous_host is None:
-                raise ValueError("No previous session in this terminal yet.")
-            argument = self.previous_host
+        previous = argument == "-"
+        if previous:
+            argument = self.previous_host or ""
         if argument == "new" or argument.startswith("new "):
             await self.start_host_session(argument[3:].strip())
             return
         current = getattr(self.runtime, "id", None) if self.hosted else None
         if argument:
-            entry = find_host(argument)
+            try:
+                entry = await asyncio.to_thread(find_host, argument)
+            except LookupError as error:
+                self.transcript.warning(
+                    f"The previous session ({argument}) is no longer running; /switch lists "
+                    "the ones that are."
+                    if previous
+                    else str(error)
+                )
+                return
             if entry.id == current:
                 self.transcript.note("This terminal is already showing that session.")
                 return

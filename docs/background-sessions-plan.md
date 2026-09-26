@@ -41,10 +41,11 @@ copied, `tmp/host-spike-e1d54951/ui_drive.py`) checked every popup over a live h
 `/status`, `/model` and Ctrl+L, `/btw $MODEL` completion and the viewer opening
 itself, `/jobs` reading the host's jobs and stopping one, `/tree`, `/switch new`,
 Ctrl+^ both ways (vi normal mode too), Ctrl+D then `--attach`, `/restart`, `/stop`.
-It found three more: an answer read in the viewer showed as ready again after
+It found four more: an answer read in the viewer showed as ready again after
 switching back (the host now keeps `read`); `/restart` drew the conversation under
-"Resumed …" instead of its own note; and stopping an idle host told its terminals
-"Run cancelled".
+"Resumed …" instead of its own note; stopping an idle host told its terminals
+"Run cancelled"; and `/switch -` (or Ctrl+^) with nothing to go back to, or
+`/switch` to a host that had gone, said only "failed (ValueError)".
 
 Nothing is left of the plan; the user docs are in
 [Sessions and recovery](sessions.md#background-sessions).
