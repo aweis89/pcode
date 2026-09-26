@@ -200,7 +200,7 @@ def test_finish_command_merges_removes_and_quits(repo, tmp_path):
     notes = []
     app.transcript.note = lambda text, **_: notes.append(text)
     commit(created.path, "f.txt")
-    app.worktree("finish")
+    app.controller.worktree("finish")
     assert "merged pcode-abc into main; removed" in notes[-1]
     assert not created.path.exists()
     assert app.running is False
@@ -212,7 +212,7 @@ def test_finish_command_refusal_changes_nothing(repo, tmp_path):
     created, session, app = make(repo, tmp_path, turns=1)
     (created.path / "README").write_text("dirty\n")
     with pytest.raises(ValueError, match="uncommitted"):
-        app.worktree("finish")
+        app.controller.worktree("finish")
     assert created.path.exists() and app.running
     session.close()
 
@@ -248,7 +248,7 @@ def test_resume_switches_to_a_sibling_worktree_and_tidies_the_old_one(repo, tmp_
     notes = []
     app.transcript.note = lambda text, **_: notes.append(text)
     with patch("pcode.agent.create_agent", return_value=Agent("test")) as create:
-        asyncio.run(app.resume_session(identity))
+        asyncio.run(app.controller.resume_session(identity))
     try:
         assert create.call_args.args[1] == other.path
         assert app.workspace == other.path
@@ -274,7 +274,7 @@ def test_resume_leaves_unmerged_worktree_with_a_note(repo, tmp_path):
     notes = []
     app.transcript.note = lambda text, **_: notes.append(text)
     with patch("pcode.agent.create_agent", return_value=Agent("test")):
-        asyncio.run(app.resume_session(identity))
+        asyncio.run(app.controller.resume_session(identity))
     try:
         assert app.workspace == repo
         assert created.path.exists()
@@ -295,7 +295,7 @@ def test_resume_continues_here_when_the_sessions_worktree_was_removed(repo, tmp_
     notes = []
     app.transcript.note = lambda text, **_: notes.append(text)
     with patch("pcode.agent.create_agent", return_value=Agent("test")):
-        asyncio.run(app.resume_session(identity))
+        asyncio.run(app.controller.resume_session(identity))
     try:
         assert app.workspace == created.path
         assert any("no longer exists" in note for note in notes)
@@ -314,9 +314,9 @@ def test_resume_refuses_another_repository_or_a_missing_directory(repo, tmp_path
     app.session_dir = root
     original = app.runtime
     with pytest.raises(SessionError, match="cross-repo"):
-        asyncio.run(app.resume_session(foreign))
+        asyncio.run(app.controller.resume_session(foreign))
     with pytest.raises(SessionError, match="no longer exists"):
-        asyncio.run(app.resume_session(gone))
+        asyncio.run(app.controller.resume_session(gone))
     assert app.runtime is original
     assert app.workspace == created.path and created.path.exists()
     session.close()

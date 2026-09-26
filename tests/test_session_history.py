@@ -402,7 +402,7 @@ def test_app_passes_session_dir_on_load_and_reload(tmp_path, root):
 
     app = PreviewApp(workspace=tmp_path, session_dir=root)
     for _ in range(2):
-        loaded = app._load_extensions()
+        loaded = app.controller._load_extensions()
         (selected,) = [e for e in loaded.extensions if e.name == "session_history"]
         assert selected.loaded, selected.error
         save_path = root / "session-a"

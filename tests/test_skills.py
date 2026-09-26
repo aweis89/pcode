@@ -141,15 +141,15 @@ def test_registered_commands_queue_a_prompt(tmp_path):
     assert app.skill_command_names == ["/skill:review"]
     assert app.registry.find("/skill:review").description == "Handles review."
     assert app.handle("/skill:review PR 12") is False
-    assert app.skill_requested.endswith("\n\nPR 12")
-    assert ".claude/skills/review/SKILL.md" in app.skill_requested
+    assert app.controller.skill_requested.endswith("\n\nPR 12")
+    assert ".claude/skills/review/SKILL.md" in app.controller.skill_requested
 
 
 def test_skill_command_requires_a_model(tmp_path):
     write_skill(tmp_path, ".claude", "review")
     app = make_app(tmp_path)
     app.handle("/skill:review")
-    assert app.skill_requested is None
+    assert app.controller.skill_requested is None
     assert "requires a live model session" in app.transcript.console.file.getvalue()
 
 
@@ -325,5 +325,5 @@ def test_invoking_a_skill_enables_its_mcp_servers_before_the_prompt(tmp_path):
 def test_startup_summary_lists_skill_commands(tmp_path):
     write_skill(tmp_path, ".claude", "review")
     app = make_app(tmp_path, model="test:model")
-    app.show_startup_context()
+    app.controller.show_startup_context()
     assert "Skill commands: /skill:review" in app.transcript.console.file.getvalue()

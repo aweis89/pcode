@@ -376,8 +376,8 @@ def test_first_session_takes_worktree_identity(tmp_path):
     root = tmp_path / "sessions"
     app = PreviewApp(model="test:local", workspace=tmp_path, save=True, session_dir=root)
     app._session_id = "11111111-2222-3333-4444-555555555555"
-    first = app._create_session()
-    second = app._create_session()
+    first = app.controller._create_session()
+    second = app.controller._create_session()
     try:
         assert first.info.id == "11111111-2222-3333-4444-555555555555"
         assert second.info.id != first.info.id
@@ -391,21 +391,21 @@ def test_worktree_command(repo):
     app = PreviewApp(workspace=created.path)
     notes = []
     app.transcript.note = lambda text, **_: notes.append(text)
-    app.worktree("")
+    app.controller.worktree("")
     assert notes[0] == f"Worktree: {created.path} (branch feature)"
     assert notes[2] == "0 unmerged commits"
     commit(created.path, "feature.txt")
     with pytest.raises(ValueError, match="unmerged"):
-        app.worktree("remove")
-    app.worktree("merge")
+        app.controller.worktree("remove")
+    app.controller.worktree("merge")
     assert notes[-1] == "merged feature into main"
-    app.worktree("remove")
+    app.controller.worktree("remove")
     assert not created.path.exists()
     assert "no longer exists" in notes[-1]
 
     mainline = PreviewApp(workspace=repo)
     mainline.transcript.note = lambda text, **_: notes.append(text)
-    mainline.worktree("")
+    mainline.controller.worktree("")
     assert "not a linked worktree" in notes[-1]
     with pytest.raises(ValueError, match="Usage"):
         mainline.registry.dispatch("/worktree bogus")
@@ -414,7 +414,6 @@ def test_worktree_command(repo):
 def test_worktree_merge_runs_under_a_system_row_with_a_terminal(repo):
     """With a live terminal the git work is deferred and labelled, not run inline."""
     import asyncio
-    from types import SimpleNamespace
 
     created = worktree.create(repo, "feature")
     commit(created.path, "feature.txt")
@@ -422,17 +421,17 @@ def test_worktree_merge_runs_under_a_system_row_with_a_terminal(repo):
     notes, errors = [], []
     app.transcript.note = lambda text, **_: notes.append(text)
     app.transcript.error = lambda text, **_: errors.append(text)
-    app.transcript.output = SimpleNamespace(app=SimpleNamespace(invalidate=lambda: None))
+    app.controller.interactive = True
 
-    app.worktree("merge")
-    assert notes == [] and app.job_requested is not None
-    label, detail, _ = app.job_requested
+    app.controller.worktree("merge")
+    assert notes == [] and app.controller.job_requested is not None
+    label, detail, _ = app.controller.job_requested
     assert (label, detail) == ("Merging worktree", "feature")
 
     seen = {}
 
     async def run():
-        task = asyncio.ensure_future(app.perform_job())
+        task = asyncio.ensure_future(app.controller.perform_job())
         await asyncio.sleep(0)
         seen["kind"] = app.activity.prompt_kind
         seen["prompt"] = app.activity.prompt
@@ -449,13 +448,13 @@ def test_worktree_merge_runs_under_a_system_row_with_a_terminal(repo):
     }
     assert notes == ["merged feature into main"]
     assert app.activity.prompt_state == "done" and not app.activity.busy
-    assert app.job_requested is None
+    assert app.controller.job_requested is None
 
     # A refusal surfaces as a command error and the row ends failed.
     commit(created.path, "README", "theirs\n")
     commit(repo, "README", "ours\n")
-    app.worktree("merge")
-    asyncio.run(app.perform_job())
+    app.controller.worktree("merge")
+    asyncio.run(app.controller.perform_job())
     assert errors and "conflicts" in errors[-1]
     assert app.activity.prompt_state == "failed"
 
@@ -463,7 +462,6 @@ def test_worktree_merge_runs_under_a_system_row_with_a_terminal(repo):
 def test_worktree_merge_runs_mid_turn_without_taking_the_turns_row(repo):
     """A merge during a turn leaves the turn's live row and busy state alone."""
     import asyncio
-    from types import SimpleNamespace
 
     created = worktree.create(repo, "feature")
     commit(created.path, "feature.txt")
@@ -471,15 +469,15 @@ def test_worktree_merge_runs_mid_turn_without_taking_the_turns_row(repo):
     notes, errors = [], []
     app.transcript.note = lambda text, **_: notes.append(text)
     app.transcript.error = lambda text, **_: errors.append(text)
-    app.transcript.output = SimpleNamespace(app=SimpleNamespace(invalidate=lambda: None))
+    app.controller.interactive = True
     app.activity.start_prompt("fix the bug")
     app.activity.busy = True
 
-    app.worktree("merge")
+    app.controller.worktree("merge")
     seen = {}
 
     async def run():
-        task = asyncio.ensure_future(app.perform_job())
+        task = asyncio.ensure_future(app.controller.perform_job())
         await asyncio.sleep(0)
         seen["notice"] = app.activity.notice
         await task
@@ -495,7 +493,7 @@ def test_worktree_merge_runs_mid_turn_without_taking_the_turns_row(repo):
 
     # Actions that rewrite or delete the worktree still wait for the turn.
     with pytest.raises(ValueError, match="Wait for the current turn"):
-        app.worktree("remove")
+        app.controller.worktree("remove")
 
 
 def test_module_cli_runs_project_setup_unconditionally(repo, monkeypatch, capsys):
@@ -536,20 +534,20 @@ def test_conflicts_point_at_resolve_and_the_prompt_names_the_files(repo):
         worktree.finish(created)
 
     app = PreviewApp(workspace=created.path, model="test:local")
-    app.worktree("resolve")
-    prompt = app.skill_requested
+    app.controller.worktree("resolve")
+    prompt = app.controller.skill_requested
     assert "`main` into `feature`" in prompt and "- README" in prompt
     assert "git merge --abort" in prompt
     offline = PreviewApp(workspace=created.path)
     with pytest.raises(ValueError, match="live model"):
-        offline.worktree("resolve")
+        offline.controller.worktree("resolve")
 
     git(created.path, "checkout", "--theirs", "README")
     git(created.path, "add", "README")
     git(created.path, "commit", "-q", "--no-edit")
     assert worktree.conflicted_files(created.path) == []
     with pytest.raises(ValueError, match="No merge conflicts"):
-        app.worktree("resolve")
+        app.controller.worktree("resolve")
     assert "merged feature into main" in worktree.finish(created)
 
     completions = list(
@@ -599,7 +597,7 @@ def test_clean_keeps_the_callers_own_worktree_and_prunes_stale_entries(repo):
     notes = []
     app = PreviewApp(workspace=mine.path)
     app.transcript.note = lambda text, **_: notes.append(text)
-    app.worktree("clean")
+    app.controller.worktree("clean")
 
     assert notes == [f"removed {other.path}"]
     assert mine.path.exists() and not other.path.exists()

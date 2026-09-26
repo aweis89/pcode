@@ -92,7 +92,7 @@ def test_editor_accepts_input_while_backend_starts(outcome):
         app = PreviewApp(
             model="test:local", console=Console(file=output), resume=outcome == "restore"
         )
-        app._create_runtime = build
+        app.controller._create_runtime = build
         # Resume replay needs a real saved session; recovery ordering is what
         # this test exercises. Existing session tests cover transcript replay.
         app.replay = lambda: None

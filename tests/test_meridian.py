@@ -491,11 +491,11 @@ def test_thinking_warning_is_shown_once_and_only_when_dropped(monkeypatch, tmp_p
     app.model = "meridian:claude-opus-5"
     app.activity.show_thinking = True
     state = ["http://127.0.0.1:3456", False]
-    monkeypatch.setattr(app, "meridian_thinking_state", lambda: tuple(state))
+    monkeypatch.setattr(app.controller, "meridian_thinking_state", lambda: tuple(state))
 
     async def run():
-        await app.warn_meridian_thinking()
-        await app.warn_meridian_thinking()
+        await app.controller.warn_meridian_thinking()
+        await app.controller.warn_meridian_thinking()
 
     asyncio.run(run())
     assert output.getvalue().count("not forwarding thinking") == 1

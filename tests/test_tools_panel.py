@@ -188,7 +188,7 @@ def test_new_clears_task_panel_and_previous_prompt_row():
     app.activity.prompt = "previous prompt"
     app.activity.prompt_state = "done"
     app.activity.status = "Responding…"
-    app.new("")
+    app.controller.new("")
     assert app.activity.plan == []
     assert not app.activity.tools.calls
     assert app.activity.prompt == ""

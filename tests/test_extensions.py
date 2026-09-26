@@ -248,15 +248,15 @@ def test_extension_commands_register_after_builtins(tmp_path):
     clash.commands = [Command("/help", "Steal help", lambda _: None)]
     app.extensions = FakeLoaded([fine, clash])
 
-    app.register_extension_commands()
-    assert app.extension_command_names == ["/hello"]
+    app.controller.register_extension_commands()
+    assert app.controller.extension_command_names == ["/hello"]
     assert "already exists" in output.getvalue()
     app.handle("/hello there")
     assert notes == ["hi there"]
 
     # A reload replaces the previous set rather than accumulating duplicates.
     app.extensions = FakeLoaded([])
-    app.register_extension_commands()
+    app.controller.register_extension_commands()
     assert app.registry.find("/hello") is None
     assert app.registry.find("/help") is not None
 
@@ -272,10 +272,10 @@ def test_reload_rebuilds_the_agent_and_commands(tmp_path, monkeypatch):
         assert app.registry.find("/hello") is None
 
         write_extension(user_extension_dir(), "greeter", GREETER)
-        app.reload("")
-        assert app.reload_requested
-        await app.reload_extensions()
-        assert not app.reload_requested
+        app.controller.reload("")
+        assert app.controller.reload_requested
+        await app.controller.reload_extensions()
+        assert not app.controller.reload_requested
         assert app.registry.find("/hello") is not None
         ids = [getattr(c, "id", None) for c in app.runtime.agent.root_capability.capabilities]
         assert "ext.greeter" in ids
@@ -285,7 +285,7 @@ def test_reload_rebuilds_the_agent_and_commands(tmp_path, monkeypatch):
 
         # Removing the file and reloading drops its command and capability.
         (user_extension_dir() / "greeter.py").unlink()
-        await app.reload_extensions()
+        await app.controller.reload_extensions()
         assert app.registry.find("/hello") is None
         ids = [getattr(c, "id", None) for c in app.runtime.agent.root_capability.capabilities]
         assert "ext.greeter" not in ids
@@ -337,20 +337,20 @@ def test_extensions_command_toggles_and_reloads(tmp_path, monkeypatch):
         await app._initialize_runtime()
         app.handle("/extensions")
         assert "greeter" in output.getvalue()
-        assert "on greeter" not in app.extension_arguments()
-        assert "off greeter" in app.extension_arguments()
+        assert "on greeter" not in app.controller.extension_arguments()
+        assert "off greeter" in app.controller.extension_arguments()
 
         app.handle("/extensions off greeter")
-        assert app.reload_requested
+        assert app.controller.reload_requested
         assert name_list("extensions_off") == {"greeter"}
-        await app.reload_extensions()
+        await app.controller.reload_extensions()
         assert app.registry.find("/hello") is None
         assert "Reloaded 0 extensions, 1 off" in output.getvalue()
-        assert app.extension_arguments() == ("list", "on greeter")
+        assert app.controller.extension_arguments() == ("list", "on greeter")
 
         app.handle("/extensions on greeter")
         assert name_list("extensions_off") == set()
-        await app.reload_extensions()
+        await app.controller.reload_extensions()
         assert app.registry.find("/hello") is not None
         app.runtime.close()
 

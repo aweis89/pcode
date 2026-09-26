@@ -142,13 +142,13 @@ def test_app_displays_actual_agent_context_and_preview_stays_local(tmp_path, mon
         console=Console(file=output, width=160, color_system=None),
         runtime=AgentRuntime(create_agent("test", tmp_path)),
     )
-    app.show_startup_context()
+    app.controller.show_startup_context()
     assert "Loaded repository instructions: AGENTS.md" in output.getvalue()
     assert "do not display this body" not in output.getvalue()
     output.seek(0)
     output.truncate()
     preview = PreviewApp(console=Console(file=output), workspace=tmp_path)
-    preview.show_startup_context()
+    preview.controller.show_startup_context()
     assert output.getvalue() == ""
 
 
@@ -170,13 +170,13 @@ def test_startup_context_is_not_repeated_after_a_model_switch(tmp_path, monkeypa
         runtime=AgentRuntime(create_agent("test", tmp_path)),
     )
     app.skill_command_names = ["/skill:review"]
-    app.show_startup_context()
+    app.controller.show_startup_context()
     first = output.getvalue()
     assert "Loaded repository instructions: AGENTS.md" in first
     assert "Skill commands: /skill:review" in first
     output.seek(0)
     output.truncate()
-    app.show_startup_context()
+    app.controller.show_startup_context()
     assert output.getvalue() == ""
 
 

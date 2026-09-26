@@ -220,10 +220,10 @@ def test_login_command_is_offered_and_dispatched():
     app = PreviewApp()
     command = app.registry.find("/login")
     assert "meridian" in command.arguments
-    app.login("meridian")
-    assert app.login_requested == "meridian"
-    app.login("nonsense")
-    assert app.login_requested == "meridian"
+    app.controller.login("meridian")
+    assert app.controller.login_requested == "meridian"
+    app.controller.login("nonsense")
+    assert app.controller.login_requested == "meridian"
 
 
 # -- installing and upgrading ------------------------------------------------
