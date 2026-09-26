@@ -23,10 +23,10 @@ run: ## Run from source without installing (make run ARGS="--theme-preview")
 test: ## Run the fast suite in parallel (real-tmux regressions skipped)
 	uv run pytest -n auto
 
-test-tmux: ## Run only the real-tmux regressions (serial: they time out under load)
-	uv run pytest --tmux -m tmux
+test-tmux: ## Run only the real-tmux regressions, in parallel
+	uv run pytest --tmux -m tmux -n auto
 
-test-all: test test-tmux ## Run everything: fast suite in parallel, then tmux serially
+test-all: test test-tmux ## Run everything: the fast suite, then the tmux regressions, each in parallel
 
 lint: ## Check formatting and lint rules
 	uv run ruff check .

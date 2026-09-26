@@ -4,7 +4,7 @@ import shutil
 
 import pytest
 from test_inspector_tmux import modal
-from test_tmux import capture, input_rows
+from test_tmux import capture, input_rows, resize, settle
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -59,8 +59,10 @@ def test_jobs_row_watch_and_wake_keep_the_prompt_compact(pane):
     assert input_rows(screen) == 1
 
     pane("send-keys", "-t", "preview:0.0", "/jobs watch j1", "Enter")
-    screen = capture(pane, "serving on 8000")
-    assert "$ " in screen and "Watching [j1]" in screen
+    # The pinned tail paints at once; the note waits for the next scrollback flush.
+    watching = ("$ ", "serving on 8000", "Watching [j1]")
+    screen = settle(pane, lambda screen: all(text in screen for text in watching))
+    assert all(text in screen for text in watching), screen
     assert input_rows(screen) == 1
 
     # Bare /jobs is a popup over the log, not another listing in scrollback.
@@ -88,7 +90,7 @@ def test_jobs_row_watch_and_wake_keep_the_prompt_compact(pane):
     assert input_rows(screen) == 1
 
     for columns in (40, 100):
-        pane("resize-window", "-t", "preview:0", "-x", str(columns))
+        resize(pane, "resize-window", "-t", "preview:0", "-x", str(columns))
         screen = capture(pane, "⟳ j2", columns=columns)
         assert input_rows(screen) == 1
 

@@ -5,7 +5,7 @@ import shutil
 import time
 
 import pytest
-from test_tmux import capture, input_rows
+from test_tmux import TIMEOUT, capture, input_rows
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -41,7 +41,7 @@ def test_animation_elapsed_resize_and_cancel_after_idle(pane):
     first = capture(pane, "WAITING_TOOL", running=True)
     first_time = float(re.search(r"· ([0-9.]+)s", first)[1])
     first_icon = status_icon(first)
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + TIMEOUT
     while True:
         time.sleep(0.13)
         screen = capture(pane, "WAITING_TOOL", running=True)

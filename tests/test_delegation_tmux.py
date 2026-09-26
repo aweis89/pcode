@@ -3,7 +3,7 @@
 import shutil
 
 import pytest
-from test_tmux import capture, input_rows
+from test_tmux import capture, input_rows, resize
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -51,7 +51,7 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
     assert "│└── ⟳ Search" in screen
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width, height in ((40, 14), (100, 32), (60, 20)):
-        pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
+        resize(pane, "resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
         screen = capture(pane, "src/auth.py", running=True, columns=width)
         lines = screen.splitlines()
         top = max(i for i, line in enumerate(lines) if line.startswith("┌─ Tools"))
