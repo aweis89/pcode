@@ -14,10 +14,10 @@ from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
-from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.subagents import SubAgents
 
-from pcode.agent import SUBAGENT_REQUEST_LIMIT, create_coder
+from pcode.agent import create_coder
 from pcode.cache_settings import ANTHROPIC_CACHE_SETTINGS, ProviderCacheSettings
 
 CHILD_INPUT_TOKENS = 100
@@ -153,33 +153,6 @@ def test_cache_settings_apply_only_where_they_are_needed(system, expected):
     chosen = replace(context, model_settings={"anthropic_cache": "1h"})
     kept = asyncio.run(ProviderCacheSettings().before_model_request(None, chosen))
     assert kept.model_settings == {"anthropic_cache": "1h"}
-
-
-def test_runaway_child_is_stopped_without_aborting_the_turn(tmp_path):
-    """An unattended child must not spend the whole session's budget."""
-    (tmp_path / "sample.txt").write_text("evidence")
-    child_requests = 0
-
-    async def model(messages, info):
-        nonlocal child_requests
-        if any(tool.name == "delegate_task" for tool in info.function_tools):
-            async for item in delegating_parent()(messages, info):
-                yield item
-            return
-        child_requests += 1
-        yield {0: DeltaToolCall(name="read_file", json_args='{"path":"sample.txt"}')}
-
-    agent = Agent(FunctionModel(stream_function=model), capabilities=[coder_with_child(tmp_path)])
-    usage = RunUsage()
-    result = asyncio.run(
-        agent.run("Explore", usage=usage, usage_limits=UsageLimits(request_limit=None))
-    )
-    # The parent continues from the child's evidence instead of crashing.
-    assert result.output == "Done"
-    assert child_requests == SUBAGENT_REQUEST_LIMIT
-    # An isolated budget keeps child requests out of the parent's usage, which is
-    # why the runtime adds child tokens back from the delegation event.
-    assert result.usage.requests < child_requests
 
 
 def test_delegated_runs_are_recorded_without_becoming_the_conversation(tmp_path):

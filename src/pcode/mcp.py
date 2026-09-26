@@ -1,8 +1,10 @@
 """Explicit, conversation-scoped MCP activation; configuration alone does nothing."""
 
+import functools
 import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
@@ -14,6 +16,20 @@ from pcode.preferences import preferences_path
 
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}\Z")
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+# Packages whose exceptions mean the OAuth flow itself failed.
+OAUTH_PACKAGES = ("mcp.client.auth", "fastmcp.client.auth", "pcode.mcp_oauth")
+
+
+class MCPConnectError(RuntimeError):
+    """An enabled server failed to connect: names it, with the HTTP status if any.
+
+    The message holds only fixed text, the server name, and the config path,
+    never anything the server sent, so it is safe to show as-is.
+    """
+
+    def __init__(self, server: str, message: str):
+        super().__init__(message)
+        self.server = server
 
 
 def mcp_transport(toolset: Any) -> Any:
@@ -157,6 +173,102 @@ def _config(name: str, raw: Any) -> ServerConfig:
         ) from None
 
 
+def _connect_failure(
+    server: str, config: ServerConfig, status: int | None, oauth_challenge: bool, error: Exception
+) -> str:
+    if status is None:
+        return f"MCP server '{server}' failed to connect ({type(error).__name__})."
+    from http import HTTPStatus
+
+    try:
+        reason = f" {HTTPStatus(status).phrase}"
+    except ValueError:
+        reason = ""
+    # A config edit reaches a server only when it is enabled again.
+    entry = f"its entry in {config_path()}"
+    then = f", then run `/mcp disable {server}` and `/mcp enable {server}`"
+    authorization = any(key.lower() == "authorization" for key in config.headers or {})
+    if status in (401, 403):
+        if config.auth == "oauth":
+            hint = f"Sign in again: `/mcp logout {server}`, then `/mcp enable {server}`."
+        elif oauth_challenge and not authorization:
+            hint = f'It offers OAuth sign-in: add "auth": "oauth" to {entry}{then}.'
+        elif config.headers:
+            hint = f"Check the credentials in the headers of {entry}{then}."
+        else:
+            hint = f"It needs credentials: add an Authorization header to {entry}{then}."
+    elif status == 404:
+        hint = f"Check the url in {entry}{then}."
+    elif status >= 500:
+        hint = "The server itself failed; try again later."
+    else:
+        hint = ""
+    return f"MCP server '{server}' failed to connect: HTTP {status}{reason}. {hint}".strip()
+
+
+@functools.cache
+def _recording_transport() -> type:
+    """A streamable HTTP transport that keeps its endpoint's last HTTP error.
+
+    The MCP SDK reduces any failed response but a 404 to a bare `MCPError`
+    ("Server returned an error response"), dropping the status. FastMCP
+    registers `_capture_session_id` as a response hook on every client it
+    builds, whatever the factory, so extending it sees each response.
+    """
+    import httpx2
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    class RecordingTransport(StreamableHttpTransport):
+        failed_status: int | None = None
+        oauth_challenge = False
+
+        async def _capture_session_id(self, response: httpx2.Response) -> None:
+            await super()._capture_session_id(response)
+            request = response.request
+            # The OAuth flow's discovery, registration, and token requests travel
+            # the same client; only MCP messages to the endpoint itself count.
+            if request.method != "POST" or request.url != httpx2.URL(self.url):
+                return
+            failed = response.status_code >= 400
+            self.failed_status = response.status_code if failed else None
+            challenge = response.headers.get("www-authenticate", "") if failed else ""
+            self.oauth_challenge = "resource_metadata=" in challenge
+
+    return RecordingTransport
+
+
+@functools.cache
+def _named_toolset() -> type:
+    from dataclasses import dataclass
+
+    from pydantic_ai.toolsets import WrapperToolset
+
+    @dataclass
+    class NamedServer(WrapperToolset):
+        """Says which server failed to connect; the SDK's errors never do."""
+
+        server: str = ""
+        config: ServerConfig | None = None
+
+        async def __aenter__(self):
+            transport = mcp_transport(self.wrapped)
+            if hasattr(transport, "failed_status"):
+                transport.failed_status = None
+            try:
+                return await super().__aenter__()
+            except Exception as error:
+                status = getattr(transport, "failed_status", None)
+                # An OAuth failure has its own cause; the endpoint's 401 is just
+                # the challenge that started the flow.
+                if find_cause(error, _from_packages(OAUTH_PACKAGES)) is not None:
+                    status = None
+                challenge = getattr(transport, "oauth_challenge", False)
+                message = _connect_failure(self.server, self.config, status, challenge, error)
+                raise MCPConnectError(self.server, message) from error
+
+    return NamedServer
+
+
 def build_toolset(name: str, raw: Any, *, interactive: bool = True):
     """Construct only the selected server. Connections are owned by each agent run.
 
@@ -192,15 +304,22 @@ def build_toolset(name: str, raw: Any, *, interactive: bool = True):
                 if config.auth == "oauth"
                 else None
             )
+            from fastmcp.mcp_config import infer_transport_type_from_url
+
+            if infer_transport_type_from_url(config.url) == "sse":
+                server, http = config.url, {"headers": config.headers, "auth": auth}
+            else:
+                server = _recording_transport()(config.url, headers=config.headers, auth=auth)
+                http = {}
             toolset = MCPToolset(
-                config.url,
+                server,
                 id=name,
-                headers=config.headers,
-                auth=auth,
+                **http,
                 # The default five-second handshake deadline also covers OAuth.
                 # Give interactive sign-in a bounded five-minute window instead.
                 **({"init_timeout": 300} if auth is not None else {}),
             )
+        toolset = _named_toolset()(toolset, server=name, config=config)
         # Hidden until Pydantic AI's auto-injected ToolSearch reveals them, so a
         # server's schemas cost one `search_tools` call instead of every request.
         if not config.direct:
@@ -230,7 +349,17 @@ def deferred_schemas_rejected(error: BaseException) -> bool:
     )
 
 
-def _find_cause(error: BaseException, kind: type[BaseException]) -> BaseException | None:
+def _from_packages(packages: tuple[str, ...]):
+    def raised_there(error: BaseException) -> bool:
+        module = type(error).__module__
+        return any(module == pkg or module.startswith(f"{pkg}.") for pkg in packages)
+
+    return raised_there
+
+
+def find_cause(error: BaseException, kind) -> BaseException | None:
+    """The first error in the chain that is a `kind`, or that `kind(error)` accepts."""
+    matches = kind if not isinstance(kind, type) else lambda current: isinstance(current, kind)
     seen: set[int] = set()
     pending = [error]
     while pending:
@@ -238,7 +367,7 @@ def _find_cause(error: BaseException, kind: type[BaseException]) -> BaseExceptio
         if current is None or id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, kind):
+        if matches(current):
             return current
         pending.extend([current.__cause__, current.__context__])
         pending.extend(getattr(current, "exceptions", ()))
@@ -264,6 +393,56 @@ def error_message(error: BaseException) -> str:
     )
 
 
+@functools.cache
+def _isolated() -> type:
+    """A per-server layer that turns a failed connection into an empty toolset.
+
+    pydantic-ai enters every run toolset in one exit stack, so one server whose
+    handshake fails would otherwise fail the whole turn and take every other
+    tool, built-in or MCP, down with it.
+    """
+    from dataclasses import dataclass, field
+
+    from pydantic_ai.toolsets import WrapperToolset
+
+    @dataclass
+    class IsolatedServer(WrapperToolset):
+        server: str = ""
+        state: Any = None
+        # Per instance: exit only what this instance entered.
+        _entered: bool = field(default=False, init=False, compare=False, repr=False)
+
+        async def __aenter__(self):
+            try:
+                await self.wrapped.__aenter__()
+            except Exception as error:  # CancelledError is not an Exception.
+                self.state.connect_failed(self.server, error)
+            else:
+                self._entered = True
+                self.state.unavailable.pop(self.server, None)
+            return self
+
+        async def __aexit__(self, *args: Any) -> bool | None:
+            if not self._entered:
+                return None
+            self._entered = False
+            return await self.wrapped.__aexit__(*args)
+
+        # Keyed on the shared state, not `_entered`: pydantic-ai may hand these
+        # calls a per-step copy of this wrapper rather than the entered instance.
+        async def get_tools(self, ctx):
+            if self.server in self.state.unavailable:
+                return {}
+            return await self.wrapped.get_tools(ctx)
+
+        async def get_instructions(self, ctx):
+            if self.server in self.state.unavailable:
+                return None
+            return await super().get_instructions(ctx)
+
+    return IsolatedServer
+
+
 class MCPState:
     """Never persisted. Disabled servers have no toolsets, connections, or prompt cost."""
 
@@ -272,6 +451,19 @@ class MCPState:
         # Captured at enable, like the toolset, so a later config edit changes
         # neither until the server is disabled and enabled again.
         self.descriptions: dict[str, str] = {}
+        # Enabled servers whose latest connection attempt failed, with a message
+        # safe to show (fixed text and an exception type, nothing the server
+        # sent). Cleared by the next successful connection, retried every turn.
+        self.unavailable: dict[str, str] = {}
+        # Set by the runtime to surface a failure and save its frames.
+        self.on_connect_failure: Callable[[str, BaseException], None] = lambda name, error: None
+
+    def connect_failed(self, name: str, error: BaseException) -> None:
+        self.unavailable[name] = (
+            f"MCP server '{name}' failed to connect ({type(error).__name__}); "
+            "continuing without its tools this turn."
+        )
+        self.on_connect_failure(name, error)
 
     async def enable(self, name: str, *, interactive: bool = True) -> None:
         if name in self.enabled:
@@ -295,7 +487,7 @@ class MCPState:
                 # verdict itself to tell "run /mcp enable" from a real failure.
                 from pcode.mcp_oauth import SignInRequired
 
-                if (sign_in := _find_cause(error, SignInRequired)) is not None:
+                if (sign_in := find_cause(error, SignInRequired)) is not None:
                     raise sign_in from error
                 raise
         self.enabled[name] = toolset
@@ -306,6 +498,7 @@ class MCPState:
         """Drop stored OAuth credentials for a server, and its toolset if enabled."""
         self.enabled.pop(name, None)
         self.descriptions.pop(name, None)
+        self.unavailable.pop(name, None)
         servers = configured_servers()
         if name not in servers:
             raise ValueError(f"Unknown MCP server '{name}'. Use /mcp list.")
@@ -324,9 +517,14 @@ class MCPState:
             raise ValueError(f"MCP server '{name}' is not enabled.")
         del self.enabled[name]
         self.descriptions.pop(name, None)
+        self.unavailable.pop(name, None)
 
     def toolsets(self) -> list:
-        return list(self.enabled.values())
+        """The enabled servers, isolated so one that cannot connect costs only its tools."""
+        isolated = _isolated()
+        return [
+            isolated(toolset, server=name, state=self) for name, toolset in self.enabled.items()
+        ]
 
     def servers(self) -> dict[str, str | None]:
         """Enabled server names, sorted, with the descriptions configured for them."""

@@ -231,6 +231,97 @@ def test_invoking_a_skill_command_sends_its_prompt(tmp_path):
     assert call.endswith("\n\nPR 12")
 
 
+def test_metadata_declares_the_mcp_servers_a_skill_needs(tmp_path):
+    path = tmp_path / ".claude" / "skills" / "oncall" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\n"
+        "description: Claim on-call pay\n"
+        "metadata:\n"
+        "  short-description: Claim pay\n"
+        "  pcode-mcp-servers: pagerduty, conduit pagerduty\n"
+        "other:\n"
+        "  pcode-mcp-servers: ignored-outside-metadata\n"
+        "---\nBody\n"
+    )
+    (skill,) = discover_skills(tmp_path)
+    assert skill.description == "Claim on-call pay"
+    assert skill.mcp_servers == ("pagerduty", "conduit")
+    write_skill(tmp_path, ".claude", "plain")
+    assert {s.name: s.mcp_servers for s in discover_skills(tmp_path)}["plain"] == ()
+
+
+def test_invoking_a_skill_enables_its_mcp_servers_before_the_prompt(tmp_path):
+    import json
+
+    from pcode.mcp import config_path
+
+    config_path().parent.mkdir(parents=True, exist_ok=True)
+    config_path().write_text(
+        json.dumps({"mcpServers": {"pagerduty": {"url": "https://example.com/mcp"}}})
+    )
+    path = tmp_path / ".claude" / "skills" / "oncall" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\nmetadata:\n  pcode-mcp-servers: pagerduty unconfigured\n---\n")
+
+    async def run():
+        calls = []
+        answered = asyncio.Event()
+
+        class State:
+            enabled: dict = {}
+
+            async def enable(self, name, interactive=True):
+                await asyncio.sleep(0.05)  # The prompt must wait for this.
+                calls.append(f"enable {name}")
+                self.enabled[name] = object()
+
+        class Runtime:
+            session = None
+            recovery_blocked = ""
+            mcp = State()
+
+            async def stream(self, text):
+                calls.append(text.split(":")[0])
+                yield TextDelta("ok")
+                yield Message("ok")
+                answered.set()
+
+        console = Console(file=StringIO(), color_system=None, width=200)
+        app = PreviewApp(model="test:local", runtime=Runtime(), workspace=tmp_path, console=console)
+        session = None
+
+        with create_pipe_input() as pipe:
+
+            def prompt(*args, **kwargs):
+                nonlocal session
+                session = create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+                return session
+
+            with patch("pcode.app.create_prompt", prompt):
+                task = asyncio.create_task(app.run_async())
+                try:
+                    async with asyncio.timeout(5):
+                        while session is None or not session.app.is_running:
+                            await asyncio.sleep(0.01)
+                        pipe.send_text("/skill:oncall\r")
+                        await answered.wait()
+                        # Already enabled now: a second run enables nothing.
+                        answered.clear()
+                        pipe.send_text("/skill:oncall\r")
+                        await answered.wait()
+                    pipe.send_text("/quit\r")
+                    await asyncio.wait_for(task, 5)
+                finally:
+                    task.cancel()
+        return calls, console.file.getvalue()
+
+    calls, output = asyncio.run(run())
+    assert calls == ["enable pagerduty", 'Use the "oncall" skill', 'Use the "oncall" skill']
+    assert "MCP 'pagerduty' enabled for the oncall skill." in output
+    assert "asks for MCP unconfigured, not configured in" in output
+
+
 def test_startup_summary_lists_skill_commands(tmp_path):
     write_skill(tmp_path, ".claude", "review")
     app = make_app(tmp_path, model="test:model")

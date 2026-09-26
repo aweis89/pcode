@@ -27,7 +27,8 @@ class ToolStarted:
     # "background" or "foreground" for command tools, "" for everything else:
     # whether the model asked for a job handle or waited on the command.
     execution: str = ""
-    # A delegation's sub-agent and its assignment, "" for every other tool.
+    # A delegation's sub-agent and its assignment (its stated purpose when it
+    # gave one), "" for every other tool.
     # Sessions saved before these existed restore without them.
     agent: str = ""
     task: str = ""
@@ -151,6 +152,21 @@ class ChildPlan:
     items: list[dict]
 
 
+@dataclass(frozen=True)
+class ChildText:
+    """A running sub-agent's own prose or reasoning, keyed by its delegate call.
+
+    Display-only and never journaled: it feeds the worker viewer, never the
+    conversation's transcript. `start` opens a new part; otherwise the text
+    continues the previous part of the same kind.
+    """
+
+    call_id: str
+    text: str
+    thinking: bool = False
+    start: bool = False
+
+
 Event = (
     Message
     | ToolStarted
@@ -163,6 +179,7 @@ Event = (
     | PlanUpdated
     | PlanPreview
     | ChildPlan
+    | ChildText
     | CommandOutput
     | EditCompleted
     | EditPreview

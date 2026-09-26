@@ -3,6 +3,7 @@
 from pcode.runtime import (
     CacheBust,
     ChildPlan,
+    ChildText,
     CommandOutput,
     EditCompleted,
     EditPreview,
@@ -16,6 +17,7 @@ from pcode.runtime import (
     ToolStarted,
     ToolSummary,
 )
+from pcode.tool_panel import active_step
 
 
 def present_events(events, *, activity, transcript, edits) -> None:
@@ -33,6 +35,7 @@ def present_events(events, *, activity, transcript, edits) -> None:
             activity.command_outputs[event.call_id] = event
         elif isinstance(event, (ToolStarted, ToolSummary)):
             activity.tools.record(event)
+            activity.workers.record(event)
             if transcript.output is not None:
                 transcript.output.app.invalidate()
             # The adapter's failed flag includes non-zero exits and tool retries.
@@ -67,11 +70,18 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
     elif isinstance(event, RunStatus):
         activity.status = event.text
     elif isinstance(event, PlanUpdated):
+        if active_step(event.items) != active_step(activity.plan):
+            activity.tools.retire_finished()
         activity.plan = event.items
     elif isinstance(event, PlanPreview):
         activity.plan_preview = event.items
     elif isinstance(event, ChildPlan):
         activity.tools.record_plan(event.call_id, event.items)
+        activity.workers.record(event)
+    elif isinstance(event, ChildText):
+        # A worker's own prose feeds `/workers`; the transcript never shows it.
+        activity.workers.record(event)
+        return
     elif isinstance(event, (ToolStarted, ToolSummary)):
         output.finish_thinking()
         # Settled calls land in scrollback, so prose must be committed first.

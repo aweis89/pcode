@@ -7,11 +7,12 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from copy import copy
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import Capability, CombinedCapability
+from pydantic_ai.models import Model
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai_codex import OpenAICodexProvider
@@ -20,18 +21,20 @@ from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
 from pydantic_ai_harness.filesystem import FileSystem
-from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
-from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness.subagents import SubAgent
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.cache_settings import ProviderCacheSettings, model_settings
 from pcode.cache_warnings import CacheBustReporting
 from pcode.code_mode import create_code_mode
 from pcode.delegation import DelegationReporting, stream_child_activity
-from pcode.ext import EXTENSION_GUIDE
+from pcode.ext import EXTENSION_GUIDE, ExtensionCapabilities
 from pcode.filesystem import DisplayFileSystem
+from pcode.isolated_delegation import WorkspaceSubAgents
+from pcode.job_notices import JobNotices
+from pcode.jobs import isolated_registry
 from pcode.llm_proxy import ProxiedCodexProvider
 from pcode.mcp import configured_servers
 from pcode.mcp_notice import MCPServers
@@ -46,14 +49,14 @@ from pcode.strict_tools import create_strict_tools
 from pcode.tool_output_limits import create_tool_output_limits
 from pcode.workspace import WorkspaceGuard
 
-# Generous enough for a real investigation, small enough that a child stuck in a
-# loop is stopped within a turn rather than after a session's worth of requests.
-# Harness isolates a child's request budget only when its `SubAgent` carries
-# `usage_limits`; without one the child shares the parent's usage counter and
-# silently gets the library's 50-request default, which a busy session has
-# already spent. `pcode.ext.subagent` applies this to extension delegates too.
-SUBAGENT_REQUEST_LIMIT = 120
-SUBAGENT_TIMEOUT_SECONDS = 900
+# Harness gives a child its own usage counter only when its `SubAgent` carries
+# `usage_limits`; without one the child shares the parent's counter and silently
+# gets the library's 50-request default, which a busy session has already spent.
+# The limits set no cap: like the parent turn, which is uncapped too, a child's
+# activity is on screen and Ctrl+C stops it, while a fixed budget discarded a
+# working child's whole result. `pcode.ext.subagent` applies this to extension
+# delegates too.
+SUBAGENT_USAGE_LIMITS = UsageLimits(request_limit=None)
 
 # Coder's default prompt without "finish long-running work before responding",
 # which kept the model waiting on jobs instead of answering steering. Job
@@ -141,7 +144,7 @@ def has_mcp_servers() -> bool:
 
 
 def create_coder(
-    workspace: Path, subagents: Sequence = (), extensions: Sequence = ()
+    workspace: Path, subagents: Sequence = (), extensions: Sequence = (), *, delegation: bool = True
 ) -> CombinedCapability:
     """Compose Harness's Coder with pcode's repository context and planning.
 
@@ -236,38 +239,34 @@ def create_coder(
     if code_mode := create_code_mode():
         coder.capabilities.append(code_mode)
         worker_capabilities.append(copy(code_mode))
-    worker = Agent(
-        name="worker",
-        retries=tool_retries(),
-        description=(
-            "Complete a self-contained task using the main agent's tools and permissions, "
-            "including file edits, shell commands, tests, web research, and enabled MCP tools"
-        ),
-        instructions=AGENT_INSTRUCTIONS
-        + (
-            " You are a general-purpose worker. Complete only the delegated task and report "
-            "your changes, verification, and remaining limitations. You inherit the main "
-            "agent's instructions, tools, and permission checks, but not its conversation. "
-            "You share its workspace: coordinate edits with the parent. Your shell and "
-            "plan are independent. You cannot delegate further. Stop jobs you no "
-            "longer need with stop_job."
-        ),
-        capabilities=[*worker_capabilities, *extensions],
-        toolsets=[worker_runtime_tools],
-    )
+    if not delegation:
+        return CombinedCapability(worker_capabilities)
+    worker = _create_worker(worker_capabilities, extensions)
+
+    @asynccontextmanager
+    async def isolated_worker(child_workspace: Path):
+        if extensions and not isinstance(extensions, ExtensionCapabilities):
+            raise ValueError(
+                "Isolated workers require rebindable extensions from load_extensions(); "
+                "use workspace_mode='shared' for directly supplied capabilities."
+            )
+        rebound = (
+            extensions
+            if isinstance(extensions, ExtensionCapabilities)
+            else ExtensionCapabilities([])
+        )
+        with isolated_registry() as jobs:
+            async with rebound.for_workspace(child_workspace) as child_extensions:
+                child_coder = create_coder(child_workspace, delegation=False)
+                child_coder.capabilities.append(JobNotices(jobs))
+                yield _create_worker(child_coder.capabilities, child_extensions, isolated=True)
+
     coder.capabilities.append(
-        SubAgents(
+        WorkspaceSubAgents(
+            workspace=workspace,
+            worker_factory=isolated_worker,
             agents=[
-                SubAgent(
-                    worker,
-                    # An unattended child is the runaway worth bounding: its budget
-                    # is its own, so exhausting it steers the parent with an
-                    # observation instead of aborting the turn. Child usage is
-                    # then isolated too, and rejoins session totals through
-                    # `DelegationEndEvent.usage`.
-                    usage_limits=UsageLimits(request_limit=SUBAGENT_REQUEST_LIMIT),
-                    timeout_seconds=SUBAGENT_TIMEOUT_SECONDS,
-                ),
+                SubAgent(worker, usage_limits=SUBAGENT_USAGE_LIMITS),
                 *subagents,
             ],
             agent_folders=None,
@@ -281,63 +280,38 @@ def create_coder(
             ],
         )
     )
-    # Web search and fetch come from the bundled `web_research` extension, so a
-    # user file of the same name can replace them.
-    # Recompose so instruction sources track replaced/added capabilities too.
-    # Summarize evidence before discarding it. Coder defaults to clearing old
-    # tool results at 70%, which otherwise runs before pcode compaction.
+    # Summarize evidence before discarding it; pcode owns compaction.
     return CombinedCapability(
         [c for c in coder.capabilities if not isinstance(c, ClearToolResults)]
     )
 
 
-ASIDE_INSTRUCTIONS = (
-    "You are answering a side question about a conversation that is still in progress. "
-    "The message history is the main agent's context and may stop mid-task; the final "
-    "user message is the side question. Answer that question and nothing else, briefly, "
-    "preferring what the conversation already shows over fresh investigation. "
-    "You are read-only: you cannot write files, run commands, delegate, or change the "
-    "plan. Your answer is shown in a popup beside the conversation and is not added to "
-    "it, so do not address the main agent, propose next steps it should take, or promise "
-    "work. If the question needs changes made, say so and let the user send it as a "
-    "normal message."
-)
-
-
-def create_aside_agent(agent: Agent, workspace: Path) -> Agent:
-    """A read-only twin of `agent` for questions asked beside a running turn.
-
-    Side questions run concurrently with the conversation's own turn, so they
-    cannot share the live agent's capability instances: one persistent shell,
-    one plan store and one set of sub-agents between two runs would interleave
-    commands, clobber the plan and bill delegated work to the wrong turn. This
-    builds its own `Coder` instead, keeps only the read-only file tools, and
-    drops the shell, planning, and delegation entirely, so the worst a side
-    question can do to a working conversation is spend tokens.
-
-    The resolved model object is shared: it is stateless per request, and a
-    second one would mean a second HTTP client and provider handshake.
-    """
-    capabilities = []
-    for capability in create_coder(workspace).capabilities:
-        # A side question gets no MCP tools, so no list of their servers either.
-        if isinstance(capability, (Shell, SubAgents, Planning, DelegationReporting, MCPServers)):
-            continue
-        if isinstance(capability, FileSystem):
-            capability = replace(capability, read_only=True)
-        capabilities.append(capability)
+def _create_worker(
+    capabilities: Sequence, extensions: Sequence, *, isolated: bool = False
+) -> Agent:
     return Agent(
-        agent.model,
-        # A model string that never resolved (missing credentials) must not turn
-        # a side question into a startup error at construction time.
-        defer_model_check=True,
-        # Model settings are passed per run instead: /effort and /show-thinking
-        # change them in place on the live agent, and a copy taken here would
-        # pin a side question to whatever they were when it was first asked.
-        name="pcode-aside",
+        name="worker",
         retries=tool_retries(),
-        instructions=AGENT_INSTRUCTIONS + " " + ASIDE_INSTRUCTIONS,
-        capabilities=capabilities,
+        description=(
+            "Complete a self-contained task using the main agent's tools and permissions, "
+            "including file edits, shell commands, tests, web research, and enabled MCP tools"
+        ),
+        instructions=AGENT_INSTRUCTIONS
+        + (
+            " You are a general-purpose worker. Complete only the delegated task and report "
+            "your changes, verification, and remaining limitations. You inherit the main "
+            "agent's instructions, tools, and permission checks, but not its conversation. "
+            "Your plan is independent. You cannot delegate further or manage other task worktrees. "
+            "Stop jobs you no longer need with stop_job. "
+        )
+        + (
+            "You have an isolated checkout. Commit completed changes here; do not push or merge "
+            "into any other checkout. Parent integration and cleanup happen after you return."
+            if isolated
+            else "You share the parent's workspace: coordinate edits with the parent."
+        ),
+        capabilities=[*capabilities, *extensions],
+        toolsets=[worker_runtime_tools],
     )
 
 
@@ -370,34 +344,93 @@ def codex_model(model: str) -> OpenAICodexModel:
     )
 
 
+def resolve_model(model: str) -> Model | str:
+    """The model object for a name, on pcode's own logins where it manages them.
+
+    Names pcode has no special handling for come back unchanged for Pydantic
+    AI's inference. So does an Anthropic name when API-key auth has no key yet,
+    which lets the terminal open and reach /login.
+    """
+    if model.startswith("openai-codex:"):
+        return codex_model(model)
+    if model.startswith("meridian:"):
+        from pcode.meridian import meridian_model
+
+        return meridian_model(model)
+    if not model.startswith("anthropic:"):
+        return model
+    from pcode.anthropic_oauth import anthropic_auth_source
+    from pcode.auth import anthropic_model
+
+    auth_source = anthropic_auth_source()
+    if auth_source == "oauth":
+        from pcode.anthropic_oauth import AnthropicOAuthModel
+
+        return AnthropicOAuthModel(model)
+    if auth_source == "api-key":
+        key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        return anthropic_model(model, key) if key else model
+    raise ValueError("PCODE_ANTHROPIC_AUTH must be api-key or oauth.")
+
+
+@dataclass(frozen=True)
+class SideModel:
+    """A model a single run uses instead of the agent's, with its own settings."""
+
+    name: str
+    model: Model
+    settings: dict | None
+
+
+def side_model(name: str, effort: str = "") -> SideModel:
+    """Resolve `name` now, failing with a clear message rather than on first request.
+
+    The settings are the ones the model would get as the conversation's model:
+    its defaults plus its own saved /effort, or `effort` when one was asked
+    for. None of the conversation model's settings carry over, since they
+    belong to another model or provider.
+    """
+    from pydantic_ai.exceptions import UserError
+    from pydantic_ai.models import infer_model
+
+    from pcode.preferences import effort_for
+
+    try:
+        resolved = resolve_model(name)
+        if isinstance(resolved, str):
+            if name.startswith("anthropic:"):
+                raise ValueError("no Anthropic credentials; use /login or set ANTHROPIC_API_KEY")
+            resolved = infer_model(resolved)
+    except (UserError, ValueError, ImportError) as error:
+        raise ValueError(f"Cannot use {name}: {error}") from error
+    return SideModel(
+        name,
+        resolved,
+        with_effort(name, resolved, model_settings(name), effort or effort_for(name)),
+    )
+
+
+def with_effort(name: str, model, settings: dict | None, effort: str | None) -> dict | None:
+    """`settings` with `effort` applied for `name` the way /effort applies it.
+
+    `settings` itself is never mutated: it may be captured by a run in flight.
+    """
+    from types import SimpleNamespace
+
+    from pcode.preferences import apply_effort
+
+    holder = SimpleNamespace(model=model, model_settings=settings)
+    apply_effort(holder, name, effort)
+    return holder.model_settings
+
+
 def create_agent(
     model: str, workspace: Path, extensions: Sequence = (), subagents: Sequence = ()
 ) -> Agent:
     """Build the terminal's agent; `extensions` and `subagents` come from `pcode.ext`."""
-    resolved = codex_model(model) if model.startswith("openai-codex:") else model
-    if model.startswith("meridian:"):
-        from pcode.meridian import meridian_model
-
-        resolved = meridian_model(model)
-    defer_model_check = False
-    if model.startswith("anthropic:"):
-        from pcode.anthropic_oauth import anthropic_auth_source
-        from pcode.auth import anthropic_model
-
-        auth_source = anthropic_auth_source()
-        if auth_source == "oauth":
-            from pcode.anthropic_oauth import AnthropicOAuthModel
-
-            resolved = AnthropicOAuthModel(model)
-        elif auth_source == "api-key":
-            key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-            if key:
-                resolved = anthropic_model(model, key)
-            else:
-                # Allow the terminal to open so /login is reachable without credentials.
-                defer_model_check = True
-        else:
-            raise ValueError("PCODE_ANTHROPIC_AUTH must be api-key or oauth.")
+    resolved = resolve_model(model)
+    # Allow the terminal to open so /login is reachable without credentials.
+    defer_model_check = model.startswith("anthropic:") and isinstance(resolved, str)
     return Agent(
         resolved,
         defer_model_check=defer_model_check,

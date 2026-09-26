@@ -3,7 +3,7 @@
 import asyncio
 import re
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing
+from contextlib import aclosing, nullcontext
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
@@ -47,11 +47,11 @@ from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersis
 from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent, SubAgents
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
-from pcode.agent import worker_toolsets
+from pcode.agent import SideModel, worker_toolsets
 from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, ContextTracking, summarize
 from pcode.conversation_tree import ConversationTree
-from pcode.delegation import ChildActivity
+from pcode.delegation import ChildActivity, ChildOutput
 from pcode.diagnostics import (
     error_details,
     provider_context,
@@ -64,7 +64,13 @@ from pcode.filesystem import FileChangeEvent
 from pcode.inspection import ToolArchive, capture
 from pcode.job_notices import JobNotices
 from pcode.jobs import registry as job_registry
-from pcode.mcp import MCPState, deferred_schemas_rejected
+from pcode.mcp import (
+    OAUTH_PACKAGES,
+    MCPConnectError,
+    MCPState,
+    deferred_schemas_rejected,
+    find_cause,
+)
 from pcode.mcp_notice import enabled_servers
 from pcode.native_results import drop_unreadable_results, unreadable_native_results
 from pcode.plan_preview import StreamingPlanPreview
@@ -74,6 +80,7 @@ from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
     CacheBust,
     ChildPlan,
+    ChildText,
     CommandOutput,
     EditPreview,
     Event,
@@ -105,6 +112,7 @@ from pcode.tool_display import (
     native_result_projection,
     result_detail,
     stated_purpose,
+    subject,
     target,
 )
 from pcode.turn import TurnContext
@@ -139,6 +147,7 @@ class AgentRuntime:
         )
         self.compaction_notice = lambda text: None
         self.retry_notice = lambda text: None
+        self.warning_notice = lambda text: None
         # Shell jobs outlive both the run and the conversation, so the registry
         # is not reset by `_clear`, `/new`, or conversation checkout.
         self.jobs = job_registry()
@@ -146,17 +155,12 @@ class AgentRuntime:
         # Prompt overhead describes the agent's configuration, not one
         # conversation, so it outlives /new and conversation checkout.
         self.request_parameters = None
-        # Built on first use by `aside`; see `create_aside_agent`.
-        self._aside_agent: Agent | None = None
         self._clear()
         self.replace_agent(agent)
 
     def replace_agent(self, agent: Agent) -> None:
         """Change the agent without resetting conversation-scoped state."""
         self.agent = agent
-        # Side questions follow the conversation's model, so the twin is rebuilt
-        # against the new agent rather than left on the previous provider.
-        self._aside_agent = None
         # Coder's public root capability is flattened by Pydantic AI. A resolver
         # keeps the store conversation-scoped, including after /new. It resolves
         # per request, so this is also where a second turn would be handed its
@@ -217,6 +221,15 @@ class AgentRuntime:
                 lines.extend(capability.startup_summary())
         return lines
 
+    def _mcp_connect_failed(self, name: str, error: BaseException) -> None:
+        """One server is down; the turn continues with every other tool."""
+        text = self.mcp.unavailable[name]
+        saved = self.session
+        path = saved.record_error(error, run_id=f"mcp:{name}") if saved else None
+        if path is not None:
+            text += f" Diagnostics: {path}"
+        self.warning_notice(text)
+
     def _clear(self) -> None:
         info = self.session.info if self.session else None
         self.tree = self.session.tree if self.session else ConversationTree()
@@ -234,6 +247,7 @@ class AgentRuntime:
         )
         self.recovery_blocked = ""
         self.mcp = MCPState()
+        self.mcp.on_connect_failure = self._mcp_connect_failed
 
     # The active branch's turn state, under the names callers already use.
     @property
@@ -342,21 +356,45 @@ class AgentRuntime:
         history = self.context_history if self.context_history is not None else self.history
         return deepcopy(settled_context(list(history)))
 
-    async def aside(self, question: str, *, report=None) -> str:
+    async def aside(
+        self,
+        question: str,
+        *,
+        report=None,
+        model: SideModel | None = None,
+        settings: dict | None = None,
+    ) -> str:
         """Answer `question` beside the conversation, recording nothing.
 
         Nothing here touches conversation state: no journal record, no tree
         node, no plan, and `self.history` is only read. The run is billed to the
         session's token totals, because the tokens were really spent. `report`
         receives `(answer_so_far, activity)` as the answer streams.
-        """
-        from pcode.agent import create_aside_agent
-        from pcode.aside import ASIDE_REQUEST_LIMIT
 
-        if self._aside_agent is None:
-            workspace, _ = self.shell_environment()
-            self._aside_agent = create_aside_agent(self.agent, workspace)
-        agent = self._aside_agent
+        The run is set up the way `_stream` sets up a turn -- same agent, MCP
+        toolsets, server list, conversation id, and model settings -- because
+        the provider caches a request prefix, and a side question whose
+        instructions or tool definitions differ by a byte re-bills the whole
+        conversation. Per-run capabilities here add neither instructions nor
+        tools; `AsideGuard` refuses the plan and delegation tools at execution
+        instead of hiding them.
+
+        `model` runs the question on another model instead. It keeps the same
+        agent, tools and history but has no cache to share, so it takes that
+        model's own settings rather than the conversation's, and a conversation
+        id of its own: Meridian keys its session on the id, and a request from
+        another model under the conversation's id would move that session and
+        force the conversation's next turn to replay cold.
+
+        `settings` replaces the conversation's model settings for this question
+        alone, which is how `/btw +EFFORT` asks the conversation's own model at
+        another effort. It keeps the conversation id: the cache may not match
+        at a different effort, but the user asked for that trade.
+        """
+        from pcode.aside import ASIDE_REQUEST_LIMIT, framed
+        from pcode.aside_guard import AsideGuard
+
+        agent = self.agent
         messages = self.aside_context()
         # A turn in flight ends on a user-role request: its new prompt, or the
         # tool results it is working through. A second user message after one of
@@ -364,10 +402,40 @@ class AgentRuntime:
         # question joins that request the way steering does, and the run
         # continues from history instead of adding a message of its own.
         joined = bool(messages) and isinstance(messages[-1], ModelRequest)
-        pending = [question]
-        capabilities = [TokenAccounting(record=self.totals.add)]
+        pending = [framed(question)]
+        capabilities = [AsideGuard(), TokenAccounting(record=self.totals.add)]
         if joined:
             capabilities.append(Steering(lambda: [pending.pop()] if pending else []))
+        conversation_id = self.conversation_id
+        other: dict = {}
+        if model is not None:
+            conversation_id = f"{self.conversation_id}.btw-{uuid4().hex[:8]}"
+            other = {"model": model.model}
+            override = agent.override(model_settings=model.settings)
+        elif settings is not None:
+            override = agent.override(model_settings=settings)
+        else:
+            override = nullcontext()
+        with override:
+            async with (
+                agent,
+                model.model if model is not None else nullcontext(),
+                worker_toolsets(self.mcp.toolsets()),
+                enabled_servers(self.mcp.servers(), self.mcp.unavailable),
+                agent.run_stream_events(
+                    None if joined else pending.pop(),
+                    message_history=messages,
+                    toolsets=self.mcp.toolsets(),
+                    conversation_id=conversation_id,
+                    capabilities=capabilities,
+                    usage_limits=UsageLimits(request_limit=ASIDE_REQUEST_LIMIT),
+                    **other,
+                ) as events,
+            ):
+                return await self._aside_answer(events, report)
+
+    async def _aside_answer(self, events, report) -> str:
+        """Collect a side question's answer from its event stream, reporting progress."""
         blocks: list[str] = []
         partial = ""
         activity = "Waiting for model…"
@@ -377,39 +445,29 @@ class AgentRuntime:
             if report is not None:
                 report("\n\n".join([*blocks, partial] if partial else blocks), activity)
 
-        async with (
-            agent,
-            agent.run_stream_events(
-                None if joined else question,
-                message_history=messages,
-                model_settings=self.agent.model_settings,
-                capabilities=capabilities,
-                usage_limits=UsageLimits(request_limit=ASIDE_REQUEST_LIMIT),
-            ) as events,
-        ):
-            async for event in events:
-                if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-                    partial += event.part.content
-                elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-                    partial += event.delta.content_delta
-                elif isinstance(event, PartEndEvent) and isinstance(event.part, TextPart):
-                    if event.part.content:
-                        blocks.append(event.part.content)
-                    partial = ""
-                elif isinstance(event, FunctionToolCallEvent):
-                    try:
-                        args = event.part.args_as_dict()
-                    except (ValueError, TypeError):
-                        args = {}
-                    where = target(event.part.tool_name, args)
-                    tools[event.part.tool_call_id] = event.part.tool_name
-                    activity = f"Reading {event.part.tool_name}" + (f" · {where}" if where else "")
-                elif isinstance(event, FunctionToolResultEvent):
-                    tools.pop(event.tool_call_id, None)
-                    activity = "Waiting for model…" if not tools else activity
-                else:
-                    continue
-                publish()
+        async for event in events:
+            if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                partial += event.part.content
+            elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                partial += event.delta.content_delta
+            elif isinstance(event, PartEndEvent) and isinstance(event.part, TextPart):
+                if event.part.content:
+                    blocks.append(event.part.content)
+                partial = ""
+            elif isinstance(event, FunctionToolCallEvent):
+                try:
+                    args = event.part.args_as_dict()
+                except (ValueError, TypeError):
+                    args = {}
+                where = target(event.part.tool_name, args)
+                tools[event.part.tool_call_id] = event.part.tool_name
+                activity = f"Running {event.part.tool_name}" + (f" · {where}" if where else "")
+            elif isinstance(event, FunctionToolResultEvent):
+                tools.pop(event.tool_call_id, None)
+                activity = "Waiting for model…" if not tools else activity
+            else:
+                continue
+            publish()
         if partial:
             blocks.append(partial)
             partial = ""
@@ -641,9 +699,11 @@ class AgentRuntime:
                 async for event in stream:
                     if isinstance(event, ToolStarted):
                         tools_started = True
-                    if isinstance(event, (PlanPreview, ChildPlan, CommandOutput, EditPreview)):
+                    if isinstance(
+                        event, (PlanPreview, ChildPlan, ChildText, CommandOutput, EditPreview)
+                    ):
                         # Unexecuted arguments and a sub-agent's transient plan
-                        # must never enter replay/tree history.
+                        # and prose must never enter replay/tree history.
                         yield event
                         continue
                     if saved:
@@ -798,7 +858,7 @@ class AgentRuntime:
         async with (
             self.agent,
             worker_toolsets(self.mcp.toolsets()),
-            enabled_servers(self.mcp.servers()),
+            enabled_servers(self.mcp.servers(), self.mcp.unavailable),
             self.agent.run_stream_events(
                 prompt,
                 message_history=context.messages(),
@@ -860,6 +920,14 @@ class AgentRuntime:
                                 parent_call_id=child.parent_call_id,
                             )
                             del child_tools[call_id]
+                elif isinstance(event, ChildOutput):
+                    if event.tool_call_id in delegates:
+                        yield ChildText(
+                            event.tool_call_id,
+                            event.text,
+                            thinking=event.thinking,
+                            start=event.start,
+                        )
                 elif isinstance(event, ChildActivity):
                     if start := delegates.get(event.tool_call_id):
                         if event.activity != start.activity:
@@ -946,6 +1014,7 @@ class AgentRuntime:
                         args = {}
                     tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
                     agent, task = assignment(event.part.tool_name, args)
+                    command, purpose = subject(event.part.tool_name, args, self.jobs)
                     start = ToolStarted(
                         event.part.tool_name,
                         target(event.part.tool_name, args),
@@ -954,8 +1023,8 @@ class AgentRuntime:
                         run_id=run_id,
                         started_at=datetime.now(timezone.utc).isoformat(),
                         process_id=capture(args.get("command_id", "")),
-                        command=invocation(event.part.tool_name, args),
-                        purpose=stated_purpose(args),
+                        command=command,
+                        purpose=purpose,
                         execution=execution_mode(event.part.tool_name, args),
                         agent=agent,
                         task=task,
@@ -1098,7 +1167,7 @@ def retry_ceiling(error: Exception) -> str | None:
 CODEX_LOGIN_HINT = "Run `/login openai-codex` (or `codex login`, then restart pcode)."
 
 # Packages whose exceptions mean an MCP server failed, not the model or provider.
-_MCP_AUTH_PACKAGES = ("mcp.client.auth", "fastmcp.client.auth", "pcode.mcp_oauth")
+_MCP_AUTH_PACKAGES = OAUTH_PACKAGES
 _MCP_PACKAGES = ("mcp", "fastmcp", "pydantic_ai.mcp", "pcode.mcp", *_MCP_AUTH_PACKAGES)
 
 
@@ -1151,6 +1220,9 @@ def error_message(error: Exception, *, unexpected: str | None = None) -> str:
                 "Retry with `/mcp enable NAME`, or `/mcp logout NAME` to start over. "
                 "See the saved session diagnostics."
             )
+        if (failed := find_cause(error, MCPConnectError)) is not None:
+            # Fixed text, the server name, and the config path only.
+            return f"{failed} Not the model or provider. See the saved session diagnostics."
         return (
             f"MCP server request failed ({name}), not the model or provider. "
             "Check it with `/mcp list`, or turn it off with `/mcp disable NAME`. "

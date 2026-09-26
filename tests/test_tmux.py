@@ -181,7 +181,8 @@ def input_rows(screen):
     assert any(mode in lines[-1] for mode in SEND_MODES), screen
     assert lines[-2].startswith("└"), screen
     cursor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
-    top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("┌"))
+    # Attached tasks sit above the divider; count only the editor's text rows.
+    top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith(("┌", "├")))
     bottom = next(i for i, line in enumerate(lines[top + 1 :], top + 1) if line.startswith("└"))
     return bottom - top - 1
 
@@ -675,7 +676,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     assert all(
         line.startswith("│") and line.endswith("│") for line in lines[first_task : first_task + 5]
     )
-    assert lines[first_task + 5].startswith("└")
+    assert lines[first_task + 5].startswith("├")
     assert input_rows(screen) == 1
     assert "Task 0\n" not in screen
     pane("send-keys", "-t", "preview:0.0", "-l", "editable draft")
@@ -684,10 +685,10 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, split):
     assert any(line.startswith("┌─ Tasks 12/12 ─") for line in completed.splitlines())
     assert "│✓ Task 0" in completed
     assert input_rows(completed) == 1
-    assert completed.count("┌") == completed.count("└") == 2
+    assert completed.count("┌") == completed.count("└") == 1
     pane("kill-pane", "-t", "preview:0.1")
     capture(pane, "editable draft", columns=100)
-    history = single_editor_history(pane, "editable draft", frames=2)
+    history = single_editor_history(pane, "editable draft")
     assert "Plan updated" not in history
     pane("send-keys", "-t", "preview:0.0", "C-c")
     pane("send-keys", "-t", "preview:0.0", "-l", "/new")
@@ -766,8 +767,15 @@ app.run()
 """
 
 
-@pytest.mark.parametrize("pane", [TOOLS_SCRIPT], indirect=True)
-def test_prompt_sits_above_left_aligned_task_header_and_nested_tools(pane):
+@pytest.mark.parametrize(
+    "pane",
+    [
+        'from pcode.preferences import save_preferences\nsave_preferences(attach_tasks="off")\n'
+        + TOOLS_SCRIPT
+    ],
+    indirect=True,
+)
+def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     initial = capture(pane, "A task")
     assert "Tools" not in initial and "┌─ Tasks 0/1 ─" in initial
     assert initial.count("┌") == initial.count("└") == 2
@@ -824,12 +832,8 @@ def attached_box(screen):
     return lines[top], lines[top + 1 : divider], bottom - divider - 1
 
 
-@pytest.mark.parametrize(
-    "pane",
-    [TOOLS_SCRIPT.replace("app.run()", "app.activity.attach_tasks = True\napp.run()")],
-    indirect=True,
-)
-def test_attached_tasks_share_the_editor_box(pane):
+@pytest.mark.parametrize("pane", [TOOLS_SCRIPT], indirect=True)
+def test_tasks_share_the_editor_box_by_default_and_config_applies_live(pane):
     initial = capture(pane, "A task")
     heading, tasks, text_rows = attached_box(initial)
     assert heading.startswith("┌─ Tasks 0/1 ─")
@@ -837,14 +841,14 @@ def test_attached_tasks_share_the_editor_box(pane):
     assert text_rows == 1
     assert initial.count("┌") == initial.count("└") == 1
 
-    pane("send-keys", "-t", "preview:0.0", "-l", "/attach-tasks off")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/config set attach_tasks off")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    detached = capture(pane, "Tasks inside the editor box: off")
+    detached = capture(pane, "attach_tasks = off")
     assert "├" not in detached and detached.count("┌") == 2
     assert input_rows(detached) == 1
-    pane("send-keys", "-t", "preview:0.0", "-l", "/attach-tasks on")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/config set attach_tasks on")
     pane("send-keys", "-t", "preview:0.0", "Enter")
-    capture(pane, "Tasks inside the editor box: on")
+    attached_box(capture(pane, "attach_tasks = on"))
 
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
@@ -892,7 +896,7 @@ def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
         for i in range(40):
             marker = f"RESIZE_TRANSCRIPT_{i:03d}"
             assert history.count(marker) == 1, f"Lost or duplicated {marker}:\n{history}"
-        history = single_editor_history(pane, "A task", frames=2)
+        history = single_editor_history(pane, "A task")
         assert history.count("file_11.py") == 1
 
 
@@ -1095,7 +1099,8 @@ def test_streamed_task_preview_has_real_prompt_height_and_cancels_cleanly(pane):
     screen = capture(pane, "STREAMED_TASK", running=True)
     assert "Tasks 0/1" in screen
     assert input_rows(screen) == 1
-    assert screen.count("┌") == screen.count("└") == 2
+    assert screen.count("┌") == screen.count("└") == 1
+    assert screen.count("├") == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "Run cancelled")
     assert "STREAMED_TASK" not in screen

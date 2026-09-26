@@ -197,7 +197,11 @@ class RichPane:
                 if pane._anchor is not None:
                     # Line offsets depend on the wrap width, which only the
                     # render knows, so a requested anchor is applied here.
-                    pane.window.vertical_scroll = pane.line_offset(pane._anchor, width)
+                    # Clamped: an empty last renderable starts past the final
+                    # line, since trailing newlines are stripped, and the
+                    # window reads the cursor row as a real line.
+                    offset = pane.line_offset(pane._anchor, width)
+                    pane.window.vertical_scroll = min(offset, max(0, len(lines) - 1))
                     pane._anchor = None
                 return UIContent(
                     get_line=lines.__getitem__,
@@ -212,6 +216,16 @@ class RichPane:
         self.window = Window(
             self.control, wrap_lines=False, right_margins=[ScrollbarMargin(display_arrows=True)]
         )
+
+    def follow(self, renderables: list) -> None:
+        """Replace streaming content: stay on the tail if the reader was there, else hold."""
+        info = self.window.render_info
+        offset = self.window.vertical_scroll
+        tailing = info is not None and offset >= max(0, info.content_height - info.window_height)
+        self.set(renderables)
+        if info is not None:
+            rows = len(self.lines(info.window_width))
+            self.window.vertical_scroll = max(0, rows - info.window_height) if tailing else offset
 
     def set(self, renderables: list, *, anchor: int | None = None) -> None:
         """Replace the content, scrolled to the top or to ``renderables[anchor]``."""

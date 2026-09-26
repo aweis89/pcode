@@ -64,6 +64,19 @@ def leave(app, answer=None, **kw):
     return err.getvalue()
 
 
+def test_worktree_is_kept_while_another_session_is_open_in_it(repo, tmp_path):
+    """A copied session shares its original's worktree; leaving one must not remove it."""
+    created, session, app = make(repo, tmp_path)
+    other = SavedSession.create("test:local", created.path, tmp_path / "sessions")
+    out = leave(app)
+    assert f"session {other.info.id} is still open" in out
+    assert created.path.exists()
+    assert session.directory.exists()
+    other.close()
+    assert "removed untouched" in leave(app)
+    assert not created.path.exists()
+
+
 def test_untouched_worktree_and_empty_session_are_deleted(repo, tmp_path):
     created, session, app = make(repo, tmp_path)
     out = leave(app)

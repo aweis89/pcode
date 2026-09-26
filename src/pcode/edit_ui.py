@@ -24,8 +24,8 @@ EMPTY = "No file edits in this conversation."
 NO_MATCH = "No matching edits."
 KEYS = (
     "↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page · Ctrl+Home/End First/last · "
-    "Tab Focus · / Search paths (in Files) or diff lines (in Diff) · n/N Next/previous match · "
-    "Esc Close"
+    "Type to search paths, Enter to leave · Tab Focus · "
+    "/ Search paths (in Files) or diff lines (in Diff) · n/N Next/previous match · Esc Close"
 )
 PROMPTS = {"paths": "Search paths: ", "diffs": "Search diff lines: "}
 
@@ -69,11 +69,20 @@ class EditBrowser:
     One search line serves both panes. Pressing ``/`` in the file list searches
     paths and filters the list; pressing it in the diff searches diff lines,
     filters the list to changes with a match, and jumps the diff to the first.
+    Changes are listed in the order given; `title` says what they are.
     """
 
-    def __init__(self, changes, *, code_theme: str = "monokai", **app_options) -> None:
-        # Newest first, matching the tool inspector's ordering.
-        self.changes = list(reversed(list(changes)))
+    def __init__(
+        self,
+        changes,
+        *,
+        title: str = "Edit diffs",
+        empty: str = EMPTY,
+        code_theme: str = "monokai",
+        **app_options,
+    ) -> None:
+        self.changes = list(changes)
+        self.empty = empty
         self.visible: list[EditCompleted] = []
         self.selected: EditCompleted | None = None
         self.scope = "paths"
@@ -97,6 +106,7 @@ class EditBrowser:
             event.app.exit()
 
         # Tab only toggles the panes; the query line is entered with / and left with Enter.
+        # The browser opens in it, searching paths.
         @keys.add("tab")
         @keys.add("s-tab")
         def toggle(event):
@@ -132,12 +142,13 @@ class EditBrowser:
 
         header = Label(
             lambda: (
-                f"Edit diffs · {self.position()}/{len(self.visible)} changes · "
+                f"{self.position()}/{len(self.visible)} · "
                 f"{edit_text(self.selected.path) if self.selected else 'none'}"
             )
         )
         root = HSplit(
             [
+                Label(title),
                 header,
                 Label(KEYS),
                 self.query,
@@ -146,7 +157,9 @@ class EditBrowser:
             ]
         )
         self.app = Application(
-            layout=Layout(popup_container(root), focused_element=self.files),
+            # Open in the search line, so typing filters rather than reaching
+            # the panes' one-key shortcuts.
+            layout=Layout(popup_container(root), focused_element=self.query),
             key_bindings=keys,
             full_screen=True,
             mouse_support=popup_mouse(),
@@ -200,7 +213,7 @@ class EditBrowser:
         self.visible = [change for change in self.changes if self.matches(change)]
         selected = next((i for i, c in enumerate(self.visible) if c is previous), 0)
         lines = [change_title(change) for change in self.visible]
-        text = "\n".join(lines) or (NO_MATCH if self.changes else EMPTY)
+        text = "\n".join(lines) or (NO_MATCH if self.changes else self.empty)
         position = sum(len(line) + 1 for line in lines[:selected])
         self._refreshing = True
         self.files.buffer.set_document(Document(text, position), bypass_readonly=True)
@@ -218,7 +231,7 @@ class EditBrowser:
         if change:
             text = change_diff(change)
         else:
-            text = NO_MATCH if self.changes else EMPTY
+            text = NO_MATCH if self.changes else self.empty
         self.diff.buffer.set_document(Document(text, 0), bypass_readonly=True)
         self.diff.window.vertical_scroll = 0
         rows = self.diff_rows()

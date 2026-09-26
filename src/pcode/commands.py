@@ -1,6 +1,6 @@
 """One registry drives dispatch, help, and slash completion."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
@@ -21,6 +21,9 @@ class Command:
     # Shown beside each argument in the completion menu, like the command's own
     # description; arguments without an entry complete bare.
     argument_descriptions: dict[str, str] | None = None
+    # Completes free-form arguments the fixed list cannot describe. Given the
+    # argument text before the cursor, it yields completions for its end.
+    argument_completer: Callable[[str], Iterable[Completion]] | None = None
 
 
 class CommandRegistry:
@@ -86,7 +89,9 @@ class SlashCompleter(Completer):
             return
         name, prefix = text.split(maxsplit=1) if len(text.split()) > 1 else (text.strip(), "")
         command = self.registry.find(name)
-        if command:
+        if command and command.argument_completer:
+            yield from command.argument_completer(prefix)
+        elif command:
             arguments = (
                 command.argument_provider() if command.argument_provider else command.arguments
             )

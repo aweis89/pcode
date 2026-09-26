@@ -5,6 +5,7 @@ import pytest
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
@@ -154,8 +155,14 @@ def _popups(tmp_path, options):
     asides = AsideBrowser(Asides(), **options)
     sessions = SessionBrowser([], root=tmp_path, workspace=tmp_path, **options)
     tools = ToolInspector(ToolArchive(), **options)
+    # The links picker opens in its search line; the read-only window is the list.
+    links_list = next(
+        window
+        for window in links.layout.find_all_windows()
+        if isinstance(window.content, BufferControl) and window.content.buffer.read_only()
+    )
     return {
-        "links": (links, [links.layout.current_window]),
+        "links": (links, [links_list]),
         "session info": (info, [info.layout.current_window]),
         "edits": (edits.app, [edits.files.window, edits.diff.window]),
         "tree": (tree.app, [tree.list.window]),
@@ -269,3 +276,13 @@ def test_model_picker_pages_its_selection():
                     await task
 
     asyncio.run(run())
+
+
+def test_anchor_on_an_empty_last_renderable_stays_on_a_real_line():
+    pane = RichPane(color_system=None)
+    pane.set([Text("one"), Text("two"), Text("")], anchor=2)
+    content = pane.control.create_content(40, 10)
+    # Trailing newlines are stripped, so the empty block starts past the end.
+    assert content.line_count == 2
+    assert content.cursor_position.y == 1
+    content.get_line(content.cursor_position.y)

@@ -167,8 +167,9 @@ def test_inspector_keyboard_focus_scroll_filter_and_close(monkeypatch):
             task = asyncio.create_task(ui.run())
             await asyncio.sleep(0.05)
             assert ui.selected.call_id == "success"  # Newest first.
-            # Arrows steer the list while the query keeps focus.
-            pipe.send_text("/\x1b[B")
+            # It opens in the search line, and arrows steer the list from there.
+            assert ui.app.layout.has_focus(ui.query)
+            pipe.send_text("\x1b[B")
             await asyncio.sleep(0.05)
             assert ui.app.layout.has_focus(ui.query)
             assert ui.selected.call_id == "failed"
@@ -197,6 +198,28 @@ def test_inspector_keyboard_focus_scroll_filter_and_close(monkeypatch):
             pipe.send_text("missing")
             await asyncio.sleep(0.05)
             assert not ui.visible
+            pipe.send_text("\x1b")
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+
+
+def test_typing_on_open_searches_instead_of_hitting_list_shortcuts():
+    """Typing a tool name straight away filters by it; `t` must not cycle the tool filter."""
+
+    async def run():
+        archive = ToolArchive()
+        call(archive, "worker", name="delegate_task")
+        call(archive, "check", name="check_command")
+        with create_pipe_input() as pipe:
+            ui = ToolInspector(archive, input=pipe, output=DummyOutput())
+            task = asyncio.create_task(ui.run())
+            await asyncio.sleep(0.05)
+            pipe.send_text("delegate")
+            await asyncio.sleep(0.05)
+            assert ui.query.text == "delegate"
+            assert ui.tool == "All"
+            assert [c.call_id for c in ui.visible] == ["worker"]
             pipe.send_text("\x1b")
             await asyncio.wait_for(task, 2)
 

@@ -26,12 +26,113 @@ protected by file tools. Repository instruction discovery remains scoped to the
 selected workspace and its configured ancestors, not every external path the
 tools can access.
 
-Use `delegate_task` with `agent_name="worker"` and a self-contained task. Workers
-share workspace files, so give concurrent workers non-overlapping edits. Each has
-fresh conversation context and its own shell and plan; the parent's conversation
-is not copied. Recursive delegation is disabled. Each task retains a separate
-120-request budget and a 15-minute timeout. Specialized extension delegates keep
-their own tool configuration rather than automatically gaining the worker's tools.
+Use `delegate_task` with `agent_name="worker"` and a self-contained task. Each has
+fresh conversation context and its own plan; the parent's conversation is not
+copied. An optional `purpose` of a few words labels the delegation in the task
+widget and scrollback; the sub-agent never sees it. Recursive delegation is
+disabled. Each task counts its own requests apart from the parent's, with no
+request cap or execution timeout: its tool calls show under the parent's, and
+Ctrl+C cancels it with the turn. There is **no concurrency cap by default**
+(`worker_concurrency=0`). Set a positive `worker_concurrency` to
+limit built-in workers per session, then `/reload` to apply it. When a cap is set,
+additional calls wait for a slot before creating a checkout or running a worker.
+Provider limits and machine resources still apply. Specialized extension
+delegates keep their own tool configuration rather than automatically gaining
+the worker's tools.
+
+### Worker worktrees
+
+Worker isolation is **opt-in**: `worker_isolation` defaults to `off`. Enabling
+`worktree` alone still creates session worktrees, but workers keep sharing their
+parent's live workspace, including uncommitted files, just as before.
+
+To opt in for this workspace:
+
+```sh
+pcode config project set worktree on
+pcode config project set worker_isolation on
+```
+
+`delegate_task` accepts `workspace_mode="auto"` (the default), `"isolated"`, or
+`"shared"`. Auto isolates built-in workers only when **both `worktree=on` and
+`worker_isolation=on`** are effective for the active workspace; otherwise it uses
+shared mode. Both preferences are checked at each delegation, so no reload is
+needed for this gate. A linked session checkout or the CLI's one-launch
+`--worktree` override does not enable worker isolation. Explicit `isolated` is
+rejected unless both settings are on; a tool argument cannot bypass the opt-in.
+Explicit `shared` is always available, including for investigations of uncommitted
+files. Shared mode is not read-only; coordinate concurrent edits and Git commands.
+
+Turning `worker_isolation` off stops new isolated delegations. It does not remove
+existing task worktrees: their management tools and cleanup protections remain
+available so outstanding results can still be integrated or explicitly discarded.
+
+For isolated editing:
+
+```python
+delegate_task(
+    agent_name="worker",
+    task="Implement the parser fix, add tests, and commit the result.",
+    workspace_mode="isolated",
+)
+```
+
+pcode creates a unique `task-<id>` branch and sibling checkout under `.worktrees/`,
+starting at the **parent's current commit**, not mainline. The parent must be a
+checkout root on a branch, with no tracked changes or Git operation in progress.
+Commit a checkpoint first; pcode never stashes or creates hidden commits.
+Untracked files are not copied. Existing trusted worktree setup hooks provision
+dependencies and local configuration before the worker starts. Setup has its own
+15-minute budget; cancellation terminates and reaps its process group rather
+than leaving provisioning running in the background.
+
+File tools, shell, repository context, and loaded extensions are rebuilt against
+the child checkout. Extension setup runs again with the child's workspace, and
+its close hooks run when the child ends. Extensions can distinguish worker setup
+with `pcode.is_worker`; shared session resources such as the browser remain owned
+by the parent. Enabled runtime MCP tools remain shared services; they are not
+worktree sandboxes. Isolated workers have a separate job registry. Job-completion
+notices go to that worker at its next model request, not to the parent or other
+workers. Remaining child shell jobs are terminated before recording the result.
+Worktrees do not isolate ports, databases, credentials, or OS permissions.
+
+The tool returns a persistent artifact containing `task_id`, parent path and
+branch, base and result commits, child branch and path, observed dirty state,
+status, and the worker's summary. Commit and cleanliness metadata come from Git;
+verification claims in the summary remain worker-reported. Cancellation, setup
+failure or timeout, or worker failure preserves the checkout and record.
+A dead owning process is recognized as a failed task when records are read.
+
+The parent alone has these management tools:
+
+- `list_task_worktrees()` recovers this checkout's task records, including after
+  restarting. Records are local JSON files in the shared Git directory, not
+  tracked repository files.
+- `integrate_task(task_id)` merges a completed result into its recorded **parent
+  branch**, never directly into mainline. Both checkouts must be clean, including
+  untracked files, and the worker's branch and commit must still match its result.
+  A per-parent lock prevents overlapping lifecycle operations. Integration overrides
+  squash/no-commit merge options and verifies the result is committed in the parent
+  before reporting success. Conflicts remain in the parent: resolve them, commit,
+  then retry integration. Review the diff before integration and run combined
+  checks afterward.
+- `discard_task(task_id, confirm=False)` removes an inactive task's checkout and
+  branch. Unintegrated or dirty work requires `confirm=True`, which the agent is
+  instructed to use only after explicit user approval. Running tasks cannot be
+  discarded. This confirmation argument is not a separate approval UI.
+
+`/worktree list` labels child checkouts with their owner and status.
+`/worktree clean` preserves active and unfinished tasks and their parent checkouts. Clean,
+successfully integrated children can be cleaned against their parent's history;
+mainline need not contain the result yet. Generic worktree merge commands refuse
+task branches, so a child cannot accidentally be integrated into mainline. Moving
+a task checkout is unsupported: generic lifecycle commands preserve it and explain
+how to restore its recorded path before integration or cleanup.
+
+Specialized extension delegates retain shared-workspace semantics even when
+`worktree=on`; explicit isolation is only supported for the built-in worker.
+Programmatic callers supplying raw extension capability lists must use shared
+mode or pass the rebindable `load_extensions(...).capabilities` collection.
 
 Harness is pinned to upstream commit
 [`a7bbe89fd855138916d4f64060479f4ddb0ef9b0`](https://github.com/pydantic/pydantic-ai-harness/commit/a7bbe89fd855138916d4f64060479f4ddb0ef9b0),
@@ -96,7 +197,9 @@ turns it off; the model then hears at your next message instead.
 
 While a job runs with nothing waiting on it, a row under the spinner (or under
 the editor, while idle) shows it: `⟳ j3 · running the e2e suite · 1m42s`. The
-row disappears when the job finishes, including failures. Its completion goes
+row disappears when the job finishes, including failures. While the model
+waits on a job, the wait's own row names it instead, with the job's purpose and
+command: `⧗ Wait · 45.2s · j3 · running the e2e suite · make e2e`. Its completion goes
 to scrollback at the end of the turn, or immediately while idle, using the
 normal `Run` presentation with a `background` label, job id, and elapsed time.
 The same `show_commands` and `tool_error_scrollback` settings control captured
@@ -124,8 +227,9 @@ follow-up such as “write the release notes in the meantime” can steer the sa
 turn into other work while a build continues, without `/btw`.
 
 Jobs outlive the turn, the conversation, and pcode itself. Use
-[`/jobs`](commands.md#offline-preview-and-commands) to see what is still running, and
-`/jobs stop ID` or `/jobs stop all` to stop it. A stop is `SIGTERM` to the
+[`/jobs`](commands.md#offline-preview-and-commands) to browse them and read each one's log
+(the last 128 KiB, with the same redaction as the preview), and **Ctrl+K** there,
+`/jobs stop ID`, or `/jobs stop all` to stop one. A stop is `SIGTERM` to the
 job's whole process group, so a server can release its port; whatever is still
 there two seconds later gets `SIGKILL`. Logs of finished jobs are dropped on
 exit and the oldest are evicted after 50; a running job keeps its log, because

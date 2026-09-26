@@ -234,8 +234,8 @@ Because the list is appended rather than written into the instructions, changing
 it never rewrites earlier messages or the instructions, so the list does not
 invalidate the prompt cache by itself. Enabling the first searchable server
 still does, since that adds the search tool to the request. A delegated worker
-sees the same list, because it shares the parent's enabled servers; side
-questions (`/btw`) get neither the tools nor the list.
+sees the same list, because it shares the parent's enabled servers, and so does
+a side question (`/btw`), which sends the conversation's exact tools and list.
 
 The name is often enough. Add a `description` when it is not:
 
@@ -266,6 +266,12 @@ editing it, disable and enable the server again.
   silently and the first authentication error arrives mid-turn.
   All enabled servers reconnect for each turn and close afterward, including on
   failure or cancellation; local subprocesses do not stay running between turns.
+- A server that fails to connect costs only its own tools. The turn goes ahead
+  with every other tool, pcode prints a warning naming the server (its frames go
+  to the session's `errors.log`), and the model's server list marks it
+  `failed to connect this turn` so it doesn't go searching for tools that aren't
+  there. It stays enabled and is tried again on the next turn;
+  `/mcp disable NAME` stops that.
 - `/mcp disable NAME` removes those tools from subsequent model requests. MCP
   selection cannot change during an active turn. To reload a server after editing
   its configuration or environment, disable and enable it again.

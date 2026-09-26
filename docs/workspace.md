@@ -109,8 +109,35 @@ gives `/NAME`, `both` registers the bare name as an alias of the prefixed one,
 and `off` registers nothing. A bare name that collides with a built-in command is
 dropped, and the built-in wins. Discovery happens at launch, so add a skill (or
 change this setting) and restart to pick it up. The startup banner lists the
-commands that were registered. Only the frontmatter `description` is read at
-launch, to label the completion menu.
+commands that were registered. Only the frontmatter is read at launch: its
+`description` labels the completion menu.
+
+### MCP servers a skill needs
+
+A skill that only works with certain [MCP servers](mcp.md) can list them under
+the frontmatter's `metadata`, the Agent Skills spec's slot for client-specific
+fields, so other assistants reading the same file ignore it:
+
+```yaml
+---
+name: oncall-pay
+description: Claim on-call pay from the PagerDuty schedule.
+metadata:
+  pcode-mcp-servers: pagerduty, conduit
+---
+```
+
+`/skill:NAME` then enables each listed server that is configured in `mcp.json`
+and not already on, exactly as `/mcp enable` would, including an OAuth browser
+sign-in if one is needed, before the skill's prompt is sent. The prompt waits
+for them. A server that fails to enable is reported and stays off while the rest
+proceed; Ctrl+C during sign-in cancels the prompt too. Names missing from
+`mcp.json` get a warning. Servers cannot change under a running turn, so
+invoking the skill while one runs prints the `/mcp enable` commands to run
+afterward instead.
+
+This applies only to the slash command. When the model decides on its own to
+read a `SKILL.md`, the turn's tools are already fixed, so nothing is enabled.
 
 ## One git worktree per session
 
@@ -173,6 +200,18 @@ reason it was kept, so the command cannot lose work. It runs from the mainline
 checkout too (`make worktree-clean`), which is usually where the pile is
 visible. A worktree someone locked with `git worktree lock` is skipped.
 
+Worker delegation remains shared by default, even with `worktree=on`. To opt in
+to isolated workers, also set `worker_isolation=on` (it defaults to `off`). Both
+preferences must be on. Isolated tasks use `task-<id>` branches starting at the
+parent session's current commit, not mainline. `/worktree list` shows their owner
+and status. Pending tasks and parents owning pending tasks are protected from
+generic removal/finish; task results must first be integrated into their parent
+or explicitly discarded.
+Clean integrated task checkouts can be swept relative to the parent's history,
+even before that parent merges into mainline. Failed task setup preserves the
+checkout for inspection rather than applying the session-launch removal rule.
+See [worker worktrees](tools.md#worker-worktrees) for modes and management tools.
+
 Branches outlive their worktrees, so a checkout that has been cleaned up by
 hand leaves a merged branch behind, and `git branch -d` refuses any branch a
 worktree still holds. `make clean-merged` runs the sweep above and then deletes
@@ -196,4 +235,7 @@ hand-made ones are only reported):
 | Uncommitted changes | Kept, with the resume command. Committing on your behalf at exit is not pcode's call. |
 
 `--print` has nobody to ask, so it only does the untouched cleanup. Merging
-never pushes; push from the mainline when you are ready.
+never pushes; push from the mainline when you are ready. None of this happens
+while another session is still open in the same worktree, as a
+[copied session](sessions.md#continuing-a-session-that-is-open-elsewhere) is
+alongside its original: the worktree is kept with a note naming that session.

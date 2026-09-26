@@ -36,6 +36,7 @@ def make_app(width=80, workspace=None):
                 "/links",
                 "/tree",
                 "/btw",
+                "/workers",
                 "/model",
                 "/effort",
                 "/mcp",
@@ -52,7 +53,6 @@ def make_app(width=80, workspace=None):
                 "/worktree",
                 "/show-tasks",
                 "/autohide-tasks",
-                "/attach-tasks",
                 "/show-thinking",
                 "/show-edits",
                 "/show-commands",
@@ -74,6 +74,7 @@ def make_app(width=80, workspace=None):
         ("hello /", []),
         ("/theme-preview\n/", []),
         ("/missing", []),
+        ("/attach-tasks", []),
         ("/tool", ["/tools"]),
     ],
 )

@@ -6,8 +6,21 @@ from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.usage import RunUsage, UsageLimits
 
-from pcode.agent import SUBAGENT_REQUEST_LIMIT, create_agent, create_coder
+from pcode.agent import create_agent, create_coder
 from pcode.ext import ExtensionAPI, ExtensionUI
+
+# Past the parent's spent default of 50 and the worker's former cap of 120.
+LONG_CHILD_REQUESTS = 130
+
+
+def test_worker_has_its_own_uncapped_budget_and_no_timeout(tmp_path):
+    from pydantic_ai_harness.subagents import SubAgents
+
+    coder = create_coder(tmp_path)
+    (worker,) = next(c for c in coder.capabilities if isinstance(c, SubAgents)).agents
+    # `usage_limits` must be present: it is what gives the child its own counter.
+    assert worker.usage_limits == UsageLimits(request_limit=None)
+    assert worker.timeout_seconds is None
 
 
 def test_child_runs_past_the_parents_near_exhausted_request_budget(tmp_path):
@@ -28,7 +41,7 @@ def test_child_runs_past_the_parents_near_exhausted_request_budget(tmp_path):
             }
             return
         child_requests += 1
-        if child_requests <= 50:
+        if child_requests < LONG_CHILD_REQUESTS:
             yield {0: DeltaToolCall(name="read_file", json_args='{"path":"sample.txt"}')}
             return
         yield "Found evidence"
@@ -40,8 +53,8 @@ def test_child_runs_past_the_parents_near_exhausted_request_budget(tmp_path):
     )
     assert result.output == "Done"
     # The parent starts 50 requests in, which is the library's default cap. The
-    # child is unaffected: it runs to its own stopping point.
-    assert child_requests == 51
+    # child is unaffected and uncapped: it runs to its own stopping point.
+    assert child_requests == LONG_CHILD_REQUESTS
     # Its own budget keeps those requests off the parent's ledger, so a long
     # delegation cannot exhaust the turn. Tokens still aggregate (see
     # tests/test_delegation_cache.py).
@@ -68,7 +81,7 @@ def test_extension_delegate_runs_past_the_parents_spent_request_budget(tmp_path,
     api = ExtensionAPI("mine", tmp_path, ExtensionUI())
     api.subagent(child)
     (delegate,) = api.subagents
-    assert delegate.usage_limits.request_limit == SUBAGENT_REQUEST_LIMIT
+    assert delegate.usage_limits == UsageLimits(request_limit=None)
     child_requests = 0
 
     async def model(messages, info):
