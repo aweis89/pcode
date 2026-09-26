@@ -279,9 +279,16 @@ def test_default_servers_enable_at_startup_and_new_without_a_browser():
                     # A prompt typed immediately still sees the startup-enabled server.
                     pipe.send_text("first question\r")
                     await wait_for(lambda: ("prompt", ["local"]) in calls)
-                    text = " ".join(output.getvalue().split())
-                    assert "MCP 'local' enabled (default on)" in text
-                    assert "MCP 'remote' needs a browser sign-in; run /mcp enable remote" in text
+                    # From a host, the notes arrive a moment after the calls.
+                    await wait_for(
+                        lambda: all(
+                            note in " ".join(output.getvalue().split())
+                            for note in (
+                                "MCP 'local' enabled (default on)",
+                                "MCP 'remote' needs a browser sign-in; run /mcp enable remote",
+                            )
+                        )
+                    )
                     assert calls[:2] == [("local", False), ("remote", False)]
                     pipe.send_text("/mcp list\r")
                     await wait_for(lambda: "manual: off" in output.getvalue())
