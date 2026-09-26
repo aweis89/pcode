@@ -614,7 +614,11 @@ async def _serve(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    import faulthandler
+
     args = _parser().parse_args(argv)
+    # `kill -USR1 PID` writes every thread's stack to the log, for a host that hangs.
+    faulthandler.register(signal.SIGUSR1)
     # The terminal that started the host may close; the host outlives it.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
