@@ -396,15 +396,204 @@ class PrivateStepStore(SqliteStepStore):
         await super().record_tool_effect(record)
 
 
-class SavedSession:
+def _parse(line: bytes) -> dict | None:
+    """One journal line as a record; anything else (torn, foreign) is skipped."""
+    try:
+        record = json.loads(line.decode("utf-8", errors="replace"))
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
+class SessionJournal:
+    """A session's conversation, readable without owning it.
+
+    `read` never locks or writes, so a terminal can display a session that a
+    host process holds open and keeps appending to; `refresh` follows it.
+    """
+
     def __init__(self, directory: Path, info: SessionInfo) -> None:
         if directory.is_symlink():
             raise SessionError("Refusing a symlinked session directory.")
         self.directory = directory
-        directory.chmod(0o700)
         self.info = info
         # The session this one was copied from because that one was open.
         self.forked_from: str | None = None
+        self.tree = ConversationTree()
+        # End of the last complete journal line fed to `tree`, and which file it
+        # was in, so a replaced journal is rebuilt rather than read mid-record.
+        self._offset = 0
+        self._journal_id: tuple[int, int] | None = None
+
+    @classmethod
+    def read(cls, directory: Path) -> "SessionJournal":
+        """Open a session read-only, even while another process holds and writes it."""
+        if directory.is_symlink():
+            raise SessionError("Refusing a symlinked session directory.")
+        journal = cls(directory, read_info(directory))
+        journal._follow()
+        return journal
+
+    def refresh(self) -> bool:
+        """Catch up with what the owner has written since; whether anything changed."""
+        changed = self._follow()
+        info = read_info(self.directory)
+        if info != self.info:
+            self.info = info
+            changed = True
+        return changed
+
+    def _follow(self) -> bool:
+        """Feed `tree` the complete lines appended since the last call.
+
+        A final line without its newline may still be being written, so it is
+        left for the next call to read whole.
+        """
+        path = self.directory / "transcript.jsonl"
+        try:
+            file = path.open("rb")
+        except FileNotFoundError:
+            return False
+        with file:
+            stat = os.fstat(file.fileno())
+            identity = (stat.st_dev, stat.st_ino)
+            changed = False
+            if identity != self._journal_id or stat.st_size < self._offset:
+                changed = self._offset > 0 or self._journal_id is not None
+                self.tree = ConversationTree()
+                self._offset = 0
+                self._journal_id = identity
+            file.seek(self._offset)
+            for line in file:
+                if not line.endswith(b"\n"):
+                    break
+                self._offset += len(line)
+                changed = True
+                if (record := _parse(line)) is not None:
+                    self.tree.consume(record)
+        return changed
+
+    def journal_size(self) -> int:
+        """Where the next record will start; `end` for records written before now."""
+        return (self.directory / "transcript.jsonl").stat().st_size
+
+    def records(self, end: int | None = None):
+        """Read intact records; a hard kill may leave a torn final append.
+
+        `end` stops at a `journal_size()` taken earlier, so a turn still being
+        written can be left out of what is read.
+        """
+        with (self.directory / "transcript.jsonl").open("rb") as file:
+            consumed = 0
+            for line in file:
+                consumed += len(line)
+                if end is not None and consumed > end:
+                    return
+                if (record := _parse(line)) is not None:
+                    yield record
+
+    def active_records(self, end: int | None = None):
+        """Records on the selected branch, by the turn each one names.
+
+        `recording` is the pre-run-id fallback: in an older journal a record
+        belongs to the last turn started before it, which is only true because
+        those sessions could never have two turns open at once.
+        """
+        selected = set(self.tree.path(self.tree.active))
+        recording = None
+        for record in self.records(end):
+            if record.get("kind") == "turn_started":
+                recording = record.get("run_id")
+            if not self.tree.nodes or (record.get("run_id") or recording) in selected:
+                yield record
+
+    def latest_plan(self) -> list[dict]:
+        """Recover UI/tool state even when the last update predates replay's limit."""
+        if self.tree.nodes:
+            return deepcopy(self.tree.nodes[self.tree.active].plan) if self.tree.active else []
+        items = []
+        for record in self.active_records():
+            if record.get("kind") == "PlanUpdated":
+                items = record["items"]
+        return items
+
+    def tool_events(self):
+        """Stream tool lifecycle records independently of the transcript replay limit."""
+        for record in self.active_records():
+            if record.get("kind") in {
+                "ToolStarted",
+                "ToolSummary",
+                "turn_started",
+                "turn_completed",
+                "turn_cancelled",
+                "turn_failed",
+            }:
+                yield record
+
+    def transcript_records(self, end: int | None = None):
+        """Stream active-path display records; Transcript owns the retention budget.
+
+        Only unfinished text is buffered. Flush thinking before interleaved display
+        records, as live output does, and don't repeat it at the completion marker.
+        """
+        partial = ""
+        thinking = ""
+        thinking_streamed = False
+        for record in self.active_records(end):
+            kind = record.get("kind")
+            if kind == "ThinkingDelta":
+                thinking += record["text"]
+                thinking_streamed = True
+                continue
+            if kind not in {
+                "Thinking",
+                "TextDelta",
+                "Message",
+                "ToolSummary",
+                "JobFinished",
+                "EditCompleted",
+                "CacheBust",
+                "steering",
+                "turn_started",
+                "turn_completed",
+                "turn_failed",
+                "turn_cancelled",
+            }:
+                continue
+            if thinking:
+                yield {"kind": "thinking_partial", "text": thinking}
+                thinking = ""
+            if kind == "Thinking":
+                if not thinking_streamed:
+                    yield record
+                thinking_streamed = False
+            elif kind == "TextDelta":
+                thinking_streamed = False
+                partial += record["text"]
+            elif kind == "Message":
+                thinking_streamed = False
+                partial = ""
+                yield record
+            elif kind.startswith("turn_"):
+                thinking_streamed = False
+                if partial:
+                    yield {"kind": "partial", "markdown": partial}
+                    partial = ""
+                yield record
+            else:
+                yield record
+        if thinking:
+            yield {"kind": "thinking_partial", "text": thinking}
+        if partial:
+            yield {"kind": "partial", "markdown": partial}
+
+
+class SavedSession(SessionJournal):
+    """The one process that owns a session: holds its lock and writes it."""
+
+    def __init__(self, directory: Path, info: SessionInfo) -> None:
+        super().__init__(directory, info)
+        directory.chmod(0o700)
         self.lock = FileLock(directory / ".lock", mode=0o600)
         try:
             self.lock.acquire(timeout=0)
@@ -417,7 +606,6 @@ class SavedSession:
                 database=directory / "steps.sqlite3",
                 max_snapshots_per_run=SNAPSHOTS_PER_RUN,
             )
-            self.tree = ConversationTree()
             for record in self.records():
                 self.tree.consume(record)
         except BaseException:
@@ -611,43 +799,10 @@ class SavedSession:
         data["run_id"] = data.get("run_id") or run_id
         self.append(type(event).__name__, **data)
 
-    def journal_size(self) -> int:
-        """Where the next record will start; `end` for records written before now."""
-        return (self.directory / "transcript.jsonl").stat().st_size
-
-    def records(self, end: int | None = None):
-        """Read intact records; a hard kill may leave a torn final append.
-
-        `end` stops at a `journal_size()` taken earlier, so a turn still being
-        written can be left out of what is read.
-        """
-        with (self.directory / "transcript.jsonl").open("rb") as file:
-            consumed = 0
-            for line in file:
-                consumed += len(line)
-                if end is not None and consumed > end:
-                    return
-                try:
-                    record = json.loads(line.decode("utf-8", errors="replace"))
-                except ValueError:
-                    continue
-                if isinstance(record, dict):
-                    yield record
-
-    def active_records(self, end: int | None = None):
-        """Records on the selected branch, by the turn each one names.
-
-        `recording` is the pre-run-id fallback: in an older journal a record
-        belongs to the last turn started before it, which is only true because
-        those sessions could never have two turns open at once.
-        """
-        selected = set(self.tree.path(self.tree.active))
-        recording = None
-        for record in self.records(end):
-            if record.get("kind") == "turn_started":
-                recording = record.get("run_id")
-            if not self.tree.nodes or (record.get("run_id") or recording) in selected:
-                yield record
+    def refresh(self) -> bool:
+        """The owner's tree and manifest are already current, and hold unsaved state
+        (navigation, unsaved turns' history) that re-reading the files would drop."""
+        return False
 
     async def history_at(self, identity: str | None):
         path = self.tree.path(identity)
@@ -683,86 +838,6 @@ class SavedSession:
             if snapshot is not None:
                 return snapshot.messages
         return []
-
-    def latest_plan(self) -> list[dict]:
-        """Recover UI/tool state even when the last update predates replay's limit."""
-        if self.tree.nodes:
-            return deepcopy(self.tree.nodes[self.tree.active].plan) if self.tree.active else []
-        items = []
-        for record in self.active_records():
-            if record.get("kind") == "PlanUpdated":
-                items = record["items"]
-        return items
-
-    def tool_events(self):
-        """Stream tool lifecycle records independently of the transcript replay limit."""
-        for record in self.active_records():
-            if record.get("kind") in {
-                "ToolStarted",
-                "ToolSummary",
-                "turn_started",
-                "turn_completed",
-                "turn_cancelled",
-                "turn_failed",
-            }:
-                yield record
-
-    def transcript_records(self, end: int | None = None):
-        """Stream active-path display records; Transcript owns the retention budget.
-
-        Only unfinished text is buffered. Flush thinking before interleaved display
-        records, as live output does, and don't repeat it at the completion marker.
-        """
-        partial = ""
-        thinking = ""
-        thinking_streamed = False
-        for record in self.active_records(end):
-            kind = record.get("kind")
-            if kind == "ThinkingDelta":
-                thinking += record["text"]
-                thinking_streamed = True
-                continue
-            if kind not in {
-                "Thinking",
-                "TextDelta",
-                "Message",
-                "ToolSummary",
-                "JobFinished",
-                "EditCompleted",
-                "CacheBust",
-                "steering",
-                "turn_started",
-                "turn_completed",
-                "turn_failed",
-                "turn_cancelled",
-            }:
-                continue
-            if thinking:
-                yield {"kind": "thinking_partial", "text": thinking}
-                thinking = ""
-            if kind == "Thinking":
-                if not thinking_streamed:
-                    yield record
-                thinking_streamed = False
-            elif kind == "TextDelta":
-                thinking_streamed = False
-                partial += record["text"]
-            elif kind == "Message":
-                thinking_streamed = False
-                partial = ""
-                yield record
-            elif kind.startswith("turn_"):
-                thinking_streamed = False
-                if partial:
-                    yield {"kind": "partial", "markdown": partial}
-                    partial = ""
-                yield record
-            else:
-                yield record
-        if thinking:
-            yield {"kind": "thinking_partial", "text": thinking}
-        if partial:
-            yield {"kind": "partial", "markdown": partial}
 
     def close(self) -> None:
         self.lock.release()
