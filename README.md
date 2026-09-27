@@ -23,7 +23,7 @@ uv tool install --editable '.[claude]'      # bare `pcode` everywhere; drop [cla
 ## Quick start
 
 ```sh
-codex login                                  # or /login [anthropic|openai-codex] inside pcode, or export a provider API key
+codex login                                  # or /login [claude|openai-codex] inside pcode, or export a provider API key
 pcode -m openai-codex:gpt-5.6-luna           # interactive; /model (Ctrl+L) saves a default
 pcode                                        # reuses the saved model, or opens the offline preview
 pcode -C /path/to/repo "Summarize the open TODOs"

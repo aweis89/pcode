@@ -7,8 +7,6 @@ import shutil
 from pathlib import Path
 from typing import get_args
 
-from pydantic_ai.models import KnownModelName
-
 # Every prefix the picker accepts, with a display label. Each provider's SDK
 # extra must be installed (see pyproject.toml) or infer_model raises on switch.
 PROVIDERS = {
@@ -82,6 +80,27 @@ ENV_PROVIDERS: dict[str, tuple[tuple[str, ...], ...]] = {
     "zai": (("ZAI_API_KEY",),),
 }
 
+# The subscription routes that predate `claude:` models (the Claude Agent SDK):
+# `meridian:` models and pcode's own Anthropic browser sign-in. Off while
+# `claude:` is tried as the way forward; True restores both unchanged.
+# `anthropic:` models on ANTHROPIC_API_KEY work either way.
+LEGACY_ANTHROPIC_AUTH = False
+
+
+def login_sources() -> tuple[str, ...]:
+    """What `/login` accepts; the first is what a bare `/login` signs in to."""
+    if LEGACY_ANTHROPIC_AUTH:
+        return ("anthropic", "openai-codex", "claude", "meridian")
+    return ("claude", "openai-codex")
+
+
+def anthropic_credential_hint() -> str:
+    """How to give an `anthropic:` model that has no credential one."""
+    if LEGACY_ANTHROPIC_AUTH:
+        return "Run /login, or set ANTHROPIC_API_KEY."
+    return "Set ANTHROPIC_API_KEY, or switch to a claude: model."
+
+
 # Catalog prefix -> KnownModelName prefixes whose IDs it accepts. Codex has no
 # separate SDK catalog, so expose every OpenAI model ID and let the provider
 # enforce account access; Meridian and Claude Code front Anthropic models.
@@ -146,11 +165,18 @@ def active_providers(current: str | None) -> set[str]:
     allowed = load_preferences().get("model_providers", "")
     if allowed:
         active.intersection_update(name.strip() for name in allowed.split(","))
+    if not LEGACY_ANTHROPIC_AUTH:
+        # Even when the current model is a saved `meridian:` one.
+        active.discard("meridian")
     return active
 
 
 def model_catalog(providers: set[str], current: str | None = None) -> list[str]:
-    # KnownModelName is a TypeAliasType on supported Pydantic versions.
+    # Imported here so the terminal can read this module's settings without
+    # loading the agent stack. KnownModelName is a TypeAliasType on supported
+    # Pydantic versions.
+    from pydantic_ai.models import KnownModelName
+
     known = get_args(getattr(KnownModelName, "__value__", KnownModelName))
     by_source: dict[str, set[str]] = {}
     for name in known:

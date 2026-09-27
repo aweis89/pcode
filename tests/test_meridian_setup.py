@@ -17,6 +17,9 @@ from pcode import meridian_process as mp
 from pcode import meridian_setup as ms
 from pcode.auth import LoginError
 
+# Meridian is off by default (pcode.models.LEGACY_ANTHROPIC_AUTH).
+pytestmark = pytest.mark.usefixtures("legacy_anthropic_auth")
+
 
 @pytest.fixture(autouse=True)
 def clean(monkeypatch, tmp_path):
