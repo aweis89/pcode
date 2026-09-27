@@ -224,11 +224,16 @@ selects high; Ctrl+P selects low). Changes apply to the **next turn**, not an
 in-progress run, and preserve your draft. Up/Down still navigate history and
 completions. Model support varies; not every model accepts every effort level.
 Effort overrides are in-memory, survive `/new`, and are not saved with sessions.
-On Anthropic, Claude Code and Meridian, `xhigh` uses the native level when supported by the
-model profile, otherwise it sends Anthropic’s `max` effort. Older models may not
-support effort or the highest level; provider validation still applies. This
+On Anthropic, Claude Code and Meridian, effort is a per-model capability, read
+from the model's profile (Opus 4.5+ and Sonnet 4.6+ at the time of writing,
+among others). Where the profile reports no effort support, the parameter would
+be rejected rather than ignored, so `/effort` refuses the model and the footer
+shows `n/a` instead of a level. `/effort default` is still accepted there, to
+clear a level saved before the model was known to be gated. `xhigh` uses the
+native level when the profile supports it, otherwise it sends Anthropic’s `max`
+effort. Provider validation still applies on top of this. This
 control sets effort without changing the model’s thinking configuration.
-Preview and other providers do not support this control.
+Preview and other providers do not support this control, and also show `n/a`.
 
 ## Claude Code provider
 

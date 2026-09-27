@@ -13,6 +13,7 @@ from pcode.preferences import (
     load_preferences,
     model_efforts,
     preferences_path,
+    save_model_effort,
     save_preferences,
 )
 
@@ -33,14 +34,19 @@ def test_effort_persists_per_model_and_restores():
     assert make_app().current_effort() == "high"
     # Another model keeps its own effort: nothing saved means nothing applied.
     for provider in ("anthropic", "meridian"):
-        assert make_app(f"{provider}:test").runtime.agent.model_settings is None
-    make_app("anthropic:test").controller.effort("low")
-    assert make_app("anthropic:test").runtime.agent.model_settings == {"anthropic_effort": "low"}
+        assert make_app(f"{provider}:claude-opus-4-5").runtime.agent.model_settings is None
+    make_app("anthropic:claude-opus-4-5").controller.effort("low")
+    assert make_app("anthropic:claude-opus-4-5").runtime.agent.model_settings == {
+        "anthropic_effort": "low"
+    }
     assert make_app().current_effort() == "high"
     assert make_app("google:test").runtime.agent.model_settings is None
+    # A Claude model without effort control never gets the setting, saved or not.
+    save_model_effort("anthropic:claude-haiku-4-5", "low")
+    assert make_app("anthropic:claude-haiku-4-5").runtime.agent.model_settings is None
     app.controller.effort("default")
     assert make_app().current_effort() == "default"
-    assert make_app("anthropic:test").current_effort() == "low"
+    assert make_app("anthropic:claude-opus-4-5").current_effort() == "low"
 
 
 def test_shared_effort_default_applies_only_to_models_without_their_own():

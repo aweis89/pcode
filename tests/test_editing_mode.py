@@ -198,3 +198,22 @@ def test_vi_escape_alone_is_responsive(transcript):
             )
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("vi_mode", [False, True])
+def test_incremental_search_is_unreachable(vi_mode):
+    """Ctrl+R (and vi's `/`) must never open prompt_toolkit's `I-search:` prompt."""
+
+    async def run():
+        with create_pipe_input() as pipe:
+            prompt = create_prompt(
+                CommandRegistry(), vi_mode=vi_mode, input=pipe, output=DummyOutput()
+            )
+            editor = prompt.layout.current_window.content
+            assert editor.search_buffer_control is None
+            # Ctrl+R then `/` in vi navigation mode; both are inert, so the
+            # following text keeps editing the draft and Enter still sends it.
+            pipe.send_text("hello\x12" + ("\x1b/a" if vi_mode else "") + " world\r")
+            assert await asyncio.wait_for(prompt.prompt_async(), timeout=3) == "hello world"
+
+    asyncio.run(run())

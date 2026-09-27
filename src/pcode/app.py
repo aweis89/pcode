@@ -32,6 +32,7 @@ from pcode.controller import (
     delivered_job,
     meridian_thinking_note,
 )
+from pcode.error_report import error_message
 from pcode.preferences import (
     SETTINGS,
     SYNTAX_THEMES,
@@ -1650,8 +1651,6 @@ class PreviewApp:
             try:
                 controller, welcome = await launch.connect(self, self.activity)
             except Exception as error:
-                from pcode.live import error_message
-
                 self._startup_error = error
                 self._startup_pending = False
                 self.transcript.error(error_message(error), title="Session host failed")
@@ -1688,13 +1687,7 @@ class PreviewApp:
                     self.replay()
             except Exception as error:
                 self._startup_error = error
-                try:
-                    from pcode.live import error_message
-
-                    message = error_message(error)
-                except ImportError:
-                    message = "Provider dependency missing. Reinstall pcode and try again."
-                self.transcript.error(message, title="Agent startup failed")
+                self.transcript.error(error_message(error), title="Agent startup failed")
                 controller.clear_queue()
                 self.activity.busy = False
             else:
@@ -1754,8 +1747,6 @@ class PreviewApp:
                 try:
                     await self.run_command(text, idle=True, tag=tag)
                 except Exception as error:
-                    from pcode.live import error_message
-
                     self.transcript.error(error_message(error, unexpected=f"{text} failed"))
                 await self.after_command()
 
@@ -1977,8 +1968,6 @@ class PreviewApp:
         gets its source, which is what a reader downstream can work with.
         Returns whether the turn succeeded.
         """
-        from pcode.live import error_message
-
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         reply = PrintedReply(
             sys.stdout if stdout is None else stdout,
@@ -2440,7 +2429,6 @@ def _run_hosted(args: argparse.Namespace) -> None:
 
 def _print_hosted(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     """`--attach --print`: one message or command for a running host, without the editor."""
-    from pcode.live import error_message
     from pcode.remote import HostError
     from pcode.remote_print import print_to_host
     from pcode.rpc import RemoteError
@@ -2581,8 +2569,6 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         try:
             _run_hosted(args)
         except (LookupError, OSError, ValueError) as error:
-            from pcode.live import error_message
-
             parser.exit(2, error_message(error) + "\n")
         return
     if not args.print and (not sys.stdin.isatty() or not sys.stdout.isatty()):
@@ -2662,8 +2648,6 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             app.run()
             _leave_worktree_on_exit(app)
     except Exception as error:
-        from pcode.live import error_message
-
         parser.exit(2, error_message(error) + "\n")
     finally:
         if app is not None and app.model and hasattr(app.runtime, "close"):
