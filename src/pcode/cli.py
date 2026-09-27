@@ -46,6 +46,13 @@ def _quiet_stdin(stack: ExitStack) -> None:
 
 def main() -> None:
     global _startup
+    from pcode.completion import COMPLETE_COMMAND
+
+    if sys.argv[1:2] == [COMPLETE_COMMAND]:
+        # Shell completion calls back on every Tab: skip the frontend import.
+        from pcode.completion import print_candidates
+
+        sys.exit(print_candidates(sys.argv[2:]))
     with ExitStack() as stack:
         _startup = stack
         _quiet_stdin(stack)

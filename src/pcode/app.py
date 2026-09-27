@@ -22,6 +22,7 @@ from rich.text import Text
 from pcode.cli import ask, restore_stdin
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
+from pcode.completion import complete_with
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_argument_descriptions, config_arguments, configure
 from pcode.controller import (
@@ -2133,13 +2134,16 @@ def main() -> None:
         help="Run the conversation in a background session host that outlives this terminal "
         "(the default); --no-host runs it inside this terminal",
     )
-    parser.add_argument(
-        "--attach",
-        nargs="?",
-        const="",
-        metavar="HOST",
-        help="Attach to a running session host by host or session ID prefix; "
-        "omit HOST for the most recent",
+    complete_with(
+        parser.add_argument(
+            "--attach",
+            nargs="?",
+            const="",
+            metavar="HOST",
+            help="Attach to a running session host by host or session ID prefix; "
+            "omit HOST for the most recent",
+        ),
+        "hosts",
     )
     parser.add_argument("--hosts", action="store_true", help="List running session hosts and exit")
     parser.add_argument(

@@ -106,3 +106,7 @@ echo 'eval "$(pcode --completions bash)"' >> ~/.bashrc
 ```
 
 The zsh script works either autoloaded from `$fpath` or sourced from `.zshrc`.
+
+`--attach` completes the IDs of running session hosts, each described by its
+state, checkout, and first prompt. The script looks them up when you press Tab
+(through a hidden `pcode __complete hosts`), so the list is always current.
