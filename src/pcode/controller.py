@@ -74,6 +74,7 @@ TERMINAL_COMMANDS = frozenset(
         "/show-thinking",
         "/show-edits",
         "/show-commands",
+        "/group-tools",
         "/theme",
         "/syntax",
         "/theme-preview",
@@ -177,6 +178,7 @@ FRONTEND_COMMANDS = frozenset(
         "/show-thinking",
         "/show-edits",
         "/show-commands",
+        "/group-tools",
         "/redraw",
         "/config",
     }

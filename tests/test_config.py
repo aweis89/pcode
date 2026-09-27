@@ -68,6 +68,7 @@ def test_defaults_and_path_do_not_create_files():
         "paced_scrollback": "typed",
         "show_commands": "off",
         "show_edits": "on",
+        "group_tools": "off",
         "command_scrollback_lines": "20",
         "command_preview_lines": "10",
         "theme": "auto",

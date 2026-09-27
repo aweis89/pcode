@@ -61,6 +61,7 @@ def make_app(width=80, workspace=None):
                 "/show-thinking",
                 "/show-edits",
                 "/show-commands",
+                "/group-tools",
                 "/theme",
                 "/syntax",
                 "/theme-preview",

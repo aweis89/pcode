@@ -187,7 +187,7 @@ popups, and truncates at 64 KiB.
 
 **Setting acknowledgements are transient.** Toggles and display settings
 (`/show-thinking`, `/show-tasks`, `/show-edits`, `/show-commands`,
-`/autohide-tasks`, `/autocompact`, `/theme`, `/syntax`, `/effort`)
+`/group-tools`, `/autohide-tasks`, `/autocompact`, `/theme`, `/syntax`, `/effort`)
 answer on a line directly above the spinner, just over the editor, and clear
 themselves after five seconds. They never enter terminal scrollback, so
 flipping a display option repeatedly does not litter the transcript, and a
