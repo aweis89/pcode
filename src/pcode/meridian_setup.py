@@ -136,12 +136,14 @@ async def claude_login(
     executable: str | None = None,
     retry: str = "/login meridian",
     extra_env: dict[str, str] | None = None,
+    for_meridian: bool = True,
 ):
     """Run `claude auth login --claudeai` for `target` and return its auth status.
 
     `executable` defaults to the `claude` Meridian runs; `retry` is the command
     the error messages suggest; `extra_env` overrides the inherited environment
-    for both the login and the status check.
+    for both the login and the status check. `for_meridian` names Meridian's
+    install knobs when no `claude` is found.
     """
     if target.oauth_token:
         raise LoginError(
@@ -149,7 +151,7 @@ async def claude_login(
             "Replace it with `meridian profile add <name> --oauth-token`."
         )
     executable = executable or claude_executable()
-    if executable is None and retry == "/login meridian":
+    if executable is None and for_meridian:
         raise LoginError(
             "Claude Code (`claude`) is not on PATH, and Meridian signs in through it. "
             f"Install Claude Code, or set MERIDIAN_CLAUDE_PATH, then retry {retry}."

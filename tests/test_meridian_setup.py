@@ -161,6 +161,7 @@ def test_claude_provider_login_uses_its_cli_and_scrubbed_environment(monkeypatch
             executable=str(claude),
             retry="/login claude",
             extra_env=LOGIN_ENV,
+            for_meridian=False,
         )
     )
     assert status == {"loggedIn": True}
@@ -178,7 +179,11 @@ def test_claude_provider_login_names_its_own_retry(monkeypatch):
     with pytest.raises(LoginError, match=r"not found\. Install it, then retry /login claude"):
         asyncio.run(
             ms.claude_login(
-                lambda _: None, ms.LoginTarget(None, "x"), executable=None, retry="/login claude"
+                lambda _: None,
+                ms.LoginTarget(None, "x"),
+                executable=None,
+                retry="/login claude",
+                for_meridian=False,
             )
         )
 

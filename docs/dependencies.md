@@ -679,7 +679,14 @@ was verified live against the bundled CLI, and most of them are traps:
   pcode request. The pump drops any message that begins while pcode is not
   expecting one and retires the process. `answer()` also waits for the CLI to have
   parked one of the open calls, because an unparseable or refused call is never
-  parked. A live request that finds its process gone this way forks instead.
+  parked. Waiting for one call rather than all of them matters: the CLI may call
+  tools one at a time. For the same reason, a result counts as pcode's only once a
+  handler has returned it. A later call the CLI refuses after pcode has sent every
+  result fails that request, and the runtime's transient retry forks. A live
+  request that finds its process gone this way forks straight away.
+- A fork whose transcript or message is gone fails in `connect()` ("No
+  conversation found with session ID" / "No message found with message.uuid"),
+  before any request is made. pcode then forgets that session and replays instead.
 - The system prompt goes in a 0600 temp file (`system_prompt={"type": "file"}`),
   removed with the process. On argv it would be visible to other local users and
   would hit Linux's 128 KiB per-argument limit.

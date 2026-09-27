@@ -2259,6 +2259,7 @@ class SessionController:
                 executable=cli_path(),
                 retry="/login claude",
                 extra_env=LOGIN_ENV,
+                for_meridian=False,
             )
             plan = status.get("subscriptionType")
             self.view.note(

@@ -153,9 +153,29 @@ class FakeCLI:
                 # A final message, then a request the CLI makes of its own
                 # (a nudge after a thinking-only reply, output-limit recovery).
                 await self._stream(reply[1])
+                await asyncio.sleep(reply[3] if len(reply) > 3 else 0)
                 await self._stream(reply[2], pause=5)  # still generating when retired
                 self.out.put_nowait(ResultMessage("success", 1, 1, False, 2, self.session_id))
                 return
+            if reply[0] == "hang":
+                await asyncio.Event().wait()
+            if reply[0] == "serial":
+                # Calls made one at a time; a refused one is answered by the CLI
+                # itself, after pcode has sent every result.
+                _, _, tools = await self._stream(reply[1], start_calls=False)
+                results = []
+                for kind, tool_id, name, arguments in tools:
+                    if kind == "refused":
+                        block = ToolResultBlock(tool_id, "Invalid input", True)
+                        self.out.put_nowait(UserMessage([block], uuid=self._uuid()))
+                        results.append((tool_id, "Invalid input", True))
+                    else:
+                        results.append(await self._call(tool_id, name, arguments))
+                content = [
+                    {"type": "tool_result", "tool_use_id": i, "content": c, "is_error": e}
+                    for i, c, e in results
+                ]
+                continue
             if reply[0] == "error":
                 _, kind, status = reply
                 self.out.put_nowait(
@@ -173,7 +193,7 @@ class FakeCLI:
                     )
                 )
                 return
-            calls, refused = await self._stream(reply)
+            calls, refused, _ = await self._stream(reply)
             if refused == ["malformed"]:
                 # An unparseable tool_use: no handler call, just a retried request.
                 await asyncio.sleep(0.05)
@@ -205,7 +225,7 @@ class FakeCLI:
             ] + self.queued
             self.queued = []
 
-    async def _stream(self, reply, pause: float = 0) -> tuple[list[asyncio.Task], list[str]]:
+    async def _stream(self, reply, pause: float = 0, start_calls: bool = True):
         self._event(
             {
                 "type": "message_start",
@@ -227,7 +247,7 @@ class FakeCLI:
             }
         )
         await asyncio.sleep(pause)
-        calls, refused = [], []
+        calls, refused, tools = [], [], []
         for index, block in enumerate(reply):
             if block[0] == "text":
                 self._event(
@@ -278,7 +298,10 @@ class FakeCLI:
                         [ToolUseBlock(tool_id, wire, arguments)], MODEL, uuid=self._uuid()
                     )
                 )
-                if kind == "malformed":
+                tools.append((kind, tool_id, name, arguments))
+                if not start_calls:
+                    pass
+                elif kind == "malformed":
                     refused = ["malformed"]
                 elif kind == "refused":
                     refused.append(tool_id)
@@ -288,7 +311,7 @@ class FakeCLI:
                     calls.append(asyncio.create_task(self._call(tool_id, name, arguments)))
                     await asyncio.sleep(0)
             self._event({"type": "content_block_stop", "index": index})
-        stop = "tool_use" if calls or refused else "end_turn"
+        stop = "tool_use" if tools else "end_turn"
         self._event(
             {
                 "type": "message_delta",
@@ -297,7 +320,7 @@ class FakeCLI:
             }
         )
         self._event({"type": "message_stop"})
-        return calls, refused
+        return calls, refused, tools
 
     async def _call(self, tool_id: str, name: str, arguments: dict):
         result = await self.mcp.call_tool(name, arguments, meta={claude.TOOL_USE_ID: tool_id})
@@ -626,6 +649,63 @@ def test_a_call_the_cli_never_parks_forks_with_pcodes_result(world):
     old, new = world.clients
     assert new.options.resume == old.session_id
     assert new.requests[0][0]["type"] == "tool_result"
+
+
+def test_a_request_the_cli_starts_while_pcode_waits_is_cut_short(world):
+    agent, _ = make_agent()
+    # The CLI's own request starts only after pcode has taken the process again.
+    world.replies = [
+        ("then", [("text", "first")], [("text", "unasked")], 0.3),
+        [("text", "second")],
+    ]
+
+    async def main():
+        first = await agent.run("one")
+        started = time.monotonic()
+        second = await agent.run("two", message_history=first.all_messages())
+        return second, time.monotonic() - started
+
+    second, elapsed = run(main)
+    assert second.output == "second"
+    assert elapsed < 3  # not the 5 s the unasked message would have taken
+    old, new = world.clients
+    assert old.interrupted and new.options.resume == old.session_id
+
+
+def test_a_later_call_the_cli_refuses_fails_the_request_for_a_retry(world):
+    agent, calls = make_agent()
+    world.replies = [
+        ("serial", [("tool", "lookup", {"key": "a"}), ("refused", "lookup", {"key": "b"})]),
+        [("text", "the CLI's own history")],
+    ]
+    with pytest.raises(claude.ClaudeProcessError) as caught:
+        run(lambda: agent.run("look up a and b"))
+    # Transient, so the runtime retries, and the retry forks.
+    assert transient(caught.value)
+    assert sorted(calls) == ["a", "b"]
+    # Retired; the fake's own continuation has already ended, so no interrupt.
+    assert world.clients[0].disconnected
+
+
+def test_shutdown_fails_a_waiting_request(world):
+    model = claude.claude_model(f"claude:{MODEL}")
+    world.replies = [("hang",)]
+    messages = [ModelRequest(parts=[UserPromptPart("hi")])]
+
+    async def main():
+        async def request():
+            async with model.request_stream(messages, None, ModelRequestParameters()) as stream:
+                async for _ in stream:
+                    pass
+
+        task = asyncio.create_task(request())
+        await asyncio.sleep(0.1)
+        await claude.shutdown()
+        with pytest.raises(claude.ClaudeProcessError, match="stopped"):
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(main())
+    assert world.clients[0].disconnected
 
 
 def test_parked_sessions_are_kept_and_finished_ones_capped():
