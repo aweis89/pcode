@@ -50,6 +50,7 @@ from pcode.runtime import (
 )
 from pcode.shell_mode import shell_command
 from pcode.stream_display import PrintedReply, present_events, present_stream_event
+from pcode.terminal_notify import TabProgress
 from pcode.theme import THEMES, replay_pending_input
 from pcode.tool_display import plain
 from pcode.ui import (
@@ -173,8 +174,10 @@ class PreviewApp:
         self.previous_host: str | None = None
         # How this terminal came to show its host ("Switched to session …").
         self._attach_note: str | None = None
-        # Writes an escape to the terminal emulator (notifications, tab progress).
+        # Writes an escape to the terminal emulator (desktop notifications).
         self._emulator: Callable[[str], None] | None = None
+        # The tab's progress bar, while this terminal runs its prompt.
+        self._progress: TabProgress | None = None
         # The in-process controller's loops, while this terminal runs them.
         self._loops: list = []
         agent = getattr(self.runtime, "agent", None)
@@ -266,6 +269,7 @@ class PreviewApp:
             self.controller.registry.find("/login"),
             self.controller.registry.find("/logout"),
             self.controller.registry.find("/extensions"),
+            self.controller.registry.find("/subagents"),
             self.controller.registry.find("/reload"),
             self.controller.registry.find("/new"),
             Command(
@@ -504,13 +508,12 @@ class PreviewApp:
         self.activity.tools.clear()
         if echo:
             self.output.begin_turn(text)
-        if self._emulator is not None:
-            from pcode.terminal_notify import progress
-
-            # A busy tab is visible from the other tabs.
-            self._emulator(progress(True))
+        if self._progress is not None:
+            self._progress.turn_started()
 
     def turn_event(self, event) -> None:
+        if self._progress is not None:
+            self._progress.turn_event()
         present_stream_event(
             event,
             output=self.output,
@@ -523,16 +526,16 @@ class PreviewApp:
         # Separate abandoned partial text/thinking from the next attempt.
         self.output.finish_thinking()
         self.output.finish()
+        if self._progress is not None:
+            self._progress.turn_retry()
         self.activity.plan_preview = None
         self.activity.edit_previews.clear()
         self.transcript.note(text)
         self.output.app.invalidate()
 
     def turn_ended(self) -> None:
-        if self._emulator is not None:
-            from pcode.terminal_notify import progress
-
-            self._emulator(progress(False))
+        if self._progress is not None:
+            self._progress.turn_ended()
         self.activity.edit_previews.clear()
         # A watched job is not the turn's; its preview stays pinned.
         for key in [k for k in self.activity.command_outputs if not k.startswith(WATCHED_PREFIX)]:
@@ -1185,6 +1188,8 @@ class PreviewApp:
             note += f" · continuing a copy of {forked}, which was open elsewhere"
         self._attach_note = note
         self.activity.reset()
+        if self._progress is not None:
+            self._progress.switched()
         self.edits.clear()
         for name, value in welcome["activity"].items():
             controller.apply_field(name, value)
@@ -1806,6 +1811,15 @@ class PreviewApp:
         self.output = output
         self.prompt_session = session
         session.app.style = DynamicStyle(lambda: self.transcript.prompt_style())
+        try:
+            terminal = session.app.output.fileno()
+        except (NotImplementedError, OSError, ValueError):
+            terminal = None
+        if terminal is not None:
+            mode = load_preferences().get("terminal_progress", "auto")
+            self._progress = TabProgress(self.activity, terminal, mode)
+            # Any key here means the failed turn's red bar has been seen.
+            session.app.key_processor.before_key_press += self._progress.key_pressed
 
         async def watch_branch():
             """Keep the footer's branch current without a Git process every 2 s.
@@ -1827,6 +1841,8 @@ class PreviewApp:
             session.app.create_background_task(watch_branch())
             session.app.create_background_task(output.run())
             session.app.create_background_task(run_local_commands())
+            if self._progress is not None:
+                session.app.create_background_task(self._progress.run())
             if early is not None:
                 session.app.create_background_task(initialize_host())
             else:
@@ -1840,6 +1856,9 @@ class PreviewApp:
         try:
             await session.app.run_async(pre_run=start)
         finally:
+            if self._progress is not None:
+                self._progress.close()
+                self._progress = None
             await self.leave_controller(self.controller)
             await output.flush(drain=True)
             self.transcript.output = None

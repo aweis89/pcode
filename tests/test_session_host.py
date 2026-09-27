@@ -458,6 +458,8 @@ def test_btw_model_names_complete_as_soon_as_a_terminal_attaches(tmp_path, host_
             completer = SlashCompleter(controller.registry)
             found = completer.get_completions(Document("/btw $opus"), CompleteEvent())
             assert [item.text for item in found] == ["$anthropic:claude-opus"]
+            found = completer.get_completions(Document("/subagents gpt"), CompleteEvent())
+            assert [item.text for item in found] == ["openai-codex:gpt-6"]
             await controller.start(welcome)
             # A new model changes the catalog; the terminal's follows with the state.
             catalog.append("anthropic:claude-sonnet")
@@ -727,11 +729,10 @@ def test_background_finish_notes_and_notifies_only_unwatched_sessions(tmp_path, 
 
 
 def test_notifications_cannot_break_out_of_their_escape(monkeypatch):
-    from pcode.terminal_notify import notification, progress
+    from pcode.terminal_notify import notification
 
     monkeypatch.delenv("TMUX", raising=False)
     assert notification("done\x07\x1b]52;c;evil\x07") == "\x1b]9;done  ]52;c;evil\x07"
-    assert progress(True) == "\x1b]9;4;3\x07" and progress(False) == "\x1b]9;4;0\x07"
     monkeypatch.setenv("TMUX", "/tmp/tmux-1/default,1,0")
     assert notification("hi") == "\x1bPtmux;\x1b\x1b]9;hi\x07\x1b\\"
 
