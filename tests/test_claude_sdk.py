@@ -177,13 +177,17 @@ class FakeCLI:
                 ]
                 continue
             if reply[0] == "error":
-                _, kind, status = reply
+                # As the CLI reports an API error (verified): an assistant
+                # message naming its kind, then a "success" result flagged
+                # is_error, with the HTTP status only when one came back.
+                _, kind, status, *text = reply
+                text = text[0] if text else "API Error"
                 self.out.put_nowait(
-                    AssistantMessage([TextBlock("API Error")], MODEL, error=kind, uuid=self._uuid())
+                    AssistantMessage([TextBlock(text)], MODEL, error=kind, uuid=self._uuid())
                 )
                 self.out.put_nowait(
                     ResultMessage(
-                        "error_during_execution",
+                        "success",
                         1,
                         1,
                         True,
@@ -597,6 +601,34 @@ def test_api_error_is_an_http_error_with_a_login_hint(world):
     assert caught.value.status_code == 401
     assert "/login claude" in claude.failure_hint(caught.value)
     assert not transient(caught.value)
+
+
+def test_dropped_connection_is_transient_and_the_retry_forks(world):
+    agent, _ = make_agent()
+    drop = ("error", "server_error", None, "API Error: Connection dropped (ECONNRESET)")
+    world.replies = [[("text", "one")], drop, [("text", "three")]]
+    first = run(lambda: agent.run("hi"))
+
+    async def twice():
+        history = first.all_messages()
+        with pytest.raises(claude.ClaudeConnectionError) as caught:
+            await agent.run("again", message_history=history)
+        assert transient(caught.value)
+        assert "no response from Anthropic" in claude.failure_hint(caught.value)
+        return await agent.run("again", message_history=history)
+
+    assert run(twice).output == "three"
+    # The failed request may sit in that transcript, so the retry forks before it.
+    assert world.clients[1].options.resume == world.clients[0].session_id
+
+
+def test_a_server_error_with_a_status_is_not_retried(world):
+    agent, _ = make_agent()
+    world.replies = [("error", "server_error", 529, "API Error: 529 Overloaded")]
+    with pytest.raises(claude.ClaudeHTTPError) as caught:
+        run(lambda: agent.run("hi"))
+    # The provider answered: no transport retry, as on pcode's other routes.
+    assert caught.value.status_code == 529 and not transient(caught.value)
 
 
 def test_process_exit_is_transient_and_the_retry_forks(world):

@@ -723,10 +723,15 @@ was verified live against the bundled CLI, and most of them are traps:
   not import the SDK: `models.claude_sdk_installed()` gates the picker, and
   `claude_model()` and `/login claude` report the missing extra.
 - `CLAUDE_CODE_MAX_RETRIES=0` makes an API error end the turn with an
-  `AssistantMessage.error` kind and `ResultMessage.api_error_status`. pcode raises
-  those as `ClaudeHTTPError`, leaving retries to the runtime. A process that dies
-  mid-request raises `ClaudeProcessError`, which `diagnostics.transient` retries,
-  and the retry forks.
+  `AssistantMessage.error` kind and `ResultMessage.api_error_status` (the result's
+  subtype is still `success`, with `is_error` set). pcode raises those as
+  `ClaudeHTTPError`, leaving retries to the runtime. A request that got no HTTP
+  response at all (connection reset, refused, or `API_TIMEOUT_MS` passed) is also
+  a `server_error`, but with no status, whereas a real 500 or 529 carries one, so
+  pcode raises `ClaudeConnectionError` for it instead. Guessing a 500 there would
+  make the one failure pcode's other providers retry fail the turn outright.
+  That, and a process that dies mid-request (`ClaudeProcessError`), are what
+  `diagnostics.transient` retries, and the retry forks.
 
 `tests/test_claude_sdk.py` drives the provider through a scripted client that
 calls pcode's real MCP server the way the CLI does.
