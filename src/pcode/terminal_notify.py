@@ -61,13 +61,25 @@ def _number(text: str | None) -> int:
     return int(text) if text and text.isdigit() else 0
 
 
+# kitty is left to `on`: before 0.38 it shows the report as a desktop
+# notification, before 0.47 it draws nothing, and it exports no version.
+_DRAWS = ("ghostty", "wezterm", "vscode", "mintty", "warpterminal")
+
+
+def _iterm(name: str) -> bool:
+    return name.lower() in ("iterm.app", "iterm2")
+
+
 def _known(name: str, version: str = "") -> bool:
     """A terminal, by the name it gives itself, that draws the bar."""
-    name = name.lower()
-    if name in ("ghostty", "wezterm", "kitty", "vscode", "mintty", "warpterminal"):
+    if name.lower() in _DRAWS:
         return True
     # Before 3.6.6 iTerm2 shows a notification instead: never guess its version.
-    return name in ("iterm.app", "iterm2") and _version(version) >= (3, 6, 6)
+    return _iterm(name) and _version(version) >= (3, 6, 6)
+
+
+def _old_iterm(name: str, version: str) -> bool:
+    return _iterm(name) and not _known(name, version)
 
 
 def _progress_feature(features: str) -> bool:
@@ -83,6 +95,12 @@ def environment_supports(env: Mapping[str, str]) -> bool:
     TERM_PROGRAM name tmux while the server's environment still names the
     terminal it was started from.
     """
+    # A terminal that says it is an iTerm2 too old for the bar would show a
+    # notification, whatever else a tmux server's stale environment claims.
+    if _old_iterm(env.get("TERM_PROGRAM", ""), env.get("TERM_PROGRAM_VERSION", "")):
+        return False
+    if _old_iterm(env.get("LC_TERMINAL", ""), env.get("LC_TERMINAL_VERSION", "")):
+        return False
     if _progress_feature(env.get("TERM_FEATURES", "")):
         return True
     if _known(env.get("TERM_PROGRAM", ""), env.get("TERM_PROGRAM_VERSION", "")):
@@ -90,9 +108,9 @@ def environment_supports(env: Mapping[str, str]) -> bool:
     # iTerm2 sets these too, and ssh forwards LC_* by default.
     if _known(env.get("LC_TERMINAL", ""), env.get("LC_TERMINAL_VERSION", "")):
         return True
-    if env.get("TERM") in ("xterm-ghostty", "xterm-kitty") or env.get("KITTY_WINDOW_ID"):
+    if env.get("TERM") == "xterm-ghostty" or env.get("GHOSTTY_RESOURCES_DIR"):
         return True
-    if env.get("GHOSTTY_RESOURCES_DIR") or env.get("WEZTERM_EXECUTABLE"):
+    if env.get("WEZTERM_EXECUTABLE"):
         return True
     if env.get("WT_SESSION") or env.get("ConEmuANSI") == "ON":
         return True
@@ -182,8 +200,19 @@ class TabProgress:
     def turn_event(self) -> None:
         self.retrying = False
 
+    def turn_ended(self) -> None:
+        # A turn that failed mid-retry never sends the event that ends it.
+        self.retrying = False
+
+    def switched(self) -> None:
+        """Another session is on screen: nothing seen or retried here is its."""
+        self.retrying = False
+        self.dismissed = False
+
     def key_pressed(self, _event=None) -> None:
-        if self.activity.prompt_state == "failed":
+        # Only once the red bar is up: typing ahead while a turn fails must
+        # not dismiss it before it was ever shown.
+        if self.sent == progress(ERROR, 100):
             self.dismissed = True
 
     def tick(self, now: float) -> None:
@@ -211,11 +240,20 @@ class TabProgress:
     def _write(self, sequence: str, now: float) -> None:
         if self.wrap is None:
             return
+        data = self.wrap(sequence).encode()
         try:
-            os.write(self.fd, self.wrap(sequence).encode())
+            # All of it or nothing: a truncated OSC leaves the terminal inside
+            # a string that swallows the next frame. The fd may have been made
+            # non-blocking under us; prompt_toolkit flushes frames the same way.
+            blocking = os.get_blocking(self.fd)
+            os.set_blocking(self.fd, True)
+            try:
+                while data:
+                    data = data[os.write(self.fd, data) :]
+            finally:
+                os.set_blocking(self.fd, blocking)
         except OSError:
-            # A non-blocking tty that is full, or one already gone: the next
-            # tick tries again.
+            # The terminal is gone; the next tick tries again.
             return
         self.sent, self.sent_at = sequence, now
 

@@ -35,9 +35,13 @@ def test_reports_are_conemu_osc_9_4():
         ({"TERM_PROGRAM": "ghostty"}, True),
         ({"TERM": "xterm-ghostty"}, True),  # over ssh, where TERM_PROGRAM is gone
         ({"TERM_PROGRAM": "WezTerm"}, True),
-        ({"TERM": "xterm-kitty"}, True),
-        ({"KITTY_WINDOW_ID": "1"}, True),
+        ({"GHOSTTY_RESOURCES_DIR": "/opt/ghostty"}, True),  # inside tmux
         ({"WEZTERM_EXECUTABLE": "/usr/bin/wezterm-gui"}, True),
+        # kitty before 0.38 shows it as a notification, and says no version.
+        ({"TERM": "xterm-kitty"}, False),
+        ({"KITTY_WINDOW_ID": "1"}, False),
+        # tmux started in Ghostty, attached from an old iTerm2 over ssh.
+        ({"GHOSTTY_RESOURCES_DIR": "/opt/ghostty", "LC_TERMINAL": "iTerm2"}, False),
         ({"TERM_PROGRAM": "vscode"}, True),
         ({"WT_SESSION": "abc"}, True),
         ({"ConEmuANSI": "ON"}, True),
@@ -149,24 +153,60 @@ def test_bar_follows_the_turn_and_is_kept_alive(keeper):
 def test_failed_turn_stays_red_until_seen(keeper):
     tab, activity, sent = keeper
     activity.prompt_state = "running"
-    tab.key_pressed()  # typing during a turn dismisses nothing yet
-    activity.prompt_state = "failed"
+    tab.turn_started()
     tab.tick(0)
+    sent()
+    activity.prompt_state = "failed"
+    # Typing ahead as it fails, before the red bar was ever up, keeps it.
+    tab.key_pressed()
+    tab.tick(1)
     assert sent() == [progress(ERROR, 100)]
-    tab.tick(KEEPALIVE_SECONDS)
+    tab.tick(1 + KEEPALIVE_SECONDS)
     assert sent() == [progress(ERROR, 100)]
     tab.key_pressed()
-    tab.tick(KEEPALIVE_SECONDS + 1)
+    tab.tick(2 + KEEPALIVE_SECONDS)
     assert sent() == [progress(CLEAR)]
 
-    # The next failure is red again.
+    # The next turn runs, then fails again: red again.
+    activity.prompt_state = "running"
     tab.turn_started()
-    tab.tick(KEEPALIVE_SECONDS + 2)
-    assert sent() == [progress(ERROR, 100)]
+    tab.tick(3 + KEEPALIVE_SECONDS)
+    activity.prompt_state = "failed"
+    tab.tick(4 + KEEPALIVE_SECONDS)
+    assert sent() == [progress(INDETERMINATE), progress(ERROR, 100)]
 
+    # Another session on screen starts undismissed and unpaused.
+    tab.key_pressed()
+    tab.switched()
     activity.prompt_state = "cancelled"
-    tab.tick(KEEPALIVE_SECONDS + 3)
+    tab.tick(5 + KEEPALIVE_SECONDS)
     assert sent() == [progress(CLEAR)]
+
+
+def test_a_turn_that_fails_mid_retry_does_not_pause_the_next_command(keeper):
+    tab, activity, sent = keeper
+    activity.prompt_state = "running"
+    tab.turn_started()
+    tab.turn_retry()
+    tab.tick(0)
+    assert sent() == [progress(PAUSED)]
+    activity.prompt_state = "failed"
+    tab.turn_ended()
+    # A `!command` runs with no turn_started, and may print nothing for a while.
+    activity.user_command = True
+    tab.tick(1)
+    assert sent() == [progress(INDETERMINATE)]
+
+
+def test_writes_are_whole_even_on_a_non_blocking_fd(keeper, monkeypatch):
+    tab, activity, sent = keeper
+    os.set_blocking(tab.fd, False)
+    real = os.write
+    monkeypatch.setattr(os, "write", lambda fd, data: real(fd, data[:3]))
+    activity.prompt_state = "running"
+    tab.tick(0)
+    assert sent() == [progress(INDETERMINATE)]
+    assert os.get_blocking(tab.fd) is False
 
 
 def test_close_takes_the_bar_down_once(keeper):
@@ -190,3 +230,25 @@ def test_a_pipe_gets_nothing():
     finally:
         os.close(read)
         os.close(write)
+
+
+def test_cancelling_the_task_clears_a_real_terminal():
+    import pty
+
+    main, terminal = pty.openpty()
+    try:
+        activity = Activity(prompt_state="running")
+        tab = TabProgress(activity, terminal, "auto", env={"TERM_PROGRAM": "ghostty"})
+
+        async def run():
+            task = asyncio.create_task(tab.run())
+            await asyncio.sleep(0.2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(run())
+        assert os.read(main, 4096) == (progress(INDETERMINATE) + progress(CLEAR)).encode()
+    finally:
+        os.close(main)
+        os.close(terminal)

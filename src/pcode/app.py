@@ -542,6 +542,8 @@ class PreviewApp:
         self.output.app.invalidate()
 
     def turn_ended(self) -> None:
+        if self._progress is not None:
+            self._progress.turn_ended()
         self.activity.edit_previews.clear()
         # A watched job is not the turn's; its preview stays pinned.
         for key in [k for k in self.activity.command_outputs if not k.startswith(WATCHED_PREFIX)]:
@@ -1194,6 +1196,8 @@ class PreviewApp:
             note += f" · continuing a copy of {forked}, which was open elsewhere"
         self._attach_note = note
         self.activity.reset()
+        if self._progress is not None:
+            self._progress.switched()
         self.edits.clear()
         for name, value in welcome["activity"].items():
             controller.apply_field(name, value)
