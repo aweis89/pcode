@@ -15,6 +15,7 @@ import asyncio
 import os
 import re
 from collections.abc import Callable, Mapping
+from contextlib import asynccontextmanager
 from time import monotonic
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -158,10 +159,11 @@ class TabProgress:
     so a hosted session's mirrored state needs nothing extra, and written
     straight to the terminal: an invisible OSC has no reason to wait for, or
     cause, a repaint, and never lands inside a frame prompt_toolkit is still
-    building.
+    building. With no terminal (`fd` None) the hooks still work and nothing
+    is sent.
     """
 
-    def __init__(self, activity, fd: int, mode: str, env: Mapping[str, str] | None = None):
+    def __init__(self, activity, fd: int | None, mode: str, env: Mapping[str, str] | None = None):
         self.activity = activity
         self.fd = fd
         self.mode = mode
@@ -227,7 +229,8 @@ class TabProgress:
             self._write(progress(CLEAR), monotonic())
 
     async def run(self) -> None:
-        self.wrap = progress_transport(self.mode, self.env, tty=_isatty(self.fd))
+        tty = self.fd is not None and _isatty(self.fd)
+        self.wrap = progress_transport(self.mode, self.env, tty=tty)
         if self.wrap is None:
             return
         try:
@@ -235,6 +238,17 @@ class TabProgress:
                 self.tick(monotonic())
                 await asyncio.sleep(TICK_SECONDS)
         finally:
+            self.close()
+
+    @asynccontextmanager
+    async def shown(self):
+        """Keep the bar in step while the block runs, for a caller with no event loop of its own."""
+        task = asyncio.create_task(self.run())
+        try:
+            yield self
+        finally:
+            task.cancel()
+            # Now, not when the cancelled task next runs: the loop may be closing.
             self.close()
 
     def _write(self, sequence: str, now: float) -> None:
@@ -263,6 +277,18 @@ def _isatty(fd: int) -> bool:
         return os.isatty(fd)
     except OSError:
         return False
+
+
+def terminal_fd(*streams) -> int | None:
+    """The descriptor of the first stream that is a terminal, or None."""
+    for stream in streams:
+        try:
+            fd = stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            continue  # In memory (StringIO), or closed.
+        if _isatty(fd):
+            return fd
+    return None
 
 
 def send(output, sequence: str) -> None:

@@ -17,6 +17,7 @@ from pcode.preferences import save_preferences
 from pcode.runtime import (
     EditCompleted,
     Message,
+    PlanUpdated,
     RunStatus,
     TextDelta,
     Thinking,
@@ -176,6 +177,68 @@ def test_print_reports_failure_on_transcript_and_returns_false():
     printed = transcript.getvalue()
     assert "Agent failed" in printed
     assert "private provider body" not in printed
+
+
+def test_print_shows_the_turn_in_the_terminal_tab(monkeypatch):
+    """The tab bar goes to the transcript's terminal while the reply is piped elsewhere."""
+    import os
+    import pty
+    import re
+
+    from pcode import terminal_notify
+    from pcode.terminal_notify import CLEAR, INDETERMINATE, NORMAL, PAUSED, progress
+
+    monkeypatch.setattr(terminal_notify, "TICK_SECONDS", 0.01)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    save_preferences(terminal_progress="on")
+
+    class Runtime:
+        session = None
+        recovery_blocked = ""
+        retry_notice = None
+
+        async def stream(self, text):
+            await asyncio.sleep(0.1)
+            yield PlanUpdated([{"status": "completed"}, {"status": "in_progress"}])
+            await asyncio.sleep(0.1)
+            self.retry_notice("Retrying provider request 1/1…")
+            await asyncio.sleep(0.1)
+            yield TextDelta("done")
+            await asyncio.sleep(0.1)
+            yield Message("done")
+
+    main, terminal = pty.openpty()
+    try:
+        with open(terminal, "w", closefd=False) as tty:
+            stdout = StringIO()
+            app = PreviewApp(
+                model="test:local",
+                runtime=Runtime(),
+                console=Console(file=tty, color_system=None, width=80),
+            )
+            assert asyncio.run(app.run_print_async("go", stdout=stdout))
+        os.set_blocking(main, False)
+        written = b""
+        while True:
+            try:
+                written += os.read(main, 65536)
+            except BlockingIOError:
+                break
+    finally:
+        os.close(main)
+        os.close(terminal)
+    reports = re.findall(r"\x1b\]9;4;[^\x07]*\x07", written.decode())
+    # Deduplicated: the keep-alive may repeat a state.
+    shown = [r for i, r in enumerate(reports) if i == 0 or r != reports[i - 1]]
+    assert shown == [
+        progress(INDETERMINATE),
+        progress(NORMAL, 50),
+        progress(PAUSED),
+        progress(NORMAL, 50),
+        progress(CLEAR),
+    ]
+    assert stdout.getvalue() == "done\n\n"
 
 
 class TerminalStringIO(StringIO):

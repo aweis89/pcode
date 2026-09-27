@@ -47,6 +47,7 @@ from pcode.runtime import (
     CacheBust,
     EditCompleted,
     Message,
+    PlanUpdated,
     PreviewRuntime,
     ToolSummary,
 )
@@ -1979,32 +1980,43 @@ class PreviewApp:
                 if isinstance(event, Message):
                     reply.write(event.markdown)
             return True
-        try:
-            await self._initialize_runtime()
-        except Exception as error:
-            self.transcript.error(error_message(error), title="Agent startup failed")
-            return False
-        if self._saved_session is not None and self._saved_session.forked_from:
-            self.transcript.note(forked_note(self._saved_session))
-        self.runtime.compaction_notice = self.transcript.note
-        if hasattr(self.runtime, "retry_notice"):
-            self.runtime.retry_notice = self.transcript.note
-        if hasattr(self.runtime, "warning_notice"):
-            self.runtime.warning_notice = self.transcript.warning
-        try:
-            async with aclosing(self.runtime.stream(prompt)) as stream:
-                async for event in stream:
-                    reply.event(event)
-                    if (job_id := delivered_job(event)) is not None:
-                        self.controller.report_delivered_job(job_id)
-        except Exception as error:
-            reply.settle()
-            self.controller.report_finished_jobs()
-            self.transcript.error(error_message(error), title="Agent failed")
-            saved = getattr(self.runtime, "session", None)
-            if saved is not None:
-                self.transcript.note(f"Session and diagnostics: {saved.directory}")
-            return False
+        # The tab looks busy from launch to exit: startup is part of the wait.
+        self.activity.start_prompt(prompt)
+        async with reply.tab_progress(self.activity).shown() as tab:
+            try:
+                await self._initialize_runtime()
+            except Exception as error:
+                self.transcript.error(error_message(error), title="Agent startup failed")
+                return False
+            if self._saved_session is not None and self._saved_session.forked_from:
+                self.transcript.note(forked_note(self._saved_session))
+
+            def retry_notice(text: str) -> None:
+                tab.turn_retry()
+                self.transcript.note(text)
+
+            self.runtime.compaction_notice = self.transcript.note
+            if hasattr(self.runtime, "retry_notice"):
+                self.runtime.retry_notice = retry_notice
+            if hasattr(self.runtime, "warning_notice"):
+                self.runtime.warning_notice = self.transcript.warning
+            try:
+                async with aclosing(self.runtime.stream(prompt)) as stream:
+                    async for event in stream:
+                        tab.turn_event()
+                        if isinstance(event, PlanUpdated):
+                            self.activity.plan = event.items
+                        reply.event(event)
+                        if (job_id := delivered_job(event)) is not None:
+                            self.controller.report_delivered_job(job_id)
+            except Exception as error:
+                reply.settle()
+                self.controller.report_finished_jobs()
+                self.transcript.error(error_message(error), title="Agent failed")
+                saved = getattr(self.runtime, "session", None)
+                if saved is not None:
+                    self.transcript.note(f"Session and diagnostics: {saved.directory}")
+                return False
         reply.settle()
         self.controller.report_finished_jobs()
         self.print_resume_hint()

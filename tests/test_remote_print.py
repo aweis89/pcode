@@ -99,6 +99,63 @@ def test_a_message_cleared_from_the_queue_fails_instead_of_waiting(tmp_path, hos
     asyncio.run(run())
 
 
+def test_the_tab_is_busy_while_the_host_works_on_the_message(tmp_path, host_dir, monkeypatch):
+    import os
+    import pty
+    import re
+
+    from pcode import terminal_notify
+    from pcode.preferences import save_preferences
+    from pcode.terminal_notify import CLEAR, INDETERMINATE, progress
+
+    monkeypatch.setattr(terminal_notify, "TICK_SECONDS", 0.01)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    save_preferences(terminal_progress="on")
+    main, terminal = pty.openpty()
+    os.set_blocking(main, False)
+    written = bytearray()
+
+    def reports() -> list[str]:
+        try:
+            written.extend(os.read(main, 65536))
+        except BlockingIOError:
+            pass
+        return re.findall(r"\x1b\]9;4;[^\x07]*\x07", written.decode(errors="replace"))
+
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        try:
+            with open(terminal, "w", closefd=False) as tty:
+                # The transcript is on the terminal; the reply goes to a pipe.
+                app = PreviewApp(console=Console(file=tty, width=120), theme="dark")
+                out = StringIO()
+                sending = asyncio.create_task(
+                    print_to_host(
+                        host.entry,
+                        "hang on",
+                        transcript=app.transcript,
+                        present=app.present_events,
+                        stdout=out,
+                    )
+                )
+                await until(lambda: host.buffer)
+                await until(lambda: progress(INDETERMINATE) in reports())
+                script.release("hang on")
+                assert await asyncio.wait_for(sending, 10)
+                assert out.getvalue() == "Started. Finished.\n\n"
+                assert reports()[-1] == progress(CLEAR)
+        finally:
+            await stop_host(host)
+
+    try:
+        asyncio.run(run())
+    finally:
+        os.close(main)
+        os.close(terminal)
+
+
 def test_a_session_command_runs_in_the_host_and_returns_when_done(tmp_path, host_dir):
     async def run():
         host = await start_host("aaaa1111", tmp_path, Script())

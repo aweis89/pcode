@@ -20,6 +20,7 @@ from pcode.runtime import (
     ToolStarted,
     ToolSummary,
 )
+from pcode.terminal_notify import TabProgress, terminal_fd
 from pcode.tool_panel import active_step
 
 
@@ -71,6 +72,17 @@ class PrintedReply:
         # Text streamed since the last settled message, so a turn that ends
         # mid-block still prints what arrived.
         self.block = ""
+
+    def tab_progress(self, activity) -> TabProgress:
+        """The terminal's tab progress, following `activity`, as the editor shows it.
+
+        Sent to the transcript's stream first: a reply piped elsewhere leaves
+        that one on the terminal. Neither being one sends nothing.
+        """
+        from pcode.preferences import load_preferences
+
+        fd = terminal_fd(self.transcript.console.file, self.stdout)
+        return TabProgress(activity, fd, load_preferences().get("terminal_progress", "auto"))
 
     def write(self, markdown: str, *, streamed: bool = False) -> None:
         """Settle one block of reply text; `streamed` means its source is already out."""
