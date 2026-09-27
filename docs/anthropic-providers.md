@@ -299,8 +299,12 @@ Every request after a session's first read the previous request's whole input
 less 2 tokens and wrote only the new turn; the longest session read 97% of its
 input from cache. Forks were as warm as the live process (early builds forked a
 new process for every request, and their reads look the same). The CLI writes
-with the 1-hour TTL, never the 5-minute one pcode asks for on the direct
-`anthropic:` path, so a turn after up to an hour idle is still warm. A new
+with the 1-hour TTL, not the 5 minutes pcode asks for on the direct `anthropic:`
+path. pcode sets nothing here: an hour is Claude Code's own default on a
+subscription within plan usage, and `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` overrides
+it. Replaying saved sessions' request gaps at API prices, an hour cost about 4%
+more on `claude:` and 8% more on `anthropic:`, since 97% of gaps are under five
+minutes; how a subscription meters 1-hour writes is not published. A new
 session's first request already reads about 7,900 tokens, the CLI's shared
 prefix. The only cold writes were a switch from another model and a turn after
 ten hours idle.
