@@ -29,7 +29,7 @@ def test_notices_are_literal_compact_and_readable_without_color(theme, syntax):
     assert "\n".join(line.rstrip() for line in stream.getvalue().splitlines()) + "\n" == (
         "✗ Agent failed\n\n [red]**literal**[/red]\n Connection reset\n\n"
         "! Warning\n  Context window nearly full\n"
-        "! Run cancelled\n  Completed tool effects are not undone.\nOrdinary notice\n"
+        "! Run cancelled\nOrdinary notice\n"
     )
 
 
