@@ -277,6 +277,8 @@ def create_coder(
             models=subagent_menu(subagent_models())[0],
             event_stream_handler=stream_child_activity,
             shared_capabilities=[
+                # Extension sub-agents have no coder of their own to set it.
+                ClaudeWorkspace(workspace, fallback=True),
                 MeridianSessionIdentity(),
                 ModelOutputLimits(),
                 *([replace(cache_notices)] if cache_notices else []),

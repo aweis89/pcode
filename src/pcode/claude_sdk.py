@@ -29,11 +29,12 @@ import sys
 import time
 import weakref
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from functools import cached_property
 from pathlib import Path
+from tempfile import NamedTemporaryFile, mkstemp
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -62,14 +63,19 @@ TOOL_USE_ID = "claudecode/toolUseId"
 # Model setting carrying the workspace the CLI runs in (see `ClaudeWorkspace`).
 CWD_SETTING = "pcode_claude_cwd"
 EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
-# Idle processes kept for reuse; busy ones are never counted or closed. Each
-# holds about 300 MB, and forking a transcript is warm anyway, so keeping one
-# only saves the ~0.8 s start: keep few, and not for long.
+# Each process holds about 300 MB, and forking a transcript is warm anyway, so
+# keeping one only saves the ~0.8 s start. Finished ones are capped and expire
+# soon. A parked one belongs to a run still executing its tools (often a parent
+# waiting on delegations), so it is never capped, only expired, and later.
 MAX_IDLE_SESSIONS = 2
 IDLE_SECONDS = 10 * 60
+PARKED_SECONDS = 30 * 60
 CLOSE_TIMEOUT_SECONDS = 5.0
 # A finished turn's result follows its last message within milliseconds.
 TURN_END_TIMEOUT_SECONDS = 60.0
+# The CLI calls a tool's handler as the tool_use block ends; allow for a slow
+# machine before deciding it never will (a call it refused or could not parse).
+CALL_TIMEOUT_SECONDS = 10.0
 INDEX_LIMIT = 4000
 REPLAY_INTRO = (
     "This conversation began outside the current session, so its earlier messages are "
@@ -78,15 +84,28 @@ REPLAY_INTRO = (
 )
 
 # The child inherits pcode's environment. An empty value is unset to the CLI
-# (verified: requests then bill the subscription), so pcode's own Anthropic
-# key, token or endpoint can never silently redirect or bill it.
-CLI_ENV = {
+# (verified: requests then bill the subscription), so neither pcode's own
+# Anthropic key, token or endpoint nor a cloud route exported for other Claude
+# Code use can silently redirect or bill a `claude:` request.
+LOGIN_ENV = {
     "ANTHROPIC_API_KEY": "",
     "ANTHROPIC_AUTH_TOKEN": "",
     "ANTHROPIC_BASE_URL": "",
-    # pcode owns retries (visible in the UI), compaction and tool deferral.
+    "CLAUDE_CODE_USE_BEDROCK": "",
+    "CLAUDE_CODE_USE_VERTEX": "",
+    "CLAUDE_CODE_USE_FOUNDRY": "",
+    "CLAUDE_CODE_USE_GATEWAY": "",
+    "CLAUDE_CODE_USE_MANTLE": "",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS": "",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD": "",
+}
+CLI_ENV = {
+    **LOGIN_ENV,
+    # pcode owns retries (visible in the UI), compaction and tool deferral. A
+    # transcript the CLI compacted itself would no longer match pcode's history.
     "CLAUDE_CODE_MAX_RETRIES": "0",
     "DISABLE_AUTO_COMPACT": "1",
+    "DISABLE_COMPACT": "1",
     "ENABLE_TOOL_SEARCH": "false",
     # pcode already bounds tool output; never let the CLI truncate it again.
     "MAX_MCP_OUTPUT_TOKENS": "1000000",
@@ -120,10 +139,8 @@ def cli_path() -> str | None:
     """The CLI the SDK runs: its bundled binary, else `claude` on PATH."""
     import shutil
 
-    try:
-        import claude_agent_sdk
-    except ImportError:
-        return shutil.which("claude")
+    import claude_agent_sdk
+
     name = "claude.exe" if sys.platform == "win32" else "claude"
     bundled = Path(claude_agent_sdk.__file__).parent / "_bundled" / name
     return str(bundled) if bundled.is_file() else shutil.which("claude")
@@ -308,10 +325,18 @@ class ResumeIndex:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path
-        self._entries: dict[str, ForkPoint] | None = None
+        self._loaded: dict[str, ForkPoint] | None = None
 
     def _file(self) -> Path:
         return self.path or index_path()
+
+    @property
+    def _entries(self) -> dict[str, ForkPoint]:
+        # Read once per process, synchronously: at most INDEX_LIMIT short lines,
+        # and no await in between means no second reader can interleave.
+        if self._loaded is None:
+            self._loaded = self._load()
+        return self._loaded
 
     def _load(self) -> dict[str, ForkPoint]:
         entries: dict[str, ForkPoint] = {}
@@ -329,9 +354,11 @@ class ResumeIndex:
             kept = list(entries.items())[-INDEX_LIMIT // 2 :]
             entries = dict(kept)
             with suppress(OSError):
-                temporary = self._file().with_suffix(".tmp")
-                temporary.write_text("".join(self._line(k, p) for k, p in kept))
-                temporary.replace(self._file())
+                with NamedTemporaryFile(
+                    "w", dir=self._file().parent, suffix=".tmp", delete=False
+                ) as file:
+                    file.write("".join(self._line(k, p) for k, p in kept))
+                Path(file.name).replace(self._file())
         return entries
 
     @staticmethod
@@ -339,16 +366,15 @@ class ResumeIndex:
         row = {"key": key, "session": point.session_id, "uuid": point.uuid, "cwd": point.cwd}
         return json.dumps(row) + "\n"
 
-    async def load(self) -> None:
-        if self._entries is None:
-            self._entries = await asyncio.to_thread(self._load)
-
     def get(self, key: str) -> ForkPoint | None:
-        return (self._entries or {}).get(key)
+        return self._entries.get(key)
+
+    def forget(self, session_id: str) -> None:
+        """Stop offering a transcript that could not be resumed, for this process."""
+        for key in [k for k, p in self._entries.items() if p.session_id == session_id]:
+            del self._entries[key]
 
     def add(self, key: str, point: ForkPoint) -> None:
-        if self._entries is None:
-            self._entries = {}
         if self._entries.get(key) == point:
             return
         self._entries[key] = point
@@ -374,7 +400,7 @@ class SessionConfig:
     effort: str | None = None
     thinking: str | None = None  # canonical JSON of the thinking setting
 
-    def options(self, server, resume: ForkPoint | None, stderr) -> Any:
+    def options(self, server, resume: ForkPoint | None, stderr, prompt_file: str) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions
 
         thinking = json.loads(self.thinking) if self.thinking else None
@@ -388,7 +414,7 @@ class SessionConfig:
             strict_mcp_config=True,
             mcp_servers={SERVER: {"type": "sdk", "name": SERVER, "instance": server}},
             allowed_tools=[f"mcp__{SERVER}"],
-            system_prompt=self.system_prompt,
+            system_prompt={"type": "file", "path": prompt_file},
             include_partial_messages=True,
             model=self.model,
             cwd=self.cwd,
@@ -410,6 +436,12 @@ def _client_factory(options) -> Any:
     return ClaudeSDKClient(options)
 
 
+class _Diverged(ClaudeProcessError):
+    """The CLI's transcript stopped matching pcode's history (it acted on its own)."""
+
+    live = False  # raised while continuing a live process, which a fork can replace
+
+
 class ClaudeSession:
     """One live CLI process and the pcode history its transcript holds."""
 
@@ -427,12 +459,19 @@ class ClaudeSession:
         self.busy = False
         self.dead = False
         self.last_used = time.monotonic()
+        # Set by the pool: stop an idle process that went its own way.
+        self.retire: Callable[[], None] | None = None
         self._client: Any = None
+        self._prompt_file: str | None = None
         self._pump_task: asyncio.Task | None = None
         self._queue: asyncio.Queue = asyncio.Queue()
         self._slots: dict[str, asyncio.Future] = {}
+        self._called: set[str] = set()
+        self._call_seen = asyncio.Event()
         self._delivered: set[str] = set()
         self._last_uuid: str | None = None
+        # Whether pcode asked for the next message; anything else is the CLI's own.
+        self._expecting = False
         self._final = False
         self._turn_done = asyncio.Event()
         self._turn_done.set()
@@ -443,15 +482,22 @@ class ClaudeSession:
     # Lifecycle
 
     async def connect(self, factory=None) -> None:
-        options = self.config.options(self._server(), self.resume, self._stderr.append)
+        # A file, not argv: a large prompt would pass Linux's 128 KiB argument
+        # limit, and argv is readable by every local user. mkstemp makes it 0600.
+        descriptor, self._prompt_file = mkstemp(prefix="pcode-claude-", suffix=".md")
+        with os.fdopen(descriptor, "w") as file:
+            file.write(self.config.system_prompt)
+        options = self.config.options(
+            self._server(), self.resume, self._stderr.append, self._prompt_file
+        )
         self._client = (factory or _client_factory)(options)
         try:
             await self._client.connect()
         except Exception as error:
             self.dead = True
-            detail = "; ".join(self._stderr) or str(error) or type(error).__name__
+            self._remove_prompt_file()
             raise ClaudeStartError(
-                self.config.model, f"Claude Code could not start: {detail[:500]}"
+                self.config.model, f"Claude Code could not start: {self._detail(error)}"
             ) from error
         self._pump_task = asyncio.create_task(self._pump(), name="claude-sdk-pump")
 
@@ -477,6 +523,29 @@ class ClaudeSession:
         for future in self._slots.values():
             if not future.done():
                 future.cancel()
+        self._remove_prompt_file()
+
+    def _remove_prompt_file(self) -> None:
+        if self._prompt_file is not None:
+            with suppress(OSError):
+                os.unlink(self._prompt_file)
+            self._prompt_file = None
+
+    def _detail(self, error: BaseException | None = None) -> str:
+        from pcode.diagnostics import redact
+
+        detail = "; ".join(list(self._stderr)[-3:]) or (str(error) if error else "")
+        return redact(detail or (type(error).__name__ if error else "no detail"))[:500]
+
+    def _diverge(self, why: str) -> None:
+        """Retire a process whose transcript no longer matches pcode's history."""
+        if self.dead:
+            return
+        logger.debug("Claude Code session diverged: %s", why)
+        self.dead = True
+        self._call_seen.set()  # wake `answer`
+        if not self.busy and self.retire is not None:
+            self.retire()  # interrupts whatever it started on its own
 
     # Tool handlers
 
@@ -507,14 +576,20 @@ class ClaudeSession:
             extra = meta if isinstance(meta, dict) else (getattr(meta, "model_extra", None) or {})
             tool_use_id = extra.get(TOOL_USE_ID)
             if not isinstance(tool_use_id, str):
+                self._diverge("a tool call without an id")
                 return types.CallToolResult(
                     content=[
                         types.TextContent(type="text", text="pcode could not match this call.")
                     ],
                     isError=True,
                 )
+            self._called.add(tool_use_id)
+            self._call_seen.set()
             # Parked until pcode runs the tool and sends its result.
-            block = await self._slot(tool_use_id)
+            try:
+                block = await self._slot(tool_use_id)
+            finally:
+                self._slots.pop(tool_use_id, None)  # never hold results once answered
             return types.CallToolResult.model_validate(
                 {"content": _mcp_content(block), "isError": bool(block.get("is_error"))}
             )
@@ -539,26 +614,42 @@ class ClaudeSession:
 
         await self._client.query(message())
 
+    def _ask(self) -> None:
+        """Expect the CLI's next message; raise if it has already gone its own way."""
+        if self.dead:
+            raise _Diverged(self.config.model, "Claude Code continued on its own.")
+        self._expecting = True
+        self.complete = False
+
     async def start(self, content: list[dict]) -> None:
         """Begin a turn with a new user message."""
         try:
             async with asyncio.timeout(TURN_END_TIMEOUT_SECONDS):
                 await self._turn_done.wait()
         except TimeoutError:
-            self.dead = True
-            raise ClaudeProcessError(
-                self.config.model, "Claude Code did not finish its previous turn."
-            ) from None
+            raise _Diverged(self.config.model, "Claude Code did not end its turn.") from None
+        self._ask()
         self._turn_done.clear()
-        self.complete = False
+        # A fork may start with results for the calls its transcript ends on.
+        self._delivered.update(b["tool_use_id"] for b in content if b.get("type") == "tool_result")
         await self._write(content)
 
     async def answer(self, message: dict) -> None:
         """Continue a parked turn: release its handlers, plus any new user input.
 
+        The CLI parks a call as its tool_use block ends. One that never arrives
+        was refused or unparseable, and the CLI has answered it itself.
         Input written before the results is already queued when they arrive, so
         the CLI sends both in one request (verified with 2.1.283).
         """
+        try:
+            async with asyncio.timeout(CALL_TIMEOUT_SECONDS):
+                while not (self._called & set(self.open_tool_ids) or self.dead):
+                    self._call_seen.clear()
+                    await self._call_seen.wait()
+        except TimeoutError:
+            self._diverge("no tool call reached pcode")
+        self._ask()
         blocks = _blocks(message)
         other = [b for b in blocks if b.get("type") != "tool_result"]
         if other:
@@ -570,7 +661,6 @@ class ClaudeSession:
                 if not future.done():
                     future.set_result(block)
         self.open_tool_ids = ()
-        self.complete = False
 
     async def send(self, message: dict) -> None:
         if self.open_tool_ids:
@@ -590,8 +680,9 @@ class ClaudeSession:
             UserMessage,
         )
 
-        error: Exception = ClaudeProcessError(self.config.model, "Claude Code stopped.")
+        error: Exception | None = None
         stop_reason = None
+        wanted = False
         try:
             async for message in self._client.receive_messages():
                 if getattr(message, "parent_tool_use_id", None):
@@ -601,12 +692,18 @@ class ClaudeSession:
                     kind = event.get("type")
                     if kind == "message_start":
                         stop_reason = None
+                        wanted, self._expecting = self._expecting, False
+                        if not wanted:
+                            # A request of its own (a nudge after a thinking-only
+                            # reply, output-limit recovery, a retried tool call).
+                            self._diverge("a message pcode did not ask for")
                     elif kind == "message_delta":
                         stop_reason = (event.get("delta") or {}).get("stop_reason") or stop_reason
                     elif kind == "message_stop" and stop_reason != "tool_use":
                         # The turn ends here; absorb its result message.
                         self._final = True
-                    self._queue.put_nowait(("event", event, self._last_uuid))
+                    if wanted:
+                        self._queue.put_nowait(("event", event, self._last_uuid))
                 elif isinstance(message, AssistantMessage):
                     self._last_uuid = message.uuid or self._last_uuid
                     if message.error:
@@ -629,24 +726,23 @@ class ClaudeSession:
         except asyncio.CancelledError:
             raise
         except Exception as cause:
-            error = ClaudeProcessError(self.config.model, f"Claude Code stopped: {cause}")
-            error.__cause__ = cause
+            error = cause
         self.dead = True
         self._turn_done.set()
-        self._queue.put_nowait(("error", error, None))
+        self._call_seen.set()
+        stopped = ClaudeProcessError(
+            self.config.model, f"Claude Code stopped: {self._detail(error)}"
+        )
+        stopped.__cause__ = error
+        self._queue.put_nowait(("error", stopped, None))
 
     def _check_results(self, message) -> None:
-        """Notice the CLI answering one of pcode's calls itself (a refused input).
-
-        Its transcript then no longer matches pcode's history, so retire it; the
-        next request forks from the last shared message instead.
-        """
+        """Notice the CLI answering one of pcode's calls itself (a refused input)."""
         content = message.content if isinstance(message.content, list) else []
         for block in content:
             tool_use_id = getattr(block, "tool_use_id", None)
             if tool_use_id and tool_use_id not in self._delivered and not self._closed:
-                logger.debug("Claude Code answered tool call %s itself", tool_use_id)
-                self.dead = True
+                self._diverge(f"Claude Code answered tool call {tool_use_id} itself")
 
     async def response(self) -> AsyncIterator[dict]:
         """Raw stream events of the CLI's next assistant message, through message_stop."""
@@ -725,7 +821,15 @@ class SessionPool:
         self, config: SessionConfig, messages: list[dict], chain: list[str]
     ) -> Checkout:
         """A session that has been sent `messages` and is producing the next response."""
-        await self.index.load()
+        try:
+            return await self._checkout(config, messages, chain)
+        except _Diverged as error:
+            if not error.live:
+                raise
+        # The live process had gone its own way; it is retired, so this forks.
+        return await self._checkout(config, messages, chain)
+
+    async def _checkout(self, config, messages, chain) -> Checkout:
         async with self._lock:
             for session in sorted(self.sessions, key=lambda s: s.last_used, reverse=True):
                 if session.accepts(config, messages, chain):
@@ -747,10 +851,15 @@ class SessionPool:
                 await session.send(delta[0])
             else:
                 open_ids = _tool_use_ids(messages[start - 1]) if start else ()
-                if len(delta) == 1 and _result_ids(delta[0]) == set(open_ids):
+                single = len(delta) == 1 and delta[0]["role"] == "user"
+                if single and _result_ids(delta[0]) == set(open_ids):
                     await session.start(_blocks(delta[0]))
                 else:
                     await session.start(replay(delta, open_ids))
+        except _Diverged as error:
+            error.live = route == "live"
+            self.release(session, ok=False)
+            raise
         except BaseException:
             self.release(session, ok=False)
             raise
@@ -770,6 +879,7 @@ class SessionPool:
     async def _open(self, config: SessionConfig, point: ForkPoint | None) -> ClaudeSession | None:
         session = ClaudeSession(config, point)
         session.busy = True
+        session.retire = lambda: self._drop(session)
         self.sessions.append(session)
         try:
             await session.connect(self.factory)
@@ -777,6 +887,7 @@ class SessionPool:
             self._drop(session)
             if point is not None:
                 logger.debug("could not resume Claude session %s", point.session_id)
+                self.index.forget(point.session_id)
                 return None
             raise
         except BaseException:
@@ -796,25 +907,35 @@ class SessionPool:
         session.last_used = time.monotonic()
         if not ok:
             session.dead = True
-        idle = [s for s in self.sessions if not s.busy]
-        for stale in [s for s in idle if s.dead]:
+        for stale in [s for s in self.sessions if not s.busy and s.dead]:
             self._drop(stale)
-        # Finished turns go first: a parked one is usually a parent waiting
-        # on a delegation, and will be asked to continue.
-        idle = sorted(
-            (s for s in idle if not s.dead), key=lambda s: (bool(s.open_tool_ids), s.last_used)
+        finished = sorted(
+            (s for s in self.sessions if not s.busy and not s.open_tool_ids),
+            key=lambda s: s.last_used,
         )
-        for stale in idle[: max(0, len(idle) - MAX_IDLE_SESSIONS)]:
+        for stale in finished[: max(0, len(finished) - MAX_IDLE_SESSIONS)]:
             self._drop(stale)
+        self._schedule_expiry()
+
+    @staticmethod
+    def _deadline(session: ClaudeSession) -> float:
+        return session.last_used + (PARKED_SECONDS if session.open_tool_ids else IDLE_SECONDS)
+
+    def _schedule_expiry(self) -> None:
         if self._expiry is not None:
             self._expiry.cancel()
-        self._expiry = asyncio.get_running_loop().call_later(IDLE_SECONDS, self._expire)
+            self._expiry = None
+        idle = [s for s in self.sessions if not s.busy]
+        if idle:
+            delay = max(0.0, min(map(self._deadline, idle)) - time.monotonic())
+            self._expiry = asyncio.get_running_loop().call_later(delay, self._expire)
 
     def _expire(self) -> None:
         self._expiry = None
-        cutoff = time.monotonic() - IDLE_SECONDS
-        for session in [s for s in self.sessions if not s.busy and s.last_used <= cutoff]:
+        now = time.monotonic()
+        for session in [s for s in self.sessions if not s.busy and self._deadline(s) <= now]:
             self._drop(session)
+        self._schedule_expiry()
 
     def _drop(self, session: ClaudeSession) -> None:
         with suppress(ValueError):
@@ -826,6 +947,7 @@ class SessionPool:
     async def aclose(self) -> None:
         if self._expiry is not None:
             self._expiry.cancel()
+            self._expiry = None
         for session in list(self.sessions):
             self._drop(session)
         if self._closing:
@@ -847,6 +969,16 @@ def pool() -> SessionPool:
         _index = _index or ResumeIndex()
         current = _pools[loop] = SessionPool(_index)
     return current
+
+
+async def shutdown() -> None:
+    """Stop this event loop's CLI processes, interrupting any mid-turn first.
+
+    Called as pcode exits; the SDK's own atexit hook only sends SIGTERM.
+    """
+    current = _pools.pop(asyncio.get_running_loop(), None)
+    if current is not None:
+        await current.aclose()
 
 
 # --- Model ---------------------------------------------------------------------
@@ -989,15 +1121,19 @@ class ClaudeWorkspace(AbstractCapability):
 
     The CLI tells the model its working directory, and keeps transcripts per
     directory; pcode's process directory is not the workspace in worktree mode.
+    A `fallback` one yields to any other: sub-agents get the parent's as a
+    fallback, and an isolated worker's own checkout must win whatever the order.
     """
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(self, workspace: Path, *, fallback: bool = False) -> None:
         self.workspace = Path(workspace)
+        self.fallback = fallback
 
     async def before_model_request(
         self, ctx: RunContext, request_context: ModelRequestContext
     ) -> ModelRequestContext:
-        if request_context.model.system != "claude":
+        settings = request_context.model_settings or {}
+        if request_context.model.system != "claude" or (self.fallback and CWD_SETTING in settings):
             return request_context
-        settings = {**(request_context.model_settings or {}), CWD_SETTING: str(self.workspace)}
+        settings = {**settings, CWD_SETTING: str(self.workspace)}
         return replace(request_context, model_settings=settings)

@@ -143,6 +143,46 @@ def fake_claude(tmp_path, login_body=None, status=None):
     )
 
 
+def test_claude_provider_login_uses_its_cli_and_scrubbed_environment(monkeypatch, tmp_path):
+    from pcode.claude_sdk import LOGIN_ENV
+
+    monkeypatch.delenv("MERIDIAN_CLAUDE_PATH", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-key")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    claude = script(
+        tmp_path / "bundled-claude",
+        'echo "[$ANTHROPIC_API_KEY][$CLAUDE_CODE_USE_BEDROCK]|$*" >> "$(dirname "$0")/calls"\n'
+        'if [ "$2" = status ]; then echo \'{"loggedIn": true}\'; fi\n',
+    )
+    status = asyncio.run(
+        ms.claude_login(
+            lambda _: None,
+            ms.LoginTarget(None, "x"),
+            executable=str(claude),
+            retry="/login claude",
+            extra_env=LOGIN_ENV,
+        )
+    )
+    assert status == {"loggedIn": True}
+    # An API key must not pass for the subscription login, at login or status.
+    assert (tmp_path / "calls").read_text().splitlines() == [
+        "[][]|auth login --claudeai",
+        "[][]|auth status --json",
+    ]
+
+
+def test_claude_provider_login_names_its_own_retry(monkeypatch):
+    # Never find a real `claude`: it would open a browser.
+    monkeypatch.delenv("MERIDIAN_CLAUDE_PATH", raising=False)
+    monkeypatch.setattr(ms.shutil, "which", lambda _: None)
+    with pytest.raises(LoginError, match=r"not found\. Install it, then retry /login claude"):
+        asyncio.run(
+            ms.claude_login(
+                lambda _: None, ms.LoginTarget(None, "x"), executable=None, retry="/login claude"
+            )
+        )
+
+
 def test_login_runs_claude_and_reports_only_non_identifying_status(monkeypatch, tmp_path):
     claude = fake_claude(tmp_path)
     monkeypatch.setenv("MERIDIAN_CLAUDE_PATH", str(claude))

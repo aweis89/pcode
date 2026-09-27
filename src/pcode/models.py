@@ -1,6 +1,5 @@
 """Local model suggestions for configured providers; no credential or network reads."""
 
-import importlib.util
 import os
 import re
 import shutil
@@ -94,8 +93,6 @@ def claude_code_configured() -> bool:
     The Agent SDK bundles the CLI, so an install is not required; its config
     is the signal, checked for existence only.
     """
-    if importlib.util.find_spec("claude_agent_sdk") is None:
-        return False
     config = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
     try:
         return bool(

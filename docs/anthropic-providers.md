@@ -287,7 +287,9 @@ and `make cache-report`):
 
 The spike's open criteria have answers now. Prompt size is Claude Code's own plus
 pcode's, since the CLI adds its environment, date and model attachments. Memory is
-high enough that idle processes are capped at two and expire after ten minutes.
+high enough that finished processes are capped at two and expire after ten
+minutes. A process waiting on tool results, such as a parent waiting for
+delegations, is kept for thirty.
 Thinking, effort changes, Ctrl+C and a warm resume after restart all work.
 
 ## ACP
