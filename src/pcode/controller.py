@@ -38,9 +38,11 @@ from pcode.preferences import (
     apply_thinking,
     effort_for,
     effort_setting,
+    from_project,
     load_preferences,
     save_model_effort,
     save_preferences,
+    subagent_models,
 )
 from pcode.rpc import transportable
 from pcode.runtime import CommandOutput, JobFinished, Message, ToolSummary
@@ -533,6 +535,15 @@ class SessionController:
                 group="Model",
             ),
             Command(
+                "/subagents",
+                "Models delegate_task may run sub-agents on: MODEL ... sets them, off clears, "
+                "bare lists",
+                self.subagents,
+                free_arguments=True,
+                argument_completer=self.model_list_completions,
+                group="Model",
+            ),
+            Command(
                 "/reload",
                 "Reload extensions; keeps the conversation",
                 self.reload,
@@ -622,7 +633,10 @@ class SessionController:
                     "free_arguments": command.free_arguments,
                     "group": command.group,
                     "argument_descriptions": dict(command.argument_descriptions or {}),
-                    "models": command.argument_completer is not None,
+                    # Which of the controller's completers the terminal runs locally.
+                    "completer": getattr(command.argument_completer, "__name__", None),
+                    # What a terminal from before `completer` reads to complete /btw.
+                    "models": command.argument_completer == self.aside_completions,
                 }
             )
             if command.argument_provider is not None:
@@ -1888,6 +1902,85 @@ class SessionController:
         )
         lines.append("Turn one on or off with /extensions on|off NAME. Ask pcode to write one.")
         self.view.note("\n".join(lines))
+
+    async def subagents(self, argument: str) -> None:
+        """`/subagents` lists the models delegate_task may pick; `MODEL ...` or `off` sets them."""
+        from pcode.agent import subagent_menu
+
+        names = list(dict.fromkeys(argument.split()))
+        project = from_project("subagent_models")
+        if not names:
+            configured = subagent_models()
+            if not configured:
+                self.view.note(
+                    "No sub-agent models: sub-agents run on the session's model. "
+                    "/subagents MODEL [MODEL ...] lets delegate_task pick others."
+                )
+                return
+            menu, problems = await asyncio.to_thread(subagent_menu, configured)
+            lines = [
+                "Sub-agent models delegate_task may pick (without one, the session's model)"
+                + (", set by this workspace's .pcode/preferences.json" if project else "")
+                + ":",
+                *(f"  {name}" for name in menu),
+                *(f"Unavailable, left out: {problem}" for problem in problems),
+                "/subagents MODEL [MODEL ...] replaces the list; /subagents off clears it.",
+            ]
+            self.view.note("\n".join(lines))
+            return
+        if not self.model:
+            raise ValueError("/subagents requires a live model session.")
+        if project:
+            # A saved user choice would change nothing while the overlay decides.
+            raise ValueError(
+                "This workspace's .pcode/preferences.json sets subagent_models; change it "
+                "with pcode config project set|unset subagent_models."
+            )
+        if names == ["off"]:
+            names = []
+        else:
+            # Resolve before saving, so an unknown provider or a missing login is
+            # refused here rather than silently left out of the menu.
+            _, problems = await asyncio.to_thread(subagent_menu, names)
+            if problems:
+                raise ValueError("\n".join(problems))
+        # Refuse before writing, so the preference cannot drift from the session.
+        self.reload("")
+        try:
+            save_preferences(subagent_models=",".join(names))
+        except (OSError, ValueError) as error:
+            # The reload reads the saved list, so without it nothing would change.
+            self.reload_requested = False
+            raise ValueError(f"Could not save subagent_models: {error}") from error
+        # Resolving checks only the provider and login, not the model id, and the
+        # catalog is not exhaustive: flag what it does not know without refusing.
+        known = set(await asyncio.to_thread(self.model_suggestions))
+        if unknown := [name for name in names if name not in known]:
+            self.view.warning(
+                f"Not in the /model catalog, so check the spelling: {', '.join(unknown)}"
+            )
+        chosen = ", ".join(names) if names else "none; sub-agents run on the session's model"
+        self.view.note(f"Sub-agent models: {chosen}. Reloading.")
+
+    def model_list_completions(self, argument: str):
+        """Complete the word being typed in `/subagents` from the /model catalog.
+
+        Names already typed are not offered again, and `off` only as the first word.
+        """
+        from prompt_toolkit.completion import Completion
+
+        words = argument.split()
+        fragment = words.pop() if words and not argument[-1].isspace() else ""
+        if words[:1] == ["off"]:
+            return
+        if not words and "off".startswith(fragment):
+            yield Completion(
+                "off", start_position=-len(fragment), display_meta="Only the session's model"
+            )
+        needle = fragment.casefold()
+        for model in self.model_suggestions():
+            if model not in words and needle in model.casefold():
+                yield Completion(model, start_position=-len(fragment))
 
     def reload(self, argument: str) -> None:
         if argument:

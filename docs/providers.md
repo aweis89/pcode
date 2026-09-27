@@ -261,7 +261,7 @@ already owns.
 **Private instance.** pcode starts one per pcode process, on an automatically
 allocated loopback port with a random API key, and needs Meridian 1.71.1 or newer.
 It writes a private adapter configuration with Thinking Passthrough on, uses an
-empty plugin directory, disables persisted telemetry and update checks, and checks
+empty plugin directory and working directory, disables persisted telemetry and update checks, and checks
 `/health` plus the effective settings before connecting, with a 30-second deadline.
 Startup happens while the terminal opens, not on the first prompt. Inherited
 `MERIDIAN_*` / `CLAUDE_PROXY_*` overrides are not applied.
@@ -287,6 +287,16 @@ it with `PCODE_MERIDIAN_BASE_URL` (the server root, without `/v1/messages`). If
 your proxy requires an API key, supply `PCODE_MERIDIAN_API_KEY` in the
 environment; otherwise pcode uses a non-secret placeholder. pcode never changes an
 external proxy's settings.
+
+If you run Meridian as a service (launchd, systemd, `brew services`), set
+`MERIDIAN_WORKDIR` to an empty directory that exists. Meridian starts a Claude
+Code process for every request in that directory, or in its own working directory
+when the variable is unset, and Claude Code counts the files under it each time
+it starts (`rg --files --hidden`, skipped only for your home directory). A service
+manager usually starts Meridian in `/`, so every request walks the whole disk:
+requests slow down, and under load Meridian answers `503 overloaded_error`
+("session bookkeeping is saturated"). pcode runs its tools itself, so Claude Code
+never needs a real directory. The private instance does this for you.
 
 Neither kind inherits `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or
 `ANTHROPIC_BASE_URL`; Meridian owns upstream authentication. Global HTTP proxy

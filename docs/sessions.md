@@ -95,8 +95,9 @@ many finished while nobody was looking (*new*; the picker lists those first).
 When one of them finishes a turn a note appears here, and if no terminal is
 showing that session, a desktop notification too: pcode asks the terminal to
 raise it (OSC 9, which Ghostty shows by default), once per turn however many
-terminals are open. While a turn runs, the tab shows a progress indicator
-(OSC 9;4). `pcode config set desktop_notifications off` turns both off.
+terminals are open; `pcode config set desktop_notifications off` turns it off.
+While a turn runs, the tab also shows a
+[progress bar](configuration.md#tab-progress-bar).
 
 A host with no terminal attached, no turn running, and no running command
 stops itself after an hour (`session_host_idle_minutes`; `0` never stops).

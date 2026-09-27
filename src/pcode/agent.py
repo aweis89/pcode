@@ -23,7 +23,7 @@ from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
-from pydantic_ai_harness.subagents import SubAgent
+from pydantic_ai_harness.subagents import ModelOption, SubAgent
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.cache_settings import ProviderCacheSettings, model_settings
@@ -42,7 +42,7 @@ from pcode.meridian import MeridianSessionIdentity
 from pcode.meridian_reminders import MeridianLimitWarnings
 from pcode.output_limits import ModelOutputLimits
 from pcode.planning import IdentifiedPlanning
-from pcode.preferences import SETTINGS, load_preferences
+from pcode.preferences import SETTINGS, load_preferences, subagent_models
 from pcode.repo_context import create_repo_context
 from pcode.shell_tools import JobShell
 from pcode.strict_tools import create_strict_tools
@@ -270,6 +270,8 @@ def create_coder(
                 *subagents,
             ],
             agent_folders=None,
+            # Unavailable names are left out here and reported by /subagents.
+            models=subagent_menu(subagent_models())[0],
             event_stream_handler=stream_child_activity,
             shared_capabilities=[
                 MeridianSessionIdentity(),
@@ -408,6 +410,25 @@ def side_model(name: str, effort: str = "") -> SideModel:
         resolved,
         with_effort(name, resolved, model_settings(name), effort or effort_for(name)),
     )
+
+
+def subagent_menu(names: Sequence[str]) -> tuple[dict[str, ModelOption], list[str]]:
+    """The `delegate_task` model menu for `names`, and why any name was left out.
+
+    Each option is resolved as /btw resolves another model: on pcode's own
+    logins, with that model's defaults and saved /effort. Omitting `model` in a
+    delegation still runs the sub-agent on the session's model.
+    """
+    menu: dict[str, ModelOption] = {}
+    problems: list[str] = []
+    for name in names:
+        try:
+            chosen = side_model(name)
+        except ValueError as error:
+            problems.append(str(error))
+            continue
+        menu[name] = ModelOption(chosen.model, settings=chosen.settings)
+    return menu, problems
 
 
 def with_effort(name: str, model, settings: dict | None, effort: str | None) -> dict | None:

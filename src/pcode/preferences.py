@@ -194,6 +194,11 @@ SETTINGS = {
         whole_number=True,
         description="Concurrent worker cap; 0 is unlimited (reload to apply)",
     ),
+    "subagent_models": Setting(
+        "",
+        name_list=True,
+        description="Models delegate_task may run a sub-agent on, comma-separated (/subagents)",
+    ),
     # An untouched worktree is always removed; uncommitted changes are always kept.
     "session_host": Setting(
         "on",
@@ -210,6 +215,12 @@ SETTINGS = {
         "on",
         ("on", "off"),
         description="Desktop notification when a background session finishes (OSC 9)",
+    ),
+    "terminal_progress": Setting(
+        "auto",
+        ("auto", "on", "off"),
+        description="Tab progress bar while a turn runs (OSC 9;4); auto sends it only to "
+        "terminals known to draw it",
     ),
     "worktree_exit": Setting(
         "ask",
@@ -494,6 +505,17 @@ def load_preferences() -> dict[str, str]:
         if key not in USER_ONLY:
             merged[key] = value
     return merged
+
+
+def subagent_models() -> list[str]:
+    """The `subagent_models` setting as model names, in order, without repeats."""
+    value = load_preferences().get("subagent_models", "")
+    return list(dict.fromkeys(entry.strip() for entry in value.split(",") if entry.strip()))
+
+
+def from_project(key: str) -> bool:
+    """Whether the workspace's `.pcode/preferences.json` decides `key`."""
+    return key not in USER_ONLY and key in _read_valid(project_preferences_path())
 
 
 def rejected_project_keys() -> list[str]:

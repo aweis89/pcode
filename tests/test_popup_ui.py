@@ -6,6 +6,8 @@ from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.layout.controls import BufferControl
+from prompt_toolkit.layout.mouse_handlers import MouseHandlers
+from prompt_toolkit.layout.screen import Screen, WritePosition
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
@@ -65,6 +67,38 @@ def test_rich_pane_invalidates_lines_on_resize_and_content_change():
     assert pane.window.vertical_scroll == 0
     assert updated.line_count == 1
     assert "replacement" == "".join(text for _, text in updated.get_line(0))
+
+
+def test_rich_pane_keeps_a_stale_scroll_on_a_real_line():
+    """A scroll past the content must not reach the window as the cursor row.
+
+    Window reads ``get_line(cursor_position.y)`` on every render, so a row the
+    content no longer has raised IndexError mid-render.
+    """
+
+    def draw(width):
+        pane.window.write_to_screen(
+            Screen(), MouseHandlers(), WritePosition(0, 0, width, 10), "", False, None
+        )
+        return pane.window.render_info
+
+    pane = RichPane()
+    pane.set([Text("word " * 400)])
+    # Scrolled near the bottom, then widened: the rewrap has far fewer lines.
+    pane.window.vertical_scroll = draw(30).content_height - 3
+    info = draw(120)
+    assert info.ui_content.cursor_position.y < info.content_height
+    # Settles on the last full page, not a lone last line.
+    assert pane.window.vertical_scroll == max(0, info.content_height - info.window_height)
+
+    # A reader scrolled mid-way (not tailing) keeps the offset across follow(),
+    # which is how the stale row arises: 20 is past the one-line content.
+    pane.set([Text("line\n" * 50)])
+    draw(40)
+    pane.window.vertical_scroll = 20
+    pane.follow([Text("short")])
+    assert pane.window.vertical_scroll == 20
+    assert draw(40).ui_content.cursor_position.y == 0
 
 
 @pytest.mark.parametrize("kind", ["sessions", "tools"])

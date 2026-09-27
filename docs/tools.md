@@ -40,6 +40,43 @@ Provider limits and machine resources still apply. Specialized extension
 delegates keep their own tool configuration rather than automatically gaining
 the worker's tools.
 
+### Sub-agents on other models
+
+By default every sub-agent runs on the session's model. `/subagents` lets the
+model hand a delegation to a different provider instead, with the worker's
+tools and permissions unchanged:
+
+```text
+❯ /subagents openai-codex:gpt-6-astra anthropic:claude-sonnet-5
+```
+
+`delegate_task` then takes an optional `model`, limited to the names listed, and
+the prompt lists them for the model to choose from. Omitting it still means the
+session's model. Each name completes from the `/model` catalog as you type, and
+is resolved the way a [`/btw` side question](side-questions.md#choosing-the-model)
+resolves another model: on pcode's own logins, with that model's defaults and
+saved `/effort` as of launch or the last `/reload`. A name that cannot be resolved
+(an unknown provider, or one you are not signed in to) is refused before anything
+is saved. Resolving does not check the model id itself, so a name missing from
+the `/model` catalog is saved with a warning to check its spelling; a real typo
+fails when a delegation uses it.
+
+- `/subagents` alone lists the models, checking each again and flagging any
+  that no longer resolves (after a `/logout`, say). The model's own list is
+  built at launch and on `/reload`, which leaves such a name out.
+- `/subagents off` clears the list.
+- Setting the list saves `subagent_models` and reloads the agent like `/reload`.
+  The tool schema and prompt change, so the next request rebuilds the prompt
+  cache. A delegation on another model also starts without the parent's cache.
+
+`pcode config set subagent_models A,B` does the same from the shell, taking
+effect at the next launch or `/reload`. A repository can set the list in its
+[`.pcode/preferences.json`](configuration.md#per-repository-overrides), which then
+wins over yours: the bare listing says so, and `/subagents` refuses to save a
+choice it would ignore. Such a list only picks among models you are already
+signed in to, but it does send delegated work to them, so check it in a
+repository you did not write.
+
 ### Worker worktrees
 
 Worker isolation is **opt-in**: `worker_isolation` defaults to `off`. Enabling
