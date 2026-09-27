@@ -748,7 +748,7 @@ def test_a_turn_is_announced_on_the_desktop_once_however_many_terminals_see_it(h
     assert not list(host_dir.glob("*.claim"))
 
 
-def test_background_finish_notes_and_notifies_only_unwatched_sessions(tmp_path, host_dir):
+def test_background_finish_notifies_once_per_turn(tmp_path, host_dir):
     output = StringIO()
     app = PreviewApp(console=Console(file=output, width=200), workspace=tmp_path)
     sent = []
@@ -758,10 +758,13 @@ def test_background_finish_notes_and_notifies_only_unwatched_sessions(tmp_path, 
     app.background_finished(watched)
     app.background_finished(unwatched)
     app.background_finished(unwatched)  # Another terminal, or a second look: no repeat.
-    text = output.getvalue()
-    assert "Background session aaaa1111 finished: fix auth" in text
-    assert "Background session bbbb2222 failed: add tests" in text
-    assert sent == ["\x1b]9;pcode: add tests — failed\x07"]
+    # Another session's turn never lands in this transcript.
+    assert "Background session" not in output.getvalue()
+    # A watched session is announced too; the same turn is not announced twice.
+    assert sent == [
+        "\x1b]9;pcode: fix auth — finished\x07",
+        "\x1b]9;pcode: add tests — failed\x07",
+    ]
 
 
 def test_notifications_cannot_break_out_of_their_escape(monkeypatch):

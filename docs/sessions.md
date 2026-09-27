@@ -90,11 +90,11 @@ pcode --attach 3f9c -p /stop                                     # end the host
   refuses with a message saying so, and `/restart` in an attached terminal
   updates it.
 
-The footer counts the other running sessions, how many are working, and how
-many finished while nobody was looking (*new*; the picker lists those first).
-When one of them finishes a turn a note appears here, and if no terminal is
-showing that session, a desktop notification too: pcode asks the terminal to
-raise it (OSC 9, which Ghostty shows by default), once per turn however many
+Other sessions stay out of this terminal: the footer says nothing about them,
+and their turns never write into this transcript. The picker (`/switch`) lists
+them, newest and unseen first. When one finishes a turn a desktop
+notification goes out, whether or not a terminal is showing it: pcode asks the
+terminal to raise it (OSC 9, which Ghostty shows by default), once per turn however many
 terminals are open; `pcode config set desktop_notifications off` turns it off.
 While a turn runs, the tab also shows a
 [progress bar](configuration.md#tab-progress-bar).

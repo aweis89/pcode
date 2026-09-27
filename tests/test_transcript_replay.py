@@ -229,7 +229,7 @@ def test_paced_flush_writes_one_row_per_frame_and_keeps_ticking(monkeypatch):
         assert written == "ROW_0\n"
         assert handoffs[0].rows_written == 1
         # The rest is queued, and the loop is asked for another frame.
-        assert [row.strip() for row in output.rows] == ["ROW_1", "ROW_2"]
+        assert [row.text.strip() for row in output.rows] == ["ROW_1", "ROW_2"]
         assert not output.pending
         assert output.changed.is_set()
         await output.flush()
@@ -284,6 +284,189 @@ def test_paced_rows_are_dropped_by_replay_and_written_at_once_when_off(monkeypat
         assert not output.rows
 
     asyncio.run(run())
+
+
+def typed_output(monkeypatch, handoffs):
+    transcript, output = paced_output(monkeypatch, handoffs)
+    output.typed = True
+    output.app.invalidate = Mock()
+    return transcript, output
+
+
+def shown(output):
+    return "".join(text for _, text in output.typing_fragments())
+
+
+def test_typed_prose_types_out_live_and_writes_each_row_once_complete(monkeypatch):
+    from pcode.ui import TYPED_CHARS_PER_STEP, TYPED_STEP_FRAMES
+
+    async def run():
+        handoffs = []
+        transcript, output = typed_output(monkeypatch, handoffs)
+        sentence = "The quick brown fox jumps over the lazy dog, twice over."
+        transcript.message(sentence)
+        await output.flush()
+        # The first frame types into the live row; scrollback is untouched.
+        assert handoffs == [] and transcript.console.file.getvalue() == ""
+        assert shown(output) == sentence[:TYPED_CHARS_PER_STEP]
+        assert output.changed.is_set()
+        assert output.app.invalidate.call_count == 1
+        frames = 1
+        while output.rows:
+            await output.flush()
+            frames += 1
+            if output.rows:
+                assert sentence.startswith(shown(output).rstrip())
+        # A step every TYPED_STEP_FRAMES frames, and only a step repaints.
+        steps = -(-len(sentence) // TYPED_CHARS_PER_STEP)
+        assert frames == (steps - 1) * TYPED_STEP_FRAMES + 1
+        assert output.app.invalidate.call_count == steps - 1
+        # The row lands once whole; its blank separator comes free in the same frame.
+        assert len(handoffs) == 1
+        assert transcript.console.file.getvalue().split("\n")[0].rstrip() == sentence
+        assert shown(output) == ""
+        assert not output.changed.is_set()
+
+    asyncio.run(run())
+
+
+def test_typed_mode_rolls_code_and_rules_by_row_behind_the_prose_they_follow(monkeypatch):
+    async def run():
+        handoffs = []
+        transcript, output = typed_output(monkeypatch, handoffs)
+        transcript.message("Intro line.")
+        transcript.message("```text\nCODE_0\nCODE_1\n```")
+        transcript.message("---")
+        while output.rows or output.pending:
+            await output.flush()
+            # Code and rules never show up half-typed in the live row.
+            assert "CODE" not in shown(output) and "---" not in shown(output)
+        text = transcript.console.file.getvalue()
+        assert text.index("Intro line.") < text.index("CODE_0") < text.index("CODE_1")
+        assert text.index("CODE_1") < text.index("-" * 80)
+        # The prose row finishes on the first frame, which still has its
+        # one-row budget for code; each later row waits a frame of its own.
+        assert len(handoffs) == 3
+
+    asyncio.run(run())
+
+
+def test_typed_rows_skip_their_indentation():
+    from pcode.ui import TYPED_CHARS_PER_STEP, QueuedRow
+
+    output = TerminalOutput(Console(file=StringIO()), SimpleNamespace())
+    output.paced = output.typed = True
+    output.rows = [QueuedRow(" " * 30 + "Centred heading" + " " * 30 + "\n", typed=True)]
+    assert output.rows[0].lead == 30 and output.rows[0].visible == 45
+    # The spaces cost nothing, so the 15-character heading fits in one step.
+    assert TYPED_CHARS_PER_STEP >= 15
+    assert output._advance() == (1, 0)
+
+
+def test_typed_backlog_catches_up_and_drain_writes_the_rest_at_once(monkeypatch):
+    from pcode.ui import TYPED_DRAIN_STEPS, TYPED_STEP_FRAMES
+
+    async def run():
+        handoffs = []
+        transcript, output = typed_output(monkeypatch, handoffs)
+        transcript.message("\n\n".join("word " * 60 for _ in range(20)))
+        frames = 0
+        while output.rows or output.pending:
+            await output.flush()
+            frames += 1
+        assert frames <= TYPED_DRAIN_STEPS * TYPED_STEP_FRAMES + 1
+        transcript.message("Interrupted by a popup before this sentence types out.")
+        await output.flush()
+        assert shown(output)
+        await output.flush(drain=True)
+        assert (
+            "Interrupted by a popup before this sentence types out."
+            in transcript.console.file.getvalue()
+        )
+        assert not output.rows and shown(output) == ""
+
+    asyncio.run(run())
+
+
+def test_replay_mid_typing_writes_the_row_once_and_keeps_queued_notes(monkeypatch):
+    async def run():
+        handoffs = []
+        transcript, output = typed_output(monkeypatch, handoffs)
+        transcript.message("A paragraph long enough to still be typing when the replay lands.")
+        transcript.note("NOTE_QUEUED")
+        await output.flush()
+        assert shown(output) and not handoffs
+        output.regenerate(transcript.replay)
+        await output.flush()
+        text = transcript.console.file.getvalue()
+        # The replay writes the paragraph whole; the queued rows go, not twice.
+        assert text.count("still be typing") == 1
+        # The note is not in the retained transcript, but it was never written:
+        # the replay carries it rather than dropping it with the queued rows.
+        assert text.count("NOTE_QUEUED") == 1
+        assert not output.rows and shown(output) == ""
+        # Once written, a note is not carried into the next replay.
+        output.regenerate(transcript.replay)
+        await output.flush()
+        assert "NOTE_QUEUED" not in transcript.console.file.getvalue()[len(text) :]
+
+    asyncio.run(run())
+
+
+def test_replay_during_the_handoff_keeps_a_note_already_rendered(monkeypatch):
+    async def run():
+        transcript = view()
+        terminal = DummyOutput()
+        terminal.get_size = lambda: Size(rows=40, columns=80)
+        output = TerminalOutput(
+            transcript.console, SimpleNamespace(output=CursorSafeOutput(terminal))
+        )
+        transcript.output = output
+        output.paced = True
+        replayed = []
+
+        async def handoff(app, **kwargs):
+            # A resize settles while the handoff waits for its cursor report.
+            if not replayed:
+                replayed.append(True)
+                output.regenerate(transcript.replay)
+            yield Handoff(11)
+
+        monkeypatch.setattr("pcode.ui.suspended_editor", asynccontextmanager(handoff))
+        transcript.message("short")
+        transcript.note("NOTE_Y")
+        while output.rows or output.pending:
+            await output.flush()
+        assert transcript.console.file.getvalue().count("NOTE_Y") == 1
+
+    asyncio.run(run())
+
+
+def test_typing_fragments_keep_styles_and_drop_hyperlink_escapes():
+    from pcode.ui import QueuedRow
+
+    link = "\x1b]8;id=1;https://example.com\x1b\\"
+    row = QueuedRow(f"\x1b[1mBold\x1b[0m {link}link\x1b]8;;\x1b\\ tail      \n", typed=True)
+    assert row.visible == len("Bold link tail")
+    output = TerminalOutput(Console(file=StringIO()), SimpleNamespace())
+    output.rows = [row]
+    output._typed = 7
+    fragments = output.typing_fragments()
+    assert "".join(text for _, text in fragments) == "Bold li"
+    assert "bold" in fragments[0][0]
+    assert all("\x1b" not in text and "https" not in text for _, text in fragments)
+
+
+def test_typed_prose_classifies_writes():
+    from pcode.thinking_markdown import ThinkingMarkdown
+    from pcode.ui import typed_prose
+
+    assert typed_prose((Markdown("A paragraph\n\n- a list"),))
+    assert typed_prose((ThinkingMarkdown("Thinking aloud"),))
+    assert not typed_prose(())
+    assert not typed_prose(("plain",))
+    assert not typed_prose((Markdown("```\ncode\n```"),))
+    assert not typed_prose((Markdown("| a |\n| - |\n| b |"),))
 
 
 def test_split_rows_keeps_newlines_and_a_trailing_partial_row():

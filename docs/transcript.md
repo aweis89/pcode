@@ -141,6 +141,33 @@ the sub-agent finished are written flush when the cancellation is reported.
     ✓ Run · 2.3s · pytest -q tests/test_api.py
 ```
 
+## Grouping tool calls
+
+With `group_tools` on, a run of consecutive tool calls leaves one line in
+scrollback instead of one per call. While the run is going, the live panel
+counts it just above the spinner; the line is written once something else
+reaches scrollback (the model's reply, a diff, mirrored command output) or the
+turn ends. `/tools` still lists every call.
+
+```sh
+pcode config set group_tools on   # One line per run of calls (default off)
+```
+
+```text
+✓ 15 tools · Edit ×10 · Run ×5
+✗ Run · exit 1 · pytest -q
+✓ Delegate  worker · Fix the flaky test → Completed  41.2s
+    ✓ 6 tools · Read ×4 · Run ×2
+✓ 2 tools · Edit · Run
+```
+
+A failed call keeps its own line, splitting the run around it. A delegate also
+keeps its own line, with its sub-agent's calls folded the same way beneath it.
+A run of one call keeps that call's usual line, and a background job's exit
+notice is never folded in. `/group-tools on`, `/group-tools off`, or bare
+`/group-tools` switch it for the session, save the default, and rebuild earlier
+scrollback to match.
+
 ## Command output in scrollback
 
 By default, a settled command leaves the same compact summary line every other
@@ -234,18 +261,33 @@ These settings also work through `/config` and apply on the next launch.
 
 ## Paced scrollback
 
-Model text reaches scrollback one settled Markdown block at a time, and a long
-code block or list would otherwise land in a single frame. By default each
-settled block is rendered once and then written a few rows per frame, so it
-rolls out instead of appearing all at once. Small blocks reveal one row per
-frame; large ones go faster, so a block is fully written within about a second
-of settling however big it is. Rendering, ordering, and the transcript retained
-for resume or redraw are unchanged; a redraw or resize rebuild always lands
-whole. To write every block in one frame:
+Model text reaches scrollback one settled Markdown block at a time, so without
+pacing a whole paragraph appears in one frame after a pause. By default
+(`typed`), settled prose (paragraphs, lists, headings, quotes, and thinking)
+is typed out a few characters per frame on a live row just below scrollback,
+and each row is written to scrollback once it is complete. The text is already
+rendered, so nothing reflows while it types: line breaks and styling are final
+from the first character, and indentation appears at once rather than being
+typed. Code blocks, tables, rules, and tool output roll in a row per frame
+instead, since half a code line or table border reads badly.
+
+Typing runs at about 360 characters a second, close to a model's own pace.
+When a burst arrives faster than that, typing speeds up to finish it in about
+two seconds and stays at that speed until everything queued is written. Rows
+rolled in whole go one per frame, sped up the same way to finish in about a
+second. The two queue behind each other, so prose followed by a long code
+block can take about three seconds to land. A popup or the end of a session
+writes whatever is left at once.
+Rendering, ordering, and the transcript retained for resume or redraw are
+unchanged; a redraw or resize rebuild always lands whole.
 
 ```sh
-pcode config set paced_scrollback off  # Default on; applies on next launch
+pcode config set paced_scrollback rows  # Roll every block in by row
+pcode config set paced_scrollback off   # Write every block in one frame
 ```
+
+The default is `typed`; changes apply on next launch. An older saved `on` falls
+back to the default.
 
 ## Regenerating the terminal transcript
 
