@@ -41,6 +41,9 @@ from pcode.anthropic_oauth import (
 )
 from pcode.auth import OAUTH_BETAS, OAUTH_PREAMBLE, LoginError, oauth_user_agent
 
+# pcode's own sign-in is off by default (pcode.models.LEGACY_ANTHROPIC_AUTH).
+pytestmark = pytest.mark.usefixtures("legacy_anthropic_auth")
+
 MESSAGE = {
     "id": "msg_synthetic",
     "type": "message",

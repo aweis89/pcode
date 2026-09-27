@@ -16,6 +16,9 @@ from pcode.meridian import MeridianProvider, meridian_base_url
 from pcode.model_ui import ModelPicker
 from pcode.models import active_providers, model_catalog
 
+# Meridian is off by default (pcode.models.LEGACY_ANTHROPIC_AUTH).
+pytestmark = pytest.mark.usefixtures("legacy_anthropic_auth")
+
 
 @pytest.fixture(autouse=True)
 def environment(monkeypatch, tmp_path):

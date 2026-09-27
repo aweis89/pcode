@@ -173,6 +173,12 @@ def isolated_preferences(monkeypatch, tmp_path):
     )
 
 
+@pytest.fixture
+def legacy_anthropic_auth(monkeypatch):
+    """Turn Meridian and pcode's own Anthropic sign-in back on for one test."""
+    monkeypatch.setattr("pcode.models.LEGACY_ANTHROPIC_AUTH", True)
+
+
 @pytest.fixture(autouse=True)
 def session_transport(request, monkeypatch):
     """With `--transport socket`, in-process sessions run in a host instead."""

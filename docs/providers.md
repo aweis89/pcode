@@ -43,11 +43,11 @@ Pydantic AI catalog, or only accepts IDs you type.
 
 | Prefix | Enabled by | Catalog |
 | --- | --- | --- |
-| `anthropic` | `/login` credential or `ANTHROPIC_API_KEY` | yes |
+| `anthropic` | `ANTHROPIC_API_KEY` (or a `/login` credential, [turned off](#sign-in-with-your-anthropic-account)) | yes |
 | `openai-codex` | pcode login, then CLI credential file (`CODEX_HOME` honored) | yes (all OpenAI IDs) |
 | `openai`, `openai-chat`, `openai-responses` | `OPENAI_API_KEY` | yes |
 | `claude` | Claude Code config (`~/.claude`, `~/.claude.json`, or `CLAUDE_CONFIG_DIR`) or `claude` on `PATH` | yes (Anthropic IDs) |
-| `meridian` | `meridian` on `PATH` or `PCODE_MERIDIAN_BASE_URL` | yes (Anthropic IDs) |
+| `meridian` | [Turned off](#local-meridian-provider); otherwise `meridian` on `PATH` or `PCODE_MERIDIAN_BASE_URL` | yes (Anthropic IDs) |
 | `google` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | yes |
 | `google-cloud` | `GOOGLE_CLOUD_PROJECT` or `GOOGLE_APPLICATION_CREDENTIALS` | yes |
 | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID`, or `AWS_PROFILE` | yes |
@@ -82,6 +82,14 @@ Everything besides Anthropic OAuth, Codex and Claude Code is plain API-key acces
 with no login flow in pcode: set the variable in your shell before launching.
 
 ## Sign in with your Anthropic account
+
+!!! note "Turned off"
+    This sign-in and [Meridian](#local-meridian-provider) are off while
+    [Claude Code models](#claude-code-provider) (`claude:`) are tried as the way
+    to use a Claude subscription. `/login` signs in to Claude Code instead, a
+    stored sign-in is ignored, and `anthropic:` models use `ANTHROPIC_API_KEY`
+    as before. Setting `LEGACY_ANTHROPIC_AUTH = True` in `src/pcode/models.py`
+    restores both as described here.
 
 Enter **`/login`** in an idle session to sign in with your Anthropic subscription.
 pcode prints the authorization URL, opens `claude.ai` in your browser, receives the
@@ -147,8 +155,8 @@ The picker offers every provider from the [supported providers](#supported-provi
 table whose credentials are configured:
 
 - The current provider is included even when using a custom model ID.
-- Anthropic is enabled by a stored `/login` credential or `ANTHROPIC_API_KEY`.
-  Detection checks for the stored file's presence only: opening the picker never
+- Anthropic is enabled by `ANTHROPIC_API_KEY`, or by a stored `/login` credential
+  while [that sign-in](#sign-in-with-your-anthropic-account) is on. Detection checks for the stored file's presence only: opening the picker never
   reads pcode's credentials.
 - Codex is enabled when its pcode or CLI credential file exists (`CODEX_HOME` is honored).
   Opening the picker checks file presence only, not its contents or validity.
@@ -168,7 +176,7 @@ requests**. This is not an account-entitlement list: the provider checks model
 availability and credentials when you use the model. A typed `provider:model-id`
 is accepted for any supported provider, configured or not, so you can point at a
 provider whose key you export after launch. If no provider is configured, use
-`/login`, set `ANTHROPIC_API_KEY`, or run `/login openai-codex` first.
+`/login claude`, set `ANTHROPIC_API_KEY`, or run `/login openai-codex` first.
 
 **Changing models continues the current conversation.** Message history, session ID,
 plan, tool panel, usage totals, transcript, and editor draft are preserved. The
@@ -310,6 +318,12 @@ Other behavior worth knowing:
 - Thinking is requested in readable (summarized) form for scrollback.
 
 ## Local Meridian provider
+
+!!! note "Turned off"
+    Meridian is off, along with [pcode's own Anthropic sign-in](#sign-in-with-your-anthropic-account):
+    `/model` does not offer it and a saved `meridian:` model fails to start with
+    a pointer to the matching `claude:` one. The rest of this section describes it
+    with `LEGACY_ANTHROPIC_AUTH = True` in `src/pcode/models.py`.
 
 [Meridian](https://github.com/rynfar/meridian) runs Claude Code behind a local
 Anthropic-compatible API, so a `meridian:` model uses your Claude subscription

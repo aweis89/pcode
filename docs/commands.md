@@ -63,9 +63,10 @@ candidate's size so that cost is visible before you pick.
   Queued messages and non-popup commands are kept; a fresh request after closing
   the popup opens it normally.
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
-- `/login [anthropic|openai-codex|meridian]`: sign in in a browser. Anthropic is pcode's own flow;
-  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required); `meridian` runs
-  `claude auth login` for the login your Meridian proxy reads ([details](providers.md#signing-in)).
+- `/login [claude|openai-codex]`: sign in in a browser. `claude` (the default) runs
+  `claude auth login` for the login `claude:` models use ([details](providers.md#signing-in));
+  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required). pcode's own Anthropic
+  sign-in and Meridian are [turned off](providers.md#sign-in-with-your-anthropic-account).
   `/logout [anthropic|openai-codex]` removes pcode's stored login, leaving CLI credentials untouched. Both require an idle conversation.
 - `/model`: searchable model picker for configured providers (keeps the conversation;
   applies from the next request when chosen mid-run).

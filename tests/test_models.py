@@ -84,6 +84,7 @@ def test_current_provider_stays_visible():
 
 
 @pytest.mark.parametrize("source", ["api-key", "oauth"])
+@pytest.mark.usefixtures("legacy_anthropic_auth")
 def test_anthropic_configuration(monkeypatch, source):
     monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", source)
     if source == "api-key":
@@ -111,11 +112,29 @@ def test_codex_presence_not_contents(monkeypatch, tmp_path):
     forbidden.assert_not_called()
 
 
+@pytest.mark.usefixtures("legacy_anthropic_auth")
 def test_proxy_does_not_limit_providers(monkeypatch):
     monkeypatch.setenv("PCODE_LLM_PROXY", "http://localhost:8080")
     monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "oauth")
     monkeypatch.setenv("PCODE_MERIDIAN_BASE_URL", "http://localhost:8888")
     assert active_providers("openai-codex:custom") == {"openai-codex", "anthropic", "meridian"}
+
+
+def test_legacy_anthropic_routes_are_off_by_default(monkeypatch, tmp_path):
+    from pcode.agent import resolve_model
+
+    monkeypatch.setenv("PCODE_MERIDIAN_BASE_URL", "http://localhost:8888")
+    monkeypatch.setenv("PCODE_ANTHROPIC_AUTH", "oauth")
+    credentials = tmp_path / "credentials.json"
+    credentials.write_text("{}")
+    monkeypatch.setenv("PCODE_CREDENTIALS_FILE", str(credentials))
+    # Neither a Meridian proxy nor a stored sign-in offers a model, even when
+    # the current model is a saved Meridian one.
+    assert active_providers("meridian:claude-opus-5") == set()
+    with pytest.raises(ValueError, match="switch to claude:claude-opus-5"):
+        resolve_model("meridian:claude-opus-5")
+    # Without a key an Anthropic model stays unresolved, not signed in.
+    assert resolve_model("anthropic:claude-opus-5") == "anthropic:claude-opus-5"
 
 
 @pytest.mark.parametrize("provider", sorted(PROVIDERS.keys() - {"meridian", "claude"}))
