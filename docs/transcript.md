@@ -251,11 +251,11 @@ turn it on to reveal earlier captured commands and their outputs; turn it off to
 remove all command blocks, including failures. No commands
 are rerun. Future completions use the same setting.
 
-Ctrl+G toggles command output outside history search; inside search it retains
-its native cancel behavior. Ctrl+S now cycles send modes instead of opening
-forward incremental search. Ctrl+R still opens history search. prompt_toolkit
-disables terminal XON/XOFF flow control while the prompt is active, so Ctrl+S
-reaches the application instead of pausing terminal output.
+Ctrl+S cycles send modes instead of opening forward incremental search;
+prompt_toolkit's incremental search is disabled entirely, so Ctrl+R does
+nothing either. prompt_toolkit disables terminal XON/XOFF flow control while the
+prompt is active, so Ctrl+S reaches the application instead of pausing terminal
+output.
 
 These settings also work through `/config` and apply on the next launch.
 

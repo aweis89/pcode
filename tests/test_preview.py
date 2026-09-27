@@ -216,16 +216,6 @@ def test_prompt_accepts_completion_before_sending():
         assert session.prompt() == "/theme-preview"
 
 
-def test_history_search_survives_compact_layout():
-    app, _ = make_app()
-    with create_pipe_input() as pipe:
-        session = create_prompt(app.registry, input=pipe, output=DummyOutput())
-        pipe.send_text("remember this\r")
-        assert session.prompt() == "remember this"
-        pipe.send_text("\x12remember\r\r")
-        assert session.prompt() == "remember this"
-
-
 @pytest.mark.parametrize("keys, exception", [("\x03", KeyboardInterrupt), ("\x04", EOFError)])
 def test_prompt_interrupt_and_eof(keys, exception):
     app, _ = make_app()
