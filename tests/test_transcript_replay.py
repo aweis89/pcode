@@ -356,10 +356,10 @@ def test_typed_rows_skip_their_indentation():
 
     output = TerminalOutput(Console(file=StringIO()), SimpleNamespace())
     output.paced = output.typed = True
-    output.rows = [QueuedRow(" " * 30 + "Centred heading" + " " * 30 + "\n", typed=True)]
-    assert output.rows[0].lead == 30 and output.rows[0].visible == 45
-    # The spaces cost nothing, so the 15-character heading fits in one step.
-    assert TYPED_CHARS_PER_STEP >= 15
+    output.rows = [QueuedRow(" " * 30 + "A heading" + " " * 30 + "\n", typed=True)]
+    assert output.rows[0].lead == 30 and output.rows[0].visible == 39
+    # The spaces cost nothing, so the 9-character heading fits in one step.
+    assert TYPED_CHARS_PER_STEP >= 9
     assert output._advance() == (1, 0)
 
 

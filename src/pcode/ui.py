@@ -862,14 +862,13 @@ def install_reflow_renderer(app: Application) -> None:
 # Frames a paced backlog takes to drain, so a settled block rolls out row by
 # row when small and lands within about a second however big it is.
 PACED_DRAIN_FRAMES = 30
-# Typed prose advances every TYPED_STEP_FRAMES frames (15 a second: each step
-# repaints the whole layout, so half the scrollback tick is plenty for text).
-# A step reveals TYPED_CHARS_PER_STEP characters (about 360 a second, near a
-# model's own pace, so a steady stream reads as one), sped up so a backlog
-# types out within TYPED_DRAIN_STEPS steps (about two seconds).
-TYPED_STEP_FRAMES = 2
-TYPED_CHARS_PER_STEP = 24
-TYPED_DRAIN_STEPS = 30
+# Typed prose advances every TYPED_STEP_FRAMES frames (every frame: 30 a
+# second). A step reveals TYPED_CHARS_PER_STEP characters (about 360 a second,
+# near a model's own pace, so a steady stream reads as one), sped up so a
+# backlog types out within TYPED_DRAIN_STEPS steps (about two seconds).
+TYPED_STEP_FRAMES = 1
+TYPED_CHARS_PER_STEP = 12
+TYPED_DRAIN_STEPS = 60
 
 # Rich writes only SGR styles and OSC 8 hyperlinks. prompt_toolkit's ANSI parser
 # knows SGR but would print an OSC's payload as text, so the live row drops them.
