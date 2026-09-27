@@ -240,13 +240,17 @@ pacing a whole paragraph appears in one frame after a pause. By default
 is typed out a few characters per frame on a live row just below scrollback,
 and each row is written to scrollback once it is complete. The text is already
 rendered, so nothing reflows while it types: line breaks and styling are final
-from the first character. Code blocks, tables, and tool output roll in a row
-per frame instead, since half a code line or table border reads badly.
+from the first character, and indentation appears at once rather than being
+typed. Code blocks, tables, rules, and tool output roll in a row per frame
+instead, since half a code line or table border reads badly.
 
-Typing runs at about 360 characters a second, close to a model's own pace, and
-speeds up when output arrives faster, so a backlog is written within about two
-seconds. Rows rolled in whole go one per frame and finish within about a
-second. A popup or the end of a session writes whatever is left at once.
+Typing runs at about 360 characters a second, close to a model's own pace.
+When a burst arrives faster than that, typing speeds up to finish it in about
+two seconds and stays at that speed until everything queued is written. Rows
+rolled in whole go one per frame, sped up the same way to finish in about a
+second. The two queue behind each other, so prose followed by a long code
+block can take about three seconds to land. A popup or the end of a session
+writes whatever is left at once.
 Rendering, ordering, and the transcript retained for resume or redraw are
 unchanged; a redraw or resize rebuild always lands whole.
 
