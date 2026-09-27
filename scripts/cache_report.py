@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from pcode.sessions import SessionError, list_sessions, resolve_session, session_root  # noqa: E402
 
 PLAN_TAG = "<plan-reminder>"
+# Request parts Pydantic AI hoists ahead of the rest when it merges requests.
+TOOL_RESULT_KINDS = frozenset({"tool-return", "retry-prompt"})
 
 # A prefix below the provider's minimum cacheable size is never stored, so a
 # short session reports no reads without anything being wrong.
@@ -123,41 +125,60 @@ def _digest(value: object) -> str:
     return sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:12]
 
 
-def _message_digest(message: dict) -> str:
-    """Fingerprint only what is re-sent to the provider.
+def _turns(messages: list[dict]) -> list[list[str]]:
+    """Each turn as its kind followed by one digest per part re-sent to the provider.
 
     A settled message still gains bookkeeping fields after it is sent --
     `run_id`, `timestamp`, `instructions`, `conversation_id` -- so hashing the
     whole record reports a rewrite on every healthy session.
+
+    Consecutive same-kind messages are one turn, tool results first: Pydantic AI
+    normalizes a loaded history that way (`_merge_consecutive_messages`), so a
+    stored tool return and the plan reminder after it become one request on the
+    next turn without anything the provider sees changing.
     """
-    return _digest(
+    turns: list[tuple[str, list[dict]]] = []
+    for message in messages:
+        parts = list(message.get("parts", []))
+        if turns and turns[-1][0] == message.get("kind"):
+            turns[-1][1].extend(parts)
+        else:
+            turns.append((message.get("kind") or "", parts))
+    return [
         [
-            message.get("kind"),
-            [(part.get("part_kind"), part.get("content")) for part in message.get("parts", [])],
+            kind,
+            *(
+                _digest([part.get("part_kind"), part.get("content")])
+                for part in sorted(parts, key=lambda p: p.get("part_kind") not in TOOL_RESULT_KINDS)
+            ),
         ]
-    )
+        for kind, parts in turns
+    ]
 
 
 def _count_prefix_rewrites(database: Path, *, delegated: bool | None = None) -> int:
     """Count snapshots that changed settled history instead of appending to it.
 
     Append-only history is what keeps a provider's cached prefix reusable, and
-    it is the property pcode's plan reminders are built to preserve.
+    it is the property pcode's plan reminders are built to preserve. Parts are
+    compared in sequence, as a prefix cache matches blocks: a part appended to
+    the end of a settled turn (a note sent after a tool result) extends the
+    prefix rather than replacing it.
 
-    The last two messages are excluded rather than one: the trailing message is
-    still being assembled when a snapshot is written, and Pydantic AI merges a
-    reminder request into the following one, which rewrites the message behind
-    it without changing anything already sent. Compaction and branch switches
+    The last two turns are excluded rather than one: the trailing turn is still
+    being assembled when a snapshot is written, and the response before it can
+    be discarded by a retry or interruption. Compaction and branch switches
     legitimately replace history, so callers report this as a warning.
     """
     rewrites = 0
-    previous: list[str] = []
+    previous: list[list[str]] = []
     for messages in _snapshots(database, delegated=delegated):
-        current = [_message_digest(message) for message in messages]
-        settled = previous[:-2]
+        turns = _turns(messages)
+        current = [token for turn in turns for token in turn]
+        settled = [token for turn in previous[:-2] for token in turn]
         if settled and len(current) >= len(settled) and current[: len(settled)] != settled:
             rewrites += 1
-        previous = current
+        previous = turns
     return rewrites
 
 
