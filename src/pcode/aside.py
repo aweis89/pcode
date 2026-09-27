@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from time import monotonic
 from uuid import uuid4
 
+from pcode.error_report import error_message
 from pcode.preferences import EFFORTS
 
 # One side question is a question, not a second conversation: it gets a small
@@ -481,8 +482,6 @@ class Asides:
         self.on_update(aside)
 
     async def _run(self, aside: Aside, work: Callable[[Aside], Awaitable[None]]) -> None:
-        from pcode.live import error_message
-
         try:
             async with asyncio.timeout(ASIDE_TIMEOUT_SECONDS):
                 reply = await work(aside)

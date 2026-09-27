@@ -224,3 +224,36 @@ def test_failed_slash_command_blames_the_command_not_the_provider(tmp_path, monk
     assert "source changed since this session started" in shown
     # Notes print once rather than replaying.
     assert "errors.log" in output.getvalue()
+
+
+def test_error_report_survives_its_own_module_disappearing(monkeypatch):
+    """A removed session worktree takes `pcode.live` with it, mid-session."""
+    import sys
+
+    from pcode.error_report import error_message
+
+    class Deleted:
+        """`pcode.live` is no longer on disk; nothing can import it again."""
+
+        def find_spec(self, name, path=None, target=None):
+            if name == "pcode.live":
+                raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+            return None
+
+    monkeypatch.delitem(sys.modules, "pcode.live", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [Deleted(), *sys.meta_path])
+
+    message = error_message(KeyError("popup_mouse"), unexpected="/diffs failed")
+    assert message.startswith("/diffs failed (KeyError), and describing it failed")
+    assert "Restart pcode" in message
+    # Sanitizing is what failed, so the error's own text stays out of the message.
+    assert "popup_mouse" not in message
+
+
+def test_error_report_delegates_while_the_package_is_intact():
+    from pcode.error_report import error_message as reported
+    from pcode.live import error_message as described
+
+    error = ModelAPIError("test:local", "Connection error.")
+    assert reported(error) == described(error)
+    assert reported(error, unexpected="/diffs failed") == "/diffs failed (ModelAPIError)."

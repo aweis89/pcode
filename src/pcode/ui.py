@@ -17,7 +17,7 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import merge_completers
 from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
-from prompt_toolkit.filters import Always, Condition, has_focus, is_searching, vi_mode
+from prompt_toolkit.filters import Always, Condition, has_focus, vi_mode
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.key_binding.vi_state import InputMode
@@ -28,7 +28,6 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.output import Output, create_output
 from prompt_toolkit.renderer import Renderer
-from prompt_toolkit.search import stop_search
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame, Label
@@ -1353,14 +1352,14 @@ def create_prompt(
     activity = activity or Activity()
     keys = KeyBindings()
 
-    @keys.add("c-o", filter=~is_searching)
+    @keys.add("c-o")
     def toggle_tasks(event: KeyPressEvent) -> None:
         shown = activity.toggle_tasks()
         if on_tasks is not None:
             on_tasks(shown)
         event.app.invalidate()
 
-    @keys.add("c-t", filter=~is_searching)
+    @keys.add("c-t")
     def toggle_thinking(event: KeyPressEvent) -> None:
         activity.show_thinking = not activity.show_thinking
         if on_thinking is not None:
@@ -1368,41 +1367,40 @@ def create_prompt(
         event.app.invalidate()
 
     if on_send_mode is not None:
-        # Ctrl+S replaces forward search; Ctrl+R still opens history search.
 
-        @keys.add("c-s", filter=~is_searching)
+        @keys.add("c-s")
         def cycle_send_mode(event: KeyPressEvent) -> None:
             on_send_mode()
             event.app.invalidate()
 
     if on_commands is not None:
-        # Ctrl+G is otherwise only an abort action; keep it native in search.
-        @keys.add("c-g", filter=~is_searching)
+
+        @keys.add("c-g")
         def toggle_command_scrollback(event: KeyPressEvent) -> None:
             on_commands()
             event.app.invalidate()
 
     if on_model is not None:
 
-        @keys.add("c-l", filter=~is_searching)
+        @keys.add("c-l")
         def choose_model(event: KeyPressEvent) -> None:
             on_model()
 
     if on_previous_session is not None:
         # Vim's alternate-buffer key; terminals send it for Ctrl+6 as well.
 
-        @keys.add("c-^", filter=~is_searching)
+        @keys.add("c-^")
         def previous_session(event: KeyPressEvent) -> None:
             on_previous_session()
 
     if on_effort is not None:
 
-        @keys.add("c-n", filter=~is_searching)
+        @keys.add("c-n")
         def increase_effort(event: KeyPressEvent) -> None:
             on_effort(1)
             event.app.invalidate()
 
-        @keys.add("c-p", filter=~is_searching)
+        @keys.add("c-p")
         def decrease_effort(event: KeyPressEvent) -> None:
             on_effort(-1)
             event.app.invalidate()
@@ -1416,7 +1414,7 @@ def create_prompt(
         data = event.data.replace("\r\n", "\n").replace("\r", "\n")
         event.current_buffer.insert_text(pasted.collapse(data))
 
-    @keys.add("c-y", filter=~is_searching)
+    @keys.add("c-y")
     def copy_draft(event: KeyPressEvent) -> None:
         # Collapsed pastes are a display device, so copy what sending would:
         # the expanded text, not the `[pasted …]` marker standing in for it.
@@ -1430,7 +1428,7 @@ def create_prompt(
         limit = " (truncated)" if truncated else ""
         transcript.flash(f"Copied prompt{limit}" if copied else "Could not copy prompt")
 
-    @keys.add("enter", filter=~is_searching)
+    @keys.add("enter")
     def submit(event: KeyPressEvent) -> None:
         buffer = event.current_buffer
         if buffer.complete_state and buffer.complete_state.current_completion:
@@ -1443,7 +1441,7 @@ def create_prompt(
             pasted.clear()
             buffer.validate_and_handle()
 
-    @keys.add("escape", filter=vi_mode & ~is_searching, eager=True)
+    @keys.add("escape", filter=vi_mode, eager=True)
     def normal_mode(event: KeyPressEvent) -> None:
         # Match native vi Escape semantics, without waiting for Alt bindings.
         buffer = event.current_buffer
@@ -1454,8 +1452,8 @@ def create_prompt(
         if buffer.selection_state:
             buffer.exit_selection()
 
-    @keys.add("c-j", filter=~is_searching)
-    @keys.add("escape", "enter", filter=~vi_mode & ~is_searching)
+    @keys.add("c-j")
+    @keys.add("escape", "enter", filter=~vi_mode)
     def newline(event: KeyPressEvent) -> None:
         event.current_buffer.insert_text("\n")
 
@@ -1473,7 +1471,7 @@ def create_prompt(
             return False
         return not vi_mode() or app.vi_state.input_mode == InputMode.INSERT
 
-    @keys.add("down", filter=~is_searching & Condition(down_would_idle))
+    @keys.add("down", filter=Condition(down_would_idle))
     def newline_on_down(event: KeyPressEvent) -> None:
         event.current_buffer.insert_text("\n")
 
@@ -1491,12 +1489,9 @@ def create_prompt(
         def interrupt(event):
             # Never discard a draft and interrupt the turn in one keypress: clear
             # the editor first, so interrupting a busy turn needs an empty prompt.
-            searching = is_searching()
-            if activity.busy and not searching and not session.default_buffer.text:
+            if activity.busy and not session.default_buffer.text:
                 on_cancel()
                 return
-            if searching:
-                stop_search()
             session.default_buffer.reset()
             pasted.clear()
             transcript.note(
@@ -1551,10 +1546,10 @@ def create_prompt(
     editor = session.layout.current_window
     editor.height = None
     editor.dont_extend_height = Always()
-    search = ConditionalContainer(
-        Window(editor.content.search_buffer_control, height=1, style="class:search-toolbar"),
-        filter=is_searching,
-    )
+    # No incremental search here: dropping the editor's search control makes
+    # prompt_toolkit's `control_is_searchable` false, so Ctrl+R, Ctrl+S, and vi's
+    # `/` and `?` never open an `I-search:` prompt this layout has no room for.
+    editor.content._search_buffer_control = None
 
     # Layout callbacks are queried repeatedly during a single synchronous redraw.
     # Never retain their results across redraws: editor/menu/CPR and mutable
@@ -1681,7 +1676,6 @@ def create_prompt(
             + status_height()
             + len(queue_rows())
             + menu.preferred_height(size.columns, size.rows).preferred
-            + search.preferred_height(size.columns, size.rows).preferred
         )
         room = max(0, size.rows - fixed)
         # Parallel calls share the preview; show the most recently updated call.
@@ -2055,7 +2049,7 @@ def create_prompt(
             ),
         ]
     )
-    children = [menu, search, activity_panel, queued, editor_frame]
+    children = [menu, activity_panel, queued, editor_frame]
     if transcript is not None:
         children[:0] = [typing, Window()]
 
@@ -2794,7 +2788,7 @@ class Transcript:
         self.note("Ctrl+O tasks widget · Ctrl+T thinking · Ctrl+G command output (each redraws)")
         self.note("Ctrl+L choose model · Ctrl+N raise effort · Ctrl+P lower effort (next turn)")
         self.note("Ctrl+^ (Ctrl+6) back to the previous session (/switch -)")
-        self.note("Ctrl+R search history · Ctrl+C discard input · Ctrl+D exit on empty input")
+        self.note("Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note(
             "During a run: Enter sends · Ctrl+S picks steering/queue/interrupt for the next send. "
             "Ctrl+C discards a draft first, then cancels · Ctrl+D cancels, keeps draft."

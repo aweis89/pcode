@@ -143,7 +143,6 @@ candidate's size so that cost is visible before you pick.
 | Ctrl+L | Choose a model (keeps the conversation; applies from the next request) |
 | Ctrl+^ (Ctrl+6) | Back to the session this terminal showed before (`/switch -`) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
-| Ctrl+R | Search this process's input history |
 | Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first) |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |

@@ -27,7 +27,15 @@ def make_app(model="openai-codex:test", runtime=None):
     ), output
 
 
-@pytest.mark.parametrize("model", ["openai-codex:test", "anthropic:test", "meridian:test"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai-codex:test",
+        "anthropic:claude-opus-4-5",
+        "meridian:claude-opus-4-5",
+        "claude:claude-opus-4-5",
+    ],
+)
 def test_command_validation_completion_and_defaults(model):
     app, output = make_app(model)
     assert app.current_effort() == "default"
@@ -55,6 +63,43 @@ def test_unsupported_models_do_not_silently_change_settings(model):
     app.handle("/effort high")
     assert app.runtime.agent.model_settings == {"temperature": 0.5}
     assert "requires an OpenAI/Codex, Anthropic, Claude, or Meridian model" in output.getvalue()
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["anthropic:claude-haiku-4-5", "anthropic:claude-sonnet-4-5", "claude:claude-haiku-4-5"],
+)
+def test_anthropic_models_without_effort_control_are_refused(model):
+    """The adapter forwards `anthropic_effort` unchecked, so sending it would 400."""
+    app, output = make_app(model)
+    app.handle("/effort high")
+    assert app.runtime.agent.model_settings == {"temperature": 0.5}
+    assert f"{model} has no effort control" in output.getvalue()
+    # The footer says so rather than showing a level nothing sends.
+    assert app.current_effort() == "n/a"
+    # Bare /effort says it too, instead of inviting a command that is refused.
+    app.handle("/effort")
+    assert "Usage" not in output.getvalue()
+
+
+def test_default_clears_a_saved_effort_on_a_gated_model():
+    """Saved before the gate, or on another machine: it has to be clearable."""
+    from pcode.preferences import model_efforts, save_model_effort
+
+    name = "anthropic:claude-haiku-4-5"
+    save_model_effort(name, "high")
+    app, output = make_app(name)
+    app.handle("/effort default")
+    assert model_efforts()[name] == "default"
+    assert "Cleared the saved effort" in output.getvalue()
+
+
+def test_effort_before_the_agent_starts_does_not_claim_the_model_lacks_it():
+    app, output = make_app("anthropic:claude-opus-4-5")
+    app.runtime = SimpleNamespace()
+    app.handle("/effort high")
+    assert "still starting" in output.getvalue() or "until the agent" in output.getvalue()
+    assert "has no effort control" not in output.getvalue()
 
 
 def test_shortcuts_clamp_and_default_baseline():
@@ -109,14 +154,14 @@ def test_real_keybindings_preserve_draft_and_cursor(busy):
 
 
 @pytest.mark.parametrize(
-    "provider, key",
+    "name, key",
     [
-        ("openai-codex", "openai_reasoning_effort"),
-        ("anthropic", "anthropic_effort"),
-        ("meridian", "anthropic_effort"),
+        ("openai-codex:gpt-5", "openai_reasoning_effort"),
+        ("anthropic:claude-opus-4-5", "anthropic_effort"),
+        ("meridian:claude-opus-4-5", "anthropic_effort"),
     ],
 )
-def test_effort_changes_apply_to_next_turn_not_next_tool_step(provider, key):
+def test_effort_changes_apply_to_next_turn_not_next_tool_step(name, key):
     requests = []
 
     async def model(messages, info):
@@ -127,14 +172,20 @@ def test_effort_changes_apply_to_next_turn_not_next_tool_step(provider, key):
         else:
             yield "Done."
 
-    agent = Agent(FunctionModel(stream_function=model))
+    from pydantic_ai.profiles.anthropic import AnthropicModelProfile
+
+    agent = Agent(
+        FunctionModel(
+            stream_function=model, profile=AnthropicModelProfile(anthropic_supports_effort=True)
+        )
+    )
 
     @agent.tool_plain
     def ping() -> str:
         return "pong"
 
     runtime = AgentRuntime(agent)
-    app, _ = make_app(model=f"{provider}:test", runtime=runtime)
+    app, _ = make_app(model=name, runtime=runtime)
     app.controller.effort("low")
 
     async def run():
@@ -152,9 +203,14 @@ def test_effort_changes_apply_to_next_turn_not_next_tool_step(provider, key):
 def test_anthropic_effort_settings_and_restore(provider, native_xhigh):
     from pcode.preferences import apply_effort, effort_for
 
-    app, _ = make_app(f"{provider}:test")
+    app, _ = make_app(f"{provider}:claude-opus-4-5")
     agent = app.runtime.agent
-    agent.model = SimpleNamespace(profile={"anthropic_supports_xhigh_effort": native_xhigh})
+    agent.model = SimpleNamespace(
+        profile={
+            "anthropic_supports_effort": True,
+            "anthropic_supports_xhigh_effort": native_xhigh,
+        }
+    )
     original = agent.model_settings
     app.controller.effort("xhigh")
     assert agent.model_settings == {
@@ -172,9 +228,8 @@ def test_anthropic_effort_settings_and_restore(provider, native_xhigh):
     assert agent.model_settings == {}
 
 
-@pytest.mark.parametrize("provider", ["anthropic", "meridian"])
-@pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "default"])
-def test_anthropic_request_payload(provider, level):
+def anthropic_request_body(model_name, send):
+    """The JSON body one request builds, against a mock Anthropic transport."""
     import json
 
     import httpx2
@@ -192,7 +247,7 @@ def test_anthropic_request_payload(provider, level):
                 "id": "msg_test",
                 "type": "message",
                 "role": "assistant",
-                "model": "claude-opus-4-6",
+                "model": model_name,
                 "content": [{"type": "text", "text": "Done."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 1, "output_tokens": 1},
@@ -202,18 +257,39 @@ def test_anthropic_request_payload(provider, level):
     async def run():
         async with httpx2.AsyncClient(transport=httpx2.MockTransport(handle)) as http:
             client = AsyncAnthropic(api_key="synthetic", http_client=http)
-            model = AnthropicModel(
-                "claude-opus-4-6", provider=AnthropicProvider(anthropic_client=client)
-            )
+            model = AnthropicModel(model_name, provider=AnthropicProvider(anthropic_client=client))
             agent = Agent(model)
-            app, _ = make_app(f"{provider}:claude-opus-4-6", AgentRuntime(agent))
-            app.controller.effort(level)
+            await send(agent)
             await agent.run("Hello")
 
     asyncio.run(run())
-    body = requests[0]
+    return requests[0]
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "meridian"])
+@pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "default"])
+def test_anthropic_request_payload(provider, level):
+    async def send(agent):
+        app, _ = make_app(f"{provider}:claude-opus-4-6", AgentRuntime(agent))
+        app.controller.effort(level)
+
+    body = anthropic_request_body("claude-opus-4-6", send)
     if level == "default":
         assert "effort" not in body.get("output_config", {})
     else:
         assert body["output_config"]["effort"] == ("max" if level == "xhigh" else level)
     assert "openai_reasoning_effort" not in body
+
+
+def test_an_effort_set_on_a_gated_model_would_still_reach_the_provider():
+    """Why pcode gates effort itself: Pydantic AI forwards it without checking.
+
+    The day upstream starts dropping it for a model whose profile reports no
+    effort support, this fails and pcode's own gate becomes belt and braces.
+    """
+
+    async def send(agent):
+        agent.model_settings = {"anthropic_effort": "high"}
+
+    body = anthropic_request_body("claude-haiku-4-5", send)
+    assert body["output_config"]["effort"] == "high"

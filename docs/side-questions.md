@@ -217,8 +217,8 @@ The same model at two efforts is two side questions; labels show the effort
 stay apart. The effort is only read from the leading words, and only after the
 last `+` in a model word when what follows is a real level, so model ids that
 contain `+` still work. An unknown level fails the command, and so does an
-effort on a model without effort control (only OpenAI/Codex, Anthropic and
-Meridian models have it, as with `/effort`). Typing `+` in the leading words
+effort on a model without effort control (OpenAI/Codex, and the Anthropic and
+Meridian models whose profile supports effort, as with `/effort`). Typing `+` in the leading words
 completes the levels.
 
 ## Which context it sees

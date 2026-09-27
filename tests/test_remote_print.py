@@ -105,7 +105,8 @@ def test_a_session_command_runs_in_the_host_and_returns_when_done(tmp_path, host
         try:
             printed = Printed()
             assert await asyncio.wait_for(printed.send(host, "/effort"), 10)
-            assert printed.err.getvalue().startswith("Effort: ")
+            # The scripted model has no effort control, so /effort says so.
+            assert "function:script is not one" in printed.err.getvalue()
             assert printed.out.getvalue() == ""
             # A picker has nobody to show it to.
             printed = Printed()
