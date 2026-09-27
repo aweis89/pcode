@@ -16,6 +16,7 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | Pydantic AI (`pydantic-ai-slim`) | 2.50.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
 | Pydantic AI Harness (`pydantic-ai-harness`) | 0.35.1.dev14+a7bbe89 (commit `a7bbe89fd855138916d4f64060479f4ddb0ef9b0`) | [Docs](https://ai.pydantic.dev/harness/) | [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) |
 | Playwright (`playwright`, via the Harness `playwright` extra; Chromium downloaded on first `/browser` use) | 1.63.0 | [Docs](https://playwright.dev/python/) | [playwright-python](https://github.com/microsoft/playwright-python) |
+| Claude Agent SDK (`claude-agent-sdk`, bundles the Claude Code CLI) | 0.2.160 (CLI 2.1.283) | [Docs](https://code.claude.com/docs/en/agent-sdk/python) | [claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python) |
 
 From the repository root, this read-only command prints installed versions and
 package source locations without importing the agent runtime or loading credentials:
@@ -652,6 +653,57 @@ read-only GET of `/settings/api/features` (the `passthrough` entry), or use its
 Anthropic SSE decoding and `AgentRuntime`'s saved `ThinkingDelta`/`Thinking` events.
 Only readable provider text enters these events; native model-message history
 remains separate and may also contain opaque signatures.
+
+### Claude Agent SDK provider (verified 0.2.160, CLI 2.1.283)
+
+`claude:` models (`src/pcode/claude_sdk.py`) keep one `ClaudeSDKClient` per
+conversation and park pcode's tool calls in an in-process MCP server; see
+[Anthropic provider options](anthropic-providers.md#what-shipped). Each item below
+was verified live against the bundled CLI, and most of them are traps:
+
+- The CLI puts the model's tool_use id in the `tools/call` request's `_meta` as
+  `claudecode/toolUseId`. `create_sdk_mcp_server` hides `_meta` from handlers, so
+  pcode builds its own `mcp.server.Server` with mcp 2's constructor callbacks.
+  Moving to mcp 1 would need the decorator API instead.
+- The handler is called when its tool_use block ends, *before* `message_stop`,
+  and a handler parked for minutes is fine (`MCP_TOOL_TIMEOUT` is raised anyway).
+  Results are keyed by id, so the call order does not matter.
+- Closing a process while a handler is parked does not stop the turn. The CLI
+  records the cancelled calls as errors and makes more billed requests while it
+  shuts down, so `ClaudeSession.close` calls `interrupt()` first. At interpreter
+  exit the SDK's atexit reaper SIGKILLs leftover children.
+- The SDK buffers only 100 parsed messages and every token delta is one, so each
+  session drains its stream continuously (`_pump`).
+- Without a `stderr` callback the child inherits pcode's stderr and writes onto the
+  terminal UI.
+- The child inherits the environment, and an empty value counts as unset.
+  `CLI_ENV` blanks pcode's Anthropic key, token and base URL. A fake key left in
+  the parent was verified to be ignored.
+- A user message written while the CLI waits on tool results is queued. It joins
+  the *same* request as the results, wrapped in a `<system-reminder>` that says the
+  user sent it mid-turn. Writing it before releasing the handlers makes this
+  deterministic, because both travel over stdin in order. A model can distrust an
+  odd-looking instruction delivered this way (Haiku ignored one as a possible
+  injection), but pcode's plan reminders went through without comment.
+- `--thinking-display summarized` works without `--thinking`. Without it, thinking
+  blocks arrive empty, carrying only a signature.
+- `resume` + `fork_session` + `resume_session_at=<assistant uuid>` truncates the
+  transcript there. A following user message may start with `tool_result` blocks
+  for that message's tool calls. Transcripts are keyed by the process `cwd`, so
+  the index records it; `ClaudeWorkspace` sets it to the agent's workspace, which
+  in worktree mode is not pcode's own directory.
+- The CLI attaches the environment (working directory, shell, OS), the date, the
+  model identity and the account's email to the first request, and a token-budget
+  reminder to every request. With `setting_sources=[]` nothing loads from
+  `CLAUDE.md` or settings.
+- `CLAUDE_CODE_MAX_RETRIES=0` makes an API error end the turn with an
+  `AssistantMessage.error` kind and `ResultMessage.api_error_status`. pcode raises
+  those as `ClaudeHTTPError`, leaving retries to the runtime. A process that dies
+  mid-request raises `ClaudeProcessError`, which `diagnostics.transient` retries,
+  and the retry forks.
+
+`tests/test_claude_sdk.py` drives the provider through a scripted client that
+calls pcode's real MCP server the way the CLI does.
 
 ### Codex thinking streaming
 

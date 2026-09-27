@@ -22,7 +22,8 @@ pcode -m openai-codex:gpt-5.6-luna
   pick a workspace with `-C`, run non-interactively with `--print`, and set up
   shell completion.
 - [Providers and models](providers.md): authentication, every supported
-  provider, the `/model` picker, reasoning effort, a local Meridian proxy, and
+  provider, the `/model` picker, reasoning effort, Claude Code's own login
+  (`claude:`), a local Meridian proxy, and
   routing model traffic through an HTTP proxy.
 - [Configuration](configuration.md): `pcode config`, per-repository overrides,
   trusting a repository's own code, the full settings table, and code

@@ -46,6 +46,7 @@ Pydantic AI catalog, or only accepts IDs you type.
 | `anthropic` | `/login` credential or `ANTHROPIC_API_KEY` | yes |
 | `openai-codex` | pcode login, then CLI credential file (`CODEX_HOME` honored) | yes (all OpenAI IDs) |
 | `openai`, `openai-chat`, `openai-responses` | `OPENAI_API_KEY` | yes |
+| `claude` | Claude Code config (`~/.claude`, `~/.claude.json`, or `CLAUDE_CONFIG_DIR`) or `claude` on `PATH` | yes (Anthropic IDs) |
 | `meridian` | `meridian` on `PATH` or `PCODE_MERIDIAN_BASE_URL` | yes (Anthropic IDs) |
 | `google` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | yes |
 | `google-cloud` | `GOOGLE_CLOUD_PROJECT` or `GOOGLE_APPLICATION_CREDENTIALS` | yes |
@@ -77,8 +78,8 @@ Providers with a catalog use the Pydantic AI known-model list, which is a static
 snapshot, not an account entitlement list. Providers not in this table (for
 example `mistral`, `cohere`, `huggingface`, `litellm`) still work from `--model`
 if you install their Pydantic AI extra; the picker does not offer them.
-Everything besides Anthropic OAuth and Codex is plain API-key access with no
-login flow in pcode: set the variable in your shell before launching.
+Everything besides Anthropic OAuth, Codex and Claude Code is plain API-key access
+with no login flow in pcode: set the variable in your shell before launching.
 
 ## Sign in with your Anthropic account
 
@@ -193,7 +194,7 @@ the current model only, plus that model as the default. Preferences live in
 (or `$XDG_CONFIG_HOME/pcode/preferences.json` when set), independently of saved
 conversations and `--no-save`. Run `pcode` with no model argument to reuse the
 saved model; without a saved default it opens the offline preview. Saved effort
-applies per model to OpenAI/Codex, Anthropic, and Meridian models, including new
+applies per model to OpenAI/Codex, Anthropic, Claude Code, and Meridian models, including new
 and resumed conversations, so changing effort on one model leaves the others
 alone; a model you have never set falls back to the `effort` default.
 `/effort default` restores provider-default behavior for the current model. Use `pcode config unset KEY`
@@ -211,7 +212,7 @@ still use the native provider, not a custom transport.
 
 ## Reasoning effort
 
-For OpenAI/Codex, Anthropic, and Meridian models, use **Ctrl+N** to increase effort and **Ctrl+P** to
+For OpenAI/Codex, Anthropic, Claude Code, and Meridian models, use **Ctrl+N** to increase effort and **Ctrl+P** to
 decrease it, or `/effort low|medium|high|xhigh`. `/effort` shows the current
 setting; `/effort default` removes the override. Each model remembers its own
 level, so raising effort on one model does not raise it elsewhere. Slash completion includes these
@@ -223,11 +224,64 @@ selects high; Ctrl+P selects low). Changes apply to the **next turn**, not an
 in-progress run, and preserve your draft. Up/Down still navigate history and
 completions. Model support varies; not every model accepts every effort level.
 Effort overrides are in-memory, survive `/new`, and are not saved with sessions.
-On Anthropic and Meridian, `xhigh` uses the native level when supported by the
+On Anthropic, Claude Code and Meridian, `xhigh` uses the native level when supported by the
 model profile, otherwise it sends Anthropic’s `max` effort. Older models may not
 support effort or the highest level; provider validation still applies. This
 control sets effort without changing the model’s thinking configuration.
 Preview and other providers do not support this control.
+
+## Claude Code provider
+
+A `claude:` model uses your Claude subscription through Claude Code's own login,
+with no proxy to install or run:
+
+```sh
+pcode -m claude:claude-sonnet-5   # then /login claude if Claude Code is not signed in
+```
+
+The `claude-agent-sdk` dependency bundles the Claude Code CLI, so neither Node.js
+nor a separate `claude` install is needed. pcode keeps one CLI process per
+conversation and hands it pcode's system prompt and tools; the CLI makes the API
+requests and pcode runs every tool itself. Compared with Meridian, which starts a
+new CLI process behind a Node proxy for every request, a tool round costs no
+process start. [Anthropic provider options](anthropic-providers.md#direct-sdk-provider)
+has the design and measurements.
+
+### Signing in
+
+`/login claude` runs the bundled CLI's `claude auth login` in your browser and
+writes Claude Code's usual login (`CLAUDE_CONFIG_DIR` is honored), so an existing
+Claude Code sign-in already works. pcode never reads or stores the credential. A
+request that fails because the login is missing or expired says to run
+`/login claude`.
+
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` are cleared
+for the CLI, so the key pcode uses for `anthropic:` models can never silently bill
+or redirect a `claude:` request.
+
+### What carries over
+
+A request reuses the live process when the process has seen exactly the history
+before the new message. Anything else resumes the CLI's own transcript at the last
+message both share, which keeps the prompt cache warm: restarting pcode,
+`--continue`, `/tree`, a retry, `/btw`, or changing model or effort. Where pcode's
+history never went through Claude Code (switching from another provider) or has
+been rewritten (compaction), a new process starts with the earlier conversation
+replayed as a text transcript, which writes that history to the cache once.
+
+Other behavior worth knowing:
+
+- Each CLI process holds about 300 MB. pcode keeps at most two idle ones, for ten
+  minutes; delegated tasks run their own.
+- Transcripts land in Claude Code's own store (`~/.claude/projects/`) and show in
+  `claude --resume` for the workspace.
+- Tool names reach the model as `mcp__pcode__<name>`; pcode's display uses its own.
+- Anthropic server tools (web search, web fetch, code execution) are not
+  available, so pcode's local web tools are used, as on Meridian.
+- Text pcode adds beside tool results (steering, plan reminders, limit warnings)
+  reaches the model through Claude Code's mid-turn channel, which presents it as a
+  message the user sent while the model was working.
+- Thinking is requested in readable (summarized) form for scrollback.
 
 ## Local Meridian provider
 
