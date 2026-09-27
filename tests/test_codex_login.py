@@ -69,7 +69,7 @@ def test_unknown_login_source_shows_usage():
     app, _, buffer = make_app("openai-codex:test-model")
     app.handle("/login gemini")
     assert app.controller.login_requested is None
-    assert "Usage: /login [anthropic|openai-codex|meridian]" in buffer.getvalue()
+    assert "Usage: /login [anthropic|openai-codex|claude|meridian]" in buffer.getvalue()
 
 
 def test_logout_preserves_cli_store(tmp_path, monkeypatch):

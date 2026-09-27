@@ -2367,8 +2367,7 @@ class SessionController:
         agent = getattr(self.runtime, "agent", None)
         if agent is None or effort_setting(self.model) is None:
             self.view.flash(
-                "Effort control requires an OpenAI/Codex, Anthropic, Claude Code, or Meridian "
-                "model."
+                "Effort control requires an OpenAI/Codex, Anthropic, Claude, or Meridian model."
             )
             return
         # Replace rather than mutate: an active run keeps its captured settings.
@@ -2845,9 +2844,8 @@ class SessionController:
             name = target.model or self.model
             if target.effort and effort_setting(name) is None:
                 raise ValueError(
-                    "Effort control requires an OpenAI/Codex, Anthropic, Claude Code, or "
-                    f"Meridian model; "
-                    f"{name} is not one."
+                    "Effort control requires an OpenAI/Codex, Anthropic, Claude, or Meridian "
+                    f"model; {name} is not one."
                 )
         await self.start_aside(question, models)
 
