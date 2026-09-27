@@ -208,12 +208,16 @@ class RichPane:
                 if pane._anchor is not None:
                     # Line offsets depend on the wrap width, which only the
                     # render knows, so a requested anchor is applied here.
-                    # Clamped: an empty last renderable starts past the final
-                    # line, since trailing newlines are stripped, and the
-                    # window reads the cursor row as a real line.
-                    offset = pane.line_offset(pane._anchor, width)
-                    pane.window.vertical_scroll = min(offset, max(0, len(lines) - 1))
+                    pane.window.vertical_scroll = pane.line_offset(pane._anchor, width)
                     pane._anchor = None
+                # The window reads the cursor row as a real line, so keep it on
+                # one. A stale scroll outlives a rewrap to fewer lines (resize,
+                # the wide/narrow switch), follow() holding an offset past
+                # shorter content, and an empty last renderable, whose start
+                # sits past the final line once trailing newlines are stripped.
+                pane.window.vertical_scroll = min(
+                    pane.window.vertical_scroll, max(0, len(lines) - 1)
+                )
                 return UIContent(
                     get_line=lines.__getitem__,
                     line_count=len(lines),
