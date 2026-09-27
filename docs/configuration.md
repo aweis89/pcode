@@ -140,7 +140,8 @@ is only sensible on a machine where you wrote all of them.
 | `worker_isolation` | `off` | `on`, `off` (opt in to isolated built-in worker tasks; also requires effective `worktree=on`, not just the CLI launch override; checked at each delegation) |
 | `worker_concurrency` | `0` | `0` means unlimited; a positive integer caps concurrent built-in workers per session; `/reload` to apply |
 | `session_host_idle_minutes` | `60` | whole minutes a [background session](sessions.md#background-sessions) may sit idle with no terminal before its host stops; `0` never stops |
-| `desktop_notifications` | `on` | `on`, `off` (desktop notification when a background session finishes, and tab progress while working; OSC 9) |
+| `desktop_notifications` | `on` | `on`, `off` (desktop notification when a background session finishes; OSC 9) |
+| `terminal_progress` | `auto` | `auto`, `on`, `off` (the terminal's [tab progress bar](#tab-progress-bar) while a turn runs; OSC 9;4) |
 | `session_host` | `on` | `on`, `off` (run sessions in a [background host](sessions.md#background-sessions) that outlives the terminal; `--host`/`--no-host` override it once) |
 | `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `project_extensions` | `off` | `on`, `off` (`on` trusts every repository's `.pcode/extensions` and `worktree-setup`) |
@@ -150,6 +151,50 @@ is only sensible on a machine where you wrote all of them.
 | `extensions_on` | `` | `,`-separated opt-in extension names to load (`/extensions on NAME`) |
 | `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian); fallback for models `/effort` has not set |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
+
+## Tab progress bar
+
+While a turn runs, pcode reports progress to the terminal itself (OSC 9;4),
+which draws it outside the screen: Ghostty and kitty as a thin bar along the
+top of the split, iTerm2 and Windows Terminal in the tab, WezTerm wherever its
+Lua config puts it. A busy tab is visible from the others.
+
+| Bar | Means |
+| --- | --- |
+| Moving, no fill | A turn is running |
+| Filling | A turn is running with a plan; the fill is the share of steps completed |
+| Paused (orange in Ghostty) | A failed provider request is being retried |
+| Error (red in Ghostty) | The last turn failed; any key in that terminal, or the next turn, clears it |
+
+The protocol carries only a state and a percentage, so the colours are the
+terminal's: Ghostty uses the macOS accent colour for a running bar, kitty uses
+its `scrollbar_*` colours. Hide it on the terminal's side with Ghostty's
+`progress-style = false` or kitty's `progress_bar hidden`.
+
+`auto` sends it only to terminals whose environment variables say they draw
+it: Ghostty, WezTerm, iTerm2 3.6.6 or newer, Windows Terminal, ConEmu, VS
+Code, Warp, mintty, VTE 0.79 terminals (GNOME Terminal, Ptyxis) and Konsole
+26.04. Older iTerm2 and kitty before 0.38 read the sequence as a desktop
+notification, which is why an unknown terminal gets nothing. kitty is among
+them because it reports no version; on kitty 0.47 or newer, set
+`terminal_progress on`. `on` sends it to any terminal, and terminals that
+do not know it ignore it.
+
+Inside tmux the terminal is judged by what the tmux server's environment
+inherited from the terminal it was started in (tmux replaces `TERM` and
+`TERM_PROGRAM`), and each report is sent twice: once through passthrough and
+once raw. Passthrough needs `allow-passthrough on` and is the reliable way,
+since Ghostty drops a report that is not refreshed within about 15 seconds and
+pcode refreshes it every few. Without it, tmux 3.7 or newer forwards the
+active pane's bar itself, but only when it changes, so a long turn's bar can
+fade in Ghostty; older tmux drops it. Two pcode panes side by side share the
+window's one bar, which shows whichever reported last.
+
+```tmux
+set -g allow-passthrough on
+```
+
+The setting is read when pcode starts.
 
 ## Code highlighting styles
 

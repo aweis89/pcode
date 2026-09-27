@@ -211,6 +211,12 @@ SETTINGS = {
         ("on", "off"),
         description="Desktop notification when a background session finishes (OSC 9)",
     ),
+    "terminal_progress": Setting(
+        "auto",
+        ("auto", "on", "off"),
+        description="Tab progress bar while a turn runs (OSC 9;4); auto sends it only to "
+        "terminals known to draw it",
+    ),
     "worktree_exit": Setting(
         "ask",
         ("ask", "merge", "keep"),
