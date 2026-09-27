@@ -74,6 +74,8 @@ class PrintedReply:
 
     def write(self, markdown: str, *, streamed: bool = False) -> None:
         """Settle one block of reply text; `streamed` means its source is already out."""
+        # The reply goes elsewhere, so close the run of calls it follows first.
+        self.transcript.settle_tools()
         if self.console is not None:
             self.console.print(Markdown(markdown, code_theme=self.transcript.code_theme))
             self.console.print()
@@ -106,6 +108,7 @@ class PrintedReply:
 
     def settle(self) -> None:
         """Write out a block the turn ended (or failed, or retried) in the middle of."""
+        self.transcript.settle_tools()
         if self.block:
             self.write(self.block, streamed=self.console is None)
             self.block = ""

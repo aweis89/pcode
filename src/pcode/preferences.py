@@ -287,9 +287,9 @@ SETTINGS = {
         description="Rebuild scrollback at the new width when the terminal resizes",
     ),
     "paced_scrollback": Setting(
-        "on",
-        ("on", "off"),
-        description="Roll settled blocks into scrollback a few rows per frame instead of at once",
+        "typed",
+        ("typed", "rows", "off"),
+        description="Type settled prose out, or roll blocks in by row, instead of landing at once",
     ),
     "show_edits": Setting(
         "on",
@@ -300,6 +300,11 @@ SETTINGS = {
         "off",
         ("on", "off"),
         description="Mirror shell command output into scrollback (Ctrl+G toggles the live preview)",
+    ),
+    "group_tools": Setting(
+        "off",
+        ("on", "off"),
+        description="Fold each run of consecutive tool calls into one summary line",
     ),
     "command_scrollback_lines": Setting(
         "20",

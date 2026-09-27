@@ -4,9 +4,10 @@ import asyncio
 import os
 import re
 from asyncio import Future
+from collections import Counter
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
-from functools import cache, lru_cache, partial, wraps
+from functools import cache, cached_property, lru_cache, partial, wraps
 from io import StringIO
 from time import monotonic
 
@@ -17,6 +18,7 @@ from prompt_toolkit.completion import merge_completers
 from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Always, Condition, has_focus, is_searching, vi_mode
+from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.keys import Keys
@@ -66,7 +68,7 @@ from pcode.tool_display import (
     split_outcome,
     tool_summary_lines,
 )
-from pcode.tool_panel import TASK_ROWS, ToolHistory, panel_fragments, task_panel_rows
+from pcode.tool_panel import DELEGATE, TASK_ROWS, ToolHistory, panel_fragments, task_panel_rows
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
@@ -146,6 +148,8 @@ class Palette:
                 "activity.notice": f"italic {self.muted}",
                 # Running background jobs are chrome like the spinner row.
                 "activity.job": self.muted,
+                # A run's pending group line, styled as scrollback will draw it.
+                "activity.group": f"dim {self.muted}",
                 # A side question runs beside the turn, not as part of it, so its
                 # row spins in the muted shade rather than the prompt's.
                 "activity.aside": self.muted,
@@ -859,6 +863,65 @@ def install_reflow_renderer(app: Application) -> None:
 # Frames a paced backlog takes to drain, so a settled block rolls out row by
 # row when small and lands within about a second however big it is.
 PACED_DRAIN_FRAMES = 30
+# Typed prose advances every TYPED_STEP_FRAMES frames (15 a second: each step
+# repaints the whole layout, so half the scrollback tick is plenty for text).
+# A step reveals TYPED_CHARS_PER_STEP characters (about 360 a second, near a
+# model's own pace, so a steady stream reads as one), sped up so a backlog
+# types out within TYPED_DRAIN_STEPS steps (about two seconds).
+TYPED_STEP_FRAMES = 2
+TYPED_CHARS_PER_STEP = 24
+TYPED_DRAIN_STEPS = 30
+
+# Rich writes only SGR styles and OSC 8 hyperlinks. prompt_toolkit's ANSI parser
+# knows SGR but would print an OSC's payload as text, so the live row drops them.
+OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+ESCAPES = re.compile(OSC.pattern + r"|\x1b\[[0-?]*[ -/]*[@-~]")
+# Blocks whose rows only make sense whole: typing them out character by
+# character would show a half-drawn rule, table border, or code line.
+UNTYPED_TOKENS = frozenset({"fence", "code_block", "table_open", "html_block", "hr"})
+
+
+def typed_prose(objects: tuple) -> bool:
+    """Whether a write is prose that reads well typed out rather than rolled in."""
+    if not objects:
+        return False
+    for obj in objects:
+        if isinstance(obj, Markdown):
+            tokens = obj.parsed
+        elif isinstance(obj, ThinkingMarkdown):
+            tokens = Markdown(obj.source).parsed
+        else:
+            return False
+        if any(token.type in UNTYPED_TOKENS for token in tokens):
+            return False
+    return True
+
+
+@dataclass
+class QueuedRow:
+    """One rendered row waiting for scrollback.
+
+    ``visible`` counts what a reader sees, without escapes or the trailing
+    padding Rich adds, so a blank row costs nothing to reveal. ``lead`` is its
+    leading indentation, shown at once so a centred heading or indented list
+    item does not spend frames typing spaces. Both are computed on first use:
+    a replay queues every row but writes them all without asking.
+    """
+
+    text: str
+    typed: bool = False
+
+    @cached_property
+    def _plain(self) -> str:
+        return ESCAPES.sub("", self.text).rstrip()
+
+    @property
+    def visible(self) -> int:
+        return len(self._plain)
+
+    @property
+    def lead(self) -> int:
+        return len(self._plain) - len(self._plain.lstrip())
 
 
 def split_rows(text: str) -> list[str]:
@@ -931,11 +994,26 @@ class TerminalOutput:
         self.resize_replay = None
         # Rendered rows not yet written. Pacing rolls a settled block out over
         # successive frames instead of landing it in one; off writes them all.
-        self.rows: list[str] = []
+        self.rows: list[QueuedRow] = []
         self.paced = False
-        # Rows per frame for the current backlog. Fixed when rows arrive rather
-        # than recomputed as they leave, or the tail would slow to a crawl.
+        # Typing reveals prose rows a few characters per frame in the live area
+        # and writes each to scrollback once it is complete. Needs ``paced``.
+        self.typed = False
+        # Characters of ``rows[0]`` already shown in the live area.
+        self._typed = 0
+        self._preview: tuple[tuple[str, int], StyleAndTextTuples] | None = None
+        # Frames skipped since the last typing step; see TYPED_STEP_FRAMES.
+        self._skipped = 0
+        # Rows and characters per step for the current backlog. Fixed when rows
+        # arrive rather than recomputed as they leave, or the tail would crawl.
         self._reveal_rate = 0
+        self._type_rate = 0
+        # Transient writes already rendered into ``rows`` but not yet written,
+        # with the absolute index just past their last row. A replay drops the
+        # queued rows, so these must join it, just as ``transient_pending`` does.
+        self._queued_transient: list[tuple[tuple, int]] = []
+        # Absolute index of ``rows[0]``: rows written or dropped so far.
+        self._row_base = 0
 
     def regenerate(self, replay) -> None:
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
@@ -1058,17 +1136,125 @@ class TerminalOutput:
         self.streamed = False
         self.changed.set()
 
-    def reveal_count(self, *, drain: bool = False) -> int:
-        """Rows to write this frame: one at a time, but never more than ~1 s behind."""
-        if drain or not self.paced:
-            return len(self.rows)
+    def _enqueue(self, pending: list, width: int, *, replay: bool = False) -> None:
+        """Render writes into rows, marking the prose ones to type out.
+
+        A row is a self-contained unit (Rich closes styles and links per
+        segment), so any prefix of the queue can be written now and the rest on
+        later frames without splitting an escape. Each write renders on its own
+        so its rows know whether they came from prose. A replay is written whole
+        at once, so it skips both the prose check and transient tracking.
+        """
+        transient = [] if replay else self.transient_pending
+        self.transient_pending = []
+        pieces = []
+        previous_file = self.console._file
+        try:
+            with self.console.use_theme(self.rich_theme()):
+                for entry in pending:
+                    objects, end, soft_wrap = entry
+                    self.console.file = rendered = StringIO()
+                    with self.console:
+                        self.console.print(*objects, end=end, soft_wrap=soft_wrap, width=width)
+                    typed = self.typed and not replay and typed_prose(objects)
+                    pieces.append((entry, rendered.getvalue(), typed))
+        finally:
+            self.console.file = previous_file
+        # A write can end mid-row and the next complete it; the row is typed
+        # only if every write it holds is.
+        text, typed = "", True
+        for entry, piece, piece_typed in pieces:
+            for part in split_rows(piece):
+                text, typed = text + part, typed and piece_typed
+                if text.endswith("\n"):
+                    self.rows.append(QueuedRow(text, typed))
+                    text, typed = "", True
+            if any(entry is note for note in transient):
+                # Its last character is in the open row, or the one just closed.
+                last = len(self.rows) + (1 if text else 0)
+                self._queued_transient.append((entry, self._row_base + last))
+        if text:
+            self.rows.append(QueuedRow(text, typed))
+
+    def _take_pending(self) -> list:
+        pending, self.pending = self.pending, []
+        return pending
+
+    def _written(self, count: int) -> None:
+        """Drop ``count`` rows from the queue's front as written or replaced."""
+        self.rows = self.rows[count:]
+        self._row_base += count
+        self._queued_transient = [
+            (entry, end) for entry, end in self._queued_transient if end > self._row_base
+        ]
+
+    def _advance(self) -> tuple[int, int]:
+        """One paced frame: whole rows now due, and characters shown of the next.
+
+        Rows roll in one at a time and prose types out a few characters a step;
+        both speed up so a backlog never falls far behind. Blank rows are free,
+        so the gap between paragraphs does not stall the reveal, and so is a
+        typed row's indentation.
+        """
         self._reveal_rate = max(self._reveal_rate, -(-len(self.rows) // PACED_DRAIN_FRAMES))
-        return self._reveal_rate
+        if self._typed and self.rows[0].typed and self._skipped < TYPED_STEP_FRAMES - 1:
+            # Mid-row and between steps: nothing moves this frame.
+            self._skipped += 1
+            return 0, self._typed
+        self._skipped = 0
+        backlog = sum(row.visible for row in self.rows if row.typed) - self._typed
+        self._type_rate = max(
+            self._type_rate, TYPED_CHARS_PER_STEP, -(-backlog // TYPED_DRAIN_STEPS)
+        )
+        rows, chars, typed = self._reveal_rate, self._type_rate, self._typed
+        due = 0
+        for row in self.rows:
+            if row.typed:
+                typed = max(typed, row.lead)
+                if row.visible - typed > chars:
+                    return due, typed + chars
+                chars -= row.visible - typed
+                typed = 0
+            elif row.visible:
+                if not rows:
+                    break
+                rows -= 1
+            due += 1
+        return due, 0
+
+    def typing_fragments(self) -> StyleAndTextTuples:
+        """The prose row being typed out, as far as it has got."""
+        if not self._typed or not self.rows:
+            return []
+        row = self.rows[0]
+        key = (row.text, self._typed)
+        if self._preview is None or self._preview[0] != key:
+            fragments, left = [], self._typed
+            for style, text in ANSI(OSC.sub("", row.text.rstrip("\n"))).__pt_formatted_text__():
+                if left <= 0:
+                    break
+                fragments.append((style, text[:left]))
+                left -= len(text)
+            self._preview = (key, fragments)
+        return self._preview[1]
 
     async def flush(self, *, drain: bool = False) -> None:
         """Write queued output; ``drain`` writes it all, as before a popup or exit."""
         async with self.lock:
-            if self.pending or self.rows or self._regenerate is not None:
+            paced = self.paced and not drain
+            due = typed = 0
+            if paced and self._regenerate is None:
+                # Decide what this frame reveals before paying for a handoff: a
+                # frame that only types further repaints the live row instead.
+                if self.pending:
+                    width = max(1, self.app.output.get_size().columns)
+                    self._enqueue(self._take_pending(), width)
+                if self.rows:
+                    due, typed = self._advance()
+                if not due and typed != self._typed:
+                    self._typed = typed
+                    self.app.invalidate()
+            if self._regenerate is not None or due or not paced and (self.pending or self.rows):
                 # Renderer.reset() shows the cursor at the transcript position
                 # both when erasing and before repainting. Suppress those shows
                 # until the handoff has restored the editor and its cursor.
@@ -1076,47 +1262,36 @@ class TerminalOutput:
                     async with suspended_editor(self.app, atomic=True) as handoff:
                         # Snapshot after entering: input/model events can arrive while
                         # the handoff waits for CPR, but not during these sync writes.
-                        replaying = self._regenerate is not None
-                        if replaying:
-                            pending = self._regenerate() + self.transient_pending
+                        width = max(1, self.app.output.get_size().columns)
+                        if self._regenerate is not None:
+                            # Transient writes are not in the replay; keep those
+                            # still queued as rows as well as those not rendered.
+                            notes = [entry for entry, _ in self._queued_transient]
+                            pending = self._regenerate() + notes + self.transient_pending
                             self._regenerate = None
                             self.pending.clear()
                             # Replay covers the rows still queued; drop them.
-                            self.rows.clear()
+                            self._written(len(self.rows))
+                            self._queued_transient = []
                             # The handoff has erased the editor. Clear the
                             # normal-screen history and home before replay; its
                             # exit will request fresh CPR and restore the draft.
                             self.app.output.write_raw("\x1b[H\x1b[2J\x1b[3J")
                             self.app.output.flush()
                             handoff.top_row = 1
+                            self._enqueue(pending, width, replay=True)
+                            # A rebuilt screen lands whole; pacing is for new output.
+                            due, typed = len(self.rows), 0
                         else:
-                            pending, self.pending = self.pending, []
-                        self.transient_pending = []
-                        width = max(1, self.app.output.get_size().columns)
-                        # Rich's public buffer context coalesces the batch's
-                        # prints (including separators) into one output flush.
-                        # Keep it synchronous and inside the single-writer handoff.
-                        # Render into rows first: a row is a self-contained
-                        # unit (Rich closes styles and links per segment), so
-                        # any prefix of them can be written now and the rest
-                        # on later frames without splitting an escape.
-                        rendered = StringIO()
-                        previous_file = self.console._file
-                        self.console.file = rendered
-                        try:
-                            with self.console, self.console.use_theme(self.rich_theme()):
-                                for objects, end, soft_wrap in pending:
-                                    self.console.print(
-                                        *objects, end=end, soft_wrap=soft_wrap, width=width
-                                    )
-                        finally:
-                            self.console.file = previous_file
-                        self.rows.extend(split_rows(rendered.getvalue()))
-                        # A rebuilt screen lands whole; pacing is for new output.
-                        count = self.reveal_count(drain=drain or replaying)
-                        chunk, self.rows = "".join(self.rows[:count]), self.rows[count:]
+                            self._enqueue(self._take_pending(), width)
+                            if not paced:
+                                due, typed = len(self.rows), 0
+                        # Rows arriving during the handoff queue behind this frame's.
+                        chunk = self.rows[:due]
+                        self._written(due)
+                        self._typed = typed
                         counter = RowCounter(self.console.file)
-                        counter.write(chunk)
+                        counter.write("".join(row.text for row in chunk))
                         counter.flush()
                         handoff.rows_written = counter.rows
                 # The handoff already repainted the editor on exit.
@@ -1125,7 +1300,7 @@ class TerminalOutput:
                 # Keep the run loop ticking at its frame rate until drained.
                 self.changed.set()
             else:
-                self._reveal_rate = 0
+                self._reveal_rate = self._type_rate = self._typed = self._skipped = 0
 
     async def run(self) -> None:
         size = self.app.output.get_size()
@@ -1578,10 +1753,24 @@ def create_prompt(
         return activity.job_rows(JOB_ROWS)
 
     @per_render
+    def group_rows():
+        """The run's group line so far; it reaches scrollback when the run closes."""
+        if transcript is None:
+            return []
+        row = transcript.pending_group_row(session.app.output.get_size().columns - 1)
+        return [("class:activity.group", row)] if row else []
+
+    @per_render
     def aside_rows():
         return activity.aside_rows(
             prompt_spinner.render(monotonic()).plain, session.app.output.get_size().columns - 1
         )
+
+    @per_render
+    def typing_row():
+        """Prose still being typed out: the next scrollback row, drawn live."""
+        output = transcript.output if transcript is not None else None
+        return output.typing_fragments() if output is not None else []
 
     def status_gap() -> bool:
         """Whether the live panel needs its own blank row above it.
@@ -1592,13 +1781,22 @@ def create_prompt(
         the gap cannot re-enter the layout calculation.
         """
         shown = (
-            activity.status_shown or bool(notice_rows()) or bool(aside_rows()) or bool(job_rows())
+            activity.status_shown
+            or bool(group_rows())
+            or bool(notice_rows())
+            or bool(aside_rows())
+            or bool(job_rows())
         )
-        return shown and transcript is not None and not transcript.ends_blank
+        # A typed row is not written yet, so scrollback's own gap sits above it.
+        return (
+            shown and transcript is not None and (bool(typing_row()) or not transcript.ends_blank)
+        )
 
     def status_height() -> int:
         return (
-            activity.status_shown
+            bool(typing_row())
+            + activity.status_shown
+            + len(group_rows())
             + len(notice_rows())
             + len(aside_rows())
             + len(job_rows())
@@ -1743,6 +1941,16 @@ def create_prompt(
         filter=Condition(lambda: bool(command_rows())),
     )
     status_spacer = ConditionalContainer(Window(height=1), filter=Condition(status_gap))
+    # Flush left, where scrollback will draw the same line once the run closes.
+    group = ConditionalContainer(
+        Window(
+            FormattedTextControl(group_rows, show_cursor=False),
+            height=lambda: len(group_rows()),
+            wrap_lines=False,
+            dont_extend_height=True,
+        ),
+        filter=Condition(lambda: bool(group_rows())),
+    )
     # Directly above the spinner: a notice answers the keystroke that caused it
     # without ever reaching scrollback, and vanishes on its own.
     notice = ConditionalContainer(
@@ -1770,7 +1978,21 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(job_rows())),
     )
-    activity_panel = HSplit([status_spacer, commands, notice, current_status, asides, jobs, plan])
+    # Flush left like the scrollback row it becomes, and placed above the
+    # layout's justifying filler so it sits directly beneath scrollback rather
+    # than jumping up a row when it is written.
+    typing = ConditionalContainer(
+        Window(
+            FormattedTextControl(typing_row, show_cursor=False),
+            height=1,
+            wrap_lines=False,
+            dont_extend_height=True,
+        ),
+        filter=Condition(lambda: bool(typing_row())),
+    )
+    activity_panel = HSplit(
+        [status_spacer, group, commands, notice, current_status, asides, jobs, plan]
+    )
 
     @per_render
     def queue_rows():
@@ -1835,7 +2057,7 @@ def create_prompt(
     )
     children = [menu, search, activity_panel, queued, editor_frame]
     if transcript is not None:
-        children.insert(0, Window())
+        children[:0] = [typing, Window()]
 
         def accept(buffer):
             text = buffer.text
@@ -1948,6 +2170,7 @@ class Transcript:
         self.tool_error_scrollback = preferences.get("tool_error_scrollback", "off") == "on"
         self.show_edits = preferences.get("show_edits", "on") == "on"
         self.command_scrollback = preferences.get("show_commands", "off") == "on"
+        self.group_tools = preferences.get("group_tools", "off") == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
         self.command_preview_lines = int(preferences.get("command_preview_lines", "10"))
         self.activity = activity
@@ -1957,7 +2180,9 @@ class Transcript:
         self.syntax_themes = syntax_themes(preferences)
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
-        self.paced_scrollback = preferences.get("paced_scrollback", "on") == "on"
+        self.paced_scrollback = preferences.get(
+            "paced_scrollback", SETTINGS["paced_scrollback"].default
+        )
         self.log = TranscriptLog(
             max_chars=int(
                 preferences.get("transcript_max_chars", SETTINGS["transcript_max_chars"].default)
@@ -1968,6 +2193,10 @@ class Transcript:
         # A sub-agent's calls settle before its delegate does. They wait here,
         # keyed by the delegate's call id, to be written beneath it.
         self._children: dict[str, list[ToolSummary]] = {}
+        # With `group_tools`, the settled calls of the run in progress: they
+        # reach scrollback as one line when anything else is written or the
+        # turn ends, and the live panel counts them until then.
+        self._group: list[ToolSummary] = []
 
     @property
     def replays_on_resize(self) -> bool:
@@ -1988,16 +2217,21 @@ class Transcript:
             # Pacing spreads handoffs over frames; only a real application has
             # either, so offline harnesses and stand-ins write at once.
             output.paced = (
-                self.paced_scrollback
+                self.paced_scrollback != "off"
                 and self.console.is_terminal
                 and isinstance(output.app, Application)
             )
+            output.typed = output.paced and self.paced_scrollback == "typed"
             if self.replays_on_resize:
                 output.resize_replay = self.replay
 
     @recorded
     def print(self, *objects, end="\n", tool_line: bool = False) -> None:
         """Write scrollback, keeping tool lines one block apart from other output."""
+        if self._group:
+            # Anything written after a run of calls closes it, so the run's
+            # line lands where the calls happened.
+            self._flush_group()
         # Resolve theme-dependent renderables again on every replay.
         objects = tuple(
             Markdown(obj.markup, code_theme=self.code_theme)
@@ -2063,9 +2297,87 @@ class Transcript:
             return
         if self.writes_tool_result(event):
             self.events((event,))
-        for child in self._children.pop(event.call_id, []):
-            for line in self.summary_lines(child, indent=CHILD_INDENT):
-                self.print(Padding(line, (0, 0, 0, CHILD_INDENT), expand=False), tool_line=True)
+        for line in self.child_lines(self._children.pop(event.call_id, []), CHILD_INDENT):
+            self.print(Padding(line, (0, 0, 0, CHILD_INDENT), expand=False), tool_line=True)
+
+    def child_lines(self, children: list[ToolSummary], indent: int = 0) -> list[Text]:
+        """A sub-agent's calls, folded the way the parent's are when grouping."""
+        if self.group_tools:
+            return self.group_lines(children, indent=indent)
+        return [line for child in children for line in self.summary_lines(child, indent=indent)]
+
+    def groups(self, event: ToolSummary) -> bool:
+        """Report whether this call's summary line folds into the run's group line.
+
+        A failure keeps its own line, a delegate heads its own calls, and a
+        background job's exit is a delayed notice, not part of the run.
+        """
+        return (
+            self.group_tools
+            and not event.failed
+            and event.name != DELEGATE
+            and event.execution != "background"
+        )
+
+    def group_lines(self, events: list[ToolSummary], *, indent: int = 0) -> list[Text]:
+        """Fold consecutive successful calls into one line; failures stand alone."""
+        lines: list[Text] = []
+        run: list[ToolSummary] = []
+
+        def close() -> None:
+            if len(run) == 1:
+                # A run of one says more as the call's own line.
+                lines.extend(self.summary_lines(run[0], indent=indent))
+            elif run:
+                lines.append(self.group_line(run, width=max(1, self.console.width - indent)))
+            run.clear()
+
+        for event in events:
+            if event.failed:
+                close()
+                lines.extend(self.summary_lines(event, indent=indent))
+            else:
+                run.append(event)
+        close()
+        return lines
+
+    @staticmethod
+    def group_line(events: list[ToolSummary], *, width: int) -> Text:
+        """`✓ 15 tools · Edit ×10 · Run ×5`, most used first."""
+        counts = Counter(label(event.name) for event in events)
+        parts = [f"{name} ×{count}" if count > 1 else name for name, count in counts.most_common()]
+        line = Text(f"✓ {len(events)} tools · " + " · ".join(parts), style="pcode.thinking")
+        line.no_wrap = True
+        line.overflow = "ellipsis"
+        line.truncate(width, overflow="ellipsis")
+        return line
+
+    def _flush_group(self) -> None:
+        group, self._group = self._group, []
+        # The retained tool results already reproduce this line on replay.
+        recording, self.log.recording = self.log.recording, False
+        try:
+            for line in self.group_lines(group):
+                self.print(line, tool_line=True)
+        finally:
+            self.log.recording = recording
+
+    def settle_tools(self) -> None:
+        """Write the pending group line; the turn ended with nothing after it.
+
+        Not recorded: whatever is written next closes the run at the same
+        place, and `replay` closes a trailing one unless it is still live.
+        """
+        if self._group:
+            self._flush_group()
+
+    def pending_group_row(self, width: int) -> str:
+        """The group line so far, for the live panel; empty when nothing is pending."""
+        if not self._group or width < 1:
+            return ""
+        line = self.group_lines(self._group)[-1].copy()
+        line.truncate(width, overflow="ellipsis")
+        return line.plain
 
     def settle_orphans(self) -> None:
         """Write sub-agent calls whose delegate never settled, e.g. a cancelled turn.
@@ -2075,9 +2387,8 @@ class Transcript:
         """
         orphans, self._children = self._children, {}
         for children in orphans.values():
-            for child in children:
-                for line in self.summary_lines(child):
-                    self.print(line, tool_line=True)
+            for line in self.child_lines(children):
+                self.print(line, tool_line=True)
 
     @recorded
     def edit(self, event) -> None:
@@ -2091,12 +2402,16 @@ class Transcript:
         self._block = None
         # Replaying the log's own tool results rebuilds whatever is pending.
         self._children = {}
+        live_group, self._group = bool(self._group), []
         self.log.recording = False
         try:
             if self.log.dropped:
                 self.note("Earlier transcript entries omitted from this regenerated view.")
             for entry in self.log.entries:
                 getattr(self, entry.method)(*entry.args, **entry.kwargs)
+            # A run still going stays in the live panel; any other was closed.
+            if not live_group:
+                self.settle_tools()
         finally:
             self.log.recording = True
             self._replay_sink = None
@@ -2113,6 +2428,8 @@ class Transcript:
         previous = self.log
         self.log = TranscriptLog(limit=previous.limit, max_chars=previous.max_chars)
         self.log.capture_only = True
+        # Restored history is settled; nothing from it is still running.
+        self._group = []
         try:
             yield
         except BaseException:
@@ -2416,6 +2733,10 @@ class Transcript:
         )
 
     def command_summary(self, event: ToolSummary) -> None:
+        """Write a settled call's summary line, or hold it for the run's group line."""
+        if self.groups(event):
+            self._group.append(event)
+            return
         for line in self.summary_lines(event):
             self.print(line, tool_line=True)
 
@@ -2455,8 +2776,7 @@ class Transcript:
                     else:
                         self.command_summary(event)
                     continue
-                for line in self.summary_lines(event):
-                    self.print(line, tool_line=True)
+                self.command_summary(event)
 
     def help(self, registry: CommandRegistry) -> None:
         table = Table(box=None, padding=(0, 2), show_header=False)

@@ -620,11 +620,16 @@ def test_markdown_code_stays_hidden_until_committed_once(pane, release):
 
 
 PACED_SCRIPT = """
+import pcode.ui
 from pcode.app import PreviewApp
 from pcode.preferences import save_preferences
 from pcode.runtime import Message, TextDelta
 
-save_preferences(paced_scrollback="on")
+save_preferences(paced_scrollback="rows")
+# One row a frame and no catch-up: 600 rows take twenty seconds, so the test
+# sees the block half written however loaded the machine is. The second turn
+# lifts the limit once the test opens the gate, and the rest lands at once.
+pcode.ui.PACED_DRAIN_FRAMES = 10**9
 
 class Runtime:
     session = None
@@ -633,10 +638,12 @@ class Runtime:
     async def stream(self, prompt):
         self.turns += 1
         if self.turns == 1:
-            block = "\\n".join(f"PACED_ROW_{i:03d}" for i in range(200))
+            block = "\\n".join(f"PACED_ROW_{i:03d}" for i in range(600))
             yield TextDelta("```text\\n" + block + "\\n```\\n\\nBLOCK_SETTLED\\n\\n")
             yield Message("")
         else:
+            await gate()
+            pcode.ui.PACED_DRAIN_FRAMES = 1
             yield Message("SECOND_TURN_DONE")
 
 PreviewApp(model="test:local", runtime=Runtime()).run()
@@ -644,28 +651,74 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 
 
 @pytest.mark.parametrize("pane", [PACED_SCRIPT], indirect=True)
-def test_paced_scrollback_rolls_a_block_out_and_keeps_taking_input(pane):
+def test_paced_scrollback_rolls_a_block_out_and_keeps_taking_input(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     deadline = time.monotonic() + TIMEOUT
     while "PACED_ROW_000" not in (history := scrollback(pane)):
         assert time.monotonic() < deadline, "The block never started to appear"
         time.sleep(0.02)
-    # The block is written a few rows per frame, so the first row shows while
-    # the last is still queued. One snapshot answers both: a second capture
-    # could land after a stalled test process let the whole roll-out finish.
-    assert "PACED_ROW_199" not in history
+    # The block is written a row per frame, so the first row shows while the
+    # last is still queued.
+    assert "PACED_ROW_599" not in history
     # Typing during the roll-out reaches the editor unchanged: the handoffs stay
     # in raw mode, so Return submits rather than landing as a newline.
     pane("send-keys", "-t", "preview:0.0", "-l", "next")
     pane("send-keys", "-t", "preview:0.0", "Enter")
+    # The second turn is running (its quote queues behind the block) and the
+    # editor is empty again, all while the block is still rolling out.
+    screen = capture(pane, "❯", running=True)
+    assert "next" not in screen
+    assert "PACED_ROW_599" not in scrollback(pane)
+    release()
     capture(pane, "SECOND_TURN_DONE")
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
-    positions = [history.index(f"PACED_ROW_{i:03d}") for i in range(200)]
+    positions = [history.index(f"PACED_ROW_{i:03d}") for i in range(600)]
     assert positions == sorted(positions)
-    assert history.count("PACED_ROW_199") == 1
+    assert history.count("PACED_ROW_599") == 1
     assert positions[-1] < history.index("BLOCK_SETTLED") < history.index("▌ next")
     assert history.index("▌ next") < history.index("SECOND_TURN_DONE")
+
+
+TYPED_SCRIPT = """
+import pcode.ui
+from pcode.app import PreviewApp
+from pcode.preferences import save_preferences
+from pcode.runtime import Message, TextDelta
+
+save_preferences(paced_scrollback="typed")
+# One character a step and no catch-up: the paragraph takes over a minute, so
+# the test sees it half typed however loaded the machine is, until the gate.
+pcode.ui.TYPED_CHARS_PER_STEP = 1
+pcode.ui.TYPED_DRAIN_STEPS = 10**9
+
+class Runtime:
+    session = None
+
+    async def stream(self, prompt):
+        words = " ".join(f"TYPED_W{i:03d}" for i in range(120))
+        yield TextDelta(words + "\\n\\nTYPED_DONE\\n\\n")
+        await gate()
+        pcode.ui.TYPED_CHARS_PER_STEP = 10**6
+        yield Message("")
+
+PreviewApp(model="test:local", runtime=Runtime()).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [TYPED_SCRIPT], indirect=True)
+def test_typed_scrollback_types_prose_live_and_writes_it_once(pane, release):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    screen = capture(pane, "TYPED_W000", running=True)
+    assert "TYPED_W119" not in screen
+    release()
+    capture(pane, "TYPED_DONE")
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    # The live row is erased as its text is written, never left behind.
+    for i in range(120):
+        assert history.count(f"TYPED_W{i:03d}") == 1
+    assert history.index("TYPED_W119") < history.index("TYPED_DONE")
 
 
 def single_editor_history(pane, marker, *, frames=1):

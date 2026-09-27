@@ -22,6 +22,7 @@ from rich.text import Text
 from pcode.cli import ask, restore_stdin
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
+from pcode.completion import complete_with
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.config import config_argument_descriptions, config_arguments, configure
 from pcode.controller import (
@@ -347,6 +348,13 @@ class PreviewApp:
                 group="Display",
             ),
             Command(
+                "/group-tools",
+                "Fold runs of tool calls into one scrollback line: on / off; bare toggles",
+                self.group_tools,
+                ("on", "off"),
+                group="Display",
+            ),
+            Command(
                 "/theme",
                 "Set the palette: dark / light / auto; bare toggles dark/light",
                 self.theme,
@@ -549,6 +557,7 @@ class PreviewApp:
         for key in [k for k in self.activity.command_outputs if not k.startswith(WATCHED_PREFIX)]:
             del self.activity.command_outputs[key]
         self.activity.plan_preview = None
+        self.transcript.settle_tools()
         self.output.end_turn()
         self.activity.tools.end_turn()
         self.activity.workers.end_turn()
@@ -689,6 +698,17 @@ class PreviewApp:
             self.transcript.output.app.invalidate()
         self.transcript.flash(
             f"Show edits: {'on' if shown else 'off'}. Usage: /show-edits [on|off]"
+        )
+
+    def group_tools(self, argument: str) -> None:
+        grouped = self.toggle_argument("/group-tools", argument, self.transcript.group_tools)
+        self.transcript.group_tools = grouped
+        self.persist_defaults(group_tools="on" if grouped else "off")
+        self.transcript.regenerate()
+        if self.transcript.output is not None:
+            self.transcript.output.app.invalidate()
+        self.transcript.flash(
+            f"Group tools: {'on' if grouped else 'off'}. Usage: /group-tools [on|off]"
         )
 
     def set_show_thinking(self, shown: bool) -> None:
@@ -1019,18 +1039,18 @@ class PreviewApp:
             self.stop_host("")
 
     def background_finished(self, entry) -> None:
-        """A turn ended in a session this terminal is not showing: say so, here and on the desktop.
+        """A turn ended in another session: say so on the desktop.
 
-        The desktop notification is for sessions nobody is looking at, and is
-        sent once per turn however many terminals notice it.
+        Nothing is written to this transcript: another session's turn is not
+        this conversation. Every finished turn is announced, watched or not,
+        and once per turn however many terminals notice it.
         """
         from pcode.host_protocol import claim
         from pcode.terminal_notify import notification
 
         what = {"failed": "failed", "cancelled": "was cancelled"}.get(entry.outcome, "finished")
         title = plain(entry.label(), 60)
-        self.transcript.note(f"Background session {entry.id} {what}: {title} · /switch shows it")
-        if entry.attached or self._emulator is None:
+        if self._emulator is None:
             return
         if claim(f"{entry.id}-{entry.turns}"):
             self._emulator(notification(f"pcode: {title} — {what}"))
@@ -1497,15 +1517,6 @@ class PreviewApp:
             segments.extend([("sep", " · "), ("activity", f"{running} btw running")])
         if unread := self.asides.unread:
             segments.extend([("sep", " · "), ("activity", f"{unread} btw ready")])
-        if self.hosts:
-            working = sum(entry.state == "working" for entry in self.hosts)
-            from pcode.host_ui import unseen
-
-            new = sum(unseen(entry) for entry in self.hosts)
-            label = f"{len(self.hosts)} other session{'s' if len(self.hosts) != 1 else ''}"
-            if details := [f"{working} working"] * bool(working) + [f"{new} new"] * bool(new):
-                label += f" ({', '.join(details)})"
-            segments.extend([("sep", " · "), ("activity", label)])
         segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
         context = self.controller.context_label()
         # Colorize the token counts distinctly from the " · " and "/" around them.
@@ -1698,7 +1709,7 @@ class PreviewApp:
                 session.app.invalidate()
 
         async def watch_hosts() -> None:
-            """Keep the footer's count of other sessions current, and say when one finishes."""
+            """Track other sessions for notifications, and say when one finishes."""
             from pcode.host_protocol import list_hosts
 
             # Finished-turn counts, not states: a turn shorter than the poll
@@ -2133,13 +2144,16 @@ def main() -> None:
         help="Run the conversation in a background session host that outlives this terminal "
         "(the default); --no-host runs it inside this terminal",
     )
-    parser.add_argument(
-        "--attach",
-        nargs="?",
-        const="",
-        metavar="HOST",
-        help="Attach to a running session host by host or session ID prefix; "
-        "omit HOST for the most recent",
+    complete_with(
+        parser.add_argument(
+            "--attach",
+            nargs="?",
+            const="",
+            metavar="HOST",
+            help="Attach to a running session host by host or session ID prefix; "
+            "omit HOST for the most recent",
+        ),
+        "hosts",
     )
     parser.add_argument("--hosts", action="store_true", help="List running session hosts and exit")
     parser.add_argument(

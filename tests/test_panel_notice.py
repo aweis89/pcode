@@ -55,7 +55,13 @@ def test_toggle_renders_above_the_editor_instead_of_entering_scrollback():
                 output=output,
             )
             app.transcript.output = type(
-                "Stub", (), {"app": session.app, "print": lambda *a, **k: None}
+                "Stub",
+                (),
+                {
+                    "app": session.app,
+                    "print": lambda *a, **k: None,
+                    "typing_fragments": lambda self: [],
+                },
             )()
             app.show_thinking("off")
             stream.seek(0)
@@ -68,6 +74,49 @@ def test_toggle_renders_above_the_editor_instead_of_entering_scrollback():
     assert "Show thinking: off" in screen
     # The frame below it proves the notice is chrome above the editor.
     assert screen.index("Show thinking: off") < screen.index("┌")
+
+
+def test_typed_row_sits_directly_under_scrollback_above_the_spinner():
+    async def run():
+        stream = StringIO()
+        app = PreviewApp(console=Console(file=stream, width=80, color_system=None))
+        app.activity.prompt_state = "running"
+        with create_pipe_input() as pipe:
+            output = Vt100_Output(stream, lambda: Size(rows=24, columns=80), enable_cpr=False)
+            session = create_prompt(
+                CommandRegistry(),
+                activity=app.activity,
+                transcript=app.transcript,
+                on_submit=lambda text: None,
+                input=pipe,
+                output=output,
+            )
+            app.transcript.output = type(
+                "Stub",
+                (),
+                {
+                    "app": session.app,
+                    "print": lambda *a, **k: None,
+                    "typing_fragments": lambda self: [("bold", "Half a sen")],
+                },
+            )()
+            with set_app(session.app):
+                session.app.renderer.render(session.app, session.app.layout)
+            screen = session.app.renderer._last_screen
+            return [
+                "".join(screen.data_buffer[row][col].char for col in range(80)).rstrip()
+                for row in range(screen.height)
+            ]
+
+    lines = asyncio.run(run())
+    # The layout's first row is the one under the cursor, where scrollback
+    # ends, so the typed text continues it flush left without a gap.
+    assert lines[0] == "Half a sen"
+    spinner = next(i for i, line in enumerate(lines) if "Working" in line)
+    frame = next(i for i, line in enumerate(lines) if line.startswith("┌"))
+    # Scrollback's own gap sits between the typed row and the spinner.
+    assert lines[spinner - 1] == ""
+    assert 0 < spinner < frame
 
 
 def test_side_question_and_job_icons_line_up_with_the_turn_spinner():
