@@ -1,4 +1,4 @@
-"""Durable reminder helper and Meridian-specific limit warnings."""
+"""Durable reminder helper and append-only limit warnings for Meridian and Claude Code."""
 
 import re
 from collections.abc import Callable
@@ -58,8 +58,14 @@ def _decile_key(text: str) -> str:
     return re.sub(r"\d+", "#", text) + str([int(p) // 10 for p in re.findall(r"(\d+)%", text)])
 
 
+# Providers that keep the history themselves, where editing a sent message
+# forces a replay: Meridian's lineage check and the `claude:` CLI transcript.
+APPEND_ONLY_SYSTEMS = frozenset({"meridian", "claude"})
+
+
 class MeridianLimitWarnings(WarnNearLimits):
-    """Warn against pcode's resolved window, and never remove sent Meridian text."""
+    """Warn against pcode's resolved window, and never remove text already sent
+    to a provider that keeps the history (`APPEND_ONLY_SYSTEMS`)."""
 
     async def _for_model(self, model) -> WarnNearLimits:
         """This capability, bound to the window the footer and compaction use.
@@ -82,7 +88,7 @@ class MeridianLimitWarnings(WarnNearLimits):
 
     async def before_model_request(self, ctx, request_context):
         warnings = await self._for_model(request_context.model)
-        if request_context.model.system != "meridian":
+        if request_context.model.system not in APPEND_ONLY_SYSTEMS:
             return await WarnNearLimits.before_model_request(warnings, ctx, request_context)
         original = request_context.messages
         if not original or not isinstance(original[-1], ModelRequest):

@@ -192,6 +192,9 @@ def catalog_key(model: str | Model, routes: dict[str, str] | None = None) -> str
     provider, sep, name = identity.partition(":")
     if not sep:
         return None
+    if provider == "claude":
+        # Claude Code serves Anthropic's models under their own names.
+        return f"anthropic:{name}"
     if not isinstance(model, str):
         endpoint = model.provider
         if endpoint is None:

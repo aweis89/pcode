@@ -30,6 +30,7 @@ from pcode.aside import (
     summary_request,
 )
 from pcode.commands import Command, CommandRegistry
+from pcode.error_report import error_message
 from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
 from pcode.preferences import (
     EFFORTS,
@@ -38,6 +39,7 @@ from pcode.preferences import (
     apply_thinking,
     effort_for,
     effort_setting,
+    effort_unavailable,
     from_project,
     load_preferences,
     save_model_effort,
@@ -516,9 +518,9 @@ class SessionController:
             ),
             Command(
                 "/login",
-                "Sign in to Anthropic, OpenAI Codex, or Claude for Meridian in a browser",
+                "Sign in to Anthropic, OpenAI Codex, or Claude Code (claude/meridian) in a browser",
                 self.login,
-                ("anthropic", "openai-codex", "meridian"),
+                ("anthropic", "openai-codex", "claude", "meridian"),
                 group="Model",
             ),
             Command(
@@ -621,8 +623,6 @@ class SessionController:
 
     def session_state(self) -> dict:
         """What a terminal attached to a host shows of the session, beyond the live panel."""
-        from pcode.live import error_message
-
         saved = getattr(self.runtime, "session", None)
         commands = []
         arguments = {}
@@ -1049,8 +1049,6 @@ class SessionController:
 
     async def consume(self) -> None:
         """Run queued messages one at a time, each once nothing holds the queue."""
-        from pcode.live import error_message
-
         await self.ready.wait()
         while self.running:
             await self.idle()
@@ -1141,8 +1139,6 @@ class SessionController:
     ) -> bool:
         """Run a turn: `resend` asks again from the last checkpoint, and `wake` is one
         a finished job started, shown as a badge rather than as typed text."""
-        from pcode.live import error_message
-
         runtime = self.runtime
         self.view.turn_started(text, echo=not wake)
         if wake:
@@ -1450,8 +1446,6 @@ class SessionController:
                 self.activity.finish_prompt("cancelled")
                 self.view.warning(cancelled)
             except Exception as error:
-                from pcode.live import error_message
-
                 self.activity.finish_prompt("failed")
                 self.view.error(error_message(error), title=failed)
             finally:
@@ -2116,8 +2110,6 @@ class SessionController:
         try:
             await self.activate_model(model)
         except Exception as error:
-            from pcode.live import error_message
-
             self.view.error(error_message(error), title="Model unchanged")
 
     async def activate_model(self, model: str) -> None:
@@ -2166,8 +2158,8 @@ class SessionController:
         # Signing in stores a credential; it does not require the conversation to
         # already be on Anthropic. A non-Anthropic session keeps its own model.
         source = argument.strip() or "anthropic"
-        if source not in {"anthropic", "openai-codex", "meridian"}:
-            self.view.note("Usage: /login [anthropic|openai-codex|meridian]")
+        if source not in {"anthropic", "openai-codex", "claude", "meridian"}:
+            self.view.note("Usage: /login [anthropic|openai-codex|claude|meridian]")
             return
         self.login_requested = source
 
@@ -2211,6 +2203,8 @@ class SessionController:
             await self.login_codex()
         elif source == "meridian":
             await self.login_meridian()
+        elif source == "claude":
+            await self.login_claude()
         else:
             await self.login_anthropic()
 
@@ -2231,6 +2225,41 @@ class SessionController:
                 f"Signed in to Claude ({target.label}"
                 + (f", {plan} plan" if plan else "")
                 + "). Meridian uses it from its next request; pcode stores nothing."
+            )
+        except asyncio.CancelledError:
+            self.view.note("Claude sign-in cancelled.")
+            raise
+        except LoginError as error:
+            self.view.error(str(error))
+        except Exception:
+            self.view.error("Claude sign-in failed. No credential details were logged.")
+
+    async def login_claude(self) -> None:
+        """Run Claude Code's own sign-in for `claude:` models, with the CLI they run."""
+        from pcode.auth import LoginError
+        from pcode.claude_sdk import LOGIN_ENV, cli_path
+        from pcode.meridian_setup import LoginTarget, claude_login
+
+        target = LoginTarget(os.environ.get("CLAUDE_CONFIG_DIR") or None, "Claude Code's login")
+        try:
+            self.view.note(
+                "Signing in to Claude Code with `claude auth login`. "
+                "Finish in the browser (Ctrl+C cancels)."
+            )
+            # Scrubbed as the requests are, so an API key cannot pass for the login.
+            status = await claude_login(
+                self.view.note,
+                target,
+                executable=cli_path(),
+                retry="/login claude",
+                extra_env=LOGIN_ENV,
+                for_meridian=False,
+            )
+            plan = status.get("subscriptionType")
+            self.view.note(
+                "Signed in to Claude Code"
+                + (f" ({plan} plan)" if plan else "")
+                + ". claude: models use it from their next request; pcode stores nothing."
             )
         except asyncio.CancelledError:
             self.view.note("Claude sign-in cancelled.")
@@ -2327,19 +2356,26 @@ class SessionController:
 
     def effort(self, argument: str) -> None:
         value = argument.strip().lower()
+        agent = getattr(self.runtime, "agent", None)
+        gated = agent is not None and effort_setting(self.model, agent.model) is None
         if not value:
             self.view.flash(
-                f"Effort: {self.current_effort()}. Usage: /effort low|medium|high|xhigh|default"
+                effort_unavailable(self.model)
+                if gated
+                else f"Effort: {self.current_effort()}. "
+                "Usage: /effort low|medium|high|xhigh|default"
             )
             return
         if value not in ("low", "medium", "high", "xhigh", "default"):
             self.view.flash("Usage: /effort low|medium|high|xhigh|default")
             return
-        agent = getattr(self.runtime, "agent", None)
-        if agent is None or effort_setting(self.model) is None:
-            self.view.flash(
-                "Effort control requires an OpenAI/Codex, Anthropic, or Meridian model."
-            )
+        if agent is None:
+            self.view.flash("Effort is unavailable until the agent has started.")
+            return
+        # `default` clears a level saved before the model was known to be gated,
+        # so it stays allowed where setting one does not.
+        if gated and value != "default":
+            self.view.flash(effort_unavailable(self.model))
             return
         # Replace rather than mutate: an active run keeps its captured settings.
         apply_effort(agent, self.model, value)
@@ -2349,6 +2385,9 @@ class SessionController:
             save_model_effort(self.model, value)
         except (OSError, ValueError):
             self.view.warning("Could not save defaults; this selection applies only here.")
+        if gated:
+            self.view.flash(f"Cleared the saved effort; {self.model} has no effort control.")
+            return
         self.view.flash(f"Effort: {self.current_effort()} (next turn).")
 
     def adjust_effort(self, direction: int) -> None:
@@ -2810,14 +2849,16 @@ class SessionController:
         if self.startup_pending or self.startup_error is not None:
             raise ValueError("/btw is unavailable until the agent has started.")
         # Refused the way /effort refuses it, before anything starts, rather
-        # than asking at an effort the provider would silently ignore.
+        # than asking at an effort the provider would reject. The conversation's
+        # own model is judged on the object /effort judges, so one command
+        # cannot accept what the other refuses; another model is judged on its
+        # name, which is all that is known before `side_model` resolves it.
+        agent = getattr(self.runtime, "agent", None)
         for target in models:
             name = target.model or self.model
-            if target.effort and effort_setting(name) is None:
-                raise ValueError(
-                    f"Effort control requires an OpenAI/Codex, Anthropic, or Meridian model; "
-                    f"{name} is not one."
-                )
+            resolved = getattr(agent, "model", None) if name == self.model else None
+            if target.effort and effort_setting(name, resolved) is None:
+                raise ValueError(effort_unavailable(name))
         await self.start_aside(question, models)
 
     async def start_aside(self, question: str, models: list[SideTarget] | None = None) -> None:
@@ -3044,7 +3085,6 @@ class SessionController:
     def command_failed(self, name: str, error: Exception) -> None:
         """Report a slash command that raised, with frames saved for diagnosis."""
         from pcode.diagnostics import stale_install
-        from pcode.live import error_message
 
         self.view.error(error_message(error, unexpected=f"{name} failed"))
         if hint := stale_install():

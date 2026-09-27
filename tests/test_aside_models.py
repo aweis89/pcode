@@ -12,6 +12,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.profiles.anthropic import AnthropicModelProfile
 from rich.console import Console
 
 from pcode.agent import SideModel, create_coder, side_model
@@ -318,7 +319,11 @@ def test_an_effort_reaches_the_request_on_the_conversations_model_and_another(
     conversation = {"temperature": 0.5, "anthropic_effort": "high"}
     runtime = AgentRuntime(
         Agent(
-            FunctionModel(stream_function=main_model, model_name="main"),
+            FunctionModel(
+                stream_function=main_model,
+                model_name="main",
+                profile=AnthropicModelProfile(anthropic_supports_effort=True),
+            ),
             capabilities=[create_coder(tmp_path), Recorder(seen)],
             model_settings=conversation,
         )
@@ -329,7 +334,9 @@ def test_an_effort_reaches_the_request_on_the_conversations_model_and_another(
         "side_model",
         lambda name, effort="": SideModel(name, other, {"openai_reasoning_effort": effort}),
     )
-    app = PreviewApp(model="anthropic:claude-x", runtime=runtime, console=Console(file=StringIO()))
+    app = PreviewApp(
+        model="anthropic:claude-opus-4-5", runtime=runtime, console=Console(file=StringIO())
+    )
 
     async def settled():
         while app.asides.running:
@@ -389,6 +396,35 @@ def test_btw_refuses_an_effort_on_a_model_without_effort_control():
     btw("$nowhere:model why?")
     btw("$openai:gpt-5+high why?")
     start.assert_awaited_with("why?", [SideTarget("openai:gpt-5", "high")])
+
+
+def test_btw_judges_anthropic_effort_the_way_effort_does():
+    """The conversation's own model is judged on the object /effort judges."""
+    model = FunctionModel(
+        lambda *args: None,
+        model_name="claude-haiku-4-5",
+        profile=AnthropicModelProfile(anthropic_supports_effort=False),
+    )
+    app = PreviewApp(
+        model="anthropic:claude-haiku-4-5",
+        runtime=AgentRuntime(Agent(model)),
+        console=Console(file=StringIO()),
+    )
+    start = app.controller.start_aside = AsyncMock()
+
+    def btw(argument):
+        asyncio.run(app.controller.aside(argument))
+
+    with pytest.raises(ValueError, match="claude-haiku-4-5 has no effort control"):
+        btw("+low why?")
+    with pytest.raises(ValueError, match="claude-haiku-4-5 has no effort control"):
+        btw("$anthropic:claude-haiku-4-5+high why?")
+    start.assert_not_awaited()
+    # An aside without an effort still runs on the gated model.
+    btw("why?")
+    # A model that does support effort is not caught by the gate.
+    btw("$anthropic:claude-opus-4-5+high why?")
+    start.assert_awaited_with("why?", [SideTarget("anthropic:claude-opus-4-5", "high")])
 
 
 class FanOutRuntime:
