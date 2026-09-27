@@ -171,6 +171,12 @@ Lua config puts it. A busy tab is visible from the others.
 | Paused (orange in Ghostty) | A failed provider request is being retried |
 | Error (red in Ghostty) | The last turn failed; any key in that terminal, or the next turn, clears it |
 
+`--print` shows the bar too, from launch until it exits (with `--attach`, while
+the host works on the message or on the turns queued ahead of it), and takes
+it down on exit. It goes to stderr, or to stdout when only that is a terminal,
+so a reply piped elsewhere still leaves the bar on the terminal. When neither
+is a terminal, nothing is sent.
+
 The protocol carries only a state and a percentage, so the colours are the
 terminal's: Ghostty uses the macOS accent colour for a running bar, kitty uses
 its `scrollbar_*` colours. Hide it on the terminal's side with Ghostty's

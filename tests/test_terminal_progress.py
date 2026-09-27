@@ -1,5 +1,7 @@
 import asyncio
 import os
+import pty
+from io import StringIO
 
 import pytest
 
@@ -15,6 +17,7 @@ from pcode.terminal_notify import (
     environment_supports,
     progress,
     progress_transport,
+    terminal_fd,
 )
 from pcode.ui import Activity
 
@@ -232,9 +235,51 @@ def test_a_pipe_gets_nothing():
         os.close(write)
 
 
-def test_cancelling_the_task_clears_a_real_terminal():
-    import pty
+def test_no_terminal_sends_nothing_and_its_hooks_still_work():
+    tab = TabProgress(Activity(prompt_state="running"), None, "on", env={"TERM_PROGRAM": "ghostty"})
 
+    async def run():
+        async with tab.shown():
+            tab.turn_retry()
+            tab.turn_event()
+            await asyncio.sleep(0.05)
+
+    asyncio.run(run())
+    assert tab.wrap is None and tab.sent is None
+
+
+def test_the_terminal_is_the_first_stream_that_is_one():
+    main, terminal = pty.openpty()
+    read, write = os.pipe()
+    try:
+        with open(write, "w", closefd=False) as pipe, open(terminal, "w", closefd=False) as tty:
+            assert terminal_fd(StringIO(), pipe, tty) == terminal
+            assert terminal_fd(tty, pipe) == terminal
+            assert terminal_fd(StringIO(), pipe) is None
+            assert terminal_fd(None) is None
+    finally:
+        for fd in (main, terminal, read, write):
+            os.close(fd)
+
+
+def test_shown_takes_the_bar_down_as_its_block_ends():
+    main, terminal = pty.openpty()
+    try:
+        activity = Activity(prompt_state="running")
+        tab = TabProgress(activity, terminal, "auto", env={"TERM_PROGRAM": "ghostty"})
+
+        async def run():
+            async with tab.shown():
+                await asyncio.sleep(0.1)
+
+        asyncio.run(run())
+        assert os.read(main, 4096) == (progress(INDETERMINATE) + progress(CLEAR)).encode()
+    finally:
+        os.close(main)
+        os.close(terminal)
+
+
+def test_cancelling_the_task_clears_a_real_terminal():
     main, terminal = pty.openpty()
     try:
         activity = Activity(prompt_state="running")

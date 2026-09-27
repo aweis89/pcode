@@ -18,6 +18,7 @@ from pcode.controller import TERMINAL_COMMANDS
 from pcode.host_protocol import HostEntry
 from pcode.remote import HostError, RemoteController, stop_entry
 from pcode.rpc import RemoteError
+from pcode.runtime import PlanUpdated
 from pcode.stream_display import PrintedReply
 from pcode.ui import Activity
 
@@ -35,6 +36,8 @@ class PrintView:
         self.reply = reply
         # The host's live-panel fields, mirrored by the RemoteController.
         self.activity = Activity()
+        # Busy while the host works, on this message or the turns ahead of it.
+        self.tab = reply.tab_progress(self.activity)
         # Whether the message's turn is running, or the command sent is.
         self.turn = False
         self.command = False
@@ -80,10 +83,14 @@ class PrintView:
 
     def turn_event(self, event) -> None:
         if self.turn:
+            self.tab.turn_event()
+            if isinstance(event, PlanUpdated):
+                self.activity.plan = event.items
             self.reply.event(event)
 
     def turn_retry(self, text: str) -> None:
         if self.turn:
+            self.tab.turn_retry()
             self.reply.settle()
             self.transcript.note(text)
 
@@ -153,6 +160,13 @@ async def print_to_host(entry: HostEntry, prompt: str, *, transcript, present, s
         sys.stdout if stdout is None else stdout, transcript=transcript, present=present
     )
     view = PrintView(transcript, reply)
+    async with view.tab.shown():
+        return await _send(entry, prompt, name, view)
+
+
+async def _send(entry: HostEntry, prompt: str, name: str, view: PrintView) -> bool:
+    """Attach, send the message or command, and write what it produces."""
+    transcript, reply = view.transcript, view.reply
     controller, welcome = await RemoteController.connect(entry.socket, view, view.activity)
     # Wired before anything else is awaited, so no close goes unnoticed.
     controller.on_closed = lambda: view.host_gone(stopped=controller.host_stopped)
