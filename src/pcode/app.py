@@ -1517,15 +1517,6 @@ class PreviewApp:
             segments.extend([("sep", " · "), ("activity", f"{running} btw running")])
         if unread := self.asides.unread:
             segments.extend([("sep", " · "), ("activity", f"{unread} btw ready")])
-        if self.hosts:
-            working = sum(entry.state == "working" for entry in self.hosts)
-            from pcode.host_ui import unseen
-
-            new = sum(unseen(entry) for entry in self.hosts)
-            label = f"{len(self.hosts)} other session{'s' if len(self.hosts) != 1 else ''}"
-            if details := [f"{working} working"] * bool(working) + [f"{new} new"] * bool(new):
-                label += f" ({', '.join(details)})"
-            segments.extend([("sep", " · "), ("activity", label)])
         segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
         context = self.controller.context_label()
         # Colorize the token counts distinctly from the " · " and "/" around them.
@@ -1718,7 +1709,7 @@ class PreviewApp:
                 session.app.invalidate()
 
         async def watch_hosts() -> None:
-            """Keep the footer's count of other sessions current, and say when one finishes."""
+            """Track other sessions for notifications, and say when one finishes."""
             from pcode.host_protocol import list_hosts
 
             # Finished-turn counts, not states: a turn shorter than the poll
