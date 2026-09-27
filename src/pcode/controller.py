@@ -68,6 +68,7 @@ TERMINAL_COMMANDS = frozenset(
         "/switch",
         "/restart",
         "/stop",
+        "/detach",
         "/show-tasks",
         "/autohide-tasks",
         "/show-thinking",
@@ -1207,12 +1208,14 @@ class SessionController:
             if hint := stale_install():
                 self.view.warning(hint)
         if (cancelled or failure) and runtime.session:
-            directory = runtime.session.directory
-            # Name the traceback file rather than the directory it sits in: the
-            # frames are the point of looking, and a cancelled turn writes none.
-            errors = directory / "errors.log"
-            target = errors if failure and errors.exists() else directory
-            self.view.note(f"Session and diagnostics: {target}")
+            # A cancel is something the user asked for, so it has nothing worth
+            # pointing at. Name the traceback file rather than the directory it
+            # sits in: the frames are the point of looking.
+            if failure:
+                directory = runtime.session.directory
+                errors = directory / "errors.log"
+                target = errors if errors.exists() else directory
+                self.view.note(f"Session and diagnostics: {target}")
             if runtime.recovery_blocked:
                 self.view.warning(runtime.recovery_blocked)
         return not (cancelled or failure)

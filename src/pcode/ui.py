@@ -2374,9 +2374,7 @@ class Transcript:
     @recorded
     def cancelled(self) -> None:
         self.settle_orphans()
-        self.print(
-            TranscriptNotice("Completed tool effects are not undone.", "cancelled", "Run cancelled")
-        )
+        self.print(TranscriptNotice("", "cancelled", "Run cancelled"))
 
     @recorded
     def user(self, text: str) -> None:

@@ -38,9 +38,9 @@ Inside a hosted session:
   conversation up again in the same worktree. A host keeps the code it started
   with, so this is how a long-running session gets a fix you just merged; the
   picker and `--hosts` mark hosts that are on older code.
-- `/stop` ends this session's host and quits, asking about the worktree the way a
-  local exit does. Plain quitting (Ctrl+D, `/quit`, or closing the terminal)
-  only detaches.
+- Quitting (Ctrl+D, `/quit`, or `/stop`) ends this session's host, asking about
+  the worktree the way a local exit does. `/detach` quits but leaves the host
+  running for `pcode --attach`, as closing the terminal window does.
 
 ### Scripting a running host
 
