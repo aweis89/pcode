@@ -59,27 +59,36 @@ pcode --attach 3f9c -p /stop                                     # end the host
 `pcode -p --attach "..."`, which reads the message as a host ID.
 
 - A message waits behind whatever the host is already doing, then runs as its
-  own turn. Only that turn is printed: the reply on stdout, tools and notes on
-  stderr, as for a local `--print`. The exit status says whether it succeeded.
-  It also fails, once the host has nothing left to do, if the message never
-  ran because the host's queue was cleared first (a Ctrl+C in another terminal,
-  or a turn ahead of it failing).
+  own turn, never mixed into one already running. That turn is printed: the
+  reply on stdout, tools and notes on stderr, as for a local `--print` (notes
+  another terminal causes meanwhile appear there too). The exit status says
+  whether the turn succeeded. It fails at once if the message is dropped
+  before running, because the host's queue was cleared (a Ctrl+C in another
+  terminal, or a turn ahead of it failing).
+- The message is always sent to the model: a leading `!` does not make it a
+  shell command, as it would typed into an attached terminal.
 - A session command (`/compact`, `/effort high`, `/model NAME`, ...) runs in the
   host, and pcode exits once it has, including compaction or MCP work it started.
   It exits non-zero if the command did not run (its queue was cleared) or
   reported an error or a warning, such as `/compact` refused while a turn runs.
   Anything else the host reports meanwhile counts too. A command that opens a
   picker (a bare `/model`) fails, since nobody is there to pick. Commands that
-  queue a turn of their own (a skill, `/resend`) exit without waiting for it.
+  queue a turn of their own (a skill, `/resend`) exit without waiting for it. A
+  command that ends the session (`/worktree finish`) succeeds; a host stopped
+  under a command by anything else is a failure.
 - `/stop` ends the host, which tidies its own worktree the way `worktree_exit`
   says, without asking, since nobody is there to be asked. Its notes about that
   go to the host's log. Other terminal commands (`/tree`, `/switch`, ...) need
   the editor and are refused.
-- Ctrl+C only detaches: the message's turn keeps running (or stays queued) in
-  the host. Stop it from an attached terminal, where Ctrl+C also clears the
-  host's queue.
-- The host must be running this version of pcode or later; an older one is
-  named, and `/restart` updates it.
+- Ctrl+C only detaches (exit status 130): the message's turn keeps running, or
+  stays queued, in the host. Stop it from an attached terminal, where Ctrl+C
+  also clears the host's queue.
+- The session's own settings apply: `-m`, `--no-save`, `--worktree`, and
+  `--continue` are ignored. (`pcode --continue ID -p ...` without `--attach`
+  still runs a copy of the session locally, even while a host runs it.)
+- The host must be running this version of pcode or later. An older one
+  refuses with a message saying so, and `/restart` in an attached terminal
+  updates it.
 
 The footer counts the other running sessions, how many are working, and how
 many finished while nobody was looking (*new*; the picker lists those first).
