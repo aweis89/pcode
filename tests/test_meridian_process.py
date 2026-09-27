@@ -132,6 +132,11 @@ def test_start_isolates_config_persists_sessions_and_cleans_up(monkeypatch, tmp_
         assert "MERIDIAN_PROFILES" not in env
         assert "CLAUDE_PROXY_PLUGIN_DIR" not in env
         assert env["MERIDIAN_API_KEY"] == instance.api_key
+        # Claude Code counts files under its cwd on every request: keep it empty.
+        workdir = root / "workdir"
+        assert env["MERIDIAN_WORKDIR"] == str(workdir)
+        assert spawn.call_args.kwargs["cwd"] == workdir
+        assert workdir.is_dir() and not any(workdir.iterdir())
         assert json.loads((root / "sdk-features.json").read_text()) == {
             "passthrough": {"thinkingPassthrough": True}
         }

@@ -124,6 +124,7 @@ class ManagedMeridian:
         )
         (root / "plugins").mkdir()
         (root / "plugins.json").write_text("[]")
+        (root / "workdir").mkdir()
         profile = default_profile()
         if profile is not None:
             # 1.72 reads profiles from ~/.config/meridian whatever MERIDIAN_CONFIG_DIR
@@ -173,6 +174,11 @@ class ManagedMeridian:
                 "MERIDIAN_NO_UPDATE_CHECK": "1",
                 "MERIDIAN_TELEMETRY_PERSIST": "0",
                 "MERIDIAN_PASSTHROUGH": "1",
+                # Claude Code counts the files under its cwd on every start
+                # (`rg --files --hidden`, skipped only for $HOME), and Meridian
+                # starts one per request. Tools run in pcode, so give it an
+                # empty directory rather than wherever pcode was launched.
+                "MERIDIAN_WORKDIR": str(root / "workdir"),
             }
         )
         if self.profile:
@@ -181,6 +187,7 @@ class ManagedMeridian:
         self.process = subprocess.Popen(
             [self.executable],
             env=env,
+            cwd=root / "workdir",
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
