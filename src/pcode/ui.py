@@ -2143,6 +2143,15 @@ def create_prompt(
     return session
 
 
+def tool_count(name: str, count: int, failed: int) -> str:
+    """One tool's part of a group line: `Read`, `Read ×3`, `Search ✗`, `Search ✓2 ✗1`."""
+    if not failed:
+        return f"{name} ×{count}" if count > 1 else name
+    if failed == count:
+        return f"{name} ✗{count}" if count > 1 else f"{name} ✗"
+    return f"{name} ✓{count - failed} ✗{failed}"
+
+
 class Transcript:
     """Persistent Rich output: anything written here belongs in terminal scrollback.
 
@@ -2302,44 +2311,31 @@ class Transcript:
     def groups(self, event: ToolSummary) -> bool:
         """Report whether this call's summary line folds into the run's group line.
 
-        A failure keeps its own line, a delegate heads its own calls, and a
-        background job's exit is a delayed notice, not part of the run.
+        A delegate heads its own calls, and a background job's exit is a
+        delayed notice, not part of the run. A failure folds in like any call.
         """
-        return (
-            self.group_tools
-            and not event.failed
-            and event.name != DELEGATE
-            and event.execution != "background"
-        )
+        return self.group_tools and event.name != DELEGATE and event.execution != "background"
 
     def group_lines(self, events: list[ToolSummary], *, indent: int = 0) -> list[Text]:
-        """Fold consecutive successful calls into one line; failures stand alone."""
-        lines: list[Text] = []
-        run: list[ToolSummary] = []
-
-        def close() -> None:
-            if len(run) == 1:
-                # A run of one says more as the call's own line.
-                lines.extend(self.summary_lines(run[0], indent=indent))
-            elif run:
-                lines.append(self.group_line(run, width=max(1, self.console.width - indent)))
-            run.clear()
-
-        for event in events:
-            if event.failed:
-                close()
-                lines.extend(self.summary_lines(event, indent=indent))
-            else:
-                run.append(event)
-        close()
-        return lines
+        """Fold a run of calls into one line; a run of one keeps the call's own line."""
+        if len(events) == 1:
+            return self.summary_lines(events[0], indent=indent)
+        if not events:
+            return []
+        return [self.group_line(events, width=max(1, self.console.width - indent))]
 
     @staticmethod
     def group_line(events: list[ToolSummary], *, width: int) -> Text:
-        """`✓ 15 tools · Edit ×10 · Run ×5`, most used first."""
+        """`✓ 15 tools · Edit ×10 · Run ×5`, most used first.
+
+        Failures split their tool's count and turn the run's marker, so a run
+        that hit one still stands out: `✗ 6 tools · Read ×3 · Search ✓2 ✗1`.
+        """
         counts = Counter(label(event.name) for event in events)
-        parts = [f"{name} ×{count}" if count > 1 else name for name, count in counts.most_common()]
-        line = Text(f"✓ {len(events)} tools · " + " · ".join(parts), style="pcode.thinking")
+        failures = Counter(label(event.name) for event in events if event.failed)
+        parts = [tool_count(name, count, failures[name]) for name, count in counts.most_common()]
+        marker = "✗" if failures else "✓"
+        line = Text(f"{marker} {len(events)} tools · " + " · ".join(parts), style="pcode.thinking")
         line.no_wrap = True
         line.overflow = "ellipsis"
         line.truncate(width, overflow="ellipsis")

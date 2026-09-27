@@ -80,15 +80,34 @@ def test_a_run_of_one_keeps_the_calls_own_line():
     assert stream.getvalue().startswith("✓ Edit  f1.py → edited")
 
 
-def test_a_failure_keeps_its_own_line_between_the_runs_around_it():
+def test_a_failure_folds_into_the_run_and_splits_its_tools_count():
     view, stream = grouped()
     for event in (edit(1), edit(2), run(1, failed=True), edit(3), run(2)):
         view.tool_result(event)
+    assert view.pending_group_row(80) == "✗ 5 tools · Edit ×3 · Run ✓1 ✗1"
     view.settle_tools()
-    lines = stream.getvalue().splitlines()
-    assert lines[0] == "✓ 2 tools · Edit ×2"
-    assert lines[1].startswith("✗ Run")
-    assert lines[2] == "✓ 2 tools · Edit · Run"
+    assert stream.getvalue() == "✗ 5 tools · Edit ×3 · Run ✓1 ✗1\n"
+    assert replayed(view) == stream.getvalue()
+
+
+def test_a_tool_that_only_failed_shows_just_the_failure_marker():
+    view, stream = grouped()
+    for event in (edit(1), run(1, failed=True), run(2, failed=True)):
+        view.tool_result(event)
+    view.settle_tools()
+    assert stream.getvalue() == "✗ 3 tools · Run ✗2 · Edit\n"
+    view, stream = grouped()
+    for event in (edit(1), edit(2), run(1, failed=True)):
+        view.tool_result(event)
+    view.settle_tools()
+    assert stream.getvalue() == "✗ 3 tools · Edit ×2 · Run ✗\n"
+
+
+def test_a_lone_failure_keeps_its_own_line():
+    view, stream = grouped()
+    view.tool_result(run(1, failed=True))
+    view.events((Message("Done."),))
+    assert stream.getvalue().startswith("✗ Run")
 
 
 def test_a_background_job_exit_is_not_folded_into_the_run():
@@ -118,9 +137,8 @@ def test_a_delegate_gets_its_own_line_with_its_calls_folded_beneath():
     lines = stream.getvalue().splitlines()
     assert lines[0] == "✓ 2 tools · Edit ×2"
     assert lines[1] == "✓ Delegate  worker · look → Completed"
-    assert lines[2] == "    ✓ 3 tools · Read ×2 · Run"
-    assert lines[3].startswith("    ✗ Run")
-    assert lines[4].startswith("✓ Edit  f3.py")
+    assert lines[2] == "    ✗ 4 tools · Read ×2 · Run ✓1 ✗1"
+    assert lines[3].startswith("✓ Edit  f3.py")
     assert replayed(view) == stream.getvalue()
 
 
