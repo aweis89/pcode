@@ -40,6 +40,34 @@ Provider limits and machine resources still apply. Specialized extension
 delegates keep their own tool configuration rather than automatically gaining
 the worker's tools.
 
+### Sub-agents on other models
+
+By default every sub-agent runs on the session's model. `/subagents` lets the
+model hand a delegation to a different provider instead, with the worker's
+tools and permissions unchanged:
+
+```text
+❯ /subagents openai-codex:gpt-6-astra anthropic:claude-sonnet-5
+```
+
+`delegate_task` then takes an optional `model`, limited to the names listed, and
+the prompt lists them for the model to choose from. Omitting it still means the
+session's model. Each name completes from the `/model` catalog as you type, and
+is resolved the way a [`/btw` side question](side-questions.md#choosing-the-model)
+resolves another model: on pcode's own logins, with that model's defaults and
+saved `/effort`. A name that cannot be resolved (a typo, a provider you are not
+signed in to) is refused before anything is saved.
+
+- `/subagents` alone lists the models, flagging any saved one that no longer
+  resolves; it is left out of the list the model sees.
+- `/subagents off` clears the list.
+- Setting the list saves `subagent_models` and reloads the agent like `/reload`.
+  The tool schema and prompt change, so the next request rebuilds the prompt
+  cache. A delegation on another model also starts without the parent's cache.
+
+`pcode config set subagent_models A,B` does the same from the shell, taking
+effect at the next launch or `/reload`.
+
 ### Worker worktrees
 
 Worker isolation is **opt-in**: `worker_isolation` defaults to `off`. Enabling

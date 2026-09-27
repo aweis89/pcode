@@ -167,6 +167,11 @@ class _Calls:
         return call
 
 
+# The host's argument completers a terminal can run itself: each reads only the
+# model catalog the host sends with its state.
+COMPLETERS = frozenset({"aside_completions", "model_list_completions"})
+
+
 def _proxy(state: dict, controller: "RemoteController") -> Command:
     """A command the host runs, listed here for help and completion."""
     name = state["name"]
@@ -184,7 +189,9 @@ def _proxy(state: dict, controller: "RemoteController") -> Command:
         argument_provider=lambda: tuple(controller.arguments.get(name, ())),
         group=state.get("group") or "Other",
         argument_descriptions=state.get("argument_descriptions") or None,
-        argument_completer=controller.aside_completions if state.get("models") else None,
+        argument_completer=getattr(controller, completer)
+        if (completer := state.get("completer")) in COMPLETERS
+        else None,
     )
 
 
@@ -192,6 +199,7 @@ class RemoteController:
     """A session host's controller, as seen from an attached terminal."""
 
     aside_completions = SessionController.aside_completions
+    model_list_completions = SessionController.model_list_completions
 
     def __init__(self, view, activity) -> None:
         self.view = view

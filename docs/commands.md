@@ -69,6 +69,9 @@ candidate's size so that cost is visible before you pick.
   `/logout [anthropic|openai-codex]` removes pcode's stored login, leaving CLI credentials untouched. Both require an idle conversation.
 - `/model`: searchable model picker for configured providers (keeps the conversation;
   applies from the next request when chosen mid-run).
+- `/subagents [MODEL ...|off]`: the models `delegate_task` may run a sub-agent on; each
+  word completes from the `/model` catalog. Bare lists them, `off` clears them
+  ([details](tools.md#sub-agents-on-other-models)).
 - `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
 - `/tools failed`: open the same inspector filtered to failures.
 - `/diffs`: review the session's work as a git diff, one entry per file, in a

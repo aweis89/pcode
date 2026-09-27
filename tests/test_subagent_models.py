@@ -1,0 +1,207 @@
+"""`subagent_models`: which models `delegate_task` may run a sub-agent on."""
+
+import asyncio
+import json
+from io import StringIO
+
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
+from pydantic_ai import Agent
+from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from rich.console import Console
+
+from pcode import agent as agent_module
+from pcode.agent import SideModel, create_coder, subagent_menu
+from pcode.app import PreviewApp
+from pcode.commands import SlashCompleter
+from pcode.live import AgentRuntime
+from pcode.preferences import save_preferences, subagent_models
+
+
+def fake_side_model(models):
+    """A `side_model` stand-in resolving only the names in `models`."""
+
+    def resolve(name, effort=""):
+        if name not in models:
+            raise ValueError(f"Cannot use {name}: no credentials")
+        return SideModel(name, models[name], {"temperature": 0.5})
+
+    return resolve
+
+
+def test_the_setting_reads_as_ordered_unique_names():
+    assert subagent_models() == []
+    save_preferences(subagent_models="b:y,a:x,b:y")
+    assert subagent_models() == ["b:y", "a:x"]
+
+
+def test_the_menu_keeps_resolvable_models_and_reports_the_rest(monkeypatch):
+    model = FunctionModel(lambda messages, info: None)
+    monkeypatch.setattr(agent_module, "side_model", fake_side_model({"a:x": model}))
+    menu, problems = subagent_menu(["a:x", "b:y"])
+    assert list(menu) == ["a:x"]
+    assert menu["a:x"].model is model and menu["a:x"].settings == {"temperature": 0.5}
+    assert problems == ["Cannot use b:y: no credentials"]
+
+
+def test_a_delegation_runs_on_the_model_it_picks(tmp_path, monkeypatch):
+    """The worker keeps its tools but answers from the chosen menu model."""
+    seen = {}
+
+    async def child(messages, info):
+        seen["tools"] = {tool.name for tool in info.function_tools}
+        yield "from the other provider"
+
+    monkeypatch.setattr(
+        agent_module,
+        "side_model",
+        fake_side_model({"other:big": FunctionModel(stream_function=child)}),
+    )
+    save_preferences(subagent_models="other:big")
+
+    async def parent(messages, info):
+        delegate = next(tool for tool in info.function_tools if tool.name == "delegate_task")
+        seen["enum"] = delegate.parameters_json_schema["properties"]["model"]["enum"]
+        if any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts):
+            yield "done"
+            return
+        yield {
+            0: DeltaToolCall(
+                name="delegate_task",
+                json_args=json.dumps(
+                    {"agent_name": "worker", "task": "Look around", "model": "other:big"}
+                ),
+                tool_call_id="call",
+            )
+        }
+
+    runtime = AgentRuntime(
+        Agent(FunctionModel(stream_function=parent), capabilities=[create_coder(tmp_path)])
+    )
+
+    async def run():
+        async for _ in runtime.stream("Delegate it"):
+            pass
+
+    asyncio.run(run())
+    assert seen["enum"] == ["other:big"]
+    assert "read_file" in seen["tools"] and "delegate_task" not in seen["tools"]
+    returned = [
+        part.content
+        for message in runtime.history
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+    assert returned == ["from the other provider"]
+
+
+def test_without_models_delegate_task_offers_no_model_argument(tmp_path):
+    async def parent(messages, info):
+        delegate = next(tool for tool in info.function_tools if tool.name == "delegate_task")
+        assert "model" not in delegate.parameters_json_schema["properties"]
+        yield "fine"
+
+    runtime = AgentRuntime(
+        Agent(FunctionModel(stream_function=parent), capabilities=[create_coder(tmp_path)])
+    )
+
+    async def run():
+        async for _ in runtime.stream("hi"):
+            pass
+
+    asyncio.run(run())
+
+
+def test_the_command_sets_lists_and_clears_the_models(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    model = FunctionModel(lambda messages, info: None)
+    monkeypatch.setattr(agent_module, "side_model", fake_side_model({"a:x": model, "b:y": model}))
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output, width=200), workspace=tmp_path, model="test")
+    controller = app.controller
+
+    async def scenario():
+        await app._initialize_runtime()
+        await controller.run_command("/subagents")
+        assert "No sub-agent models" in output.getvalue()
+
+        await controller.run_command("/subagents a:x b:y a:x")
+        assert subagent_models() == ["a:x", "b:y"]
+        assert controller.reload_requested
+        await controller.reload_extensions()
+        assert "Sub-agent models: a:x, b:y. Reloading." in output.getvalue()
+
+        # A name that does not resolve is refused, and nothing is saved.
+        await controller.run_command("/subagents a:x nope:z")
+        assert "Cannot use nope:z: no credentials" in output.getvalue()
+        assert subagent_models() == ["a:x", "b:y"]
+        assert not controller.reload_requested
+
+        # One saved earlier that no longer resolves is listed as left out.
+        save_preferences(subagent_models="a:x,gone:q")
+        await controller.run_command("/subagents")
+        assert "  a:x\nUnavailable, left out: Cannot use gone:q" in output.getvalue()
+
+        await controller.run_command("/subagents off")
+        assert subagent_models() == []
+        await controller.reload_extensions()
+        app.runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_setting_models_waits_for_the_running_turn(tmp_path, monkeypatch):
+    model = FunctionModel(lambda messages, info: None)
+    monkeypatch.setattr(agent_module, "side_model", fake_side_model({"a:x": model}))
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output, width=200), workspace=tmp_path, model="test")
+
+    async def scenario():
+        await app._initialize_runtime()
+        app.activity.busy = True
+        await app.controller.run_command("/subagents a:x")
+        app.activity.busy = False
+        app.runtime.close()
+
+    asyncio.run(scenario())
+    assert "/reload is unavailable while working" in output.getvalue()
+    assert subagent_models() == []
+
+
+def test_model_names_complete_for_every_word(monkeypatch):
+    app = PreviewApp(console=Console(file=StringIO()))
+    monkeypatch.setattr(
+        app.controller,
+        "model_suggestions",
+        lambda: ["anthropic:claude-opus", "openai-codex:gpt-6-astra", "openai:gpt-6"],
+    )
+    completer = SlashCompleter(app.registry)
+
+    def complete(text):
+        return [
+            (item.text, item.start_position)
+            for item in completer.get_completions(Document(text), CompleteEvent())
+        ]
+
+    assert complete("/subagents ") == [
+        ("off", 0),
+        ("anthropic:claude-opus", 0),
+        ("openai-codex:gpt-6-astra", 0),
+        ("openai:gpt-6", 0),
+    ]
+    assert complete("/subagents o") == [
+        ("off", -1),
+        ("anthropic:claude-opus", -1),
+        ("openai-codex:gpt-6-astra", -1),
+        ("openai:gpt-6", -1),
+    ]
+    assert complete("/subagents astra") == [("openai-codex:gpt-6-astra", -5)]
+    # Later words complete too, without repeating a name already typed.
+    assert complete("/subagents openai-codex:gpt-6-astra gpt") == [("openai:gpt-6", -3)]
+    assert complete("/subagents anthropic:claude-opus ") == [
+        ("openai-codex:gpt-6-astra", 0),
+        ("openai:gpt-6", 0),
+    ]
+    # `off` stands alone.
+    assert complete("/subagents off ") == []

@@ -43,6 +43,7 @@ def make_app(width=80, workspace=None):
                 "/login",
                 "/logout",
                 "/extensions",
+                "/subagents",
                 "/reload",
                 "/new",
                 "/resume",

@@ -139,6 +139,7 @@ is only sensible on a machine where you wrote all of them.
 | `worktree` | `off` | `on`, `off` (start new sessions in `.worktrees/` git worktrees; does not enable worker isolation on its own) |
 | `worker_isolation` | `off` | `on`, `off` (opt in to isolated built-in worker tasks; also requires effective `worktree=on`, not just the CLI launch override; checked at each delegation) |
 | `worker_concurrency` | `0` | `0` means unlimited; a positive integer caps concurrent built-in workers per session; `/reload` to apply |
+| `subagent_models` | `` | `,`-separated models `delegate_task` may run a sub-agent on ([`/subagents`](tools.md#sub-agents-on-other-models)); empty runs every sub-agent on the session's model; `/reload` to apply |
 | `session_host_idle_minutes` | `60` | whole minutes a [background session](sessions.md#background-sessions) may sit idle with no terminal before its host stops; `0` never stops |
 | `desktop_notifications` | `on` | `on`, `off` (desktop notification when a background session finishes, and tab progress while working; OSC 9) |
 | `session_host` | `on` | `on`, `off` (run sessions in a [background host](sessions.md#background-sessions) that outlives the terminal; `--host`/`--no-host` override it once) |

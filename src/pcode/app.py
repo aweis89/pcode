@@ -275,6 +275,7 @@ class PreviewApp:
             self.controller.registry.find("/login"),
             self.controller.registry.find("/logout"),
             self.controller.registry.find("/extensions"),
+            self.controller.registry.find("/subagents"),
             self.controller.registry.find("/reload"),
             self.controller.registry.find("/new"),
             Command(

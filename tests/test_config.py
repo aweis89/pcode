@@ -44,6 +44,7 @@ def test_defaults_and_path_do_not_create_files():
         "worktree": "off",
         "worker_isolation": "off",
         "worker_concurrency": "0",
+        "subagent_models": "",
         "session_host": "off",
         "session_host_idle_minutes": "60",
         "desktop_notifications": "on",

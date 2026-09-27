@@ -194,6 +194,11 @@ SETTINGS = {
         whole_number=True,
         description="Concurrent worker cap; 0 is unlimited (reload to apply)",
     ),
+    "subagent_models": Setting(
+        "",
+        name_list=True,
+        description="Models delegate_task may run a sub-agent on, comma-separated (/subagents)",
+    ),
     # An untouched worktree is always removed; uncommitted changes are always kept.
     "session_host": Setting(
         "on",
@@ -494,6 +499,12 @@ def load_preferences() -> dict[str, str]:
         if key not in USER_ONLY:
             merged[key] = value
     return merged
+
+
+def subagent_models() -> list[str]:
+    """The `subagent_models` setting as model names, in order, without repeats."""
+    value = load_preferences().get("subagent_models", "")
+    return list(dict.fromkeys(entry.strip() for entry in value.split(",") if entry.strip()))
 
 
 def rejected_project_keys() -> list[str]:
