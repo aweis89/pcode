@@ -86,9 +86,13 @@ def test_rich_pane_keeps_a_stale_scroll_on_a_real_line():
     pane.set([Text("word " * 400)])
     # Scrolled near the bottom, then widened: the rewrap has far fewer lines.
     pane.window.vertical_scroll = draw(30).content_height - 3
-    assert draw(120).ui_content.cursor_position.y < draw(120).content_height
+    info = draw(120)
+    assert info.ui_content.cursor_position.y < info.content_height
+    # Settles on the last full page, not a lone last line.
+    assert pane.window.vertical_scroll == max(0, info.content_height - info.window_height)
 
-    # A reader scrolled mid-way (not tailing) keeps the offset across follow().
+    # A reader scrolled mid-way (not tailing) keeps the offset across follow(),
+    # which is how the stale row arises: 20 is past the one-line content.
     pane.set([Text("line\n" * 50)])
     draw(40)
     pane.window.vertical_scroll = 20
