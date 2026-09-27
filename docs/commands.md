@@ -106,7 +106,9 @@ candidate's size so that cost is visible before you pick.
 - `/switch [HOST | - | new [PROMPT]]`: pick another running [background session](sessions.md#background-sessions)
   and show it here, or start a new one; the session left keeps working.
 - `/restart`: restart this background session's host on the pcode installed now, keeping the conversation.
-- `/stop`: end this background session's host and quit (quitting normally leaves it running).
+- `/stop`: end this background session's host and quit. Quitting any other way (Ctrl+D,
+  `/quit`) does the same.
+- `/detach`: quit but leave this background session's host running; `pcode --attach` returns to it.
 - `/tree`: [browse and fork the conversation](conversation-tree.md); select a user prompt to
   edit it, or an assistant response to continue from there. Existing branches are kept.
   Readable at any time; forking waits for the running turn.
@@ -145,7 +147,7 @@ candidate's size so that cost is visible before you pick.
 | Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first) |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
-| Ctrl+D | Exit on empty idle input; cancel during generation |
+| Ctrl+D | Exit on empty idle input (stopping a background session's host); cancel during generation |
 
 Press **Ctrl+O** or use `/show-tasks [on|off]` to hide or show the Tasks/Tools
 widget without stopping work or clearing task/tool history. The current prompt

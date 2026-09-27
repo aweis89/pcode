@@ -548,7 +548,7 @@ def test_switch_says_what_it_cannot_switch_to(host_dir):
 
 
 def test_switch_leaves_a_running_turn_in_its_host_and_comes_back_to_it(tmp_path, host_dir):
-    """The whole terminal: attach, switch away mid-turn, switch back, detach on quit."""
+    """The whole terminal: attach, switch away mid-turn, switch back, then /detach."""
 
     async def run():
         script_a, script_b = Script(), Script()
@@ -597,17 +597,50 @@ def test_switch_leaves_a_running_turn_in_its_host_and_comes_back_to_it(tmp_path,
                     script_a.release("hang in a")
                     await seen("Finished.")
                     await until(lambda: not app.activity.busy)
-                    pipe.send_text("/quit\r")
+                    pipe.send_text("/detach\r")
 
                 with patch("pcode.app.create_prompt", prompt):
                     await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=30)
             assert "keeps running in the background" in output.getvalue()
-            # Quitting detached: both hosts still serve, nobody attached.
+            # Detached: both hosts still serve, nobody attached.
             await until(lambda: not host_a.clients and not host_b.clients)
             assert not host_a.stopped.is_set() and not host_b.stopped.is_set()
         finally:
             await stop_host(host_a)
             await stop_host(host_b)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("keys", ["\x04", "/quit\r"])
+def test_quitting_stops_the_host_as_stop_does(tmp_path, host_dir, keys):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        output = StringIO()
+        app = PreviewApp(
+            model="function:script",
+            workspace=tmp_path,
+            host=HostLaunch("aaaa1111"),
+            console=Console(file=output, color_system=None, width=140),
+        )
+        try:
+            with create_pipe_input() as pipe:
+
+                def prompt(*args, **kwargs):
+                    return create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+
+                async def drive():
+                    await until(lambda: "Attached to session host" in output.getvalue())
+                    pipe.send_text(keys)
+
+                with patch("pcode.app.create_prompt", prompt):
+                    await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=30)
+            assert "Stopped the session host." in output.getvalue()
+            await asyncio.wait_for(host.stopped.wait(), 5)
+            # Left for the terminal to tidy, asking, as after /stop.
+            assert app.host_stopped and host.keep_worktree
+        finally:
+            await stop_host(host)
 
     asyncio.run(run())
 

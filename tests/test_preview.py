@@ -50,6 +50,7 @@ def make_app(width=80, workspace=None):
                 "/switch",
                 "/restart",
                 "/stop",
+                "/detach",
                 "/compact",
                 "/autocompact",
                 "/jobs",
