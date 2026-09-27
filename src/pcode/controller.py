@@ -492,6 +492,13 @@ class SessionController:
         self.register_commands()
 
     def register_commands(self) -> None:
+        from pcode.models import LEGACY_ANTHROPIC_AUTH, login_sources
+
+        login_targets = (
+            "Anthropic, OpenAI Codex, or Claude Code (claude/meridian)"
+            if LEGACY_ANTHROPIC_AUTH
+            else "Claude Code or OpenAI Codex"
+        )
         for command in (
             Command(
                 "/btw",
@@ -518,9 +525,9 @@ class SessionController:
             ),
             Command(
                 "/login",
-                "Sign in to Anthropic, OpenAI Codex, or Claude Code (claude/meridian) in a browser",
+                f"Sign in to {login_targets} in a browser",
                 self.login,
-                ("anthropic", "openai-codex", "claude", "meridian"),
+                login_sources(),
                 group="Model",
             ),
             Command(
@@ -2157,9 +2164,12 @@ class SessionController:
     def login(self, argument: str) -> None:
         # Signing in stores a credential; it does not require the conversation to
         # already be on Anthropic. A non-Anthropic session keeps its own model.
-        source = argument.strip() or "anthropic"
-        if source not in {"anthropic", "openai-codex", "claude", "meridian"}:
-            self.view.note("Usage: /login [anthropic|openai-codex|claude|meridian]")
+        from pcode.models import login_sources
+
+        sources = login_sources()
+        source = argument.strip() or sources[0]
+        if source not in sources:
+            self.view.note(f"Usage: /login [{'|'.join(sources)}]")
             return
         self.login_requested = source
 
@@ -2653,9 +2663,11 @@ class SessionController:
         agent = getattr(self.runtime, "agent", None)
         if agent is None or not isinstance(getattr(agent, "model", None), str):
             return
+        from pcode.models import anthropic_credential_hint
+
         self.view.warning(
             "No Anthropic credential is selected, so prompts will fail. "
-            "Run /login, or restart with ANTHROPIC_API_KEY set."
+            + anthropic_credential_hint()
         )
 
     def new(self, argument: str) -> None:
@@ -2676,7 +2688,7 @@ class SessionController:
         providers = await asyncio.to_thread(active_providers, self.model)
         if not providers:
             self.view.note(
-                "No active model providers. Use /login to sign in to Anthropic, "
+                "No active model providers. Use /login to sign in, "
                 "set ANTHROPIC_API_KEY, run codex login, or export another "
                 "provider's API key (see docs/providers.md). "
                 "If model_providers is set, check that it allows an active provider."

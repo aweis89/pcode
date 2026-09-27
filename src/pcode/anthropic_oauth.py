@@ -91,7 +91,14 @@ def anthropic_auth_source() -> str:
 
     A saved choice is honored only while its credential file is still present:
     a stale preference must not turn a missing credential into a startup error.
+
+    Always api-key while `LEGACY_ANTHROPIC_AUTH` is off: a stored sign-in or a
+    saved or exported `oauth` is ignored rather than failing.
     """
+    from pcode.models import LEGACY_ANTHROPIC_AUTH
+
+    if not LEGACY_ANTHROPIC_AUTH:
+        return "api-key"
     source = os.environ.get("PCODE_ANTHROPIC_AUTH", "").strip()
     if source:
         return source

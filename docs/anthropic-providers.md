@@ -9,6 +9,11 @@ alternatives that were considered, and what we decided. API-key access through
 Measurements were taken on 2026-09-23 with Claude Code 2.1.280, Meridian 1.72.0
 and `claude-agent-sdk` 0.2.158.
 
+Update, 2026-09-27: `claude:` models are being tried as the way forward, so the
+`/login` direct route and Meridian are turned off behind one constant,
+`LEGACY_ANTHROPIC_AUTH` in `src/pcode/models.py`. Their code stays, and setting
+it to `True` restores both.
+
 ## Recommendation
 
 1. Make Meridian the easy subscription route. pcode's own `/login` stays for now,
@@ -24,8 +29,8 @@ and `claude-agent-sdk` 0.2.158.
 
 | Route | Policy risk | Caching | Latency | pcode agent features | Status |
 |---|---|---|---|---|---|
-| `/login` direct | High | Tuned by pcode | Best | All | Shipped |
-| Meridian | Low | Warm on continuation, one cold write on divergence | New CLI process per request | All | Shipped |
+| `/login` direct | High | Tuned by pcode | Best | All | Shipped, turned off |
+| Meridian | Low | Warm on continuation, one cold write on divergence | New CLI process per request | All | Shipped, turned off |
 | Agent SDK provider (`claude:`) | Low | Warm on continuation and on forks; one cold write on replay | One CLI process per conversation | All | Shipped |
 | ACP as a provider | Low | Same as the SDK provider | Same, plus a Node process | Usage and cache data degraded | Rejected |
 | ACP client | Lowest | Claude Code's own | One CLI process per session | None for Claude sessions | Separate decision |

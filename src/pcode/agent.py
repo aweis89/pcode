@@ -361,6 +361,11 @@ def resolve_model(model: str) -> Model | str:
     if model.startswith("openai-codex:"):
         return codex_model(model)
     if model.startswith("meridian:"):
+        from pcode.models import LEGACY_ANTHROPIC_AUTH
+
+        if not LEGACY_ANTHROPIC_AUTH:
+            name = model.removeprefix("meridian:")
+            raise ValueError(f"Meridian is turned off; switch to claude:{name} with /model.")
         from pcode.meridian import meridian_model
 
         return meridian_model(model)
@@ -410,7 +415,9 @@ def side_model(name: str, effort: str = "") -> SideModel:
         resolved = resolve_model(name)
         if isinstance(resolved, str):
             if name.startswith("anthropic:"):
-                raise ValueError("no Anthropic credentials; use /login or set ANTHROPIC_API_KEY")
+                from pcode.models import anthropic_credential_hint
+
+                raise ValueError(f"no Anthropic credentials. {anthropic_credential_hint()}")
             resolved = infer_model(resolved)
     except (UserError, ValueError, ImportError) as error:
         raise ValueError(f"Cannot use {name}: {error}") from error
