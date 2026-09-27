@@ -1039,17 +1039,17 @@ class PreviewApp:
             self.stop_host("")
 
     def background_finished(self, entry) -> None:
-        """A turn ended in a session this terminal is not showing: say so, here and on the desktop.
+        """A turn ended in a session this terminal is not showing: say so on the desktop.
 
-        The desktop notification is for sessions nobody is looking at, and is
-        sent once per turn however many terminals notice it.
+        Nothing is written to this transcript: another session's turn is not
+        this conversation. The desktop notification is for sessions nobody is
+        looking at, and is sent once per turn however many terminals notice it.
         """
         from pcode.host_protocol import claim
         from pcode.terminal_notify import notification
 
         what = {"failed": "failed", "cancelled": "was cancelled"}.get(entry.outcome, "finished")
         title = plain(entry.label(), 60)
-        self.transcript.note(f"Background session {entry.id} {what}: {title} · /switch shows it")
         if entry.attached or self._emulator is None:
             return
         if claim(f"{entry.id}-{entry.turns}"):
