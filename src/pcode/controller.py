@@ -68,6 +68,7 @@ TERMINAL_COMMANDS = frozenset(
         "/switch",
         "/restart",
         "/stop",
+        "/detach",
         "/show-tasks",
         "/autohide-tasks",
         "/show-thinking",

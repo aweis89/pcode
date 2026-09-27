@@ -170,6 +170,8 @@ class PreviewApp:
         self.switch_requested: str | None = None
         self.restart_requested = False
         self.host_stopped = False
+        # `/detach`: leave the host running on exit, which otherwise stops it.
+        self.detach_requested = False
         # The host this terminal showed before the current one, for `/switch -`.
         self.previous_host: str | None = None
         # How this terminal came to show its host ("Switched to session …").
@@ -294,8 +296,14 @@ class PreviewApp:
             ),
             Command(
                 "/stop",
-                "End this background session's host and quit (plain exit leaves it running)",
+                "End this background session's host and quit, as any exit does",
                 self.stop_host,
+                group="Session",
+            ),
+            Command(
+                "/detach",
+                "Quit but leave this background session's host running",
+                self.detach,
                 group="Session",
             ),
             self.controller.registry.find("/compact"),
@@ -997,6 +1005,19 @@ class PreviewApp:
         self.host_stopped = True
         self.running = False
 
+    def detach(self, argument: str) -> None:
+        if argument:
+            raise ValueError("Usage: /detach")
+        if not self.hosted:
+            raise ValueError("/detach leaves a session host running; this session runs here.")
+        self.detach_requested = True
+        self.running = False
+
+    def stop_host_on_exit(self) -> None:
+        """Quitting (Ctrl+D, `/quit`) ends the host as `/stop` does, unless `/detach` asked."""
+        if self.hosted and not (self.host_stopped or self.detach_requested or self.runtime.lost):
+            self.stop_host("")
+
     def background_finished(self, entry) -> None:
         """A turn ended in a session this terminal is not showing: say so, here and on the desktop.
 
@@ -1612,8 +1633,8 @@ class PreviewApp:
             launch, self._host_launch = self._host_launch, None
             if launch.process is not None:
                 self.transcript.note(
-                    f"Starting session host {launch.id}; it keeps running when this terminal "
-                    f"closes. Log: {launch.log}"
+                    f"Starting session host {launch.id}; quitting stops it, /detach leaves "
+                    f"it running. Log: {launch.log}"
                 )
             try:
                 controller, welcome = await launch.connect(self, self.activity)
@@ -1855,6 +1876,8 @@ class PreviewApp:
 
         try:
             await session.app.run_async(pre_run=start)
+            # Before `leave_controller` closes the connection the stop goes out on.
+            self.stop_host_on_exit()
         finally:
             if self._progress is not None:
                 self._progress.close()

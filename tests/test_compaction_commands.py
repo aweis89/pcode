@@ -132,8 +132,8 @@ def test_compact_cancellation_busy_gates_and_prompt_queue(outcome):
         elif outcome == "failure":
             assert "Compaction failed" in text
         elif outcome == "quit" and app.hosted:
-            # Quitting only detached; the host's compaction was still running.
-            assert "keeps running in the background" in text
+            # Quitting stopped the host, compaction and all.
+            assert "Stopped the session host." in text
         else:
             assert "Compaction cancelled" in text
 
