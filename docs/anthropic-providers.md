@@ -269,6 +269,14 @@ ways:
 - The system prompt, tool list, model, effort and thinking settings are fixed per
   process, so changing any of them forks to a new process rather than using
   `set_model()`.
+- No `Transport` is involved. pcode drives the public `ClaudeSDKClient` and serves
+  its tools from its own MCP server, and the tests script the client instead. What
+  can break on an upgrade is the CLI's own behavior, listed under
+  [dependencies](dependencies.md#claude-agent-sdk-provider-verified-02160-cli-21283).
+- `claude-agent-sdk` is an optional extra (`pcode[claude]`), since each wheel
+  bundles the CLI. `make install` and the Homebrew formula include it. The sdist
+  is not used, because it would run whatever `claude` is on `PATH` rather than
+  the CLI version these notes were verified against.
 - Text pcode appends beside tool results is written to the CLI while it is
   parked. The CLI queues it and sends it in the same request as the results,
   wrapped as a mid-turn user message (verified, including the wording). No

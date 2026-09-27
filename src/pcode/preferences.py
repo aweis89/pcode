@@ -211,6 +211,18 @@ SETTINGS = {
         whole_number=True,
         description="Stop a background session idle this long with no terminal; 0 never stops",
     ),
+    # Defaults mirror claude_sdk.MAX_IDLE_SESSIONS and IDLE_SECONDS.
+    "claude_idle_processes": Setting(
+        "2",
+        whole_number=True,
+        description="claude: models: finished Claude Code processes kept warm (~300 MB each); "
+        "0 stops each after its turn",
+    ),
+    "claude_idle_minutes": Setting(
+        "10",
+        positive_integer=True,
+        description="claude: models: minutes a finished Claude Code process is kept warm",
+    ),
     "desktop_notifications": Setting(
         "on",
         ("on", "off"),

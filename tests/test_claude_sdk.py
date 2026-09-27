@@ -412,7 +412,32 @@ def test_process_runs_pcode_prompt_and_tools_only(world):
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
         assert options.env[name] == ""
     assert options.env["CLAUDE_CODE_MAX_RETRIES"] == "0"
+    # No output ceiling from pcode leaves the CLI's own default.
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in options.env
     assert options.stderr is not None  # never onto pcode's terminal
+
+
+def test_output_ceiling_reaches_the_cli(world):
+    agent, _ = make_agent()
+    world.replies = [[("text", "ok")]]
+    run(lambda: agent.run("hi", model_settings={"max_tokens": 64_000}))
+    assert world.clients[0].options.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "64000"
+
+
+def test_missing_extra_hides_the_provider_and_names_the_fix(monkeypatch):
+    from pcode import models
+
+    monkeypatch.setattr(models, "claude_code_configured", lambda: True)
+    assert "claude" in models.active_providers(None)
+    monkeypatch.setattr(models, "claude_sdk_installed", lambda: False)
+    assert "claude" not in models.active_providers(None)
+    with pytest.raises(ValueError, match=r"optional `claude` extra") as raised:
+        claude.claude_model(f"claude:{MODEL}")
+    # Failure messages are never echoed, so the hint is matched by type.
+    assert claude.failure_hint(RuntimeError("startup failed")) is None
+    wrapped = RuntimeError("startup failed")
+    wrapped.__cause__ = raised.value
+    assert claude.failure_hint(wrapped) == claude.MISSING_SDK
 
 
 def test_restart_forks_the_transcript_at_the_last_answer(world):
@@ -616,6 +641,14 @@ def test_idle_processes_expire(world, monkeypatch):
     assert world.clients[0].disconnected
 
 
+def test_idle_minutes_preference_sets_the_expiry(monkeypatch):
+    from pcode.preferences import save_preferences
+
+    assert claude._idle_seconds() == claude.IDLE_SECONDS
+    save_preferences(claude_idle_minutes="3")
+    assert claude._idle_seconds() == 180
+
+
 def test_a_message_the_cli_starts_itself_never_answers_pcode(world):
     agent, _ = make_agent()
     world.replies = [
@@ -708,7 +741,13 @@ def test_shutdown_fails_a_waiting_request(world):
     assert world.clients[0].disconnected
 
 
-def test_parked_sessions_are_kept_and_finished_ones_capped():
+@pytest.mark.parametrize(("saved", "kept_finished"), [(None, 2), ("0", 0), ("3", 3)])
+def test_parked_sessions_are_kept_and_finished_ones_capped(saved, kept_finished):
+    from pcode.preferences import save_preferences
+
+    if saved is not None:
+        save_preferences(claude_idle_processes=saved)
+
     class Stub:
         def __init__(self, parked: bool, age: float) -> None:
             self.busy = self.dead = False
@@ -723,7 +762,7 @@ def test_parked_sessions_are_kept_and_finished_ones_capped():
         pool = claude.SessionPool(claude.ResumeIndex())
         now = time.monotonic()
         parked = [Stub(True, now - age) for age in (6, 5, 4)]
-        finished = [Stub(False, now - age) for age in (3, 2, 1)]
+        finished = [Stub(False, now - age) for age in (4, 3, 2, 1)]
         pool.sessions = [*parked, *finished]
         pool.release(finished[-1], ok=True)
         await asyncio.gather(*pool._closing)
@@ -732,7 +771,10 @@ def test_parked_sessions_are_kept_and_finished_ones_capped():
     kept, parked, finished = asyncio.run(main())
     # Delegations cannot evict the parent waiting on them.
     assert all(s in kept for s in parked)
-    assert finished[0].closed and finished[1:] == [s for s in kept if not s.open_tool_ids]
+    # The oldest finished ones go first.
+    closed = len(finished) - kept_finished
+    assert all(s.closed for s in finished[:closed])
+    assert finished[closed:] == [s for s in kept if not s.open_tool_ids]
 
 
 def test_shutdown_interrupts_a_parked_turn(world):

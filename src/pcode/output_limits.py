@@ -30,6 +30,9 @@ class ModelOutputLimits(AbstractCapability):
         await refresh_context(request_context.model)
         limits = catalog.limits(request_context.model)
         maximum = limits.output if limits else None
+        if maximum is None and request_context.model.system == "claude":
+            # The CLI's own default beats a guess below it (a `claude:opus` alias).
+            return request_context
         return replace(
             request_context,
             model_settings={**settings, "max_tokens": maximum or FALLBACK_OUTPUT_TOKENS},

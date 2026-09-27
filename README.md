@@ -17,7 +17,7 @@ Or from a checkout with [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv run pcode -m openai-codex:gpt-5.6-luna   # this checkout only
-uv tool install --editable .                # bare `pcode` everywhere
+uv tool install --editable '.[claude]'      # bare `pcode` everywhere; drop [claude] to skip claude: models
 ```
 
 ## Quick start
