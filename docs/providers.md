@@ -255,9 +255,11 @@ Claude Code sign-in already works. pcode never reads or stores the credential. A
 request that fails because the login is missing or expired says to run
 `/login claude`.
 
-`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` are cleared
-for the CLI, so the key pcode uses for `anthropic:` models can never silently bill
-or redirect a `claude:` request.
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and Claude
+Code's cloud routes (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and the
+like) are cleared for the CLI and for `/login claude`. The key pcode uses for
+`anthropic:` models can never silently bill or redirect a `claude:` request, or
+pass for the subscription login.
 
 ### What carries over
 
@@ -271,10 +273,18 @@ replayed as a text transcript, which writes that history to the cache once.
 
 Other behavior worth knowing:
 
-- Each CLI process holds about 300 MB. pcode keeps at most two idle ones, for ten
-  minutes; delegated tasks run their own.
-- Transcripts land in Claude Code's own store (`~/.claude/projects/`) and show in
-  `claude --resume` for the workspace.
+- Each CLI process holds about 300 MB. pcode keeps at most two finished ones, for
+  ten minutes. One waiting on tool results (a parent waiting for delegated tasks,
+  which run their own) is kept for up to thirty minutes. All of them stop when pcode
+  exits.
+- Transcripts, tool output included, land in Claude Code's own store
+  (`~/.claude/projects/`) and show in `claude --resume` for the workspace. pcode
+  starts the CLI without your Claude Code settings, so settings such as
+  `cleanupPeriodDays` do not apply to these runs.
+- Use full model IDs such as `claude:claude-sonnet-5`. An alias like
+  `claude:opus` works, but pcode cannot look up its context window, so set
+  `PCODE_CONTEXT_WINDOW` for compaction. Output limits (`max_tokens`) are the
+  CLI's own.
 - Tool names reach the model as `mcp__pcode__<name>`; pcode's display uses its own.
 - Anthropic server tools (web search, web fetch, code execution) are not
   available, so pcode's local web tools are used, as on Meridian.

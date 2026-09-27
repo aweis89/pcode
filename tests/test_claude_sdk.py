@@ -10,9 +10,11 @@ forks through `resume`. Nothing starts a process or bills a request.
 import asyncio
 import itertools
 import json
+import time
 import weakref
 from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import anyio
 import pytest
@@ -77,6 +79,9 @@ class FakeCLI:
     async def connect(self) -> None:
         if self.options.resume in self.world.missing:
             raise RuntimeError(f"No conversation found with session ID: {self.options.resume}")
+        prompt = Path(self.options.system_prompt["path"])
+        assert prompt.stat().st_mode & 0o777 == 0o600
+        self.prompt_file, self.system_prompt = prompt, prompt.read_text()
         ready = asyncio.Event()
         self._serving = asyncio.create_task(self._serve(ready))
         await ready.wait()
@@ -144,6 +149,13 @@ class FakeCLI:
             if reply[0] == "die":
                 self.out.put_nowait(None)
                 return
+            if reply[0] == "then":
+                # A final message, then a request the CLI makes of its own
+                # (a nudge after a thinking-only reply, output-limit recovery).
+                await self._stream(reply[1])
+                await self._stream(reply[2], pause=5)  # still generating when retired
+                self.out.put_nowait(ResultMessage("success", 1, 1, False, 2, self.session_id))
+                return
             if reply[0] == "error":
                 _, kind, status = reply
                 self.out.put_nowait(
@@ -162,6 +174,11 @@ class FakeCLI:
                 )
                 return
             calls, refused = await self._stream(reply)
+            if refused == ["malformed"]:
+                # An unparseable tool_use: no handler call, just a retried request.
+                await asyncio.sleep(0.05)
+                content = [{"type": "text", "text": "[malformed tool use]"}]
+                continue
             if refused:
                 # The CLI answering a call itself (a refused input) and going on.
                 blocks = [ToolResultBlock(i, "Invalid input", True) for i in refused]
@@ -188,7 +205,7 @@ class FakeCLI:
             ] + self.queued
             self.queued = []
 
-    async def _stream(self, reply) -> tuple[list[asyncio.Task], list[str]]:
+    async def _stream(self, reply, pause: float = 0) -> tuple[list[asyncio.Task], list[str]]:
         self._event(
             {
                 "type": "message_start",
@@ -209,6 +226,7 @@ class FakeCLI:
                 },
             }
         )
+        await asyncio.sleep(pause)
         calls, refused = [], []
         for index, block in enumerate(reply):
             if block[0] == "text":
@@ -260,7 +278,9 @@ class FakeCLI:
                         [ToolUseBlock(tool_id, wire, arguments)], MODEL, uuid=self._uuid()
                     )
                 )
-                if kind == "refused":
+                if kind == "malformed":
+                    refused = ["malformed"]
+                elif kind == "refused":
                     refused.append(tool_id)
                 else:
                     # Like the CLI: the handler is called when the block ends,
@@ -360,7 +380,9 @@ def test_process_runs_pcode_prompt_and_tools_only(world):
     options = world.clients[0].options
     assert options.tools == [] and options.setting_sources == []
     assert options.strict_mcp_config and options.allowed_tools == ["mcp__pcode"]
-    assert "Be terse." in options.system_prompt
+    # Passed as a private file, removed with the process, never on argv.
+    assert "Be terse." in world.clients[0].system_prompt
+    assert not world.clients[0].prompt_file.exists()
     assert options.model == MODEL and options.include_partial_messages
     assert options.extra_args == {"thinking-display": "summarized"}
     # pcode's Anthropic credentials and endpoint never reach the CLI.
@@ -571,6 +593,125 @@ def test_idle_processes_expire(world, monkeypatch):
     assert world.clients[0].disconnected
 
 
+def test_a_message_the_cli_starts_itself_never_answers_pcode(world):
+    agent, _ = make_agent()
+    world.replies = [
+        ("then", [("text", "first")], [("text", "unasked")]),
+        [("text", "second")],
+    ]
+
+    async def main():
+        first = await agent.run("one")
+        await asyncio.sleep(0.05)  # the CLI's own request lands meanwhile
+        second = await agent.run("two", message_history=first.all_messages())
+        return first, second
+
+    first, second = run(main)
+    assert (first.output, second.output) == ("first", "second")
+    old, new = world.clients
+    assert old.interrupted  # stopped rather than left generating
+    assert new.options.resume == old.session_id
+    assert new.requests == [[{"type": "text", "text": "two"}]]
+
+
+def test_a_call_the_cli_never_parks_forks_with_pcodes_result(world):
+    agent, calls = make_agent()
+    world.replies = [
+        [("malformed", "lookup", {"key": "a"})],
+        [("text", "the retried request, unasked")],
+        [("text", "after fork")],
+    ]
+    result = run(lambda: agent.run("look up a"))
+    assert result.output == "after fork" and calls == ["a"]
+    old, new = world.clients
+    assert new.options.resume == old.session_id
+    assert new.requests[0][0]["type"] == "tool_result"
+
+
+def test_parked_sessions_are_kept_and_finished_ones_capped():
+    class Stub:
+        def __init__(self, parked: bool, age: float) -> None:
+            self.busy = self.dead = False
+            self.open_tool_ids = ("t",) if parked else ()
+            self.last_used = age
+            self.closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def main():
+        pool = claude.SessionPool(claude.ResumeIndex())
+        now = time.monotonic()
+        parked = [Stub(True, now - age) for age in (6, 5, 4)]
+        finished = [Stub(False, now - age) for age in (3, 2, 1)]
+        pool.sessions = [*parked, *finished]
+        pool.release(finished[-1], ok=True)
+        await asyncio.gather(*pool._closing)
+        return pool.sessions, parked, finished
+
+    kept, parked, finished = asyncio.run(main())
+    # Delegations cannot evict the parent waiting on them.
+    assert all(s in kept for s in parked)
+    assert finished[0].closed and finished[1:] == [s for s in kept if not s.open_tool_ids]
+
+
+def test_shutdown_interrupts_a_parked_turn(world):
+    model = claude.claude_model(f"claude:{MODEL}")
+    world.replies = [[("tool", "lookup", {"key": "a"})]]
+    messages = [ModelRequest(parts=[UserPromptPart("hi")])]
+    parameters = ModelRequestParameters(function_tools=[lookup_definition()])
+
+    async def main():
+        async with model.request_stream(messages, None, parameters) as stream:
+            async for _ in stream:
+                pass
+        assert len(claude.pool().sessions) == 1  # parked, kept for the result
+        await claude.shutdown()
+
+    asyncio.run(main())
+    [cli] = world.clients
+    assert cli.interrupted and cli.disconnected
+
+
+def test_history_ending_on_an_answer_is_replayed(world):
+    model = claude.claude_model(f"claude:{MODEL}")
+    world.replies = [[("text", "continued")]]
+    messages = [
+        ModelRequest(parts=[UserPromptPart("hi")]),
+        ModelResponse(parts=[TextPart("partial")]),
+    ]
+
+    async def main():
+        async with model.request_stream(messages, None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                pass
+
+    run(main)
+    [[block]] = world.clients[0].requests
+    assert block["text"].endswith("[Assistant]\npartial\n</conversation>")
+
+
+def test_fallback_workspace_yields_to_the_workers_own(tmp_path):
+    from pydantic_ai.models import ModelRequestContext
+
+    model = claude.claude_model(f"claude:{MODEL}")
+    parent = claude.ClaudeWorkspace(tmp_path / "parent", fallback=True)
+    child = claude.ClaudeWorkspace(tmp_path / "child")
+
+    async def apply(order):
+        context = ModelRequestContext(
+            model=model, messages=[], model_settings=None, model_request_parameters=None
+        )
+        for capability in order:
+            context = await capability.before_model_request(None, context)
+        return context.model_settings[claude.CWD_SETTING]
+
+    child_path = str(tmp_path / "child")
+    assert asyncio.run(apply([parent, child])) == child_path
+    assert asyncio.run(apply([child, parent])) == child_path
+    assert asyncio.run(apply([parent])) == str(tmp_path / "parent")
+
+
 def test_start_failure_names_the_cli(world, monkeypatch):
     def refuse(options):
         client = FakeCLI(options, world)
@@ -644,12 +785,10 @@ def test_resume_index_persists_and_prunes(tmp_path, monkeypatch):
     index.add("k", point)  # unchanged entries are not rewritten
     assert len(path.read_text().splitlines()) == 1
     reloaded = claude.ResumeIndex(path)
-    asyncio.run(reloaded.load())
     assert reloaded.get("k") == point
     monkeypatch.setattr(claude, "INDEX_LIMIT", 4)
     for number in range(6):
         index.add(f"k{number}", point)
     pruned = claude.ResumeIndex(path)
-    asyncio.run(pruned.load())
     assert pruned.get("k5") == point and pruned.get("k0") is None
     assert len(path.read_text().splitlines()) == 2

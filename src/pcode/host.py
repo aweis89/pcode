@@ -745,6 +745,9 @@ async def _serve(args: argparse.Namespace) -> None:
         if watcher is not None:
             watcher.cancel()
         await host.close()
+        from pcode.claude_sdk import shutdown
+
+        await shutdown()
         runtime = controller.runtime
         if runtime is not None and hasattr(runtime, "close"):
             runtime.close()

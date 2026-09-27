@@ -135,11 +135,13 @@ async def claude_login(
     *,
     executable: str | None = None,
     retry: str = "/login meridian",
+    extra_env: dict[str, str] | None = None,
 ):
     """Run `claude auth login --claudeai` for `target` and return its auth status.
 
     `executable` defaults to the `claude` Meridian runs; `retry` is the command
-    the error messages suggest.
+    the error messages suggest; `extra_env` overrides the inherited environment
+    for both the login and the status check.
     """
     if target.oauth_token:
         raise LoginError(
@@ -147,17 +149,19 @@ async def claude_login(
             "Replace it with `meridian profile add <name> --oauth-token`."
         )
     executable = executable or claude_executable()
-    if executable is None:
+    if executable is None and retry == "/login meridian":
         raise LoginError(
             "Claude Code (`claude`) is not on PATH, and Meridian signs in through it. "
             f"Install Claude Code, or set MERIDIAN_CLAUDE_PATH, then retry {retry}."
         )
+    if executable is None:
+        raise LoginError(f"Claude Code (`claude`) was not found. Install it, then retry {retry}.")
     if remote_session():
         raise LoginError(
             "This looks like a remote session, so the browser cannot finish signing in here. "
             f"Run `{manual_login_command(target)}` in a terminal on this machine, then retry."
         )
-    env = login_env(target)
+    env = {**login_env(target), **(extra_env or {})}
     process = await asyncio.create_subprocess_exec(
         executable,
         "auth",

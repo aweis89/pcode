@@ -2243,7 +2243,7 @@ class SessionController:
     async def login_claude(self) -> None:
         """Run Claude Code's own sign-in for `claude:` models, with the CLI they run."""
         from pcode.auth import LoginError
-        from pcode.claude_sdk import cli_path
+        from pcode.claude_sdk import LOGIN_ENV, cli_path
         from pcode.meridian_setup import LoginTarget, claude_login
 
         target = LoginTarget(os.environ.get("CLAUDE_CONFIG_DIR") or None, "Claude Code's login")
@@ -2252,8 +2252,13 @@ class SessionController:
                 "Signing in to Claude Code with `claude auth login`. "
                 "Finish in the browser (Ctrl+C cancels)."
             )
+            # Scrubbed as the requests are, so an API key cannot pass for the login.
             status = await claude_login(
-                self.view.note, target, executable=cli_path(), retry="/login claude"
+                self.view.note,
+                target,
+                executable=cli_path(),
+                retry="/login claude",
+                extra_env=LOGIN_ENV,
             )
             plan = status.get("subscriptionType")
             self.view.note(

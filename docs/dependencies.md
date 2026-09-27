@@ -670,8 +670,19 @@ was verified live against the bundled CLI, and most of them are traps:
   Results are keyed by id, so the call order does not matter.
 - Closing a process while a handler is parked does not stop the turn. The CLI
   records the cancelled calls as errors and makes more billed requests while it
-  shuts down, so `ClaudeSession.close` calls `interrupt()` first. At interpreter
-  exit the SDK's atexit reaper SIGKILLs leftover children.
+  shuts down, so `ClaudeSession.close` calls `interrupt()` first. The SDK's own
+  atexit hook only sends SIGTERM, so pcode's exits `await claude_sdk.shutdown()`
+  (`app.py` for `run` and `run_print`, and the host's teardown).
+- The CLI makes requests pcode never asked for inside one turn: a nudge after a
+  thinking-only reply, output-limit recovery, and a retry of an unparseable
+  tool_use (the bundled CLI's strings show all three). None of these can answer a
+  pcode request. The pump drops any message that begins while pcode is not
+  expecting one and retires the process. `answer()` also waits for the CLI to have
+  parked one of the open calls, because an unparseable or refused call is never
+  parked. A live request that finds its process gone this way forks instead.
+- The system prompt goes in a 0600 temp file (`system_prompt={"type": "file"}`),
+  removed with the process. On argv it would be visible to other local users and
+  would hit Linux's 128 KiB per-argument limit.
 - The SDK buffers only 100 parsed messages and every token delta is one, so each
   session drains its stream continuously (`_pump`).
 - Without a `stderr` callback the child inherits pcode's stderr and writes onto the
