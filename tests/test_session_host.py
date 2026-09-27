@@ -460,6 +460,9 @@ def test_btw_model_names_complete_as_soon_as_a_terminal_attaches(tmp_path, host_
             assert [item.text for item in found] == ["$anthropic:claude-opus"]
             found = completer.get_completions(Document("/subagents gpt"), CompleteEvent())
             assert [item.text for item in found] == ["openai-codex:gpt-6"]
+            # Commands with a fixed argument list and no provider complete too.
+            found = completer.get_completions(Document("/worktree fin"), CompleteEvent())
+            assert [item.text for item in found] == ["finish"]
             await controller.start(welcome)
             # A new model changes the catalog; the terminal's follows with the state.
             catalog.append("anthropic:claude-sonnet")
