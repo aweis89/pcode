@@ -1901,7 +1901,12 @@ class SessionController:
                 raise ValueError("\n".join(problems))
         # Refuse before writing, so the preference cannot drift from the session.
         self.reload("")
-        self.persist_defaults(subagent_models=",".join(names))
+        try:
+            save_preferences(subagent_models=",".join(names))
+        except (OSError, ValueError) as error:
+            # The reload reads the saved list, so without it nothing would change.
+            self.reload_requested = False
+            raise ValueError(f"Could not save subagent_models: {error}") from error
         if subagent_models() != names:
             self.view.warning(
                 "This workspace's .pcode/preferences.json sets subagent_models, which "

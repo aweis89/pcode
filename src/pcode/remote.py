@@ -175,6 +175,8 @@ COMPLETERS = frozenset({"aside_completions", "model_list_completions"})
 def _proxy(state: dict, controller: "RemoteController") -> Command:
     """A command the host runs, listed here for help and completion."""
     name = state["name"]
+    # A host started before `completer` existed flags /btw with `models`.
+    completer = state.get("completer") or ("aside_completions" if state.get("models") else None)
 
     def refuse(argument: str) -> None:
         raise ValueError(f"{name} runs in the session host.")
@@ -189,9 +191,7 @@ def _proxy(state: dict, controller: "RemoteController") -> Command:
         argument_provider=lambda: tuple(controller.arguments.get(name, ())),
         group=state.get("group") or "Other",
         argument_descriptions=state.get("argument_descriptions") or None,
-        argument_completer=getattr(controller, completer)
-        if (completer := state.get("completer")) in COMPLETERS
-        else None,
+        argument_completer=getattr(controller, completer) if completer in COMPLETERS else None,
     )
 
 

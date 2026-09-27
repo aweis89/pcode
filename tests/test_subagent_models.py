@@ -51,6 +51,7 @@ def test_a_delegation_runs_on_the_model_it_picks(tmp_path, monkeypatch):
 
     async def child(messages, info):
         seen["tools"] = {tool.name for tool in info.function_tools}
+        seen["settings"] = info.model_settings
         yield "from the other provider"
 
     monkeypatch.setattr(
@@ -87,6 +88,8 @@ def test_a_delegation_runs_on_the_model_it_picks(tmp_path, monkeypatch):
     asyncio.run(run())
     assert seen["enum"] == ["other:big"]
     assert "read_file" in seen["tools"] and "delegate_task" not in seen["tools"]
+    # The option's own settings (its defaults and saved /effort) reach the child.
+    assert seen["settings"]["temperature"] == 0.5
     returned = [
         part.content
         for message in runtime.history
@@ -94,6 +97,30 @@ def test_a_delegation_runs_on_the_model_it_picks(tmp_path, monkeypatch):
         if isinstance(part, ToolReturnPart)
     ]
     assert returned == ["from the other provider"]
+
+
+def test_a_worker_without_delegation_resolves_no_models(tmp_path, monkeypatch):
+    def refuse(name, effort=""):
+        raise AssertionError("an isolated child resolved the menu")
+
+    monkeypatch.setattr(agent_module, "side_model", refuse)
+    save_preferences(subagent_models="a:x")
+    create_coder(tmp_path, delegation=False)
+
+
+def test_a_terminal_completes_btw_models_from_a_host_that_predates_completer_names():
+    from pcode.remote import RemoteController, _proxy
+    from pcode.ui import Activity
+
+    controller = RemoteController(None, Activity())
+    old = _proxy({"name": "/btw", "description": "", "models": True}, controller)
+    new = _proxy(
+        {"name": "/subagents", "description": "", "completer": "model_list_completions"}, controller
+    )
+    unknown = _proxy({"name": "/x", "description": "", "completer": "subagents"}, controller)
+    assert old.argument_completer == controller.aside_completions
+    assert new.argument_completer == controller.model_list_completions
+    assert unknown.argument_completer is None
 
 
 def test_without_models_delegate_task_offers_no_model_argument(tmp_path):
@@ -167,6 +194,31 @@ def test_setting_models_waits_for_the_running_turn(tmp_path, monkeypatch):
     asyncio.run(scenario())
     assert "/reload is unavailable while working" in output.getvalue()
     assert subagent_models() == []
+
+
+def test_an_unsaved_choice_is_refused_without_reloading(tmp_path, monkeypatch):
+    from pcode import controller as controller_module
+
+    model = FunctionModel(lambda messages, info: None)
+    monkeypatch.setattr(agent_module, "side_model", fake_side_model({"a:x": model}))
+
+    def fail(**updates):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(controller_module, "save_preferences", fail)
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output, width=200), workspace=tmp_path, model="test")
+
+    async def scenario():
+        await app._initialize_runtime()
+        await app.controller.run_command("/subagents a:x")
+        assert not app.controller.reload_requested
+        app.runtime.close()
+
+    asyncio.run(scenario())
+    text = output.getvalue()
+    assert "Could not save subagent_models: read-only" in text
+    assert "overrides" not in text
 
 
 def test_model_names_complete_for_every_word(monkeypatch):

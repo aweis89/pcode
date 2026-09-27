@@ -58,8 +58,9 @@ resolves another model: on pcode's own logins, with that model's defaults and
 saved `/effort`. A name that cannot be resolved (a typo, a provider you are not
 signed in to) is refused before anything is saved.
 
-- `/subagents` alone lists the models, flagging any saved one that no longer
-  resolves; it is left out of the list the model sees.
+- `/subagents` alone lists the models, checking each again and flagging any
+  that no longer resolves (after a `/logout`, say). The model's own list is
+  built at launch and on `/reload`, which leaves such a name out.
 - `/subagents off` clears the list.
 - Setting the list saves `subagent_models` and reloads the agent like `/reload`.
   The tool schema and prompt change, so the next request rebuilds the prompt
