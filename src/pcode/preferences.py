@@ -301,6 +301,11 @@ SETTINGS = {
         ("on", "off"),
         description="Mirror shell command output into scrollback (Ctrl+G toggles the live preview)",
     ),
+    "group_tools": Setting(
+        "off",
+        ("on", "off"),
+        description="Fold each run of consecutive tool calls into one summary line",
+    ),
     "command_scrollback_lines": Setting(
         "20",
         positive_integer=True,

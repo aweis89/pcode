@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 from asyncio import Future
+from collections import Counter
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from functools import cache, lru_cache, partial, wraps
@@ -66,7 +67,7 @@ from pcode.tool_display import (
     split_outcome,
     tool_summary_lines,
 )
-from pcode.tool_panel import TASK_ROWS, ToolHistory, panel_fragments, task_panel_rows
+from pcode.tool_panel import DELEGATE, TASK_ROWS, ToolHistory, panel_fragments, task_panel_rows
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
@@ -146,6 +147,8 @@ class Palette:
                 "activity.notice": f"italic {self.muted}",
                 # Running background jobs are chrome like the spinner row.
                 "activity.job": self.muted,
+                # A run's pending group line, styled as scrollback will draw it.
+                "activity.group": f"dim {self.muted}",
                 # A side question runs beside the turn, not as part of it, so its
                 # row spins in the muted shade rather than the prompt's.
                 "activity.aside": self.muted,
@@ -1578,6 +1581,14 @@ def create_prompt(
         return activity.job_rows(JOB_ROWS)
 
     @per_render
+    def group_rows():
+        """The run's group line so far; it reaches scrollback when the run closes."""
+        if transcript is None:
+            return []
+        row = transcript.pending_group_row(session.app.output.get_size().columns - 1)
+        return [("class:activity.group", row)] if row else []
+
+    @per_render
     def aside_rows():
         return activity.aside_rows(
             prompt_spinner.render(monotonic()).plain, session.app.output.get_size().columns - 1
@@ -1592,13 +1603,18 @@ def create_prompt(
         the gap cannot re-enter the layout calculation.
         """
         shown = (
-            activity.status_shown or bool(notice_rows()) or bool(aside_rows()) or bool(job_rows())
+            activity.status_shown
+            or bool(group_rows())
+            or bool(notice_rows())
+            or bool(aside_rows())
+            or bool(job_rows())
         )
         return shown and transcript is not None and not transcript.ends_blank
 
     def status_height() -> int:
         return (
             activity.status_shown
+            + len(group_rows())
             + len(notice_rows())
             + len(aside_rows())
             + len(job_rows())
@@ -1743,6 +1759,16 @@ def create_prompt(
         filter=Condition(lambda: bool(command_rows())),
     )
     status_spacer = ConditionalContainer(Window(height=1), filter=Condition(status_gap))
+    # Flush left, where scrollback will draw the same line once the run closes.
+    group = ConditionalContainer(
+        Window(
+            FormattedTextControl(group_rows, show_cursor=False),
+            height=lambda: len(group_rows()),
+            wrap_lines=False,
+            dont_extend_height=True,
+        ),
+        filter=Condition(lambda: bool(group_rows())),
+    )
     # Directly above the spinner: a notice answers the keystroke that caused it
     # without ever reaching scrollback, and vanishes on its own.
     notice = ConditionalContainer(
@@ -1770,7 +1796,9 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(job_rows())),
     )
-    activity_panel = HSplit([status_spacer, commands, notice, current_status, asides, jobs, plan])
+    activity_panel = HSplit(
+        [status_spacer, group, commands, notice, current_status, asides, jobs, plan]
+    )
 
     @per_render
     def queue_rows():
@@ -1948,6 +1976,7 @@ class Transcript:
         self.tool_error_scrollback = preferences.get("tool_error_scrollback", "off") == "on"
         self.show_edits = preferences.get("show_edits", "on") == "on"
         self.command_scrollback = preferences.get("show_commands", "off") == "on"
+        self.group_tools = preferences.get("group_tools", "off") == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
         self.command_preview_lines = int(preferences.get("command_preview_lines", "10"))
         self.activity = activity
@@ -1968,6 +1997,10 @@ class Transcript:
         # A sub-agent's calls settle before its delegate does. They wait here,
         # keyed by the delegate's call id, to be written beneath it.
         self._children: dict[str, list[ToolSummary]] = {}
+        # With `group_tools`, the settled calls of the run in progress: they
+        # reach scrollback as one line when anything else is written or the
+        # turn ends, and the live panel counts them until then.
+        self._group: list[ToolSummary] = []
 
     @property
     def replays_on_resize(self) -> bool:
@@ -1998,6 +2031,10 @@ class Transcript:
     @recorded
     def print(self, *objects, end="\n", tool_line: bool = False) -> None:
         """Write scrollback, keeping tool lines one block apart from other output."""
+        if self._group:
+            # Anything written after a run of calls closes it, so the run's
+            # line lands where the calls happened.
+            self._flush_group()
         # Resolve theme-dependent renderables again on every replay.
         objects = tuple(
             Markdown(obj.markup, code_theme=self.code_theme)
@@ -2063,9 +2100,87 @@ class Transcript:
             return
         if self.writes_tool_result(event):
             self.events((event,))
-        for child in self._children.pop(event.call_id, []):
-            for line in self.summary_lines(child, indent=CHILD_INDENT):
-                self.print(Padding(line, (0, 0, 0, CHILD_INDENT), expand=False), tool_line=True)
+        for line in self.child_lines(self._children.pop(event.call_id, []), CHILD_INDENT):
+            self.print(Padding(line, (0, 0, 0, CHILD_INDENT), expand=False), tool_line=True)
+
+    def child_lines(self, children: list[ToolSummary], indent: int = 0) -> list[Text]:
+        """A sub-agent's calls, folded the way the parent's are when grouping."""
+        if self.group_tools:
+            return self.group_lines(children, indent=indent)
+        return [line for child in children for line in self.summary_lines(child, indent=indent)]
+
+    def groups(self, event: ToolSummary) -> bool:
+        """Report whether this call's summary line folds into the run's group line.
+
+        A failure keeps its own line, a delegate heads its own calls, and a
+        background job's exit is a delayed notice, not part of the run.
+        """
+        return (
+            self.group_tools
+            and not event.failed
+            and event.name != DELEGATE
+            and event.execution != "background"
+        )
+
+    def group_lines(self, events: list[ToolSummary], *, indent: int = 0) -> list[Text]:
+        """Fold consecutive successful calls into one line; failures stand alone."""
+        lines: list[Text] = []
+        run: list[ToolSummary] = []
+
+        def close() -> None:
+            if len(run) == 1:
+                # A run of one says more as the call's own line.
+                lines.extend(self.summary_lines(run[0], indent=indent))
+            elif run:
+                lines.append(self.group_line(run, width=max(1, self.console.width - indent)))
+            run.clear()
+
+        for event in events:
+            if event.failed:
+                close()
+                lines.extend(self.summary_lines(event, indent=indent))
+            else:
+                run.append(event)
+        close()
+        return lines
+
+    @staticmethod
+    def group_line(events: list[ToolSummary], *, width: int) -> Text:
+        """`✓ 15 tools · Edit ×10 · Run ×5`, most used first."""
+        counts = Counter(label(event.name) for event in events)
+        parts = [f"{name} ×{count}" if count > 1 else name for name, count in counts.most_common()]
+        line = Text(f"✓ {len(events)} tools · " + " · ".join(parts), style="pcode.thinking")
+        line.no_wrap = True
+        line.overflow = "ellipsis"
+        line.truncate(width, overflow="ellipsis")
+        return line
+
+    def _flush_group(self) -> None:
+        group, self._group = self._group, []
+        # The retained tool results already reproduce this line on replay.
+        recording, self.log.recording = self.log.recording, False
+        try:
+            for line in self.group_lines(group):
+                self.print(line, tool_line=True)
+        finally:
+            self.log.recording = recording
+
+    def settle_tools(self) -> None:
+        """Write the pending group line; the turn ended with nothing after it.
+
+        Not recorded: whatever is written next closes the run at the same
+        place, and `replay` closes a trailing one unless it is still live.
+        """
+        if self._group:
+            self._flush_group()
+
+    def pending_group_row(self, width: int) -> str:
+        """The group line so far, for the live panel; empty when nothing is pending."""
+        if not self._group or width < 1:
+            return ""
+        line = self.group_lines(self._group)[-1].copy()
+        line.truncate(width, overflow="ellipsis")
+        return line.plain
 
     def settle_orphans(self) -> None:
         """Write sub-agent calls whose delegate never settled, e.g. a cancelled turn.
@@ -2075,9 +2190,8 @@ class Transcript:
         """
         orphans, self._children = self._children, {}
         for children in orphans.values():
-            for child in children:
-                for line in self.summary_lines(child):
-                    self.print(line, tool_line=True)
+            for line in self.child_lines(children):
+                self.print(line, tool_line=True)
 
     @recorded
     def edit(self, event) -> None:
@@ -2091,12 +2205,16 @@ class Transcript:
         self._block = None
         # Replaying the log's own tool results rebuilds whatever is pending.
         self._children = {}
+        live_group, self._group = bool(self._group), []
         self.log.recording = False
         try:
             if self.log.dropped:
                 self.note("Earlier transcript entries omitted from this regenerated view.")
             for entry in self.log.entries:
                 getattr(self, entry.method)(*entry.args, **entry.kwargs)
+            # A run still going stays in the live panel; any other was closed.
+            if not live_group:
+                self.settle_tools()
         finally:
             self.log.recording = True
             self._replay_sink = None
@@ -2113,6 +2231,8 @@ class Transcript:
         previous = self.log
         self.log = TranscriptLog(limit=previous.limit, max_chars=previous.max_chars)
         self.log.capture_only = True
+        # Restored history is settled; nothing from it is still running.
+        self._group = []
         try:
             yield
         except BaseException:
@@ -2416,6 +2536,10 @@ class Transcript:
         )
 
     def command_summary(self, event: ToolSummary) -> None:
+        """Write a settled call's summary line, or hold it for the run's group line."""
+        if self.groups(event):
+            self._group.append(event)
+            return
         for line in self.summary_lines(event):
             self.print(line, tool_line=True)
 
@@ -2455,8 +2579,7 @@ class Transcript:
                     else:
                         self.command_summary(event)
                     continue
-                for line in self.summary_lines(event):
-                    self.print(line, tool_line=True)
+                self.command_summary(event)
 
     def help(self, registry: CommandRegistry) -> None:
         table = Table(box=None, padding=(0, 2), show_header=False)

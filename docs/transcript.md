@@ -141,6 +141,33 @@ the sub-agent finished are written flush when the cancellation is reported.
     ✓ Run · 2.3s · pytest -q tests/test_api.py
 ```
 
+## Grouping tool calls
+
+With `group_tools` on, a run of consecutive tool calls leaves one line in
+scrollback instead of one per call. While the run is going, the live panel
+counts it just above the spinner; the line is written once something else
+reaches scrollback (the model's reply, a diff, mirrored command output) or the
+turn ends. `/tools` still lists every call.
+
+```sh
+pcode config set group_tools on   # One line per run of calls (default off)
+```
+
+```text
+✓ 15 tools · Edit ×10 · Run ×5
+✗ Run · exit 1 · pytest -q
+✓ Delegate  worker · Fix the flaky test → Completed  41.2s
+    ✓ 6 tools · Read ×4 · Run ×2
+✓ 2 tools · Edit · Run
+```
+
+A failed call keeps its own line, splitting the run around it. A delegate also
+keeps its own line, with its sub-agent's calls folded the same way beneath it.
+A run of one call keeps that call's usual line, and a background job's exit
+notice is never folded in. `/group-tools on`, `/group-tools off`, or bare
+`/group-tools` switch it for the session, save the default, and rebuild earlier
+scrollback to match.
+
 ## Command output in scrollback
 
 By default, a settled command leaves the same compact summary line every other

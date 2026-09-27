@@ -348,6 +348,13 @@ class PreviewApp:
                 group="Display",
             ),
             Command(
+                "/group-tools",
+                "Fold runs of tool calls into one scrollback line: on / off; bare toggles",
+                self.group_tools,
+                ("on", "off"),
+                group="Display",
+            ),
+            Command(
                 "/theme",
                 "Set the palette: dark / light / auto; bare toggles dark/light",
                 self.theme,
@@ -550,6 +557,7 @@ class PreviewApp:
         for key in [k for k in self.activity.command_outputs if not k.startswith(WATCHED_PREFIX)]:
             del self.activity.command_outputs[key]
         self.activity.plan_preview = None
+        self.transcript.settle_tools()
         self.output.end_turn()
         self.activity.tools.end_turn()
         self.activity.workers.end_turn()
@@ -690,6 +698,17 @@ class PreviewApp:
             self.transcript.output.app.invalidate()
         self.transcript.flash(
             f"Show edits: {'on' if shown else 'off'}. Usage: /show-edits [on|off]"
+        )
+
+    def group_tools(self, argument: str) -> None:
+        grouped = self.toggle_argument("/group-tools", argument, self.transcript.group_tools)
+        self.transcript.group_tools = grouped
+        self.persist_defaults(group_tools="on" if grouped else "off")
+        self.transcript.regenerate()
+        if self.transcript.output is not None:
+            self.transcript.output.app.invalidate()
+        self.transcript.flash(
+            f"Group tools: {'on' if grouped else 'off'}. Usage: /group-tools [on|off]"
         )
 
     def set_show_thinking(self, shown: bool) -> None:
