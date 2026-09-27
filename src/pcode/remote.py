@@ -178,6 +178,8 @@ def _proxy(state: dict, controller: "RemoteController") -> Command:
     # A host started before `completer` existed flags /btw with `models`.
     completer = state.get("completer") or ("aside_completions" if state.get("models") else None)
 
+    arguments = tuple(state.get("arguments") or ())
+
     def refuse(argument: str) -> None:
         raise ValueError(f"{name} runs in the session host.")
 
@@ -185,10 +187,12 @@ def _proxy(state: dict, controller: "RemoteController") -> Command:
         name,
         state["description"],
         refuse,
-        tuple(state.get("arguments") or ()),
+        arguments,
         tuple(state.get("aliases") or ()),
         free_arguments=bool(state.get("free_arguments")),
-        argument_provider=lambda: tuple(controller.arguments.get(name, ())),
+        # The host sends a list only for commands whose arguments change; the
+        # rest (/worktree, /show-tasks, ...) complete from their fixed list.
+        argument_provider=lambda: tuple(controller.arguments.get(name, arguments)),
         group=state.get("group") or "Other",
         argument_descriptions=state.get("argument_descriptions") or None,
         argument_completer=getattr(controller, completer) if completer in COMPLETERS else None,
