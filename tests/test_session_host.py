@@ -729,11 +729,10 @@ def test_background_finish_notes_and_notifies_only_unwatched_sessions(tmp_path, 
 
 
 def test_notifications_cannot_break_out_of_their_escape(monkeypatch):
-    from pcode.terminal_notify import notification, progress
+    from pcode.terminal_notify import notification
 
     monkeypatch.delenv("TMUX", raising=False)
     assert notification("done\x07\x1b]52;c;evil\x07") == "\x1b]9;done  ]52;c;evil\x07"
-    assert progress(True) == "\x1b]9;4;3\x07" and progress(False) == "\x1b]9;4;0\x07"
     monkeypatch.setenv("TMUX", "/tmp/tmux-1/default,1,0")
     assert notification("hi") == "\x1bPtmux;\x1b\x1b]9;hi\x07\x1b\\"
 

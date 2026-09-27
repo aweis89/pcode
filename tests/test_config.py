@@ -48,6 +48,7 @@ def test_defaults_and_path_do_not_create_files():
         "session_host": "off",
         "session_host_idle_minutes": "60",
         "desktop_notifications": "on",
+        "terminal_progress": "auto",
         "worktree_exit": "ask",
         "retry_attempts": "1",
         "tool_retries": "3",
