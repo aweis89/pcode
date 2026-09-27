@@ -632,10 +632,12 @@ def save_model_effort(model: str, effort: str) -> None:
 
 
 def anthropic_profile(model: str | None, resolved=None) -> dict:
-    """The Anthropic profile for `model`, from `resolved` when it is a model object.
+    """The profile for `model`, from `resolved` when it is a model object.
 
-    Before /login a model is still its name, so fall back to the name's profile
-    rather than forcing credential loading just to answer a question about it.
+    Only meaningful once the caller knows the model is an Anthropic one: the
+    object's own profile is returned whatever it is. Before /login a model is
+    still its name, and a real `Model` always has a non-empty profile, so a
+    missing attribute means the name lookup rather than credential loading.
     """
     profile = getattr(resolved, "profile", None)
     if profile is not None:
@@ -674,11 +676,18 @@ def effort_unavailable(model: str | None) -> str:
 
 
 def current_effort(agent, model: str) -> str:
-    """The effort `agent` will request next, as /effort names it."""
+    """The effort `agent` will request next, as /effort names it.
+
+    `n/a` where the model has no effort control, which `default` would hide:
+    nothing is sent either way, but only one of them can be changed.
+    """
     resolved = getattr(agent, "model", None)
+    key = effort_setting(model, resolved)
+    if key is None:
+        return "n/a"
     settings = getattr(resolved, "settings", None) or {}
     settings = {**settings, **(getattr(agent, "model_settings", None) or {})}
-    effort = settings.get(effort_setting(model, resolved), "default")
+    effort = settings.get(key, "default")
     return "xhigh" if effort == "max" else effort
 
 

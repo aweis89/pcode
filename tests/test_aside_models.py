@@ -398,6 +398,35 @@ def test_btw_refuses_an_effort_on_a_model_without_effort_control():
     start.assert_awaited_with("why?", [SideTarget("openai:gpt-5", "high")])
 
 
+def test_btw_judges_anthropic_effort_the_way_effort_does():
+    """The conversation's own model is judged on the object /effort judges."""
+    model = FunctionModel(
+        lambda *args: None,
+        model_name="claude-haiku-4-5",
+        profile=AnthropicModelProfile(anthropic_supports_effort=False),
+    )
+    app = PreviewApp(
+        model="anthropic:claude-haiku-4-5",
+        runtime=AgentRuntime(Agent(model)),
+        console=Console(file=StringIO()),
+    )
+    start = app.controller.start_aside = AsyncMock()
+
+    def btw(argument):
+        asyncio.run(app.controller.aside(argument))
+
+    with pytest.raises(ValueError, match="claude-haiku-4-5 has no effort control"):
+        btw("+low why?")
+    with pytest.raises(ValueError, match="claude-haiku-4-5 has no effort control"):
+        btw("$anthropic:claude-haiku-4-5+high why?")
+    start.assert_not_awaited()
+    # An aside without an effort still runs on the gated model.
+    btw("why?")
+    # A model that does support effort is not caught by the gate.
+    btw("$anthropic:claude-opus-4-5+high why?")
+    start.assert_awaited_with("why?", [SideTarget("anthropic:claude-opus-4-5", "high")])
+
+
 class FanOutRuntime:
     session = None
     tree = None
