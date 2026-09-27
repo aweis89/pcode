@@ -277,11 +277,16 @@ replayed as a text transcript, which writes that history to the cache once.
 
 Other behavior worth knowing:
 
-- Each CLI process holds about 300 MB. pcode keeps at most two finished ones, for
-  ten minutes (`claude_idle_processes` and `claude_idle_minutes`; `0` processes
-  stops each one when its turn ends). One waiting on tool results (a parent waiting for delegated tasks,
-  which run their own) is kept for up to thirty minutes. All of them stop when pcode
-  exits.
+- Each session runs its own CLI process while a turn is in progress. The first
+  costs about 300 MB, and each further one about 110–135 MB, because the
+  processes share the CLI's ~200 MB of code (RSS counts it in every one). Once a
+  turn ends, each session keeps its process for ten minutes so the next turn
+  continues on it (`claude_idle_processes` and `claude_idle_minutes`; `0`
+  processes stops each one when its turn ends). One waiting on tool results (a
+  parent waiting for delegated tasks, which run their own) is kept for up to
+  thirty minutes. When less than a tenth of the machine's memory is available,
+  pcode stops every idle process within a minute, and the next request forks the
+  transcript instead. All of them stop when pcode exits.
 - Transcripts, tool output included, land in Claude Code's own store
   (`~/.claude/projects/`) and show in `claude --resume` for the workspace. pcode
   starts the CLI without your Claude Code settings, so settings such as

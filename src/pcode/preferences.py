@@ -213,9 +213,9 @@ SETTINGS = {
     ),
     # Defaults mirror claude_sdk.MAX_IDLE_SESSIONS and IDLE_SECONDS.
     "claude_idle_processes": Setting(
-        "2",
+        "1",
         whole_number=True,
-        description="claude: models: finished Claude Code processes kept warm (~300 MB each); "
+        description="claude: models: finished Claude Code processes kept warm (~120 MB each); "
         "0 stops each after its turn",
     ),
     "claude_idle_minutes": Setting(

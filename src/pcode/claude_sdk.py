@@ -63,14 +63,20 @@ TOOL_USE_ID = "claudecode/toolUseId"
 # Model setting carrying the workspace the CLI runs in (see `ClaudeWorkspace`).
 CWD_SETTING = "pcode_claude_cwd"
 EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
-# Each process holds about 300 MB, and forking a transcript is warm anyway, so
-# keeping one only saves the ~0.8 s start. Finished ones are capped and expire
-# soon. A parked one belongs to a run still executing its tools (often a parent
-# waiting on delegations), so it is never capped, only expired, and later.
+# Each process holds about 110-135 MB of its own beyond the ~200 MB binary the
+# processes share (measured with vmmap), and forking a transcript is warm anyway,
+# so keeping one only saves the ~0.8 s start. Finished ones are capped and expire
+# soon; one is enough for the next turn to continue on. A parked one belongs to a
+# run still executing its tools (often a parent waiting on delegations), so it is
+# never capped, only expired, and later. Under memory pressure none are kept.
 # The first two are defaults for `claude_idle_processes` / `claude_idle_minutes`.
-MAX_IDLE_SESSIONS = 2
+MAX_IDLE_SESSIONS = 1
 IDLE_SECONDS = 10 * 60
 PARKED_SECONDS = 30 * 60
+# How often idle processes are checked against memory pressure, and what counts:
+# less than this share of physical memory available.
+PRESSURE_CHECK_SECONDS = 60.0
+LOW_MEMORY_FRACTION = 0.10
 CLOSE_TIMEOUT_SECONDS = 5.0
 # A finished turn's result follows its last message within milliseconds.
 TURN_END_TIMEOUT_SECONDS = 60.0
@@ -964,7 +970,8 @@ class SessionPool:
         session.last_used = time.monotonic()
         if not ok:
             session.dead = True
-        for stale in [s for s in self.sessions if not s.busy and s.dead]:
+        low = memory_low()
+        for stale in [s for s in self.sessions if not s.busy and (s.dead or low)]:
             self._drop(stale)
         finished = sorted(
             (s for s in self.sessions if not s.busy and not s.open_tool_ids),
@@ -985,12 +992,16 @@ class SessionPool:
         idle = [s for s in self.sessions if not s.busy]
         if idle:
             delay = max(0.0, min(map(self._deadline, idle)) - time.monotonic())
+            delay = min(delay, PRESSURE_CHECK_SECONDS)
             self._expiry = asyncio.get_running_loop().call_later(delay, self._expire)
 
     def _expire(self) -> None:
         self._expiry = None
         now = time.monotonic()
-        for session in [s for s in self.sessions if not s.busy and self._deadline(s) <= now]:
+        low = memory_low()
+        for session in [
+            s for s in self.sessions if not s.busy and (low or self._deadline(s) <= now)
+        ]:
             self._drop(session)
         self._schedule_expiry()
 
@@ -1017,6 +1028,21 @@ def _preference(key: str) -> int | None:
 
     value = load_preferences().get(key, "")
     return int(value) if value.isdecimal() else None
+
+
+def memory_low() -> bool:
+    """Whether the machine is short of memory, so no idle process is worth keeping.
+
+    Dropping one costs the next request a warm fork, even mid-round: the tool
+    results then arrive structured at the fork point.
+    """
+    try:
+        import psutil
+
+        memory = psutil.virtual_memory()
+    except Exception:
+        return False
+    return memory.available < memory.total * LOW_MEMORY_FRACTION
 
 
 def _idle_limit() -> int:

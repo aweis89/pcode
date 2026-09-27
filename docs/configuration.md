@@ -132,7 +132,7 @@ is only sensible on a machine where you wrote all of them.
 | `tool_output_retention_hours` | `0` | Whole number, spill retention; `0` keeps indefinitely |
 | `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, see [popup keys](commands.md#popup-keys)) |
 | `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |
-| `claude_idle_processes` | `2` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes kept warm (about 300 MB each); `0` stops each when its turn ends |
+| `claude_idle_processes` | `1` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes each session keeps warm (about 120 MB each beyond the first); `0` stops each when its turn ends. None are kept under memory pressure |
 | `claude_idle_minutes` | `10` | Positive integer, minutes a finished `claude:` CLI process is kept warm |
 | `meridian_managed` | `auto` | `auto`, `on`, `off` (use a running Meridian proxy or start a private one; see [Meridian](providers.md#which-meridian-pcode-uses)) |
 | `profile` | `off` | `off`, `resources`, `cpu`, `memory` (capture each session's resource use; see [profiling](profiling.md)) |

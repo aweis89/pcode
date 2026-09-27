@@ -291,13 +291,25 @@ and `make cache-report`):
 | Continuation cache | 8,083 read, 318 written on the second request |
 | New pcode process, `--continue` | Forked: 8,401 read, 166 written; 3.7 s for the whole command |
 | Fork connect | 0.8 s |
-| Memory | 260–310 MB RSS per CLI process |
+| Memory | 260–310 MB RSS per CLI process; about 200 MB of that is the CLI's code, shared between processes |
 
 The spike's open criteria have answers now. Prompt size is Claude Code's own plus
-pcode's, since the CLI adds its environment, date and model attachments. Memory is
-high enough that finished processes are capped at two and expire after ten
-minutes. A process waiting on tool results, such as a parent waiting for
-delegations, is kept for thirty.
+pcode's, since the CLI adds its environment, date and model attachments.
+
+Memory was measured again on 2026-09-26 with `vmmap`. After one short request,
+a process showed 232 MB RSS but a 110 MB physical footprint (134 MB peak); the
+rest is the Bun binary's ~200 MB of code, which every process shares. So each
+process after the first costs about 110–135 MB, growing with the conversation.
+Each session keeps one finished process for ten minutes, and a process waiting
+on tool results, such as a parent waiting for delegations, for thirty. Under
+memory pressure none are kept.
+
+One CLI process cannot serve several conversations: the system prompt, tools,
+model, effort, thinking and working directory are fixed when it starts, and the
+SDK's per-message `session_id` does not change that. A shared broker owning
+every session's processes would only add a machine-wide idle cap, at the cost of
+relaying every tool call between processes, so each session host keeps its own
+pool.
 Thinking, effort changes, Ctrl+C and a warm resume after restart all work.
 
 ## ACP

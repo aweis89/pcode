@@ -328,6 +328,12 @@ class FakeCLI:
         return tool_id, content, bool(result.is_error)
 
 
+@pytest.fixture(autouse=True)
+def plenty_of_memory(monkeypatch):
+    """A busy machine must not evict the processes these tests expect to reuse."""
+    monkeypatch.setattr(claude, "memory_low", lambda: False)
+
+
 @pytest.fixture
 def world(monkeypatch):
     world = World()
@@ -566,7 +572,7 @@ def test_cancelled_stream_interrupts_before_closing(world):
             async for _ in stream:
                 break  # the user pressed Ctrl+C mid-message
         await asyncio.sleep(0.05)
-        return claude.pool().sessions
+        return list(claude.pool().sessions)  # run() then closes the pool
 
     assert run(main) == []
     [cli] = world.clients
@@ -635,10 +641,48 @@ def test_idle_processes_expire(world, monkeypatch):
         await agent.run("hi")
         assert len(claude.pool().sessions) == 1
         await asyncio.sleep(0.2)
-        return claude.pool().sessions
+        return list(claude.pool().sessions)  # run() then closes the pool
 
     assert run(main) == []
     assert world.clients[0].disconnected
+
+
+def test_memory_pressure_stops_idle_processes_between_turns(world, monkeypatch):
+    monkeypatch.setattr(claude, "PRESSURE_CHECK_SECONDS", 0.05)
+    low = False
+    monkeypatch.setattr(claude, "memory_low", lambda: low)
+    agent, _ = make_agent()
+    world.replies = [[("text", "ok")]]
+
+    async def main():
+        nonlocal low
+        await agent.run("hi")
+        await asyncio.sleep(0.15)
+        kept = len(claude.pool().sessions)
+        low = True
+        # Found by the periodic check: no turn ends to trigger a release.
+        await asyncio.sleep(0.15)
+        return kept, list(claude.pool().sessions)  # run() then closes the pool
+
+    assert run(main) == (1, [])
+    assert world.clients[0].disconnected
+
+
+def test_memory_pressure_releases_parked_processes_too(monkeypatch):
+    monkeypatch.setattr(claude, "memory_low", lambda: True)
+
+    async def main():
+        pool = claude.SessionPool(claude.ResumeIndex())
+        now = time.monotonic()
+        sessions = [StubSession(True, now), StubSession(False, now), StubSession(False, now)]
+        sessions[2].busy = True  # mid-request: never touched
+        pool.sessions = list(sessions)
+        pool.release(sessions[1], ok=True)
+        await asyncio.gather(*pool._closing)
+        return pool.sessions, sessions
+
+    kept, sessions = asyncio.run(main())
+    assert kept == [sessions[2]] and sessions[0].closed and sessions[1].closed
 
 
 def test_idle_minutes_preference_sets_the_expiry(monkeypatch):
@@ -741,28 +785,31 @@ def test_shutdown_fails_a_waiting_request(world):
     assert world.clients[0].disconnected
 
 
-@pytest.mark.parametrize(("saved", "kept_finished"), [(None, 2), ("0", 0), ("3", 3)])
+class StubSession:
+    """Just what the pool's bookkeeping reads."""
+
+    def __init__(self, parked: bool, last_used: float) -> None:
+        self.busy = self.dead = False
+        self.open_tool_ids = ("t",) if parked else ()
+        self.last_used = last_used
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.parametrize(("saved", "kept_finished"), [(None, 1), ("0", 0), ("3", 3)])
 def test_parked_sessions_are_kept_and_finished_ones_capped(saved, kept_finished):
     from pcode.preferences import save_preferences
 
     if saved is not None:
         save_preferences(claude_idle_processes=saved)
 
-    class Stub:
-        def __init__(self, parked: bool, age: float) -> None:
-            self.busy = self.dead = False
-            self.open_tool_ids = ("t",) if parked else ()
-            self.last_used = age
-            self.closed = False
-
-        async def close(self) -> None:
-            self.closed = True
-
     async def main():
         pool = claude.SessionPool(claude.ResumeIndex())
         now = time.monotonic()
-        parked = [Stub(True, now - age) for age in (6, 5, 4)]
-        finished = [Stub(False, now - age) for age in (4, 3, 2, 1)]
+        parked = [StubSession(True, now - age) for age in (6, 5, 4)]
+        finished = [StubSession(False, now - age) for age in (4, 3, 2, 1)]
         pool.sessions = [*parked, *finished]
         pool.release(finished[-1], ok=True)
         await asyncio.gather(*pool._closing)
