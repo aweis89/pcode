@@ -28,6 +28,7 @@ from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.cache_settings import ProviderCacheSettings, model_settings
 from pcode.cache_warnings import CacheBustReporting
+from pcode.claude_sdk import ClaudeWorkspace
 from pcode.code_mode import create_code_mode
 from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.ext import EXTENSION_GUIDE, ExtensionCapabilities
@@ -191,6 +192,8 @@ def create_coder(
     # Ahead of the other capabilities in the list, so a tool call in a deleted
     # workspace stops before anything tries to read or write in it.
     coder.capabilities.insert(0, WorkspaceGuard(workspace))
+    # Isolated workers build their own coder, so each CLI runs in its checkout.
+    coder.capabilities.append(ClaudeWorkspace(workspace))
     coder.capabilities.append(IdentifiedPlanning())
     coder.capabilities.append(DelegationReporting())
     coder.capabilities.append(MeridianSessionIdentity())
@@ -359,6 +362,10 @@ def resolve_model(model: str) -> Model | str:
         from pcode.meridian import meridian_model
 
         return meridian_model(model)
+    if model.startswith("claude:"):
+        from pcode.claude_sdk import claude_model
+
+        return claude_model(model)
     if not model.startswith("anthropic:"):
         return model
     from pcode.anthropic_oauth import anthropic_auth_source

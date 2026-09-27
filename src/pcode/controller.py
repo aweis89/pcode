@@ -514,9 +514,9 @@ class SessionController:
             ),
             Command(
                 "/login",
-                "Sign in to Anthropic, OpenAI Codex, or Claude for Meridian in a browser",
+                "Sign in to Anthropic, OpenAI Codex, or Claude Code (claude/meridian) in a browser",
                 self.login,
-                ("anthropic", "openai-codex", "meridian"),
+                ("anthropic", "openai-codex", "claude", "meridian"),
                 group="Model",
             ),
             Command(
@@ -2164,8 +2164,8 @@ class SessionController:
         # Signing in stores a credential; it does not require the conversation to
         # already be on Anthropic. A non-Anthropic session keeps its own model.
         source = argument.strip() or "anthropic"
-        if source not in {"anthropic", "openai-codex", "meridian"}:
-            self.view.note("Usage: /login [anthropic|openai-codex|meridian]")
+        if source not in {"anthropic", "openai-codex", "claude", "meridian"}:
+            self.view.note("Usage: /login [anthropic|openai-codex|claude|meridian]")
             return
         self.login_requested = source
 
@@ -2209,6 +2209,8 @@ class SessionController:
             await self.login_codex()
         elif source == "meridian":
             await self.login_meridian()
+        elif source == "claude":
+            await self.login_claude()
         else:
             await self.login_anthropic()
 
@@ -2229,6 +2231,35 @@ class SessionController:
                 f"Signed in to Claude ({target.label}"
                 + (f", {plan} plan" if plan else "")
                 + "). Meridian uses it from its next request; pcode stores nothing."
+            )
+        except asyncio.CancelledError:
+            self.view.note("Claude sign-in cancelled.")
+            raise
+        except LoginError as error:
+            self.view.error(str(error))
+        except Exception:
+            self.view.error("Claude sign-in failed. No credential details were logged.")
+
+    async def login_claude(self) -> None:
+        """Run Claude Code's own sign-in for `claude:` models, with the CLI they run."""
+        from pcode.auth import LoginError
+        from pcode.claude_sdk import cli_path
+        from pcode.meridian_setup import LoginTarget, claude_login
+
+        target = LoginTarget(os.environ.get("CLAUDE_CONFIG_DIR") or None, "Claude Code's login")
+        try:
+            self.view.note(
+                "Signing in to Claude Code with `claude auth login`. "
+                "Finish in the browser (Ctrl+C cancels)."
+            )
+            status = await claude_login(
+                self.view.note, target, executable=cli_path(), retry="/login claude"
+            )
+            plan = status.get("subscriptionType")
+            self.view.note(
+                "Signed in to Claude Code"
+                + (f" ({plan} plan)" if plan else "")
+                + ". claude: models use it from their next request; pcode stores nothing."
             )
         except asyncio.CancelledError:
             self.view.note("Claude sign-in cancelled.")
@@ -2336,7 +2367,8 @@ class SessionController:
         agent = getattr(self.runtime, "agent", None)
         if agent is None or effort_setting(self.model) is None:
             self.view.flash(
-                "Effort control requires an OpenAI/Codex, Anthropic, or Meridian model."
+                "Effort control requires an OpenAI/Codex, Anthropic, Claude Code, or Meridian "
+                "model."
             )
             return
         # Replace rather than mutate: an active run keeps its captured settings.
@@ -2813,7 +2845,8 @@ class SessionController:
             name = target.model or self.model
             if target.effort and effort_setting(name) is None:
                 raise ValueError(
-                    f"Effort control requires an OpenAI/Codex, Anthropic, or Meridian model; "
+                    "Effort control requires an OpenAI/Codex, Anthropic, Claude Code, or "
+                    f"Meridian model; "
                     f"{name} is not one."
                 )
         await self.start_aside(question, models)

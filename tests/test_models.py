@@ -17,7 +17,13 @@ from pcode.models import (
 
 @pytest.fixture(autouse=True)
 def isolated_providers(monkeypatch, tmp_path):
-    for name in ("PCODE_ANTHROPIC_AUTH", "ANTHROPIC_API_KEY", "PCODE_LLM_PROXY", "CODEX_HOME"):
+    for name in (
+        "PCODE_ANTHROPIC_AUTH",
+        "ANTHROPIC_API_KEY",
+        "PCODE_LLM_PROXY",
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+    ):
         monkeypatch.delenv(name, raising=False)
     for requirements in ENV_PROVIDERS.values():
         for group in requirements:
@@ -112,10 +118,24 @@ def test_proxy_does_not_limit_providers(monkeypatch):
     assert active_providers("openai-codex:custom") == {"openai-codex", "anthropic", "meridian"}
 
 
-@pytest.mark.parametrize("provider", sorted(PROVIDERS.keys() - {"meridian"}))
+@pytest.mark.parametrize("provider", sorted(PROVIDERS.keys() - {"meridian", "claude"}))
 def test_every_listed_provider_is_installed(provider):
     # A picker entry that raises ImportError on switch is worse than none.
     infer_provider_class(provider)
+
+
+def test_claude_code_config_activates_claude(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    assert "claude" not in active_providers(None)
+    (tmp_path / ".claude.json").touch()
+    assert "claude" in active_providers(None)
+    (tmp_path / ".claude.json").unlink()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "profile"))
+    assert "claude" not in active_providers(None)
+    (tmp_path / "profile").mkdir()
+    assert "claude" in active_providers(None)
+    # Picker entries are Anthropic's own model IDs.
+    assert "claude:claude-opus-5" in model_catalog({"claude"})
 
 
 def test_key_presence_enables_provider(monkeypatch):

@@ -128,18 +128,29 @@ def manual_login_command(target: LoginTarget) -> str:
     return "claude auth login"
 
 
-async def claude_login(notify, target: LoginTarget, timeout: float = LOGIN_TIMEOUT_SECONDS):
-    """Run `claude auth login --claudeai` for `target` and return its auth status."""
+async def claude_login(
+    notify,
+    target: LoginTarget,
+    timeout: float = LOGIN_TIMEOUT_SECONDS,
+    *,
+    executable: str | None = None,
+    retry: str = "/login meridian",
+):
+    """Run `claude auth login --claudeai` for `target` and return its auth status.
+
+    `executable` defaults to the `claude` Meridian runs; `retry` is the command
+    the error messages suggest.
+    """
     if target.oauth_token:
         raise LoginError(
             f"{target.label} signs in with a `claude setup-token` token, not a browser login. "
             "Replace it with `meridian profile add <name> --oauth-token`."
         )
-    executable = claude_executable()
+    executable = executable or claude_executable()
     if executable is None:
         raise LoginError(
             "Claude Code (`claude`) is not on PATH, and Meridian signs in through it. "
-            "Install Claude Code, or set MERIDIAN_CLAUDE_PATH, then retry /login meridian."
+            f"Install Claude Code, or set MERIDIAN_CLAUDE_PATH, then retry {retry}."
         )
     if remote_session():
         raise LoginError(
@@ -174,7 +185,7 @@ async def claude_login(notify, target: LoginTarget, timeout: float = LOGIN_TIMEO
                 notify(line)
             code = await process.wait()
     except TimeoutError:
-        raise LoginError("Claude sign-in timed out. Run /login meridian to try again.") from None
+        raise LoginError(f"Claude sign-in timed out. Run {retry} to try again.") from None
     finally:
         if process.returncode is None:
             process.kill()
@@ -186,7 +197,7 @@ async def claude_login(notify, target: LoginTarget, timeout: float = LOGIN_TIMEO
         )
     status = await asyncio.to_thread(auth_status, executable, env)
     if status.get("loggedIn") is False:
-        raise LoginError("Claude Code still reports no login. Run /login meridian to try again.")
+        raise LoginError(f"Claude Code still reports no login. Run {retry} to try again.")
     return status
 
 
