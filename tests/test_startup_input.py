@@ -38,7 +38,8 @@ cli.main()
     child.logfile_read = log
     try:
         child.expect_exact("IMPORTS")
-        assert not termios.tcgetattr(child.child_fd)[3] & termios.ECHO
+        # Canonical without echo is what terminals read as a password prompt.
+        assert not termios.tcgetattr(child.child_fd)[3] & (termios.ECHO | termios.ICANON)
         if stage == "query":
             child.expect_exact("\x1b]11;?\x1b\\")
         child.send("/theme light")  # Deliberately no Enter before the editor starts.
@@ -120,6 +121,15 @@ def test_buffered_escape_uses_the_normal_input_timeout():
         os.close(slave)
 
 
+def _settings(fd):
+    # Re-entering canonical mode makes BSD kernels set PENDIN (reprocess any
+    # queued input). Only the kernel can clear it, and with nothing queued it
+    # changes nothing.
+    attrs = termios.tcgetattr(fd)
+    attrs[3] &= ~termios.PENDIN
+    return attrs
+
+
 @pytest.mark.parametrize("outcome", ["return", "error", "interrupt", "handoff"])
 def test_bootstrap_restores_terminal(monkeypatch, outcome):
     import pty
@@ -127,21 +137,21 @@ def test_bootstrap_restores_terminal(monkeypatch, outcome):
     from pcode import app, cli
 
     master, slave = pty.openpty()
-    original = termios.tcgetattr(slave)
+    original = _settings(slave)
     try:
         with os.fdopen(os.dup(slave), "r") as stdin, os.fdopen(os.dup(slave), "w") as stdout:
             monkeypatch.setattr(sys, "stdin", stdin)
             monkeypatch.setattr(sys, "stdout", stdout)
 
             def run():
-                assert not termios.tcgetattr(slave)[3] & termios.ECHO
+                assert not termios.tcgetattr(slave)[3] & (termios.ECHO | termios.ICANON)
                 if outcome == "error":
                     raise ValueError("startup failed")
                 if outcome == "interrupt":
                     raise KeyboardInterrupt
                 if outcome == "handoff":
                     cli.restore_stdin()
-                    assert termios.tcgetattr(slave) == original
+                    assert _settings(slave) == original
 
             monkeypatch.setattr(app, "main", run)
             if outcome in ("error", "interrupt"):
@@ -149,7 +159,7 @@ def test_bootstrap_restores_terminal(monkeypatch, outcome):
                     cli.main()
             else:
                 cli.main()
-            assert termios.tcgetattr(slave) == original
+            assert _settings(slave) == original
     finally:
         os.close(master)
         os.close(slave)
