@@ -41,7 +41,7 @@ before pointing it at anything you care about.
 | Page | What it covers |
 | --- | --- |
 | [Getting started](docs/getting-started.md) | Homebrew and source installs, `-C`, `--print`, shell completion |
-| [Providers and models](docs/providers.md) | Authentication, supported providers, the model picker, reasoning effort, Meridian, proxies |
+| [Providers and models](docs/providers.md) | Authentication, supported providers, the model picker, reasoning effort, Claude Code, Meridian, proxies |
 | [Configuration](docs/configuration.md) | `pcode config`, per-repository overrides, trusting repository code, the settings table, syntax styles |
 | [Commands and keys](docs/commands.md) | Slash commands, key bindings, vi mode, tmux newlines, status line, `!command`, the diff and tool inspectors |
 | [Tools](docs/tools.md) | Tool permissions, web search, the browser, code mode |

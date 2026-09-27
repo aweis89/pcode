@@ -1958,7 +1958,7 @@ class PreviewApp:
             self.transcript.console.print(f"Continue with: {shlex.join(command)}", markup=False)
 
     def run(self) -> None:
-        asyncio.run(self.run_async())
+        asyncio.run(_stopping_provider_processes(self.run_async()))
 
     async def run_print_async(self, prompt: str, *, stdout=None) -> bool:
         """Answer one prompt without an editor: the reply to `stdout`, the rest to the transcript.
@@ -2011,7 +2011,7 @@ class PreviewApp:
         return True
 
     def run_print(self, prompt: str) -> bool:
-        return asyncio.run(self.run_print_async(prompt))
+        return asyncio.run(_stopping_provider_processes(self.run_print_async(prompt)))
 
 
 def _profile_capture(args) -> tuple[Path, bool, bool] | None:
@@ -2283,6 +2283,16 @@ def _leave_worktree_on_exit(app, ask=input, stream=None) -> None:
     )
     if deleted:
         app.runtime.session = None
+
+
+async def _stopping_provider_processes(main):
+    """Run `main`, then stop the `claude:` CLI processes this event loop started."""
+    from pcode.claude_sdk import shutdown
+
+    try:
+        return await main
+    finally:
+        await shutdown()
 
 
 def forked_note(saved) -> str:

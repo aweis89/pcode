@@ -17,7 +17,8 @@ and `claude-agent-sdk` 0.2.158.
 2. Smooth the rough edges of the Meridian integration, starting with the
    compaction fix. What shipped is under [Meridian work](#meridian-work).
 3. Spike a native Agent SDK provider before committing to build one. The pass
-   criteria are under [Direct SDK provider](#direct-sdk-provider).
+   criteria are under [Direct SDK provider](#direct-sdk-provider). It shipped as
+   `claude:` models; see [What shipped](#what-shipped).
 4. Do not build ACP as a model provider. An ACP client that lets Claude Code run
    the whole conversation is a separate product decision.
 
@@ -25,7 +26,7 @@ and `claude-agent-sdk` 0.2.158.
 |---|---|---|---|---|---|
 | `/login` direct | High | Tuned by pcode | Best | All | Shipped |
 | Meridian | Low | Warm on continuation, one cold write on divergence | New CLI process per request | All | Shipped |
-| Agent SDK provider | Low | Same as Meridian | One CLI process per conversation | All | Proposed |
+| Agent SDK provider (`claude:`) | Low | Warm on continuation and on forks; one cold write on replay | One CLI process per conversation | All | Shipped |
 | ACP as a provider | Low | Same as the SDK provider | Same, plus a Node process | Usage and cache data degraded | Rejected |
 | ACP client | Lowest | Claude Code's own | One CLI process per session | None for Claude sessions | Separate decision |
 
@@ -248,6 +249,49 @@ Embedding Meridian's library does not avoid this work. Its entry point,
 `createProxyServer()`, is the HTTP app itself, so using it still means a Node
 process doing a `query()` per request.
 
+### What shipped
+
+`src/pcode/claude_sdk.py` implements the proposal against `claude-agent-sdk`
+0.2.160, whose bundled CLI is 2.1.283. It departs from the sketch above in these
+ways:
+
+- Sessions are matched by history, not by conversation ID. Each message pcode sends
+  or receives is hashed along with everything before it. A live process is reused
+  only when it holds exactly the history before the new user message, so
+  delegations, `/btw` and compaction runs cannot land on the wrong process.
+- Recovery never synthesizes a transcript. An index of history hashes, persisted
+  in `$XDG_STATE_HOME/pcode/claude-sessions.jsonl`, maps each assistant message to
+  its CLI session and transcript entry. A request that no live process can take
+  forks the transcript at the last shared message with `resume`, `fork_session`
+  and `resume_session_at`, and sends the rest as one user turn. The tool results
+  the fork point waits for stay structured; anything longer is replayed as text.
+  With no shared message at all, the whole history is replayed that way.
+- The system prompt, tool list, model, effort and thinking settings are fixed per
+  process, so changing any of them forks to a new process rather than using
+  `set_model()`.
+- Text pcode appends beside tool results is written to the CLI while it is
+  parked. The CLI queues it and sends it in the same request as the results,
+  wrapped as a mid-turn user message (verified, including the wording). No
+  respawn is needed for plan reminders or steering.
+
+Measured on 2026-09-26 with `claude-haiku-4-5` through pcode itself (`pcode -p`
+and `make cache-report`):
+
+| Case | Result |
+|---|---|
+| Tool round on the live process | 0.9–1.4 s including generation; no process start |
+| Continuation cache | 8,083 read, 318 written on the second request |
+| New pcode process, `--continue` | Forked: 8,401 read, 166 written; 3.7 s for the whole command |
+| Fork connect | 0.8 s |
+| Memory | 260–310 MB RSS per CLI process |
+
+The spike's open criteria have answers now. Prompt size is Claude Code's own plus
+pcode's, since the CLI adds its environment, date and model attachments. Memory is
+high enough that finished processes are capped at two and expire after ten
+minutes. A process waiting on tool results, such as a parent waiting for
+delegations, is kept for thirty.
+Thinking, effort changes, Ctrl+C and a warm resume after restart all work.
+
 ## ACP
 
 [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)
@@ -338,5 +382,5 @@ Later candidates: a picker fed by Meridian's account-aware `/v1/models`, and an
 explicit command to turn on Thinking Passthrough for an external proxy.
 
 The per-request CLI start, about 0.5 s per tool round, is inherent to Meridian;
-the SDK spike covers it. When Meridian does start fresh it replays history as
+`claude:` models avoid it. When Meridian does start fresh it replays history as
 flattened text. Items 1 and 4 make that rarer but cannot change the format.

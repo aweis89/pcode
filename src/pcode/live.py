@@ -1370,9 +1370,10 @@ def error_message(error: Exception, *, unexpected: str | None = None) -> str:
             "Check it with `/mcp list`, or turn it off with `/mcp disable NAME`. "
             "See the saved session diagnostics."
         )
+    from pcode.claude_sdk import failure_hint as claude_hint
     from pcode.meridian import failure_hint
 
-    if (hint := failure_hint(error)) is not None:
+    if (hint := failure_hint(error) or claude_hint(error)) is not None:
         return hint
     if name == "UserError" and "Codex CLI credentials" in str(error):
         return f"Provider login missing or invalid. {CODEX_LOGIN_HINT}"

@@ -16,6 +16,7 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | Pydantic AI (`pydantic-ai-slim`) | 2.50.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
 | Pydantic AI Harness (`pydantic-ai-harness`) | 0.35.1.dev14+a7bbe89 (commit `a7bbe89fd855138916d4f64060479f4ddb0ef9b0`) | [Docs](https://ai.pydantic.dev/harness/) | [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) |
 | Playwright (`playwright`, via the Harness `playwright` extra; Chromium downloaded on first `/browser` use) | 1.63.0 | [Docs](https://playwright.dev/python/) | [playwright-python](https://github.com/microsoft/playwright-python) |
+| Claude Agent SDK (`claude-agent-sdk`, bundles the Claude Code CLI) | 0.2.160 (CLI 2.1.283) | [Docs](https://code.claude.com/docs/en/agent-sdk/python) | [claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python) |
 
 From the repository root, this read-only command prints installed versions and
 package source locations without importing the agent runtime or loading credentials:
@@ -506,11 +507,18 @@ readback, and spill-failure fallback tests in `tests/test_tool_output_limits.py`
 
 `preferences.apply_effort` uses `openai_reasoning_effort` for OpenAI/Codex and
 `anthropic_effort` for Anthropic/Meridian.
-Verified Pydantic AI 2.43.0's `AnthropicModelSettings.anthropic_effort` and
+Verified Pydantic AI 2.50.0's `AnthropicModelSettings.anthropic_effort` and
 `AnthropicModel._build_output_config` send `output_config.effort` without changing
-thinking settings. The model profile's `anthropic_supports_xhigh_effort` selects
-native `xhigh`; otherwise pcode maps its top level to `max`. Support for effort
-and its highest levels varies by model; do not infer support from the route alone.
+thinking settings. `_build_output_config` consults `anthropic_supports_effort`
+only when deriving effort from unified thinking: an explicitly set
+`anthropic_effort` is forwarded even to a model whose profile reports no effort
+support. That the provider then rejects it is inferred from the profile flag and
+Anthropic's own documented model list, not observed against the live API. So
+`preferences.effort_setting` checks the flag itself and reports no effort
+control for those models rather than sending the parameter. The profile's
+`anthropic_supports_xhigh_effort` selects native `xhigh`; otherwise pcode maps
+its top level to `max`. Support for effort and its highest levels varies by
+model; do not infer support from the route alone.
 See [Anthropic effort](https://platform.claude.com/docs/en/build-with-claude/effort).
 
 ### Anthropic prompt caching
@@ -652,6 +660,75 @@ read-only GET of `/settings/api/features` (the `passthrough` entry), or use its
 Anthropic SSE decoding and `AgentRuntime`'s saved `ThinkingDelta`/`Thinking` events.
 Only readable provider text enters these events; native model-message history
 remains separate and may also contain opaque signatures.
+
+### Claude Agent SDK provider (verified 0.2.160, CLI 2.1.283)
+
+`claude:` models (`src/pcode/claude_sdk.py`) keep one `ClaudeSDKClient` per
+conversation and park pcode's tool calls in an in-process MCP server; see
+[Anthropic provider options](anthropic-providers.md#what-shipped). Each item below
+was verified live against the bundled CLI, and most of them are traps:
+
+- The CLI puts the model's tool_use id in the `tools/call` request's `_meta` as
+  `claudecode/toolUseId`. `create_sdk_mcp_server` hides `_meta` from handlers, so
+  pcode builds its own `mcp.server.Server` with mcp 2's constructor callbacks.
+  Moving to mcp 1 would need the decorator API instead.
+- The handler is called when its tool_use block ends, *before* `message_stop`,
+  and a handler parked for minutes is fine (`MCP_TOOL_TIMEOUT` is raised anyway).
+  Results are keyed by id, so the call order does not matter.
+- Closing a process while a handler is parked does not stop the turn. The CLI
+  records the cancelled calls as errors and makes more billed requests while it
+  shuts down, so `ClaudeSession.close` calls `interrupt()` first. The SDK's own
+  atexit hook only sends SIGTERM, so pcode's exits `await claude_sdk.shutdown()`
+  (`app.py` for `run` and `run_print`, and the host's teardown).
+- The CLI makes requests pcode never asked for inside one turn: a nudge after a
+  thinking-only reply, output-limit recovery, and a retry of an unparseable
+  tool_use (the bundled CLI's strings show all three). None of these can answer a
+  pcode request. The pump drops any message that begins while pcode is not
+  expecting one and retires the process. `answer()` also waits for the CLI to have
+  parked one of the open calls, because an unparseable or refused call is never
+  parked. Waiting for one call rather than all of them matters: the CLI may call
+  tools one at a time. For the same reason, a result counts as pcode's only once a
+  handler has returned it. A later call the CLI refuses after pcode has sent every
+  result fails that request, and the runtime's transient retry forks. A live
+  request that finds its process gone this way forks straight away.
+- A fork whose transcript or message is gone fails in `connect()` ("No
+  conversation found with session ID" / "No message found with message.uuid"),
+  before any request is made. pcode then forgets that session and replays instead.
+- The system prompt goes in a 0600 temp file (`system_prompt={"type": "file"}`),
+  removed with the process. On argv it would be visible to other local users and
+  would hit Linux's 128 KiB per-argument limit.
+- The SDK buffers only 100 parsed messages and every token delta is one, so each
+  session drains its stream continuously (`_pump`).
+- Without a `stderr` callback the child inherits pcode's stderr and writes onto the
+  terminal UI.
+- The child inherits the environment, and an empty value counts as unset.
+  `CLI_ENV` blanks pcode's Anthropic key, token and base URL. A fake key left in
+  the parent was verified to be ignored.
+- A user message written while the CLI waits on tool results is queued. It joins
+  the *same* request as the results, wrapped in a `<system-reminder>` that says the
+  user sent it mid-turn. Writing it before releasing the handlers makes this
+  deterministic, because both travel over stdin in order. A model can distrust an
+  odd-looking instruction delivered this way (Haiku ignored one as a possible
+  injection), but pcode's plan reminders went through without comment.
+- `--thinking-display summarized` works without `--thinking`. Without it, thinking
+  blocks arrive empty, carrying only a signature.
+- `resume` + `fork_session` + `resume_session_at=<assistant uuid>` truncates the
+  transcript there. A following user message may start with `tool_result` blocks
+  for that message's tool calls. Transcripts are keyed by the process `cwd`, so
+  the index records it; `ClaudeWorkspace` sets it to the agent's workspace, which
+  in worktree mode is not pcode's own directory.
+- The CLI attaches the environment (working directory, shell, OS), the date, the
+  model identity and the account's email to the first request, and a token-budget
+  reminder to every request. With `setting_sources=[]` nothing loads from
+  `CLAUDE.md` or settings.
+- `CLAUDE_CODE_MAX_RETRIES=0` makes an API error end the turn with an
+  `AssistantMessage.error` kind and `ResultMessage.api_error_status`. pcode raises
+  those as `ClaudeHTTPError`, leaving retries to the runtime. A process that dies
+  mid-request raises `ClaudeProcessError`, which `diagnostics.transient` retries,
+  and the retry forks.
+
+`tests/test_claude_sdk.py` drives the provider through a scripted client that
+calls pcode's real MCP server the way the CLI does.
 
 ### Codex thinking streaming
 
