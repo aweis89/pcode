@@ -2245,9 +2245,13 @@ class SessionController:
     async def login_claude(self) -> None:
         """Run Claude Code's own sign-in for `claude:` models, with the CLI they run."""
         from pcode.auth import LoginError
-        from pcode.claude_sdk import LOGIN_ENV, cli_path
+        from pcode.claude_sdk import LOGIN_ENV, MISSING_SDK, cli_path
         from pcode.meridian_setup import LoginTarget, claude_login
+        from pcode.models import claude_sdk_installed
 
+        if not claude_sdk_installed():
+            self.view.error(MISSING_SDK)
+            return
         target = LoginTarget(os.environ.get("CLAUDE_CONFIG_DIR") or None, "Claude Code's login")
         try:
             self.view.note(

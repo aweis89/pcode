@@ -1,5 +1,6 @@
 """Local model suggestions for configured providers; no credential or network reads."""
 
+import importlib.util
 import os
 import re
 import shutil
@@ -104,6 +105,11 @@ def claude_code_configured() -> bool:
         return False
 
 
+def claude_sdk_installed() -> bool:
+    """Whether pcode was installed with its `claude` extra (claude-agent-sdk)."""
+    return importlib.util.find_spec("claude_agent_sdk") is not None
+
+
 def _configured(requirements: tuple[tuple[str, ...], ...]) -> bool:
     return all(any(os.environ.get(name, "").strip() for name in group) for group in requirements)
 
@@ -114,7 +120,7 @@ def active_providers(current: str | None) -> set[str]:
         active.add(current.partition(":")[0])
     if os.environ.get("PCODE_MERIDIAN_BASE_URL", "").strip() or shutil.which("meridian"):
         active.add("meridian")
-    if claude_code_configured():
+    if claude_sdk_installed() and claude_code_configured():
         active.add("claude")
     active.update(name for name, needs in ENV_PROVIDERS.items() if _configured(needs))
     from pcode.anthropic_oauth import anthropic_auth_source

@@ -2028,7 +2028,6 @@ name = "pcode"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "claude-agent-sdk" },
     { name = "filelock" },
     { name = "genai-prices" },
     { name = "httpx2" },
@@ -2041,8 +2040,14 @@ dependencies = [
     { name = "yappi" },
 ]
 
+[package.optional-dependencies]
+claude = [
+    { name = "claude-agent-sdk" },
+]
+
 [package.dev-dependencies]
 dev = [
+    { name = "pcode", extra = ["claude"] },
     { name = "pexpect", marker = "sys_platform != 'win32'" },
     { name = "pytest" },
     { name = "pytest-xdist" },
@@ -2054,7 +2059,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "claude-agent-sdk", specifier = ">=0.2.160,<0.3" },
+    { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.2.160,<0.3" },
     { name = "filelock", specifier = ">=3.16,<4" },
     { name = "genai-prices", specifier = ">=0.1.7,<0.2" },
     { name = "httpx2", specifier = ">=2.13,<3" },
@@ -2066,9 +2071,11 @@ requires-dist = [
     { name = "websockets", specifier = ">=15.0.1,<17" },
     { name = "yappi", specifier = ">=1.7.6,<2" },
 ]
+provides-extras = ["claude"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pcode", extras = ["claude"] },
     { name = "pexpect", marker = "sys_platform != 'win32'", specifier = ">=4.9" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-xdist", specifier = ">=3.6" },

@@ -82,6 +82,19 @@ def test_other_providers_untouched_and_switches_recompute(metadata):
     assert refresh.await_count == 3
 
 
+def test_claude_code_keeps_its_own_default_for_an_unknown_model(metadata):
+    from pcode.claude_sdk import claude_model
+
+    limits, _ = metadata
+    alias, known = claude_model("claude:opus"), claude_model("claude:claude-test")
+    limits[id(known)] = ModelLimits(output=64_000)
+    original = request(alias)
+    # No guessed fallback below the CLI's own default; a known limit still applies.
+    assert asyncio.run(ModelOutputLimits().before_model_request(None, original)) is original
+    resolved = asyncio.run(ModelOutputLimits().before_model_request(None, request(known)))
+    assert resolved.model_settings == {"max_tokens": 64_000}
+
+
 def wire_response(body, blocks, *, truncated=False):
     message = {
         "id": "msg-test",

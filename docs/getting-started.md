@@ -60,9 +60,13 @@ uv run pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
 For a bare `pcode` command available outside this project:
 
 ```sh
-uv tool install --editable .
+uv tool install --editable '.[claude]'   # or `make install`
 pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
 ```
+
+The `claude` extra adds [`claude:` models](providers.md#claude-code-provider),
+which bundle the Claude Code CLI (about 215 MB). Leave it out with
+`uv tool install --editable .` or `make install EXTRAS=` if you do not need them.
 
 Try asking: `What does this repository do? Read the README and cite relevant files.`
 Live conversations save automatically when the first model prompt is submitted.

@@ -240,7 +240,11 @@ pcode -m claude:claude-sonnet-5   # then /login claude if Claude Code is not sig
 ```
 
 The `claude-agent-sdk` dependency bundles the Claude Code CLI, so neither Node.js
-nor a separate `claude` install is needed. pcode keeps one CLI process per
+nor a separate `claude` install is needed. It is pcode's optional `claude` extra
+because of that bundle (about 215 MB installed). The Homebrew formula and
+`make install` include it; elsewhere install `pcode[claude]`, for example
+`uv tool install --editable '.[claude]'` from a checkout. Without it, `claude:`
+models are left out of `/model` and naming one says what to install. pcode keeps one CLI process per
 conversation and hands it pcode's system prompt and tools; the CLI makes the API
 requests and pcode runs every tool itself. Compared with Meridian, which starts a
 new CLI process behind a Node proxy for every request, a tool round costs no
@@ -274,7 +278,8 @@ replayed as a text transcript, which writes that history to the cache once.
 Other behavior worth knowing:
 
 - Each CLI process holds about 300 MB. pcode keeps at most two finished ones, for
-  ten minutes. One waiting on tool results (a parent waiting for delegated tasks,
+  ten minutes (`claude_idle_processes` and `claude_idle_minutes`; `0` processes
+  stops each one when its turn ends). One waiting on tool results (a parent waiting for delegated tasks,
   which run their own) is kept for up to thirty minutes. All of them stop when pcode
   exits.
 - Transcripts, tool output included, land in Claude Code's own store
@@ -283,8 +288,9 @@ Other behavior worth knowing:
   `cleanupPeriodDays` do not apply to these runs.
 - Use full model IDs such as `claude:claude-sonnet-5`. An alias like
   `claude:opus` works, but pcode cannot look up its context window, so set
-  `PCODE_CONTEXT_WINDOW` for compaction. Output limits (`max_tokens`) are the
-  CLI's own.
+  `PCODE_CONTEXT_WINDOW` for compaction. pcode's output limit reaches the CLI as
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, which it caps at the model's own maximum; for
+  a model pcode has no limits for, the CLI's default applies.
 - Tool names reach the model as `mcp__pcode__<name>`; pcode's display uses its own.
 - Anthropic server tools (web search, web fetch, code execution) are not
   available, so pcode's local web tools are used, as on Meridian.

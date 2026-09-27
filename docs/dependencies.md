@@ -714,6 +714,14 @@ was verified live against the bundled CLI, and most of them are traps:
   model identity and the account's email to the first request, and a token-budget
   reminder to every request. With `setting_sources=[]` nothing loads from
   `CLAUDE.md` or settings.
+- `CLAUDE_CODE_MAX_OUTPUT_TOKENS` sets the request's `max_tokens`, clamped to the
+  model's upper limit, and the CLI lowers a thinking budget to fit under it. pcode
+  sends its own ceiling there, but not the 16k offline fallback: for a model with
+  no known limits the CLI's default is higher.
+- `claude-agent-sdk` is the optional `claude` extra, and the dev group pulls in
+  `pcode[claude]` so the tests always have it. Code outside `claude_sdk.py` must
+  not import the SDK: `models.claude_sdk_installed()` gates the picker, and
+  `claude_model()` and `/login claude` report the missing extra.
 - `CLAUDE_CODE_MAX_RETRIES=0` makes an API error end the turn with an
   `AssistantMessage.error` kind and `ResultMessage.api_error_status`. pcode raises
   those as `ClaudeHTTPError`, leaving retries to the runtime. A process that dies

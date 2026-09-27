@@ -47,6 +47,8 @@ def test_defaults_and_path_do_not_create_files():
         "subagent_models": "",
         "session_host": "off",
         "session_host_idle_minutes": "60",
+        "claude_idle_processes": "2",
+        "claude_idle_minutes": "10",
         "desktop_notifications": "on",
         "terminal_progress": "auto",
         "worktree_exit": "ask",

@@ -67,6 +67,7 @@ EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 # keeping one only saves the ~0.8 s start. Finished ones are capped and expire
 # soon. A parked one belongs to a run still executing its tools (often a parent
 # waiting on delegations), so it is never capped, only expired, and later.
+# The first two are defaults for `claude_idle_processes` / `claude_idle_minutes`.
 MAX_IDLE_SESSIONS = 2
 IDLE_SECONDS = 10 * 60
 PARKED_SECONDS = 30 * 60
@@ -77,6 +78,10 @@ TURN_END_TIMEOUT_SECONDS = 60.0
 # machine before deciding it never will (a call it refused or could not parse).
 CALL_TIMEOUT_SECONDS = 10.0
 INDEX_LIMIT = 4000
+MISSING_SDK = (
+    "claude: models need pcode's optional `claude` extra, which is not installed. "
+    "From a pcode checkout run `make install`, or `uv tool install --editable '.[claude]'`."
+)
 REPLAY_INTRO = (
     "This conversation began outside the current session, so its earlier messages are "
     "replayed below as a transcript. Treat them as having happened here and continue "
@@ -135,6 +140,10 @@ class ClaudeStartError(ModelAPIError):
     """The CLI process could not be started or resumed."""
 
 
+class ClaudeSDKMissing(ValueError):
+    """pcode was installed without its `claude` extra."""
+
+
 def cli_path() -> str | None:
     """The CLI the SDK runs: its bundled binary, else `claude` on PATH."""
     import shutil
@@ -151,6 +160,8 @@ def failure_hint(error: BaseException) -> str | None:
     seen = set()
     while error is not None and id(error) not in seen and len(seen) < 16:
         seen.add(id(error))
+        if isinstance(error, ClaudeSDKMissing):
+            return MISSING_SDK
         if isinstance(error, ClaudeHTTPError):
             body = error.body if isinstance(error.body, dict) else {}
             kind = (body.get("error") or {}).get("type")
@@ -404,6 +415,8 @@ class SessionConfig:
     tools: str  # canonical JSON of [{name, description, input_schema}]
     effort: str | None = None
     thinking: str | None = None  # canonical JSON of the thinking setting
+    # pcode's output ceiling; the CLI clamps it to the model's own limit.
+    max_tokens: int | None = None
 
     def options(self, server, resume: ForkPoint | None, stderr, prompt_file: str) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions
@@ -423,7 +436,14 @@ class SessionConfig:
             include_partial_messages=True,
             model=self.model,
             cwd=self.cwd,
-            env=dict(CLI_ENV),
+            env={
+                **CLI_ENV,
+                **(
+                    {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(self.max_tokens)}
+                    if self.max_tokens
+                    else {}
+                ),
+            },
             effort=self.effort,
             thinking=thinking,
             # Readable thinking for scrollback when no thinking setting says so.
@@ -950,13 +970,13 @@ class SessionPool:
             (s for s in self.sessions if not s.busy and not s.open_tool_ids),
             key=lambda s: s.last_used,
         )
-        for stale in finished[: max(0, len(finished) - MAX_IDLE_SESSIONS)]:
+        for stale in finished[: max(0, len(finished) - _idle_limit())]:
             self._drop(stale)
         self._schedule_expiry()
 
     @staticmethod
     def _deadline(session: ClaudeSession) -> float:
-        return session.last_used + (PARKED_SECONDS if session.open_tool_ids else IDLE_SECONDS)
+        return session.last_used + (PARKED_SECONDS if session.open_tool_ids else _idle_seconds())
 
     def _schedule_expiry(self) -> None:
         if self._expiry is not None:
@@ -989,6 +1009,23 @@ class SessionPool:
             self._drop(session)
         if self._closing:
             await asyncio.gather(*self._closing, return_exceptions=True)
+
+
+def _preference(key: str) -> int | None:
+    """A saved whole-number preference, read on use so `/config set` applies at once."""
+    from pcode.preferences import load_preferences
+
+    value = load_preferences().get(key, "")
+    return int(value) if value.isdecimal() else None
+
+
+def _idle_limit() -> int:
+    value = _preference("claude_idle_processes")
+    return MAX_IDLE_SESSIONS if value is None else value
+
+
+def _idle_seconds() -> float:
+    return (_preference("claude_idle_minutes") or 0) * 60 or IDLE_SECONDS
 
 
 _pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, SessionPool]" = (
@@ -1090,6 +1127,7 @@ class ClaudeModel(AnthropicModel):
         ]
         effort = settings.get("anthropic_effort")
         thinking = settings.get("anthropic_thinking")
+        max_tokens = settings.get("max_tokens")
         return SessionConfig(
             model=self.model_name,
             cwd=str(settings.get(CWD_SETTING) or os.getcwd()),
@@ -1097,6 +1135,7 @@ class ClaudeModel(AnthropicModel):
             tools=json.dumps(wire_tools, sort_keys=True),
             effort=effort if effort in EFFORTS else None,
             thinking=json.dumps(thinking, sort_keys=True) if isinstance(thinking, dict) else None,
+            max_tokens=max_tokens if isinstance(max_tokens, int) and max_tokens > 0 else None,
         )
 
     async def request(self, messages, model_settings, model_request_parameters):
@@ -1147,9 +1186,13 @@ class ClaudeModel(AnthropicModel):
 
 
 def claude_model(model: str) -> ClaudeModel:
+    from pcode.models import claude_sdk_installed
+
     name = model.removeprefix(PREFIX)
     if not name.strip():
         raise ValueError("Claude requires a model ID: claude:<model-id>")
+    if not claude_sdk_installed():
+        raise ClaudeSDKMissing(MISSING_SDK)
     return ClaudeModel(name, provider=ClaudeProvider())
 
 
