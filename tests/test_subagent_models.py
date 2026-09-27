@@ -221,6 +221,51 @@ def test_an_unsaved_choice_is_refused_without_reloading(tmp_path, monkeypatch):
     assert "overrides" not in text
 
 
+def test_a_workspace_setting_is_named_and_not_shadowed_by_a_user_choice(tmp_path, monkeypatch):
+    from pcode import preferences
+
+    model = FunctionModel(lambda messages, info: None)
+    monkeypatch.setattr(agent_module, "side_model", fake_side_model({"a:x": model, "b:y": model}))
+    (tmp_path / ".pcode").mkdir()
+    (tmp_path / ".pcode" / "preferences.json").write_text('{"subagent_models": "a:x"}')
+    monkeypatch.setattr(preferences, "_project_root", tmp_path)
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output, width=200), workspace=tmp_path, model="test")
+
+    async def scenario():
+        await app._initialize_runtime()
+        await app.controller.run_command("/subagents")
+        await app.controller.run_command("/subagents b:y")
+        assert not app.controller.reload_requested
+        app.runtime.close()
+
+    asyncio.run(scenario())
+    text = output.getvalue()
+    assert "set by this workspace's .pcode/preferences.json:\n  a:x" in text
+    assert "change it with pcode config project set|unset subagent_models" in text
+    assert "subagent_models" not in preferences.read_preferences()
+
+
+def test_a_name_outside_the_catalog_is_saved_with_a_warning(tmp_path, monkeypatch):
+    model = FunctionModel(lambda messages, info: None)
+    monkeypatch.setattr(
+        agent_module, "side_model", fake_side_model({"a:x": model, "a:typo": model})
+    )
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output, width=200), workspace=tmp_path, model="test")
+    monkeypatch.setattr(app.controller, "model_suggestions", lambda: ["a:x"])
+
+    async def scenario():
+        await app._initialize_runtime()
+        await app.controller.run_command("/subagents a:x a:typo")
+        await app.controller.reload_extensions()
+        app.runtime.close()
+
+    asyncio.run(scenario())
+    assert "Not in the /model catalog, so check the spelling: a:typo" in output.getvalue()
+    assert subagent_models() == ["a:x", "a:typo"]
+
+
 def test_model_names_complete_for_every_word(monkeypatch):
     app = PreviewApp(console=Console(file=StringIO()))
     monkeypatch.setattr(

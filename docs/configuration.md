@@ -83,8 +83,10 @@ pcode config project reset              # Drop the whole overlay
 
 A cloned repository must not be able to run code or pick credentials on your
 behalf, so `project_extensions`, `trusted_projects`, `extension_dirs`,
-`meridian_managed`, and `anthropic_auth` are user-only: the project file cannot
-set them, and pcode says so at launch if it tries. The overlay is read from the
+`extensions_off`, `extensions_on`, `meridian_managed`, and `anthropic_auth` are
+user-only: the project file cannot set them, and pcode says so at launch if it
+tries. `model` and `subagent_models` can be set, but only choose among the
+providers you are signed in to; `/subagents` names a list the repository set. The overlay is read from the
 launch workspace before any worktree is created, so `worktree on` in a
 repository's file is what starts each of its sessions in a worktree.
 

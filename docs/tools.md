@@ -55,8 +55,11 @@ the prompt lists them for the model to choose from. Omitting it still means the
 session's model. Each name completes from the `/model` catalog as you type, and
 is resolved the way a [`/btw` side question](side-questions.md#choosing-the-model)
 resolves another model: on pcode's own logins, with that model's defaults and
-saved `/effort`. A name that cannot be resolved (a typo, a provider you are not
-signed in to) is refused before anything is saved.
+saved `/effort` as of launch or the last `/reload`. A name that cannot be resolved
+(an unknown provider, or one you are not signed in to) is refused before anything
+is saved. Resolving does not check the model id itself, so a name missing from
+the `/model` catalog is saved with a warning to check its spelling; a real typo
+fails when a delegation uses it.
 
 - `/subagents` alone lists the models, checking each again and flagging any
   that no longer resolves (after a `/logout`, say). The model's own list is
@@ -67,7 +70,12 @@ signed in to) is refused before anything is saved.
   cache. A delegation on another model also starts without the parent's cache.
 
 `pcode config set subagent_models A,B` does the same from the shell, taking
-effect at the next launch or `/reload`.
+effect at the next launch or `/reload`. A repository can set the list in its
+[`.pcode/preferences.json`](configuration.md#per-repository-overrides), which then
+wins over yours: the bare listing says so, and `/subagents` refuses to save a
+choice it would ignore. Such a list only picks among models you are already
+signed in to, but it does send delegated work to them, so check it in a
+repository you did not write.
 
 ### Worker worktrees
 

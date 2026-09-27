@@ -38,6 +38,7 @@ from pcode.preferences import (
     apply_thinking,
     effort_for,
     effort_setting,
+    from_project,
     load_preferences,
     save_model_effort,
     save_preferences,
@@ -617,6 +618,8 @@ class SessionController:
                     "argument_descriptions": dict(command.argument_descriptions or {}),
                     # Which of the controller's completers the terminal runs locally.
                     "completer": getattr(command.argument_completer, "__name__", None),
+                    # What a terminal from before `completer` reads to complete /btw.
+                    "models": command.argument_completer == self.aside_completions,
                 }
             )
             if command.argument_provider is not None:
@@ -1872,6 +1875,7 @@ class SessionController:
         from pcode.agent import subagent_menu
 
         names = list(dict.fromkeys(argument.split()))
+        project = from_project("subagent_models")
         if not names:
             configured = subagent_models()
             if not configured:
@@ -1882,7 +1886,9 @@ class SessionController:
                 return
             menu, problems = await asyncio.to_thread(subagent_menu, configured)
             lines = [
-                "Sub-agent models delegate_task may pick (without one, the session's model):",
+                "Sub-agent models delegate_task may pick (without one, the session's model)"
+                + (", set by this workspace's .pcode/preferences.json" if project else "")
+                + ":",
                 *(f"  {name}" for name in menu),
                 *(f"Unavailable, left out: {problem}" for problem in problems),
                 "/subagents MODEL [MODEL ...] replaces the list; /subagents off clears it.",
@@ -1891,11 +1897,17 @@ class SessionController:
             return
         if not self.model:
             raise ValueError("/subagents requires a live model session.")
+        if project:
+            # A saved user choice would change nothing while the overlay decides.
+            raise ValueError(
+                "This workspace's .pcode/preferences.json sets subagent_models; change it "
+                "with pcode config project set|unset subagent_models."
+            )
         if names == ["off"]:
             names = []
         else:
-            # Resolve before saving, so a typo or a missing login is refused here
-            # rather than silently left out of the menu.
+            # Resolve before saving, so an unknown provider or a missing login is
+            # refused here rather than silently left out of the menu.
             _, problems = await asyncio.to_thread(subagent_menu, names)
             if problems:
                 raise ValueError("\n".join(problems))
@@ -1907,10 +1919,12 @@ class SessionController:
             # The reload reads the saved list, so without it nothing would change.
             self.reload_requested = False
             raise ValueError(f"Could not save subagent_models: {error}") from error
-        if subagent_models() != names:
+        # Resolving checks only the provider and login, not the model id, and the
+        # catalog is not exhaustive: flag what it does not know without refusing.
+        known = set(await asyncio.to_thread(self.model_suggestions))
+        if unknown := [name for name in names if name not in known]:
             self.view.warning(
-                "This workspace's .pcode/preferences.json sets subagent_models, which "
-                "overrides the saved choice (pcode config project unset subagent_models)."
+                f"Not in the /model catalog, so check the spelling: {', '.join(unknown)}"
             )
         chosen = ", ".join(names) if names else "none; sub-agents run on the session's model"
         self.view.note(f"Sub-agent models: {chosen}. Reloading.")

@@ -507,6 +507,11 @@ def subagent_models() -> list[str]:
     return list(dict.fromkeys(entry.strip() for entry in value.split(",") if entry.strip()))
 
 
+def from_project(key: str) -> bool:
+    """Whether the workspace's `.pcode/preferences.json` decides `key`."""
+    return key not in USER_ONLY and key in _read_valid(project_preferences_path())
+
+
 def rejected_project_keys() -> list[str]:
     """User-only keys the project file tries to set, for a launch warning."""
     path = project_preferences_path()
