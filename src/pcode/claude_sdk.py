@@ -62,8 +62,11 @@ TOOL_USE_ID = "claudecode/toolUseId"
 # Model setting carrying the workspace the CLI runs in (see `ClaudeWorkspace`).
 CWD_SETTING = "pcode_claude_cwd"
 EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
-# Idle processes kept for reuse; busy ones are never counted or closed.
-MAX_IDLE_SESSIONS = 3
+# Idle processes kept for reuse; busy ones are never counted or closed. Each
+# holds about 300 MB, and forking a transcript is warm anyway, so keeping one
+# only saves the ~0.8 s start: keep few, and not for long.
+MAX_IDLE_SESSIONS = 2
+IDLE_SECONDS = 10 * 60
 CLOSE_TIMEOUT_SECONDS = 5.0
 # A finished turn's result follows its last message within milliseconds.
 TURN_END_TIMEOUT_SECONDS = 60.0
@@ -716,6 +719,7 @@ class SessionPool:
         self.sessions: list[ClaudeSession] = []
         self._lock = asyncio.Lock()
         self._closing: set[asyncio.Task] = set()
+        self._expiry: asyncio.TimerHandle | None = None
 
     async def checkout(
         self, config: SessionConfig, messages: list[dict], chain: list[str]
@@ -802,6 +806,15 @@ class SessionPool:
         )
         for stale in idle[: max(0, len(idle) - MAX_IDLE_SESSIONS)]:
             self._drop(stale)
+        if self._expiry is not None:
+            self._expiry.cancel()
+        self._expiry = asyncio.get_running_loop().call_later(IDLE_SECONDS, self._expire)
+
+    def _expire(self) -> None:
+        self._expiry = None
+        cutoff = time.monotonic() - IDLE_SECONDS
+        for session in [s for s in self.sessions if not s.busy and s.last_used <= cutoff]:
+            self._drop(session)
 
     def _drop(self, session: ClaudeSession) -> None:
         with suppress(ValueError):
@@ -811,6 +824,8 @@ class SessionPool:
         task.add_done_callback(self._closing.discard)
 
     async def aclose(self) -> None:
+        if self._expiry is not None:
+            self._expiry.cancel()
         for session in list(self.sessions):
             self._drop(session)
         if self._closing:
@@ -951,12 +966,13 @@ class ClaudeModel(AnthropicModel):
             stream = await self._process_streamed_response(events, parameters, settings)
             yield stream
             # Anything short of the whole message leaves the process mid-turn.
-            if session.complete and not session.dead:
+            # A whole one is a fork point even if the process has since died.
+            if session.complete:
                 _, answer = await self._map_message([stream.get()], parameters, settings)
                 answer = normalize(answer)
                 if len(answer) == 1 and answer[0]["role"] == "assistant":
                     sessions.record(session, _digest(chain[-1], answer[0]))
-                    ok = True
+                    ok = not session.dead
         finally:
             sessions.release(session, ok=ok)
 
