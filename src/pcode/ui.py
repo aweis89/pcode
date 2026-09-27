@@ -2151,13 +2151,7 @@ def tally(succeeded: int, failed: int, sep: str = "") -> str:
 
 
 def tool_count(name: str, count: int, failed: int) -> str:
-    """One tool's part of a group line: `Read`, `Read 3`, `Search ✗1`, `Search ✓2 ✗1`.
-
-    A tool that never failed gives its bare count; marks appear only once
-    there is a failure to tell apart.
-    """
-    if not failed:
-        return f"{name} {count}" if count > 1 else name
+    """One tool's part of a group line: `Read ✓3`, `Search ✗1`, `Search ✓2 ✗1`."""
     return f"{name} {tally(count - failed, failed)}"
 
 
@@ -2335,10 +2329,10 @@ class Transcript:
 
     @staticmethod
     def group_line(events: list[ToolSummary], *, width: int) -> Text:
-        """`✓ 15 tools · Edit 10 · Run 5`, most used first.
+        """`✓ 15 tools · Edit ✓10 · Run ✓5`, most used first.
 
         Failures split the run's count and their tool's, so a run that hit
-        one still stands out: `✓ 5 ✗ 1 tools · Read 3 · Search ✓2 ✗1`.
+        one still stands out: `✓ 5 ✗ 1 tools · Read ✓3 · Search ✓2 ✗1`.
         """
         counts = Counter(label(event.name) for event in events)
         failures = Counter(label(event.name) for event in events if event.failed)
