@@ -38,6 +38,7 @@ from pcode.preferences import (
     apply_thinking,
     effort_for,
     effort_setting,
+    effort_unavailable,
     from_project,
     load_preferences,
     save_model_effort,
@@ -2336,10 +2337,8 @@ class SessionController:
             self.view.flash("Usage: /effort low|medium|high|xhigh|default")
             return
         agent = getattr(self.runtime, "agent", None)
-        if agent is None or effort_setting(self.model) is None:
-            self.view.flash(
-                "Effort control requires an OpenAI/Codex, Anthropic, or Meridian model."
-            )
+        if agent is None or effort_setting(self.model, getattr(agent, "model", None)) is None:
+            self.view.flash(effort_unavailable(self.model))
             return
         # Replace rather than mutate: an active run keeps its captured settings.
         apply_effort(agent, self.model, value)
@@ -2814,10 +2813,7 @@ class SessionController:
         for target in models:
             name = target.model or self.model
             if target.effort and effort_setting(name) is None:
-                raise ValueError(
-                    f"Effort control requires an OpenAI/Codex, Anthropic, or Meridian model; "
-                    f"{name} is not one."
-                )
+                raise ValueError(effort_unavailable(name))
         await self.start_aside(question, models)
 
     async def start_aside(self, question: str, models: list[SideTarget] | None = None) -> None:

@@ -27,7 +27,10 @@ def make_app(model="openai-codex:test", runtime=None):
     ), output
 
 
-@pytest.mark.parametrize("model", ["openai-codex:test", "anthropic:test", "meridian:test"])
+@pytest.mark.parametrize(
+    "model",
+    ["openai-codex:test", "anthropic:claude-opus-4-5", "meridian:claude-opus-4-5"],
+)
 def test_command_validation_completion_and_defaults(model):
     app, output = make_app(model)
     assert app.current_effort() == "default"
@@ -55,6 +58,15 @@ def test_unsupported_models_do_not_silently_change_settings(model):
     app.handle("/effort high")
     assert app.runtime.agent.model_settings == {"temperature": 0.5}
     assert "requires an OpenAI/Codex, Anthropic, or Meridian model" in output.getvalue()
+
+
+@pytest.mark.parametrize("model", ["anthropic:claude-haiku-4-5", "anthropic:claude-sonnet-4-5"])
+def test_anthropic_models_without_effort_control_are_refused(model):
+    """The adapter forwards `anthropic_effort` unchecked, so sending it would 400."""
+    app, output = make_app(model)
+    app.handle("/effort high")
+    assert app.runtime.agent.model_settings == {"temperature": 0.5}
+    assert f"{model} has no effort control" in output.getvalue()
 
 
 def test_shortcuts_clamp_and_default_baseline():
@@ -127,14 +139,20 @@ def test_effort_changes_apply_to_next_turn_not_next_tool_step(provider, key):
         else:
             yield "Done."
 
-    agent = Agent(FunctionModel(stream_function=model))
+    from pydantic_ai.profiles.anthropic import AnthropicModelProfile
+
+    agent = Agent(
+        FunctionModel(
+            stream_function=model, profile=AnthropicModelProfile(anthropic_supports_effort=True)
+        )
+    )
 
     @agent.tool_plain
     def ping() -> str:
         return "pong"
 
     runtime = AgentRuntime(agent)
-    app, _ = make_app(model=f"{provider}:test", runtime=runtime)
+    app, _ = make_app(model=f"{provider}:claude-opus-4-5", runtime=runtime)
     app.controller.effort("low")
 
     async def run():
@@ -152,9 +170,14 @@ def test_effort_changes_apply_to_next_turn_not_next_tool_step(provider, key):
 def test_anthropic_effort_settings_and_restore(provider, native_xhigh):
     from pcode.preferences import apply_effort, effort_for
 
-    app, _ = make_app(f"{provider}:test")
+    app, _ = make_app(f"{provider}:claude-opus-4-5")
     agent = app.runtime.agent
-    agent.model = SimpleNamespace(profile={"anthropic_supports_xhigh_effort": native_xhigh})
+    agent.model = SimpleNamespace(
+        profile={
+            "anthropic_supports_effort": True,
+            "anthropic_supports_xhigh_effort": native_xhigh,
+        }
+    )
     original = agent.model_settings
     app.controller.effort("xhigh")
     assert agent.model_settings == {

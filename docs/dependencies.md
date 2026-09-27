@@ -508,9 +508,14 @@ readback, and spill-failure fallback tests in `tests/test_tool_output_limits.py`
 `anthropic_effort` for Anthropic/Meridian.
 Verified Pydantic AI 2.43.0's `AnthropicModelSettings.anthropic_effort` and
 `AnthropicModel._build_output_config` send `output_config.effort` without changing
-thinking settings. The model profile's `anthropic_supports_xhigh_effort` selects
-native `xhigh`; otherwise pcode maps its top level to `max`. Support for effort
-and its highest levels varies by model; do not infer support from the route alone.
+thinking settings. `_build_output_config` consults `anthropic_supports_effort`
+only when deriving effort from unified thinking: an explicitly set
+`anthropic_effort` is forwarded to a model that does not support it, and the API
+rejects the request. So `preferences.effort_setting` checks that profile flag
+itself and reports no effort control for those models. The profile's
+`anthropic_supports_xhigh_effort` selects native `xhigh`; otherwise pcode maps
+its top level to `max`. Support for effort and its highest levels varies by
+model; do not infer support from the route alone.
 See [Anthropic effort](https://platform.claude.com/docs/en/build-with-claude/effort).
 
 ### Anthropic prompt caching

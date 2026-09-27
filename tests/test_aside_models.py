@@ -12,6 +12,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.profiles.anthropic import AnthropicModelProfile
 from rich.console import Console
 
 from pcode.agent import SideModel, create_coder, side_model
@@ -318,7 +319,11 @@ def test_an_effort_reaches_the_request_on_the_conversations_model_and_another(
     conversation = {"temperature": 0.5, "anthropic_effort": "high"}
     runtime = AgentRuntime(
         Agent(
-            FunctionModel(stream_function=main_model, model_name="main"),
+            FunctionModel(
+                stream_function=main_model,
+                model_name="main",
+                profile=AnthropicModelProfile(anthropic_supports_effort=True),
+            ),
             capabilities=[create_coder(tmp_path), Recorder(seen)],
             model_settings=conversation,
         )
@@ -329,7 +334,9 @@ def test_an_effort_reaches_the_request_on_the_conversations_model_and_another(
         "side_model",
         lambda name, effort="": SideModel(name, other, {"openai_reasoning_effort": effort}),
     )
-    app = PreviewApp(model="anthropic:claude-x", runtime=runtime, console=Console(file=StringIO()))
+    app = PreviewApp(
+        model="anthropic:claude-opus-4-5", runtime=runtime, console=Console(file=StringIO())
+    )
 
     async def settled():
         while app.asides.running:

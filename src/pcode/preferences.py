@@ -631,25 +631,60 @@ def save_model_effort(model: str, effort: str) -> None:
         _write_preferences(path, data)
 
 
-def effort_setting(model: str | None) -> str | None:
+def anthropic_profile(model: str | None, resolved=None) -> dict:
+    """The Anthropic profile for `model`, from `resolved` when it is a model object.
+
+    Before /login a model is still its name, so fall back to the name's profile
+    rather than forcing credential loading just to answer a question about it.
+    """
+    profile = getattr(resolved, "profile", None)
+    if profile is not None:
+        return profile
+    from pydantic_ai.profiles.anthropic import anthropic_model_profile
+
+    return anthropic_model_profile((model or "").split(":", 1)[-1]) or {}
+
+
+def effort_setting(model: str | None, resolved=None) -> str | None:
+    """The settings key /effort writes for `model`, or None where it has none.
+
+    Anthropic gates effort per model (Opus 4.5+, Sonnet 4.6+): the rest reject
+    `output_config.effort` outright, and the adapter forwards an explicitly set
+    `anthropic_effort` without consulting the profile. So asking Haiku for an
+    effort is a 400 on the next turn, not a setting the provider ignores.
+    """
     provider = (model or "").split(":", 1)[0]
     if provider in OPENAI_PROVIDERS:
         return "openai_reasoning_effort"
     if provider in ("anthropic", "meridian"):
-        return "anthropic_effort"
+        if anthropic_profile(model, resolved).get("anthropic_supports_effort"):
+            return "anthropic_effort"
     return None
+
+
+def effort_unavailable(model: str | None) -> str:
+    """Why /effort refuses `model`, naming the model where the provider is fine."""
+    if (model or "").split(":", 1)[0] in ("anthropic", "meridian"):
+        return (
+            f"{model} has no effort control; Anthropic gates it to "
+            "Opus 4.5+ and Sonnet 4.6+ models."
+        )
+    base = "Effort control requires an OpenAI/Codex, Anthropic, or Meridian model"
+    return f"{base}; {model} is not one." if model else f"{base}."
 
 
 def current_effort(agent, model: str) -> str:
     """The effort `agent` will request next, as /effort names it."""
-    settings = getattr(getattr(agent, "model", None), "settings", None) or {}
+    resolved = getattr(agent, "model", None)
+    settings = getattr(resolved, "settings", None) or {}
     settings = {**settings, **(getattr(agent, "model_settings", None) or {})}
-    effort = settings.get(effort_setting(model), "default")
+    effort = settings.get(effort_setting(model, resolved), "default")
     return "xhigh" if effort == "max" else effort
 
 
 def apply_effort(agent, model: str, effort: str | None) -> None:
-    key = effort_setting(model)
+    resolved = getattr(agent, "model", None)
+    key = effort_setting(model, resolved)
     if effort not in EFFORTS or key is None:
         return
     settings = dict(agent.model_settings or {})
@@ -657,9 +692,9 @@ def apply_effort(agent, model: str, effort: str | None) -> None:
         settings.pop(key, None)
     else:
         # Older Claude models call their highest effort "max", not "xhigh".
-        profile = getattr(getattr(agent, "model", None), "profile", {}) or {}
         if key == "anthropic_effort" and effort == "xhigh":
-            effort = "xhigh" if profile.get("anthropic_supports_xhigh_effort") else "max"
+            supports = anthropic_profile(model, resolved).get("anthropic_supports_xhigh_effort")
+            effort = "xhigh" if supports else "max"
         settings[key] = effort
     agent.model_settings = settings
 
@@ -673,13 +708,7 @@ def apply_thinking(agent, model: str, shown: bool) -> None:
         return
     settings = dict(current or {})
     if shown:
-        from pydantic_ai.profiles.anthropic import anthropic_model_profile
-
-        # Before /login, Agent.model can still be an unresolved string. Looking
-        # up its profile must not force credential loading just to open the UI.
-        profile = getattr(agent.model, "profile", None)
-        if profile is None:
-            profile = anthropic_model_profile(model.removeprefix("anthropic:")) or {}
+        profile = anthropic_profile(model, getattr(agent, "model", None))
         settings["anthropic_thinking"] = (
             {"type": "adaptive", "display": "summarized"}
             if profile.get("anthropic_supports_adaptive_thinking")
