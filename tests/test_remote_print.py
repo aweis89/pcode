@@ -149,6 +149,163 @@ def test_compact_is_waited_for_not_just_started(tmp_path, host_dir):
     asyncio.run(run())
 
 
+def test_a_command_cleared_from_the_queue_fails_instead_of_passing(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            queue = host.controller.command
+
+            def command_then_ctrl_c(text, tag=None):
+                queue(text, tag)
+                host.controller.clear_queue()  # Ctrl+C in another terminal.
+
+            host.controller.command = command_then_ctrl_c
+            printed = Printed()
+            assert not await asyncio.wait_for(printed.send(host, "/effort high"), 10)
+            assert "/effort did not run" in printed.err.getvalue()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_an_identical_message_queued_first_is_not_mistaken_for_this_one(tmp_path, host_dir):
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        try:
+            terminal, _, _ = await attach(host)
+            terminal.submit("hang first", "queue")
+            await until(lambda: host.buffer)
+            terminal.submit("continue", "queue")
+            await until(lambda: host.activity.queued_prompts == ["continue"])
+            printed = Printed()
+            sending = asyncio.create_task(printed.send(host, "continue"))
+            await until(lambda: host.activity.queued_prompts == ["continue", "continue"])
+            script.release("hang first")
+            assert await asyncio.wait_for(sending, 10)
+            # It waited for the second "continue", its own, which was the last turn.
+            assert printed.out.getvalue() == "Echo: continue\n\n"
+            assert not host.activity.busy and not host.activity.queued_prompts
+            terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_ctrl_c_detaches_and_the_caller_never_takes_a_terminals_place(tmp_path, host_dir):
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        try:
+            terminal, _, _ = await attach(host)
+            (own,) = host.clients.values()
+            printed = Printed()
+            sending = asyncio.create_task(printed.send(host, "hang long"))
+            # Its own turn is running: it has printed the turn's first words.
+            await until(lambda: printed.out.getvalue() == "Started. ")
+            # Side answers and popups for "the terminal last used" still go to one.
+            assert host.latest_client() is own
+            sending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await sending
+            assert "Detached; the message keeps running" in printed.err.getvalue()
+            await until(lambda: len(host.clients) == 1)
+            # Not cancelled: the turn is the host's, and it finishes there.
+            script.release("hang long")
+            await until(lambda: host.activity.prompt_state == "done")
+            terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_startup_failure_after_attaching_is_named(tmp_path, host_dir):
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        try:
+            terminal, _, _ = await attach(host)
+            terminal.submit("hang first", "queue")
+            await until(lambda: host.buffer)
+            printed = Printed()
+            sending = asyncio.create_task(printed.send(host, "later"))
+            await until(lambda: host.activity.queued_prompts == ["later"])
+            # The next queued message meets the failure and the queue is dropped.
+            host.controller.startup_error = RuntimeError("no credentials")
+            host.push_state()
+            script.release("hang first")
+            assert not await asyncio.wait_for(sending, 10)
+            # The host's own (sanitized) startup error, not a vague "dropped".
+            assert "Agent startup failed" in printed.err.getvalue()
+            assert "dropped" not in printed.err.getvalue()
+            terminal.close()
+        finally:
+            host.controller.startup_error = None
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_host_that_goes_away_before_the_message_is_sent_is_not_waited_on(
+    tmp_path, host_dir, monkeypatch
+):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        start = RemoteController.start
+
+        async def dropped_first(controller, welcome):
+            for client in list(host.clients.values()):
+                client.peer.close()
+            await controller.peer.closed.wait()
+            await start(controller, welcome)
+
+        monkeypatch.setattr(RemoteController, "start", dropped_first)
+        try:
+            printed = Printed()
+            assert not await asyncio.wait_for(printed.send(host, "hello"), 10)
+            assert "went away" in printed.err.getvalue()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("closed_before_reply", [False, True])
+def test_a_command_that_ends_the_session_is_not_a_failure(tmp_path, host_dir, closed_before_reply):
+    from pcode.commands import Command
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+
+        def end(argument):
+            host.controller.running = False  # As /worktree finish does.
+            if closed_before_reply:
+                # The host's close can overtake the reply to `run`.
+                for client in list(host.clients.values()):
+                    client.peer.notify("host_closed")
+                    client.peer.close()
+
+        host.controller.registry.register(Command("/end", "End the session", end))
+
+        async def close_when_stopped():
+            await host.stopped.wait()
+            await host.close()  # What the host process does next.
+
+        closing = asyncio.create_task(close_when_stopped())
+        try:
+            printed = Printed()
+            assert await asyncio.wait_for(printed.send(host, "/end"), 10)
+            assert "✗" not in printed.err.getvalue()
+            await closing
+        finally:
+            host.controller.runtime.close()
+
+    asyncio.run(run())
+
+
 def test_run_returns_for_a_command_the_host_drops(tmp_path, host_dir):
     """A `run` caller has nothing else to wait on, so a skipped command must still report."""
 
@@ -157,7 +314,7 @@ def test_run_returns_for_a_command_the_host_drops(tmp_path, host_dir):
         try:
             host.controller.startup_error = RuntimeError("no credentials")
             terminal, view, _ = await attach(host)
-            await asyncio.wait_for(terminal.peer.request("run", "/effort"), 10)
+            assert await asyncio.wait_for(terminal.peer.request("run", "/effort"), 10) is False
             await until(lambda: view.count("warning"))
             assert "startup failed" in view.calls[view.names().index("warning")][1][0]
             terminal.close()
@@ -181,6 +338,7 @@ def test_terminal_commands_are_refused_and_stop_ends_the_host(tmp_path, host_dir
                 pass  # This host is the test process itself.
 
             monkeypatch.setattr("pcode.remote.wait_for_exit", exited)
+            host.keep_worktree = True  # As a /restart leaves it, so the stop visibly resets it.
             printed = Printed()
             assert await asyncio.wait_for(printed.send(host, "/stop"), 10)
             await until(host.stopped.is_set)

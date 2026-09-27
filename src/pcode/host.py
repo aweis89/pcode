@@ -53,7 +53,7 @@ SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 RESETS = {"conversation_reset", "replay_conversation", "show_branch"}
 
 # What a terminal may call besides the controller's intents.
-HOST_CALLS = frozenset({"attach", "query", "run", "stop", "asides_read"})
+HOST_CALLS = frozenset({"attach", "query", "send", "run", "stop", "asides_read"})
 
 _MISSING = object()
 
@@ -89,6 +89,15 @@ class MirroredActivity(Activity):
         return {name: getattr(self, name) for name in SESSION_FIELDS}
 
 
+class _Run:
+    """A command sent with `run`, until it has run."""
+
+    def __init__(self) -> None:
+        self.done = asyncio.get_running_loop().create_future()
+        # The background tasks (compaction, MCP) as it began; None until it does.
+        self.work: tuple | None = None
+
+
 class _Client:
     """One attached terminal, and the calls it may make."""
 
@@ -96,6 +105,9 @@ class _Client:
         self.host = host
         self.number = number
         self.peer: Peer | None = None
+        # A caller with no editor (`--attach --print`): popups and side-answer
+        # notices meant for "the terminal last used" skip it.
+        self.headless = False
 
     # Intents: the controller's, with commands tagged by who sent them.
 
@@ -107,23 +119,47 @@ class _Client:
         self.host.touch(self)
         self.host.controller.command(text, (self.number, tag))
 
-    async def run(self, text: str) -> None:
-        """`command`, returning once it has run: for a caller with no editor to watch.
+    # Host calls for a caller with no editor to watch
 
-        That includes work it left running in the background (compaction, MCP
-        sign-in), whose outcome is the point of sending, say, `/compact`.
+    def send(self, text: str) -> None:
+        """Queue `text` as a turn of its own, and tell the caller how to know that turn.
+
+        The caller knows its turn by its text, so it skips as many identical
+        ones as were queued ahead. `queued` goes out in order with the view
+        calls: every `turn_started` before it is for a turn taken earlier, and
+        the reply to this call can arrive after the turn has begun.
         """
+        self.headless = True
+        self.host.active_at = time.monotonic()
+        ahead = self.host.activity.queued_prompts.count(text)
+        self.host.controller.submit(text, "queue")
+        self.peer.notify("queued", text, ahead)
+
+    async def run(self, text: str) -> bool:
+        """`command`, returning once it has run, and whether it did.
+
+        A command dropped from the queue (a Ctrl+C elsewhere cleared it) or
+        refused (one that waits for an idle session) did not. Background work
+        the command started (compaction, MCP sign-in) is waited for, as its
+        outcome is the point of sending, say, `/compact`.
+        """
+        self.headless = True
         tag = (self.number, f"run-{next(self.host.run_ids)}")
-        done = asyncio.get_running_loop().create_future()
-        self.host.runs[tag] = done
+        run = self.host.runs[tag] = _Run()
         try:
             self.command(text, tag[1])
-            await done
+            await run.done
         finally:
             self.host.runs.pop(tag, None)
+        if run.work is None:
+            return False
         controller = self.host.controller
-        await controller.compact_idle.wait()
-        await controller.mcp_idle.wait()
+        compaction, mcp = run.work
+        if controller.compact_task not in (None, compaction):
+            await controller.compact_idle.wait()
+        if controller.mcp_task not in (None, mcp):
+            await controller.mcp_idle.wait()
+        return True
 
     def cancel(self) -> None:
         self.host.controller.cancel()
@@ -200,10 +236,8 @@ class HostView:
     async def after_command(self, tag=None) -> None:
         # Terminals get it untagged, as ever; a `run` caller is waiting for its own.
         self._host.emit("after_command", (), {})
-        # Only `run` tags are strings: a terminal's own tag may not even be hashable.
-        run = isinstance(tag, tuple) and len(tag) == 2 and isinstance(tag[1], str)
-        if run and (done := self._host.runs.get(tag)) and not done.done():
-            done.set_result(None)
+        if (run := self._host.run_for(tag)) and not run.done.done():
+            run.done.set_result(None)
         if not self._host.controller.running:
             self._host.stop()
 
@@ -228,6 +262,7 @@ class HostView:
     # Requests to one terminal
 
     async def run_command(self, text: str, *, idle: bool, tag) -> None:
+        self._host.run_began(tag)
         client, own_tag = self._host.sender(tag)
         if client is None:
             return
@@ -237,6 +272,7 @@ class HostView:
             pass
 
     def command_started(self, tag) -> None:
+        self._host.run_began(tag)
         client, own_tag = self._host.sender(tag)
         self._host.running_command = client
         if client is not None:
@@ -278,7 +314,7 @@ class SessionHost:
         self._latest: _Client | None = None
         self.running_command: _Client | None = None
         # Commands sent with `run`, by tag, until they have run.
-        self.runs: dict[tuple, asyncio.Future] = {}
+        self.runs: dict[tuple, _Run] = {}
         self.run_ids = itertools.count(1)
         self.view = HostView(self)
         self.activity = MirroredActivity(lambda changes: self.emit("state", (changes,), {}))
@@ -437,13 +473,29 @@ class SessionHost:
         self.active_at = time.monotonic()
 
     def latest_client(self) -> _Client | None:
-        return self._latest if self._latest is not None and self._latest.peer else None
+        """The terminal last used, for what goes to one terminal; never a headless caller."""
+        latest = self._latest
+        if latest is not None and latest.peer and not latest.headless:
+            return latest
+        # Attach order: the newest terminal that has an editor.
+        return next((c for c in reversed(self.clients.values()) if not c.headless), None)
 
     def sender(self, tag) -> tuple[_Client | None, object]:
         """The terminal a command came from, and the tag it gave it."""
         if isinstance(tag, (list, tuple)) and len(tag) == 2:
             return self.clients.get(tag[0]), tag[1]
         return self.latest_client(), None
+
+    def run_for(self, tag) -> _Run | None:
+        # Only `run` tags are strings: a terminal's own tag may not even be hashable.
+        if isinstance(tag, tuple) and len(tag) == 2 and isinstance(tag[1], str):
+            return self.runs.get(tag)
+        return None
+
+    def run_began(self, tag) -> None:
+        """A `run` command is being handled: note the background work already going."""
+        if (run := self.run_for(tag)) is not None:
+            run.work = (self.controller.compact_task, self.controller.mcp_task)
 
     # Showing
 
