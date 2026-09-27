@@ -28,9 +28,12 @@ def _quiet_stdin(stack: ExitStack) -> None:
         fd = sys.stdin.fileno()
         original = termios.tcgetattr(fd)
         quiet = termios.tcgetattr(fd)
-        # Leave canonical editing and signals alone. The kernel queues typeahead;
-        # no reader thread, input flushing, or raw-mode shell is needed.
-        quiet[3] &= ~(termios.ECHO | termios.ECHONL)
+        # The kernel queues typeahead; no reader thread or input flushing is
+        # needed. Canonical mode goes too: canonical without echo is how
+        # terminals such as Ghostty recognize a password prompt. Signals stay.
+        quiet[3] &= ~(termios.ECHO | termios.ECHONL | termios.ICANON)
+        quiet[6][termios.VMIN] = 1
+        quiet[6][termios.VTIME] = 0
         termios.tcsetattr(fd, termios.TCSANOW, quiet)
     except (OSError, ValueError, termios.error):
         return
