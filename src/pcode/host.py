@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 
 from pcode.controller import INTENTS, SESSION_FIELDS, SessionController
+from pcode.error_report import error_message
 from pcode.host_protocol import (
     LINE_LIMIT,
     PROTOCOL,
@@ -388,8 +389,6 @@ class SessionHost:
         Terminals may attach while this runs: they see the startup notes as
         they come, and anything they send waits for the loops.
         """
-        from pcode.live import error_message
-
         controller = self.controller
         try:
             await controller.initialize_runtime()
@@ -769,8 +768,6 @@ def main(argv: list[str] | None = None) -> None:
     try:
         asyncio.run(_serve(args))
     except Exception as error:  # noqa: BLE001 - the log is the only reader.
-        from pcode.live import error_message
-
         print(f"session host failed: {error_message(error)}", file=sys.stderr, flush=True)
         remove_entry(args.id)
         raise SystemExit(1) from error

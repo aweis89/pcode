@@ -30,6 +30,7 @@ from pcode.aside import (
     summary_request,
 )
 from pcode.commands import Command, CommandRegistry
+from pcode.error_report import error_message
 from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
 from pcode.preferences import (
     EFFORTS,
@@ -621,8 +622,6 @@ class SessionController:
 
     def session_state(self) -> dict:
         """What a terminal attached to a host shows of the session, beyond the live panel."""
-        from pcode.live import error_message
-
         saved = getattr(self.runtime, "session", None)
         commands = []
         arguments = {}
@@ -1049,8 +1048,6 @@ class SessionController:
 
     async def consume(self) -> None:
         """Run queued messages one at a time, each once nothing holds the queue."""
-        from pcode.live import error_message
-
         await self.ready.wait()
         while self.running:
             await self.idle()
@@ -1141,8 +1138,6 @@ class SessionController:
     ) -> bool:
         """Run a turn: `resend` asks again from the last checkpoint, and `wake` is one
         a finished job started, shown as a badge rather than as typed text."""
-        from pcode.live import error_message
-
         runtime = self.runtime
         self.view.turn_started(text, echo=not wake)
         if wake:
@@ -1450,8 +1445,6 @@ class SessionController:
                 self.activity.finish_prompt("cancelled")
                 self.view.warning(cancelled)
             except Exception as error:
-                from pcode.live import error_message
-
                 self.activity.finish_prompt("failed")
                 self.view.error(error_message(error), title=failed)
             finally:
@@ -2116,8 +2109,6 @@ class SessionController:
         try:
             await self.activate_model(model)
         except Exception as error:
-            from pcode.live import error_message
-
             self.view.error(error_message(error), title="Model unchanged")
 
     async def activate_model(self, model: str) -> None:
@@ -3044,7 +3035,6 @@ class SessionController:
     def command_failed(self, name: str, error: Exception) -> None:
         """Report a slash command that raised, with frames saved for diagnosis."""
         from pcode.diagnostics import stale_install
-        from pcode.live import error_message
 
         self.view.error(error_message(error, unexpected=f"{name} failed"))
         if hint := stale_install():
