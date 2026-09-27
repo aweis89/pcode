@@ -234,18 +234,29 @@ These settings also work through `/config` and apply on the next launch.
 
 ## Paced scrollback
 
-Model text reaches scrollback one settled Markdown block at a time, and a long
-code block or list would otherwise land in a single frame. By default each
-settled block is rendered once and then written a few rows per frame, so it
-rolls out instead of appearing all at once. Small blocks reveal one row per
-frame; large ones go faster, so a block is fully written within about a second
-of settling however big it is. Rendering, ordering, and the transcript retained
-for resume or redraw are unchanged; a redraw or resize rebuild always lands
-whole. To write every block in one frame:
+Model text reaches scrollback one settled Markdown block at a time, so without
+pacing a whole paragraph appears in one frame after a pause. By default
+(`typed`), settled prose (paragraphs, lists, headings, quotes, and thinking)
+is typed out a few characters per frame on a live row just below scrollback,
+and each row is written to scrollback once it is complete. The text is already
+rendered, so nothing reflows while it types: line breaks and styling are final
+from the first character. Code blocks, tables, and tool output roll in a row
+per frame instead, since half a code line or table border reads badly.
+
+Typing runs at about 360 characters a second, close to a model's own pace, and
+speeds up when output arrives faster, so a backlog is written within about two
+seconds. Rows rolled in whole go one per frame and finish within about a
+second. A popup or the end of a session writes whatever is left at once.
+Rendering, ordering, and the transcript retained for resume or redraw are
+unchanged; a redraw or resize rebuild always lands whole.
 
 ```sh
-pcode config set paced_scrollback off  # Default on; applies on next launch
+pcode config set paced_scrollback rows  # Roll every block in by row
+pcode config set paced_scrollback off   # Write every block in one frame
 ```
+
+The default is `typed`; changes apply on next launch. An older saved `on` falls
+back to the default.
 
 ## Regenerating the terminal transcript
 

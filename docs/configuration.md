@@ -122,7 +122,7 @@ is only sensible on a machine where you wrote all of them.
 | `cache_notices` | `on` | `on`, `off` (note in the transcript when a request reuses less of the prompt cache; see [prompt cache notices](context.md#prompt-cache-notices)) |
 | `debug` | `off` | `on`, `off` (also write request fingerprints to disk with each cache notice) |
 | `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
-| `paced_scrollback` | `on` | `on`, `off` (roll settled blocks into scrollback a few rows per frame; see [the transcript](transcript.md#paced-scrollback)) |
+| `paced_scrollback` | `typed` | `typed`, `rows`, `off` (type settled prose out, or roll blocks in a row per frame; see [the transcript](transcript.md#paced-scrollback)) |
 | `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
 | `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |
 | `tool_output_threshold` | `10000` | Positive integer, characters that trigger reduction |

@@ -229,7 +229,7 @@ def test_paced_flush_writes_one_row_per_frame_and_keeps_ticking(monkeypatch):
         assert written == "ROW_0\n"
         assert handoffs[0].rows_written == 1
         # The rest is queued, and the loop is asked for another frame.
-        assert [row.strip() for row in output.rows] == ["ROW_1", "ROW_2"]
+        assert [row.text.strip() for row in output.rows] == ["ROW_1", "ROW_2"]
         assert not output.pending
         assert output.changed.is_set()
         await output.flush()
@@ -284,6 +284,116 @@ def test_paced_rows_are_dropped_by_replay_and_written_at_once_when_off(monkeypat
         assert not output.rows
 
     asyncio.run(run())
+
+
+def typed_output(monkeypatch, handoffs):
+    transcript, output = paced_output(monkeypatch, handoffs)
+    output.typed = True
+    output.app.invalidate = Mock()
+    return transcript, output
+
+
+def shown(output):
+    return "".join(text for _, text in output.typing_fragments())
+
+
+def test_typed_prose_types_out_live_and_writes_each_row_once_complete(monkeypatch):
+    from pcode.ui import TYPED_CHARS_PER_FRAME
+
+    async def run():
+        handoffs = []
+        transcript, output = typed_output(monkeypatch, handoffs)
+        sentence = "The quick brown fox jumps over the lazy dog."
+        transcript.message(sentence)
+        await output.flush()
+        # The first frame types into the live row; scrollback is untouched.
+        assert handoffs == [] and transcript.console.file.getvalue() == ""
+        assert shown(output) == sentence[:TYPED_CHARS_PER_FRAME]
+        assert output.changed.is_set()
+        output.app.invalidate.assert_called()
+        frames = 1
+        while output.rows:
+            await output.flush()
+            frames += 1
+            if output.rows:
+                assert sentence.startswith(shown(output).rstrip())
+        # The row lands once whole; its blank separator comes free in the same frame.
+        assert len(handoffs) == 1
+        assert frames == -(-len(sentence) // TYPED_CHARS_PER_FRAME)
+        assert transcript.console.file.getvalue().split("\n")[0].rstrip() == sentence
+        assert shown(output) == ""
+        assert not output.changed.is_set()
+
+    asyncio.run(run())
+
+
+def test_typed_mode_rolls_code_by_row_behind_the_prose_it_follows(monkeypatch):
+    async def run():
+        handoffs = []
+        transcript, output = typed_output(monkeypatch, handoffs)
+        transcript.message("Intro line.")
+        transcript.message("```text\nCODE_0\nCODE_1\n```")
+        while output.rows or output.pending:
+            await output.flush()
+            # Code never shows up half-typed in the live row.
+            assert "CODE" not in shown(output)
+        text = transcript.console.file.getvalue()
+        assert text.index("Intro line.") < text.index("CODE_0") < text.index("CODE_1")
+        # The short prose row finishes on the first frame, which still has its
+        # one-row budget for code; the second code row waits a frame.
+        assert [handoff.rows_written for handoff in handoffs][-1] >= 1
+        assert len(handoffs) == 2
+
+    asyncio.run(run())
+
+
+def test_typed_backlog_catches_up_and_drain_writes_the_rest_at_once(monkeypatch):
+    from pcode.ui import TYPED_DRAIN_FRAMES
+
+    async def run():
+        handoffs = []
+        transcript, output = typed_output(monkeypatch, handoffs)
+        transcript.message("\n\n".join("word " * 60 for _ in range(20)))
+        frames = 0
+        while output.rows or output.pending:
+            await output.flush()
+            frames += 1
+        assert frames <= TYPED_DRAIN_FRAMES + 1
+        transcript.message("Interrupted by a popup.")
+        await output.flush()
+        assert shown(output)
+        await output.flush(drain=True)
+        assert "Interrupted by a popup." in transcript.console.file.getvalue()
+        assert not output.rows and shown(output) == ""
+
+    asyncio.run(run())
+
+
+def test_typing_fragments_keep_styles_and_drop_hyperlink_escapes():
+    from pcode.ui import QueuedRow
+
+    link = "\x1b]8;id=1;https://example.com\x1b\\"
+    row = QueuedRow(f"\x1b[1mBold\x1b[0m {link}link\x1b]8;;\x1b\\ tail      \n", typed=True)
+    assert row.visible == len("Bold link tail")
+    output = TerminalOutput(Console(file=StringIO()), SimpleNamespace())
+    output.rows = [row]
+    output._typed = 7
+    fragments = output.typing_fragments()
+    assert "".join(text for _, text in fragments) == "Bold li"
+    assert "bold" in fragments[0][0]
+    assert all("\x1b" not in text and "https" not in text for _, text in fragments)
+
+
+def test_typed_prose_classifies_writes():
+    from pcode.thinking_markdown import ThinkingMarkdown
+    from pcode.ui import typed_prose
+
+    assert typed_prose((Markdown("A paragraph\n\n- a list"),))
+    assert typed_prose((ThinkingMarkdown("Thinking aloud"),))
+    assert not typed_prose(())
+    assert not typed_prose(("plain",))
+    assert not typed_prose((Markdown("```\ncode\n```"),))
+    assert not typed_prose((Markdown("| a |\n| - |\n| b |"),))
 
 
 def test_split_rows_keeps_newlines_and_a_trailing_partial_row():

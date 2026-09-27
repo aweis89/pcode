@@ -624,7 +624,7 @@ from pcode.app import PreviewApp
 from pcode.preferences import save_preferences
 from pcode.runtime import Message, TextDelta
 
-save_preferences(paced_scrollback="on")
+save_preferences(paced_scrollback="rows")
 
 class Runtime:
     session = None
@@ -666,6 +666,46 @@ def test_paced_scrollback_rolls_a_block_out_and_keeps_taking_input(pane):
     assert history.count("PACED_ROW_199") == 1
     assert positions[-1] < history.index("BLOCK_SETTLED") < history.index("▌ next")
     assert history.index("▌ next") < history.index("SECOND_TURN_DONE")
+
+
+TYPED_SCRIPT = """
+from pcode.app import PreviewApp
+from pcode.preferences import save_preferences
+from pcode.runtime import Message, TextDelta
+
+save_preferences(paced_scrollback="typed")
+
+class Runtime:
+    session = None
+
+    async def stream(self, prompt):
+        words = " ".join(f"TYPED_W{i:03d}" for i in range(120))
+        yield TextDelta(words + "\\n\\nTYPED_DONE\\n\\n")
+        yield Message("")
+
+PreviewApp(model="test:local", runtime=Runtime()).run()
+"""
+
+
+@pytest.mark.parametrize("pane", [TYPED_SCRIPT], indirect=True)
+def test_typed_scrollback_types_prose_live_and_writes_it_once(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "h", "Enter")
+    deadline = time.monotonic() + TIMEOUT
+    while "TYPED_W000" not in (
+        history := pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    ):
+        assert time.monotonic() < deadline, "The paragraph never started to appear"
+        time.sleep(0.02)
+    # About 1300 characters type out over roughly two seconds; one snapshot
+    # sees the start without the end, as with the row pacing test above.
+    assert "TYPED_W119" not in history
+    capture(pane, "TYPED_DONE")
+    history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    # The live row is erased as its text is written, never left behind.
+    for i in range(120):
+        assert history.count(f"TYPED_W{i:03d}") == 1
+    assert history.index("TYPED_W119") < history.index("TYPED_DONE")
 
 
 def single_editor_history(pane, marker, *, frames=1):

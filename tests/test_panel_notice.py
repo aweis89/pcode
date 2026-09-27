@@ -55,7 +55,13 @@ def test_toggle_renders_above_the_editor_instead_of_entering_scrollback():
                 output=output,
             )
             app.transcript.output = type(
-                "Stub", (), {"app": session.app, "print": lambda *a, **k: None}
+                "Stub",
+                (),
+                {
+                    "app": session.app,
+                    "print": lambda *a, **k: None,
+                    "typing_fragments": lambda self: [],
+                },
             )()
             app.show_thinking("off")
             stream.seek(0)
