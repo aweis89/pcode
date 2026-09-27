@@ -704,6 +704,12 @@ was verified live against the bundled CLI, and most of them are traps:
 - The child inherits the environment, and an empty value counts as unset.
   `CLI_ENV` blanks pcode's Anthropic key, token and base URL. A fake key left in
   the parent was verified to be ignored.
+- On a subscription login the CLI writes 1-hour cache entries unless told
+  otherwise. `CLI_ENV` sets `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` (verified on
+  2026-09-27: the transcript's `cache_creation` shows only
+  `ephemeral_5m_input_tokens`). An upgrade that drops or renames the variable
+  shows up there as `ephemeral_1h_input_tokens` again; see
+  [anthropic-providers](anthropic-providers.md#what-shipped) for why 5 minutes.
 - A user message written while the CLI waits on tool results is queued. It joins
   the *same* request as the results, wrapped in a `<system-reminder>` that says the
   user sent it mid-turn. Writing it before releasing the handlers makes this

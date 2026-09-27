@@ -303,16 +303,34 @@ Caching was checked again on 2026-09-27 against real traffic: four
 Every request after a session's first read the previous request's whole input
 less 2 tokens and wrote only the new turn; the longest session read 97% of its
 input from cache. Forks were as warm as the live process (early builds forked a
-new process for every request, and their reads look the same). The CLI writes
-with the 1-hour TTL, not the 5 minutes pcode asks for on the direct `anthropic:`
-path. pcode sets nothing here: an hour is Claude Code's own default on a
-subscription within plan usage, and `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` overrides
-it. Replaying saved sessions' request gaps at API prices, an hour cost about 4%
-more on `claude:` and 8% more on `anthropic:`, since 97% of gaps are under five
-minutes; how a subscription meters 1-hour writes is not published. A new
-session's first request already reads about 7,900 tokens, the CLI's shared
-prefix. The only cold writes were a switch from another model and a turn after
-ten hours idle.
+new process for every request, and their reads look the same). A new session's
+first request already reads about 7,900 tokens, the CLI's shared prefix. The only
+cold writes were a switch from another model and a turn after ten hours idle.
+
+Those sessions wrote 1-hour cache entries, Claude Code's default on a
+subscription within plan usage. pcode now sets `CLAUDE_CODE_PROMPT_CACHE_TTL=5m`,
+matching the 5 minutes it asks for on the direct `anthropic:` path, for three
+reasons:
+
+- A 1-hour write costs 2x input against 1.25x, and pays back only when the next
+  request comes 5-60 minutes later. pcode turns average about 35 requests, 97% of
+  them under five minutes apart. Replaying saved sessions' request gaps at Opus 5.5
+  prices (reads 0.05x), an hour cost about 10% more on `claude:`, 12% on
+  `anthropic:` and 7% across all Anthropic traffic.
+- Anthropic does not publish how a subscription meters cache tokens, but one Max
+  user's reconstruction of an exhausted week at list API prices, 1-hour writes at
+  2x, matched the measured pool to 0.3%
+  ([claude-code#88352](https://github.com/anthropics/claude-code/issues/88352)).
+  Claude Code's maintainers describe the hour as a per-workload call, not a
+  general win
+  ([claude-code#46829](https://github.com/anthropics/claude-code/issues/46829)).
+- The one case the hour covered well is a parent blocked in `delegate_task`, which
+  has no wait cap and routinely outlasts five minutes. On five minutes that parent
+  rewrites its prefix when the child returns, as `anthropic:` parents already do.
+
+The variable outranks `ENABLE_PROMPT_CACHING_1H` and settings; only
+`FORCE_PROMPT_CACHING_5M` beats it. The API offers no TTL other than 5 minutes and
+1 hour.
 
 The spike's open criteria have answers now. Prompt size is Claude Code's own plus
 pcode's, since the CLI adds its environment, date and model attachments.
