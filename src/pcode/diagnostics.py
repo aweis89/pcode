@@ -119,6 +119,8 @@ TRANSIENT_TRANSPORT = frozenset(
         "IncompleteRead",
         # A `claude:` CLI process ended mid-request; the retry starts another.
         "ClaudeProcessError",
+        # A `claude:` request got no HTTP response; the retry forks the transcript.
+        "ClaudeConnectionError",
     }
 )
 

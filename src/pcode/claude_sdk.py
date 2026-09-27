@@ -126,11 +126,12 @@ CLI_ENV = {
     "DISABLE_AUTOUPDATER": "1",
 }
 # Statuses for the CLI's error kinds when it reports no HTTP status itself.
+# `server_error` has none on purpose: without a status it is a connection failure
+# (`ClaudeConnectionError`), while a real 5xx or 529 always carries its status.
 ERROR_STATUS = {
     "authentication_failed": 401,
     "rate_limit": 429,
     "invalid_request": 400,
-    "server_error": 500,
 }
 
 
@@ -140,6 +141,16 @@ class ClaudeHTTPError(ModelHTTPError):
 
 class ClaudeProcessError(ModelAPIError):
     """The CLI process ended mid-request; a retry starts another (transient)."""
+
+
+class ClaudeConnectionError(ModelAPIError):
+    """The CLI's request got no HTTP response: dropped, refused or timed out (transient).
+
+    Verified against the bundled CLI: all three arrive as a `server_error` with
+    no `api_error_status`, where a real 500 or 529 carries its status. With the
+    CLI's own retries off, pcode's transient retry covers these, as it covers
+    the same failures on its other providers.
+    """
 
 
 class ClaudeStartError(ModelAPIError):
@@ -168,6 +179,12 @@ def failure_hint(error: BaseException) -> str | None:
         seen.add(id(error))
         if isinstance(error, ClaudeSDKMissing):
             return MISSING_SDK
+        if isinstance(error, ClaudeConnectionError):
+            # The CLI's own text stays in the diagnostics log.
+            return (
+                "Claude Code got no response from Anthropic (connection dropped, refused "
+                "or timed out). Check network/proxy connectivity and retry when ready."
+            )
         if isinstance(error, ClaudeHTTPError):
             body = error.body if isinstance(error.body, dict) else {}
             kind = (body.get("error") or {}).get("type")
@@ -838,6 +855,8 @@ class ClaudeSession:
         kind, text = self._api_error or (None, "")
         self._api_error = None
         text = text or result.result or "; ".join(result.errors or []) or result.subtype
+        if kind == "server_error" and not result.api_error_status:
+            return ClaudeConnectionError(self.config.model, text)
         status = result.api_error_status or ERROR_STATUS.get(kind or "")
         if status:
             body = {"type": "error", "error": {"type": kind or result.subtype, "message": text}}
