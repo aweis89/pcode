@@ -31,6 +31,7 @@ nav = [
     { "Prompt caching and plan reminders" = "prompt-caching.md" },
     { "Conversation tree" = "conversation-tree.md" },
     { "Background sessions plan" = "background-sessions-plan.md" },
+    { "Bounded delegation waits plan" = "delegation-wait-plan.md" },
     { "Profiling" = "profiling.md" },
     { "Dependencies" = "dependencies.md" },
     { "Anthropic provider options" = "anthropic-providers.md" },
