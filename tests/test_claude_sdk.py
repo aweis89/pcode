@@ -422,6 +422,8 @@ def test_process_runs_pcode_prompt_and_tools_only(world):
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
         assert options.env[name] == ""
     assert options.env["CLAUDE_CODE_MAX_RETRIES"] == "0"
+    # Five-minute cache writes, not the subscription's default hour.
+    assert options.env["CLAUDE_CODE_PROMPT_CACHE_TTL"] == "5m"
     # No output ceiling from pcode leaves the CLI's own default.
     assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in options.env
     assert options.stderr is not None  # never onto pcode's terminal

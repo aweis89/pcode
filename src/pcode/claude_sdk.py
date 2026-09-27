@@ -120,6 +120,11 @@ CLI_ENV = {
     "ENABLE_TOOL_SEARCH": "false",
     # pcode already bounds tool output; never let the CLI truncate it again.
     "MAX_MCP_OUTPUT_TOKENS": "1000000",
+    # A subscription login defaults to 1-hour cache writes (2x input, against
+    # 1.25x). pcode's tool loops send requests well inside five minutes, so the
+    # hour rarely pays off (docs/anthropic-providers.md). This variable wins
+    # over ENABLE_PROMPT_CACHING_1H; only FORCE_PROMPT_CACHING_5M outranks it.
+    "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m",
     # A parked handler lasts as long as the tool runs, delegations included.
     "MCP_TOOL_TIMEOUT": str(7 * 24 * 3600 * 1000),
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
