@@ -344,9 +344,10 @@ class SessionView(Protocol):
 
 # What a host may call on an attached terminal: its view, and the mirrors of
 # the live panel (`state`), the session (`session_state`), and side questions.
+# `queued` answers a headless caller's `send` (see pcode.remote_print).
 VIEW_CALLS = frozenset(
     {name for name in vars(SessionView) if not name.startswith("_")}
-    | {"state", "session_state", "aside_changed", "aside_answered", "host_closed"}
+    | {"state", "session_state", "aside_changed", "aside_answered", "host_closed", "queued"}
 )
 
 transportable(Bridge)

@@ -28,45 +28,59 @@ class PrintView:
         self.reply = reply
         # The host's live-panel fields, mirrored by the RemoteController.
         self.activity = Activity()
-        # The message sent, once it is; whether the host's queue has shown it;
-        # whether its turn is running; whether the command sent is running.
+        # The message, once the host has queued it; how many identical ones
+        # were queued ahead of it (their turns start first); whether its turn
+        # is running; whether the command sent is running.
         self.prompt: str | None = None
-        self.queued = False
+        self.ahead = 0
         self.turn = False
         self.command = False
         self.failed = False
+        # The message left the host's queue without running.
+        self.dropped = False
         self.finished = asyncio.Event()
 
     @property
     def showing(self) -> bool:
         return self.turn or self.command
 
-    def finish(self, ok: bool) -> None:
-        self.failed = self.failed or not ok
+    def queued(self, prompt: str, ahead: int) -> None:
+        """The host queued the message: its turn is the next with this text after `ahead`."""
+        self.prompt, self.ahead = prompt, ahead
+        self.redraw()
+
+    def host_gone(self, *, stopped: bool) -> None:
+        if self.finished.is_set():
+            return
+        self.reply.settle()
+        if stopped and self.command and not self.turn:
+            # Most likely this command ending the session (`/worktree finish`).
+            self.transcript.note("The session host stopped.")
+        else:
+            self.transcript.error(
+                "The session host stopped." if stopped else "The session host went away."
+            )
+            self.failed = True
         self.finished.set()
 
-    def host_gone(self) -> None:
-        if not self.finished.is_set():
-            self.reply.settle()
-            self.transcript.error("The session host went away.")
-            self.finish(False)
-
     def redraw(self) -> None:
-        """The host's queue moved: notice the message leaving it without having run."""
+        """The host's state moved: notice the message leaving its queue without running."""
         if self.prompt is None or self.turn or self.finished.is_set():
             return
-        if self.prompt in self.activity.queued_prompts:
-            self.queued = True
-        elif self.queued and not self.activity.busy:
-            # Taking it to run keeps the host busy until its turn has started,
-            # so an idle host without it means a Ctrl+C or failure cleared it.
-            self.transcript.error("The host dropped this message from its queue before it ran.")
-            self.finish(False)
+        if not self.activity.busy:
+            # A queued message holds the host busy until its turn has started,
+            # so an idle host means a Ctrl+C or a failed turn cleared the queue.
+            self.dropped = self.failed = True
+            self.finished.set()
 
     # The turn
 
     def turn_started(self, text: str, *, echo: bool) -> None:
-        if text == self.prompt and not self.turn and not self.finished.is_set():
+        if text != self.prompt or self.turn or self.finished.is_set():
+            return
+        if self.ahead:
+            self.ahead -= 1  # An identical message queued before this one.
+        else:
             self.turn = True
 
     def turn_event(self, event) -> None:
@@ -85,7 +99,8 @@ class PrintView:
     async def after_turn(self) -> None:
         if self.turn:
             self.turn = False
-            self.finish(self.activity.prompt_state == "done")
+            self.failed = self.failed or self.activity.prompt_state != "done"
+            self.finished.set()
 
     # Scrollback, written only while this caller's own work runs
 
@@ -158,41 +173,61 @@ async def print_to_host(entry: HostEntry, prompt: str, *, transcript, present, s
     )
     view = PrintView(transcript, reply)
     controller, welcome = await RemoteController.connect(entry.socket, view, view.activity)
+    # Wired before anything else is awaited, so no close goes unnoticed.
+    controller.on_closed = lambda: view.host_gone(stopped=controller.host_stopped)
+    if controller.peer.closed.is_set():
+        controller.on_closed()
     try:
         # What the host showed before this attached is not this caller's.
         await controller.start({**welcome, "calls": []})
-        controller.on_closed = view.host_gone
         if controller.startup_error is not None:
             transcript.error(str(controller.startup_error), title="Agent startup failed")
             return False
         if name:
             view.command = True
-            try:
-                await controller.peer.request("run", prompt)
-            except RemoteError as error:
-                # A host from before `run` refuses it by name.
-                raise HostError(
-                    f"The session host runs older pcode ({error}); restart it to send it commands."
-                ) from error
-            except ConnectionError:
-                view.host_gone()
+            ran = await _host_call(controller, "run", prompt, view)
             view.command = False
+            if ran is False and not view.failed:
+                transcript.error(f"{name} did not run: the host's queue was cleared first.")
+                return False
+            # A host that went away has said whether that was a failure.
             return not view.failed
-        view.prompt = prompt
-        controller.submit(prompt, "queue")
+        # The host answers with `queued` first, which arms the view.
+        await _host_call(controller, "send", prompt, view)
         try:
             await view.finished.wait()
         except asyncio.CancelledError:
-            # Ctrl+C stops this caller's own turn. One still queued stays: the
-            # host's cancel would also stop whatever another terminal is running.
-            if view.turn:
-                controller.cancel()
-            else:
-                transcript.note(f"Detached; the message is still queued in host {entry.id}.")
+            # Ctrl+C only detaches: the host's own cancel would also clear
+            # every other terminal's queue. Attach to stop the turn there.
+            reply.settle()
+            where = "keeps running" if view.turn else "is still queued"
+            transcript.note(f"Detached; the message {where} in host {entry.id}.")
             raise
+        if view.dropped:
+            # Startup can fail after this attached, and then drops the queue.
+            error = controller.startup_error
+            transcript.error(
+                str(error) if error else "The host dropped this message before it ran.",
+                title="Agent startup failed" if error else "Error",
+            )
         return not view.failed
     finally:
         await controller.detach()
+
+
+async def _host_call(controller: RemoteController, method: str, prompt: str, view: PrintView):
+    """A call only newer hosts have; None when the host went away (and has said so)."""
+    try:
+        return await controller.peer.request(method, prompt)
+    except RemoteError as error:
+        if error.type_name == "PermissionError":
+            raise HostError(
+                "The session host runs older pcode; /restart it to send it messages headlessly."
+            ) from error
+        raise
+    except ConnectionError:
+        view.host_gone(stopped=controller.host_stopped)
+        return None
 
 
 async def _stop(entry: HostEntry, prompt: str, transcript) -> bool:

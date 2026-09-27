@@ -221,6 +221,8 @@ class RemoteController:
         self._calls = _Calls(self)
         self._serving: asyncio.Task | None = None
         self.on_closed = lambda: None
+        # The host said it was stopping, rather than just going away.
+        self.host_stopped = False
 
     # Connecting
 
@@ -315,6 +317,7 @@ class RemoteController:
             self.view.aside_answered(self.apply_aside(args[0]))
             return None
         if name == "host_closed":
+            self.host_stopped = True
             return None
         if name == "read_asides":
             return self._read_asides()

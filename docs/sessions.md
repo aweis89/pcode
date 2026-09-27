@@ -50,25 +50,36 @@ terminal attached to it sees the turn as usual.
 
 ```sh
 pcode --attach 3f9c -p "Run the tests and summarize failures"   # reply on stdout
-pcode --attach -p /compact                                       # a session command
+pcode --attach 3f9c -p /compact                                  # a session command
 pcode --attach 3f9c -p /stop                                     # end the host
 ```
 
+`--attach` takes an optional HOST, so it swallows the word after it: write
+`pcode --attach -p "..."` or `pcode --attach 3f9c "..." -p`, never
+`pcode -p --attach "..."`, which reads the message as a host ID.
+
 - A message waits behind whatever the host is already doing, then runs as its
   own turn. Only that turn is printed: the reply on stdout, tools and notes on
-  stderr, as for a local `--print`. The exit status says whether it succeeded,
-  and it fails if a Ctrl+C elsewhere clears it from the queue before it runs.
+  stderr, as for a local `--print`. The exit status says whether it succeeded.
+  It also fails, once the host has nothing left to do, if the message never
+  ran because the host's queue was cleared first (a Ctrl+C in another terminal,
+  or a turn ahead of it failing).
 - A session command (`/compact`, `/effort high`, `/model NAME`, ...) runs in the
-  host, and pcode exits once it has, compaction included. It exits non-zero if
-  the command reports an error or a warning, such as `/compact` refused while a
-  turn runs. A command that opens a picker (a bare `/model`) fails, since nobody
-  is there to pick. A skill command's turn is queued in the host but not waited
-  for.
-- `/stop` ends the host. It tidies its own worktree, keeping unmerged work,
-  because nobody is there to ask. Other terminal commands (`/tree`, `/switch`,
-  ...) need the editor and are refused.
-- Ctrl+C cancels the message's turn once it is running. Before that, it only
-  detaches and the message stays queued.
+  host, and pcode exits once it has, including compaction or MCP work it started.
+  It exits non-zero if the command did not run (its queue was cleared) or
+  reported an error or a warning, such as `/compact` refused while a turn runs.
+  Anything else the host reports meanwhile counts too. A command that opens a
+  picker (a bare `/model`) fails, since nobody is there to pick. Commands that
+  queue a turn of their own (a skill, `/resend`) exit without waiting for it.
+- `/stop` ends the host, which tidies its own worktree the way `worktree_exit`
+  says, without asking, since nobody is there to be asked. Its notes about that
+  go to the host's log. Other terminal commands (`/tree`, `/switch`, ...) need
+  the editor and are refused.
+- Ctrl+C only detaches: the message's turn keeps running (or stays queued) in
+  the host. Stop it from an attached terminal, where Ctrl+C also clears the
+  host's queue.
+- The host must be running this version of pcode or later; an older one is
+  named, and `/restart` updates it.
 
 The footer counts the other running sessions, how many are working, and how
 many finished while nobody was looking (*new*; the picker lists those first).
