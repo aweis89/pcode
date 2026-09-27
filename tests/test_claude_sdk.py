@@ -161,7 +161,16 @@ class FakeCLI:
                     )
                 )
                 return
-            calls = await self._stream(reply)
+            calls, refused = await self._stream(reply)
+            if refused:
+                # The CLI answering a call itself (a refused input) and going on.
+                blocks = [ToolResultBlock(i, "Invalid input", True) for i in refused]
+                self.out.put_nowait(UserMessage(blocks, uuid=self._uuid()))
+                content = [
+                    {"type": "tool_result", "tool_use_id": i, "content": "Invalid input"}
+                    for i in refused
+                ]
+                continue
             if not calls:
                 self.out.put_nowait(
                     ResultMessage(
@@ -179,7 +188,7 @@ class FakeCLI:
             ] + self.queued
             self.queued = []
 
-    async def _stream(self, reply) -> list[asyncio.Task]:
+    async def _stream(self, reply) -> tuple[list[asyncio.Task], list[str]]:
         self._event(
             {
                 "type": "message_start",
@@ -200,7 +209,7 @@ class FakeCLI:
                 },
             }
         )
-        calls = []
+        calls, refused = [], []
         for index, block in enumerate(reply):
             if block[0] == "text":
                 self._event(
@@ -221,7 +230,7 @@ class FakeCLI:
                     AssistantMessage([TextBlock(block[1])], MODEL, uuid=self._uuid())
                 )
             else:
-                _, name, arguments = block
+                kind, name, arguments = block
                 tool_id = f"toolu_{next(self.world.ids)}"
                 wire = f"{claude.TOOL_PREFIX}{name}"
                 self._event(
@@ -251,12 +260,15 @@ class FakeCLI:
                         [ToolUseBlock(tool_id, wire, arguments)], MODEL, uuid=self._uuid()
                     )
                 )
-                # Like the CLI: the handler is called when the block ends,
-                # before the message does.
-                calls.append(asyncio.create_task(self._call(tool_id, name, arguments)))
-                await asyncio.sleep(0)
+                if kind == "refused":
+                    refused.append(tool_id)
+                else:
+                    # Like the CLI: the handler is called when the block ends,
+                    # before the message does.
+                    calls.append(asyncio.create_task(self._call(tool_id, name, arguments)))
+                    await asyncio.sleep(0)
             self._event({"type": "content_block_stop", "index": index})
-        stop = "tool_use" if calls else "end_turn"
+        stop = "tool_use" if calls or refused else "end_turn"
         self._event(
             {
                 "type": "message_delta",
@@ -265,7 +277,7 @@ class FakeCLI:
             }
         )
         self._event({"type": "message_stop"})
-        return calls
+        return calls, refused
 
     async def _call(self, tool_id: str, name: str, arguments: dict):
         result = await self.mcp.call_tool(name, arguments, meta={claude.TOOL_USE_ID: tool_id})
@@ -526,6 +538,37 @@ def test_process_exit_is_transient_and_the_retry_forks(world):
     assert run(twice).output == "three"
     # The same (dead) session never serves the retry.
     assert world.clients[2].options.resume == world.clients[0].session_id
+
+
+def test_cli_answering_a_call_itself_retires_the_session(world):
+    agent, calls = make_agent()
+    world.replies = [
+        [("refused", "lookup", {"key": "a"})],
+        [("text", "the stale process carries on")],
+        [("text", "after fork")],
+    ]
+    result = run(lambda: agent.run("look up a"))
+    assert result.output == "after fork" and calls == ["a"]
+    old, new = world.clients
+    # pcode's own result, structured, on a fork at the tool call.
+    assert new.options.resume == old.session_id
+    assert new.options.resume_session_at == "uuid-1"
+    assert new.requests[0][0]["content"] == [{"type": "text", "text": "value-a"}]
+
+
+def test_idle_processes_expire(world, monkeypatch):
+    monkeypatch.setattr(claude, "IDLE_SECONDS", 0.05)
+    agent, _ = make_agent()
+    world.replies = [[("text", "ok")]]
+
+    async def main():
+        await agent.run("hi")
+        assert len(claude.pool().sessions) == 1
+        await asyncio.sleep(0.2)
+        return claude.pool().sessions
+
+    assert run(main) == []
+    assert world.clients[0].disconnected
 
 
 def test_start_failure_names_the_cli(world, monkeypatch):
