@@ -5,8 +5,10 @@ is already doing) or the slash command, writes what that produces the way a
 local `--print` writes its turn (the reply on stdout, the rest on stderr), and
 detaches. The host keeps running, and every other terminal sees the turn too.
 
-Only this caller's own turn or command is written: a turn another terminal
-started, or one already running when this attached, is not.
+The host tells this caller alone when its message's turn starts, or that it
+was dropped, in order with everything else it shows (`pcode.host._Owner`), so
+a turn another terminal started, or one already running, is never mistaken
+for it. Notes other terminals cause while it runs are written all the same.
 """
 
 import asyncio
@@ -23,65 +25,58 @@ from pcode.ui import Activity
 class PrintView:
     """The view a `--print` attach gives the host: its own turn or command, nothing else."""
 
+    # Scrollback written as is, while this caller's own turn or command runs.
+    SCROLLBACK = frozenset(
+        {"user", "note", "retained_note", "flash", "cancelled", "tool_result", "shell_result"}
+    )
+
     def __init__(self, transcript, reply: PrintedReply) -> None:
         self.transcript = transcript
         self.reply = reply
         # The host's live-panel fields, mirrored by the RemoteController.
         self.activity = Activity()
-        # The message, once the host has queued it; how many identical ones
-        # were queued ahead of it (their turns start first); whether its turn
-        # is running; whether the command sent is running.
-        self.prompt: str | None = None
-        self.ahead = 0
+        # Whether the message's turn is running, or the command sent is.
         self.turn = False
         self.command = False
         self.failed = False
-        # The message left the host's queue without running.
+        # The message was dropped from the host's queue without running.
         self.dropped = False
+        # The command sent ended the session, so the host stopping is its doing.
+        self.ended = False
         self.finished = asyncio.Event()
 
     @property
     def showing(self) -> bool:
         return self.turn or self.command
 
-    def queued(self, prompt: str, ahead: int) -> None:
-        """The host queued the message: its turn is the next with this text after `ahead`."""
-        self.prompt, self.ahead = prompt, ahead
-        self.redraw()
+    # What the host says about this caller's own message or command
+
+    def message_started(self) -> None:
+        self.turn = True
+
+    def message_dropped(self) -> None:
+        self.dropped = self.failed = True
+        self.finished.set()
+
+    def session_ended(self) -> None:
+        self.ended = True
 
     def host_gone(self, *, stopped: bool) -> None:
         if self.finished.is_set():
             return
         self.reply.settle()
-        if stopped and self.command and not self.turn:
-            # Most likely this command ending the session (`/worktree finish`).
-            self.transcript.note("The session host stopped.")
+        if self.ended:
+            self.transcript.note("The session ended, and its host stopped.")
         else:
             self.transcript.error(
-                "The session host stopped." if stopped else "The session host went away."
+                "The session host stopped before this finished."
+                if stopped
+                else "The session host went away."
             )
             self.failed = True
         self.finished.set()
 
-    def redraw(self) -> None:
-        """The host's state moved: notice the message leaving its queue without running."""
-        if self.prompt is None or self.turn or self.finished.is_set():
-            return
-        if not self.activity.busy:
-            # A queued message holds the host busy until its turn has started,
-            # so an idle host means a Ctrl+C or a failed turn cleared the queue.
-            self.dropped = self.failed = True
-            self.finished.set()
-
     # The turn
-
-    def turn_started(self, text: str, *, echo: bool) -> None:
-        if text != self.prompt or self.turn or self.finished.is_set():
-            return
-        if self.ahead:
-            self.ahead -= 1  # An identical message queued before this one.
-        else:
-            self.turn = True
 
     def turn_event(self, event) -> None:
         if self.turn:
@@ -102,39 +97,23 @@ class PrintView:
             self.failed = self.failed or self.activity.prompt_state != "done"
             self.finished.set()
 
-    # Scrollback, written only while this caller's own work runs
+    # Scrollback
 
-    def _scrollback(name: str):
-        def write(self, *args, **kwargs) -> None:
-            if self.showing:
-                self.reply.settle()
-                getattr(self.transcript, name)(*args, **kwargs)
-
-        write.__name__ = name
-        return write
-
-    user = _scrollback("user")
-    note = _scrollback("note")
-    retained_note = _scrollback("retained_note")
-    flash = _scrollback("flash")
-    cancelled = _scrollback("cancelled")
-    tool_result = _scrollback("tool_result")
-    shell_result = _scrollback("shell_result")
-    del _scrollback
+    def _scrollback(self, name: str, *args, **kwargs) -> None:
+        if self.showing:
+            self.reply.settle()
+            getattr(self.transcript, name)(*args, **kwargs)
 
     def warning(self, text: str) -> None:
-        if self.showing:
-            self.reply.settle()
-            self.transcript.warning(text)
-            # A command's warning is a refusal ("unavailable while working"),
-            # which a script must not read as success. A turn's is only advice.
-            self.failed = self.failed or self.command
+        self._scrollback("warning", text)
+        # A command's warning is a refusal ("unavailable while working"), which
+        # a script must not read as success. A turn's is advice; how the turn
+        # ended says whether it worked.
+        self.failed = self.failed or self.command
 
     def error(self, text: str, *, title: str = "Error") -> None:
-        if self.showing:
-            self.reply.settle()
-            self.transcript.error(text, title=title)
-            self.failed = True
+        self._scrollback("error", text, title=title)
+        self.failed = self.failed or self.command
 
     def show_events(self, events) -> None:
         if self.showing:
@@ -153,9 +132,11 @@ class PrintView:
     choose_model = read_asides = browse_jobs = _popup
 
     def __getattr__(self, name: str):
-        """Anything else only repaints a live panel this caller does not have."""
         if name.startswith("_"):
             raise AttributeError(name)
+        if name in self.SCROLLBACK:
+            return lambda *args, **kwargs: self._scrollback(name, *args, **kwargs)
+        # Anything else repaints a live panel this caller does not have.
         return lambda *args, **kwargs: None
 
 
@@ -192,7 +173,6 @@ async def print_to_host(entry: HostEntry, prompt: str, *, transcript, present, s
                 return False
             # A host that went away has said whether that was a failure.
             return not view.failed
-        # The host answers with `queued` first, which arms the view.
         await _host_call(controller, "send", prompt, view)
         try:
             await view.finished.wait()

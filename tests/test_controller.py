@@ -22,9 +22,38 @@ def test_queue_keeps_the_panel_in_step():
         assert activity.queued_modes == ["resend", "queue", "steering"]
         assert activity.queued == len(prompts) == 3
         item = await prompts.get()
-        assert item == (0, "again", "resend") and prompts.current(item)
+        assert item == (0, "again", "resend", None) and prompts.current(item)
         prompts.taken()
         assert activity.queued_prompts == ["one", "two"] and activity.queued == 2
+
+    asyncio.run(run())
+
+
+def test_a_queued_messages_owner_hears_when_it_is_dropped_and_keeps_its_place():
+    class Owner:
+        def __init__(self):
+            self.heard = []
+
+        def started(self):
+            self.heard.append("started")
+
+        def dropped(self):
+            self.heard.append("dropped")
+
+    async def run():
+        prompts = PromptQueue(panel())
+        mine, other = Owner(), Owner()
+        prompts.put("mine", "queue", owner=mine)
+        prompts.put("steer me", "steering")
+        prompts.put("first", "resend", first=True, owner=other)
+        # Reordering keeps each item's owner with it.
+        assert prompts.take_steering() == ["steer me"]
+        for owner in (other, mine):
+            assert (await prompts.get())[3] is owner
+            prompts.taken()
+        prompts.put("mine", "queue", owner=mine)
+        assert prompts.clear() == 1
+        assert mine.heard == ["dropped"] and other.heard == []
 
     asyncio.run(run())
 

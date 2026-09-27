@@ -2377,6 +2377,7 @@ def _print_hosted(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     from pcode.live import error_message
     from pcode.remote import HostError
     from pcode.remote_print import print_to_host
+    from pcode.rpc import RemoteError
 
     try:
         entry = _pick_host(args.attach, args.workspace or Path.cwd())
@@ -2388,7 +2389,10 @@ def _print_hosted(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         ok = asyncio.run(
             print_to_host(entry, args.prompt, transcript=app.transcript, present=app.present_events)
         )
-    except (HostError, OSError) as error:
+    except KeyboardInterrupt:
+        parser.exit(130)  # It has said what it left running.
+    # ValueError: a malformed line from the host (OSError covers timeouts and resets).
+    except (HostError, RemoteError, OSError, ValueError) as error:
         parser.exit(2, error_message(error) + "\n")
     if not ok:
         parser.exit(1)

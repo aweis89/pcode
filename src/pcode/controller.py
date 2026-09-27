@@ -184,9 +184,19 @@ FRONTEND_COMMANDS = frozenset(
 # stamped on it.
 QueuedCommand = tuple[int, str, bool, object]
 
-# One queued message: the queue generation it was sent in, its text, and how
-# it is sent ("steering", "queue", "interrupt", "shell", "resend", "wake").
-Item = tuple[int, str, str]
+
+class MessageOwner(Protocol):
+    """Whoever waits on one queued message (a headless caller): told when its turn
+    starts, or that it never will. Either is said exactly once."""
+
+    def started(self) -> None: ...
+    def dropped(self) -> None: ...
+
+
+# One queued message: the queue generation it was sent in, its text, how it is
+# sent ("steering", "queue", "interrupt", "shell", "resend", "wake"), and its
+# owner, if anyone waits on it.
+Item = tuple[int, str, str, MessageOwner | None]
 
 
 class PromptQueue:
@@ -207,17 +217,19 @@ class PromptQueue:
     def __len__(self) -> int:
         return len(self.activity.queued_prompts)
 
-    def put(self, text: str, mode: str, *, first: bool = False) -> None:
+    def put(
+        self, text: str, mode: str, *, first: bool = False, owner: MessageOwner | None = None
+    ) -> None:
         """Queue `text`; `first` puts it ahead of everything already waiting."""
         if first:
             waiting = self._drain()
-            self._items.put_nowait((self.generation, text, mode))
+            self._items.put_nowait((self.generation, text, mode, owner))
             for item in waiting:
                 self._items.put_nowait(item)
             self.activity.queued_prompts.insert(0, text)
             self.activity.queued_modes.insert(0, mode)
         else:
-            self._items.put_nowait((self.generation, text, mode))
+            self._items.put_nowait((self.generation, text, mode, owner))
             self.activity.queued_prompts.append(text)
             self.activity.queued_modes.append(mode)
         self._sync()
@@ -239,7 +251,9 @@ class PromptQueue:
         """Drop everything waiting and start a new generation. Returns how many were dropped."""
         self.generation += 1
         count = len(self.activity.queued_prompts)
-        self._drain()
+        for *_, owner in self._drain():
+            if owner is not None:
+                owner.dropped()
         self.activity.queued_prompts.clear()
         self.activity.queued_modes.clear()
         self._sync()
@@ -249,7 +263,7 @@ class PromptQueue:
         """Remove and return the current steering messages; everything else keeps its place."""
         messages = []
         for item in self._drain():
-            generation, text, mode = item
+            generation, text, mode, _owner = item
             if generation == self.generation and mode == "steering":
                 messages.append(text)
                 index = next(
@@ -344,10 +358,12 @@ class SessionView(Protocol):
 
 # What a host may call on an attached terminal: its view, and the mirrors of
 # the live panel (`state`), the session (`session_state`), and side questions.
-# `queued` answers a headless caller's `send` (see pcode.remote_print).
+# The `message_*` and `session_ended` calls go only to a headless caller (see
+# pcode.remote_print): about its own message, and a command that ended the session.
 VIEW_CALLS = frozenset(
     {name for name in vars(SessionView) if not name.startswith("_")}
-    | {"state", "session_state", "aside_changed", "aside_answered", "host_closed", "queued"}
+    | {"state", "session_state", "aside_changed", "aside_answered", "host_closed"}
+    | {"message_started", "message_dropped", "session_ended"}
 )
 
 transportable(Bridge)
@@ -792,13 +808,14 @@ class SessionController:
 
     # Sending
 
-    def submit(self, text: str, mode: str) -> None:
+    def submit(self, text: str, mode: str, *, owner: MessageOwner | None = None) -> None:
         """Queue a message for the model, sent the way `mode` says.
 
         `steering` joins the running turn at its next request, `queue` waits
         for it to end, `interrupt` cancels it, and `shell` runs a `!command`
         in turn, never as steering: its result rides the next request rather
-        than being spliced into a running one.
+        than being spliced into a running one. `owner` hears when it starts,
+        or that it was dropped; a steering message never starts a turn.
         """
         if mode == "interrupt" and self.turn_running():
             self.clear_queue()
@@ -809,7 +826,7 @@ class SessionController:
             self.set_cancel_policy("detach")
             if not self.live_task.cancelling():
                 self.live_task.cancel()
-        self.prompts.put(text, mode)
+        self.prompts.put(text, mode, owner=owner)
         # Set immediately so Enter + Ctrl+C in one input batch cancels the
         # pending request rather than clearing the user's draft.
         self.activity.busy = True
@@ -1021,9 +1038,11 @@ class SessionController:
         while self.running:
             await self.idle()
             item = await self.prompts.get()
-            _generation, text, mode = item
+            _generation, text, mode, owner = item
             if self.startup_error is not None:
                 self.clear_queue()
+                if owner is not None:
+                    owner.dropped()
                 self.activity.busy = False
                 self.view.warning("Agent startup failed; restart pcode to retry.")
                 continue
@@ -1031,12 +1050,19 @@ class SessionController:
             if not self.running:
                 return
             if not self.prompts.current(item):
-                continue  # Cancelled while waiting for a command/modal.
+                # Cancelled while waiting for a command/modal. Fetched before
+                # the clear, so the clear could not say so to its owner.
+                if owner is not None:
+                    owner.dropped()
+                continue
             self.prompts.taken()
             # A model chosen mid-run takes effect here, before the request
             # that follows it is sent.
             if self.pending_model is not None:
                 await self.apply_pending_model()
+            if owner is not None:
+                # Everything shown from here to `after_turn` is this message's.
+                owner.started()
             success = True
             try:
                 resend = mode == "resend"

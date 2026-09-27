@@ -98,6 +98,23 @@ class _Run:
         self.work: tuple | None = None
 
 
+class _Owner:
+    """A headless caller's queued message: when it starts, or that it never will.
+
+    Told to that caller alone, in order with the view calls, so everything
+    between `message_started` and `after_turn` is its turn.
+    """
+
+    def __init__(self, client: "_Client") -> None:
+        self.client = client
+
+    def started(self) -> None:
+        self.client.peer.notify("message_started")
+
+    def dropped(self) -> None:
+        self.client.peer.notify("message_dropped")
+
+
 class _Client:
     """One attached terminal, and the calls it may make."""
 
@@ -106,8 +123,12 @@ class _Client:
         self.number = number
         self.peer: Peer | None = None
         # A caller with no editor (`--attach --print`): popups and side-answer
-        # notices meant for "the terminal last used" skip it.
+        # notices meant for "the terminal last used" skip it, and it does not
+        # count as a terminal watching the session.
         self.headless = False
+        # What attaching took from the terminals, given back if it turns out headless.
+        self.displaced: _Client | None = None
+        self.unseen_before = False
 
     # Intents: the controller's, with commands tagged by who sent them.
 
@@ -122,18 +143,10 @@ class _Client:
     # Host calls for a caller with no editor to watch
 
     def send(self, text: str) -> None:
-        """Queue `text` as a turn of its own, and tell the caller how to know that turn.
-
-        The caller knows its turn by its text, so it skips as many identical
-        ones as were queued ahead. `queued` goes out in order with the view
-        calls: every `turn_started` before it is for a turn taken earlier, and
-        the reply to this call can arrive after the turn has begun.
-        """
-        self.headless = True
+        """Queue `text` as a turn of its own; the caller hears when it starts (see `_Owner`)."""
+        self.become_headless()
         self.host.active_at = time.monotonic()
-        ahead = self.host.activity.queued_prompts.count(text)
-        self.host.controller.submit(text, "queue")
-        self.peer.notify("queued", text, ahead)
+        self.host.controller.submit(text, "queue", owner=_Owner(self))
 
     async def run(self, text: str) -> bool:
         """`command`, returning once it has run, and whether it did.
@@ -143,11 +156,12 @@ class _Client:
         the command started (compaction, MCP sign-in) is waited for, as its
         outcome is the point of sending, say, `/compact`.
         """
-        self.headless = True
+        self.become_headless()
+        self.host.active_at = time.monotonic()
         tag = (self.number, f"run-{next(self.host.run_ids)}")
         run = self.host.runs[tag] = _Run()
         try:
-            self.command(text, tag[1])
+            self.host.controller.command(text, tag)
             await run.done
         finally:
             self.host.runs.pop(tag, None)
@@ -160,6 +174,16 @@ class _Client:
         if controller.mcp_task not in (None, mcp):
             await controller.mcp_idle.wait()
         return True
+
+    def become_headless(self) -> None:
+        """This caller has no editor: give the terminals back what attaching took."""
+        if self.headless:
+            return
+        self.headless = True
+        host = self.host
+        if host._latest is self:
+            host._latest = self.displaced
+        host.update(attached=len(host.terminals()), unseen=host.entry.unseen or self.unseen_before)
 
     def cancel(self) -> None:
         self.host.controller.cancel()
@@ -236,9 +260,14 @@ class HostView:
     async def after_command(self, tag=None) -> None:
         # Terminals get it untagged, as ever; a `run` caller is waiting for its own.
         self._host.emit("after_command", (), {})
-        if (run := self._host.run_for(tag)) and not run.done.done():
+        run = self._host.run_for(tag)
+        if run is not None and not run.done.done():
             run.done.set_result(None)
         if not self._host.controller.running:
+            if run is not None and (client := self._host.clients.get(tag[0])) is not None:
+                # Ahead of `host_closed`, which can overtake the reply to `run`:
+                # ending the session was what this caller asked for.
+                client.peer.notify("session_ended")
             self._host.stop()
 
     def session_changed(self) -> None:
@@ -441,15 +470,16 @@ class SessionHost:
                 if self.running_command is client:
                     self.running_command = None
                 if not self.stopped.is_set():
-                    self.update(attached=len(self.clients))
+                    self.update(attached=len(self.terminals()))
 
     def attach(self, client: _Client) -> dict:
         from pcode.rpc import encode
 
         self.clients[client.number] = client
-        self._latest = client
+        client.displaced, self._latest = self._latest, client
+        client.unseen_before = self.entry.unseen
         # Shown now, so whatever finished while nobody watched has been seen.
-        self.update(attached=len(self.clients), unseen=False)
+        self.update(attached=len(self.terminals()), unseen=False)
         self._state = self.controller.session_state()
         return {
             "id": self.entry.id,
@@ -472,13 +502,17 @@ class SessionHost:
         self._latest = client
         self.active_at = time.monotonic()
 
+    def terminals(self) -> list[_Client]:
+        """The attached clients with an editor, in attach order: not headless callers."""
+        return [client for client in self.clients.values() if not client.headless]
+
     def latest_client(self) -> _Client | None:
         """The terminal last used, for what goes to one terminal; never a headless caller."""
         latest = self._latest
-        if latest is not None and latest.peer and not latest.headless:
+        if latest is not None and self.clients.get(latest.number) is latest and not latest.headless:
             return latest
         # Attach order: the newest terminal that has an editor.
-        return next((c for c in reversed(self.clients.values()) if not c.headless), None)
+        return next(reversed(self.terminals()), None)
 
     def sender(self, tag) -> tuple[_Client | None, object]:
         """The terminal a command came from, and the tag it gave it."""
@@ -591,7 +625,7 @@ class SessionHost:
             state="idle",
             outcome=outcome,
             turns=self.entry.turns + 1,
-            unseen=not self.clients,
+            unseen=not self.terminals(),
         )
 
     # Stopping
