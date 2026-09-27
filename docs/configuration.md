@@ -172,19 +172,21 @@ its `scrollbar_*` colours. Hide it on the terminal's side with Ghostty's
 `progress-style = false` or kitty's `progress_bar hidden`.
 
 `auto` sends it only to terminals known to draw it, by their environment
-(`TERM_PROGRAM`, `TERM`, iTerm2's `TERM_FEATURES`, `WT_SESSION`, `VTE_VERSION`,
-`KONSOLE_VERSION`): Ghostty, kitty, WezTerm, iTerm2 3.6.6 or newer, Windows
+(`TERM_PROGRAM`, `TERM`, iTerm2's `TERM_FEATURES` and `LC_TERMINAL`,
+`GHOSTTY_RESOURCES_DIR`, `WT_SESSION`, `VTE_VERSION`, `KONSOLE_VERSION`): Ghostty, kitty, WezTerm, iTerm2 3.6.6 or newer, Windows
 Terminal, ConEmu, VS Code, Warp, mintty, VTE 0.79 terminals (GNOME Terminal,
 Ptyxis) and Konsole 26.04. Older iTerm2 reads the sequence as a desktop
 notification, which is why an unknown terminal gets nothing; `on` sends it
 anyway, and terminals that do not know it ignore it.
 
-Inside tmux, pcode asks the server which terminal is attached, then sends
-the report through passthrough when `allow-passthrough` is `on` (the reliable
-way, since Ghostty drops a report that is not refreshed within about 15
-seconds and pcode refreshes it every few). Without passthrough, tmux 3.7 or
-newer forwards the active pane's bar itself, but only when it changes, so a
-long turn's bar can fade in Ghostty; older tmux drops it.
+Inside tmux the terminal is judged by what the tmux server's environment
+inherited from the terminal it was started in (tmux replaces `TERM` and
+`TERM_PROGRAM`), and each report is sent twice: once through passthrough and
+once raw. Passthrough needs `allow-passthrough on` and is the reliable way,
+since Ghostty drops a report that is not refreshed within about 15 seconds and
+pcode refreshes it every few. Without it, tmux 3.7 or newer forwards the
+active pane's bar itself, but only when it changes, so a long turn's bar can
+fade in Ghostty; older tmux drops it.
 
 ```tmux
 set -g allow-passthrough on

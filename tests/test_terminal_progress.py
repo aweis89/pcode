@@ -1,6 +1,5 @@
 import asyncio
 import os
-import subprocess
 
 import pytest
 
@@ -13,15 +12,14 @@ from pcode.terminal_notify import (
     NORMAL,
     PAUSED,
     TabProgress,
-    Tmux,
     environment_supports,
     progress,
     progress_transport,
-    query_tmux,
 )
 from pcode.ui import Activity
 
 PASSTHROUGH = terminal_notify._passthrough
+INTO_TMUX = terminal_notify._into_tmux
 
 
 def test_reports_are_conemu_osc_9_4():
@@ -39,6 +37,7 @@ def test_reports_are_conemu_osc_9_4():
         ({"TERM_PROGRAM": "WezTerm"}, True),
         ({"TERM": "xterm-kitty"}, True),
         ({"KITTY_WINDOW_ID": "1"}, True),
+        ({"WEZTERM_EXECUTABLE": "/usr/bin/wezterm-gui"}, True),
         ({"TERM_PROGRAM": "vscode"}, True),
         ({"WT_SESSION": "abc"}, True),
         ({"ConEmuANSI": "ON"}, True),
@@ -62,11 +61,6 @@ def test_auto_sends_only_to_terminals_that_draw_the_bar(env, supported):
     assert environment_supports(env) is supported
 
 
-def tmux_says(**fields):
-    info = Tmux(**{"version": (3, 7), "passthrough": False, **fields})
-    return lambda env: info
-
-
 def test_transport_outside_tmux():
     ghostty = {"TERM_PROGRAM": "ghostty"}
     assert progress_transport("auto", ghostty, tty=True) is str
@@ -78,65 +72,20 @@ def test_transport_outside_tmux():
     assert progress_transport("on", {"TERM": "dumb"}, tty=True) is None
 
 
-def test_transport_inside_tmux():
-    env = {"TMUX": "/tmp/tmux-1/default,1,0", "TERM": "tmux-256color"}
-    inherited = {**env, "TERM_PROGRAM": "ghostty"}
-
-    def transport(tmux, mode="auto", env=env):
-        return progress_transport(mode, env, tty=True, tmux=tmux)
-
-    ghostty = {"termtype": "ghostty 1.2.0", "features": ("RGB", "progressbar")}
-    # Passthrough reaches the terminal as sent, so keep-alives survive.
-    assert transport(tmux_says(passthrough=True, **ghostty)) is PASSTHROUGH
-    # Without it tmux 3.7 forwards the active pane's report itself.
-    assert transport(tmux_says(**ghostty)) is str
-    old = tmux_says(version=(3, 6), termtype="ghostty 1.2.0")
-    assert transport(old) is None
-    assert transport(old, "on") is None
-
-    # The attached terminal decides, not the environment the server started in.
-    alacritty = tmux_says(passthrough=True, termtype="alacritty 0.15", termname="alacritty")
-    assert transport(alacritty, env=inherited) is None
-    assert transport(alacritty, "on") is PASSTHROUGH
-    for outer in (
-        {"termtype": "iTerm2 3.6.6"},
-        {"termname": "xterm-kitty"},
-        {"termtype": "kitty(0.40.1)"},
-    ):
-        assert transport(tmux_says(passthrough=True, **outer)) is PASSTHROUGH
-    assert transport(tmux_says(passthrough=True, termtype="iTerm2 3.5.0")) is None
-
-    # tmux cannot be asked: fall back to the inherited environment.
-    assert transport(lambda env: None, env=inherited) is PASSTHROUGH
-    assert transport(lambda env: None) is None
-
-
-def test_query_tmux_reads_one_display_message(monkeypatch):
-    calls = []
-
-    def run(command, **kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(
-            command, 0, stdout="3.7c\tall\tghostty 1.2.0\txterm-ghostty\tRGB,progressbar,sync\n"
-        )
-
-    monkeypatch.setattr(subprocess, "run", run)
-    info = query_tmux({"TMUX_PANE": "%3"})
-    assert info == Tmux(
-        version=(3, 7),
-        passthrough=True,
-        termtype="ghostty 1.2.0",
-        termname="xterm-ghostty",
-        features=("RGB", "progressbar", "sync"),
-    )
-    assert info.outer_supports and info.forwards
-    assert calls[0][:4] == ["tmux", "display-message", "-p", "-t"]
-
-    def missing(command, **kwargs):
-        raise FileNotFoundError("tmux")
-
-    monkeypatch.setattr(subprocess, "run", missing)
-    assert query_tmux({}) is None
+def test_tmux_gets_both_a_passthrough_and_a_raw_copy():
+    # What a pane sees: tmux replaces TERM and TERM_PROGRAM, and the server's
+    # environment still names the terminal it started in.
+    pane = {
+        "TMUX": "/tmp/tmux-1/default,1,0",
+        "TERM": "tmux-256color",
+        "TERM_PROGRAM": "tmux",
+        "TERM_PROGRAM_VERSION": "3.7c",
+    }
+    assert progress_transport("auto", pane, tty=True) is None
+    assert progress_transport("on", pane, tty=True) is INTO_TMUX
+    ghostty = {**pane, "GHOSTTY_RESOURCES_DIR": "/Applications/Ghostty.app/Contents/Resources"}
+    assert progress_transport("auto", ghostty, tty=True) is INTO_TMUX
+    assert INTO_TMUX(progress(CLEAR)) == PASSTHROUGH(progress(CLEAR)) + progress(CLEAR)
 
 
 @pytest.fixture

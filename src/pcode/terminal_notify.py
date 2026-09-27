@@ -14,9 +14,7 @@ on every turn, which is why pytest turned the same feature off by default.
 import asyncio
 import os
 import re
-import subprocess
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from time import monotonic
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -80,8 +78,10 @@ def _progress_feature(features: str) -> bool:
 def environment_supports(env: Mapping[str, str]) -> bool:
     """Whether the terminal pcode runs in directly draws the bar.
 
-    The same checks as Cargo's (anstyle-progress), plus the TERM values that
-    survive ssh, where TERM_PROGRAM does not.
+    The same checks as Cargo's (anstyle-progress), plus variables that survive
+    where TERM_PROGRAM does not: ssh keeps TERM, and inside tmux both TERM and
+    TERM_PROGRAM name tmux while the server's environment still names the
+    terminal it was started from.
     """
     if _progress_feature(env.get("TERM_FEATURES", "")):
         return True
@@ -92,97 +92,38 @@ def environment_supports(env: Mapping[str, str]) -> bool:
         return True
     if env.get("TERM") in ("xterm-ghostty", "xterm-kitty") or env.get("KITTY_WINDOW_ID"):
         return True
+    if env.get("GHOSTTY_RESOURCES_DIR") or env.get("WEZTERM_EXECUTABLE"):
+        return True
     if env.get("WT_SESSION") or env.get("ConEmuANSI") == "ON":
         return True
     # VTE 0.79 (GNOME Terminal, Ptyxis) and Konsole 26.04 added it.
     return _number(env.get("VTE_VERSION")) >= 7900 or _number(env.get("KONSOLE_VERSION")) >= 260400
 
 
-@dataclass(frozen=True)
-class Tmux:
-    """What the tmux server says about itself and the terminal attached to it."""
+def _into_tmux(sequence: str) -> str:
+    """Both ways through tmux, so neither needs asking about.
 
-    version: tuple[int, ...]
-    passthrough: bool
-    # The attached terminal: its XTVERSION answer ("ghostty 1.2.0"), TERM, and
-    # the features tmux enabled for it ("progressbar" since tmux 3.7).
-    termtype: str = ""
-    termname: str = ""
-    features: tuple[str, ...] = ()
-
-    @property
-    def outer_supports(self) -> bool:
-        if "progressbar" in self.features or self.termname in ("xterm-ghostty", "xterm-kitty"):
-            return True
-        name, _, version = self.termtype.partition(" ")
-        return _known(name.split("(")[0], version or name)
-
-    @property
-    def forwards(self) -> bool:
-        """tmux 3.7 parses OSC 9;4 itself and passes the active pane's on."""
-        return self.version >= (3, 7) and "progressbar" in self.features
-
-
-_TMUX_FORMAT = (
-    "#{version}\t#{allow-passthrough}\t#{client_termtype}\t#{client_termname}\t"
-    "#{client_termfeatures}"
-)
-
-
-def query_tmux(env: Mapping[str, str]) -> Tmux | None:
-    """Ask the tmux server holding this pane; None when it cannot be asked."""
-    pane = env.get("TMUX_PANE")
-    try:
-        answer = subprocess.run(
-            ["tmux", "display-message", "-p", *(["-t", pane] if pane else []), _TMUX_FORMAT],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=True,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return None
-    fields = answer.rstrip("\n").split("\t")
-    if len(fields) != 5:
-        return None
-    version, passthrough, termtype, termname, features = fields
-    return Tmux(
-        version=_version(version),
-        passthrough=passthrough in ("on", "all"),
-        termtype=termtype,
-        termname=termname,
-        features=tuple(feature for feature in features.split(",") if feature),
-    )
+    The passthrough copy reaches the outer terminal when `allow-passthrough`
+    is on, and is the only one that carries a keep-alive: tmux 3.7 forwards
+    the raw copy itself, but only when the active pane's state changes. Older
+    tmux drops the raw copy, and a terminal that gets both sees one state.
+    """
+    return _passthrough(sequence) + sequence
 
 
 def progress_transport(
-    mode: str,
-    env: Mapping[str, str],
-    *,
-    tty: bool,
-    tmux: Callable[[Mapping[str, str]], Tmux | None] = query_tmux,
+    mode: str, env: Mapping[str, str], *, tty: bool
 ) -> Callable[[str], str] | None:
     """How a report reaches the terminal (a wrapper), or None to send nothing.
 
     `mode` is the preference: "off", "on" (send whatever the terminal), or
-    "auto" (only where the bar is known to be drawn). Inside tmux passthrough
-    wins when allowed, because tmux's own forwarding sends a report only when
-    it changes, so a keep-alive never reaches the outer terminal.
+    "auto" (only where the bar is known to be drawn).
     """
     if mode == "off" or not tty or env.get("TERM") == "dumb":
         return None
-    forced = mode == "on"
-    if not env.get("TMUX"):
-        return str if forced or environment_supports(env) else None
-    info = tmux(env)
-    if info is None:
-        # No answer from tmux: go on what the server inherited, as before.
-        return _passthrough if forced or environment_supports(env) else None
-    if not (forced or info.outer_supports):
+    if mode != "on" and not environment_supports(env):
         return None
-    if info.passthrough:
-        return _passthrough
-    return str if info.forwards else None
+    return _into_tmux if env.get("TMUX") else str
 
 
 # Keeping the bar in step with the turn
@@ -257,9 +198,7 @@ class TabProgress:
             self._write(progress(CLEAR), monotonic())
 
     async def run(self) -> None:
-        tty = _isatty(self.fd)
-        # Asking tmux spawns a process: keep it off the event loop.
-        self.wrap = await asyncio.to_thread(progress_transport, self.mode, self.env, tty=tty)
+        self.wrap = progress_transport(self.mode, self.env, tty=_isatty(self.fd))
         if self.wrap is None:
             return
         try:
