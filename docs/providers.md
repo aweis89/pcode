@@ -241,6 +241,11 @@ pcode --upgrade-meridian            # install or upgrade Meridian with npm
 pcode -m meridian:claude-sonnet-5   # then /login meridian if Claude is not signed in
 ```
 
+Meridian is an npm package, so the Homebrew formula does not install it, and
+`pcode --upgrade-meridian` needs Node.js's `npm` on `PATH`. Once `meridian` is on
+`PATH`, pcode starts its own private instance with no further setup, unless an
+older shared proxy still answers on port 3456 (see below).
+
 ### Which Meridian pcode uses
 
 The `meridian_managed` preference decides when a Meridian provider is created:
