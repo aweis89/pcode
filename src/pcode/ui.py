@@ -2143,13 +2143,22 @@ def create_prompt(
     return session
 
 
+def tally(succeeded: int, failed: int, sep: str = "") -> str:
+    """`✓2 ✗1`, dropping a zero side, so each mark only ever counts its own outcome."""
+    return " ".join(
+        f"{mark}{sep}{count}" for mark, count in (("✓", succeeded), ("✗", failed)) if count
+    )
+
+
 def tool_count(name: str, count: int, failed: int) -> str:
-    """One tool's part of a group line: `Read`, `Read ×3`, `Search ✗`, `Search ✓2 ✗1`."""
+    """One tool's part of a group line: `Read`, `Read 3`, `Search ✗1`, `Search ✓2 ✗1`.
+
+    A tool that never failed gives its bare count; marks appear only once
+    there is a failure to tell apart.
+    """
     if not failed:
-        return f"{name} ×{count}" if count > 1 else name
-    if failed == count:
-        return f"{name} ✗{count}" if count > 1 else f"{name} ✗"
-    return f"{name} ✓{count - failed} ✗{failed}"
+        return f"{name} {count}" if count > 1 else name
+    return f"{name} {tally(count - failed, failed)}"
 
 
 class Transcript:
@@ -2326,16 +2335,17 @@ class Transcript:
 
     @staticmethod
     def group_line(events: list[ToolSummary], *, width: int) -> Text:
-        """`✓ 15 tools · Edit ×10 · Run ×5`, most used first.
+        """`✓ 15 tools · Edit 10 · Run 5`, most used first.
 
-        Failures split their tool's count and turn the run's marker, so a run
-        that hit one still stands out: `✗ 6 tools · Read ×3 · Search ✓2 ✗1`.
+        Failures split the run's count and their tool's, so a run that hit
+        one still stands out: `✓ 5 ✗ 1 tools · Read 3 · Search ✓2 ✗1`.
         """
         counts = Counter(label(event.name) for event in events)
         failures = Counter(label(event.name) for event in events if event.failed)
+        failed = failures.total()
         parts = [tool_count(name, count, failures[name]) for name, count in counts.most_common()]
-        marker = "✗" if failures else "✓"
-        line = Text(f"{marker} {len(events)} tools · " + " · ".join(parts), style="pcode.thinking")
+        head = tally(len(events) - failed, failed, sep=" ")
+        line = Text(f"{head} tools · " + " · ".join(parts), style="pcode.thinking")
         line.no_wrap = True
         line.overflow = "ellipsis"
         line.truncate(width, overflow="ellipsis")
