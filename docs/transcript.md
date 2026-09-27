@@ -154,15 +154,16 @@ pcode config set group_tools on   # One line per run of calls (default off)
 ```
 
 ```text
-✗ 16 tools · Edit ×10 · Run ✓5 ✗1
+✓ 15 ✗ 1 tools · Edit 10 · Run ✓5 ✗1
 ✓ Delegate  worker · Fix the flaky test → Completed  41.2s
-    ✓ 6 tools · Read ×4 · Run ×2
-✗ 3 tools · Read ×2 · Search ✗
+    ✓ 6 tools · Read 4 · Run 2
+✓ 2 ✗ 1 tools · Read 2 · Search ✗1
 ```
 
-A failed call folds into the run too: its tool's count splits into successes
-and failures (`Run ✓5 ✗1`, or `Search ✗` when every call failed), and the line
-leads with `✗` instead of `✓`. `/tools failed` browses just the failures. A
+A failed call folds into the run too. `✓` only ever counts successes and `✗`
+only failures: a tool that never failed shows its bare count (`Read 4`), one
+that did splits it (`Run ✓5 ✗1`), and so does the run's own count at the start
+of the line. `/tools failed` browses just the failures. A
 delegate keeps its own line, with its sub-agent's calls folded the same way
 beneath it. A run of one call keeps that call's usual line, and a background
 job's exit notice is never folded in. `/group-tools on`, `/group-tools off`, or bare
