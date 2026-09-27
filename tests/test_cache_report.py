@@ -166,6 +166,77 @@ def test_duplicate_plan_reminders_are_reported(tmp_path):
     ]
 
 
+def count_rewrites(tmp_path: Path, *snapshots: list) -> int:
+    database = tmp_path / "steps.sqlite3"
+    store = SqliteStepStore(database=database)
+
+    async def build() -> None:
+        for index, messages in enumerate(snapshots):
+            await store.save_snapshot(
+                ContinuableSnapshot(run_id="run", step_index=index, messages=messages)
+            )
+
+    asyncio.run(build())
+    return cache_report._count_prefix_rewrites(database, delegated=False)
+
+
+def tool_return(index: int, content: str = "r") -> ToolReturnPart:
+    return ToolReturnPart(tool_name="probe", content=content, tool_call_id=f"call_{index}")
+
+
+def test_merged_requests_are_not_a_rewrite(tmp_path):
+    """Pydantic AI merges a loaded history's consecutive requests, tool results first.
+
+    The provider sees the same blocks either way, so this is not a replaced prefix.
+    """
+    start = ModelRequest(parts=[UserPromptPart(content="start")])
+    reminder = UserPromptPart(content=f"{cache_report.PLAN_TAG}\nA\n")
+    stored = [
+        start,
+        response(0, read=0, write=0, total=0),
+        ModelRequest(parts=[reminder]),
+        ModelRequest(parts=[tool_return(0)]),
+        response(1, read=0, write=0, total=0),
+        ModelRequest(parts=[tool_return(1)]),
+    ]
+    loaded = [
+        start,
+        response(0, read=0, write=0, total=0),
+        ModelRequest(parts=[tool_return(0), reminder]),
+        *stored[4:],
+        response(2, read=0, write=0, total=0),
+    ]
+    assert count_rewrites(tmp_path, stored, loaded) == 0
+
+
+def test_note_after_a_settled_tool_result_extends_the_prefix(tmp_path):
+    """A discarded in-flight response replaced by a note leaves every sent block in place."""
+    head = [
+        ModelRequest(parts=[UserPromptPart(content="start")]),
+        response(0, read=0, write=0, total=0),
+        ModelRequest(parts=[tool_return(0)]),
+    ]
+    interrupted = [*head, response(1, read=0, write=0, total=0), ModelRequest(parts=[])]
+    resumed = [
+        *head,
+        ModelRequest(parts=[UserPromptPart(content="note")]),
+        response(2, read=0, write=0, total=0),
+    ]
+    assert count_rewrites(tmp_path, interrupted, resumed) == 0
+
+
+def test_changed_settled_content_is_a_rewrite(tmp_path):
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="start")]),
+        response(0, read=0, write=0, total=0),
+        ModelRequest(parts=[tool_return(0)]),
+        response(1, read=0, write=0, total=0),
+        ModelRequest(parts=[tool_return(1)]),
+    ]
+    rewritten = [*history[:2], ModelRequest(parts=[tool_return(0, "changed")]), *history[3:]]
+    assert count_rewrites(tmp_path, history, rewritten) == 1
+
+
 def test_short_session_is_not_reported_as_a_regression(tmp_path):
     """Below the provider's minimum cacheable size, zero reads is expected."""
     directory = tmp_path / "eeeeeee5"
