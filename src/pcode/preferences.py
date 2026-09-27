@@ -630,7 +630,7 @@ def effort_setting(model: str | None) -> str | None:
     provider = (model or "").split(":", 1)[0]
     if provider in OPENAI_PROVIDERS:
         return "openai_reasoning_effort"
-    if provider in ("anthropic", "meridian"):
+    if provider in ("anthropic", "meridian", "claude"):
         return "anthropic_effort"
     return None
 

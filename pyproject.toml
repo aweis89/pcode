@@ -20,6 +20,7 @@ dependencies = [
     "rich>=14,<15",
     # FastMCP 4.x OAuth callback server selects Uvicorn's websockets-sansio protocol.
     "websockets>=15.0.1,<17",
+    "claude-agent-sdk>=0.2.160,<0.3",
 ]
 
 [project.scripts]

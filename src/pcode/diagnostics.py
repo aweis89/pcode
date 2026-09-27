@@ -117,6 +117,8 @@ TRANSIENT_TRANSPORT = frozenset(
         "WriteTimeout",
         "APITimeoutError",
         "IncompleteRead",
+        # A `claude:` CLI process ended mid-request; the retry starts another.
+        "ClaudeProcessError",
     }
 )
 

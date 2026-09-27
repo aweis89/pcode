@@ -1,5 +1,6 @@
 """Local model suggestions for configured providers; no credential or network reads."""
 
+import importlib.util
 import os
 import re
 import shutil
@@ -17,6 +18,7 @@ PROVIDERS = {
     "bedrock": "Bedrock",
     "bedrock-mantle": "Bedrock Mantle",
     "cerebras": "Cerebras",
+    "claude": "Claude Code",
     "crusoe": "Crusoe",
     "deepseek": "DeepSeek",
     "fireworks": "Fireworks",
@@ -82,8 +84,27 @@ ENV_PROVIDERS: dict[str, tuple[tuple[str, ...], ...]] = {
 
 # Catalog prefix -> KnownModelName prefixes whose IDs it accepts. Codex has no
 # separate SDK catalog, so expose every OpenAI model ID and let the provider
-# enforce account access; Meridian fronts Anthropic models.
-CATALOG_SOURCES = {"openai-codex": "openai", "meridian": "anthropic"}
+# enforce account access; Meridian and Claude Code front Anthropic models.
+CATALOG_SOURCES = {"openai-codex": "openai", "meridian": "anthropic", "claude": "anthropic"}
+
+
+def claude_code_configured() -> bool:
+    """Whether this machine has used Claude Code, whose login `claude:` models share.
+
+    The Agent SDK bundles the CLI, so an install is not required; its config
+    is the signal, checked for existence only.
+    """
+    if importlib.util.find_spec("claude_agent_sdk") is None:
+        return False
+    config = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    try:
+        return bool(
+            (Path(config).expanduser() if config else Path.home() / ".claude").is_dir()
+            or (Path.home() / ".claude.json").is_file()
+            or shutil.which("claude")
+        )
+    except OSError:
+        return False
 
 
 def _configured(requirements: tuple[tuple[str, ...], ...]) -> bool:
@@ -96,6 +117,8 @@ def active_providers(current: str | None) -> set[str]:
         active.add(current.partition(":")[0])
     if os.environ.get("PCODE_MERIDIAN_BASE_URL", "").strip() or shutil.which("meridian"):
         active.add("meridian")
+    if claude_code_configured():
+        active.add("claude")
     active.update(name for name, needs in ENV_PROVIDERS.items() if _configured(needs))
     from pcode.anthropic_oauth import anthropic_auth_source
 
