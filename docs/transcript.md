@@ -136,9 +136,9 @@ in the inspector. If a turn is cancelled before its delegate settles, the steps
 the sub-agent finished are written flush when the cancellation is reported.
 
 ```text
-✓ Delegate  worker · Fix the flaky test → Completed  41.2s
-    ✓ Read  tests/test_api.py → lines 1–80 · 80 lines
-    ✓ Run · 2.3s · pytest -q tests/test_api.py
+✓ Delegate task  worker · Fix the flaky test → Completed  41.2s
+    ✓ Read file  tests/test_api.py → lines 1–80 · 80 lines
+    ✓ Run shell · 2.3s · pytest -q tests/test_api.py
 ```
 
 ## Grouping tool calls
@@ -154,15 +154,15 @@ pcode config set group_tools on   # One line per run of calls (default off)
 ```
 
 ```text
-✓ 15 ✗ 1 tools · Edit ✓10 · Run ✓5 ✗1
-✓ Delegate  worker · Fix the flaky test → Completed  41.2s
-    ✓ 6 tools · Read ✓4 · Run ✓2
-✓ 2 ✗ 1 tools · Read ✓2 · Search ✗1
+✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1
+✓ Delegate task  worker · Fix the flaky test → Completed  41.2s
+    ✓ 6 tools · Read file ✓4 · Run shell ✓2
+✓ 2 ✗ 1 tools · Read file ✓2 · Search code ✗1
 ```
 
 A failed call folds into the run too. `✓` counts successes and `✗` counts
 failures, both for the run as a whole at the start of the line and for each
-tool (`Read ✓4`, `Run ✓5 ✗1`, `Search ✗1`). `/tools failed` browses just the
+tool (`Read file ✓4`, `Run shell ✓5 ✗1`, `Search code ✗1`). `/tools failed` browses just the
 failures. A
 delegate keeps its own line, with its sub-agent's calls folded the same way
 beneath it. A run of one call keeps that call's usual line, and a background
@@ -176,7 +176,7 @@ By default, a settled command leaves the same compact summary line every other
 tool leaves, with the command preview inline after the elapsed time. Long summaries
 truncate to the terminal width instead of wrapping. Captured output stays in the
 mutable tool panel. A background job's exit uses the same line with its id
-after the label, as in `✓ Run · j12 · exit 0 · 4.1s · make test`. It is written
+after the label, as in `✓ Run shell · j12 · exit 0 · 4.1s · make test`. It is written
 where the model collected the result with `wait_for_job` or `job_output`, or
 once the session is idle if nothing collected it. Enable
 `show_commands` to mirror **every settled shell tool call and its captured
@@ -201,7 +201,7 @@ padding. Process polling details without a command are shown without a `$` prefi
 The heading sits on the block's opening line, and a plain line closes it:
 
 ```text
-✓ Run · j7 · 0.4s ─────────────────────────────────────────
+✓ Run shell · j7 · 0.4s ───────────────────────────────────
   $ pytest -q
   2 passed in 0.31s
 ────────────────────────────────────────────────────────────
