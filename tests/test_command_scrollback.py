@@ -7,6 +7,7 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from pcode.app import PreviewApp
+from pcode.command_transcript import SEPARATOR
 from pcode.commands import CommandRegistry
 from pcode.config import configure
 from pcode.preferences import load_preferences, save_preferences
@@ -219,10 +220,11 @@ def test_command_scrollback_lines_bounds_rows_and_keeps_tail(limit):
     lines = stream.getvalue().splitlines()
     assert lines[0] == "✓ Run shell " + "─" * 33
     assert lines[-1] == "─" * 45
-    assert len(lines) == limit + 4  # Rules, command, and omission marker.
+    assert len(lines) == limit + 5  # Rules, command, separator, and omission marker.
     assert lines[1].strip() == "$ noisy"
-    assert f"{61 - limit} earlier output rows omitted" in lines[2]
-    assert "earlier error output" not in lines[2]
+    assert lines[2].strip() == SEPARATOR
+    assert f"{61 - limit} earlier output rows omitted" in lines[3]
+    assert "earlier error output" not in lines[3]
     assert lines[-2].strip() == "final line"
 
 
@@ -362,6 +364,7 @@ def test_output_keeps_leading_indentation_and_markdown_literal_without_padding()
     assert stream.getvalue().splitlines() == [
         "✓ Run shell " + "─" * 68,
         "  $ echo hi",
+        "  " + SEPARATOR,
         "      # heading",
         "  ```",
         "  [bold]x[/bold]",
@@ -429,8 +432,8 @@ def test_default_budget_retains_last_twenty_output_rows():
     )
     lines = stream.getvalue().splitlines()
     assert view.command_scrollback_lines == 20
-    assert "30 earlier output rows omitted" in lines[2]
-    assert [line.strip() for line in lines[3:-1]] == [f"row {i}" for i in range(30, 50)]
+    assert "30 earlier output rows omitted" in lines[3]
+    assert [line.strip() for line in lines[4:-1]] == [f"row {i}" for i in range(30, 50)]
 
 
 @pytest.mark.parametrize(
