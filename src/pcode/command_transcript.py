@@ -10,6 +10,9 @@ from rich.text import Text
 from pcode.block import DONE, FAILED, INDENT, block_heading, block_rule
 from pcode.syntax import transparent_theme
 
+# Marks where a multi-line command (a heredoc, say) ends and its output begins.
+SEPARATOR = "┄" * 12
+
 
 @dataclass(frozen=True)
 class CommandTranscript:
@@ -48,6 +51,10 @@ class CommandTranscript:
             yield Segment(indent)
             yield from line
             yield Segment.line()
+        separator = Text(SEPARATOR, style="pcode.muted")
+        separator.truncate(body_options.max_width)
+        yield Segment(indent)
+        yield from console.render(separator, body_options)
 
         lines = console.render_lines(Text(self.output), body_options, pad=False)
         if self.max_lines is not None and len(lines) > self.max_lines:

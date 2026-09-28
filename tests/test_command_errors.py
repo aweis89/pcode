@@ -9,6 +9,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from rich.console import Console
 from rich.text import Text
 
+from pcode.command_transcript import SEPARATOR
 from pcode.live import AgentRuntime
 from pcode.runtime import ToolSummary
 from pcode.sessions import SavedSession
@@ -92,6 +93,7 @@ def test_command_diagnostic_survives_event_round_trip_and_uses_output_fallback()
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
         "✗ Run shell · 0.5s " + "─" * 81,
         "  pytest -q → exit 1",
+        "  " + SEPARATOR,
         "  [stderr] missing module",
         "    traceback context",
         "─" * 100,

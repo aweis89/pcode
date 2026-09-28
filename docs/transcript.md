@@ -191,11 +191,14 @@ pcode config set show_commands off            # Summary lines only (default)
 
 Each mirrored block has a heading with a ✓/✗ indicator, the tool label, the job
 id, and elapsed time, then the command on a highlighted `$` line, then the
-output, literally and with its indentation kept:
+output, literally and with its indentation kept. A short dashed line separates
+the command from its output, making multi-line commands (a heredoc, say) easier
+to distinguish from what they printed. A plain line closes the block:
 
 ```text
 ✓ Run shell · j7 · 0.4s ───────────────────────────────────
   $ pytest -q
+  ┄┄┄┄┄┄┄┄┄┄┄┄
   2 passed in 0.31s
 ────────────────────────────────────────────────────────────
 ```
