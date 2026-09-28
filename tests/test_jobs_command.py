@@ -186,7 +186,7 @@ def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
     assert app.controller.report_finished_jobs() == [job]
     printed = stream.getvalue()
     marker = "✓" if outcome == "success" else "✗"
-    assert f"{marker} Run · j12 · " in printed
+    assert f"{marker} Run shell · j12 · " in printed
     assert "j12" in printed and "8.8s" in printed
     assert "make test" in printed
     assert job.outcome() in printed
@@ -234,7 +234,7 @@ def test_collected_job_exit_prints_where_the_wait_settled(tmp_path):
         settle(ToolSummary("wait_for_job", "j2 · still running", outcome="success"))
         assert stream.getvalue() == ""
         settle(ToolSummary("wait_for_job", "j1", outcome="success"))
-        assert stream.getvalue().startswith("✓ Run · j1 · exit 0 · ")
+        assert stream.getvalue().startswith("✓ Run shell · j1 · exit 0 · ")
         # Reported once: neither a second read nor the idle reporter repeats it.
         settle(ToolSummary("job_output", "j1", outcome="success"))
         assert app.controller.report_finished_jobs() == []

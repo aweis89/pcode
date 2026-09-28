@@ -907,12 +907,12 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     assert "Tools" not in initial and "┌─ Tasks 0/1 ─" in initial
     assert initial.count("┌") == initial.count("└") == 2
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    screen = capture(pane, "Run · ", running=True)
+    screen = capture(pane, "Run shell · ", running=True)
     lines = screen.splitlines()
     task = next(i for i, line in enumerate(lines) if "A task" in line)
     # The running command owns the status row; the widget holds tasks alone.
     status = lines[task - 2]
-    assert status.startswith(SPINNER_ROW) and "Run" in status
+    assert status.startswith(SPINNER_ROW) and "Run shell" in status
     assert not status.startswith("│")
     assert lines[task - 1].startswith("┌─ Tasks 0/1 ─")
     assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
@@ -922,7 +922,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert history.count("file_11.py") == 1
     assert history.count("INSPECTABLE ERROR") == 1
-    assert "✗ Read failed" in history
+    assert "✗ Read file failed" in history
 
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width, height in ((40, 20), (100, 32), (40, 14)):
@@ -944,7 +944,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     assert "keep draft" not in capture(pane, "Input discarded", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "! Run cancelled")
-    assert "Run · " not in screen
+    assert "Run shell · " not in screen
 
 
 def attached_box(screen):
@@ -1010,11 +1010,11 @@ def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
     pane("resize-window", "-t", "preview:0", "-x", "240", "-y", "40")
     capture(pane, "A task", columns=240)
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    capture(pane, "Run · ", running=True, columns=240)
+    capture(pane, "Run shell · ", running=True, columns=240)
 
     for width, height in ((120, 24), (240, 40), (80, 24), (240, 40)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
-        screen = capture(pane, "Run · ", running=True, columns=width)
+        screen = capture(pane, "Run shell · ", running=True, columns=width)
         assert input_rows(screen) == 1
         editor = next(line for line in screen.splitlines() if line.startswith("│❯"))
         assert editor[2:-1].strip() == ""  # No multiline draft needed to trigger this.
@@ -1117,15 +1117,15 @@ def test_queued_messages_stay_directly_above_editor(pane, mode):
 def test_single_running_tool_needs_no_box_above_the_editor(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    screen = capture(pane, "Run · ", running=True)
+    screen = capture(pane, "Run shell · ", running=True)
     lines = screen.splitlines()
     top = next(i for i, line in enumerate(lines) if line.startswith("┌"))
     # Only the editor is boxed: the lone running call lives on the status row.
     assert screen.count("┌") == screen.count("└") == 1
     assert lines[top - 1].startswith(SPINNER_ROW)
-    assert "Run · " in lines[top - 1]
+    assert "Run shell · " in lines[top - 1]
     assert "Tasks" not in screen and "Tools" not in screen
-    assert "✓ Read" in pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    assert "✓ Read file" in pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert input_rows(screen) == 1
 
 
@@ -1158,7 +1158,7 @@ def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
     status = next(i for i, line in enumerate(lines) if "SLOW_FILE" in line)
     assert lines[status].startswith(SPINNER_ROW)
     assert lines[status - 1].strip() == ""
-    assert "✓ Read  file_30.py" in lines[status - 2]
+    assert "✓ Read file  file_30.py" in lines[status - 2]
 
 
 IMMEDIATE_PROMPT_SCRIPT = """

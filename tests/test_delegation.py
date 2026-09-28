@@ -198,7 +198,7 @@ def test_active_delegations_are_pinned_and_children_share_the_row_budget():
         assert "Explorer" in rows[0][1]
         assert len(panel_fragments(rows, 20)) == len(rows)
     rows = history.rows(3)
-    assert rows[1][1].startswith("└── ⟳ Read")
+    assert rows[1][1].startswith("└── ⟳ Read file")
     assert "child.py" in rows[1][1]
     # Finishing the plan must not hide a still-running child agent.
     assert any(
@@ -551,9 +551,9 @@ def test_child_calls_are_written_indented_under_their_delegate():
         transcript.tool_result(event)
     lines = stream.getvalue().splitlines()
     assert lines == [
-        "✓ Delegate  worker · look → Completed",
-        "    ✓ Read  a.py → 3 lines",
-        "    ✓ Run · echo hi",
+        "✓ Delegate task  worker · look → Completed",
+        "    ✓ Read file  a.py → 3 lines",
+        "    ✓ Run shell · echo hi",
     ]
     # A redraw rebuilds the same grouping from the retained log.
     assert [
@@ -577,7 +577,7 @@ def test_orphaned_child_calls_are_not_lost_when_the_turn_is_cancelled():
     )
     assert stream.getvalue() == ""
     transcript.cancelled()
-    assert "✓ Read  a.py → 3 lines" in stream.getvalue()
+    assert "✓ Read file  a.py → 3 lines" in stream.getvalue()
 
 
 def _render(objects):
@@ -650,7 +650,7 @@ def test_a_delegate_shows_its_plan_with_its_calls_under_the_active_task():
         rows[3],
         "└── ○ Run the tests",
     ]
-    assert rows[3].startswith("│   └── ⟳ Read") and "child.py" in rows[3]
+    assert rows[3].startswith("│   └── ⟳ Read file") and "child.py" in rows[3]
     # The plan stays while the delegate itself holds the status row.
     history.record(ToolSummary("read_file", "child.py", call_id="parent:child"))
     history.record(ToolSummary("grep", "newest", call_id="status-row"))

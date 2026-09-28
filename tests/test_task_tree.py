@@ -45,9 +45,9 @@ def test_guides_continue_past_descendants_to_the_next_visible_sibling(task_tree)
         ("class:plan.active", "* Implement"),
         ("class:plan.agent", "├── ✦ Worker · 0.0s · Working · Fix it"),
         ("class:plan.active", "│   ├── * Read the code"),
-        ("class:plan.active", "│   │   └── ⟳ Read · 0.0s · child.py"),
+        ("class:plan.active", "│   │   └── ⟳ Read file · 0.0s · child.py"),
         ("class:plan", "│   └── ○ Test the fix"),
-        ("class:plan.active", "└── ⟳ Run · 0.0s · make check"),
+        ("class:plan.active", "└── ⟳ Run shell · 0.0s · make check"),
         ("class:plan", "○ Validate"),
     ]
 
@@ -70,7 +70,7 @@ def test_clipped_tree_keeps_ancestors_and_ends_at_the_last_visible_sibling(task_
             assert not any("make check" in line for line in text)
         else:
             assert delegate.startswith("├── ")
-            assert "└── ⟳ Run · 0.0s · make check" in text
+            assert "└── ⟳ Run shell · 0.0s · make check" in text
         if budget == 3:
             assert text[-1] == "    └── * Read the code"
         if budget == 4:
@@ -78,7 +78,7 @@ def test_clipped_tree_keeps_ancestors_and_ends_at_the_last_visible_sibling(task_
         if budget == 5:
             assert text[-3:] == [
                 "    ├── * Read the code",
-                "    │   └── ⟳ Read · 0.0s · child.py",
+                "    │   └── ⟳ Read file · 0.0s · child.py",
                 "    └── ○ Test the fix",
             ]
 
@@ -94,13 +94,13 @@ def test_parallel_delegates_have_separate_branches(task_tree):
     assert text == [
         "├── ✦ Worker · 0.0s · Working · Fix it",
         "│   ├── ⟳ Read the code",
-        "│   │   └── ⟳ Read · 0.0s · child.py",
+        "│   │   └── ⟳ Read file · 0.0s · child.py",
         "│   └── ○ Test the fix",
         "├── ✦ Reviewer · 0.0s · Starting · Review",
         "│   ├── ○ Check diff",
-        "│   └── ⟳ Read · 0.0s · diff",
-        "├── ⟳ Run · 0.0s · make check",
-        "└── ⟳ Search · 0.0s · status row",
+        "│   └── ⟳ Read file · 0.0s · diff",
+        "├── ⟳ Run shell · 0.0s · make check",
+        "└── ⟳ Search code · 0.0s · status row",
     ]
 
 
@@ -114,9 +114,9 @@ def test_without_an_active_task_only_the_delegate_children_have_guides(task_tree
         "○ Validate",
         "✦ Worker · 0.0s · Working · Fix it",
         "├── * Read the code",
-        "│   └── ⟳ Read · 0.0s · child.py",
+        "│   └── ⟳ Read file · 0.0s · child.py",
         "└── ○ Test the fix",
-        "⟳ Run · 0.0s · make check",
+        "⟳ Run shell · 0.0s · make check",
     ]
     assert task_panel_rows([], history, 10, "*") == rows[3:]
 

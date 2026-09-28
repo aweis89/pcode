@@ -69,7 +69,7 @@ def test_tool_persistence_is_decided_on_completion(command, exit_code):
     # The settled call leaves the live panel for a summary line; its output and
     # diagnostic stay hidden while command visibility is off.
     assert app.activity.tools.calls == []
-    assert stream.getvalue().startswith("✗ Run" if failed else "✓ Run")
+    assert stream.getvalue().startswith("✗ Run shell" if failed else "✓ Run shell")
     assert "diagnostic" not in stream.getvalue()
     assert "exit code" not in stream.getvalue()
 
@@ -107,9 +107,8 @@ def test_exceptional_tool_completion_flushes_prose_before_queued_diagnostic():
         assert stream.getvalue() == ""  # Uses the terminal handoff, not console.print.
         await output.flush()
         text = stream.getvalue()
-        assert (
-            text.index("Before failure") < text.index("✗ Read failed") < text.index("After failure")
-        )
+        failure = text.index("✗ Read file failed")
+        assert text.index("Before failure") < failure < text.index("After failure")
         assert text.count("Not found") == 1
 
     asyncio.run(run())

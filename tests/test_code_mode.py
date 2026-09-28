@@ -115,7 +115,7 @@ def test_snippets_display_the_tool_calls_they_make():
         "files = await asyncio.gather(read_file(path='a'), read_file(path='b'))\n"
         "len(files)\n"
     )
-    assert label("run_code") == "Code"
+    assert label("run_code") == "Run code"
     assert target("run_code", {"code": code}) == "grep · read_file ×2 · 5 lines"
     assert target("run_code", {"code": "1 + 1"}) == "1 line"
     # A snippet that does not parse still gets an honest size, not a wrong summary.

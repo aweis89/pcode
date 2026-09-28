@@ -155,8 +155,8 @@ def test_compact_rows_and_old_and_new_event_shapes():
     new = ToolSummary("run_command", "pytest → exit 1", True, "call-2", 0.25)
     transcript.events((old, ToolSummary(**asdict(new))))
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
-        "✓ Read  a.py · 2 lines",
-        "✗ Run · exit 1 · 0.2s",
+        "✓ Read file  a.py · 2 lines",
+        "✗ Run shell · exit 1 · 0.2s",
     ]
 
 
@@ -178,8 +178,8 @@ def test_tool_lines_group_together_and_are_blank_separated_from_prose():
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
         "Reading first.",
         "",
-        "✓ Read  a.py · 2 lines",
-        "✓ Read  b.py · 3 lines",
+        "✓ Read file  a.py · 2 lines",
+        "✓ Read file  b.py · 3 lines",
         "",
         "Done.",
         "",
@@ -348,7 +348,7 @@ def test_long_command_is_compact_without_numbers_or_details_hint():
     assert "/tool" not in output
     assert "#" not in output
     assert len(output.splitlines()) == 1
-    assert output.startswith("✓ Run · pytest ")
+    assert output.startswith("✓ Run shell · pytest ")
     assert len(output.rstrip()) == 60
 
 
@@ -365,7 +365,7 @@ def test_command_summary_keeps_timing_and_preview_on_one_line(failed):
             command="echo hello",
         )
     )
-    heading = "✗ Run · exit 1" if failed else "✓ Run"
+    heading = "✗ Run shell · exit 1" if failed else "✓ Run shell"
     assert stream.getvalue().splitlines() == [f"{heading} · 0.8s · echo hello"]
 
 
@@ -390,7 +390,7 @@ def test_background_completion_has_compact_job_label(failed, outcome, show_comma
     )
     output = stream.getvalue()
     marker = "✗" if failed else "✓"
-    heading = f"{marker} Run · j12 · {outcome} · 0.8s"
+    heading = f"{marker} Run shell · j12 · {outcome} · 0.8s"
     assert output.startswith(heading)
     assert output.count("j12") == 1
     assert "background" not in output
@@ -402,7 +402,7 @@ def test_background_heading_matches_other_command_lines():
     from pcode.tool_display import tool_summary_lines
 
     (line,) = tool_summary_lines("shell", " · j3 · stopped", command="make test")
-    assert line.plain == "✓ Run · j3 · stopped · make test"
+    assert line.plain == "✓ Run shell · j3 · stopped · make test"
 
 
 def test_multiline_command_preview_is_compact_and_sanitized():

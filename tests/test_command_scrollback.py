@@ -40,7 +40,7 @@ def test_disabled_mirroring_still_leaves_a_summary_line():
     assert view.writes_tool_result(event)
     view.tool_result(event)
     output = stream.getvalue()
-    assert "✓ Run" in output
+    assert "✓ Run shell" in output
     assert "2 passed" not in output
 
 
@@ -98,7 +98,7 @@ def test_enabled_option_mirrors_command_and_output():
     assert view.command_output(event) is True
     lines = [line.rstrip() for line in stream.getvalue().splitlines()]
     # The heading rides the opening rule; a plain rule closes the block.
-    assert lines[0] == "✓ Run · 0.2s " + "─" * 67
+    assert lines[0] == "✓ Run shell · 0.2s " + "─" * 61
     assert lines[-1] == "─" * 80
     assert "  $ pytest -q" in lines
     assert "  2 passed" in lines
@@ -118,7 +118,7 @@ def test_job_marker_moves_from_the_footer_into_the_heading():
     )
     assert view.command_output(event) is True
     lines = [line.rstrip() for line in stream.getvalue().splitlines()]
-    assert lines[0].startswith("✓ Run · j27 · running the suite · 0.2s ")
+    assert lines[0].startswith("✓ Run shell · j27 · running the suite · 0.2s ")
     assert "  2 passed" in lines
     # The marker, the exit status and the elapsed time are all in the heading.
     assert "[j27" not in stream.getvalue()
@@ -167,7 +167,7 @@ def test_failed_commands_report_failure_in_the_mirrored_block():
         error="ModuleNotFoundError: example",
     )
     assert view.command_output(event) is True
-    assert "✗ Run" in stream.getvalue()
+    assert "✗ Run shell" in stream.getvalue()
     assert "ModuleNotFoundError: example" in stream.getvalue()
 
 
@@ -186,8 +186,8 @@ def test_mirrored_failure_replaces_the_error_excerpt_block():
     )
     app.present_events((event,))
     output = stream.getvalue()
-    assert "✗ Run" in output
-    assert output.count("✗ Run") == 1
+    assert "✗ Run shell" in output
+    assert output.count("✗ Run shell") == 1
     assert "kept context" in output
     # Scrollback is the only record: a settled call leaves the live panel.
     assert app.activity.tools.calls == []
@@ -200,7 +200,7 @@ def test_disabled_option_keeps_command_output_out_of_scrollback():
         (ToolSummary("run_command", "pytest -q → exit 0", command="pytest -q", result="2 passed"),)
     )
     output = stream.getvalue()
-    assert "✓ Run" in output
+    assert "✓ Run shell" in output
     assert "2 passed" not in output
 
 
@@ -217,7 +217,7 @@ def test_command_scrollback_lines_bounds_rows_and_keeps_tail(limit):
         )
     )
     lines = stream.getvalue().splitlines()
-    assert lines[0] == "✓ Run " + "─" * 39
+    assert lines[0] == "✓ Run shell " + "─" * 33
     assert lines[-1] == "─" * 45
     assert len(lines) == limit + 4  # Rules, command, and omission marker.
     assert lines[1].strip() == "$ noisy"
@@ -306,7 +306,7 @@ def test_toggled_mirroring_takes_effect_on_the_next_settled_command():
     assert "$ echo hi" not in stream.getvalue()
     app.show_commands("")
     app.present_events((event,))
-    assert "✓ Run" in stream.getvalue()
+    assert "✓ Run shell" in stream.getvalue()
     assert "$ echo hi" in stream.getvalue()
 
 
@@ -360,7 +360,7 @@ def test_output_keeps_leading_indentation_and_markdown_literal_without_padding()
         )
     )
     assert stream.getvalue().splitlines() == [
-        "✓ Run " + "─" * 74,
+        "✓ Run shell " + "─" * 68,
         "  $ echo hi",
         "      # heading",
         "  ```",
