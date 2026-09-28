@@ -295,7 +295,7 @@ once it settles, the phase becomes `Done` or `Failed`.
 └── ⟳ ✦ Worker · 12.4s · Working · Investigate the retry path
     ├── ✓ Read the retry code
     ├── * Reproduce the failure
-    │   └── ⟳ Run · 1.2s · pytest -q tests/test_login.py
+    │   └── ⟳ Run shell · 1.2s · pytest -q tests/test_login.py
     └── ○ Report back
 ```
 
