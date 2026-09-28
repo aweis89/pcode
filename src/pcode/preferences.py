@@ -38,6 +38,8 @@ class Setting:
     name_list: bool = False
     # Terminal rows as a whole number, or a share of the screen below 1 (0.5).
     height: bool = False
+    # `ctrl`, or the leader key(s) pressed before a shortcut's letter.
+    key_prefix: bool = False
     # One line shown beside the key in /config completions.
     description: str = ""
 
@@ -59,6 +61,8 @@ class Setting:
                 } - PROVIDERS.keys()
                 if unknown:
                     raise ValueError(f"Unknown model providers: {', '.join(sorted(unknown))}")
+        elif self.key_prefix:
+            parse_key_prefix(value)
         elif self.height:
             if parse_height(value) is None:
                 raise ValueError(
@@ -91,6 +95,57 @@ def parse_height(value: str | None) -> float | None:
     if height >= 1:
         return height if value.isascii() and value.isdecimal() else None
     return height if height > 0 else None
+
+
+# Ctrl chords every surface keeps for itself, or that the terminal sends as
+# another key; a leader on one of them would take away something essential.
+RESERVED_CHORDS = {
+    "c-c": "cancels and closes popups",
+    "c-d": "exits and half-pages",
+    "c-h": "is Backspace",
+    "c-i": "is Tab",
+    "c-j": "inserts a newline",
+    "c-m": "is Enter",
+    "c-[": "is Escape",
+}
+_CTRL_HEADS = ("ctrl+", "ctrl-", "control+", "control-", "c-")
+_CTRL_NAMES = {"space": "@", "spc": "@"}
+_CTRL_SYMBOLS = "@]\\^_"
+
+
+def _prefix_key(token: str) -> str:
+    """One leader key as prompt_toolkit names it: ctrl+p is c-p, ctrl+space is c-@."""
+    text = token.casefold()
+    head = next((head for head in _CTRL_HEADS if text.startswith(head)), None)
+    if head is not None:
+        rest = _CTRL_NAMES.get(text[len(head) :], text[len(head) :])
+        if len(rest) == 1 and ("a" <= rest <= "z" or rest in _CTRL_SYMBOLS):
+            key = f"c-{rest}"
+            if key in RESERVED_CHORDS:
+                raise ValueError(
+                    f"key_prefix cannot use {token}: it {RESERVED_CHORDS[key]} everywhere."
+                )
+            return key
+    elif text.startswith("f") and text[1:].isdecimal() and 1 <= int(text[1:]) <= 24:
+        return text
+    raise ValueError(
+        f"key_prefix: {token!r} is not a key pcode can use as a leader. "
+        "Use ctrl, or keys such as ctrl+p, ctrl+space, ctrl+] or f2."
+    )
+
+
+def parse_key_prefix(value: str) -> tuple[str, ...]:
+    """`ctrl` is () and makes each shortcut a Ctrl chord; otherwise the leader's keys.
+
+    Several keys, separated by spaces, form one leader pressed in sequence
+    (`ctrl+x ctrl+p`), the way Emacs spells a prefix. Raises ValueError.
+    """
+    tokens = value.split()
+    if [token.casefold() for token in tokens] == ["ctrl"]:
+        return ()
+    if not tokens:
+        raise ValueError("key_prefix must be ctrl or a leader key such as ctrl+p.")
+    return tuple(_prefix_key(token) for token in tokens)
 
 
 SEND_MODES = ("steering", "queue", "interrupt")
@@ -313,7 +368,10 @@ SETTINGS = {
     "show_commands": Setting(
         "off",
         ("on", "off"),
-        description="Mirror shell command output into scrollback (Ctrl+G toggles the live preview)",
+        description=(
+            "Mirror shell command output into scrollback (the g shortcut, Ctrl+G by default, "
+            "toggles it)"
+        ),
     ),
     "group_tools": Setting(
         "off",
@@ -376,6 +434,15 @@ SETTINGS = {
     ),
     # On by default so the wheel scrolls popups; plain drag-to-select then needs
     # a modifier. Read when a popup opens, so no restart is needed.
+    # Read as each popup opens; the main prompt picks it up on the next launch.
+    "key_prefix": Setting(
+        "ctrl",
+        key_prefix=True,
+        description=(
+            "Shortcut prefix: ctrl for Ctrl+key chords, or a leader such as ctrl+p "
+            "pressed before the key"
+        ),
+    ),
     "popup_mouse": Setting(
         "on",
         ("on", "off"),

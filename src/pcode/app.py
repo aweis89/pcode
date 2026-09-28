@@ -43,6 +43,7 @@ from pcode.preferences import (
     parse_height,
     save_preferences,
 )
+from pcode.prefix_keys import shortcut_label
 from pcode.runtime import (
     CacheBust,
     EditCompleted,
@@ -316,7 +317,7 @@ class PreviewApp:
             self.controller.registry.find("/worktree"),
             Command(
                 "/show-tasks",
-                "Tasks/Tools widget: on / off; bare toggles (Ctrl+O)",
+                f"Tasks/Tools widget: on / off; bare toggles ({shortcut_label('o')})",
                 self.show_tasks,
                 ("on", "off"),
                 group="Display",
@@ -330,7 +331,7 @@ class PreviewApp:
             ),
             Command(
                 "/show-thinking",
-                "Thinking in scrollback: on / off; bare toggles (Ctrl+T)",
+                f"Thinking in scrollback: on / off; bare toggles ({shortcut_label('t')})",
                 self.show_thinking,
                 ("on", "off"),
                 group="Display",
@@ -344,7 +345,8 @@ class PreviewApp:
             ),
             Command(
                 "/show-commands",
-                "Shell command output in scrollback: on / off; bare toggles (Ctrl+G)",
+                "Shell command output in scrollback: on / off; bare toggles "
+                f"({shortcut_label('g')})",
                 self.show_commands,
                 ("on", "off"),
                 group="Display",
@@ -676,7 +678,9 @@ class PreviewApp:
     def show_tasks(self, argument: str) -> None:
         self.set_show_tasks(self.toggle_argument("/show-tasks", argument, self.activity.show_tasks))
         state = "on" if self.activity.show_tasks else "off"
-        self.transcript.flash(f"Show tasks: {state}. Usage: /show-tasks [on|off] (Ctrl+O)")
+        self.transcript.flash(
+            f"Show tasks: {state}. Usage: /show-tasks [on|off] ({self.shortcut('o')})"
+        )
 
     def autohide_tasks(self, argument: str) -> None:
         enabled = self.toggle_argument("/autohide-tasks", argument, self.activity.autohide_tasks)
@@ -726,7 +730,7 @@ class PreviewApp:
             self.toggle_argument("/show-thinking", argument, self.activity.show_thinking)
         )
         state = "on" if self.activity.show_thinking else "off"
-        lines = [f"Show thinking: {state}. Usage: /show-thinking [on|off] (Ctrl+T)"]
+        lines = [f"Show thinking: {state}. Usage: /show-thinking [on|off] ({self.shortcut('t')})"]
         if (self.model or "").startswith("anthropic:"):
             lines.append(
                 "Anthropic thinking request: "
@@ -739,7 +743,7 @@ class PreviewApp:
 
     @property
     def next_send_mode(self) -> str:
-        """The mode the next prompt sends with: a Ctrl+S pick, else the default."""
+        """The mode the next prompt sends with: a send-mode shortcut pick, else the default."""
         return self.send_mode_once or self.send_mode
 
     def cycle_send_mode(self) -> None:
@@ -762,7 +766,14 @@ class PreviewApp:
             self.toggle_argument("/show-commands", argument, self.transcript.command_scrollback)
         )
         state = "on" if self.transcript.command_scrollback else "off"
-        self.transcript.flash(f"Show commands: {state}. Usage: /show-commands [on|off] (Ctrl+G)")
+        self.transcript.flash(
+            f"Show commands: {state}. Usage: /show-commands [on|off] ({self.shortcut('g')})"
+        )
+
+    def shortcut(self, key: str) -> str:
+        """How this session's prompt spells shortcut ``key``, e.g. Ctrl+O."""
+        shortcuts = getattr(self.prompt_session, "shortcuts", None)
+        return shortcuts.label(key) if shortcuts is not None else shortcut_label(key)
 
     def persist_defaults(self, **updates: str) -> None:
         try:
@@ -949,7 +960,7 @@ class PreviewApp:
             await browser.run()
 
     def help(self, argument: str) -> None:
-        self.transcript.help(self.registry)
+        self.transcript.help(self.registry, self.shortcut)
 
     def present_events(self, events) -> None:
         present_events(events, activity=self.activity, transcript=self.transcript, edits=self.edits)

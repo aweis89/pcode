@@ -173,17 +173,20 @@ def test_inspector_keyboard_focus_scroll_filter_and_close(monkeypatch):
             await asyncio.sleep(0.05)
             assert ui.app.layout.has_focus(ui.query)
             assert ui.selected.call_id == "failed"
-            pipe.send_text("\x1b[A\t")  # Up, then Tab to the list.
+            pipe.send_text("\x1b[A")
             await asyncio.sleep(0.05)
             assert ui.selected.call_id == "success"
-            assert ui.app.layout.has_focus(ui.list)
-            pipe.send_text("f")
+            # Shortcuts work from the search line too, without typing into it.
+            pipe.send_text("\x18")  # Ctrl+X: failures only.
             await asyncio.sleep(0.05)
-            assert ui.selected.call_id == "failed"
-            pipe.send_text("c")
+            assert ui.selected.call_id == "failed" and ui.query.text == ""
+            pipe.send_text("\t")
+            await asyncio.sleep(0.05)
+            assert ui.app.layout.has_focus(ui.list)
+            pipe.send_text("\x19")  # Ctrl+Y
             await asyncio.sleep(0.05)
             assert ui.notice == "Copied command"
-            pipe.send_text("o")
+            pipe.send_text("\x0f")  # Ctrl+O
             await asyncio.sleep(0.05)
             assert ui.notice == "Copied output"
             pipe.send_text("\t")

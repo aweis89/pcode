@@ -25,6 +25,7 @@ from pcode.popup_ui import (
     popup_mouse,
     popup_style,
 )
+from pcode.prefix_keys import PrefixKeys
 from pcode.shell import preview_text
 from pcode.tool_display import command_text
 
@@ -108,6 +109,7 @@ class JobBrowser:
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
         color_system: str | None = "truecolor",
+        key_prefix: str | None = None,
         **app_options,
     ) -> None:
         self.registry = registry
@@ -134,18 +136,9 @@ class JobBrowser:
         def close(event):
             event.app.exit(result=None)
 
-        @keys.add("c-k")
-        def stop_selected(event):
-            # Same key meaning as in /btw: stop the work, keep the record.
-            job = self.current()
-            if job is None or not job.running:
-                self.notice = "nothing running to stop"
-                return
-            self.stop(job)
-            self.notice = f"stopped {job.id}"
-            self.refresh()
+        self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
 
-        @keys.add("w")
+        @shortcuts.add("w", "Watch in preview")
         def toggle_watch(event):
             job = self.current()
             if job is not None and job.id == self.watched():
@@ -157,6 +150,17 @@ class JobBrowser:
             else:
                 self.watch(job)
                 self.notice = f"watching {job.id} in the preview"
+            self.refresh()
+
+        @shortcuts.add("k", "Stop")
+        def stop_selected(event):
+            # Same key meaning as in /btw: stop the work, keep the record.
+            job = self.current()
+            if job is None or not job.running:
+                self.notice = "nothing running to stop"
+                return
+            self.stop(job)
+            self.notice = f"stopped {job.id}"
             self.refresh()
 
         keys.add("tab")(focus_next)
@@ -187,12 +191,13 @@ class JobBrowser:
                 Label(header),
                 body,
                 Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label("Tab Focus · W Watch in preview · Ctrl+K Stop · Enter/Esc Close"),
+                Label("Tab Focus · Enter/Esc Close"),
+                Label(shortcuts.summary),
             ]
         )
         self.app = Application(
-            layout=Layout(popup_container(root_container), focused_element=self.list),
-            key_bindings=keys,
+            layout=Layout(popup_container(root_container, shortcuts), focused_element=self.list),
+            key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(),
             style=popup_style(app_options.pop("style", None)),

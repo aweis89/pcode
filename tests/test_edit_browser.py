@@ -190,13 +190,13 @@ def test_diff_search_matches_the_redacted_text():
         assert len(ui.visible) == 1 and ui.diff_rows()
 
 
-def test_slash_targets_the_focused_pane_and_enter_returns_to_it():
+def test_search_shortcut_targets_the_focused_pane_and_enter_returns_to_it():
     async def run():
         with create_pipe_input() as pipe:
             ui = EditBrowser([change("x.py")], input=pipe, output=DummyOutput())
             task = asyncio.create_task(ui.run())
             await asyncio.sleep(0.05)
-            # It opens searching paths, so typing filters (`n` is not next-match here).
+            # It opens searching paths, so typing filters.
             assert ui.scope == "paths" and ui.app.layout.has_focus(ui.query)
             pipe.send_text("nx")
             await asyncio.sleep(0.05)
@@ -204,13 +204,13 @@ def test_slash_targets_the_focused_pane_and_enter_returns_to_it():
             pipe.send_text("\x7f\x7f\r")
             await asyncio.sleep(0.05)
             assert ui.app.layout.has_focus(ui.files)
-            pipe.send_text("/")
+            pipe.send_text("\x06")  # Ctrl+F
             await asyncio.sleep(0.05)
             assert ui.scope == "paths" and ui.app.layout.has_focus(ui.query)
             pipe.send_text("\r")
             await asyncio.sleep(0.05)
             assert ui.app.layout.has_focus(ui.files)
-            pipe.send_text("\t/")
+            pipe.send_text("\t\x06")
             await asyncio.sleep(0.05)
             assert ui.scope == "diffs" and ui.app.layout.has_focus(ui.query)
             pipe.send_text("new\r")

@@ -22,6 +22,7 @@ from pcode.popup_ui import (
     popup_mouse,
     popup_style,
 )
+from pcode.prefix_keys import PrefixKeys
 from pcode.runtime import ToolSummary
 from pcode.session_ui import literal
 from pcode.task_prompt import TaskPrompt
@@ -88,6 +89,7 @@ class WorkerBrowser:
         code_theme: str = "ansi_dark",
         color_system: str | None = "truecolor",
         show_thinking: bool = False,
+        key_prefix: str | None = None,
         **app_options,
     ) -> None:
         self.workers = workers
@@ -112,7 +114,9 @@ class WorkerBrowser:
         def close(event):
             event.app.exit(result=None)
 
-        @keys.add("t")
+        self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+
+        @shortcuts.add("t", "Thinking")
         def toggle_thinking(event):
             self.show_thinking = not self.show_thinking
             self.select(force=True)
@@ -148,15 +152,15 @@ class WorkerBrowser:
                 Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
                 Label(
                     lambda: (
-                        f"Tab Focus · T Thinking ({'on' if self.show_thinking else 'off'})"
-                        " · Enter/Esc Close"
+                        f"Tab Focus · Enter/Esc Close · {shortcuts.summary()}"
+                        f" ({'on' if self.show_thinking else 'off'})"
                     )
                 ),
             ]
         )
         self.app = Application(
-            layout=Layout(popup_container(root_container), focused_element=self.list),
-            key_bindings=keys,
+            layout=Layout(popup_container(root_container, shortcuts), focused_element=self.list),
+            key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(),
             style=popup_style(app_options.pop("style", None)),

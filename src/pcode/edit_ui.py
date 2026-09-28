@@ -18,14 +18,14 @@ from pcode.popup_ui import (
     popup_style,
     steer_list_from_query,
 )
+from pcode.prefix_keys import PrefixKeys
 from pcode.runtime import EditCompleted
 
 EMPTY = "No file edits in this conversation."
 NO_MATCH = "No matching edits."
 KEYS = (
     "↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page · Ctrl+Home/End First/last · "
-    "Type to search paths, Enter to leave · Tab Focus · "
-    "/ Search paths (in Files) or diff lines (in Diff) · n/N Next/previous match · Esc Close"
+    "Type to search paths, Enter to leave · Tab Focus · Esc Close"
 )
 PROMPTS = {"paths": "Search paths: ", "diffs": "Search diff lines: "}
 
@@ -66,8 +66,8 @@ def matching_rows(text: str, terms: list[str]) -> list[int]:
 class EditBrowser:
     """Most of the screen is the diff; the file selector stays a small bottom pane.
 
-    One search line serves both panes. Pressing ``/`` in the file list searches
-    paths and filters the list; pressing it in the diff searches diff lines,
+    One search line serves both panes. The ``f`` shortcut in the file list
+    searches paths and filters the list; in the diff it searches diff lines,
     filters the list to changes with a match, and jumps the diff to the first.
     Changes are listed in the order given; `title` says what they are.
     """
@@ -79,6 +79,7 @@ class EditBrowser:
         title: str = "Edit diffs",
         empty: str = EMPTY,
         code_theme: str = "monokai",
+        key_prefix: str | None = None,
         **app_options,
     ) -> None:
         self.changes = list(changes)
@@ -118,25 +119,28 @@ class EditBrowser:
         bind_list_paging(keys, self.files, has_focus(self.files) | has_focus(self.query))
         bind_list_paging(keys, self.diff, has_focus(self.diff))
 
-        @keys.add("/", filter=has_focus(self.files))
-        @keys.add("c-f", filter=has_focus(self.files))
-        def search_paths(event):
-            self.search("paths")
-
-        @keys.add("/", filter=has_focus(self.diff))
-        @keys.add("c-f", filter=has_focus(self.diff))
-        def search_diffs(event):
-            self.search("diffs")
-
         @keys.add("enter", filter=has_focus(self.query))
         def search_done(event):
             event.app.layout.focus(self.files if self.scope == "paths" else self.diff)
 
-        @keys.add("n", filter=has_focus(self.files) | has_focus(self.diff))
+        self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+
+        @shortcuts.add("f", "Search the focused pane")
+        def search(event):
+            # From the search line itself, keep searching what it searches.
+            if event.app.layout.has_focus(self.files):
+                self.search("paths")
+            elif event.app.layout.has_focus(self.diff):
+                self.search("diffs")
+            else:
+                self.search(self.scope)
+
+        # Emacs's incremental search keys: s forward, r in reverse.
+        @shortcuts.add("s", "Next match")
         def next_match(event):
             self.jump(1)
 
-        @keys.add("N", filter=has_focus(self.files) | has_focus(self.diff))
+        @shortcuts.add("r", "Previous match")
         def previous_match(event):
             self.jump(-1)
 
@@ -151,16 +155,16 @@ class EditBrowser:
                 Label(title),
                 header,
                 Label(KEYS),
+                Label(shortcuts.summary),
                 self.query,
                 Frame(self.diff, title="Diff"),
                 Frame(self.files, title="Files", height=list_pane_height(len(self.changes))),
             ]
         )
         self.app = Application(
-            # Open in the search line, so typing filters rather than reaching
-            # the panes' one-key shortcuts.
-            layout=Layout(popup_container(root), focused_element=self.query),
-            key_bindings=keys,
+            # Open in the search line, so typing filters straight away.
+            layout=Layout(popup_container(root, shortcuts), focused_element=self.query),
+            key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(),
             style=popup_style(app_options.pop("style", None)),

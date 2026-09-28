@@ -5,6 +5,7 @@ import os
 import re
 from asyncio import Future
 from collections import Counter
+from collections.abc import Callable
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from functools import cache, cached_property, lru_cache, partial, wraps
@@ -50,6 +51,7 @@ from pcode.jobs import WATCHED_PREFIX
 from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN, PastedText
 from pcode.preferences import SETTINGS, SYNTAX_THEMES, TERMINAL_SYNTAX, load_preferences
+from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.syntax_colors import derive_colors
 from pcode.task_prompt import TaskPrompt
@@ -305,6 +307,21 @@ JOB_ROWS = 3
 ASIDE_ROWS = 3
 
 
+def chrome_rows(text: str, width: int, style: str) -> list[tuple[str, str]]:
+    """Wrap transient chrome text to the pane, bounded so it cannot take the screen."""
+    if width < 1:
+        return []
+    console = Console(width=width)
+    rows = [
+        (style, row.plain)
+        for line in text.splitlines()
+        for row in Text(plain(line, limit=None)).wrap(
+            console, width, overflow="fold", no_wrap=False
+        )
+    ]
+    return rows[:NOTICE_ROWS]
+
+
 @dataclass
 class Activity:
     show_tasks: bool = True
@@ -399,17 +416,9 @@ class Activity:
 
     def notice_rows(self, width: int) -> list[tuple[str, str]]:
         """Wrap the notice to the pane, bounded so chrome cannot take the screen."""
-        if not self.notice_shown or width < 1:
+        if not self.notice_shown:
             return []
-        console = Console(width=width)
-        rows = [
-            ("class:activity.notice", row.plain)
-            for line in self.notice.splitlines()
-            for row in Text(plain(line, limit=None)).wrap(
-                console, width, overflow="fold", no_wrap=False
-            )
-        ]
-        return rows[:NOTICE_ROWS]
+        return chrome_rows(self.notice, width, "class:activity.notice")
 
     def panel_heading(self) -> str:
         return self.panel_title()
@@ -1344,65 +1353,59 @@ def create_prompt(
     on_commands=None,
     on_send_mode=None,
     on_previous_session=None,
+    key_prefix: str | None = None,
     **kwargs,
 ) -> PromptSession:
     configure_newline_keys()
     install_fast_layout_division()
     activity = activity or Activity()
     keys = KeyBindings()
+    # The prompt's own shortcuts: Ctrl chords by default, or a leader and a
+    # letter, whose hint takes the notice rows above the spinner.
+    shortcuts = PrefixKeys(key_prefix)
 
-    @keys.add("c-o")
+    @shortcuts.add("s", "Send mode", filter=on_send_mode is not None)
+    def cycle_send_mode(event: KeyPressEvent) -> None:
+        on_send_mode()
+        event.app.invalidate()
+
+    @shortcuts.add("l", "Model", filter=on_model is not None)
+    def choose_model(event: KeyPressEvent) -> None:
+        on_model()
+
+    @shortcuts.add("n", "More effort", filter=on_effort is not None)
+    def increase_effort(event: KeyPressEvent) -> None:
+        on_effort(1)
+        event.app.invalidate()
+
+    @shortcuts.add("p", "Less effort", filter=on_effort is not None)
+    def decrease_effort(event: KeyPressEvent) -> None:
+        on_effort(-1)
+        event.app.invalidate()
+
+    @shortcuts.add("o", "Tasks")
     def toggle_tasks(event: KeyPressEvent) -> None:
         shown = activity.toggle_tasks()
         if on_tasks is not None:
             on_tasks(shown)
         event.app.invalidate()
 
-    @keys.add("c-t")
+    @shortcuts.add("t", "Thinking")
     def toggle_thinking(event: KeyPressEvent) -> None:
         activity.show_thinking = not activity.show_thinking
         if on_thinking is not None:
             on_thinking(activity.show_thinking)
         event.app.invalidate()
 
-    if on_send_mode is not None:
+    @shortcuts.add("g", "Command output", filter=on_commands is not None)
+    def toggle_command_scrollback(event: KeyPressEvent) -> None:
+        on_commands()
+        event.app.invalidate()
 
-        @keys.add("c-s")
-        def cycle_send_mode(event: KeyPressEvent) -> None:
-            on_send_mode()
-            event.app.invalidate()
-
-    if on_commands is not None:
-
-        @keys.add("c-g")
-        def toggle_command_scrollback(event: KeyPressEvent) -> None:
-            on_commands()
-            event.app.invalidate()
-
-    if on_model is not None:
-
-        @keys.add("c-l")
-        def choose_model(event: KeyPressEvent) -> None:
-            on_model()
-
-    if on_previous_session is not None:
-        # Vim's alternate-buffer key; terminals send it for Ctrl+6 as well.
-
-        @keys.add("c-^")
-        def previous_session(event: KeyPressEvent) -> None:
-            on_previous_session()
-
-    if on_effort is not None:
-
-        @keys.add("c-n")
-        def increase_effort(event: KeyPressEvent) -> None:
-            on_effort(1)
-            event.app.invalidate()
-
-        @keys.add("c-p")
-        def decrease_effort(event: KeyPressEvent) -> None:
-            on_effort(-1)
-            event.app.invalidate()
+    # Vim's alternate-buffer key; terminals send Ctrl+^ for Ctrl+6 as well.
+    @shortcuts.add("^", "Previous session", filter=on_previous_session is not None)
+    def previous_session(event: KeyPressEvent) -> None:
+        on_previous_session()
 
     pasted = PastedText()
 
@@ -1413,7 +1416,7 @@ def create_prompt(
         data = event.data.replace("\r\n", "\n").replace("\r", "\n")
         event.current_buffer.insert_text(pasted.collapse(data))
 
-    @keys.add("c-y")
+    @shortcuts.add("y", "Copy draft")
     def copy_draft(event: KeyPressEvent) -> None:
         # Collapsed pastes are a display device, so copy what sending would:
         # the expanded text, not the `[pasted …]` marker standing in for it.
@@ -1534,10 +1537,11 @@ def create_prompt(
         ),
         reserve_space_for_menu=0,
         auto_suggest=AutoSuggestFromHistory(),
-        key_bindings=keys,
+        key_bindings=shortcuts.key_bindings(keys),
         mouse_support=False,
         **kwargs,
     )
+    session.shortcuts = shortcuts
 
     # Retain PromptSession's editor/processors, but give its frame a content-sized
     # height. The default frame expands into the CPR-reported space below the
@@ -1738,8 +1742,15 @@ def create_prompt(
 
     @per_render
     def notice_rows():
-        """Freeze the expiring notice for this render so height matches content."""
-        return activity.notice_rows(session.app.output.get_size().columns - 1)
+        """Freeze the expiring notice for this render so height matches content.
+
+        A waiting leader's hint borrows the slot: it answers a keystroke and
+        goes with the next one, which is what a notice is for.
+        """
+        width = session.app.output.get_size().columns - 1
+        if shortcuts.pending:
+            return chrome_rows(shortcuts.hint_text(), width, "class:activity.system")
+        return activity.notice_rows(width)
 
     @per_render
     def job_rows():
@@ -2771,7 +2782,10 @@ class Transcript:
                     continue
                 self.command_summary(event)
 
-    def help(self, registry: CommandRegistry) -> None:
+    def help(self, registry: CommandRegistry, shortcut: Callable[[str], str] | None = None) -> None:
+        """List the commands, then the keys; ``shortcut`` spells the prompt's own."""
+        key = shortcut or shortcut_label
+        previous = key("^") + (" (Ctrl+6)" if key("^") == "Ctrl+^" else "")
         table = Table(box=None, padding=(0, 2), show_header=False)
         table.add_column(style="pcode.accent", no_wrap=True)
         table.add_column()
@@ -2784,13 +2798,19 @@ class Transcript:
         self.print()
         self.note("Enter send · ↓ on last line or Ctrl+J newline · Tab/↑/↓ complete")
         self.note("Enter accepts a selected completion; press again to send.")
-        self.note("Ctrl+O tasks widget · Ctrl+T thinking · Ctrl+G command output (each redraws)")
-        self.note("Ctrl+L choose model · Ctrl+N raise effort · Ctrl+P lower effort (next turn)")
-        self.note("Ctrl+^ (Ctrl+6) back to the previous session (/switch -)")
-        self.note("Ctrl+C discard input · Ctrl+D exit on empty input")
         self.note(
-            "During a run: Enter sends · Ctrl+S picks steering/queue/interrupt for the next send. "
-            "Ctrl+C discards a draft first, then cancels · Ctrl+D cancels, keeps draft."
+            f"{key('o')} tasks widget · {key('t')} thinking · {key('g')} command output "
+            "(each redraws)"
+        )
+        self.note(
+            f"{key('l')} choose model · {key('n')} raise effort · {key('p')} lower effort "
+            "(next turn)"
+        )
+        self.note(f"{previous} back to the previous session (/switch -)")
+        self.note(f"{key('y')} copy the draft · Ctrl+C discard input · Ctrl+D exit on empty input")
+        self.note(
+            f"During a run: Enter sends · {key('s')} picks steering/queue/interrupt for the "
+            "next send. Ctrl+C discards a draft first, then cancels · Ctrl+D cancels, keeps draft."
         )
         self.note("Cancellation clears queued messages. Use terminal/tmux scrollback for history.")
         self.print()
