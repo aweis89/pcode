@@ -68,12 +68,12 @@ def test_a_wait_row_names_its_job_and_the_command_that_job_runs():
     known = ToolStarted(
         "wait_for_job", "j3", "one", command="make e2e", purpose="running the suite"
     )
-    assert line(known) == "⧗ Wait · 45.2s · j3 · running the suite · make e2e"
+    assert line(known) == "⧗ Wait for job · 45.2s · j3 · running the suite · make e2e"
     # A job the runtime could not name still says which one is being waited on.
-    assert line(ToolStarted("wait_for_job", "j9", "two")) == "⧗ Wait · 45.2s · j9"
+    assert line(ToolStarted("wait_for_job", "j9", "two")) == "⧗ Wait for job · 45.2s · j9"
     # Reading a job is not waiting on it, but names the job the same way.
     output = ToolStarted("job_output", "j3", "three", command="make e2e")
-    assert line(output) == "Job output · 45.2s · j3 · make e2e"
+    assert line(output) == "Read job output · 45.2s · j3 · make e2e"
 
 
 @pytest.mark.parametrize("width", [1, 8, 24, 80])
@@ -173,7 +173,7 @@ def test_failed_commands_keep_only_a_summary_line_without_command_mirroring():
         error="FAILED test_example: missing module",
     )
     app.present_events((event,))
-    assert "✗ Run" in stream.getvalue()
+    assert "✗ Run shell" in stream.getvalue()
     assert "FAILED test_example" not in stream.getvalue()
     assert app.activity.tools.calls == []
     assert app.registry.find("/tools") is not None
@@ -249,7 +249,7 @@ def test_concurrent_tools_follow_active_task_without_headers_or_empty_rows():
     ]
     text = [text for _, text in task_panel_rows(items, history, 10, "⟳")]
     assert text[:2] == ["✓ Inspect", "⟳ Implement"]
-    assert text[2].startswith("└── ⟳ Read") and text[2].endswith("example.py")
+    assert text[2].startswith("└── ⟳ Read file") and text[2].endswith("example.py")
     assert text[3] == "○ Validate"
     items[1]["status"] = "completed"
     items[2]["status"] = "in_progress"
@@ -267,7 +267,7 @@ def test_without_active_task_tools_are_root_rows_not_children_of_inactive_task(s
     items = [{"id": "one", "content": "A task", "status": status}]
     style, text = task_panel_rows(items, history, 10, "⟳")[-1]
     assert style == "class:plan.active"
-    assert text.startswith("⟳ Read") and text.endswith("example.py")
+    assert text.startswith("⟳ Read file") and text.endswith("example.py")
     assert task_panel_rows([], history, 10, "⟳")[0][1] == text
 
 
@@ -283,11 +283,11 @@ def test_shared_task_tool_budget_keeps_active_item_and_oldest_calls_visible(budg
     text = [text for _, text in lines]
     active = text.index("⟳ Task 8")
     count = min(3, budget - 1)
-    assert sum("Read ·" in line for line in text) == count
+    assert sum("Read file ·" in line for line in text) == count
     children = text[active + 1 : active + 1 + count]
-    assert all(line.startswith("├── ⟳ Read") for line in children[:-1])
+    assert all(line.startswith("├── ⟳ Read file") for line in children[:-1])
     if children:
-        assert children[-1].startswith("└── ⟳ Read")
+        assert children[-1].startswith("└── ⟳ Read file")
     if count:
         assert text[active + 1].endswith("file_0.py")
     assert all("Tasks ·" not in line and "Tools" not in line for line in text)

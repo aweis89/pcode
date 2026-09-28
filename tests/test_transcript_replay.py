@@ -53,11 +53,11 @@ def test_failure_has_exactly_one_representation_and_uses_command_visibility():
         )
     )
     assert "FULL_RESULT" not in project(transcript)
-    assert "✗ Run" in project(transcript)
+    assert "✗ Run shell" in project(transcript)
     transcript.command_scrollback = True
     # Mirroring alone keeps the failure to its summary line.
     assert "FULL_RESULT" not in project(transcript)
-    assert "✗ Run" in project(transcript)
+    assert "✗ Run shell" in project(transcript)
     transcript.tool_error_scrollback = True
     assert project(transcript).count("FULL_RESULT") == 1
     assert "EXCERPT" not in project(transcript)

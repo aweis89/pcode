@@ -90,7 +90,7 @@ def test_command_diagnostic_survives_event_round_trip_and_uses_output_fallback()
     transcript.tool_error_scrollback = True
     transcript.events((ToolSummary(**asdict(event)),))
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
-        "✗ Run · 0.5s " + "─" * 87,
+        "✗ Run shell · 0.5s " + "─" * 81,
         "  pytest -q → exit 1",
         "  [stderr] missing module",
         "    traceback context",
@@ -160,7 +160,7 @@ def test_failed_command_block_keeps_the_ordinary_title_color(command):
         return stream.getvalue()
 
     output = render(True)
-    assert "✗ Run" in output and "failed" not in Text.from_ansi(output).plain
+    assert "✗ Run shell" in output and "failed" not in Text.from_ansi(output).plain
     assert "pytest -q" in Text.from_ansi(output).plain
     assert "\x1b[1;31m" not in output
     codes = re.compile(r"\x1b\[[0-9;]*m")
@@ -229,7 +229,7 @@ def test_failed_commands_need_mirroring_before_the_failure_option_applies():
     assert transcript.writes_tool_result(event)
     transcript.tool_result(event)
     # Without mirroring, a failure keeps its summary line and nothing else.
-    assert "✗ Run" in stream.getvalue()
+    assert "✗ Run shell" in stream.getvalue()
     assert "DIAGNOSTIC" not in stream.getvalue()
 
 
@@ -249,7 +249,7 @@ def test_mirrored_command_failures_keep_only_their_summary_line_by_default():
     )
     transcript.tool_result(event)
     assert [line.rstrip() for line in stream.getvalue().splitlines()] == [
-        "✗ Run · exit 1 · pytest",
+        "✗ Run shell · exit 1 · pytest",
     ]
 
 
