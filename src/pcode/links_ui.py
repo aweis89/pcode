@@ -16,6 +16,7 @@ from pcode.popup_ui import (
     popup_style,
     steer_list_from_query,
 )
+from pcode.prefix_keys import PrefixKeys
 
 _ROW_WIDTH = 100
 
@@ -39,6 +40,7 @@ def links_dialog(
     input=None,
     output=None,
     style=None,
+    key_prefix: str | None = None,
 ):
     # Collect message-only links separately: a URL first seen in a tool can also
     # appear in a reply, and must survive hiding tools despite URL deduplication.
@@ -74,16 +76,17 @@ def links_dialog(
     steer_list_from_query(bindings, query, choices)
     bind_list_paging(bindings, choices, has_focus(choices) | has_focus(query))
 
-    @bindings.add("t", filter=has_focus(choices))
+    shortcuts = PrefixKeys(key_prefix)
+
+    @shortcuts.add("f", "Search")
+    def search(event):
+        event.app.layout.focus(query)
+
+    @shortcuts.add("t", "Show/hide tool links")
     def toggle_tools(event):
         nonlocal show_tools
         show_tools = not show_tools
         refresh()
-
-    @bindings.add("/", filter=has_focus(choices))
-    @bindings.add("c-f")
-    def search(event):
-        event.app.layout.focus(query)
 
     # The picker opens in the search line, so Enter opens from there too.
     @bindings.add("enter", eager=True)
@@ -115,7 +118,7 @@ def links_dialog(
                 choices,
                 Label("↑↓ Select · PgUp/PgDn Page · Ctrl+U/D Half page"),
                 Label("Type to search · Enter open · Tab list · Esc clear search, then cancel"),
-                Label("In the list: t toggle tools · / search"),
+                Label(shortcuts.summary),
             ],
             padding=1,
         ),
@@ -123,10 +126,9 @@ def links_dialog(
     )
     refresh()
     return Application(
-        # Open in the search line, so typing filters instead of reaching the
-        # list's one-key shortcuts.
-        layout=Layout(popup_container(dialog), focused_element=query),
-        key_bindings=bindings,
+        # Open in the search line, so typing filters straight away.
+        layout=Layout(popup_container(dialog, shortcuts), focused_element=query),
+        key_bindings=shortcuts.key_bindings(bindings),
         full_screen=True,
         mouse_support=popup_mouse(),
         input=input,

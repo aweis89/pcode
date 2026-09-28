@@ -83,9 +83,10 @@ candidate's size so that cost is visible before you pick.
   position. The picker opens in its search line: typing searches URLs, labels, and
   sources, case-insensitively, filtering as you type, while `↑`/`↓` move the
   selection. `Enter` opens the selected URL. `Esc` clears the search, or closes the
-  picker when the search is empty. Tab moves to the list, where `t` shows/hides tool
+  picker when the search is empty. Tab moves to the list. **Ctrl+T** shows/hides tool
   links (shown by default; URLs also present in prompts or replies remain when tools
-  are hidden) and `/` returns to the search. Filters reset when you reopen `/links`.
+  are hidden) and **Ctrl+F** returns to the search, from either one. Filters reset when
+  you reopen `/links`.
   Output omitted by truncation or stored only in a spill file is not searched. Open the selection
   in the default browser via
   `open` (macOS), `xdg-open` (Linux), or the shell association (Windows). Useful
@@ -97,7 +98,7 @@ candidate's size so that cost is visible before you pick.
 - `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
 - `/jobs [stop ID|stop all|watch ID|unwatch]`: bare `/jobs` opens a popup listing this
   session's shell jobs, running first, beside the selected job's command and live output log.
-  **W** pins or unpins its output tail in the command preview, **Ctrl+K** stops it, and
+  **Ctrl+W** pins or unpins its output tail in the command preview, **Ctrl+K** stops it, and
   Enter/Esc closes. The subcommands do the same without the popup. Jobs outlive the turn that
   started them — see [Shell jobs](tools.md#shell-jobs).
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
@@ -116,22 +117,27 @@ candidate's size so that cost is visible before you pick.
 - `/btw QUESTION`: [ask a side question](side-questions.md) against the context the model is
   working with right now, without interrupting or queueing it. The answer opens in a popup
   when it is ready (`btw_auto_open`); a bare `/btw` opens the answers at any time, and
-  `r` there [asks a follow-up](side-questions.md#following-up) to the selected answer;
-  `s` and `m` [keep a thread](side-questions.md#keeping-a-thread) as a summary or a
-  merged `/tree` branch.
+  **Ctrl+R** there [asks a follow-up](side-questions.md#following-up) to the selected answer;
+  **Ctrl+S** and **Ctrl+T** [keep a thread](side-questions.md#keeping-a-thread) as a summary
+  or a merged `/tree` branch.
   `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks on other models instead, one
   side question per model ([choosing the model](side-questions.md#choosing-the-model)).
   A `+EFFORT` suffix (`$openai:gpt-5+high`), or a bare `+EFFORT` word for the
   conversation's model, picks that question's reasoning effort from the `/effort` levels.
 - `/workers`: follow delegated workers in a popup, live and read-only: each worker's
   assignment, plan, prose and tool calls, which the transcript only summarizes under its
-  delegate row. Works while the turn runs. `T` shows or hides reasoning. Workers are kept in
+  delegate row. Works while the turn runs. **Ctrl+T** shows or hides reasoning. Workers are kept in
   memory for the session, so a resumed session starts with none.
 - `/skill:NAME [text]`: run a discovered skill; see
   [Skills as slash commands](workspace.md#skills-as-slash-commands) for naming and configuration.
 - `/quit` (alias `/exit`): exit.
 
 ## Keys and layout
+
+The Ctrl+*letter* keys below that pick a mode, open a picker or toggle a
+widget are shortcuts: they follow the [shortcut prefix](#shortcut-prefix), so
+with a leader such as Ctrl+P, Ctrl+S becomes Ctrl+P then `s`. Enter, the
+arrows, Ctrl+J, Ctrl+C and Ctrl+D never change.
 
 | Key | Action |
 | --- | --- |
@@ -142,6 +148,7 @@ candidate's size so that cost is visible before you pick.
 | Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
 | Ctrl+L | Choose a model (keeps the conversation; applies from the next request) |
+| Ctrl+N / Ctrl+P | Raise / lower reasoning effort for the next turn |
 | Ctrl+^ (Ctrl+6) | Back to the session this terminal showed before (`/switch -`) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
 | Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first) |
@@ -197,6 +204,40 @@ Everything else a command reports — `/status`, `/mcp`, `/help`, login flows,
 session and model changes, warnings, and errors — still goes to scrollback.
 Without a live panel (redirected output, `--print`) an acknowledgement falls
 back to a printed notice.
+
+## Shortcut prefix
+
+Every pcode shortcut is a letter behind one prefix, the `key_prefix` setting.
+By default it is `ctrl`: the letter is pressed with Ctrl held, as in Ctrl+S or
+Ctrl+L. Set a leader instead and each shortcut becomes two keystrokes, the
+leader and then the plain letter, the way tmux's prefix works:
+
+```sh
+pcode config set key_prefix ctrl+p           # Ctrl+P, then s cycles the send mode
+pcode config set key_prefix "ctrl+x ctrl+p"  # a leader of several keys, pressed in turn
+pcode config set key_prefix ctrl             # back to Ctrl chords
+```
+
+While a leader waits, it lists the shortcuts it can reach: above the editor at
+the prompt, and in a small frame in a popup's corner. The next key decides. A
+listed letter runs that shortcut; anything else (Esc, the leader again, a stray
+letter) cancels without being typed. The leader works whatever has focus,
+including a popup's search line or the `/btw` editor.
+
+At the prompt the letters are `s` send mode, `l` model, `n`/`p` more/less
+effort, `o` tasks widget, `t` thinking, `g` command output, `^` previous
+session and `y` copy the draft. Each popup lists its own in its footer; see
+[Popup keys](#popup-keys).
+
+A leader takes over whatever its key did before: with `ctrl+p`, Ctrl+P no
+longer moves up a line or lowers effort (that is now Ctrl+P `p`). Keys nothing
+else uses make the least surprising leaders: `ctrl+space`, `ctrl+]`, `ctrl+\`,
+or a function key such as `f2`. A leader is built from Ctrl+*key* (a letter,
+space, `]`, `\`, `^` or `_`) and F1–F24; Ctrl+C, Ctrl+D, Ctrl+H, Ctrl+I,
+Ctrl+J, Ctrl+M and Ctrl+[ are refused because the terminal sends them as
+Backspace, Tab, Enter and Esc, or pcode needs them everywhere.
+
+The prompt reads `key_prefix` at launch; popups read it as each one opens.
 
 ## Optional vi editing
 
@@ -423,9 +464,24 @@ Ctrl+D never closes a popup; it always half-pages. A list with a search line
 keeps these keys working while you type, so the query stays where it is.
 
 Popups with a search line (`/tools`, `/resume`, `/diffs`, `/links`) open with
-the cursor in it, so you can type to filter straight away. Their one-letter
-shortcuts (such as `t` for the tool filter in `/tools`) act only once Tab or
-Enter has moved focus out of the search line.
+the cursor in it, so you can type to filter straight away. Each popup's
+shortcuts follow the [shortcut prefix](#shortcut-prefix) and act from any pane,
+the search line and the `/btw` editor included, so typing never triggers one.
+With the default `ctrl` prefix they are:
+
+| Popup | Shortcuts |
+| --- | --- |
+| `/btw` | Ctrl+R follow up · Ctrl+Y copy answer · Ctrl+S summarize into the conversation · Ctrl+T merge into `/tree` · Ctrl+K stop running |
+| `/tools` | Ctrl+F search · Ctrl+X failures only · Ctrl+T tool filter · Ctrl+Y copy command · Ctrl+O copy output |
+| `/diffs` | Ctrl+F search the focused pane · Ctrl+S / Ctrl+R next / previous match |
+| `/resume` | Ctrl+F search · Ctrl+R responses too · Ctrl+G all workspaces · Ctrl+X delete (twice) |
+| `/switch` | Ctrl+F search · Ctrl+N new session · Ctrl+X stop (twice) |
+| `/jobs` | Ctrl+W watch in the preview · Ctrl+K stop |
+| `/links` | Ctrl+F search · Ctrl+T show/hide tool links |
+| `/tree` | Ctrl+Y copy the selection |
+| `/workers` | Ctrl+T thinking |
+
+With a leader, each is the leader then the letter: Ctrl+P `y` copies.
 
 Selected rows and scrollbars follow the active theme and syntax colors, like
 completion menus. Popup bodies keep the terminal's default background. With
@@ -475,20 +531,21 @@ lines, and one over 1 MB shows only its counts.
 The diff fills most of the screen; a small file selector sits at the bottom.
 Keys are listed in the header:
 
-- The browser opens in the search line, searching paths (see `/` below). Enter
-  moves to the file list.
+- The browser opens in the search line, searching paths (see Ctrl+F below).
+  Enter moves to the file list.
 - Up/Down in the file list selects a file.
 - Tab/Shift+Tab switch between the file list and the diff. The
   [popup keys](#popup-keys) act on whichever has focus; Ctrl+Home/Ctrl+End jump
   to the first or last line of the diff.
-- `/` (or Ctrl+F) opens a search for whichever pane has focus. In the file list
+- **Ctrl+F** opens a search for whichever pane has focus. In the file list
   it filters files by path; in the diff it filters to changes whose diff has a
   matching line and jumps the diff to the first one. Matching is fuzzy: a plain
   substring, or joined word prefixes such as `ed_ui` for `edit_ui.py` or
   `sel_row` for `selected_row`. Every word of the query must match. Up/Down
   still move the file selection while typing; Enter returns to the pane.
-  Switching panes and pressing `/` again starts a fresh query for that scope.
-- `n`/`N` in either pane jump to the next/previous matching diff line.
+  Switching panes and pressing Ctrl+F again starts a fresh query for that scope.
+- **Ctrl+S**/**Ctrl+R** jump to the next/previous matching diff line (Emacs's
+  search keys), from either pane or the search line.
 - Escape or Ctrl+C closes the popup and restores the editor draft.
 
 The tool-edit fallback reads saved sessions back from the journal on the active
@@ -505,15 +562,16 @@ terminal output is buffered until it closes. Inspection never reruns a tool.
 - Calls are newest first. The inspector opens in the search field, so typing
   filters straight away while arrows move the selection; Enter moves to the call
   list. Tab/Shift+Tab move between the search field, call list, and detail pane.
-- In the call list or details, **c** copies the selected call's command (its whole
-  arguments payload when it has no command) and **o** copies the returned output.
+- **Ctrl+Y** copies the selected call's command (its whole arguments payload when
+  it has no command) and **Ctrl+O** copies the returned output.
   Copying uses `pbcopy`/`wl-copy`/`xclip` when one is installed and OSC 52
   otherwise; over ssh it tries OSC 52 first. tmux forwards OSC 52 only with
   `tmux set -g set-clipboard on`. Payloads are truncated at 64 KiB, and the
   header says what was copied or that copying failed.
-- In the call list, **f** toggles failures, **t** cycles tool-name filters, and
-  **/** focuses search. Search matches tool names/statuses and command/summary
-  previews, not the complete output payload. Ctrl+F focuses search from any pane.
+- **Ctrl+X** toggles failures, **Ctrl+T** cycles tool-name filters, and **Ctrl+F**
+  focuses search. Search matches tool names/statuses and command/summary
+  previews, not the complete output payload. Like every popup shortcut, these
+  act from any pane, including the search field.
 - In details, use arrows to scroll by line, PageUp/PageDown by page, or Ctrl+U/Ctrl+D
   by half a page. Ctrl+U/Ctrl+D also half-page the call list, including while
   typing a search. The session browser shares these controls.
@@ -534,7 +592,7 @@ multiline layout. `shfmt` may keep compact blocks on one line rather than fully
 expanding them.
 
 Every logical command line starts with a display-only `$ `, before any
-indentation; soft-wrapped rows do not get another marker. **c** still copies the
+indentation; soft-wrapped rows do not get another marker. **Ctrl+Y** still copies the
 original command exactly as run, without markers or formatting changes. Nonzero command exits,
 timeouts, and tool retries are failures; interruption and unknown results remain
 distinct. Command tools show an **Execution** row saying whether the model asked

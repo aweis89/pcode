@@ -61,8 +61,8 @@ def browser(tmp_path, **options):
         # Arrows steer the list while typing; Enter does nothing with no match.
         ("a\x1b[B\r", "older"),
         ("nothing-matches\r\x1b", None),
-        # `/` in the list returns to the search.
-        ("\t/cache warn\r", "older"),
+        # Ctrl+F in the list returns to the search.
+        ("\t\x06cache warn\r", "older"),
     ],
 )
 def test_browser_keyboard(tmp_path, keys, expected):
@@ -78,22 +78,28 @@ def test_browser_keyboard(tmp_path, keys, expected):
     asyncio.run(run())
 
 
-def test_browser_deletes_after_confirmation(tmp_path):
+@pytest.mark.parametrize(
+    "prefix,delete,label",
+    [("ctrl", "\x18", "Ctrl+X"), ("ctrl+p", "\x10x", "Ctrl+P x")],
+)
+def test_browser_deletes_after_confirmation(tmp_path, prefix, delete, label):
     async def run():
         with create_pipe_input() as pipe:
-            app, ids = browser(tmp_path, input=pipe, active_id=None)
+            app, ids = browser(tmp_path, input=pipe, active_id=None, key_prefix=prefix)
             root = app.root
             task = asyncio.create_task(app.run())
             await asyncio.sleep(0.05)
-            # Typed on open, `d` searches: only the list's `d` deletes.
-            pipe.send_text("dd")
+            # Typed on open, `x` searches; the shortcut deletes, even from here.
+            pipe.send_text("xx")
             await asyncio.sleep(0.05)
-            assert app.query.text == "dd" and not app.status
-            pipe.send_text("\x7f\x7f\td")
+            assert app.query.text == "xx" and not app.status
+            # Searching `x` selected the only match; ↑ goes back to the newest.
+            pipe.send_text("\x7f\x7f\x1b[A" + delete)
             await asyncio.sleep(0.05)
+            assert app.query.text == "" and app.selected.id == ids["newest"]
             assert (root / ids["newest"]).is_dir()
-            assert "Press d again" in app.status
-            pipe.send_text("d")
+            assert f"Press {label} again" in app.status
+            pipe.send_text(delete)
             await asyncio.sleep(0.05)
             assert not (root / ids["newest"]).exists()
             assert [info.id for info in app.visible] == [ids["older"]]

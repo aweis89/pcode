@@ -130,6 +130,7 @@ is only sensible on a machine where you wrote all of them.
 | `tool_output_max_chars` | `4000` | Positive integer, truncation budget (also spill-failure fallback) |
 | `tool_output_strategy` | `head_tail` | `head`, `tail`, `head_tail` (truncation only) |
 | `tool_output_retention_hours` | `0` | Whole number, spill retention; `0` keeps indefinitely |
+| `key_prefix` | `ctrl` | `ctrl` (shortcuts are Ctrl+letter chords), or a leader pressed before the letter, such as `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"`; the leader lists its shortcuts while it waits. See [shortcut prefix](commands.md#shortcut-prefix) |
 | `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, see [popup keys](commands.md#popup-keys)) |
 | `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |
 | `claude_idle_processes` | `1` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes each session keeps warm (about 120 MB each beyond the first); `0` stops each when its turn ends. None are kept under memory pressure |

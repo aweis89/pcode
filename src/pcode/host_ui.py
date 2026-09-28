@@ -19,6 +19,7 @@ from pcode.popup_ui import (
     popup_style,
     steer_list_from_query,
 )
+from pcode.prefix_keys import PrefixKeys
 
 _TITLE_WIDTH = 40
 STATES = {"working": "● working", "idle": "○ idle   ", "starting": "◌ starting"}
@@ -79,7 +80,13 @@ def status_rows(entry: HostEntry, now: float | None = None, *, code: str | None 
 
 
 def hosts_dialog(
-    entries: list[HostEntry], *, current: str | None, input=None, output=None, style=None
+    entries: list[HostEntry],
+    *,
+    current: str | None,
+    input=None,
+    output=None,
+    style=None,
+    key_prefix: str | None = None,
 ):
     """Returns ("attach", id), ("stop", id), ("new", None), or None when cancelled."""
     entries = ordered(entries)
@@ -121,12 +128,17 @@ def hosts_dialog(
         if entry is not None:
             event.app.exit(result=("attach", entry.id))
 
-    @bindings.add("c-n")
-    @bindings.add("n", filter=has_focus(choices))
+    shortcuts = PrefixKeys(key_prefix)
+
+    @shortcuts.add("f", "Search")
+    def search(event):
+        event.app.layout.focus(query)
+
+    @shortcuts.add("n", "New session")
     def new(event):
         event.app.exit(result=("new", None))
 
-    @bindings.add("x", filter=has_focus(choices))
+    @shortcuts.add("x", "Stop (twice)")
     @bindings.add("delete", filter=has_focus(choices))
     def stop(event):
         entry = selected()
@@ -137,13 +149,9 @@ def hosts_dialog(
             return
         armed[0] = entry.id
         status[0] = (
-            f"Press x again to stop {entry.id} ({entry.label()[:40]}). Its turn is cancelled."
+            f"Press {shortcuts.label('x')} again to stop {entry.id} ({entry.label()[:40]}). "
+            "Its turn is cancelled."
         )
-
-    @bindings.add("/", filter=has_focus(choices))
-    @bindings.add("c-f")
-    def search(event):
-        event.app.layout.focus(query)
 
     @bindings.add("escape", eager=True)
     def escape(event):
@@ -169,8 +177,8 @@ def hosts_dialog(
                 query,
                 choices,
                 Label(lambda: status[0], dont_extend_height=True),
-                Label("Type to search · Enter switch · Ctrl+N new session · Tab list · Esc cancel"),
-                Label("In the list: n new · x stop (twice) · / search"),
+                Label("Type to search · Enter switch · Tab list · Esc cancel"),
+                Label(shortcuts.summary),
             ],
             padding=1,
         ),
@@ -178,8 +186,8 @@ def hosts_dialog(
     )
     refresh()
     return Application(
-        layout=Layout(popup_container(dialog), focused_element=query),
-        key_bindings=bindings,
+        layout=Layout(popup_container(dialog, shortcuts), focused_element=query),
+        key_bindings=shortcuts.key_bindings(bindings),
         full_screen=True,
         mouse_support=popup_mouse(),
         input=input,

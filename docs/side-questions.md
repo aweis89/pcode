@@ -26,13 +26,17 @@ streams it.
 - **↑ / ↓:** move through the questions, or scroll the answer when it has focus.
 - **Tab:** move between the question list, the answer pane and the follow-up
   editor.
-- **r:** type a [follow-up](#following-up) to the selected answer.
-- **s / m:** [bring the thread into the conversation](#keeping-a-thread), as a
-  summary or merged whole.
-- **c:** copy the selected thread's newest answer to the clipboard as raw
+- **Ctrl+R:** type a [follow-up](#following-up) to the selected answer.
+- **Ctrl+S / Ctrl+T:** [bring the thread into the conversation](#keeping-a-thread),
+  as a summary or merged into the tree.
+- **Ctrl+Y:** copy the selected thread's newest answer to the clipboard as raw
   markdown (also works mid-stream, taking what has arrived so far).
 - **Ctrl+K:** stop every running side question, keeping the records.
 - **Enter / Escape / Ctrl+C:** close the popup and restore the editor draft.
+
+The Ctrl shortcuts work from the list, the answer and the follow-up editor
+alike, and follow the [shortcut prefix](commands.md#shortcut-prefix): with a
+leader such as Ctrl+P, Ctrl+Y becomes Ctrl+P then `y`.
 
 To keep the answers out of the way until you ask for them, turn auto-open off:
 
@@ -54,7 +58,7 @@ never throws away the side question as well.
 
 The viewer has an editor under the answer for asking a follow-up, so a side
 question can become a short back-and-forth without leaving the popup. Press
-**r** (or Tab to it), type, and press **Enter** to send; **Ctrl+J** (or
+**Ctrl+R** (or Tab to it), type, and press **Enter** to send; **Ctrl+J** (or
 Shift+Enter, where the terminal reports it) adds a line. The draft grows to six
 rows before it scrolls, and **PgUp / PgDn** scroll the answer while you type.
 **Escape** steps back to the list and keeps the draft; a second Escape closes
@@ -91,7 +95,7 @@ for the running turn the way forking in `/tree` does: the conversation's history
 cannot change under a turn that is about to write it back. Pressing either key
 mid-turn says so in the header and does nothing else.
 
-**s: Summarize into the conversation.** The editor asks for optional
+**Ctrl+S: Summarize into the conversation.** The editor asks for optional
 instructions ("keep only the decisions", "what should change in the plan?");
 press **Enter** with nothing typed to summarize as is, or **Escape** to cancel
 and get your follow-up draft back. The summary is asked *in the thread*, on its
@@ -103,7 +107,7 @@ so the conversation's cache still covers everything before it. While the summary
 runs, the footer shows it like `/compact`, prompts you send wait behind it, and
 Ctrl+C cancels it with the conversation unchanged.
 
-**m: Merge into `/tree`.** Every answered question in the thread becomes a node
+**Ctrl+T: Merge into `/tree`.** Every answered question in the thread becomes a node
 in the [conversation tree](conversation-tree.md), marked `btw:`, forked from the
 point where the thread was asked. Each one is a checkpoint like a turn's:
 selecting it in `/tree` continues from that answer, and it survives resuming the

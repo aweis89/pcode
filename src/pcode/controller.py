@@ -46,6 +46,7 @@ from pcode.preferences import (
     save_preferences,
     subagent_models,
 )
+from pcode.prefix_keys import shortcut_label
 from pcode.rpc import transportable
 from pcode.runtime import CommandOutput, JobFinished, Message, ToolSummary
 from pcode.shell_mode import execute, shell_command
@@ -512,13 +513,14 @@ class SessionController:
             ),
             Command(
                 "/model",
-                "Choose a model; keeps the conversation (Ctrl+L)",
+                f"Choose a model; keeps the conversation ({shortcut_label('l')})",
                 self.select_model,
                 group="Model",
             ),
             Command(
                 "/effort",
-                "Set reasoning effort: low / medium / high / xhigh / default (Ctrl+N / Ctrl+P)",
+                "Set reasoning effort: low / medium / high / xhigh / default "
+                f"({shortcut_label('n')} / {shortcut_label('p')})",
                 self.effort,
                 ("low", "medium", "high", "xhigh", "default"),
                 group="Model",

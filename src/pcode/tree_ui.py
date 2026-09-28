@@ -23,6 +23,7 @@ from pcode.popup_ui import (
     popup_mouse,
     popup_style,
 )
+from pcode.prefix_keys import PrefixKeys
 from pcode.session_ui import literal
 from pcode.task_prompt import TaskPrompt
 
@@ -46,6 +47,7 @@ class TreeBrowser:
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
         color_system: str | None = "truecolor",
+        key_prefix: str | None = None,
         **app_options,
     ) -> None:
         self.tree = tree
@@ -86,7 +88,9 @@ class TreeBrowser:
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
 
-        @keys.add("c", filter=has_focus(self.list) | has_focus(self.detail))
+        self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+
+        @shortcuts.add("y", "Copy selection")
         def copy_selection(event):
             self.copy(event.app.output)
 
@@ -120,11 +124,15 @@ class TreeBrowser:
             [
                 header,
                 body,
-                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page · c Copy selection"),
+                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
                 Label(
-                    "Enter Navigate · Tab Focus · Esc Cancel"
-                    if navigable
-                    else "Tab Focus · Esc Close"
+                    (
+                        "Enter Navigate · Tab Focus · Esc Cancel"
+                        if navigable
+                        else "Tab Focus · Esc Close"
+                    )
+                    + " · "
+                    + shortcuts.summary()
                 ),
                 Label(
                     "Switching context does not undo file changes or tool effects."
@@ -134,8 +142,8 @@ class TreeBrowser:
             ]
         )
         self.app = Application(
-            layout=Layout(popup_container(root_container), focused_element=self.list),
-            key_bindings=keys,
+            layout=Layout(popup_container(root_container, shortcuts), focused_element=self.list),
+            key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(),
             style=popup_style(app_options.pop("style", None)),

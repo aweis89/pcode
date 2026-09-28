@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Always, Filter, has_focus
+from prompt_toolkit.filters import Always, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
@@ -31,6 +31,7 @@ from pcode.popup_ui import (
     popup_mouse,
     popup_style,
 )
+from pcode.prefix_keys import PrefixKeys
 from pcode.session_ui import literal
 from pcode.task_prompt import TaskPrompt
 from pcode.tool_display import plain
@@ -88,10 +89,11 @@ class AsideBrowser:
     With `ask`, an editor under the pane sends follow-ups: `ask(thread,
     question)` starts one, or raises `ValueError` saying why it cannot yet.
 
-    With `check_bridge`, `m` merges the selected thread into the conversation
-    tree and `s` summarizes it into the conversation, after asking for optional
-    instructions in the editor. Either closes the viewer, returning a `Bridge`
-    from `run`; `check_bridge(thread)` raises `ValueError` when it cannot yet.
+    With `check_bridge`, prefix `t` merges the selected thread into the
+    conversation tree and prefix `s` summarizes it into the conversation, after
+    asking for optional instructions in the editor. Either closes the viewer,
+    returning a `Bridge` from `run`; `check_bridge(thread)` raises `ValueError`
+    when it cannot yet.
     """
 
     def __init__(
@@ -104,6 +106,7 @@ class AsideBrowser:
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
         color_system: str | None = "truecolor",
+        key_prefix: str | None = None,
         **app_options,
     ) -> None:
         self.asides = asides
@@ -125,18 +128,18 @@ class AsideBrowser:
         self.list.window.cursorline = Always()
         self.detail = RichPane(theme=rich_theme, color_system=color_system)
         self.list.buffer.on_cursor_position_changed += lambda _: self.select()
+        self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
         self.input = (
             PopupInput(
                 self.follow_up,
                 home=self.list,
                 title=self.input_title,
                 placeholder="Ask a follow-up about this answer…",
+                shortcuts=shortcuts,
             )
             if ask is not None or check_bridge is not None
             else None
         )
-        # One-letter keys would otherwise fire instead of typing in the editor.
-        browsing: Filter = self.input.browsing if self.input else Always()
         keys = KeyBindings()
         self.detail.bind_scrolling(keys, paging=self.input.editing if self.input else None)
         bind_list_paging(keys, self.list, has_focus(self.list))
@@ -147,29 +150,19 @@ class AsideBrowser:
         def close(event):
             event.app.exit(result=None)
 
-        @keys.add("c-k")
-        def stop(event):
-            # Same key meaning as elsewhere: stop the work, keep the record.
-            self.asides.cancel()
+        if ask is not None:
 
-        @keys.add("c", filter=browsing)
-        def copy_answer(event):
-            self.copy(event.app.output)
-
-        if self.input is not None:
-
-            @keys.add("r", filter=browsing)
+            @shortcuts.add("r", "Follow up")
             def reply(event):
                 self.input.open(event.app)
 
+        @shortcuts.add("y", "Copy answer")
+        def copy_answer(event):
+            self.copy(event.app.output)
+
         if self.check_bridge is not None:
 
-            @keys.add("m", filter=browsing)
-            def merge(event):
-                if self.bridgeable():
-                    self.finish(Bridge(self.selected, "merge"))
-
-            @keys.add("s", filter=browsing)
+            @shortcuts.add("s", "Summarize into the conversation")
             def summarize(event):
                 if self.bridgeable():
                     thread = self.selected
@@ -179,6 +172,16 @@ class AsideBrowser:
                         placeholder="Enter summarizes as is, or say what to keep…",
                         submit=lambda text: self.finish(Bridge(thread, "summary", text)),
                     )
+
+            @shortcuts.add("t", "Merge into /tree")
+            def merge(event):
+                if self.bridgeable():
+                    self.finish(Bridge(self.selected, "merge"))
+
+        @shortcuts.add("k", "Stop running")
+        def stop(event):
+            # Same key meaning as in /jobs: stop the work, keep the record.
+            self.asides.cancel()
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
@@ -214,14 +217,14 @@ class AsideBrowser:
                 *([self.input] if self.input else []),
                 Label(self.hints),
                 Label(self.shortcuts),
-                *([Label(self.bridging)] if self.check_bridge else []),
+                Label(shortcuts.summary),
             ]
         )
         self.app = Application(
             # Opens on the list, never the editor: the viewer can open by itself
             # when an answer lands, mid-keystroke at the main prompt.
-            layout=Layout(popup_container(root_container), focused_element=self.list),
-            key_bindings=keys,
+            layout=Layout(popup_container(root_container, shortcuts), focused_element=self.list),
+            key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(),
             style=popup_style(app_options.pop("style", None)),
@@ -243,12 +246,8 @@ class AsideBrowser:
         if self.editing() and self.input.prompting:
             return "Esc Cancel (brings the follow-up draft back) · Tab Focus"
         if self.editing():
-            return "Esc Back to the list (keeps the draft) · Tab Focus · Ctrl+K Stop running"
-        reply = "R Follow up · " if self.ask else ""
-        return f"Tab Focus · {reply}C Copy answer · Ctrl+K Stop running · Enter/Esc Close"
-
-    def bridging(self) -> str:
-        return "S Summarize into the conversation · M Merge into /tree"
+            return "Esc Back to the list (keeps the draft) · Tab Focus"
+        return "Tab Focus · Enter/Esc Close"
 
     def bridgeable(self) -> bool:
         """Whether the selected thread can join the conversation now; says why not."""
