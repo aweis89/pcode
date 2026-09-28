@@ -330,10 +330,10 @@ def test_the_viewer_sends_a_follow_up_typed_in_its_editor():
                 await asyncio.sleep(0.05)
                 # Opens on the list, not the editor.
                 assert app.layout.has_focus(browser.list)
-                await press("r")
+                await press("\x12")  # Ctrl+R
                 assert app.layout.has_focus(browser.input.area)
                 assert "Enter Send" in browser.hints()
-                # `c` copies and `r` replies in the list; here they are text.
+                # Shortcuts are chords, so every letter here is text.
                 await press("can you recheck it?")
                 await press("\n")  # Ctrl+J.
                 await press("line two")

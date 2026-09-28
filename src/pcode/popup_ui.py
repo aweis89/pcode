@@ -10,8 +10,8 @@ from prompt_toolkit.filters import Condition, Filter, has_focus
 from prompt_toolkit.formatted_text import ANSI, AnyFormattedText, to_formatted_text
 from prompt_toolkit.formatted_text.utils import fragment_list_to_text, split_lines
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Window
-from prompt_toolkit.layout.controls import UIContent, UIControl
+from prompt_toolkit.layout import ConditionalContainer, Float, FloatContainer, HSplit, Window
+from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UIControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
@@ -23,6 +23,7 @@ from rich.theme import Theme
 
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import SETTINGS, load_preferences
+from pcode.prefix_keys import PrefixKeys
 
 # Rich writes Markdown links as OSC 8 hyperlinks on a terminal, but
 # prompt_toolkit's ANSI parser reads CSI only and spills the rest as literal
@@ -64,9 +65,42 @@ POPUP_ACCENTS = Style.from_dict(
 )
 
 
-def popup_container(body):
-    """Scope every modal surface under the same style class."""
+def popup_container(body, shortcuts: PrefixKeys | None = None):
+    """Scope every modal surface under the same style class.
+
+    With ``shortcuts`` on a leader, a waiting leader lists them in a small
+    frame over the popup's bottom corner, the way which-key does.
+    """
+    if shortcuts is not None and shortcuts.leader:
+        body = FloatContainer(body, floats=[Float(shortcut_hint(shortcuts), bottom=1, right=2)])
     return HSplit([body], style="class:popup")
+
+
+def shortcut_hint(shortcuts: PrefixKeys):
+    """A framed key/action list, shown only while the leader waits."""
+
+    def fragments():
+        rows = shortcuts.hint_rows()
+        width = max(get_cwidth(key) for key, _ in rows)
+        lines = []
+        for key, label in rows:
+            lines.append([("bold", f" {key.ljust(width)}"), ("", f"  {label} ")])
+        result = []
+        for index, line in enumerate(lines):
+            result.extend(line)
+            if index < len(lines) - 1:
+                result.append(("", "\n"))
+        return result
+
+    body = Window(
+        FormattedTextControl(fragments, show_cursor=False),
+        dont_extend_width=True,
+        dont_extend_height=True,
+    )
+    return ConditionalContainer(
+        Frame(body, title=lambda: shortcuts.leader_label),
+        filter=Condition(lambda: shortcuts.pending),
+    )
 
 
 def popup_mouse() -> bool:
@@ -356,9 +390,9 @@ class PopupInput:
     refuse, which keeps the draft and shows why in the editor's title.
 
     The editor's own keys are scoped to it, so its Enter and Esc win over the
-    popup's while it has focus. The popup's one-letter shortcuts are not
-    scoped, and a letter binding outranks typing: gate them on ``browsing``,
-    or pressing ``c`` in the editor copies instead of typing a ``c``.
+    popup's while it has focus. Never give the popup a bare letter key: it
+    would outrank typing. Its shortcuts go through ``PrefixKeys`` instead,
+    which keeps them working here too.
 
     Focus it with ``open``. A popup should not open with focus here: one that
     appears on its own could swallow keystrokes meant for the main prompt, and
@@ -367,6 +401,9 @@ class PopupInput:
     ``prompt`` borrows the editor to ask for one value, e.g. instructions for
     an action, with its own title and ``submit``; the draft set aside comes
     back once that is sent or Esc cancels it.
+
+    Pass the popup's ``shortcuts`` so a waiting leader can switch the editor's
+    own Enter and Esc off; they sit on the editor and would outrank it.
     """
 
     def __init__(
@@ -376,6 +413,7 @@ class PopupInput:
         home,
         title: AnyFormattedText = "Message",
         placeholder: str = "",
+        shortcuts: PrefixKeys | None = None,
     ) -> None:
         # Ctrl+J and Shift+Enter arrive as terminal-specific sequences; the
         # main prompt registers them too, but a popup can open without it.
@@ -406,7 +444,6 @@ class PopupInput:
         )
         self.area.buffer.on_text_changed += lambda _: self._clear_notice()
         self.editing = has_focus(self.area)
-        self.browsing = ~self.editing
         keys = KeyBindings()
 
         @keys.add("enter")
@@ -425,7 +462,9 @@ class PopupInput:
             event.app.layout.focus(self.home)
 
         frame = Frame(self.area, title=self._title)
-        self.container = HSplit([frame], key_bindings=keys)
+        self.container = HSplit(
+            [frame], key_bindings=shortcuts.gate(keys) if shortcuts is not None else keys
+        )
 
     def __pt_container__(self):
         return self.container

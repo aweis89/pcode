@@ -854,6 +854,31 @@ implementations; real-tmux tests retain CPR, multiline height, Escape, and resiz
 checks for each supported newline encoding.
 
 
+### Shortcut prefix and key precedence
+
+`prefix_keys.py` gives the prompt and every popup their shortcuts behind the
+`key_prefix` setting. Verified against prompt_toolkit 3.0.53:
+
+- A native multi-key binding cannot be a leader. `KeyProcessor` flushes a
+  partial sequence after `Application.timeoutlen` (1 s), dropping the leader,
+  and replays an unmatched follow-up as ordinary input, typing it. `PrefixKeys`
+  keeps its own `pending` flag instead, set by the leader binding.
+- Precedence is eager over non-eager, then fewer `Keys.Any`, then the later
+  registry (focused container over parents over `Application.key_bindings` over
+  defaults). An eager `<any>` dispatcher still loses to any specific eager
+  binding, such as a popup's Esc, so while a leader waits every pcode binding is
+  switched off through `ConditionalKeyBindings` rather than outranked. Default
+  bindings are not gated; their only eager ones are quoted insert and Emacs
+  incremental search.
+- `key_processor.key_buffer` already holds the key being matched when filters
+  run. `PrefixKeys` reads it to let cursor-position reports, mouse events and
+  pastes through while a leader waits; swallowing a CPR would stall rendering.
+- Ctrl chord shortcuts are eager too, or a chord that begins a longer default
+  sequence (Ctrl+X in Emacs mode) would wait out `timeoutlen` first.
+
+Recheck `tests/test_prefix_keys.py` and `tests/test_prefix_keys_tmux.py` on
+upgrades.
+
 ### Provider summaries versus internal reasoning
 
 [OpenAI's reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)

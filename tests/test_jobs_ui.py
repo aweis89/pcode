@@ -1,4 +1,4 @@
-"""The /jobs browser: rows, the followed log, and its stop and watch keys."""
+"""The /jobs browser: rows, the followed log, and its stop and watch shortcuts."""
 
 import shutil
 import time
@@ -52,11 +52,11 @@ def test_browser_lists_running_first_follows_the_log_and_stops_and_watches(tmp_p
         assert "serving the docs" in shown and "serving on 8000" in shown
         assert "time.sleep(60)" in shown and "background" in shown
 
-        press(browser, "w")
+        press(browser, "c-w")
         assert app.activity.watched_job == live.id
         assert browser.list.text.splitlines()[0].endswith(" · watching")
         assert "watching in the preview" in browser.detail.text(120)
-        press(browser, "w")
+        press(browser, "c-w")
         assert app.activity.watched_job == ""
 
         press(browser, "c-k")
@@ -73,7 +73,7 @@ def test_browser_lists_running_first_follows_the_log_and_stops_and_watches(tmp_p
         assert "all done" in browser.detail.text(120)
         press(browser, "c-k")
         assert browser.notice == "nothing running to stop"
-        press(browser, "w")
+        press(browser, "c-w")
         assert browser.notice == "only a running job can be watched"
         assert app.activity.watched_job == ""
 

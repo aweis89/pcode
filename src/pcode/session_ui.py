@@ -25,6 +25,7 @@ from pcode.popup_ui import (
     popup_style,
     steer_list_from_query,
 )
+from pcode.prefix_keys import PrefixKeys
 from pcode.sessions import (
     SessionError,
     SessionInfo,
@@ -59,7 +60,7 @@ class SessionBrowser:
 
     Turns are read lazily from each transcript and cached. Typing a query reads
     every session in scope once; a session stays listed only if a turn matches
-    every query word (prompts by default, responses too with ``r``).
+    every query word (prompts by default, responses too with the ``r`` shortcut).
     """
 
     def __init__(
@@ -72,6 +73,7 @@ class SessionBrowser:
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
         color_system: str | None = "truecolor",
+        key_prefix: str | None = None,
         **app_options,
     ) -> None:
         self.records = records
@@ -114,22 +116,23 @@ class SessionBrowser:
             if self.selected is not None:
                 event.app.exit(result=self.selected.id)
 
-        @keys.add("/", filter=has_focus(self.list))
-        @keys.add("c-f")
+        self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+
+        @shortcuts.add("f", "Search")
         def search(event):
             event.app.layout.focus(self.query)
 
-        @keys.add("w", filter=has_focus(self.list))
-        def workspaces(event):
-            self.everywhere = not self.everywhere
-            self.refresh()
-
-        @keys.add("r", filter=has_focus(self.list))
+        @shortcuts.add("r", "Responses too")
         def responses(event):
             self.responses = not self.responses
             self.refresh()
 
-        @keys.add("d", filter=has_focus(self.list))
+        @shortcuts.add("g", "All workspaces")
+        def workspaces(event):
+            self.everywhere = not self.everywhere
+            self.refresh()
+
+        @shortcuts.add("x", "Delete (twice)")
         @keys.add("delete", filter=has_focus(self.list))
         def delete(event):
             self.delete_selected()
@@ -171,14 +174,13 @@ class SessionBrowser:
                     "Type to search (↑↓ select while typing) · Enter Resume · Tab Focus · "
                     "Esc Cancel"
                 ),
-                Label("In Sessions: / Search · r Responses too · w All · d Delete (twice)"),
+                Label(shortcuts.summary),
             ]
         )
         self.app = Application(
-            # Open in the search line, so typing filters instead of reaching the
-            # list's one-key shortcuts (`d` arms a delete).
-            layout=Layout(popup_container(root_container), focused_element=self.query),
-            key_bindings=keys,
+            # Open in the search line, so typing filters straight away.
+            layout=Layout(popup_container(root_container, shortcuts), focused_element=self.query),
+            key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(),
             style=popup_style(app_options.pop("style", None)),
@@ -196,7 +198,7 @@ class SessionBrowser:
             return
         if self.pending_delete != info.id:
             self.pending_delete = info.id
-            self.status = f"Press d again to delete {info.id[:8]}"
+            self.status = f"Press {self.prefix_keys.label('x')} again to delete {info.id[:8]}"
             return
         self.pending_delete = None
         try:

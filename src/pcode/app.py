@@ -43,6 +43,7 @@ from pcode.preferences import (
     parse_height,
     save_preferences,
 )
+from pcode.prefix_keys import shortcut_label
 from pcode.runtime import (
     CacheBust,
     EditCompleted,
@@ -316,7 +317,7 @@ class PreviewApp:
             self.controller.registry.find("/worktree"),
             Command(
                 "/show-tasks",
-                "Tasks/Tools widget: on / off; bare toggles (Ctrl+O)",
+                f"Tasks/Tools widget: on / off; bare toggles ({shortcut_label('o')})",
                 self.show_tasks,
                 ("on", "off"),
                 group="Display",
@@ -330,7 +331,7 @@ class PreviewApp:
             ),
             Command(
                 "/show-thinking",
-                "Thinking in scrollback: on / off; bare toggles (Ctrl+T)",
+                f"Thinking in scrollback: on / off; bare toggles ({shortcut_label('t')})",
                 self.show_thinking,
                 ("on", "off"),
                 group="Display",
@@ -344,7 +345,8 @@ class PreviewApp:
             ),
             Command(
                 "/show-commands",
-                "Shell command output in scrollback: on / off; bare toggles (Ctrl+G)",
+                "Shell command output in scrollback: on / off; bare toggles "
+                f"({shortcut_label('g')})",
                 self.show_commands,
                 ("on", "off"),
                 group="Display",
@@ -676,7 +678,9 @@ class PreviewApp:
     def show_tasks(self, argument: str) -> None:
         self.set_show_tasks(self.toggle_argument("/show-tasks", argument, self.activity.show_tasks))
         state = "on" if self.activity.show_tasks else "off"
-        self.transcript.flash(f"Show tasks: {state}. Usage: /show-tasks [on|off] (Ctrl+O)")
+        self.transcript.flash(
+            f"Show tasks: {state}. Usage: /show-tasks [on|off] ({self.shortcut('o')})"
+        )
 
     def autohide_tasks(self, argument: str) -> None:
         enabled = self.toggle_argument("/autohide-tasks", argument, self.activity.autohide_tasks)
@@ -726,7 +730,7 @@ class PreviewApp:
             self.toggle_argument("/show-thinking", argument, self.activity.show_thinking)
         )
         state = "on" if self.activity.show_thinking else "off"
-        lines = [f"Show thinking: {state}. Usage: /show-thinking [on|off] (Ctrl+T)"]
+        lines = [f"Show thinking: {state}. Usage: /show-thinking [on|off] ({self.shortcut('t')})"]
         if (self.model or "").startswith("anthropic:"):
             lines.append(
                 "Anthropic thinking request: "
@@ -739,7 +743,7 @@ class PreviewApp:
 
     @property
     def next_send_mode(self) -> str:
-        """The mode the next prompt sends with: a Ctrl+S pick, else the default."""
+        """The mode the next prompt sends with: a send-mode shortcut pick, else the default."""
         return self.send_mode_once or self.send_mode
 
     def cycle_send_mode(self) -> None:
@@ -762,7 +766,14 @@ class PreviewApp:
             self.toggle_argument("/show-commands", argument, self.transcript.command_scrollback)
         )
         state = "on" if self.transcript.command_scrollback else "off"
-        self.transcript.flash(f"Show commands: {state}. Usage: /show-commands [on|off] (Ctrl+G)")
+        self.transcript.flash(
+            f"Show commands: {state}. Usage: /show-commands [on|off] ({self.shortcut('g')})"
+        )
+
+    def shortcut(self, key: str) -> str:
+        """How this session's prompt spells shortcut ``key``, e.g. Ctrl+O."""
+        shortcuts = getattr(self.prompt_session, "shortcuts", None)
+        return shortcuts.label(key) if shortcuts is not None else shortcut_label(key)
 
     def persist_defaults(self, **updates: str) -> None:
         try:
@@ -949,7 +960,7 @@ class PreviewApp:
             await browser.run()
 
     def help(self, argument: str) -> None:
-        self.transcript.help(self.registry)
+        self.transcript.help(self.registry, self.shortcut)
 
     def present_events(self, events) -> None:
         present_events(events, activity=self.activity, transcript=self.transcript, edits=self.edits)
@@ -1074,7 +1085,8 @@ class PreviewApp:
         runtime = self.runtime
         # Kept: the new host resumes in the same worktree.
         runtime.stop(keep_worktree=True)
-        await wait_for_exit(runtime.pid)
+        with self.activity.waiting("Stopping the session host"):
+            await wait_for_exit(runtime.pid)
         if runtime.session_id:
             await self.start_host_session(
                 resume=runtime.session_id, note="Restarted on the current pcode"
@@ -1157,13 +1169,15 @@ class PreviewApp:
         if self.hosted and entry.id == self.runtime.id:
             self.stop_host("")
             return
-        await stop_entry(entry)
+        with self.activity.waiting(f"Stopping session {entry.id}"):
+            await stop_entry(entry)
         self.transcript.note(f"Stopped session {entry.id} ({entry.label()[:60]}).")
 
     async def attach_host(self, entry) -> None:
         from pcode.remote import HostLaunch
 
-        controller, welcome = await HostLaunch.running(entry).connect(self, self.activity)
+        with self.activity.waiting(f"Connecting to session {entry.id}"):
+            controller, welcome = await HostLaunch.running(entry).connect(self, self.activity)
         await self.adopt_controller(controller, welcome, f"Switched to session {entry.id}")
 
     async def start_host_session(
@@ -1181,17 +1195,28 @@ class PreviewApp:
         base = (
             self.workspace if resume else worktree.main_checkout(self.workspace) or self.workspace
         )
-        identity, process, log = await asyncio.to_thread(
-            spawn_host,
-            model=self.model,
-            workspace=base,
-            resume=resume,
-            session_dir=self.session_dir,
+        wait = self.activity.begin_wait(
+            f"Resuming {resume[:8]} in a new session host" if resume else "Starting a session host"
         )
-        self.transcript.note(f"Starting session {identity}… (log: {log})")
+        try:
+            identity, process, log = await asyncio.to_thread(
+                spawn_host,
+                model=self.model,
+                workspace=base,
+                resume=resume,
+                session_dir=self.session_dir,
+            )
+            self.transcript.note(f"Starting session {identity}… (log: {log})")
+            if prompt:
+                # Its state goes nowhere: this terminal stays on its own session.
+                controller, _ = await wait_for_host(identity, None, Activity(), process, log)
+            else:
+                controller, welcome = await wait_for_host(
+                    identity, self, self.activity, process, log
+                )
+        finally:
+            self.activity.end_wait(wait)
         if prompt:
-            # Its state goes nowhere: this terminal stays on its own session.
-            controller, _ = await wait_for_host(identity, None, Activity(), process, log)
             controller.submit(prompt, "queue")
             controller.close()
             self.transcript.note(
@@ -1201,7 +1226,6 @@ class PreviewApp:
             if self._host_watch is not None:
                 self._host_watch()
             return
-        controller, welcome = await wait_for_host(identity, self, self.activity, process, log)
         what = (
             f"Resumed {resume} in session host {identity}" if resume else f"New session {identity}"
         )
@@ -1342,14 +1366,24 @@ class PreviewApp:
                 session.default_buffer.cursor_position = len(draft)
 
     async def choose_session(self, output: TerminalOutput, session) -> None:
-        from pcode.session_ui import SessionBrowser
-        from pcode.sessions import list_sessions, session_root
-        from pcode.worktree import repo_scope
-
         self.session_requested = False
-        records = list_sessions(self.session_dir)
-        scope = repo_scope(self.workspace)
-        if not any(repo_scope(Path(info.workspace)) == scope for info in records):
+
+        def load():
+            # Off the event loop: the first import of pcode.sessions pulls in the
+            # agent stack, and grouping by repository runs git per workspace.
+            from pcode.sessions import list_sessions
+            from pcode.worktree import repo_scope
+
+            records = list_sessions(self.session_dir)
+            scope = repo_scope(self.workspace)
+            return records, any(repo_scope(Path(info.workspace)) == scope for info in records)
+
+        with self.activity.waiting("Loading saved sessions"):
+            records, any_here = await asyncio.to_thread(load)
+        from pcode.session_ui import SessionBrowser
+        from pcode.sessions import session_root
+
+        if not any_here:
             self.transcript.note("No saved sessions for this workspace.")
             return
         current = getattr(self.runtime, "session", None)
@@ -1649,8 +1683,10 @@ class PreviewApp:
                     f"Starting session host {launch.id}; quitting stops it, /detach leaves "
                     f"it running. Log: {launch.log}"
                 )
+            label = "Starting the session host" if launch.process else "Connecting to the host"
             try:
-                controller, welcome = await launch.connect(self, self.activity)
+                with self.activity.waiting(label):
+                    controller, welcome = await launch.connect(self, self.activity)
             except Exception as error:
                 self._startup_error = error
                 self._startup_pending = False
@@ -1676,6 +1712,7 @@ class PreviewApp:
             replayed = self.resuming and self._saved_session is not None
             if replayed:
                 self.replay(self._saved_session)
+                controller.conversation_shown = True
             try:
                 await self._initialize_runtime()
                 controller.show_startup_context()

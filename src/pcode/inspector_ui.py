@@ -29,6 +29,7 @@ from pcode.popup_ui import (
     popup_style,
     steer_list_from_query,
 )
+from pcode.prefix_keys import PrefixKeys
 
 STATE_STYLES = {"failed": "bold red", "succeeded": "bold green", "running": "bold yellow"}
 
@@ -180,6 +181,7 @@ class ToolInspector:
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
         color_system: str | None = "truecolor",
+        key_prefix: str | None = None,
         **app_options,
     ) -> None:
         self.archive = archive
@@ -210,32 +212,31 @@ class ToolInspector:
         steer_list_from_query(keys, self.query, self.list)
         bind_list_paging(keys, self.list, has_focus(self.list) | has_focus(self.query))
 
-        @keys.add("f", filter=has_focus(self.list))
-        def failures(event):
-            self.failed = not self.failed
-            self.refresh()
-
-        @keys.add("t", filter=has_focus(self.list))
-        def tool(event):
-            self.tool = self.names[(self.names.index(self.tool) + 1) % len(self.names)]
-            self.refresh()
-
-        @keys.add("/", filter=has_focus(self.list))
-        @keys.add("c-f")
-        def search(event):
-            event.app.layout.focus(self.query)
-
         @keys.add("enter", filter=has_focus(self.query))
         def search_done(event):
             event.app.layout.focus(self.list)
 
-        browsing = has_focus(self.list) | has_focus(self.detail)
+        self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
 
-        @keys.add("c", filter=browsing)
+        @shortcuts.add("f", "Search")
+        def search(event):
+            event.app.layout.focus(self.query)
+
+        @shortcuts.add("x", "Failures only")
+        def failures(event):
+            self.failed = not self.failed
+            self.refresh()
+
+        @shortcuts.add("t", "Tool filter")
+        def tool(event):
+            self.tool = self.names[(self.names.index(self.tool) + 1) % len(self.names)]
+            self.refresh()
+
+        @shortcuts.add("y", "Copy command")
         def copy_command(event):
             self.copy("command", event.app.output)
 
-        @keys.add("o", filter=browsing)
+        @shortcuts.add("o", "Copy output")
         def copy_output(event):
             self.copy("output", event.app.output)
 
@@ -270,15 +271,13 @@ class ToolInspector:
                 Label(
                     "Type to search (↑↓ select while typing) · Enter Calls · Tab Focus · Esc Close"
                 ),
-                Label("In Calls: f Failures · t Tool filter · / Search"),
-                Label("In Calls/Details: c Copy command · o Copy output"),
+                Label(shortcuts.summary),
             ]
         )
         self.app = Application(
-            # Open in the search line: typed letters would otherwise hit the
-            # list's one-key shortcuts, and `t` silently swaps the tool filter.
-            layout=Layout(popup_container(root), focused_element=self.query),
-            key_bindings=keys,
+            # Open in the search line, so typing filters straight away.
+            layout=Layout(popup_container(root, shortcuts), focused_element=self.query),
+            key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(),
             style=popup_style(app_options.pop("style", None)),

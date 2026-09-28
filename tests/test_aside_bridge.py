@@ -387,8 +387,13 @@ def answered(question: str, answer: str) -> Aside:
     return aside
 
 
-def test_the_viewer_asks_for_optional_summary_instructions_and_merges():
-    """Real keys: m merges, s prompts in the editor, Esc gives the draft back."""
+@pytest.mark.parametrize("prefix", ["ctrl", "ctrl+p"])
+def test_the_viewer_asks_for_optional_summary_instructions_and_merges(prefix):
+    """Real keys: t merges, s prompts in the editor, Esc gives the draft back."""
+
+    def shortcut(letter):
+        # Ctrl+letter arrives as its control code; a leader is Ctrl+P, then the letter.
+        return chr(ord(letter) - 96) if prefix == "ctrl" else "\x10" + letter
 
     async def run():
         asides = Asides()
@@ -406,6 +411,7 @@ def test_the_viewer_asks_for_optional_summary_instructions_and_merges():
                     asides,
                     ask=lambda thread, question: None,
                     check_bridge=check,
+                    key_prefix=prefix,
                     input=pipe,
                     output=DummyOutput(),
                 )
@@ -424,14 +430,14 @@ def test_the_viewer_asks_for_optional_summary_instructions_and_merges():
                         browser.app.exit()
                         await task
 
-        _, result = await viewer("m")
+        _, result = await viewer(shortcut("t"))
         assert result == Bridge(root.thread, "merge")
 
-        _, result = await viewer("s", "keep the decisions", "\r")
+        _, result = await viewer(shortcut("s"), "keep the decisions", "\r")
         assert result == Bridge(root.thread, "summary", "keep the decisions")
 
         # Nothing typed summarizes as is.
-        _, result = await viewer("s", "\r")
+        _, result = await viewer(shortcut("s"), "\r")
         assert result == Bridge(root.thread, "summary", "")
 
         def prompting(browser):
@@ -445,13 +451,21 @@ def test_the_viewer_asks_for_optional_summary_instructions_and_merges():
             assert "Summarize" not in browser.input._title()
 
         # A follow-up draft is set aside for the prompt, and Esc brings it back.
+        # The shortcut works from the editor, without typing its letter there.
         browser, result = await viewer(
-            "r", "half a follow-up", "\x1b", "s", prompting, "x", "\x1b", restored, "\x1b"
+            shortcut("r"),
+            "half a follow-up",
+            shortcut("s"),
+            prompting,
+            "x",
+            "\x1b",
+            restored,
+            "\x1b",
         )
         assert result is None
 
         refusal.append("Adding to the conversation waits for the running turn")
-        browser, result = await viewer("m", "s", "\x1b")
+        browser, result = await viewer(shortcut("t"), shortcut("s"), "\x1b")
         assert result is None
         assert browser.notice == refusal[0]
         assert not browser.input.prompting
@@ -464,5 +478,6 @@ def test_the_viewer_without_bridging_has_no_bridge_keys():
     asides.items.append(answered("why?", "because"))
     browser = AsideBrowser(asides, output=None, input=None)
     assert browser.input is None
+    assert [shortcut.key for shortcut in browser.prefix_keys.shortcuts] == ["y", "k"]
     keys = {binding.keys for binding in browser.app.key_bindings.bindings}
-    assert ("m",) not in keys and ("s",) not in keys
+    assert ("c-s",) not in keys and ("c-t",) not in keys

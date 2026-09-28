@@ -11,7 +11,7 @@ from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.commands import CommandRegistry
-from pcode.ui import NOTICE_ROWS, Activity, Transcript, create_prompt
+from pcode.ui import NOTICE_ROWS, WAIT_GRACE_SECONDS, Activity, Transcript, create_prompt
 
 
 def test_notice_wraps_to_the_pane_and_is_bounded():
@@ -38,6 +38,51 @@ def test_flash_without_a_live_panel_falls_back_to_a_printed_note():
     transcript = Transcript(Console(file=stream, width=80, color_system=None), activity=Activity())
     transcript.flash("Theme: light.")
     assert "Theme: light." in stream.getvalue()
+
+
+def test_a_wait_shows_a_spinner_row_only_once_it_outlasts_the_grace_period():
+    activity = Activity()
+    with activity.waiting("Starting the session host") as wait:
+        assert activity.wait_fragments("|", 80) == []
+        wait.started -= WAIT_GRACE_SECONDS
+        ((style, text),) = activity.wait_fragments("|", 80)
+        assert style == "class:activity.system"
+        assert text.startswith("| ◈ Starting the session host · ")
+        assert len(activity.wait_fragments("|", 12)[0][1]) <= 12
+        # The newest wait is named; the elapsed time is the oldest one's.
+        wait.started -= 10
+        later = activity.begin_wait("Running /model")
+        later.started -= WAIT_GRACE_SECONDS
+        assert activity.wait_fragments("|", 80)[0][1].startswith("| ◈ Running /model · 10s")
+        activity.end_wait(later)
+    assert activity.waits == []
+    assert activity.wait_fragments("|", 80) == []
+
+
+def test_a_wait_renders_above_the_editor():
+    async def run():
+        stream = StringIO()
+        app = PreviewApp(console=Console(file=stream, width=80, color_system=None))
+        with create_pipe_input() as pipe:
+            output = Vt100_Output(stream, lambda: Size(rows=24, columns=80), enable_cpr=False)
+            session = create_prompt(
+                CommandRegistry(),
+                activity=app.activity,
+                transcript=app.transcript,
+                on_submit=lambda text: None,
+                input=pipe,
+                output=output,
+            )
+            app.activity.begin_wait("Loading saved sessions").started -= WAIT_GRACE_SECONDS
+            stream.seek(0)
+            stream.truncate()
+            with set_app(session.app):
+                session.app.renderer.render(session.app, session.app.layout)
+            return stream.getvalue()
+
+    screen = asyncio.run(run())
+    assert "Loading saved sessions" in screen
+    assert screen.index("Loading saved sessions") < screen.index("┌")
 
 
 def test_toggle_renders_above_the_editor_instead_of_entering_scrollback():

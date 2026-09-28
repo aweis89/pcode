@@ -235,6 +235,9 @@ class RemoteController:
         self.on_closed = lambda: None
         # The host said it was stopping, rather than just going away.
         self.host_stopped = False
+        # One per command sent and not yet answered by `after_command`, oldest
+        # first: the host runs them in order and reports each exactly once.
+        self._command_waits: list = []
 
     # Connecting
 
@@ -293,6 +296,7 @@ class RemoteController:
     def close(self) -> None:
         """Detach: the host keeps running."""
         self.running = False
+        self._end_command_waits()
         if self.peer is not None:
             self.peer.on_close = None
             self.peer.close()
@@ -303,7 +307,12 @@ class RemoteController:
         if self._serving is not None:
             await asyncio.gather(self._serving, return_exceptions=True)
 
+    def _end_command_waits(self) -> None:
+        while self._command_waits:
+            self.activity.end_wait(self._command_waits.pop())
+
     def _closed(self) -> None:
+        self._end_command_waits()
         if self.runtime is not None:
             self.runtime.lost = True
         self.on_closed()
@@ -333,6 +342,8 @@ class RemoteController:
             return None
         if name == "read_asides":
             return self._read_asides()
+        if name == "after_command" and self._command_waits:
+            self.activity.end_wait(self._command_waits.pop(0))
         if name in ("turn_ended", "replay_conversation", "show_branch") and self.runtime:
             self.runtime.refresh()
         return getattr(self.view, name)(*args, **kwargs)
@@ -423,9 +434,12 @@ class RemoteController:
     def command(self, text: str, tag=None) -> None:
         if text.split()[0] in MODEL_COMMANDS or text.split()[:2] == ["/mcp", "enable"]:
             self.activity.busy = True
+        self._command_waits.append(self.activity.begin_wait(f"Running {text.split()[0]}"))
         self.peer.notify("command", text, tag)
 
     def cancel(self) -> None:
+        # The host drops queued commands, some without an `after_command`.
+        self._end_command_waits()
         self.peer.notify("cancel")
 
     def set_thinking(self, shown: bool) -> None:
@@ -441,7 +455,8 @@ class RemoteController:
         self.peer.notify("watch_job", job_id)
 
     async def query(self, name: str, *args):
-        return await self.peer.request("query", name, *args)
+        with self.activity.waiting("Waiting for the session host"):
+            return await self.peer.request("query", name, *args)
 
     def current_effort(self) -> str:
         return self.state.get("effort", "n/a") if self.model else "n/a"
@@ -602,6 +617,15 @@ def others(current: str | None, directory: Path | None = None) -> list[HostEntry
 
 
 def _running(pid: int) -> bool:
+    # A host this terminal spawned is its child: until reaped it lingers as a
+    # zombie that still answers kill(pid, 0), so a wait would run to its timeout.
+    try:
+        reaped, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass  # Not our child (attached to a running host): kill() tells.
+    else:
+        if reaped:
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

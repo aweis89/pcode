@@ -24,8 +24,9 @@ pcode --stop-hosts stale         # stop hosts still running older pcode code (or
 Inside a hosted session:
 
 - `/switch` opens a picker over every running host, with what each one is doing.
-  Enter shows that session in this terminal; `n` (or Ctrl+N) starts a new one;
-  `x`, pressed twice, stops one. A turn you switch away from keeps running.
+  Enter shows that session in this terminal; Ctrl+N starts a new one;
+  Ctrl+X (or Delete in the list), pressed twice, stops one. A turn you switch
+  away from keeps running. Both are [shortcuts](commands.md#shortcut-prefix).
 - `/switch HOST` goes straight to one by host or session ID prefix, and
   `/switch -` (or Ctrl+^, which most terminals also send for Ctrl+6) back to the
   one this terminal showed before. Pressed again, it flips back.
@@ -113,6 +114,11 @@ attaches is sent the conversation so far and then every event as the turn
 produces it, so switching to a session mid-turn picks the turn up where it is,
 streaming text and running commands included.
 
+When the terminal is waiting on a host (one starting up or being connected to,
+a slash command the host has not finished, the saved-session list `/resume`
+reads), a `◈` spinner row above the editor names the wait and counts the
+seconds. Waits under a quarter of a second never show one.
+
 A new host started with the `worktree` setting on makes its own worktree, the
 same as a local session, and `/switch new` starts from the main checkout so the
 new session never shares yours. A host tidies its worktree when it stops, as a
@@ -163,10 +169,11 @@ by their first prompt), or the exact workspace outside Git, with every
 prompt and a truncated, rendered response for the selected session alongside. It
 opens in the search line: typing searches prompts across sessions (space-separated
 words are all required) and ↑/↓ move the selection while you type (Ctrl+U/Ctrl+D by
-half a page). Tab moves to the session list, where `/` returns to the search, `r`
-includes responses, and `w` includes every workspace. Tab again focuses the content pane, where arrows
-scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page. Enter resumes the selected
-session in place, Esc cancels. `d` (or Delete) in the session list, pressed twice,
+half a page). Tab moves to the session list, and Tab again focuses the content pane, where arrows
+scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page. From any of them,
+Ctrl+F returns to the search, Ctrl+R includes responses, and Ctrl+G includes every workspace
+(these are [shortcuts](commands.md#shortcut-prefix)). Enter resumes the selected
+session in place, Esc cancels. Ctrl+X (or Delete in the session list), pressed twice,
 permanently removes the selected session's directory; the active session and one
 open in another process are refused. Resuming restores the saved model, history, and plan.
 A session from another worktree of the same repository switches the workspace to
