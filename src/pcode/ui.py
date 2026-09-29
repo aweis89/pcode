@@ -707,15 +707,16 @@ class Activity:
         call = self.tools.active
         running = self.tools.running
         if call is not None and call.settled is None:
-            # The call is the detail; `Running` is the phase whatever the
-            # model said last, and the clock is the call's own.
+            # A tool's label is already a verb (`Run shell`, `Read file`), so
+            # one call is its own phase; parallel calls are counted instead.
+            # The clock is the call's own, whatever the model said last.
             self._phase_seconds("")
-            return StatusLine(
-                "Running" if running < 2 else f"Running {running} tools",
-                call.line(timed=False),
-                tally=tally,
-                elapsed=call.elapsed,
-            )
+            line = call.line(timed=False)
+            if running < 2:
+                phase, _, detail = line.partition(" · ")
+            else:
+                phase, detail = f"Running {running} tools", line
+            return StatusLine(phase, detail, tally=tally, elapsed=call.elapsed)
         if phase.startswith("Running") and not running and not self.user_command:
             # Written for a call that has since finished; the model has the turn.
             phase, detail = "Waiting for model", ""

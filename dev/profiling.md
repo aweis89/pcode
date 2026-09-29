@@ -283,8 +283,8 @@ which ~45% was `VSplit._divide_widths`/`HSplit._divide_heights` growing the
 children one cell at a time; `layout_speed.py` replaces those with an exact
 closed form, bringing a repaint to ~2.5/3.5 ms. What remains is the container
 walk and control rendering, spread thinly. The other lever is frame rate: the
-panel repaints at the rate of the fastest spinner on screen (`dots`, 80 ms,
-during a model turn).
+panel repaints at the rate of its one shared spinner (`dots`, slowed to 128 ms)
+whenever anything on it is live.
 
 No model or tool runs; the journal's events are handed to the same code a live
 turn uses. `--speed 0` drops the pacing and mostly measures the flush loop's

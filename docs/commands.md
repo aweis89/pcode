@@ -321,6 +321,23 @@ calls appear beneath the active task with tree guides (`├──`, `└──`,
 make parent/child relationships clear. This view follows the currently active
 item, rather than recording historical task ownership. The newest running call
 appears in the status row above the widget instead of being repeated inside it.
+
+The status row always reads the same way: a spinner, what the turn is doing,
+what it is doing it to, and on the right the run's tool count and how long
+this phase has lasted.
+
+```text
+⠋ Thinking                                                    8s
+⠋ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
+⠋ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
+⠋ ◈ Compacting context ▸ keep tests                           4s
+```
+
+A spinner means the turn is waiting on that row; background jobs get a static
+`⟳` instead. The phase is the one highlighted word, and a stall shows as its
+clock climbing (`Thinking · 40s`). A call that just finished stays for a
+moment, marked `✓` or `✗`, so a burst of quick calls reads as progress rather
+than flicker. `◈` marks work pcode runs itself, such as compaction.
 When there is no active task (including no plan), background tools appear as
 unparented rows rather than beneath a completed or pending task.
 
