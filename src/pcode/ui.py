@@ -1546,6 +1546,7 @@ def create_prompt(
     on_commands=None,
     on_send_mode=None,
     on_previous_session=None,
+    on_copy_response=None,
     key_prefix: str | None = None,
     **kwargs,
 ) -> PromptSession:
@@ -1609,11 +1610,15 @@ def create_prompt(
         data = event.data.replace("\r\n", "\n").replace("\r", "\n")
         event.current_buffer.insert_text(pasted.collapse(data))
 
-    @shortcuts.add("y", "Copy draft")
+    @shortcuts.add("y", "Copy")
     def copy_draft(event: KeyPressEvent) -> None:
         # Collapsed pastes are a display device, so copy what sending would:
         # the expanded text, not the `[pasted …]` marker standing in for it.
         text = pasted.expand(event.current_buffer.text)
+        # With nothing typed, there is no draft to copy: copy the last response.
+        if not text and on_copy_response is not None:
+            on_copy_response()
+            return
         if transcript is None:
             return
         if not text:

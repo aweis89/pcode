@@ -2,10 +2,18 @@
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Always, has_focus
+from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
-from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
+from prompt_toolkit.layout import (
+    ConditionalContainer,
+    DynamicContainer,
+    Float,
+    FloatContainer,
+    HSplit,
+    Layout,
+    VSplit,
+)
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Frame, Label, TextArea
 from rich.markdown import Markdown
@@ -15,6 +23,7 @@ from rich.theme import Theme
 
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.conversation_tree import ConversationTree, TurnNode
+from pcode.copy_ui import Snippet, SnippetPicker, snippets
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,
@@ -59,6 +68,8 @@ class TreeBrowser:
         self._branch: tuple[str, ...] | None = None
         self._anchors: dict[Selection, int] = {}
         self._refreshing = False
+        # The quote/code picker over the tree, while one is open.
+        self.picker: SnippetPicker | None = None
         self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
         self.list.window.cursorline = Always()
         self.detail = RichPane(theme=rich_theme, color_system=color_system)
@@ -90,7 +101,7 @@ class TreeBrowser:
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
 
-        @shortcuts.add("y", "Copy selection")
+        @shortcuts.add("y", "Copy selection", filter=Condition(lambda: self.picker is None))
         def copy_selection(event):
             self.copy(event.app.output)
 
@@ -141,8 +152,16 @@ class TreeBrowser:
                 ),
             ]
         )
+        picker = Frame(
+            DynamicContainer(lambda: self.picker.container if self.picker else HSplit([])),
+            title="Copy",
+        )
+        overlaid = FloatContainer(
+            root_container,
+            floats=[Float(ConditionalContainer(picker, Condition(lambda: bool(self.picker))))],
+        )
         self.app = Application(
-            layout=Layout(popup_container(root_container, shortcuts), focused_element=self.list),
+            layout=Layout(popup_container(overlaid, shortcuts), focused_element=self.list),
             key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(),
@@ -180,7 +199,8 @@ class TreeBrowser:
         """Copy the selected row's prompt or response, as the pane shows it.
 
         The text is the redacted `literal` form rendered above, not the raw
-        record: what is on screen is what leaves the popup.
+        record: what is on screen is what leaves the popup. A response holding
+        quotes or code blocks opens a picker to copy just one of them.
         """
         identity, prompt = self.selected
         node = self.tree.nodes.get(identity) if identity is not None else None
@@ -189,9 +209,28 @@ class TreeBrowser:
         if not text:
             self.notice = f"No {name} to copy"
             return
+        choices = [] if prompt or node.kind == "compaction" else snippets(text)
+        if len(choices) > 1:
+            self.open_picker(choices, output)
+            return
+        self.copy_text(name, text, output)
+
+    def copy_text(self, name: str, text: str, output=None) -> None:
         copied, truncated = copy_to_clipboard(text, output)
         limit = " (truncated)" if truncated else ""
         self.notice = f"Copied {name}{limit}" if copied else f"Could not copy {name}"
+
+    def open_picker(self, choices: list[Snippet], output=None) -> None:
+        def close() -> None:
+            self.picker = None
+            self.app.layout.focus(self.list)
+
+        def pick(snippet: Snippet) -> None:
+            close()
+            self.copy_text(snippet.kind, snippet.text, output)
+
+        self.picker = SnippetPicker(choices, on_pick=pick, on_cancel=close)
+        self.app.layout.focus(self.picker.list)
 
     def branch(self, identity: str | None) -> tuple[str, ...]:
         """Root-to-leaf path through ``identity``, following the active branch below it."""
