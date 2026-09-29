@@ -19,6 +19,7 @@ _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}\Z")
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 # Packages whose exceptions mean the OAuth flow itself failed.
 OAUTH_PACKAGES = ("mcp.client.auth", "fastmcp.client.auth", "pcode.mcp_oauth")
+STDIO_INIT_TIMEOUT = 30.0  # seconds from launch until the server answers its handshake
 
 
 class MCPConnectError(RuntimeError):
@@ -290,7 +291,9 @@ def build_toolset(name: str, raw: Any, *, interactive: bool = True):
                 # FastMCP otherwise keeps subprocesses alive after toolset exit.
                 keep_alive=False,
             )
-            toolset = MCPToolset(transport, id=name)
+            # FastMCP's five-second handshake deadline counts the server's own
+            # startup, which a `uvx`/`npx` launch beside other servers can exceed.
+            toolset = MCPToolset(transport, id=name, init_timeout=STDIO_INIT_TIMEOUT)
         else:
             # FastMCP owns PKCE, browser sign-in, and refresh; pcode owns the socket
             # and the credential file (see mcp_oauth).
