@@ -6,9 +6,8 @@ Opening the app, using commands, or quitting without a prompt creates no session
 ## Background sessions
 
 Every interactive session runs in a *session host*: a headless pcode process
-that owns the conversation (the agent, its tools, the journal) while the
-terminal only draws it. The terminal can then leave, switch to another session,
-or close, and the work carries on. `--no-host` (or `session_host off`) runs a
+that owns the conversation while the terminal only draws it. The terminal can
+leave, switch to another session, or close, and the work carries on. `--no-host` (or `session_host off`) runs a
 session inside the terminal instead, as `--print` does unless it is given
 `--attach` (see [Scripting a running host](#scripting-a-running-host)).
 
@@ -104,30 +103,27 @@ A host with no terminal attached, no turn running, and no running command
 stops itself after an hour (`session_host_idle_minutes`; `0` never stops).
 Nothing is lost: `/resume` or `pcode --continue` brings the conversation back.
 
-### How it works
+### Host processes
 
-Each host is its own process, started by the terminal that asked for it, so it
-inherits that terminal's environment (direnv credentials, `PATH`, tool
+Each session has its own host process, started by the terminal that asked for
+it, so it inherits that terminal's environment (direnv credentials, `PATH`, tool
 versions) exactly as a local session would. One session crashing or hanging
-does not touch the others. A host listens on a Unix socket; a terminal that
-attaches is sent the conversation so far and then every event as the turn
-produces it, so switching to a session mid-turn picks the turn up where it is,
-streaming text and running commands included.
+does not affect the others. Switching to a session mid-turn picks the turn up
+where it is, streaming text and running commands included.
 
-When the terminal is waiting on a host (one starting up or being connected to,
-a slash command the host has not finished, the saved-session list `/resume`
-reads), a `◈` spinner row above the editor names the wait and counts the
-seconds. Waits under a quarter of a second never show one.
+While the terminal waits on a host (starting up, connecting, finishing a slash
+command, or loading the `/resume` list), a `◈` spinner row above the editor
+names the wait and counts the seconds. Waits under a quarter of a second show
+nothing.
 
-A new host started with the `worktree` setting on makes its own worktree, the
-same as a local session, and `/switch new` starts from the main checkout so the
-new session never shares yours. A host tidies its worktree when it stops, as a
-local session does on exit, without asking: unmerged work is kept with a note in
-the host's log.
+With the `worktree` setting on, a new host makes its own worktree like a local
+session, and `/switch new` starts from the main checkout so the new session
+never shares yours. A host tidies its worktree when it stops, without asking:
+unmerged work is kept with a note in the host's log.
 
-Hosts keep running until stopped. Their sockets, status files, and logs live in
-`~/.local/state/pcode/hosts/` (`PCODE_HOST_DIR` overrides it; a Unix socket path
-is limited to about 100 bytes, so keep it short).
+Host sockets, status files, and logs live in `~/.local/state/pcode/hosts/`.
+`PCODE_HOST_DIR` overrides it; keep that path short, since a Unix socket path is
+limited to about 100 bytes.
 
 ### What works in a hosted session
 
@@ -136,7 +132,7 @@ Everything. The host runs the session's commands (`/model`, `/effort`, `/compact
 `/reload`, skills, and extension commands), and opens their pickers in the
 terminal that typed them. The terminal runs its own (`/switch`, `/resume`,
 `/status`, `/tools`, `/diffs`, `/links`, `/workers`, `/help`, `/config`, and the
-display commands), reading the conversation from the host's journal on disk.
+display commands).
 MCP sign-ins that need a browser open it from the host, on the same machine.
 
 A host started by an older pcode keeps running that code until it stops. A
@@ -151,36 +147,44 @@ uv run pcode --continue SESSION_ID
 uv run pcode -m openai-codex:gpt-5.6-sol --no-save  # opt out for a sensitive session
 ```
 
-`-c` / `--continue` accepts an unambiguous ID prefix (at least 8 characters) and
-restores the saved model, workspace, and structured message history. Without an ID
-it picks the newest session whose workspace is the current directory (or `-C`), not
-the newest session overall. It rebuilds the retained transcript using the same
-redraw path and `transcript_max_chars` budget as live scrollback (default 2,000,000
-characters), then waits for your next message; it never re-runs tools. This replaces
-the terminal's screen and scrollback, just like `/redraw`. See
+`-c` / `--continue` restores the saved model, workspace, and message history. It
+accepts an unambiguous ID prefix (at least 8 characters); without an ID it picks
+the newest session whose workspace is the current directory (or `-C`), not the
+newest overall. It redraws the saved transcript (up to `transcript_max_chars`,
+default 2,000,000 characters), replacing the terminal's screen and scrollback
+like `/redraw`, then waits for your next message. It never re-runs tools. See
 [transcript regeneration](transcript.md#regenerating-the-terminal-transcript).
+
 A different explicit `-m` is rejected on resume, as is a `-C` in another
 repository; `-C` pointing at another worktree of the same repository is fine and
-the session goes back to its own directory. Only one process may open
-a session for writing; continuing one that is already open
-[continues a copy](#continuing-a-session-that-is-open-elsewhere). `/resume` opens a full-screen browser of saved conversations
-in the current repository, including its linked worktrees (newest first, labeled
-by their first prompt), or the exact workspace outside Git, with every
-prompt and a truncated, rendered response for the selected session alongside. It
-opens in the search line: typing searches prompts across sessions (space-separated
-words are all required) and ↑/↓ move the selection while you type (Ctrl+U/Ctrl+D by
-half a page). Tab moves to the session list, and Tab again focuses the content pane, where arrows
-scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page. From any of them,
-Ctrl+F returns to the search, Ctrl+R includes responses, and Ctrl+G includes every workspace
-(these are [shortcuts](commands.md#shortcut-prefix)). Enter resumes the selected
-session in place, Esc cancels. Ctrl+X (or Delete in the session list), pressed twice,
-permanently removes the selected session's directory; the active session and one
-open in another process are refused. Resuming restores the saved model, history, and plan.
+the session goes back to its own directory. Continuing a session that another
+process already has open
+[continues a copy](#continuing-a-session-that-is-open-elsewhere).
+
+`/resume` opens a full-screen browser of saved conversations in the current
+repository and its linked worktrees (or the exact workspace outside Git), newest
+first and labeled by their first prompt, with the selected session's prompts and
+truncated responses alongside.
+
+- It opens in the search line: typing searches prompts across sessions (every
+  space-separated word must match), and ↑/↓ move the selection while you type
+  (Ctrl+U/Ctrl+D by half a page).
+- Tab moves to the session list, and Tab again to the content pane, where arrows
+  scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page.
+- From anywhere, Ctrl+F returns to the search, Ctrl+R includes responses in it,
+  and Ctrl+G includes every workspace (these are
+  [shortcuts](commands.md#shortcut-prefix)).
+- Enter resumes the selected session in place, restoring its model, history, and
+  plan. Esc cancels.
+- Ctrl+X (or Delete in the session list), pressed twice, permanently deletes the
+  selected session. The active session and one open in another process are
+  refused.
+
 A session from another worktree of the same repository switches the workspace to
-that worktree: file tools, the shell, extensions, and skill commands are rebuilt
-there, and the worktree being left is tidied as on exit (an untouched `pcode-`
-worktree is removed; unmerged work is kept with a note). Sessions from another
-repository are refused.
+that worktree: file tools, the shell, extensions, and skill commands move there,
+and the worktree being left is tidied as on exit (an untouched `pcode-` worktree
+is removed; unmerged work is kept with a note). Sessions from another repository
+are refused.
 
 ### Continuing a session that is open elsewhere
 
@@ -221,100 +225,53 @@ command that cannot succeed. Quit and continue the session elsewhere.
 
 ## Recalling earlier sessions
 
-The bundled `session_history` extension lets the model answer questions such as
-“What did we decide about editor flicker?” without resuming another session.
-`search_sessions` returns ranked excerpts grouped by session, with session/turn
-IDs, dates, outcomes, and active/inactive branch labels. `read_session` retrieves a referenced turn,
-paginates long text, and includes bounded ancestor context (not sibling branches).
+The model can look things up in your saved sessions without resuming them, so
+you can ask "What did we decide about editor flicker?" or "Did we already try
+bumping the timeout?" It searches, then reads the matching turns, and cites the
+session and turn it found them in. This is the bundled `session_history`
+extension.
 
-- Default `scope="project"` includes linked worktrees. `workspace` restricts to
-  the exact directory; `all` is for explicitly cross-project questions.
-- `scope="session"` searches the current conversation, including original turns
-  dropped from model context by compaction — `/compact` between turns, and
-  automatic compaction inside a long turn, which journals an `auto_compacted`
-  marker so recall knows the running turn is no longer fully in context. It reads
-  the journal without taking the live session's lock. This is not a replacement
-  for model checkpoints.
-- Search covers saved prompts, consumed steering messages, assistant text, and
-  tool summaries/commands, not full tool results, reasoning, or unsaved conversations.
-  Steering messages from older versions were not journaled and are not recalled.
-  Historical claims and
-  failed or abandoned attempts are evidence, not proof that a change shipped.
-- Hits are grouped by session so one long session cannot take every slot: each
-  session gets at most three turns until the limit would otherwise go unused.
-  The current conversation is flagged `current`, and the turn running the search
-  is never returned as evidence — except after automatic compaction has dropped
-  part of that turn from context, when it comes back marked `current_turn`.
-- Excerpts are centred on the densest match in prose where there is one, so a
-  conclusion outranks the shell command that led to it, and each hit carries the
-  turn's closing assistant text as `conclusion` when the excerpt misses it.
-- Results report cumulative `sessions_searched` against `sessions_in_scope`, plus
-  `sessions_partial`, `sessions_unreadable`, and `scan_complete`. Sessions start
-  newest first, with traversal order fixed across pages. Both the journal-byte
-  budget and the chunk limit return `next_cursor` when work remains. Pass it as
-  `after` with the same arguments, even when the page has no hits. Continuation
-  resumes inside the journal or turn, without skipping its remaining records or
-  chunks. Coverage counts apply to the whole continuation chain; hits and rankings
-  apply to the current page. An empty page does not establish absence while
-  coverage is incomplete.
-- A session's hits are deferred until its journal snapshot has been read in full,
-  so attribution, branch labels, redaction, and text offsets agree. A journal
-  larger than the byte budget can therefore produce several empty pages first.
-  A session counts as searched only after all its chunks have been considered.
-- `read_session` also returns `next_cursor` if it needs more journal bytes before
-  resolving a turn. Continue with `after`, keeping the other arguments unchanged.
-  Once `next_cursor` is null, use `next_offset` to page through the returned turn's
-  text. A scan cutoff is not reported as a missing turn.
-- Continuations retain parser state in memory, not a persistent transcript cache.
-  Tokens are single-use, tied to the scope and request, and expire after 30 idle
-  minutes or a process restart. At most 16 pending continuations are retained;
-  the oldest is evicted when that limit is reached. An expired token reports an
-  error: restart without `after`. Each journal is read to the size captured when
-  first opened; appends require a fresh search. Replaced files, shrinking files,
-  and same-size edits invalidate a continuation. Journals must otherwise remain
-  append-only: a growing in-place rewrite is not reliably distinguishable from
-  an append. An unfinished final record produces a warning rather than a claim
-  of complete coverage.
-- New sessions record their project path so deleted worktrees remain discoverable.
-  Older sessions use Git discovery or the conventional `.worktrees/` layout;
-  a deleted legacy worktree elsewhere may need `scope="all"`.
+By default it searches the current repository, including its linked worktrees
+(even ones since deleted). Ask about "this directory only" to narrow it, or
+"across all my projects" to widen it; it only searches other projects when you
+ask. It can also search the current conversation, which recovers details that
+`/compact` or automatic compaction dropped from the model's context.
 
-Keyword retrieval is BM25 (the same ranking as Harness's `ConversationSearch`)
-with a bonus for an exact phrase match; it needs no credentials or network.
-Optional hybrid retrieval uses
-Pydantic AI's `Embedder` when you explicitly set a model before launching:
+What it can find:
+
+- Saved prompts, steering messages you sent mid-turn, the model's replies, and
+  tool summaries and commands.
+- Not full tool output, reasoning, or conversations run with `--no-save`.
+
+Results from abandoned `/tree` branches and failed attempts are labeled as
+such, and the model is told to treat past claims as evidence, not proof that a
+change shipped. Very large histories are searched in stages, so the model may
+need several searches to cover everything.
+
+### Semantic search (opt-in)
+
+Search is keyword-based by default, runs locally, and needs no credentials or
+network. To add embedding-based matching, set a model before launching:
 
 ```sh
 PCODE_HISTORY_EMBEDDING_MODEL=openai:text-embedding-3-small pcode
 ```
 
-This opts into sending redacted chunks and queries to the selected embedding
-provider, using that provider's normal credentials. Redaction is best-effort;
-do not enable a hosted model for history you cannot send off-machine. Local
-embedding models require their provider's optional dependencies. No model is
-selected automatically, and `semantic=false` on a search forces keyword-only.
-Provider/cache failures fall back to keywords with a warning.
+This sends redacted excerpts of your history and the search queries to that
+provider, using its normal credentials. Redaction is best-effort, so do not
+enable a hosted model for history you cannot send off-machine. Local embedding
+models need their provider's optional dependencies. No model is chosen for you,
+and if the provider fails, search falls back to keywords with a warning.
 
-The optional cache is `.history-embeddings.sqlite3` inside the session root,
-mode 0600, containing content hashes and vectors, not transcript text. Vectors
-are still sensitive data. It is created lazily; there is no startup indexing.
-Each search call has a 256 MiB journal-read budget, returns candidates from at
-most 10,000 chunks, and embeds at most 128 new chunks. Reading a referenced turn
-has the same per-call byte budget. These limits bound journal bytes read and
-chunks ranked, not total memory or processing time: an unfinished record and a
-session's parsed turns are retained across calls, and a complete JSON record is
-decoded as a unit. They do not cap the history reachable through continuation.
-Narrowing to `scope="session"` avoids
-spending the budget on other conversations. Subsequent semantic searches extend
-the vector cache; use `after` explicitly to advance the journal scan. Cache
-keys include the model and content; removed sessions are never returned, but
-old cached vectors remain until the cache is deleted. Delete that file with
-pcode stopped to clear it (also necessary if a provider changes a model's vector
-dimensions under the same name).
+Vectors are cached in `.history-embeddings.sqlite3` in the session directory
+(mode 0600). It holds content hashes and vectors, not transcript text, but
+vectors are still sensitive. Old vectors stay after a session is deleted; delete
+the file with pcode stopped to clear the cache (also needed if a provider changes
+a model's vector size under the same name).
 
-To disable recall, create `~/.config/pcode/extensions/session_history.py` with
-`def setup(pcode): pass`, then `/reload`. The tools honor the same session-storage
-configuration as the terminal.
+To turn recall off, create `~/.config/pcode/extensions/session_history.py` with
+`def setup(pcode): pass`, then `/reload`. Recall uses the same session storage
+location as the rest of pcode.
 
 ## Where sessions are stored
 
@@ -323,129 +280,110 @@ Default location: `$XDG_STATE_HOME/pcode/sessions`, or
 `PCODE_SESSION_DIR`. Each session directory contains:
 
 - `session.json`: model, workspace, timestamps, completed-turn usage, and package versions.
-- `steps.sqlite3`: Harness `StepPersistence` events, full Pydantic message snapshots
-  (including tool arguments/results and provider reasoning metadata), and a tool-effect ledger.
-- `transcript.jsonl`: submitted prompts, streamed text, completed blocks/tool summaries,
-  bounded redacted tool-inspection arguments/results, and structured failure diagnostics (HTTP status, provider code/parameter/message).
-  Failed turns also record the configured parent model's provider and base URL
-  when available, both in the transcript and `errors.log`. URL userinfo, query,
-  and fragment are omitted. This is the configured route, not proof of which
-  endpoint failed inside a delegated run. Quota/credit exhaustion and rate limits
-  get specific guidance rather than the generic login/connectivity hint.
+- `steps.sqlite3`: full message snapshots (including tool arguments and results
+  and provider reasoning metadata) used for resume, and a record of tool effects.
+- `transcript.jsonl`: submitted prompts, streamed text, tool summaries, bounded
+  redacted tool arguments and results, and failure details (HTTP status, provider
+  code and message).
+- `errors.log`: tracebacks from failed turns and side questions.
+
+A failed turn also records the configured model's provider and base URL (without
+userinfo, query, or fragment) in the transcript and `errors.log`. That is the
+configured route, not proof of which endpoint failed inside a delegated run.
+Quota exhaustion and rate limits get specific guidance rather than the generic
+login/connectivity hint.
 
 Session directories are mode 0700 and data files are 0600. **These files contain
 conversation and repository content in plaintext.** They stay outside the repo by
-default; do not commit or share them without inspection. No HTTP headers, provider
-credential store, or auth tokens are deliberately captured. Error diagnostics
-redact known token formats, credential assignments, and credential values from
-the environment; this is best-effort, not a guarantee that arbitrary sensitive
-text can be recognized. Model snapshots retain their content faithfully for replay,
-so sensitive material pasted by you or returned by a tool can still be stored.
-Use `--no-save` when that is inappropriate. Delete a closed session's directory
-to remove it; conversations are never deleted for you.
+default; do not commit or share them without inspection. HTTP headers, stored
+provider credentials, and auth tokens are not deliberately captured, and error
+details redact known token formats, credential assignments, and credential
+values from the environment, but that is best-effort. Message snapshots are kept
+verbatim for replay, so anything sensitive you paste or a tool returns can be
+stored. Use `--no-save` when that is inappropriate. Delete a closed session's
+directory to remove it; conversations are never deleted for you.
 
 ### Disk use
 
-`steps.sqlite3` holds all of it. Harness saves the whole message history again
-at every settled step, so a turn with hundreds of tool calls would store
-hundreds of copies of itself. Each turn keeps its newest two checkpoints
-instead, which is what resume and `/tree` read; sessions written before that
-bound existed keep every step and can reach gigabytes.
+Each turn keeps its two newest checkpoints in `steps.sqlite3`. Sessions saved by
+older pcode versions kept every step and can reach gigabytes. To shrink them:
 
 ```sh
 pcode --sessions --compact   # Drop superseded checkpoints, report space freed.
 ```
 
-That rewrites each closed session's store in place, skipping any session open
-in another process, and reports what it reclaimed. It removes no conversation:
-every turn still restores from the step it settled at, so `--continue`, `/resume`
-and `/tree` navigation to an earlier turn all work afterwards. Recall is
-unaffected too: search reads `transcript.jsonl`, which `--compact` never touches. On the largest session
-observed (1.3 GB, 338 checkpoints across 10 turns) it took under a second and
-left 67 MB.
+This rewrites each closed session's store in place, skipping any open in another
+process, and reports what it reclaimed. No conversation is lost: `--continue`,
+`/resume`, `/tree` navigation to earlier turns, and recall all work afterwards.
 
 ## Checkpoints
 
-Checkpoints are saved by Harness at settled tool boundaries, not just when an
-answer succeeds. If the request after a completed tool fails, its tool result is
-retained for the next turn and for resume. Interrupted streaming text is retained
-in the journal, even when it cannot become a safe model checkpoint. Resume uses
-the most recent settled checkpoint without requiring review of interrupted tools.
-Pending tool calls are not automatically replayed, and their unknown outcomes
-remain in the diagnostic ledger. Interrupted tools may already have changed the
-workspace; resuming does not undo those effects. Checkpoints do not restore files,
-running processes, or capability-local state such as the in-memory planner.
+A checkpoint is saved after every completed tool call, not just when an answer
+succeeds. If the request after a completed tool fails, its result is kept for the
+next turn and for resume. Text that was streaming when a turn was interrupted is
+kept in the transcript even when it cannot become a checkpoint.
 
-Only a turn's newest checkpoint is read, so that is what is kept (plus its
-newest settled one, when the newest is interrupted). Rewinding to an earlier
-step *within* a turn is not offered; `/tree` moves between turns.
+Resume continues from the most recent checkpoint. Tool calls that were still
+pending are not replayed, and their unknown outcomes are recorded. Interrupted
+tools may already have changed the workspace; resuming does not undo that.
+Checkpoints do not restore files, running processes, or in-memory state such as
+the planner.
+
+Rewinding to an earlier step *within* a turn is not offered; `/tree` moves
+between turns.
 
 ## Retries and `/resend`
 
 Dropped provider connections and transport timeouts get one automatic retry by
-default (two attempts total per submitted turn). The retry reuses the failed
-request's checkpoint, including completed tool results, without adding a
-"continue" prompt. Partial streamed output may remain visible but is excluded
-from the retried request. Authentication, HTTP status errors, tool errors, and
-user cancellation are not automatically retried by pcode. Anthropic SDK request
-retries are disabled for all three authentication modes: rate-limit, billing,
-and server errors surface immediately rather than waiting through hidden
-backoff. Transport retries show the failure and attempt count. OAuth credential
-refresh still handles an expired access token. Other provider SDKs may retry
-internally. Use `/resend` to retry a failed request when ready.
+default (two attempts per submitted turn). The retry picks up from the failed
+request's checkpoint, completed tool results included, without adding a
+"continue" prompt. Partial output from the failed attempt may stay on screen but
+is not sent again. Retries show the failure and attempt count.
 
 ```sh
 pcode config set retry_attempts 3   # Three extra attempts per turn, next launch
 pcode config set retry_attempts 0   # Disable automatic retries
 ```
 
-One HTTP status error is retried, because repeating it unchanged cannot help.
-Anthropic encrypts each server-side `web_search` result to the account that ran
-the search, so a session resumed under a different login is rejected with
-`Invalid encrypted_content in search_result block` — and the results are in the
-history, so every later request fails the same way. pcode drops them, keeping
-each page's title and URL and the model's own reading of the search, says how
-many went, and sends the turn again. This costs nothing from the retry budget
-above and happens once per turn; a rejection that survives it is reported.
+Authentication failures, HTTP status errors, tool errors, and cancellation are
+not retried. For Anthropic, rate-limit, billing, and server errors surface
+immediately instead of waiting through hidden SDK backoff; an expired OAuth
+token is still refreshed. Other providers' SDKs may retry internally.
 
-A tool call whose arguments fail the tool's schema is a separate budget. The
-model is told what was wrong and gets three corrections by default; past that
-the turn ends, naming the tool and the rejected field rather than blaming the
-provider. Nested arguments such as `edit_file`'s `replacements` array are the
-usual cause, and the correction costs a round trip where the old limit of one
-cost the turn. Output validation keeps the stricter single retry.
+One HTTP error is handled automatically. Anthropic ties each server-side
+`web_search` result to the account that ran the search, so a session resumed
+under a different login fails with
+`Invalid encrypted_content in search_result block`, and would keep failing since
+the results are in the history. pcode drops those results, keeping each page's
+title and URL and the model's own reading of them, says how many it removed, and
+sends the turn again. This happens once per turn and does not use the retry
+budget; if the request still fails, the error is reported.
+
+A tool call whose arguments don't match the tool's schema has its own budget.
+The model is told what was wrong and gets three corrections per turn by default;
+past that the turn ends with a message naming the tool and the rejected field.
+`edit_file`'s `replacements` array is the usual cause on Anthropic models.
 
 ```sh
 pcode config set tool_retries 5   # More corrections before a turn is abandoned
 pcode config set tool_retries 0   # Fail on the first rejected tool call
 ```
 
-`strict_tools`, on by default, also sends `edit_file` with Anthropic's
-[strict tool use][strict] flag, which is documented to constrain sampling to
-the tool's schema. In practice it does not stop this particular mistake: with
-the flag confirmed on the wire, Anthropic still returns `replacements` as a
-truncated string often enough that the measured failure rate barely moved
-(11.5% to 9.6% of calls that use the array). The retry budget above is what
-recovers the edit; the flag stays on only because nothing got worse.
+`strict_tools` (on by default) also sends `edit_file` with Anthropic's
+[strict tool use][strict] flag. It reduces those malformed arguments only
+slightly; the correction budget is what actually recovers them. OpenAI models
+use strict mode anyway, other providers ignore the flag, and schemas it cannot
+support are left alone.
 
 ```sh
 pcode config set strict_tools off   # Leave edit_file arguments unconstrained
 ```
 
-Nothing else changes: OpenAI models already infer strict mode, other providers
-ignore the flag, and a model or schema that cannot support it is left alone
-rather than failing. Anthropic rejects an entire request whose strict schema
-uses a keyword it does not accept, so pcode only constrains schemas built from
-a known-supported subset and silently skips the rest.
-
 [strict]: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
 
-Use `/resend` while idle to try again manually without adding another user
-message. The original prompt appears above the task bar with the normal running
-spinner. Completed tool results stay in context; if the last answer completed,
-only that final response is regenerated. An empty conversation cannot be resent.
-If cancellation left tool effects unsettled, `/resend` refuses to replay them;
-inspect the tools and send an explicit next step instead.
-
-Nothing from sessions run before this feature was installed can be reconstructed
-from disk; those earlier conversations were memory-only.
+`/resend` retries manually while idle, without adding another message. The
+original prompt appears above the task bar with the running spinner. Completed
+tool results stay in context; if the last answer completed, only that answer is
+regenerated. An empty conversation cannot be resent. If cancellation left tool
+effects unsettled, `/resend` refuses to replay them; check `/tools` and send an
+explicit next step instead.

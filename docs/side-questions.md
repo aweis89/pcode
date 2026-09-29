@@ -1,9 +1,9 @@
 # Side questions (`/btw`)
 
-`/btw QUESTION` asks a question about what the model is doing **while it is doing
-it**. The question runs as a second, parallel request against the same context;
-the turn in flight is not interrupted, cancelled, or steered, and the question
-never enters the conversation.
+`/btw QUESTION` asks about what the model is doing **while it is doing it**. The
+question runs as a separate request alongside the turn, against the same
+context. The turn is not interrupted or steered, and the question stays out of
+the conversation unless you choose to keep it.
 
 ```text
 ❯ refactor the parser and make the tests pass
@@ -69,10 +69,9 @@ A follow-up joins the selected question's **thread**. The list shows one row per
 thread, with a follow-up count, and the answer pane shows the whole exchange in
 order, opening on the newest question. Each follow-up:
 
-- **continues the thread, not the conversation.** It is sent as the history the
-  previous answer ran with, plus that answer, plus the new question. The prefix
-  is exactly what the last request sent, so the provider cache covers all of it;
-  what the main turn did since does not reach the thread.
+- **continues the thread, not the conversation.** It sees what the previous
+  answer saw, plus that answer, so the prompt cache covers it; what the main
+  turn did since does not reach the thread.
 - **runs where the thread began:** the same model, effort and conversation id,
   even if `/model` or `/effort` has changed the conversation's since. A thread
   started with `$MODEL` or `+LEVEL` keeps them; a `/btw` that fanned out to
@@ -131,23 +130,18 @@ thread `merged` or `summarized`; keeping it again adds it again.
 ## What a side question can and cannot do
 
 A side question runs on the **conversation's own agent**: the same model,
-instructions, tool definitions, enabled MCP servers and model settings as the
-turn beside it (unless you [choose another model](#choosing-the-model)). Its requests therefore start with the exact prefix the
-conversation has already sent, so the provider's prompt cache covers everything
-but the question itself. The instructions telling the model it is answering a
-side question travel inside the question message for the same reason; putting
-them in the system prompt would change the prefix and re-bill the whole
-conversation.
+instructions, tools, enabled MCP servers and model settings as the turn beside
+it (unless you [choose another model](#choosing-the-model)). The provider's
+prompt cache therefore covers everything but the question itself, so a side
+question costs little more than the question.
 
 Tools work as they do in a turn. The model can read files, search the web, use
 MCP tools, and run shell commands or edit files if the question calls for it,
 with the usual permission checks. The exceptions are the tools that change the
 conversation itself: the plan (`write_plan`, `add_task`, `update_task_status`
 and the rest; `read_plan` is fine) and delegation (`delegate_task`,
-`integrate_task`, `discard_task`). They stay declared, since removing them would
-break the cache, but a call is refused with a result telling the model the tool
-is unavailable in a side question, and it carries on answering. A side question
-is a question; if the answer implies work, send it as a normal message.
+`integrate_task`, `discard_task`). A call to one is refused, and the model
+carries on answering. If the answer implies work, send it as a normal message.
 
 Nothing about a side question joins the conversation:
 
@@ -218,21 +212,18 @@ that model alone.
 
 The same model at two efforts is two side questions; labels show the effort
 (`gpt-5 · high`, or just `low` on the conversation's model) so their answers
-stay apart. The effort is only read from the leading words, and only after the
-last `+` in a model word when what follows is a real level, so model ids that
-contain `+` still work. An unknown level fails the command, and so does an
-effort on a model without effort control (OpenAI/Codex, and the Anthropic and
-Meridian models whose profile supports effort, as with `/effort`). Typing `+` in the leading words
-completes the levels.
+stay apart. The effort is only read from the leading words, and only from the
+last `+` in a model word when a real level follows, so model ids that contain
+`+` still work. An unknown level fails the command, and so does an effort on a
+model `/effort` cannot set (it supports OpenAI/Codex models and the Anthropic
+and Meridian models whose profile has effort control). Typing `+` in the leading
+words completes the levels.
 
 ## Which context it sees
 
-A side question is asked against the newest **settled** prefix of the request in
-flight — what the model is working with right now, not the state before the turn
-started. Providers reject a history whose tool calls have no results, so the
-prefix stops at the last point where the conversation was balanced: a tool call
-that has not returned yet is not included, and neither is the assistant text
-streaming beside it.
+A side question sees what the running turn is working with right now, not the
+state before the turn started, up to the last completed step. A tool call that
+has not returned yet is left out, and so is the text streaming beside it.
 
 Side questions are bounded: 12 model requests and 300 seconds each. They are not
 retried, and they do not survive exiting pcode.
@@ -245,19 +236,12 @@ writes nothing.
 ## Parallel work and `/tree`
 
 `/tree` opens while a turn is running, but only to read: the header says
-`read-only while working` and Enter does not switch context. Switching context
-replaces the history the running turn is about to write back, so a checkout
-during a turn would silently lose. Browse the tree now, fork when the turn ends,
-and use `/btw` to ask about a branch in the meantime.
+`read-only while working` and Enter does not switch context, since the running
+turn would overwrite the switch when it finishes. Browse the tree now, fork when
+the turn ends, and use `/btw` to ask about a branch in the meantime.
 
 Several side questions can run at once, each with the context available when it
-was asked. What is **not** yet possible is running two conversation turns in
-parallel — from `/tree` or anywhere else. One turn at a time is assumed
-throughout: the conversation tree records events against a single "recording"
-cursor, the runtime keeps one history, plan store, request checkpoint and shell,
-the session journal is a single append-only stream, and the transcript and
-activity widget present one stream of tool and text events. `/btw` is the useful
-slice that fits those constraints, because its answer lands in its own surface
-instead of the conversation and it cannot touch the plan or start workers.
-A shell command it runs is still a real job in the shared job list, though, so
-prefer questions that only need reading while a turn is editing the same files.
+was asked. Two conversation turns cannot run in parallel, from `/tree` or
+anywhere else; `/btw` is the parallel work that is possible. A shell command a
+side question runs is a real job in the shared job list, though, so while a turn
+is editing files, prefer questions that only need reading.

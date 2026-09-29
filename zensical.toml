@@ -16,6 +16,12 @@ site_dir = "site"
 nav = [
   { "Overview" = "index.md" },
   { "Getting started" = "getting-started.md" },
+  { "Guide" = [
+    { "Scrollback and transparency" = "guide/scrollback.md" },
+    { "A shell for long-running work" = "guide/shell.md" },
+    { "Parallel agents" = "guide/parallel.md" },
+    { "Extending pcode" = "guide/extending.md" },
+  ] },
   { "Reference" = [
     { "Providers and models" = "providers.md" },
     { "Configuration" = "configuration.md" },

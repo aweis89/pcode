@@ -33,6 +33,7 @@ from pcode.output_limits import ModelOutputLimits
 # Caps for the summary request. The first attempt keeps evidence readable; the
 # retries exist so an oversized history still compacts instead of failing at the
 # moment it must succeed. Each retry is (tool-return chars, any-part chars).
+# Harness's own default is 500 chars per tool return, too little to summarize from.
 TOOL_RETURN_CHARS = 16_000
 TIGHTENED_ATTEMPTS = ((2_000, 8_000), (500, 2_000))
 

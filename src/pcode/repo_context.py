@@ -76,6 +76,11 @@ def create_repo_context(workspace: Path) -> AutomaticRepoContext:
 
     Snapshot saved defaults at agent creation, not during an active run. Disabling
     the walk keeps workspace instructions; nested discovery is independently opt-in.
+
+    Harness owns the rest: startup files are deduplicated by resolved path and
+    content (first occurrence wins) and cached per agent run, while nested
+    discovery takes only the first matching filename in a directory and surfaces
+    each directory once per run.
     """
     preferences = load_preferences()
     walk_up = preferences.get("repo_context_walk_up", SETTINGS["repo_context_walk_up"].default)

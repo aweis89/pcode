@@ -104,6 +104,9 @@ class JournalReader:
             raise OSError("session removed")
 
     def validate(self, stat=None):
+        # Catches a replaced, shrunk, or same-size-edited journal. Journals are
+        # assumed append-only otherwise: a rewrite that grows the file looks
+        # exactly like an append and is not detected.
         self._check_path()
         stat = stat or self.path.stat()
         if (
