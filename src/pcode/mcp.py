@@ -2,6 +2,7 @@
 
 import functools
 import json
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -399,7 +400,9 @@ def _isolated() -> type:
 
     pydantic-ai enters every run toolset in one exit stack, so one server whose
     handshake fails would otherwise fail the whole turn and take every other
-    tool, built-in or MCP, down with it.
+    tool, built-in or MCP, down with it. The same holds for a connection that
+    drops later: listing its tools, or closing it when the run ends, raises
+    from inside the run, so both degrade the same way the handshake does.
     """
     from dataclasses import dataclass, field
 
@@ -426,14 +429,26 @@ def _isolated() -> type:
             if not self._entered:
                 return None
             self._entered = False
-            return await self.wrapped.__aexit__(*args)
+            try:
+                return await self.wrapped.__aexit__(*args)
+            except Exception:
+                # The turn is already over; a server that went away meanwhile
+                # must not replace its result (or its real error) with this one.
+                logging.getLogger(__name__).debug(
+                    "MCP server %r failed to disconnect", self.server, exc_info=True
+                )
+                return None
 
         # Keyed on the shared state, not `_entered`: pydantic-ai may hand these
         # calls a per-step copy of this wrapper rather than the entered instance.
         async def get_tools(self, ctx):
             if self.server in self.state.unavailable:
                 return {}
-            return await self.wrapped.get_tools(ctx)
+            try:
+                return await self.wrapped.get_tools(ctx)
+            except Exception as error:
+                self.state.connect_failed(self.server, error)
+                return {}
 
         async def get_instructions(self, ctx):
             if self.server in self.state.unavailable:
