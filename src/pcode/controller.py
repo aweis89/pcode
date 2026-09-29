@@ -621,6 +621,12 @@ class SessionController:
                 argument_provider=self.jobs_arguments,
                 group="Session",
             ),
+            Command(
+                "/usage",
+                "Plan limits and spend for the Claude Code and Codex logins",
+                self.usage,
+                group="Inspect",
+            ),
         ):
             self.registry.register(command)
 
@@ -2567,6 +2573,11 @@ class SessionController:
         finally:
             self.activity.notice = ""
             self.view.redraw()
+
+    def usage(self, argument: str) -> None:
+        from pcode.usage import usage_report
+
+        self.defer("Checking usage", "", usage_report)
 
     def worktree(self, argument: str) -> None:
         from pcode import worktree
