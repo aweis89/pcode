@@ -331,8 +331,8 @@ def test_resend_uses_send_pipeline_and_original_prompt_spinner(following):
                     assert app.activity.prompt_state == "running"
                     fragments = app.activity.status_fragments("⠋", 100)
                     # The row spins for the resent turn without echoing its prompt.
-                    assert fragments[0] == ("class:activity.prompt", "⠋ ")
-                    assert "make the requested change" not in fragments[1][1]
+                    assert fragments[0] == ("class:activity.spinner", "⠋ ")
+                    assert "make the requested change" not in "".join(t for _, t in fragments)
                     assert app.activity.queued_prompts == (["next message"] if following else [])
                     # A second resend while busy must not queue or steer anything.
                     pipe.send_text("/resend\rdraft")

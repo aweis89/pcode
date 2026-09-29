@@ -32,6 +32,7 @@ from prompt_toolkit.renderer import Renderer
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame, Label
+from rich.cells import cell_len
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.padding import Padding
@@ -138,21 +139,30 @@ class Palette:
                 # as one of the tasks it sits among.
                 "plan.agent": f"nodim {self.task_heading}",
                 "prompt": f"{self.accent} bold",
-                "activity.prompt": self.muted,
-                # System work is pcode's own, so it gets the accent colour and
-                # an italic detail rather than the muted prompt echo styling.
+                # The live area has three weights. Live: the spinner and the
+                # phase word, the one thing that says the turn is moving.
+                # Content: what it is doing, in the terminal's own text colour.
+                # Chrome: counts, clocks, notices, jobs and queues, muted.
+                "activity.spinner": self.accent,
+                "activity.badge": self.accent,
+                "activity.phase": f"nodim {self.accent} bold",
+                "activity.detail": "nodim",
+                "activity.meta": self.muted,
+                # System work is pcode's own: the badge and accent mark it, and
+                # its queued rows keep an italic detail.
                 "activity.system": self.accent,
-                "activity.system.label": f"{self.accent} bold",
                 "activity.system.detail": f"italic {self.muted}",
                 # Short-lived answers to a keystroke live above the spinner
                 # rather than in scrollback; italics mark them as chrome.
                 "activity.notice": f"italic {self.muted}",
                 # Running background jobs are chrome like the spinner row.
                 "activity.job": self.muted,
-                # A run's pending group line, styled as scrollback will draw it.
-                "activity.group": f"dim {self.muted}",
+                # A run's pending group line, shown only when no status row
+                # carries its tally. Still live, so muted rather than dimmed
+                # like the settled scrollback line it becomes.
+                "activity.group": self.muted,
                 # A side question runs beside the turn, not as part of it, so its
-                # row spins in the muted shade rather than the prompt's.
+                # row spins in the muted shade rather than the accent.
                 "activity.aside": self.muted,
                 # The live preview block, drawn the way scrollback draws a
                 # settled one: a heading on the opening line, rules around it.
@@ -310,6 +320,115 @@ ASIDE_ROWS = 3
 WAIT_GRACE_SECONDS = 0.25
 
 
+# The status row is redrawn several times a second while a turn runs, so a
+# longer gap means the row went away; its phase clock starts over.
+PHASE_GAP_SECONDS = 1.0
+# Status text the row leads with verbatim; anything longer is detail.
+PHASE_WORDS = 3
+# Cells of detail worth more than the status row's tally and clock.
+DETAIL_MIN_CELLS = 16
+
+
+def status_parts(status: str) -> tuple[str, str]:
+    """Split free-text status into the row's phase word and its detail.
+
+    Several modules write `Activity.status`; the convention is `Phase · detail…`
+    (`Running shell · src…`, `Retrying · Overloaded…`). A short bare status
+    is all phase (`Thinking…`); a sentence with no phase becomes detail, so it
+    never renders as one long highlighted word.
+    """
+    text = plain(status, limit=None).strip().removesuffix("…").strip()
+    phase, separator, detail = text.partition(" · ")
+    if separator:
+        return phase, detail.removesuffix("…").strip()
+    if not text:
+        return "Working", ""
+    if len(text.split()) <= PHASE_WORDS:
+        return text, ""
+    return "Working", text
+
+
+def clock(seconds: float) -> str:
+    """`8s`, `2m05s`: whole seconds, since the row is not a stopwatch."""
+    seconds = max(0, int(seconds))
+    return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m{seconds % 60:02d}s"
+
+
+@dataclass
+class StatusLine:
+    """The status row's parts, in the one order every state uses.
+
+    Left: spinner, optional badge, the phase (the live word, accented), then
+    the detail as ordinary text. Right, in a fixed column: the run's tool tally
+    and the phase clock, muted. Narrow panes drop the tally, then the clock,
+    then cut the detail, and only then the phase.
+    """
+
+    phase: str
+    detail: str = ""
+    tally: str = ""
+    elapsed: float | None = None
+    badge: str = ""
+    separator: str = "·"
+    # A just-finished call held on the row: its detail is muted, not live.
+    settled: bool = False
+
+    def fragments(self, spinner: str, width: int) -> list[tuple[str, str]]:
+        if width < 1:
+            return []
+        head = [("class:activity.spinner", f"{spinner} ")]
+        if self.badge:
+            head.append(("class:activity.badge", f"{self.badge} "))
+        head.append(("class:activity.phase", self.phase))
+        needed = sum(cell_len(text) for _, text in head)
+        detail = f" {self.separator} {plain(self.detail, limit=None)}" if self.detail else ""
+        # The meta column gives way before the detail is cut to a stub.
+        wanted = needed + min(cell_len(detail), DETAIL_MIN_CELLS)
+        meta = [part for part in (self.tally, self._clock()) if part]
+        while meta and wanted + 2 + cell_len(" · ".join(meta)) > width:
+            meta.pop(0)
+        suffix = " · ".join(meta)
+        room = width - (cell_len(suffix) + 2 if suffix else 0)
+        # A detail with no room to say anything is dropped, not left as `·…`.
+        if detail and room - needed >= DETAIL_MIN_CELLS // 2:
+            style = "class:activity.meta" if self.settled else "class:activity.detail"
+            head.append((style, detail))
+        fitted = fit_fragments(head, room)
+        if not suffix:
+            return fitted
+        pad = room - sum(cell_len(text) for _, text in fitted) + 2
+        return [*fitted, ("", " " * pad), ("class:activity.meta", suffix)]
+
+    def _clock(self) -> str:
+        return "" if self.elapsed is None else clock(self.elapsed)
+
+
+def fit_fragments(fragments: list[tuple[str, str]], width: int) -> list[tuple[str, str]]:
+    """Cut styled fragments to `width` cells, marking a cut with an ellipsis.
+
+    Newlines and control characters are flattened first, so a pasted command
+    cannot break the row. The ellipsis goes on the last fragment kept; a
+    spinner or badge that cannot fit whole is cropped without one.
+    """
+    fragments = [(style, plain(text, limit=None)) for style, text in fragments]
+    if sum(cell_len(text) for _, text in fragments) <= width:
+        return fragments
+    fitted = []
+    remaining = max(0, width)
+    for style, text in fragments:
+        # Strictly less: the fragment that overflows needs a cell for the ellipsis.
+        if cell_len(text) < remaining:
+            fitted.append((style, text))
+            remaining -= cell_len(text)
+            continue
+        part = Text(text)
+        part.truncate(remaining, overflow="ellipsis" if remaining > 1 else "crop")
+        if part.plain:
+            fitted.append((style, part.plain))
+        break
+    return fitted
+
+
 @dataclass(eq=False)
 class Wait:
     """Something this terminal is waiting on, and since when."""
@@ -385,6 +504,11 @@ class Activity:
     # What this terminal is waiting on (the session host starting, a command
     # it has not finished): its own state, never synced from the host.
     waits: list[Wait] = field(default_factory=list)
+    # The status row's phase clock: (phase, since, last drawn). Drawing state,
+    # so it is never compared, copied into a repr, or synced from the host.
+    _phase: tuple[str, float, float] = field(
+        default=("", 0.0, 0.0), init=False, repr=False, compare=False
+    )
 
     def begin_wait(self, label: str) -> Wait:
         """Start a wait that shows a spinner row once it outlasts the grace period."""
@@ -551,52 +675,61 @@ class Activity:
         return f"Tasks {completed}/{len(items)}"
 
     @property
-    def uses_system_spinner(self) -> bool:
-        """Tool calls animate like pcode's own work, not like model thinking.
-
-        The dots spinner means "the model is producing"; once a tool runs, the
-        wait is on the tool, so the row switches to the system glyph the way a
-        compaction or worktree row already does.
-        """
-        return self.prompt_kind != "user" or self.tools.active is not None
-
-    @property
     def status_shown(self) -> bool:
         """The live row exists only while a turn runs; the prompt is in scrollback."""
         return self.prompt_state == "running"
 
-    def status_fragments(self, spinner: str, width: int):
-        """The row above the tasks: the spinner plus whatever is running right now."""
-        if self.prompt_kind != "user":
-            return self._system_fragments(spinner, width)
-        call = self.tools.active
-        style = "class:plan.active" if call else "class:activity.prompt"
-        # Measure terminal cells, not characters, so wide Unicode fits too.
-        prefix = Text(spinner + " ")
-        prefix.truncate(max(0, width), overflow="crop")
-        text = Text(call.line() if call else plain(self.status, limit=None) or "Working…")
-        remaining = max(0, width - prefix.cell_len)
-        text.truncate(remaining, overflow="ellipsis" if remaining else "crop")
-        return [("class:activity.prompt", prefix.plain), (style, text.plain)]
+    def _phase_seconds(self, phase: str) -> float:
+        """Seconds the row has shown this phase: a stall reads as `Thinking · 40s`.
 
-    def _system_fragments(self, icon: str, width: int):
-        """Render pcode's own work as a labelled badge, never as an echoed prompt."""
-        prefix = Text(f"{icon} {SYSTEM_BADGE} ")
-        prefix.truncate(max(0, width), overflow="crop")
-        remaining = max(0, width - prefix.cell_len)
-        label = Text(plain(self.prompt, limit=None))
-        label.truncate(remaining, overflow="ellipsis" if remaining else "crop")
-        fragments = [
-            ("class:activity.system", prefix.plain),
-            ("class:activity.system.label", label.plain),
-        ]
-        remaining = max(0, remaining - label.cell_len)
-        detail = plain(self.prompt_detail, limit=None)
-        if detail and remaining > 2:
-            text = Text(f" {SYSTEM_SEPARATOR} {detail}")
-            text.truncate(remaining, overflow="ellipsis")
-            fragments.append(("class:activity.system.detail", text.plain))
-        return fragments
+        Kept by whoever draws the row rather than synced from the host, and
+        restarted after a gap in drawing, which only happens between turns.
+        """
+        now = monotonic()
+        shown, since, seen = self._phase
+        if shown != phase or now - seen > PHASE_GAP_SECONDS:
+            since = now
+        self._phase = (phase, since, now)
+        return now - since
+
+    def status_line(self, tally: str = "") -> StatusLine:
+        """What the status row says, before it is fitted to a width."""
+        if self.prompt_kind != "user":
+            phase = plain(self.prompt, limit=None)
+            return StatusLine(
+                phase,
+                plain(self.prompt_detail, limit=None),
+                badge=SYSTEM_BADGE,
+                separator=SYSTEM_SEPARATOR,
+                elapsed=self._phase_seconds("\0system" + phase),
+            )
+        phase, detail = status_parts(self.status)
+        call = self.tools.active
+        running = self.tools.running
+        if call is not None and call.settled is None:
+            # The call is the detail; `Running` is the phase whatever the
+            # model said last, and the clock is the call's own.
+            self._phase_seconds("")
+            return StatusLine(
+                "Running" if running < 2 else f"Running {running} tools",
+                call.line(timed=False),
+                tally=tally,
+                elapsed=call.elapsed,
+            )
+        if phase.startswith("Running") and not running and not self.user_command:
+            # Written for a call that has since finished; the model has the turn.
+            phase, detail = "Waiting for model", ""
+        line = StatusLine(phase, detail, tally=tally, elapsed=self._phase_seconds(phase))
+        if call is not None:
+            # Just finished: held briefly and marked done, so a burst of fast
+            # calls reads as progress rather than strobing.
+            line.detail = f"{'✗' if call.failed else '✓'} {call.line(timed=False)}"
+            line.settled = True
+        return line
+
+    def status_fragments(self, spinner: str, width: int, tally: str = ""):
+        """The row above the tasks: `⠋ Phase · detail … ✓7 tools · 12s`."""
+        return self.status_line(tally).fragments(spinner, width)
 
     def queue_rows(self, budget: int):
         """Show the next queued prompts, leaving room for the editor on short panes."""
@@ -1645,43 +1778,23 @@ def create_prompt(
         text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
         return min(text_height, available) + 2 + tasks
 
-    plan_spinner = Spinner("arc")
-    # Give the prompt line its own glyph so it reads as the overall turn, not as
-    # another in-progress task row.
-    prompt_spinner = Spinner("dots")
-    # System rows (compaction, worktree git work) spin differently from a
-    # model turn, so a wait on pcode itself is never mistaken for one on the model.
-    system_spinner = Spinner("line")
+    # One spinner for everything live: the status row, the active task, side
+    # questions and waits all show the same frame, so motion only ever means
+    # "the turn is waiting on this". Who owns the work is the badge and colour.
+    spinner = Spinner("dots")
     # Every frame is a full layout pass (~2-3ms), so the animation loop alone
     # costs a few percent of a core for the length of a turn. Rich's built-in
-    # intervals (80/100/130ms) are tuned for a dedicated terminal spinner, not
-    # for driving pcode's whole bottom block; slow them ~1.6x, which still
-    # reads as motion but noticeably cuts render frequency.
-    for spinner in (plan_spinner, prompt_spinner, system_spinner):
-        spinner.interval = round(spinner.interval * 1.6)
-    fastest_interval = min(plan_spinner.interval, prompt_spinner.interval, system_spinner.interval)
+    # interval is tuned for a dedicated terminal spinner, not for driving
+    # pcode's whole bottom block; slow it ~1.6x, which still reads as motion
+    # but noticeably cuts render frequency.
+    spinner.interval = round(spinner.interval * 1.6)
 
     def refresh_interval() -> float:
-        """Seconds until the next frame: the fastest spinner actually on screen.
+        """Seconds until the next frame."""
+        return spinner.interval / 1000
 
-        Each frame is a full layout pass, so a system turn animates at its own
-        slower rate rather than at the prompt spinner's. Anything else that
-        keeps the timer alive (a queued prompt, an expiring notice) has no
-        spinner to pace, so it keeps the fastest rate as before.
-        """
-        if not activity.status_shown:
-            if activity.asides_running:
-                return prompt_spinner.interval / 1000
-            return fastest_interval / 1000
-        spinner = system_spinner if activity.uses_system_spinner else prompt_spinner
-        interval = spinner.interval
-        if activity.asides_running:
-            interval = min(interval, prompt_spinner.interval)
-        if activity.waits:
-            interval = min(interval, system_spinner.interval)
-        if activity.tasks_shown:
-            interval = min(interval, plan_spinner.interval)
-        return interval / 1000
+    def spinner_frame() -> str:
+        return spinner.render(monotonic()).plain
 
     @per_render
     def base_plan_rows(budget: int | None = None):
@@ -1694,7 +1807,7 @@ def create_prompt(
                 # The editor box keeps one text row inside its two borders.
                 else max(1, cap - task_chrome() - 3)
             )
-        return activity.plan_rows(budget, plan_spinner.render(monotonic()).plain)
+        return activity.plan_rows(budget, spinner_frame())
 
     @lru_cache(maxsize=1)
     def preview_body(diff: bool, body: str, width: int, theme: str):
@@ -1819,24 +1932,25 @@ def create_prompt(
 
     @per_render
     def group_rows():
-        """The run's group line so far; it reaches scrollback when the run closes."""
-        if transcript is None:
+        """The run's group line so far, when no status row carries its tally.
+
+        While a turn runs the count rides the status row instead, next to the
+        spinner that says it is still going; the full line reaches scrollback
+        when the run closes.
+        """
+        if transcript is None or activity.status_shown:
             return []
         row = transcript.pending_group_row(session.app.output.get_size().columns - 1)
         return [("class:activity.group", row)] if row else []
 
     @per_render
     def aside_rows():
-        return activity.aside_rows(
-            prompt_spinner.render(monotonic()).plain, session.app.output.get_size().columns - 1
-        )
+        return activity.aside_rows(spinner_frame(), session.app.output.get_size().columns - 1)
 
     @per_render
     def wait_rows():
         """The terminal's own wait (the host starting, a command running there)."""
-        return activity.wait_fragments(
-            system_spinner.render(monotonic()).plain, session.app.output.get_size().columns - 1
-        )
+        return activity.wait_fragments(spinner_frame(), session.app.output.get_size().columns - 1)
 
     @per_render
     def typing_row():
@@ -1927,10 +2041,9 @@ def create_prompt(
     current_status = ConditionalContainer(
         spinner_rows(
             lambda: activity.status_fragments(
-                (system_spinner if activity.uses_system_spinner else prompt_spinner)
-                .render(monotonic())
-                .plain,
+                spinner_frame(),
                 session.app.output.get_size().columns - 1,
+                transcript.pending_tally() if transcript is not None else "",
             ),
             1,
         ),
@@ -2461,6 +2574,14 @@ class Transcript:
         line = self.group_lines(self._group)[-1].copy()
         line.truncate(width, overflow="ellipsis")
         return line.plain
+
+    def pending_tally(self) -> str:
+        """The open run's count for the status row: `✓7 ✗1 tools`, or empty."""
+        if not self._group:
+            return ""
+        failed = sum(event.failed for event in self._group)
+        noun = "tool" if len(self._group) == 1 else "tools"
+        return f"{tally(len(self._group) - failed, failed)} {noun}"
 
     def settle_orphans(self) -> None:
         """Write sub-agent calls whose delegate never settled, e.g. a cancelled turn.

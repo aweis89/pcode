@@ -1174,14 +1174,17 @@ class SessionController:
         self.activity.status = "Waiting for model…"
 
         def compaction_notice(text):
-            self.activity.status = text
+            # The sentence goes to scrollback; the status row keeps to a phase
+            # (see `status_parts`), and the model has the turn once it is done.
+            starting = text.startswith("Compacting")
+            self.activity.status = "Compacting context…" if starting else "Waiting for model…"
             self.view.note(text)
 
         runtime.compaction_notice = compaction_notice
 
         def retry_notice(text):
             # Separate abandoned partial text/thinking from the next attempt.
-            self.activity.status = text
+            self.activity.status = f"Retrying · {text}"
             self.view.turn_retry(text)
 
         if hasattr(runtime, "retry_notice"):
