@@ -139,13 +139,34 @@ and answers with a pointer to where it found them. It also recovers details
 from earlier in the current conversation that compaction dropped from context.
 See [recalling earlier sessions](sessions.md#recalling-earlier-sessions).
 
-## One worktree per session
+## Run several agents on one repo
 
-Turn on `worktree` and every session gets its own git worktree and branch, so
-parallel sessions never trample each other's edits. When you leave, pcode
-offers to merge the work back. Sub-agents can get their own worktrees too, and
-run on a different model from the parent. See
-[working in a repository](workspace.md#one-git-worktree-per-session) and
+Two agents in one checkout step on each other: one runs `git checkout` or
+`git stash` and the other's uncommitted edits are gone. With worktrees on,
+every pcode session gets its own git worktree and branch under `.worktrees/`,
+and that becomes its workspace. File tools, the shell and the saved session all
+point there, so the agent needs no instructions and a relative path can't land
+in your main checkout by accident.
+
+```sh
+pcode config project set worktree on   # every session in this repo gets a worktree
+pcode --worktree fix-flaky-test        # or just this one, with a readable name
+```
+
+So you can have one session fixing a bug, another writing a feature and a
+third reviewing a PR, all in the same repository at the same time. When a
+session is done, `/worktree merge` merges your main branch into the worktree
+first, so any conflicts get resolved there and never in your main checkout,
+then fast-forwards main. Leaving a session with unmerged commits asks whether
+to merge it. `/worktree clean` removes finished worktrees and lists any it kept
+and why, so it can't lose work. A setup script can run in each new worktree to
+install dependencies or copy untracked config like `.envrc`.
+
+Sub-agents can be isolated the same way: turn on `worker_isolation` and each
+delegated task works on its own branch starting from the parent's commit, and
+comes back to be reviewed and integrated. Sub-agents can also run on a
+different model from the parent. See
+[one git worktree per session](workspace.md#one-git-worktree-per-session) and
 [sub-agents](tools.md#sub-agents-on-other-models).
 
 ## Hand it the browser
