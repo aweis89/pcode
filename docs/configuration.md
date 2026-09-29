@@ -112,51 +112,111 @@ is only sensible on a machine where you wrote all of them.
 
 ## Settings reference
 
+Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
+
+### Models and providers
+
+| Key | Built-in default | Values |
+| --- | --- | --- |
+| `model` | `null` (offline preview) | A model name, normally `provider:model` |
+| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian); fallback for models `/effort` has not set |
+| `model_providers` | `` | `,`-separated providers `/model` lists; empty shows every provider you're signed in to or have a key for |
+| `anthropic_auth` | unset | `api-key`, `oauth` (which Anthropic credential `anthropic:` models use; set by `/login`, overridden by `PCODE_ANTHROPIC_AUTH`) |
+| `meridian_managed` | `auto` | `auto`, `on`, `off` (use a running Meridian proxy or start a private one; see [Meridian](providers.md#which-meridian-pcode-uses)) |
+| `claude_idle_processes` | `1` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes each session keeps warm (about 120 MB each beyond the first); `0` stops each when its turn ends. None are kept under memory pressure |
+| `claude_idle_minutes` | `10` | Positive integer, minutes a finished `claude:` CLI process is kept warm |
+| `retry_attempts` | `1` | Whole number, automatic retries after a dropped connection; `0` disables. See [retries](sessions.md#retries-and-resend) |
+
+### Editor and keys
+
+| Key | Built-in default | Values |
+| --- | --- | --- |
+| `send_mode` | `steering` | `steering`, `queue`, `interrupt` (what Enter does while a turn runs; see [sending while the agent is working](commands.md#sending-while-the-agent-is-working)) |
+| `editing_mode` | `emacs` | `emacs`, `vi` (prompt editor key bindings; see [vi editing](commands.md#optional-vi-editing)) |
+| `key_prefix` | `ctrl` | `ctrl` (shortcuts are Ctrl+letter chords), or a leader pressed before the letter, such as `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"`; the leader lists its shortcuts while it waits. See [shortcut prefix](commands.md#shortcut-prefix) |
+| `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, see [popup keys](commands.md#popup-keys)) |
+| `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |
+
+### Scrollback and display
+
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `theme` | `auto` | `dark`, `light`, `auto` |
-| `transcript_max_chars` | `2000000` | Positive integer, retained text budget shared by resume and redraw; applies on next launch |
 | `syntax_dark` | `terminal` | `terminal` or a Pygments style, for the dark palette |
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
-| `autocompact` | `on` | `on`, `off` |
-| `cache_notices` | `on` | `on`, `off` (note in the transcript when a request reuses less of the prompt cache; see [prompt cache notices](context.md#prompt-cache-notices)) |
-| `debug` | `off` | `on`, `off` (also write request fingerprints to disk with each cache notice) |
+| `show_thinking` | `off` | `on`, `off` (show the model's readable reasoning in scrollback; `/show-thinking`) |
+| `show_edits` | `on` | `on`, `off` (show a diff of each file edit; `/show-edits`) |
+| `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+G or `/show-commands`) |
+| `group_tools` | `off` | `on`, `off` (fold each run of tool calls into one line; `/group-tools`, see [grouping tool calls](transcript.md#grouping-tool-calls)) |
+| `command_scrollback_lines` | `20` | Positive integer, lines of each command's output mirrored into scrollback |
+| `command_preview_lines` | `10` | Positive integer, lines in the live preview of a running command |
+| `tool_error_scrollback` | `off` | `on`, `off` (keep a failed tool call's full diagnostic in scrollback instead of one line) |
+| `error_scrollback_lines` | `20` | Positive integer, lines of an error notice kept in scrollback before it is clipped |
+| `show_tasks` | `on` | `on`, `off` (show the Tasks/Tools widget; Ctrl+O or `/show-tasks`) |
+| `autohide_tasks` | `off` | `on`, `off` (hide the Tasks/Tools widget when a turn ends; `/autohide-tasks`) |
 | `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
+| `tasks_max_height` | unset | Rows (`20`) or a share of the screen (`0.5`) for the Tasks/Tools widget and editor together; unset keeps the widget to 10 rows or half the screen |
 | `paced_scrollback` | `typed` | `typed`, `rows`, `off` (type settled prose out, or roll blocks in a row per frame; see [the transcript](transcript.md#paced-scrollback)) |
+| `regenerate_on_resize` | `on` | `on`, `off` (rebuild scrollback at the new size after a resize; applies on next launch) |
+| `transcript_max_chars` | `2000000` | Positive integer, retained text budget shared by resume and redraw; applies on next launch |
+| `cache_notices` | `on` | `on`, `off` (note in the transcript when a request reuses less of the prompt cache; see [prompt cache notices](context.md#prompt-cache-notices)) |
+| `terminal_progress` | `auto` | `auto`, `on`, `off` (the terminal's [tab progress bar](#tab-progress-bar) while a turn runs; OSC 9;4) |
+| `desktop_notifications` | `on` | `on`, `off` (desktop notification when a background session finishes; OSC 9) |
+
+### Tools and sub-agents
+
+| Key | Built-in default | Values |
+| --- | --- | --- |
+| `web_search` | `auto` | `auto`, `local`, `off` (provider-native web search when available, pcode's own, or none; see [web search](tools.md#web-search)) |
 | `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
+| `job_wake` | `on` | `on`, `off` (start a turn when a job the model backgrounded finishes while idle; see [shell jobs](tools.md#shell-jobs)) |
+| `tool_retries` | `3` | Whole number, corrections the model gets per turn when a tool call has invalid arguments |
+| `strict_tools` | `on` | `on`, `off` (constrain `edit_file` arguments with Anthropic strict tool use) |
+| `subagent_models` | `` | `,`-separated models `delegate_task` may run a sub-agent on ([`/subagents`](tools.md#sub-agents-on-other-models)); empty runs every sub-agent on the session's model; `/reload` to apply |
+| `worker_concurrency` | `0` | `0` means unlimited; a positive integer caps concurrent built-in workers per session; `/reload` to apply |
 | `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |
 | `tool_output_threshold` | `10000` | Positive integer, characters that trigger reduction |
 | `tool_output_preview_chars` | `1000` | Positive integer, spill preview characters |
 | `tool_output_max_chars` | `4000` | Positive integer, truncation budget (also spill-failure fallback) |
 | `tool_output_strategy` | `head_tail` | `head`, `tail`, `head_tail` (truncation only) |
 | `tool_output_retention_hours` | `0` | Whole number, spill retention; `0` keeps indefinitely |
-| `key_prefix` | `ctrl` | `ctrl` (shortcuts are Ctrl+letter chords), or a leader pressed before the letter, such as `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"`; the leader lists its shortcuts while it waits. See [shortcut prefix](commands.md#shortcut-prefix) |
-| `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, see [popup keys](commands.md#popup-keys)) |
-| `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |
-| `claude_idle_processes` | `1` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes each session keeps warm (about 120 MB each beyond the first); `0` stops each when its turn ends. None are kept under memory pressure |
-| `claude_idle_minutes` | `10` | Positive integer, minutes a finished `claude:` CLI process is kept warm |
-| `meridian_managed` | `auto` | `auto`, `on`, `off` (use a running Meridian proxy or start a private one; see [Meridian](providers.md#which-meridian-pcode-uses)) |
-| `profile` | `off` | `off`, `resources`, `cpu`, `memory` (capture each session's resource use; see [profiling](https://github.com/aweis89/pcode/blob/master/dev/profiling.md)) |
+
+### Context
+
+| Key | Built-in default | Values |
+| --- | --- | --- |
+| `autocompact` | `on` | `on`, `off` |
+
+### Sessions and worktrees
+
+| Key | Built-in default | Values |
+| --- | --- | --- |
+| `session_host` | `on` | `on`, `off` (run sessions in a [background host](sessions.md#background-sessions) that outlives the terminal; `--host`/`--no-host` override it once) |
+| `session_host_idle_minutes` | `60` | whole minutes a [background session](sessions.md#background-sessions) may sit idle with no terminal before its host stops; `0` never stops |
+| `worktree` | `off` | `on`, `off` (start new sessions in `.worktrees/` git worktrees; does not enable worker isolation on its own) |
+| `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
+| `worker_isolation` | `off` | `on`, `off` (opt in to isolated built-in worker tasks; also requires effective `worktree=on`, not just the CLI launch override; checked at each delegation) |
+
+### Repository instructions, skills and extensions
+
+| Key | Built-in default | Values |
+| --- | --- | --- |
 | `repo_context_walk_up` | `on` | `on`, `off` (inherit ancestor instruction files) |
 | `repo_context_nested` | `off` | `off`, `pointer`, `contents` (discover instructions on file-tool traversal) |
 | `skill_commands` | `prefix` | `prefix`, `bare`, `both`, `off` (how discovered skills appear as slash commands) |
 | `skill_dirs` | `~/.agents/skills:.agents/skills` | `:`-separated directories searched for skills; relative entries resolve against the workspace |
-| `worktree` | `off` | `on`, `off` (start new sessions in `.worktrees/` git worktrees; does not enable worker isolation on its own) |
-| `worker_isolation` | `off` | `on`, `off` (opt in to isolated built-in worker tasks; also requires effective `worktree=on`, not just the CLI launch override; checked at each delegation) |
-| `worker_concurrency` | `0` | `0` means unlimited; a positive integer caps concurrent built-in workers per session; `/reload` to apply |
-| `subagent_models` | `` | `,`-separated models `delegate_task` may run a sub-agent on ([`/subagents`](tools.md#sub-agents-on-other-models)); empty runs every sub-agent on the session's model; `/reload` to apply |
-| `session_host_idle_minutes` | `60` | whole minutes a [background session](sessions.md#background-sessions) may sit idle with no terminal before its host stops; `0` never stops |
-| `desktop_notifications` | `on` | `on`, `off` (desktop notification when a background session finishes; OSC 9) |
-| `terminal_progress` | `auto` | `auto`, `on`, `off` (the terminal's [tab progress bar](#tab-progress-bar) while a turn runs; OSC 9;4) |
-| `session_host` | `on` | `on`, `off` (run sessions in a [background host](sessions.md#background-sessions) that outlives the terminal; `--host`/`--no-host` override it once) |
-| `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `project_extensions` | `off` | `on`, `off` (`on` trusts every repository's `.pcode/extensions` and `worktree-setup`) |
 | `trusted_projects` | `` | `:`-separated repository paths whose shipped code may run; the launch prompt appends here |
 | `extension_dirs` | `` | `:`-separated extra directories searched for extensions, after the user one |
 | `extensions_off` | `` | `,`-separated extension names that never load (`/extensions off NAME`) |
 | `extensions_on` | `` | `,`-separated opt-in extension names to load (`/extensions on NAME`) |
-| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian); fallback for models `/effort` has not set |
-| `model` | `null` (offline preview) | A model name, normally `provider:model` |
+
+### Diagnostics
+
+| Key | Built-in default | Values |
+| --- | --- | --- |
+| `debug` | `off` | `on`, `off` (also write request fingerprints to disk with each cache notice) |
+| `profile` | `off` | `off`, `resources`, `cpu`, `memory` (capture each session's resource use; see [profiling](https://github.com/aweis89/pcode/blob/master/dev/profiling.md)) |
 
 ## Tab progress bar
 
