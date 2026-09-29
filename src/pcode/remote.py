@@ -602,6 +602,15 @@ def others(current: str | None, directory: Path | None = None) -> list[HostEntry
 
 
 def _running(pid: int) -> bool:
+    # A host this terminal spawned is its child: until reaped it lingers as a
+    # zombie that still answers kill(pid, 0), so a wait would run to its timeout.
+    try:
+        reaped, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass  # Not our child (attached to a running host): kill() tells.
+    else:
+        if reaped:
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

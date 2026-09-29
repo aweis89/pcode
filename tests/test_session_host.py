@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -835,3 +836,14 @@ def test_restart_stops_keeping_the_worktree_and_resumes_the_session(tmp_path):
         assert started == [("", "session-1", "Restarted on the current pcode")]
 
     asyncio.run(run())
+
+
+def test_waiting_for_a_spawned_host_does_not_wait_out_its_zombie():
+    """A host this terminal spawned exits as its child: the wait must reap it, not time out."""
+    from pcode.remote import wait_for_exit, wait_for_exit_sync
+
+    for wait in (wait_for_exit_sync, lambda pid, timeout: asyncio.run(wait_for_exit(pid, timeout))):
+        process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        started = time.monotonic()
+        wait(process.pid, timeout=10)
+        assert time.monotonic() - started < 5
