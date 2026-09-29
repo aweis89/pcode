@@ -43,7 +43,7 @@ serial turns, failures, cancellation, and draft/cursor preservation. When tmux i
 installed, isolated-server tests measure prompt height and bottom placement
 through splits, streaming, cancellation, and replies. They also verify long
 responses in scrollback, no completion-time replacement, and draft editing during
-resize. One expected failure tracks the unfinished-line width-resize limitation.
+resize.
 
 Real tmux tests include cursor-position reports: plain PTYs alone missed the
 original frame-stretching bug. Actual copy-mode/search and rendering in your
@@ -113,8 +113,43 @@ dim scrollback when enabled and retains it for redraw when hidden. Opaque signat
 and provider-internal reasoning are not readable transcript content. Plans, status,
 dialogs, and editor state remain mutable, outside `Transcript`.
 
-Approvals, model pickers, and MCP management are not implemented yet. Model
-request-count limits are explicitly disabled; there is no monetary budget guard.
+Approvals are not implemented. Model request-count limits are explicitly
+disabled; there is no monetary budget guard.
+
+## Session hosts
+
+Every interactive session with a model runs in a host process. `SessionController`
+(`src/pcode/controller.py`) owns the session (queues, send modes, turns, commands,
+MCP, side questions, jobs) and runs in the host behind `HostView`; the terminal
+attaches over the socket protocol with a `RemoteController` and runs only its own
+commands (`TERMINAL_COMMANDS`). `--no-host` and `--print` run a controller
+in-process with `PreviewApp` as its view. The user-facing side is
+[background sessions](../docs/sessions.md#background-sessions).
+
+Traps:
+
+- Unix socket paths are capped at 104 bytes on macOS. pytest's `tmp_path` is too
+  long, so tests put hosts under a short `/tmp` directory (`PCODE_HOST_DIR`).
+  `/tmp` resolves to `/private/tmp`; compare resolved workspaces.
+- asyncio's stream line limit defaults to 64 KiB; one tool result is larger.
+  Readers use `LINE_LIMIT`.
+- `EditPreview` has a `kind` field, so events are encoded as `{"kind", "fields"}`,
+  not spread beside the name the way the journal writes them.
+- A running turn is partly in the journal (settled steps) and partly not (streaming
+  text, previews, live command output). A snapshot reads the journal only up to
+  where the turn began (`SavedSession.records(end)`) and sends the turn from the
+  host's buffer.
+- Cancel-then-prompt races: the host must not clear a queue while a cancelled turn
+  unwinds, and a terminal must detach its inbox only on the `turn_finished` of the
+  prompt it sent.
+- A `Mock` runtime in tests answers every attribute, so feature checks on the
+  runtime use `is True` rather than truthiness.
+- Hosts inherit the environment of the terminal that spawned them. One shared
+  daemon could not: `os.environ` is per process, and pcode reads credentials from it.
+
+`tests/test_session_host.py` covers the wire format, host logic, and switching
+away mid-turn and back over a real socket. `make test-socket` reruns the fast
+suite with each session in a host (see `AGENTS.md` for what that changes).
 
 ## Resource profiling
 
@@ -156,5 +191,6 @@ not the original session's CPU, live prompt redraws, or external processes.
 - [Pydantic streaming events](https://ai.pydantic.dev/agents/#streaming-all-events)
 - [Pydantic Harness Coder](https://ai.pydantic.dev/harness/coder/)
 
-The latest Harness website describes a newer Coder composition than the pinned
-0.31.x release. Implementation follows the installed release's public API.
+The latest Harness website can describe a newer Coder composition than the pinned
+release. Implementation follows the installed release's public API
+(`make harness-src` checks out the pinned source).

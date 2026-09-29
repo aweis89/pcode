@@ -274,7 +274,7 @@ def settled_context(messages: list) -> list:
     against the last point where the conversation was balanced.
 
     The provider stack is imported here, not at module import: the terminal
-    reaches its first frame without loading it. See `docs/dependencies.md`.
+    reaches its first frame without loading it. See `dev/dependencies.md`.
     """
     from pydantic_ai.messages import (
         NativeToolCallPart,

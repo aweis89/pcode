@@ -55,7 +55,7 @@ the provider's reported reads prove reuse.
 
 1. Check `~/.local/state/pcode/cache-diagnostics/` for request fingerprints; they
    name the message index that moved.
-2. Read `docs/prompt-caching.md` for the upstream design history and the traps
+2. Read `dev/prompt-caching.md` for the upstream design history and the traps
    (minimum cacheable size, metadata that does not survive a resume).
 3. Confirm the session actually ran the code under test -- an editable install
    only takes effect for processes started after the change.

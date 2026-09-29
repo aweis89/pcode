@@ -15,7 +15,7 @@ the history before the new user message. Otherwise it forks the CLI transcript
 at the last assistant message both share (`resume` + `fork_session` +
 `resume_session_at`: structured history, warm cache), found through a persisted
 index of history hashes, and failing that starts over with the history replayed
-as text, as Meridian does. See docs/anthropic-providers.md.
+as text, as Meridian does. See dev/anthropic-providers.md.
 
 pcode holds no credentials here: the CLI signs in itself (`/login claude`).
 """
@@ -122,7 +122,7 @@ CLI_ENV = {
     "MAX_MCP_OUTPUT_TOKENS": "1000000",
     # A subscription login defaults to 1-hour cache writes (2x input, against
     # 1.25x). pcode's tool loops send requests well inside five minutes, so the
-    # hour rarely pays off (docs/anthropic-providers.md). This variable wins
+    # hour rarely pays off (dev/anthropic-providers.md). This variable wins
     # over ENABLE_PROMPT_CACHING_1H; only FORCE_PROMPT_CACHING_5M outranks it.
     "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m",
     # A parked handler lasts as long as the tool runs, delegations included.

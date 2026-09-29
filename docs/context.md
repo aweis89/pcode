@@ -180,7 +180,7 @@ LLM summarization, multiple size bands, and per-tool configuration are not expos
 ## Prompt cache notices
 
 For the planning-specific cache issue and why reminders are now append-only, see
-[prompt caching and plan reminders](prompt-caching.md). `make cache-report`
+[prompt caching and plan reminders](https://github.com/aweis89/pcode/blob/master/dev/prompt-caching.md). `make cache-report`
 summarizes how prompt caching actually performed in saved sessions.
 
 When a request reuses much less of the prompt cache than an earlier one had

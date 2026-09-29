@@ -50,11 +50,8 @@ before pointing it at anything you care about.
 | [Sessions and recovery](docs/sessions.md) | Saving, resuming, recalling earlier sessions, checkpoints, retries |
 | [Context, limits and caching](docs/context.md) | Prompt overhead, compaction, output limits, prompt cache notices |
 | [The transcript](docs/transcript.md) | What lands in scrollback: diffs, thinking, errors, command output, `/redraw` |
-| [Development](docs/development.md) | Tests, architecture, profiling, references |
-
-Deeper notes: [prompt caching](docs/prompt-caching.md),
-[conversation tree](docs/conversation-tree.md), [profiling](docs/profiling.md),
-[dependencies](docs/dependencies.md), [Meridian validation](docs/meridian-validation.md).
+| [Conversation tree](docs/conversation-tree.md) | `/tree`: rewinding and forking a conversation |
+| [Side questions](docs/side-questions.md) | `/btw`: asking about the running turn without interrupting it |
 
 The same pages build into a browsable site with `make docs-serve`; `make docs`
 checks every page and anchor link.
@@ -67,4 +64,5 @@ make test-all    # everything, before touching layout, streaming, the editor, or
 ```
 
 [AGENTS.md](AGENTS.md) has the worktree workflow and the traps worth knowing
-before editing.
+before editing. Contributor notes (architecture, dependencies, profiling, prompt
+caching, provider design) live in [`dev/`](dev/), outside the published docs.

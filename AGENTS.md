@@ -3,8 +3,8 @@
 ## Workflow
 
 - Always commit after changes. The global `pcode` is an editable install pointing at the mainline `src/`, so a merged change is live on the next start with no reinstall. Only `pyproject.toml`/`uv.lock` changes need `make install`, and the `.githooks/post-merge` hook runs it on the mainline when a merge touches them (needs `git config core.hooksPath .githooks`). Never run `make install` from a worktree: it repoints the global `pcode` at that branch.
-- Before touching terminal or agent integrations, read [docs/dependencies.md](docs/dependencies.md).
-- User-facing behavior is documented under `docs/` (one page per topic, listed in `zensical.toml`), not the README, which is only a landing page. `make docs` fails on a broken page or anchor link, so run it after moving or renaming a heading.
+- Before touching terminal or agent integrations, read [dev/dependencies.md](dev/dependencies.md).
+- `docs/` is the published user site (listed in `zensical.toml`): what a feature does and why you'd want it, not how it's built. Design notes, plans, runbooks and implementation detail go in `dev/`, which is not published, or in a code comment. A published page linking into `dev/` must use a full GitHub URL, since `dev/` is outside the site. `make docs` fails on a broken page or anchor link under `docs/` but never checks `dev/` or the README.
 - `make harness-src` checks out Harness upstream source, docs, and tests at the pinned SHA under `tmp/pydantic-ai-harness`. Read that rather than the website, which can describe an unreleased Coder API and extras.
 
 ## Testing and debugging

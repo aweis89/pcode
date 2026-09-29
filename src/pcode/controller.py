@@ -1,8 +1,7 @@
-"""What runs a conversation, lifted out of the terminal UI a piece at a time.
+"""What runs a conversation: the `SessionController` a session host runs.
 
-See docs/background-sessions-plan.md. The end state is a `SessionController`
-that runs in the session host while the terminal only renders; until then its
-parts live here and `PreviewApp` drives them.
+The terminal only renders and attaches over the socket; `--no-host` and
+`--print` run a controller in-process. See dev/development.md#session-hosts.
 """
 
 import asyncio
