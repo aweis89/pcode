@@ -83,6 +83,10 @@ TURN_END_TIMEOUT_SECONDS = 60.0
 # The CLI calls a tool's handler as the tool_use block ends; allow for a slow
 # machine before deciding it never will (a call it refused or could not parse).
 CALL_TIMEOUT_SECONDS = 10.0
+# `connect` returns before the CLI has listed pcode's tools; a message sent in
+# that gap goes out with none (verified with 2.1.285), so wait for them.
+TOOLS_READY_TIMEOUT_SECONDS = 30.0
+TOOLS_READY_POLL_SECONDS = 0.02
 INDEX_LIMIT = 4000
 MISSING_SDK = (
     "claude: models need pcode's optional `claude` extra, which is not installed. "
@@ -386,8 +390,11 @@ class ResumeIndex:
         for line in lines:
             try:
                 row = json.loads(line)
+                if row.get("dropped"):
+                    entries.pop(row["key"], None)
+                    continue
                 entries[row["key"]] = ForkPoint(row["session"], row["uuid"], row["cwd"])
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, AttributeError):
                 continue
         if len(lines) > INDEX_LIMIT:
             kept = list(entries.items())[-INDEX_LIMIT // 2 :]
@@ -418,16 +425,26 @@ class ResumeIndex:
         for key in [k for k, p in self._entries.items() if p.session_id == session_id]:
             del self._entries[key]
 
+    def drop(self, keys: list[str]) -> None:
+        """Never fork these histories again, in any pcode process."""
+        dropped = [key for key in keys if self._entries.pop(key, None) is not None]
+        self._append("".join(json.dumps({"key": key, "dropped": True}) + "\n" for key in dropped))
+
     def add(self, key: str, point: ForkPoint) -> None:
         if self._entries.get(key) == point:
             return
         self._entries[key] = point
+        self._append(self._line(key, point))
+
+    def _append(self, lines: str) -> None:
+        if not lines:
+            return
         try:
             self._file().parent.mkdir(parents=True, exist_ok=True)
             with self._file().open("a") as file:
-                file.write(self._line(key, point))
+                file.write(lines)
         except OSError:
-            logger.debug("could not record a Claude fork point", exc_info=True)
+            logger.debug("could not update the Claude fork index", exc_info=True)
 
 
 # --- One CLI process -----------------------------------------------------------
@@ -509,6 +526,10 @@ class ClaudeSession:
         self.response_uuid: str | None = None
         # Whether the current response was read through its message_stop.
         self.complete = False
+        # Whether it called a tool by a name the CLI does not offer (pcode's bare
+        # name). The CLI refuses such a call, and a transcript that holds one
+        # teaches the model to repeat it, so it must never be forked.
+        self.stray_call = False
         self.busy = False
         self.dead = False
         self.last_used = time.monotonic()
@@ -555,11 +576,52 @@ class ClaudeSession:
             raise ClaudeStartError(
                 self.config.model, f"Claude Code could not start: {self._detail(error)}"
             ) from error
+        if not self._closed:
+            try:
+                await self._tools_ready()
+            except BaseException as error:
+                stopped, self._closed, self.dead = self._closed, True, True
+                self._remove_prompt_file()
+                with suppress(Exception):
+                    await self._client.disconnect()
+                if stopped and isinstance(error, Exception):
+                    message = "Claude Code was stopped."
+                    raise ClaudeProcessError(self.config.model, message) from error
+                raise
         if self._closed:  # closed while connecting: `close` found nothing to stop
             with suppress(Exception):
                 await self._client.disconnect()
             raise ClaudeProcessError(self.config.model, "Claude Code was stopped.")
         self._pump_task = asyncio.create_task(self._pump(), name="claude-sdk-pump")
+
+    async def _tools_ready(self) -> None:
+        """Wait until the CLI offers every pcode tool to the model.
+
+        A request sent before then declares no tools, so the model calls them
+        by the bare names in pcode's prompt, which the CLI refuses.
+        """
+        expected = len(json.loads(self.config.tools))
+        state = "not listed"
+        try:
+            async with asyncio.timeout(TOOLS_READY_TIMEOUT_SECONDS):
+                while True:
+                    status = await self._client.get_mcp_status()
+                    server = next(
+                        (s for s in status.get("mcpServers") or [] if s.get("name") == SERVER),
+                        None,
+                    )
+                    if server is not None:
+                        state = str(server.get("status"))
+                        if state == "connected" and len(server.get("tools") or []) >= expected:
+                            return
+                        if state in ("failed", "needs-auth", "disabled"):
+                            break
+                    await asyncio.sleep(TOOLS_READY_POLL_SECONDS)
+        except TimeoutError:
+            pass
+        raise ClaudeProcessError(
+            self.config.model, f"Claude Code did not load pcode's tools ({state})."
+        )
 
     async def close(self) -> None:
         """Stop the process without letting it act on its own first.
@@ -830,6 +892,7 @@ class ClaudeSession:
         """Raw stream events of the CLI's next assistant message, through message_stop."""
         tool_ids: list[str] = []
         stop_reason = None
+        self.stray_call = False
         while True:
             kind, value, uuid = await self._queue.get()
             if kind == "error":
@@ -843,7 +906,9 @@ class ClaudeSession:
                 block = value.get("content_block") or {}
                 if block.get("type") == "tool_use":
                     tool_ids.append(block.get("id"))
-                    name = str(block.get("name", "")).removeprefix(TOOL_PREFIX)
+                    wire = str(block.get("name", ""))
+                    self.stray_call = self.stray_call or not wire.startswith(TOOL_PREFIX)
+                    name = wire.removeprefix(TOOL_PREFIX)
                     value = {**value, "content_block": {**block, "name": name}}
             elif event_type == "message_delta":
                 stop_reason = (value.get("delta") or {}).get("stop_reason") or stop_reason
@@ -1225,7 +1290,11 @@ class ClaudeModel(AnthropicModel):
             yield stream
             # Anything short of the whole message leaves the process mid-turn.
             # A whole one is a fork point even if the process has since died.
-            if session.complete:
+            if session.complete and session.stray_call:
+                # Resuming any of this history would show the model its own
+                # refused calls again: the next request replays it instead.
+                sessions.index.drop(chain)
+            elif session.complete:
                 _, answer = await self._map_message([stream.get()], parameters, settings)
                 answer = normalize(answer)
                 if len(answer) == 1 and answer[0]["role"] == "assistant":
