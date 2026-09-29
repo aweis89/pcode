@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall
+.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve screenshots cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall
 
 HARNESS_DIR := tmp/pydantic-ai-harness
 HARNESS_URL := https://github.com/pydantic/pydantic-ai-harness.git
@@ -47,6 +47,9 @@ docs: ## Build the docs site into site/ (fails on broken links)
 
 docs-serve: ## Preview the docs site with live reload at http://localhost:8000
 	uv run --group docs zensical serve
+
+screenshots: ## Regenerate docs screenshots from scripted scenes (SCENES="tree jobs" for some)
+	uv run python scripts/screenshots/run.py $(SCENES)
 
 cache-report: ## Report prompt-cache behavior from saved sessions (SESSION=latest|all|<id>)
 	uv run python scripts/cache_report.py $(or $(SESSION),latest) $(ARGS)

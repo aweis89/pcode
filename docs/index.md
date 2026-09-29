@@ -58,6 +58,8 @@ its output (Ctrl+O) to run or paste yourself. It survives resume, so you can
 audit what happened in a session from last week. See
 [scrollback and transparency](guide/scrollback.md#every-command-nothing-hidden-tools).
 
+![The /tools inspector: every call on the left, the selected command and its full output on the right](assets/screenshots/tools.svg)
+
 ## Rewind and fork with `/tree`
 
 Every conversation is a tree, not a line. `/tree` shows it with the full branch
@@ -66,17 +68,7 @@ answer to jump back to that point. The branch you left stays there to return
 to. It's inspired by [pi's session tree](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md),
 which is the best idea in that agent.
 
-```text
-Conversation start
-user: Explain the failing test
-assistant: The parser rejects empty input
-├─ user: Fix the parser
-│  assistant: Updated the parser
-│  user: Run the tests
-│  assistant: Tests pass
-└─ user: Instead, change the test
-   assistant: Updated the test ← active
-```
+![/tree after editing an earlier prompt: two branches from the same answer, with the active branch in full on the right](assets/screenshots/tree.svg)
 
 See [conversation tree navigation](conversation-tree.md).
 
@@ -94,6 +86,8 @@ fixing what fails, starting a dev server and testing against it, or running a
 slow suite while editing something else. `/jobs` lists what's running and shows
 each log; jobs even survive pcode restarting and are picked up by the next
 session. See [a shell for long-running work](guide/shell.md).
+
+![A background job watching CI as a row above the editor while the conversation carries on](assets/screenshots/jobs.svg)
 
 ## Your Claude subscription, the supported way
 

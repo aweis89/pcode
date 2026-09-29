@@ -23,13 +23,13 @@ keeps running whether or not anyone is waiting on it.
 
 You see running jobs as rows under the spinner:
 
-```text
-⟳ j3 · running the e2e suite · 1m42s
-```
+![A job watching CI as a row above the editor, while the agent answers something else](../assets/screenshots/jobs.svg)
 
 `/jobs` lists them beside each one's live output. Ctrl+W pins a job's output
 into the preview and Ctrl+K stops it. Jobs outlive the turn and even pcode: if
 you quit with a job running, the next pcode adopts it.
+
+![The /jobs popup: the job list on the left, the command and its live output on the right](../assets/screenshots/jobs-popup.svg)
 
 ## Example: watch CI and fix what fails
 
