@@ -1,8 +1,25 @@
 # pcode
 
-A small, streaming terminal for a Pydantic AI Coder agent, with an offline UI
-preview. Full documentation lives in [`docs/`](docs/index.md); see
-[PLAN.md](PLAN.md) for the longer-term direction.
+A coding agent for people who live in the terminal. It streams into your
+terminal's normal scrollback instead of taking over the screen, keeps every
+conversation so you can resume, search or fork it, and runs on the model
+subscription you already pay for.
+
+**Documentation: [aweis89.github.io/pcode](https://aweis89.github.io/pcode/)**
+
+- Scrollback you can re-render after the fact: show every command and diff
+  while it runs, fold them to summaries when it's done.
+- `/tools` shows every command the agent ran and its full output.
+- `/tree` rewinds and forks the conversation at any point.
+- A shell built for slow work: long commands become background jobs, and a
+  finished job wakes the agent. Good for watching CI and fixing what fails.
+- Your Claude subscription through Anthropic's own Agent SDK and Claude Code
+  login, or your ChatGPT one, or any API key.
+- A git worktree per session, so several agents can work on one repo at once.
+- `/btw` side questions, background sessions, recall of past sessions, a
+  browser the agent can drive, and Python extensions.
+
+See [PLAN.md](PLAN.md) for the longer-term direction.
 
 ## Install
 
