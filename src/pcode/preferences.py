@@ -374,7 +374,7 @@ SETTINGS = {
         ),
     ),
     "group_tools": Setting(
-        "off",
+        "on",
         ("on", "off"),
         description="Fold each run of consecutive tool calls into one summary line",
     ),
