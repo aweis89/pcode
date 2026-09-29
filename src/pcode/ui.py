@@ -2378,7 +2378,7 @@ class Transcript:
         self.tool_error_scrollback = preferences.get("tool_error_scrollback", "off") == "on"
         self.show_edits = preferences.get("show_edits", "on") == "on"
         self.command_scrollback = preferences.get("show_commands", "off") == "on"
-        self.group_tools = preferences.get("group_tools", "off") == "on"
+        self.group_tools = preferences.get("group_tools", SETTINGS["group_tools"].default) == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
         self.command_preview_lines = int(preferences.get("command_preview_lines", "10"))
         self.activity = activity
