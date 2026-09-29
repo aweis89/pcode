@@ -183,6 +183,7 @@ class Palette:
                 "bottom-toolbar.context": self.muted,
                 "bottom-toolbar.context-value": self.accent,
                 "bottom-toolbar.activity": f"{self.task_heading} bold",
+                "bottom-toolbar.cache": self.muted,
                 "completion-menu": f"bg:{menu.surface} {menu.foreground}",
                 "completion-menu.completion": f"bg:{menu.surface} {menu.foreground}",
                 # The toolkit's selected-row default uses reverse; explicitly
@@ -492,6 +493,9 @@ class Activity:
     edit_previews: dict = field(default_factory=dict)
     notice: str = ""
     notice_expires: float = 0.0
+    # The footer's note of this turn's latest prompt-cache drop, e.g.
+    # `cache miss 0/166k`; the full notice is only in the session journal.
+    cache_note: str = ""
     # Shell jobs nothing on screen accounts for: running with no tool call
     # waiting on them, or finished before the terminal could say so. Rows are
     # rendered once a second by the app's job watcher, not per frame.

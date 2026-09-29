@@ -138,9 +138,11 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         output.delta(event.text)
         activity.status = "Responding…"
     elif isinstance(event, CacheBust):
-        output.finish_thinking()
-        output.finish()
-        transcript.events((event,))
+        # A footer note, not a scrollback line: the session journal keeps the
+        # full notice (and its cause) for anyone diagnosing it later.
+        from pcode.cache_warnings import footer_label
+
+        activity.cache_note = footer_label(event.text)
     elif isinstance(event, EditCompleted):
         output.finish_thinking()
         output.finish()

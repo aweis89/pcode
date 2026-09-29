@@ -45,7 +45,6 @@ from pcode.preferences import (
 )
 from pcode.prefix_keys import shortcut_label
 from pcode.runtime import (
-    CacheBust,
     EditCompleted,
     Message,
     PlanUpdated,
@@ -533,6 +532,7 @@ class PreviewApp:
     def turn_started(self, text: str, *, echo: bool) -> None:
         # The last turn's finished delegates stay listed only until this one.
         self.activity.tools.clear()
+        self.activity.cache_note = ""
         if echo:
             self.output.begin_turn(text)
         if self._progress is not None:
@@ -1511,7 +1511,7 @@ class PreviewApp:
                 elif kind in ("Thinking", "thinking_partial"):
                     self.transcript.thinking(redact(record["text"]).rstrip("\n") + "\n\n")
                 elif kind == "CacheBust":
-                    self.transcript.events((CacheBust(redact(record["text"])),))
+                    continue  # Kept in the journal; live runs show it in the footer.
                 elif kind == "EditCompleted":
                     from pcode.edits import change_from_record
 
@@ -1608,9 +1608,12 @@ class PreviewApp:
             for part in parts
             if part
         )
-        details = "".join(value for _, value in segments)
         # Only spend spare width on the path; preserve the send mode first.
-        path_width = max(0, width - cell_len(details) - 4)
+        path_width = max(0, width - cell_len("".join(value for _, value in segments)) - 4)
+        # Last and outside the path's budget: a narrow pane cuts it first.
+        if self.activity.cache_note:
+            segments.extend([("sep", " · "), ("cache", self.activity.cache_note)])
+        details = "".join(value for _, value in segments)
         path = Text(location if path_width else "")
         if path_width:
             path.truncate(path_width, overflow="ellipsis")

@@ -205,7 +205,13 @@ Enabled MCP servers (replaces any earlier list):
 ```
 
 Changing the list does not invalidate the prompt cache, but enabling the first
-server whose tools are searched does, because it adds the search tool.
+server whose tools are searched does, because it adds the search tool. On
+`claude:` models each search that finds new tools does too: the Claude Code CLI
+has no way to mark a tool as deferred, so a found tool's definition is sent for
+the first time, ahead of the whole cached conversation. Searching early in a
+conversation keeps that rewrite small; a server you use constantly can set
+[`"direct": true`](#tool-search-direct) instead, at the cost of sending all its
+schemas on every request.
 
 The name is often enough. Add a `description` when it is not:
 

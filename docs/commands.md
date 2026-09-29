@@ -440,6 +440,10 @@ smaller one is used. Public metadata is cached for 24 hours in
 Unknown limits show `?`, so a first run offline can show `?`, and Codex needs a
 successful lookup or an explicit override.
 
+When a request reuses much less of the prompt cache than before, a muted note
+such as `cache miss 0/166k` follows the context until your next prompt; see
+[prompt cache notices](context.md#prompt-cache-notices).
+
 ## Sending while the agent is working
 
 Enter uses the saved `send_mode` (default `steering`). **Ctrl+S** cycles
