@@ -58,6 +58,10 @@ before pointing it at anything you care about.
 | Page | What it covers |
 | --- | --- |
 | [Getting started](docs/getting-started.md) | Homebrew and source installs, `-C`, `--print`, shell completion |
+| [Scrollback and transparency](docs/guide/scrollback.md) | Guide: what goes into scrollback, `/tools`, `/diffs` |
+| [A shell for long-running work](docs/guide/shell.md) | Guide: background jobs, watching CI |
+| [Parallel agents](docs/guide/parallel.md) | Guide: worktrees, parallel sub-agents, `/workers` |
+| [Extending pcode](docs/guide/extending.md) | Guide: extensions, skills, settings |
 | [Providers and models](docs/providers.md) | Authentication, supported providers, the model picker, reasoning effort, Claude Code, Meridian, proxies |
 | [Configuration](docs/configuration.md) | `pcode config`, per-repository overrides, trusting repository code, the settings table, syntax styles |
 | [Commands and keys](docs/commands.md) | Slash commands, key bindings, vi mode, tmux newlines, status line, `!command`, the diff and tool inspectors |
