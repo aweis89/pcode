@@ -141,14 +141,14 @@ steps it completed are written when the cancellation is reported.
 
 ## Grouping tool calls
 
-With `group_tools` on, a run of consecutive tool calls leaves one line in
+With `group_tools` on (the default), a run of consecutive tool calls leaves one line in
 scrollback instead of one per call. While the run is going, the live panel
 counts it just above the spinner. The line is written once something else
 reaches scrollback (the model's reply, a diff, mirrored command output) or the
 turn ends. `/tools` still lists every call.
 
 ```sh
-pcode config set group_tools on   # One line per run of calls (default off)
+pcode config set group_tools off  # One line per call instead (default on)
 ```
 
 ```text

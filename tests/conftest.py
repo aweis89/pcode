@@ -171,6 +171,13 @@ def isolated_preferences(monkeypatch, tmp_path):
         "session_host",
         replace_setting(preferences.SETTINGS["session_host"], default="off"),
     )
+    # Grouping is the shipped default, but most transcript tests assert on the
+    # per-call summary lines; tests/test_group_tools.py turns grouping on itself.
+    monkeypatch.setitem(
+        preferences.SETTINGS,
+        "group_tools",
+        replace_setting(preferences.SETTINGS["group_tools"], default="off"),
+    )
 
 
 @pytest.fixture

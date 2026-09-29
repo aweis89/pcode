@@ -54,6 +54,11 @@ def test_a_wait_shows_a_spinner_row_only_once_it_outlasts_the_grace_period():
         later = activity.begin_wait("Running /model")
         later.started -= WAIT_GRACE_SECONDS
         assert activity.wait_fragments("|", 80)[0][1].startswith("| ◈ Running /model · 10s")
+        # A live status row (a host job or turn) covers the same work: one spinner.
+        activity.start_prompt("Merging worktree", kind="system", detail="pcode-x")
+        assert activity.wait_fragments("|", 80) == []
+        activity.finish_prompt("done")
+        assert activity.wait_fragments("|", 80)
         activity.end_wait(later)
     assert activity.waits == []
     assert activity.wait_fragments("|", 80) == []

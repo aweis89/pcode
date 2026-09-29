@@ -407,7 +407,14 @@ class Activity:
             self.end_wait(wait)
 
     def wait_fragments(self, spinner: str, width: int):
-        """The newest wait past its grace period, as a system row; empty otherwise."""
+        """The newest wait past its grace period, as a system row; empty otherwise.
+
+        A running status row already says what the host is doing (a turn, or a
+        command's `◈ label ▸ detail` job), so the terminal's own wait on that
+        same work stays out of the way: one spinner at a time.
+        """
+        if self.status_shown:
+            return []
         now = monotonic()
         shown = [wait for wait in self.waits if now - wait.started >= WAIT_GRACE_SECONDS]
         if not shown or width < 1:
@@ -2027,7 +2034,7 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(notice_rows())),
     )
-    # This terminal's own wait on the session host, which no turn row covers.
+    # This terminal's own wait on the session host, hidden while a turn row covers it.
     waits = ConditionalContainer(
         spinner_rows(
             lambda: panel_fragments(wait_rows(), session.app.output.get_size().columns - 1),
@@ -2258,7 +2265,7 @@ class Transcript:
         self.tool_error_scrollback = preferences.get("tool_error_scrollback", "off") == "on"
         self.show_edits = preferences.get("show_edits", "on") == "on"
         self.command_scrollback = preferences.get("show_commands", "off") == "on"
-        self.group_tools = preferences.get("group_tools", "off") == "on"
+        self.group_tools = preferences.get("group_tools", SETTINGS["group_tools"].default) == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
         self.command_preview_lines = int(preferences.get("command_preview_lines", "10"))
         self.activity = activity
