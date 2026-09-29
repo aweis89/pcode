@@ -129,15 +129,57 @@ def test_edit_and_queue_during_generation(outcome):
     asyncio.run(run())
 
 
+def styled(fragments):
+    """`{style: text}` for one status row, minus the unstyled padding."""
+    return {style.removeprefix("class:"): text for style, text in fragments if style}
+
+
 @pytest.mark.parametrize("state", ["running", "failed", "cancelled", "done", ""])
 def test_status_row_shows_the_spinner_and_never_echoes_the_prompt(state):
     from pcode.ui import Activity
 
     activity = Activity(prompt="first\nsecond\x1b", prompt_state=state, status="Waiting for model…")
     assert activity.status_shown is (state == "running")
-    fragments = activity.status_fragments("⠋", 80)
-    assert fragments[0] == ("class:activity.prompt", "⠋ ")
-    assert fragments[1][1] == "Waiting for model…"
+    parts = styled(activity.status_fragments("⠋", 80))
+    assert parts["activity.spinner"] == "⠋ "
+    assert parts["activity.phase"] == "Waiting for model"
+    assert "first" not in "".join(parts.values())
+
+
+@pytest.mark.parametrize(
+    ("status", "phase", "detail"),
+    [
+        ("Thinking…", "Thinking", ""),
+        ("Responding…", "Responding", ""),
+        ("Waiting for model…", "Waiting for model", ""),
+        ("Retrying · Overloaded. Retrying 1/3…", "Retrying", "Overloaded. Retrying 1/3"),
+        # A sentence with no phase is detail, never one long accented word.
+        (
+            "Enabling MCP 'x' — complete browser sign-in…",
+            "Working",
+            "Enabling MCP 'x' — complete browser sign-in",
+        ),
+        ("", "Working", ""),
+    ],
+)
+def test_status_text_splits_into_phase_and_detail(status, phase, detail):
+    from pcode.ui import status_parts
+
+    assert status_parts(status) == (phase, detail)
+
+
+def test_status_row_keeps_one_shape_with_meta_right_aligned():
+    from rich.cells import cell_len
+
+    from pcode.ui import Activity
+
+    activity = Activity(prompt_state="running", status="Responding…")
+    fragments = activity.status_fragments("⠋", 60, "✓7 ✗1 tools")
+    rendered = "".join(text for _, text in fragments)
+    assert cell_len(rendered) == 60
+    assert rendered.startswith("⠋ Responding ")
+    assert rendered.endswith("✓7 ✗1 tools · 0s")
+    assert styled(fragments)["activity.meta"] == "✓7 ✗1 tools · 0s"
 
 
 def test_status_row_reports_the_newest_running_tool_call():
@@ -147,29 +189,55 @@ def test_status_row_reports_the_newest_running_tool_call():
     activity = Activity(prompt="Fix bug", prompt_state="running", status="Responding…")
     activity.tools.record(ToolStarted("read_file", "example.py", "one"))
     activity.tools.record(ToolStarted("grep", "pattern", "two"))
-    style, text = activity.status_fragments("⠋", 80)[1]
-    assert style == "class:plan.active"
-    assert text.endswith("pattern")
+    parts = styled(activity.status_fragments("⠋", 80))
+    assert parts["activity.phase"] == "Running 2 tools"
+    assert parts["activity.detail"].endswith("pattern")
     # A result hands the row back to the call still running.
     activity.tools.record(ToolSummary("grep", "pattern", call_id="two"))
-    assert activity.status_fragments("⠋", 80)[1][1].endswith("example.py")
+    parts = styled(activity.status_fragments("⠋", 80))
+    assert parts["activity.phase"] == "Running"
+    assert parts["activity.detail"].endswith("example.py")
 
 
-def test_running_tool_call_switches_to_the_system_spinner():
+def test_finished_call_is_held_as_done_under_the_models_phase():
     from pcode.runtime import ToolStarted, ToolSummary
     from pcode.ui import Activity
 
-    activity = Activity(prompt="Fix bug", prompt_state="running", status="Responding…")
-    assert activity.uses_system_spinner is False
+    activity = Activity(prompt="Fix bug", prompt_state="running", status="Running read_file…")
     activity.tools.record(ToolStarted("read_file", "example.py", "one"))
-    assert activity.uses_system_spinner is True
-    # The finished call keeps the row (and the spinner) for its dwell window.
     activity.tools.record(ToolSummary("read_file", "example.py", call_id="one"))
+    parts = styled(activity.status_fragments("⠋", 80))
+    # Nothing runs, so a stale `Running` status gives the model the turn,
+    # and the held call is muted chrome with its result mark, not live work.
+    assert parts["activity.phase"] == "Waiting for model"
+    fragments = activity.status_fragments("⠋", 80)
+    assert ("class:activity.meta", " · ✓ Read file · example.py") in fragments
     activity.tools.clear()
-    assert activity.uses_system_spinner is False
-    # pcode's own work keeps the system spinner with no tool running.
-    activity.start_prompt("Compacting", kind="system")
-    assert activity.uses_system_spinner is True
+    parts = styled(activity.status_fragments("⠋", 80))
+    assert "activity.detail" not in parts and parts["activity.meta"] == "0s"
+
+
+def test_phase_clock_restarts_when_the_phase_changes(monkeypatch):
+    from pcode import ui
+
+    now = [100.0]
+    monkeypatch.setattr(ui, "monotonic", lambda: now[0])
+    activity = ui.Activity(prompt_state="running", status="Thinking…")
+
+    def clock():
+        return styled(activity.status_fragments("⠋", 80))["activity.meta"]
+
+    assert clock() == "0s"
+    now[0] += 0.5
+    assert clock() == "0s"
+    now[0] += 0.9
+    assert clock() == "1s"
+    activity.status = "Responding…"
+    now[0] += 0.5
+    assert clock() == "0s"
+    # A gap in drawing means the row went away between turns.
+    now[0] += 30
+    assert clock() == "0s"
 
 
 @pytest.mark.parametrize("width", [0, 1, 2, 3, 12, 40, 100])
@@ -181,11 +249,25 @@ def test_status_row_truncates_to_terminal_width(width):
 
     activity = Activity(prompt_state="running")
     activity.tools.record(ToolStarted("read_file", "界面/path\n" * 30, "one"))
-    rendered = "".join(text for _, text in activity.status_fragments("⠋", width))
+    rendered = "".join(text for _, text in activity.status_fragments("⠋", width, "✓3 tools"))
     assert "\n" not in rendered
     assert cell_len(rendered) <= width
-    if width > 2:
-        assert rendered.endswith("…")
+    if width >= 40:
+        assert "…" in rendered
+    elif width > 2:
+        # Too narrow for the detail to say anything: the phase alone, cut if it must be.
+        assert "界面" not in rendered
+
+
+def test_narrow_status_row_drops_the_tally_before_the_detail():
+    from pcode.ui import Activity
+
+    activity = Activity(
+        prompt_state="running", status="Retrying · Overloaded, retrying request 1/3…"
+    )
+    parts = styled(activity.status_fragments("⠋", 32, "✓12 ✗3 tools"))
+    assert parts["activity.meta"] == "0s"
+    assert parts["activity.detail"].startswith(" · Overloaded")
 
 
 def test_system_prompt_row_is_badged_and_not_an_echoed_command():
@@ -194,11 +276,13 @@ def test_system_prompt_row_is_badged_and_not_an_echoed_command():
     activity = Activity()
     activity.start_prompt("Compacting context", kind="system", detail="keep {tests}")
     fragments = activity.status_fragments("⠋", 80)
-    assert fragments == [
-        ("class:activity.system", "⠋ ◈ "),
-        ("class:activity.system.label", "Compacting context"),
-        ("class:activity.system.detail", " ▸ keep {tests}"),
-    ]
+    assert styled(fragments) == {
+        "activity.spinner": "⠋ ",
+        "activity.badge": "◈ ",
+        "activity.phase": "Compacting context",
+        "activity.detail": " ▸ keep {tests}",
+        "activity.meta": "0s",
+    }
     rendered = "".join(text for _, text in fragments)
     assert "/compact" not in rendered and "❯" not in rendered
 
@@ -208,10 +292,7 @@ def test_system_prompt_row_drops_empty_detail():
 
     activity = Activity()
     activity.start_prompt("Compacting context", kind="system")
-    assert activity.status_fragments("⠋", 80) == [
-        ("class:activity.system", "⠋ ◈ "),
-        ("class:activity.system.label", "Compacting context"),
-    ]
+    assert "activity.detail" not in styled(activity.status_fragments("⠋", 80))
 
 
 @pytest.mark.parametrize("width", [0, 1, 2, 3, 5, 12, 40, 100])
@@ -234,7 +315,7 @@ def test_new_conversation_clears_the_system_prompt_kind():
     activity.start_prompt("Compacting context", kind="system", detail="keep tests")
     activity.reset()
     activity.start_prompt("Fix bug")
-    assert activity.status_fragments("⠋", 20)[0] == ("class:activity.prompt", "⠋ ")
+    assert "activity.badge" not in styled(activity.status_fragments("⠋", 40))
     assert activity.prompt_detail == ""
 
 
@@ -276,8 +357,9 @@ def test_queued_and_running_system_rows_share_one_label():
     activity = Activity(queued_prompts=["/compact keep tests"])
     queued = activity.queue_rows(1)[0][1]
     activity.start_prompt(SYSTEM_COMMAND_LABELS["/compact"], kind="system", detail="keep tests")
-    running = "".join(text for _, text in activity.status_fragments("⠋", 80))
-    assert queued.removeprefix("Queued ") == running.removeprefix("⠋ ")
+    parts = styled(activity.status_fragments("⠋", 80))
+    running = parts["activity.badge"] + parts["activity.phase"] + parts["activity.detail"]
+    assert queued.removeprefix("Queued ") == running
 
 
 @pytest.mark.parametrize("inspector_command", ["/tools", "/tools failed"])

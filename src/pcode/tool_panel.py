@@ -17,10 +17,11 @@ AGENT_ICON = "✦"
 # run of the command it names. One cell wide, for the same reason.
 WAIT_ICON = "⧗"
 # The status row has the same problem, worse: a command that finishes in
-# milliseconds appears and vanishes before it can be read, and the row snaps
-# back to "Working…". The finished call keeps the row until it has been up this
-# long, unless real work starts first.
-STATUS_DWELL = 2.5
+# milliseconds appears and vanishes before it can be read, and a burst of them
+# strobes. A finished call keeps the row, marked done, for this long after it
+# settles, unless real work starts first. The tally on the same row is the
+# lasting record, so this only has to stop the flicker.
+STATUS_DWELL = 0.6
 # A sub-agent's plan is a window around its active task, like the parent's, but
 # shorter: several delegates share the panel with the parent's own tasks.
 CHILD_PLAN_ROWS = 3
@@ -68,11 +69,19 @@ class ToolCall:
         """A settled delegate stays listed, with its plan, like a completed task."""
         return self.event.name == DELEGATE and self.settled is not None
 
-    def line(self) -> str:
-        """The call without a status icon; each surface supplies its own."""
+    @property
+    def elapsed(self) -> float:
+        """Seconds so far; a settled call keeps the duration it finished with."""
+        return (self.settled if self.settled is not None else monotonic()) - self.started
+
+    def line(self, *, timed: bool = True) -> str:
+        """The call without a status icon; each surface supplies its own.
+
+        `timed=False` leaves the duration out, for the status row, which
+        keeps its clock in a fixed column of its own.
+        """
         event = self.event
-        # A settled call keeps the duration it finished with instead of ticking on.
-        elapsed = (self.settled if self.settled is not None else monotonic()) - self.started
+        elapsed = self.elapsed if timed else None
         if event.name == DELEGATE:
             return self._delegate_line(elapsed)
         # A stated purpose is what this row is for: the widget is the one place
@@ -92,15 +101,17 @@ class ToolCall:
         else:
             detail = command or detail
         icon = f"{WAIT_ICON} " if event.name == "wait_for_job" else ""
-        state = f" · {plain(event.activity)}" if event.activity else ""
-        return f"{icon}{label(event.name)}{state} · {elapsed:.1f}s · {detail}"
+        state = plain(event.activity) if event.activity else ""
+        clock = "" if elapsed is None else f"{elapsed:.1f}s"
+        return " · ".join(
+            part for part in (f"{icon}{label(event.name)}", state, clock, detail) if part
+        )
 
-    def _delegate_line(self, elapsed: float) -> str:
+    def _delegate_line(self, elapsed: float | None) -> str:
         """`✦ Worker · 5.5s · Thinking · <task>`: the agent is what tells delegates apart.
 
         A settled delegate's last phase is stale (nearly always "Responding"),
-        so it says how it ended instead. The status row draws a spinner, not
-        a check, so this word is the only sign there that the agent is done.
+        so it says how it ended instead.
         """
         event = self.event
         if self.settled is not None:
@@ -109,7 +120,8 @@ class ToolCall:
             state = plain(event.activity) or "Starting"
         name = event.agent[:1].upper() + event.agent[1:] or label(event.name)
         task = event.task or plain(event.detail, limit=None)
-        return f"{AGENT_ICON} {name} · {elapsed:.1f}s · {state} · {task}"
+        clock = "" if elapsed is None else f"{elapsed:.1f}s"
+        return " · ".join(part for part in (f"{AGENT_ICON} {name}", clock, state, task) if part)
 
 
 @dataclass
@@ -202,10 +214,18 @@ class ToolHistory:
         if running is not None:
             return running
         held = self.recent
-        if held is not None and monotonic() - held.started < STATUS_DWELL:
+        if held is not None and monotonic() - (held.settled or held.started) < STATUS_DWELL:
             return held
         self.recent = None
         return None
+
+    @property
+    def running(self) -> int:
+        """This agent's calls still in flight, for the status row's `Running N tools`.
+
+        A delegate counts once; the calls its sub-agent makes are its own.
+        """
+        return sum(c.settled is None and not c.event.parent_call_id for c in self.calls)
 
     @property
     def background(self) -> list[ToolCall]:

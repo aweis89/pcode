@@ -68,19 +68,26 @@ def test_live_submission_does_not_echo_quote_before_response():
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_live_prompt_uses_muted_notice_style_without_changing_editor(theme):
+def test_status_row_accents_the_live_phase_and_mutes_its_chrome(theme):
     from pcode.ui import PALETTES, Activity
 
     palette = PALETTES[theme]
     console = Console(file=StringIO())
     with console.use_theme(palette.rich_theme()):
-        notice_style = console.get_style("pcode.muted")
+        muted = console.get_style("pcode.muted").color.name.lstrip("#")
     prompt_style = palette.prompt_style()
-    activity = Activity(prompt="A quiet prompt", prompt_state="running", status="Waiting…")
-    for style, _ in activity.status_fragments("⠋", 80):
-        attrs = prompt_style.get_attrs_for_style_str(style)
-        assert attrs.color == notice_style.color.name.lstrip("#")
-        assert not attrs.bold
+    activity = Activity(prompt="A quiet prompt", prompt_state="running", status="Retrying · soon…")
+    fragments = activity.status_fragments("⠋", 80, "✓2 tools")
+    attrs = {style: prompt_style.get_attrs_for_style_str(style) for style, _ in fragments if style}
+    accent = palette.accent.lstrip("#")
+    # Live: the spinner and phase share the accent; only the phase is bold.
+    assert attrs["class:activity.spinner"].color == accent
+    assert attrs["class:activity.phase"].color == accent
+    assert attrs["class:activity.phase"].bold
+    # Content keeps the terminal's own colour; chrome is muted and never bold.
+    assert not attrs["class:activity.detail"].color
+    assert attrs["class:activity.meta"].color == muted
+    assert not attrs["class:activity.meta"].bold
     editor_attrs = prompt_style.get_attrs_for_style_str("class:prompt")
-    assert editor_attrs.color == palette.accent.lstrip("#")
+    assert editor_attrs.color == accent
     assert editor_attrs.bold

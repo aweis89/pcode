@@ -186,13 +186,13 @@ def test_slash_command_toggles_and_saves_the_default():
         app.registry.dispatch("/group-tools yes")
 
 
-def test_the_live_panel_counts_the_run_flush_left():
+def render_panel(running: bool) -> list[str]:
     async def render():
         stream = StringIO()
         app = PreviewApp(console=Console(file=stream, width=80, color_system=None))
         app.transcript.group_tools = True
         app.transcript.show_edits = False
-        app.activity.prompt_state = "running"
+        app.activity.prompt_state = "running" if running else "done"
         for event in (edit(1), edit(2), run(1)):
             app.transcript.tool_result(event)
         with create_pipe_input() as pipe:
@@ -213,7 +213,18 @@ def test_the_live_panel_counts_the_run_flush_left():
                 for row in range(screen.height)
             ]
 
-    lines = asyncio.run(render())
-    row = next(line for line in lines if "tools" in line)
+    return asyncio.run(render())
+
+
+def test_a_running_turn_counts_the_run_on_its_status_row():
+    lines = render_panel(running=True)
+    (row,) = [line for line in lines if "tools" in line]
+    # The count sits beside the spinner that says the run is still going.
+    assert row.lstrip().startswith("⠋ Working")
+    assert row.endswith("✓3 tools · 0s")
+
+
+def test_without_a_status_row_the_run_is_counted_flush_left():
+    lines = render_panel(running=False)
+    (row,) = [line for line in lines if "tools" in line]
     assert row == "✓ 3 tools · Edit file ✓2 · Run shell ✓1"
-    assert lines.index(row) < next(i for i, line in enumerate(lines) if "Working" in line)
