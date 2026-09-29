@@ -114,6 +114,11 @@ attaches is sent the conversation so far and then every event as the turn
 produces it, so switching to a session mid-turn picks the turn up where it is,
 streaming text and running commands included.
 
+When the terminal is waiting on a host (one starting up or being connected to,
+a slash command the host has not finished, the saved-session list `/resume`
+reads), a `◈` spinner row above the editor names the wait and counts the
+seconds. Waits under a quarter of a second never show one.
+
 A new host started with the `worktree` setting on makes its own worktree, the
 same as a local session, and `/switch new` starts from the main checkout so the
 new session never shares yours. A host tidies its worktree when it stops, as a

@@ -1085,7 +1085,8 @@ class PreviewApp:
         runtime = self.runtime
         # Kept: the new host resumes in the same worktree.
         runtime.stop(keep_worktree=True)
-        await wait_for_exit(runtime.pid)
+        with self.activity.waiting("Stopping the session host"):
+            await wait_for_exit(runtime.pid)
         if runtime.session_id:
             await self.start_host_session(
                 resume=runtime.session_id, note="Restarted on the current pcode"
@@ -1168,13 +1169,15 @@ class PreviewApp:
         if self.hosted and entry.id == self.runtime.id:
             self.stop_host("")
             return
-        await stop_entry(entry)
+        with self.activity.waiting(f"Stopping session {entry.id}"):
+            await stop_entry(entry)
         self.transcript.note(f"Stopped session {entry.id} ({entry.label()[:60]}).")
 
     async def attach_host(self, entry) -> None:
         from pcode.remote import HostLaunch
 
-        controller, welcome = await HostLaunch.running(entry).connect(self, self.activity)
+        with self.activity.waiting(f"Connecting to session {entry.id}"):
+            controller, welcome = await HostLaunch.running(entry).connect(self, self.activity)
         await self.adopt_controller(controller, welcome, f"Switched to session {entry.id}")
 
     async def start_host_session(
@@ -1192,17 +1195,28 @@ class PreviewApp:
         base = (
             self.workspace if resume else worktree.main_checkout(self.workspace) or self.workspace
         )
-        identity, process, log = await asyncio.to_thread(
-            spawn_host,
-            model=self.model,
-            workspace=base,
-            resume=resume,
-            session_dir=self.session_dir,
+        wait = self.activity.begin_wait(
+            f"Resuming {resume[:8]} in a new session host" if resume else "Starting a session host"
         )
-        self.transcript.note(f"Starting session {identity}… (log: {log})")
+        try:
+            identity, process, log = await asyncio.to_thread(
+                spawn_host,
+                model=self.model,
+                workspace=base,
+                resume=resume,
+                session_dir=self.session_dir,
+            )
+            self.transcript.note(f"Starting session {identity}… (log: {log})")
+            if prompt:
+                # Its state goes nowhere: this terminal stays on its own session.
+                controller, _ = await wait_for_host(identity, None, Activity(), process, log)
+            else:
+                controller, welcome = await wait_for_host(
+                    identity, self, self.activity, process, log
+                )
+        finally:
+            self.activity.end_wait(wait)
         if prompt:
-            # Its state goes nowhere: this terminal stays on its own session.
-            controller, _ = await wait_for_host(identity, None, Activity(), process, log)
             controller.submit(prompt, "queue")
             controller.close()
             self.transcript.note(
@@ -1212,7 +1226,6 @@ class PreviewApp:
             if self._host_watch is not None:
                 self._host_watch()
             return
-        controller, welcome = await wait_for_host(identity, self, self.activity, process, log)
         what = (
             f"Resumed {resume} in session host {identity}" if resume else f"New session {identity}"
         )
@@ -1353,14 +1366,24 @@ class PreviewApp:
                 session.default_buffer.cursor_position = len(draft)
 
     async def choose_session(self, output: TerminalOutput, session) -> None:
-        from pcode.session_ui import SessionBrowser
-        from pcode.sessions import list_sessions, session_root
-        from pcode.worktree import repo_scope
-
         self.session_requested = False
-        records = list_sessions(self.session_dir)
-        scope = repo_scope(self.workspace)
-        if not any(repo_scope(Path(info.workspace)) == scope for info in records):
+
+        def load():
+            # Off the event loop: the first import of pcode.sessions pulls in the
+            # agent stack, and grouping by repository runs git per workspace.
+            from pcode.sessions import list_sessions
+            from pcode.worktree import repo_scope
+
+            records = list_sessions(self.session_dir)
+            scope = repo_scope(self.workspace)
+            return records, any(repo_scope(Path(info.workspace)) == scope for info in records)
+
+        with self.activity.waiting("Loading saved sessions"):
+            records, any_here = await asyncio.to_thread(load)
+        from pcode.session_ui import SessionBrowser
+        from pcode.sessions import session_root
+
+        if not any_here:
             self.transcript.note("No saved sessions for this workspace.")
             return
         current = getattr(self.runtime, "session", None)
@@ -1660,8 +1683,10 @@ class PreviewApp:
                     f"Starting session host {launch.id}; quitting stops it, /detach leaves "
                     f"it running. Log: {launch.log}"
                 )
+            label = "Starting the session host" if launch.process else "Connecting to the host"
             try:
-                controller, welcome = await launch.connect(self, self.activity)
+                with self.activity.waiting(label):
+                    controller, welcome = await launch.connect(self, self.activity)
             except Exception as error:
                 self._startup_error = error
                 self._startup_pending = False

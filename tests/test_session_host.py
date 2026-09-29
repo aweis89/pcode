@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -439,6 +440,29 @@ def test_session_commands_run_in_the_host_and_ask_the_terminal_that_sent_them(
     asyncio.run(run())
 
 
+def test_a_command_waits_with_a_spinner_until_the_host_has_run_it(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal, view, _ = await attach(host)
+            terminal.command("/effort")
+            terminal.command("/effort")
+            assert [wait.label for wait in terminal.activity.waits] == ["Running /effort"] * 2
+            await until(lambda: view.count("after_command") == 2)
+            assert terminal.activity.waits == []
+            # Ctrl+C drops queued commands, some of which never report back.
+            terminal.command("/effort")
+            terminal.cancel()
+            assert terminal.activity.waits == []
+            terminal.command("/effort")
+            terminal.close()
+            assert terminal.activity.waits == []
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
 def test_btw_model_names_complete_as_soon_as_a_terminal_attaches(tmp_path, host_dir, monkeypatch):
     from prompt_toolkit.completion import CompleteEvent
     from prompt_toolkit.document import Document
@@ -835,3 +859,14 @@ def test_restart_stops_keeping_the_worktree_and_resumes_the_session(tmp_path):
         assert started == [("", "session-1", "Restarted on the current pcode")]
 
     asyncio.run(run())
+
+
+def test_waiting_for_a_spawned_host_does_not_wait_out_its_zombie():
+    """A host this terminal spawned exits as its child: the wait must reap it, not time out."""
+    from pcode.remote import wait_for_exit, wait_for_exit_sync
+
+    for wait in (wait_for_exit_sync, lambda pid, timeout: asyncio.run(wait_for_exit(pid, timeout))):
+        process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        started = time.monotonic()
+        wait(process.pid, timeout=10)
+        assert time.monotonic() - started < 5
