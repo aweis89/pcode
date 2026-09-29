@@ -38,15 +38,19 @@ def test_animation_elapsed_resize_and_cancel_after_idle(pane):
         # non-blank character rather than column zero.
         return next(line.lstrip()[0] for line in screen.splitlines() if "WAITING_TOOL" in line)
 
+    def elapsed(screen):
+        # The phase clock sits at the right end of the status row.
+        line = next(line for line in screen.splitlines() if "WAITING_TOOL" in line)
+        return int(re.search(r" (\d+)s$", line.rstrip())[1])
+
     first = capture(pane, "WAITING_TOOL", running=True)
-    first_time = float(re.search(r"· ([0-9.]+)s", first)[1])
+    first_time = elapsed(first)
     first_icon = status_icon(first)
     deadline = time.monotonic() + TIMEOUT
     while True:
         time.sleep(0.13)
         screen = capture(pane, "WAITING_TOOL", running=True)
-        elapsed = float(re.search(r"· ([0-9.]+)s", screen)[1])
-        if elapsed > first_time and status_icon(screen) != first_icon:
+        if elapsed(screen) > first_time and status_icon(screen) != first_icon:
             break
         assert time.monotonic() < deadline, screen
     pane("resize-window", "-t", "preview:0", "-x", "40")

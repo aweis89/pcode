@@ -116,9 +116,17 @@ def pane(request, tmp_path):
     # The pane runs from this checkout, which ships .pcode/worktree-setup; trust
     # it up front or the launch prompt blocks the pane. Panes capture the screen
     # the moment a marker shows and expect scrollback to be complete at that
-    # instant, so paced scrollback is off; its own test turns it on.
+    # instant, so paced scrollback is off; its own test turns it on. Grouping
+    # is off as in conftest: these panes assert on per-call summary lines.
     config.joinpath("preferences.json").write_text(
-        json.dumps({"autohide_tasks": "off", "project_extensions": "on", "paced_scrollback": "off"})
+        json.dumps(
+            {
+                "autohide_tasks": "off",
+                "project_extensions": "on",
+                "paced_scrollback": "off",
+                "group_tools": "off",
+            }
+        )
     )
     reaper = tmux_reaper(server, os.getpid())
 
@@ -170,7 +178,9 @@ def pane(request, tmp_path):
 
 
 # The spinner row leads with a `dots` frame, or a `line` frame for system work.
-BUSY_FRAMES = tuple(" " + frame + " " for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏-\\|/")
+BUSY_FRAMES = tuple(" " + frame + " " for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+# The active task spins with the status row's own frames: one spinner on screen.
+TASK_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # The footer always names the mode the next Enter sends with.
 SEND_MODES = ("steering", "queue", "interrupt")
@@ -782,7 +792,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, release, split):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "Task 8", running=True)
-    frames = "◜◠◝◞◡◟"
+    frames = TASK_FRAMES
     first_frame = next(frame for frame in frames if f"{frame} Task 8" in screen)
     deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
@@ -915,7 +925,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     assert status.startswith(SPINNER_ROW) and "Run shell" in status
     assert not status.startswith("│")
     assert lines[task - 1].startswith("┌─ Tasks 0/1 ─")
-    assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
+    assert lines[task].startswith("│") and lines[task][1] in TASK_FRAMES
     assert lines[task + 1].startswith("└")
     assert lines[task + 2].startswith("┌")  # Editor, not another Tools widget.
     assert "Tools" not in screen and "Tasks ·" not in screen
@@ -937,7 +947,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
                 break
             assert time.monotonic() < deadline, screen
             time.sleep(0.05)
-        assert lines[task].startswith("│") and lines[task][1] in "◜◠◝◞◡◟"
+        assert lines[task].startswith("│") and lines[task][1] in TASK_FRAMES
         assert "keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")  # Clears the draft.
@@ -990,7 +1000,7 @@ def test_tasks_share_the_editor_box_by_default_and_config_applies_live(pane):
             time.sleep(0.05)
         heading, tasks, text_rows = attached_box(screen)
         assert heading.startswith("┌─ Tasks 0/1")
-        assert len(tasks) == 1 and tasks[0][1] in "◜◠◝◞◡◟"
+        assert len(tasks) == 1 and tasks[0][1] in TASK_FRAMES
         assert text_rows == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
     pane("send-keys", "-t", "preview:0.0", "C-c")

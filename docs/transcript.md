@@ -144,8 +144,8 @@ the sub-agent finished are written flush when the cancellation is reported.
 ## Grouping tool calls
 
 With `group_tools` on (the default), a run of consecutive tool calls leaves one line in
-scrollback instead of one per call. While the run is going, the live panel
-counts it just above the spinner; the line is written once something else
+scrollback instead of one per call. While the run is going, the status row
+counts it at the right (`✓7 ✗1 tools`); the full line is written once something else
 reaches scrollback (the model's reply, a diff, mirrored command output) or the
 turn ends. `/tools` still lists every call.
 
