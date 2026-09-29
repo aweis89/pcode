@@ -66,6 +66,7 @@ def make_app(width=80, workspace=None):
                 "/syntax",
                 "/theme-preview",
                 "/redraw",
+                "/usage",
             ],
         ),
         ("/sta", ["/status"]),

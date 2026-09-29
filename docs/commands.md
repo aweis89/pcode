@@ -95,6 +95,15 @@ candidate's size so that cost is visible before you pick.
   and a breakdown of the prompt overhead the model is re-sent every request — see
   [Where the fixed prompt goes](context.md#where-the-fixed-prompt-goes). Opens a popup in the
   interactive editor; prints inline when there is no editor.
+- `/usage`: plan limits and spend for the Claude Code and Codex logins, fetched when you
+  run it. Subscription seats show the session (5h) and weekly percentages with their resets,
+  including per-model weekly caps. Seats billed at API rates show the monthly spend against
+  its cap (for example `Spend: $652.42 of $2,500.00 (26%)`). No admin key is needed: Claude
+  reads the login of the current `CLAUDE_CONFIG_DIR` (from the Keychain on macOS, else
+  `.credentials.json`), and Codex uses pcode's `/login openai-codex` or the Codex CLI's
+  `auth.json`, through `PCODE_LLM_PROXY` when set. Both endpoints are undocumented and can
+  change. An expired Claude Code token is reported, never refreshed, so Claude Code stays
+  signed in. Plain API keys have no per-user usage endpoint and are not covered.
 - `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
 - `/jobs [stop ID|stop all|watch ID|unwatch]`: bare `/jobs` opens a popup listing this
   session's shell jobs, running first, beside the selected job's command and live output log.
