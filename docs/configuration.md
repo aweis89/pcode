@@ -147,7 +147,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `show_thinking` | `off` | `on`, `off` (show the model's readable reasoning in scrollback; `/show-thinking`) |
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; `/show-edits`) |
 | `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+G or `/show-commands`) |
-| `group_tools` | `off` | `on`, `off` (fold each run of tool calls into one line; `/group-tools`, see [grouping tool calls](transcript.md#grouping-tool-calls)) |
+| `group_tools` | `on` | `on`, `off` (fold each run of tool calls into one line; `/group-tools`, see [grouping tool calls](transcript.md#grouping-tool-calls)) |
 | `command_scrollback_lines` | `20` | Positive integer, lines of each command's output mirrored into scrollback |
 | `command_preview_lines` | `10` | Positive integer, lines in the live preview of a running command |
 | `tool_error_scrollback` | `off` | `on`, `off` (keep a failed tool call's full diagnostic in scrollback instead of one line) |

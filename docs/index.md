@@ -41,7 +41,7 @@ next.
 | Ctrl+G, `/show-commands` | Mirror each command and its output into scrollback, or hide them |
 | `/show-edits` | Show or hide the diff of every file edit |
 | `/show-thinking` | Show or hide the model's readable reasoning |
-| `/group-tools` | Fold a run of tool calls into one line: `✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1` |
+| `/group-tools` | Fold each run of tool calls into one line (on by default): `✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1` |
 | Ctrl+O, `/show-tasks` | Show or hide the live task and tool panel |
 
 Resizing the terminal re-renders at the new width too, so a narrowed pane

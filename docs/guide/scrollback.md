@@ -16,14 +16,16 @@ A typical rhythm:
 
 1. While a tricky turn runs, press **Ctrl+G** to mirror every shell command and
    its output into scrollback, so you can watch the tests fail and pass.
-2. Once it's done, press Ctrl+G again. The same history comes back with each
-   command folded to a one-line summary, and the reply is easy to find.
-3. Turn on `/group-tools` if even one line per call is too much. A run of calls
-   becomes one line:
+2. Once it's done, press Ctrl+G again. The same history comes back with the
+   command output gone and each run of tool calls folded into one line, so the
+   reply is easy to find:
 
     ```text
     ✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1
     ```
+
+3. Want a line per call instead? `/group-tools off` unfolds them, again for the
+   whole history.
 
 The toggles, each saved as your default:
 
@@ -32,7 +34,7 @@ The toggles, each saved as your default:
 | Ctrl+G, `/show-commands` | Each shell command and its output |
 | `/show-edits` | The diff of each file edit |
 | `/show-thinking` | The model's readable reasoning |
-| `/group-tools` | One line per run of tool calls instead of one per call |
+| `/group-tools` | One line per run of tool calls (the default) or one per call |
 | Ctrl+O, `/show-tasks` | The live task and tool panel above the editor |
 
 Hidden isn't deleted. Thinking, diffs and command results are kept even while
