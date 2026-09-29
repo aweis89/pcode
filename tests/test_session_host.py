@@ -439,6 +439,29 @@ def test_session_commands_run_in_the_host_and_ask_the_terminal_that_sent_them(
     asyncio.run(run())
 
 
+def test_a_command_waits_with_a_spinner_until_the_host_has_run_it(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal, view, _ = await attach(host)
+            terminal.command("/effort")
+            terminal.command("/effort")
+            assert [wait.label for wait in terminal.activity.waits] == ["Running /effort"] * 2
+            await until(lambda: view.count("after_command") == 2)
+            assert terminal.activity.waits == []
+            # Ctrl+C drops queued commands, some of which never report back.
+            terminal.command("/effort")
+            terminal.cancel()
+            assert terminal.activity.waits == []
+            terminal.command("/effort")
+            terminal.close()
+            assert terminal.activity.waits == []
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
 def test_btw_model_names_complete_as_soon_as_a_terminal_attaches(tmp_path, host_dir, monkeypatch):
     from prompt_toolkit.completion import CompleteEvent
     from prompt_toolkit.document import Document

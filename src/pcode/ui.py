@@ -13,7 +13,7 @@ from io import StringIO
 from time import monotonic
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.application import Application, get_app, get_app_or_none
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import merge_completers
 from prompt_toolkit.document import Document
@@ -305,6 +305,23 @@ NOTICE_ROWS = 6
 JOB_ROWS = 3
 # Running side questions likewise; `/btw` has the full list.
 ASIDE_ROWS = 3
+# A wait on the session host shorter than this never gets a row: most answer
+# within a frame or two, and a row that flashes for them reads as a glitch.
+WAIT_GRACE_SECONDS = 0.25
+
+
+@dataclass(eq=False)
+class Wait:
+    """Something this terminal is waiting on, and since when."""
+
+    label: str
+    started: float = field(default_factory=monotonic)
+
+
+def _invalidate() -> None:
+    """Repaint the running editor, if there is one; state can change outside it."""
+    if (app := get_app_or_none()) is not None:
+        app.invalidate()
 
 
 def chrome_rows(text: str, width: int, style: str) -> list[tuple[str, str]]:
@@ -365,6 +382,41 @@ class Activity:
     # The session's side-question records (`Asides.items`, shared, not copied):
     # the running ones get a spinner row below the prompt's.
     asides: list = field(default_factory=list)
+    # What this terminal is waiting on (the session host starting, a command
+    # it has not finished): its own state, never synced from the host.
+    waits: list[Wait] = field(default_factory=list)
+
+    def begin_wait(self, label: str) -> Wait:
+        """Start a wait that shows a spinner row once it outlasts the grace period."""
+        wait = Wait(label)
+        self.waits.append(wait)
+        _invalidate()  # Starts the animation timer that draws the row later.
+        return wait
+
+    def end_wait(self, wait: Wait) -> None:
+        if wait in self.waits:
+            self.waits.remove(wait)
+            _invalidate()
+
+    @contextmanager
+    def waiting(self, label: str):
+        wait = self.begin_wait(label)
+        try:
+            yield wait
+        finally:
+            self.end_wait(wait)
+
+    def wait_fragments(self, spinner: str, width: int):
+        """The newest wait past its grace period, as a system row; empty otherwise."""
+        now = monotonic()
+        shown = [wait for wait in self.waits if now - wait.started >= WAIT_GRACE_SECONDS]
+        if not shown or width < 1:
+            return []
+        wait = shown[-1]
+        text = Text(f"{spinner} {SYSTEM_BADGE} {plain(wait.label, limit=None)}")
+        text.append(f" \u00b7 {now - shown[0].started:.0f}s")
+        text.truncate(width, overflow="ellipsis")
+        return [("class:activity.system", text.plain)]
 
     @property
     def asides_running(self) -> bool:
@@ -1618,6 +1670,8 @@ def create_prompt(
         interval = spinner.interval
         if activity.asides_running:
             interval = min(interval, prompt_spinner.interval)
+        if activity.waits:
+            interval = min(interval, system_spinner.interval)
         if activity.tasks_shown:
             interval = min(interval, plan_spinner.interval)
         return interval / 1000
@@ -1771,6 +1825,13 @@ def create_prompt(
         )
 
     @per_render
+    def wait_rows():
+        """The terminal's own wait (the host starting, a command running there)."""
+        return activity.wait_fragments(
+            system_spinner.render(monotonic()).plain, session.app.output.get_size().columns - 1
+        )
+
+    @per_render
     def typing_row():
         """Prose still being typed out: the next scrollback row, drawn live."""
         output = transcript.output if transcript is not None else None
@@ -1788,6 +1849,7 @@ def create_prompt(
             activity.status_shown
             or bool(group_rows())
             or bool(notice_rows())
+            or bool(wait_rows())
             or bool(aside_rows())
             or bool(job_rows())
         )
@@ -1802,6 +1864,7 @@ def create_prompt(
             + activity.status_shown
             + len(group_rows())
             + len(notice_rows())
+            + len(wait_rows())
             + len(aside_rows())
             + len(job_rows())
             + status_gap()
@@ -1964,6 +2027,14 @@ def create_prompt(
         ),
         filter=Condition(lambda: bool(notice_rows())),
     )
+    # This terminal's own wait on the session host, which no turn row covers.
+    waits = ConditionalContainer(
+        spinner_rows(
+            lambda: panel_fragments(wait_rows(), session.app.output.get_size().columns - 1),
+            lambda: len(wait_rows()),
+        ),
+        filter=Condition(lambda: bool(wait_rows())),
+    )
     # Below the spinner: side questions run beside the turn and outlive it, so
     # they get their own spinner rows rather than a share of the prompt's.
     asides = ConditionalContainer(
@@ -1995,7 +2066,7 @@ def create_prompt(
         filter=Condition(lambda: bool(typing_row())),
     )
     activity_panel = HSplit(
-        [status_spacer, group, commands, notice, current_status, asides, jobs, plan]
+        [status_spacer, group, commands, notice, current_status, waits, asides, jobs, plan]
     )
 
     @per_render
@@ -2109,6 +2180,7 @@ def create_prompt(
             # the frame that finally removes it.
             or activity.notice_shown
             or activity.asides_running
+            or bool(activity.waits)
             or (activity.tasks_shown and activity.tools.animating)
         )
 
