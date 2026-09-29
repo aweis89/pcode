@@ -64,6 +64,7 @@ TERMINAL_COMMANDS = frozenset(
         "/tools",
         "/diffs",
         "/links",
+        "/copy",
         "/tree",
         "/workers",
         "/resume",

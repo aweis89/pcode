@@ -202,6 +202,7 @@ class PreviewApp:
         self.inspector_requested: str | None = None
         self.diffs_requested = False
         self.links_requested = False
+        self.copy_requested = False
         # Unsaved conversations have no journal to re-read, so keep their changes.
         self.edits: list[EditCompleted] = []
         self.session_requested = False
@@ -254,6 +255,12 @@ class PreviewApp:
                 "/links",
                 "Pick a URL from this conversation and open it in the browser",
                 self.links,
+                group="Inspect",
+            ),
+            Command(
+                "/copy",
+                "Copy the last response, or a quote or code block from it",
+                self.copy,
                 group="Inspect",
             ),
             Command(
@@ -885,6 +892,43 @@ class PreviewApp:
         if argument:
             raise ValueError("Usage: /links")
         self.links_requested = True
+
+    def copy(self, argument: str) -> None:
+        if argument:
+            raise ValueError("Usage: /copy")
+        self.copy_requested = True
+
+    async def choose_copy(self, output: TerminalOutput, session) -> None:
+        from pcode.clipboard import copy as copy_to_clipboard
+        from pcode.copy_ui import last_response, snippet_dialog, snippets
+        from pcode.session_ui import literal
+
+        self.copy_requested = False
+        tree = getattr(self.runtime, "tree", None)
+        # Redacted like /tree's copy: what leaves pcode never carries a secret.
+        choices = snippets(literal(last_response(tree))) if tree is not None else []
+        if not choices:
+            self.transcript.note("No response to copy yet.")
+            return
+        choice = choices[0]
+        if len(choices) > 1:
+            async with self.popup(output, session) as modal_input:
+                dialog = snippet_dialog(
+                    choices,
+                    input=modal_input,
+                    output=session.app.output,
+                    style=session.app.style,
+                )
+                choice = await dialog.run_async()
+            if choice is None:
+                return
+        copied, truncated = copy_to_clipboard(choice.text, session.app.output if session else None)
+        name = choice.kind
+        limit = " (truncated)" if truncated else ""
+        if copied:
+            self.transcript.note(f"Copied {name}{limit}.")
+        else:
+            self.transcript.error(f"Could not copy {name}.")
 
     async def choose_link(self, output: TerminalOutput, session) -> None:
         from pcode.links import conversation_links, open_link
@@ -1647,6 +1691,8 @@ class PreviewApp:
                 await self.browse_diffs(output, session)
             if self.links_requested:
                 await self.choose_link(output, session)
+            if self.copy_requested:
+                await self.choose_copy(output, session)
         except _PopupSuperseded:
             pass
         finally:
@@ -1859,6 +1905,7 @@ class PreviewApp:
             on_send_mode=self.cycle_send_mode,
             on_model=lambda: submit("/model"),
             on_previous_session=lambda: submit("/switch -"),
+            on_copy_response=lambda: submit("/copy"),
             bottom_toolbar=self.toolbar,
             vi_mode=load_preferences().get("editing_mode", "emacs") == "vi",
         )
