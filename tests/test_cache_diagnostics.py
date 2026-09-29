@@ -150,6 +150,46 @@ def test_instruction_and_tool_changes_outrank_message_diffs():
     assert "edited schema or order" in divergence(added, reordered)
 
 
+@pytest.mark.parametrize("provider", ["claude", "anthropic"])
+def test_a_tool_search_reveal_is_named_only_where_it_moves_the_prefix(provider):
+    """A revealed tool stays in `function_tools`; only the provider knows if it moved."""
+    from pydantic_ai.models import ModelRequestParameters
+    from pydantic_ai.models.anthropic import AnthropicModel
+    from pydantic_ai.providers.anthropic import AnthropicProvider
+
+    from pcode.claude_sdk import claude_model
+
+    model = (
+        claude_model("claude:claude-opus-5-5")
+        if provider == "claude"
+        else AnthropicModel("claude-opus-5-5", provider=AnthropicProvider(api_key="unused"))
+    )
+    hidden = ToolDefinition(
+        name="post", parameters_json_schema={"type": "object"}, defer_loading=True
+    )
+
+    def request(revealed):
+        parameters = ModelRequestParameters(
+            function_tools=[tool(), hidden], revealed_tool_names=revealed
+        )
+        return fingerprint(
+            SimpleNamespace(
+                model=model,
+                model_request_parameters=parameters,
+                model_settings=None,
+                messages=turn(),
+            ),
+            reply(),
+            step=1,
+        )
+
+    summary = divergence(request(set()), request({"post"}))
+    if provider == "claude":  # withheld until found, then sent ahead of the history
+        assert "Tool definitions changed (added post)" in summary
+    else:  # sent as deferred throughout: the reveal leaves the prefix alone
+        assert "Request fingerprints unchanged" in summary
+
+
 def test_cache_settings_changes_are_reported():
     before = print_for(turn(), settings={"anthropic_cache": "5m"})
     after = print_for(turn(), settings={"anthropic_cache": "1h"})

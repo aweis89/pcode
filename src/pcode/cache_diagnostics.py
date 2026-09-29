@@ -18,6 +18,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from pydantic_ai.messages import CachePoint
 
@@ -161,22 +162,48 @@ class RequestFingerprint:
         }
 
 
+def _sent_tools(request_context) -> list[tuple[Any, str]]:
+    """Each tool whose definition the request carries, with how the provider sends it.
+
+    A deferred tool stays in `function_tools` whether or not tool search has revealed
+    it, so the list alone cannot see a reveal. Whether a reveal moves the prefix is the
+    provider's call: one that withholds hidden schemas (`claude:`) adds the definition
+    ahead of every cached message, while native deferral keeps sending it as deferred.
+    The model's own `prepare_request` resolves that, exactly as the request did.
+    """
+    parameters = request_context.model_request_parameters
+    model = getattr(request_context, "model", None)
+    if getattr(parameters, "tool_visibility", None) is None and model is not None:
+        try:
+            _, parameters = model.prepare_request(request_context.model_settings, parameters)
+        except Exception:
+            parameters = request_context.model_request_parameters
+    visibility_of = getattr(parameters, "visibility_of", None)
+    sent = []
+    for tool in [
+        *(getattr(parameters, "function_tools", None) or []),
+        *(getattr(parameters, "output_tools", None) or []),
+    ]:
+        visibility = visibility_of(tool.name) if visibility_of is not None else "visible"
+        if visibility in ("visible", "deferred"):
+            sent.append((tool, visibility))
+    return sent
+
+
 def fingerprint(request_context, response, step: int) -> RequestFingerprint:
     parameters = request_context.model_request_parameters
     instruction_text = "\n".join(
         _content_text(getattr(part, "content", None))
         for part in (getattr(parameters, "instruction_parts", None) or [])
     )
-    tools = [
-        *(getattr(parameters, "function_tools", None) or []),
-        *(getattr(parameters, "output_tools", None) or []),
-    ]
+    sent = _sent_tools(request_context)
+    tools = [tool for tool, _ in sent]
     # Definitions reach the provider in list order: a reordered toolset invalidates
     # the cached block just as an edited schema does, so order stays in the digest.
     tool_text = "\n".join(
-        f"{tool.name}|{tool.description or ''}|"
+        f"{tool.name}|{visibility}|{tool.description or ''}|"
         f"{json.dumps(tool.parameters_json_schema, sort_keys=True, default=str)}"
-        for tool in tools
+        for tool, visibility in sent
     )
     settings = request_context.model_settings or {}
     usage = response.usage
