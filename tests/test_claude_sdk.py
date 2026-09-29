@@ -55,6 +55,10 @@ class World:
     replies: list = field(default_factory=list)
     clients: list = field(default_factory=list)
     missing: set = field(default_factory=set)
+    # Status polls that find pcode's server not listed yet, like a real CLI
+    # right after `connect`; then how it reports the server ("connected").
+    unlisted_polls: int = 0
+    server_status: str = "connected"
     ids: itertools.count = field(default_factory=lambda: itertools.count(1))
     # Transcript entries only, so tests can name them; stream events use `ids`.
     uuids: itertools.count = field(default_factory=lambda: itertools.count(1))
@@ -75,6 +79,17 @@ class FakeCLI:
         self.mcp: ClientSession | None = None
         self._stop = asyncio.Event()
         self._serving: asyncio.Task | None = None
+        self.status_polls = 0
+        self.polls_at_first_query: int | None = None
+
+    async def get_mcp_status(self) -> dict:
+        self.status_polls += 1
+        if self.status_polls <= self.world.unlisted_polls:
+            return {"mcpServers": []}
+        listed = await self.mcp.list_tools()
+        tools = [{"name": tool.name} for tool in listed.tools]
+        server = {"name": claude.SERVER, "status": self.world.server_status, "tools": tools}
+        return {"mcpServers": [server]}
 
     async def connect(self) -> None:
         if self.options.resume in self.world.missing:
@@ -101,6 +116,8 @@ class FakeCLI:
                 group.cancel_scope.cancel()
 
     async def query(self, prompt) -> None:
+        if self.polls_at_first_query is None:
+            self.polls_at_first_query = self.status_polls
         async for message in prompt:
             content = list(message["message"]["content"])
             if self.turn is not None and not self.turn.done():
@@ -274,7 +291,8 @@ class FakeCLI:
             else:
                 kind, name, arguments = block
                 tool_id = f"toolu_{next(self.world.ids)}"
-                wire = f"{claude.TOOL_PREFIX}{name}"
+                # A stray call names the tool without the CLI's prefix.
+                wire = name if kind == "stray" else f"{claude.TOOL_PREFIX}{name}"
                 self._event(
                     {
                         "type": "content_block_start",
@@ -307,7 +325,7 @@ class FakeCLI:
                     pass
                 elif kind == "malformed":
                     refused = ["malformed"]
-                elif kind == "refused":
+                elif kind in ("refused", "stray"):
                     refused.append(tool_id)
                 else:
                     # Like the CLI: the handler is called when the block ends,
@@ -664,6 +682,53 @@ def test_cli_answering_a_call_itself_retires_the_session(world):
     assert new.options.resume == old.session_id
     assert new.options.resume_session_at == "uuid-1"
     assert new.requests[0][0]["content"] == [{"type": "text", "text": "value-a"}]
+
+
+def test_the_first_request_waits_for_the_cli_to_list_pcodes_tools(world):
+    agent, _ = make_agent()
+    world.unlisted_polls = 3
+    world.replies = [[("text", "ok")]]
+    assert run(lambda: agent.run("hi")).output == "ok"
+    [cli] = world.clients
+    assert cli.polls_at_first_query == 4
+
+
+def test_tools_the_cli_never_loads_fail_the_request_for_a_retry(world):
+    agent, _ = make_agent()
+    world.server_status = "failed"
+    with pytest.raises(claude.ClaudeProcessError, match=r"did not load pcode's tools \(failed\)"):
+        run(lambda: agent.run("hi"))
+    [cli] = world.clients
+    assert cli.disconnected and cli.polls_at_first_query is None
+
+
+def test_a_stray_call_poisons_no_fork_point_even_after_restart(world):
+    """A call by pcode's bare name is refused by the CLI, and a transcript holding one
+    teaches the model to repeat it: that history is replayed, never resumed."""
+    agent, calls = make_agent()
+    world.replies = [
+        [("text", "hello")],
+        [("stray", "lookup", {"key": "a"})],
+        [("text", "the stale process carries on")],
+        [("text", "after replay")],
+        [("text", "healthy fork")],
+    ]
+    first = run(lambda: agent.run("hi"))
+
+    async def stray():
+        return await agent.run("look up a", message_history=first.all_messages())
+
+    second = run(stray)
+    assert second.output == "after replay" and calls == ["a"]
+    original, stale, replayed = world.clients
+    assert stale.options.resume == original.session_id  # the stray was not foreseeable
+    assert replayed.options.resume is None  # but nothing before it is forked again
+    assert texts(replayed.requests[0])[0].startswith(claude.REPLAY_INTRO)
+
+    restart()  # the drop is persisted: no process forks the stray history
+    result = run(lambda: agent.run("again", message_history=second.all_messages()))
+    assert result.output == "healthy fork"
+    assert world.clients[-1].options.resume == replayed.session_id
 
 
 def test_idle_processes_expire(world, monkeypatch):
