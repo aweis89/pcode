@@ -130,6 +130,14 @@ uv run pcode --theme light   # light input palette
 uv run pcode --theme auto    # detect terminal background at startup (OSC 11)
 ```
 
+## Docs screenshots
+
+`make screenshots` regenerates `docs/assets/screenshots/*.svg` from scripted
+scenes: the real terminal on a scripted model in a private tmux server. See
+`scripts/screenshots/scene.py` for the format and the `screenshots` skill in
+`.agents/skills/` for how to add one. Rerun it after a UI change and review the
+image diff before committing.
+
 ## Session hosts
 
 Every interactive session with a model runs in a host process. `SessionController`

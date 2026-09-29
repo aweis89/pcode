@@ -27,6 +27,15 @@ A typical rhythm:
 3. Want a line per call instead? `/group-tools off` unfolds them, again for the
    whole history.
 
+Here is one turn both ways. First with commands hidden and the tool calls folded
+into a line:
+
+![A bug fix turn with tool calls folded into one summary line](../assets/screenshots/scrollback-summary.svg)
+
+Then the same history after Ctrl+G, rebuilt with each command and its output:
+
+![The same turn after Ctrl+G, with every shell command and its output](../assets/screenshots/scrollback-commands.svg)
+
 The toggles, each saved as your default:
 
 | Toggle | Shows or hides |
@@ -58,8 +67,13 @@ while a turn is still running:
 - how long it took and whether it failed
 - the complete output the model got back
 
+![The /tools inspector with a passing check selected](../assets/screenshots/tools.svg)
+
 Type to search, press Ctrl+X to show only failures, and Ctrl+T to filter by
-tool. Ctrl+Y copies the command so you can run it yourself, and Ctrl+O copies
+tool.
+
+![/tools filtered to failures with Ctrl+X, showing the traceback the model saw](../assets/screenshots/tools-failed.svg)
+ Ctrl+Y copies the command so you can run it yourself, and Ctrl+O copies
 the output. It works on resumed sessions too, so you can audit what an agent
 did last week. Opening it never reruns anything. See the
 [tool-call inspector](../commands.md#tool-call-inspector).

@@ -5,6 +5,8 @@ from there, keeping every branch. It opens a browser of the current conversation
 forking works while the agent is idle. This follows the user/assistant selection model of
 [pi-coding-agent's session tree](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md).
 
+![/tree after editing an earlier prompt: two branches from the same answer](assets/screenshots/tree.svg)
+
 The picker is laid out like `/resume`: the tree on the left, and on the right a
 Conversation pane showing the full branch through the selected row, root to
 leaf. Moving the selection scrolls that pane so the selected prompt or response
