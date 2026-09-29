@@ -21,7 +21,9 @@ pcode holds no credentials here: the CLI signs in itself (`/login claude`).
 """
 
 import asyncio
+import base64
 import hashlib
+import io
 import json
 import logging
 import os
@@ -212,7 +214,14 @@ def failure_hint(error: BaseException) -> str | None:
 
 
 def _clean(value: Any) -> Any:
-    """Drop cache markers: the CLI places its own, and they never change content."""
+    """Drop cache markers and make binary sources plain base64 JSON.
+
+    The CLI places its own cache markers, and they never change content.
+    Pydantic AI maps image and PDF bytes to `io.BytesIO`, which the Anthropic
+    SDK encodes on send; the CLI takes JSON, and hashing needs stable values.
+    """
+    if isinstance(value, io.BytesIO):
+        return base64.b64encode(value.getvalue()).decode("ascii")
     if isinstance(value, dict):
         return {k: _clean(v) for k, v in value.items() if k != "cache_control"}
     if isinstance(value, list):
