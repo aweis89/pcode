@@ -200,6 +200,53 @@ def test_switch_continues_conversation(monkeypatch, tmp_path, save):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("resume", [False, True])
+def test_model_recovers_failed_startup(monkeypatch, tmp_path, resume):
+    """A model that cannot start must not strand the session: /model picks another."""
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("bogus:model", tmp_path, root) if resume else None
+    app = PreviewApp(
+        model="bogus:model",
+        workspace=tmp_path,
+        session_dir=root,
+        saved_session=saved,
+        resume=resume,
+        save=True,
+        console=Console(file=StringIO()),
+    )
+    controller = app.controller
+    monkeypatch.setattr(controller, "_load_extensions", lambda *args: None)
+    monkeypatch.setattr(controller, "_create_runtime", Mock(side_effect=ValueError("bad model")))
+    replays = Mock()
+    monkeypatch.setattr(app, "replay_conversation", replays)
+
+    async def run():
+        with pytest.raises(ValueError, match="bad model"):
+            await controller.initialize_runtime()
+        controller.startup_error = ValueError("bad model")
+        generation = controller.prompts.generation
+        assert controller.dispatchable(generation, "/model")
+        assert not controller.dispatchable(generation, "/new")
+
+        monkeypatch.setattr("pcode.agent.create_agent", lambda *args: Agent("test"))
+        await controller.switch_model(MODELS[0])
+        assert controller.startup_error is None
+        assert isinstance(controller.runtime, AgentRuntime)
+        assert controller.model == MODELS[0]
+        assert controller.mcp_defaults_requested
+        assert controller.dispatchable(generation, "/new")
+        if resume:
+            assert controller.runtime.session is saved
+            assert saved.info.model == MODELS[0]
+            replays.assert_called_once()
+        else:
+            assert controller.runtime.session_factory is not None
+            replays.assert_not_called()
+        controller.runtime.close()
+
+    asyncio.run(run())
+
+
 def test_switch_manifest_failure_keeps_conversation(monkeypatch, tmp_path):
     saved = SavedSession.create(MODELS[0], tmp_path, tmp_path / "sessions")
     runtime = AgentRuntime(Agent("test"), saved)

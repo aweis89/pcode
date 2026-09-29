@@ -1712,6 +1712,7 @@ class PreviewApp:
             replayed = self.resuming and self._saved_session is not None
             if replayed:
                 self.replay(self._saved_session)
+                controller.conversation_shown = True
             try:
                 await self._initialize_runtime()
                 controller.show_startup_context()

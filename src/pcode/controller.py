@@ -187,10 +187,16 @@ FRONTEND_COMMANDS = frozenset(
     }
 )
 
+# Session commands that can recover from a failed startup: picking a model that
+# builds starts the agent the bad one could not, and signing in is often the fix.
+RECOVERY_COMMANDS = frozenset({"/model", "/login"})
+
 # One queued command: the queue generation it was sent in, its text, whether
 # the session was idle when it was sent, and the popup generation the terminal
 # stamped on it.
 QueuedCommand = tuple[int, str, bool, object]
+
+STARTUP_FAILED = "Agent startup failed; choose another model with /model or restart pcode."
 
 
 class MessageOwner(Protocol):
@@ -426,6 +432,9 @@ class SessionController:
         self._session_id: str | None = None
         self._saved_session = None
         self.resuming = False
+        # Whether the resumed conversation is on screen already (a terminal
+        # draws it before the runtime loads; a host only once it has).
+        self.conversation_shown = False
         # The runtime is built once the event loop is up (see initialize_runtime).
         self._needs_runtime = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -958,7 +967,7 @@ class SessionController:
                     # commands wait, preserving their order for readiness.
                     self.startup_commands.append((generation, text, submitted_idle, tag))
                     continue
-                if name in FRONTEND_COMMANDS or self.dispatchable(generation):
+                if name in FRONTEND_COMMANDS or self.dispatchable(generation, name):
                     self.command_started(text)
                     await self.dispatch(text, idle=submitted_idle, tag=tag)
             except Exception as error:
@@ -969,12 +978,12 @@ class SessionController:
             # a host's `run` caller waits for exactly this.
             await self.view.after_command(tag)
 
-    def dispatchable(self, generation: int) -> bool:
+    def dispatchable(self, generation: int, name: str) -> bool:
         """Whether a session command dequeued now should run; says why when it should not."""
         if generation != self.prompts.generation:
             return False  # Ctrl+C cleared the queue it was sent in.
-        if self.startup_error is not None:
-            self.view.warning("Agent startup failed; restart pcode to retry.")
+        if self.startup_error is not None and name not in RECOVERY_COMMANDS:
+            self.view.warning(STARTUP_FAILED)
             return False
         return True
 
@@ -1068,7 +1077,7 @@ class SessionController:
                 if owner is not None:
                     owner.dropped()
                 self.activity.busy = False
-                self.view.warning("Agent startup failed; restart pcode to retry.")
+                self.view.warning(STARTUP_FAILED)
                 continue
             await self.idle()
             if not self.running:
@@ -2126,10 +2135,13 @@ class SessionController:
         from pcode.live import AgentRuntime
 
         self.pending_model = None
-        if model == self.model:
+        recovering = self.startup_error is not None
+        if model == self.model and not recovering:
             self.persist_defaults(model=model)
             self.view.note(f"Already using {model}.")
             return
+        if recovering and self.extensions is None:
+            self.extensions = await asyncio.to_thread(self._load_extensions)
         # Construct first: a missing provider/login must leave the old session intact.
         capabilities = self.extensions.capabilities if self.extensions else ()
         subagents = self.extensions.subagents if self.extensions else ()
@@ -2140,6 +2152,8 @@ class SessionController:
         apply_thinking(agent, model, self.activity.show_thinking)
         save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
         factory = (lambda: self._create_session(model)) if save else None
+        if recovering:
+            await self._finish_startup(AgentRuntime(agent, self._saved_session))
         if isinstance(self.runtime, AgentRuntime):
             saved = self.runtime.session
             if saved is not None:
@@ -2158,6 +2172,14 @@ class SessionController:
         await self.runtime.refresh_context()
         self.persist_defaults(model=model)
         self.save_sessions = save
+        if recovering:
+            self.startup_error = None
+            self.mcp_defaults_requested = True
+            if self.resuming and not self.conversation_shown:
+                # The state first, so a host's terminals know which journal to read.
+                self.view.session_changed()
+                self.view.replay_conversation()
+                self.conversation_shown = True
         self.view.note(f"Model: {model}. Continuing the current conversation.")
         self.show_startup_context()
         self.warn_without_credentials()
@@ -2298,7 +2320,8 @@ class SessionController:
             await login(notify=self.view.note)
             # Codex credentials are read when the model is built, so a Codex
             # conversation must rebuild its model to adopt the new sign-in.
-            if self.model and self.model.startswith("openai-codex:"):
+            codex = (self.model or "").startswith("openai-codex:")
+            if codex and hasattr(self.runtime, "agent"):
                 self.runtime.agent.model = await asyncio.to_thread(codex_model, self.model)
             self.view.note(
                 f"Signed in to OpenAI Codex. Credentials are stored in {credentials_path()} "
@@ -2718,15 +2741,21 @@ class SessionController:
                 else:
                     runtime.close()
                 raise
-            self.runtime = runtime
-            self._needs_runtime = False
             agent = getattr(runtime, "agent", None)
             if agent is not None:
                 apply_effort(agent, self.model, effort_for(self.model))
                 apply_thinking(agent, self.model, self.activity.show_thinking)
-            self.register_extension_commands()
-        if self.resuming:
+            await self._finish_startup(runtime)
+        elif self.resuming:
             await self.runtime.restore()
+
+    async def _finish_startup(self, runtime) -> None:
+        """Adopt the first runtime: at launch, or from /model after launch failed."""
+        self.runtime = runtime
+        self._needs_runtime = False
+        self.register_extension_commands()
+        if self.resuming:
+            await runtime.restore()
 
     # Resuming another saved conversation in this process
 
