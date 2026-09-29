@@ -218,6 +218,7 @@ def stdio_server(tmp_path):
     script.write_text("""import json, os, sys, time
 with open(sys.argv[1], "a") as log:
     log.write(json.dumps({"pid": os.getpid()}) + "\\n")
+time.sleep(float(os.environ.get("PCODE_TEST_MCP_STARTUP_DELAY", "0")))
 for line in sys.stdin:
     request = json.loads(line)
     if "id" not in request:
@@ -540,6 +541,31 @@ def test_real_stdio_cleanup_on_early_stream_close(stdio_server):
         assert_processes_closed(stdio_server)
 
     asyncio.run(run())
+
+
+def test_a_slow_starting_stdio_server_still_connects(stdio_server):
+    """FastMCP's five-second handshake deadline includes the server's startup."""
+    servers = configured_servers()
+    servers["local"]["env"] = {"PCODE_TEST_MCP_STARTUP_DELAY": "5.5"}
+    write_config(servers)
+    requests = []
+
+    async def model(messages, info):
+        requests.append({tool.name for tool in info.function_tools})
+        yield "done"
+
+    runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+    warnings = []
+    runtime.warning_notice = warnings.append
+    asyncio.run(runtime.mcp.enable("local"))
+
+    async def turn():
+        return [event async for event in runtime.stream("hello")]
+
+    asyncio.run(turn())
+    assert warnings == []
+    assert "mcp_local_echo" in requests[-1]
+    assert_processes_closed(stdio_server)
 
 
 @pytest.mark.parametrize("phase", ["initialize", "tool"])
