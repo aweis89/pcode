@@ -1017,6 +1017,24 @@ def test_normalize_merges_turns_and_drops_cache_markers():
     assert len(chain) == 2 and chain != claude.lineage(claude.normalize(messages[1:]))
 
 
+def test_normalize_encodes_binary_sources_as_stable_base64():
+    from pydantic_ai.models.anthropic import AnthropicModel
+
+    def messages():
+        # Pydantic AI maps image bytes to an io.BytesIO the CLI's JSON cannot carry.
+        image = AnthropicModel._map_binary_data(b"png", "image/png")
+        return [{"role": "user", "content": [{"type": "text", "text": "look"}, image]}]
+
+    normalized = claude.normalize(messages())
+    assert normalized[0]["content"][1]["source"] == {
+        "data": "cG5n",
+        "media_type": "image/png",
+        "type": "base64",
+    }
+    json.dumps(normalized)
+    assert claude.lineage(normalized) == claude.lineage(claude.normalize(messages()))
+
+
 def test_replay_keeps_open_results_structured_and_answers_missing_ones():
     delta = [
         {
