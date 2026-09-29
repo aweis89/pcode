@@ -2,7 +2,7 @@
 
 Harness 0.31's walkers inline root-relative conversions, so these three small
 walkers track upstream while the read/write/edit implementations stay inherited.
-See docs/dependencies.md before upgrading the filesystem integration.
+See dev/dependencies.md before upgrading the filesystem integration.
 """
 
 # Portions adapted from pydantic-ai-harness 0.31.0 filesystem/_toolset.py.

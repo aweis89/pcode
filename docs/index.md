@@ -1,14 +1,14 @@
 # pcode
 
-A small, streaming terminal for a Pydantic AI Coder agent, with an offline UI
-preview. It runs the Harness Coder tool loop against your checkout, renders the
-reply as Markdown in normal scrollback, and saves every conversation so it can
-be resumed, searched, or forked later.
+A coding agent for people who live in the terminal. It streams into your
+terminal's normal scrollback instead of taking over the screen, keeps every
+conversation so you can resume, search or fork it, and runs on the model
+subscription you already pay for.
 
 ```sh
 brew tap aweis89/pcode https://github.com/aweis89/pcode.git
 brew install --HEAD aweis89/pcode/pcode
-pcode -m openai-codex:gpt-5.6-luna
+pcode -m claude:claude-sonnet-5        # or openai-codex:gpt-5.6-luna, or any API-key provider
 ```
 
 !!! warning "Live mode edits files and runs commands"
@@ -16,43 +16,192 @@ pcode -m openai-codex:gpt-5.6-luna
     with your permissions. Read [tool permissions](tools.md#tool-permissions)
     before pointing it at anything you care about.
 
-## Using pcode
+## It's just your terminal
 
-- [Getting started](getting-started.md): install with Homebrew or from source,
-  pick a workspace with `-C`, run non-interactively with `--print`, and set up
-  shell completion.
-- [Providers and models](providers.md): authentication, every supported
-  provider, the `/model` picker, reasoning effort, Claude Code's own login
-  (`claude:`), a local Meridian proxy, and
-  routing model traffic through an HTTP proxy.
-- [Configuration](configuration.md): `pcode config`, per-repository overrides,
-  trusting a repository's own code, the full settings table, and code
-  highlighting styles.
-- [Commands and keys](commands.md): every slash command, key bindings, vi mode,
-  newlines under tmux, the status line, `!command`, and the diff and tool
-  inspectors.
+There's no full-screen app. The model's replies, diffs and command output are
+written into your terminal's normal scrollback, so everything you already use
+keeps working: scroll with your mouse or tmux copy mode, search with your
+terminal's find, select and copy text. Only the editor and the live activity
+panel sit at the bottom and redraw.
 
-## What the agent can do
+## Scrollback you can change after the fact
 
-- [Tools](tools.md): what runs without approval, web search, driving your
-  browser, and code mode.
-- [MCP servers](mcp.md): explicit opt-in servers, OAuth sign-in, and deferred
-  tool search.
-- [Working in a repository](workspace.md): `AGENTS.md`/`CLAUDE.md`
-  instructions, skills as slash commands, and one git worktree per session.
+Most terminal agents either print everything forever or hide it behind a UI.
+pcode keeps the whole transcript and re-renders your scrollback whenever you
+change what you want to see.
 
-## Sessions, context and output
+Watch every command and its output while a turn runs, then collapse the lot to
+one-line summaries once you only care about the result. Or the other way round:
+work with a quiet transcript and bring the details back when something looks
+off. Every toggle rewrites the history already on screen, not just what comes
+next.
 
-- [Sessions and recovery](sessions.md): where conversations are stored,
-  resuming, recalling earlier sessions, checkpoints, and retries.
-- [Context, limits and caching](context.md): what the fixed prompt costs,
-  compaction, model and tool output limits, and prompt cache notices.
-- [The transcript](transcript.md): what lands in scrollback and how to
-  regenerate it.
+| Toggle | What it does |
+| --- | --- |
+| Ctrl+G, `/show-commands` | Mirror each command and its output into scrollback, or hide them |
+| `/show-edits` | Show or hide the diff of every file edit |
+| `/show-thinking` | Show or hide the model's readable reasoning |
+| `/group-tools` | Fold a run of tool calls into one line: `✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1` |
+| Ctrl+O, `/show-tasks` | Show or hide the live task and tool panel |
 
-## Internals
+Resizing the terminal re-renders at the new width too, so a narrowed pane
+doesn't leave half-wrapped wreckage behind. Replay never reruns a tool. See
+[the transcript](transcript.md#regenerating-the-terminal-transcript).
 
-- [Development](development.md): tests, architecture, profiling, references.
-- Design notes: [prompt caching and plan reminders](prompt-caching.md),
-  [conversation tree](conversation-tree.md), [profiling](profiling.md),
-  [dependencies](dependencies.md), [Meridian validation](meridian-validation.md).
+## Nothing hidden: `/tools`
+
+`/tools` opens every tool call the agent has made in this conversation, newest
+first, including while a turn is still running: the exact command, its
+arguments, how long it took, and the full output it returned. Filter to
+failures with Ctrl+X, search by name or command, and copy a command (Ctrl+Y) or
+its output (Ctrl+O) to run or paste yourself. It survives resume, so you can
+audit what happened in a session from last week. See the
+[tool-call inspector](commands.md#tool-call-inspector).
+
+## Rewind and fork with `/tree`
+
+Every conversation is a tree, not a line. `/tree` shows it with the full branch
+beside it; pick any earlier prompt to edit it and go a different way, or pick an
+answer to jump back to that point. The branch you left stays there to return
+to. It's inspired by [pi's session tree](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md),
+which is the best idea in that agent.
+
+```text
+Conversation start
+user: Explain the failing test
+assistant: The parser rejects empty input
+├─ user: Fix the parser
+│  assistant: Updated the parser
+│  user: Run the tests
+│  assistant: Tests pass
+└─ user: Instead, change the test
+   assistant: Updated the test ← active
+```
+
+See [conversation tree navigation](conversation-tree.md).
+
+## A shell built for long-running work
+
+The agent's shell treats slow commands as normal. A command the model chose to
+wait on that runs past its timeout isn't killed: it turns into a background job
+with an id, and the model gets the handle back and keeps working. Jobs can wait
+for a readiness line (`listening on`) instead of exit, and their exits are
+delivered to the model rather than polled for. If the model has finished its
+turn, a job finishing wakes it up to act on the result.
+
+That makes jobs a good fit for terminal-heavy work: watching a CI run and
+fixing what fails, starting a dev server and testing against it, or running a
+slow suite while editing something else. `/jobs` lists what's running and shows
+each log; jobs even survive pcode restarting and are picked up by the next
+session. See [shell jobs](tools.md#shell-jobs).
+
+## Your Claude subscription, the supported way
+
+`claude:` models run through Anthropic's own
+[Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview) and the
+Claude Code login. Sign-in happens in Anthropic's flow, Claude Code holds and
+refreshes the tokens, and pcode never sees them. Anthropic's
+[terms](https://code.claude.com/docs/en/legal-and-compliance) allow signing in
+to the unmodified Claude Code binary with your own subscription; they forbid
+third-party apps that collect or hold Claude.ai credentials, which is what
+most "use your Claude account" tools do.
+
+```sh
+pcode -m claude:claude-sonnet-5   # /login claude if Claude Code isn't signed in yet
+```
+
+ChatGPT subscriptions work the same way with `/login openai-codex`, and any
+provider with an API key works too. Switch models mid-conversation with
+Ctrl+L. See [providers and models](providers.md).
+
+## Ask while it works: `/btw`
+
+`/btw why did you pick a recursive descent parser?` asks a side question
+about what the agent is doing without interrupting it. The answer runs in
+parallel against the same context, pops up when it's ready, and never enters
+the main conversation unless you choose to pull it in. See
+[side questions](side-questions.md).
+
+## Sessions that outlive the terminal
+
+Each session runs in a background host. Close the terminal and the turn keeps
+going; `pcode --attach` picks it back up. `/switch` moves between running
+sessions and Ctrl+^ flips back to the last one. Everything is saved, so
+`pcode --continue` resumes the latest conversation in a directory and `/resume`
+searches all of them. See [sessions and recovery](sessions.md).
+
+## Ask about past sessions
+
+You don't need to dig up an old session to use what's in it. Ask "what did we
+decide about the retry logic last week?" and pcode searches your saved
+conversations for this project (worktrees included), reads the relevant turns,
+and answers with a pointer to where it found them. It also recovers details
+from earlier in the current conversation that compaction dropped from context.
+See [recalling earlier sessions](sessions.md#recalling-earlier-sessions).
+
+## Run several agents on one repo
+
+Two agents in one checkout step on each other: one runs `git checkout` or
+`git stash` and the other's uncommitted edits are gone. With worktrees on,
+every pcode session gets its own git worktree and branch under `.worktrees/`,
+and that becomes its workspace. File tools, the shell and the saved session all
+point there, so the agent needs no instructions and a relative path can't land
+in your main checkout by accident.
+
+```sh
+pcode config project set worktree on   # every session in this repo gets a worktree
+pcode --worktree fix-flaky-test        # or just this one, with a readable name
+```
+
+So you can have one session fixing a bug, another writing a feature and a
+third reviewing a PR, all in the same repository at the same time. When a
+session is done, `/worktree merge` merges your main branch into the worktree
+first, so any conflicts get resolved there and never in your main checkout,
+then fast-forwards main. Leaving a session with unmerged commits asks whether
+to merge it. `/worktree clean` removes finished worktrees and lists any it kept
+and why, so it can't lose work. A setup script can run in each new worktree to
+install dependencies or copy untracked config like `.envrc`.
+
+Sub-agents can be isolated the same way: turn on `worker_isolation` and each
+delegated task works on its own branch starting from the parent's commit, and
+comes back to be reviewed and integrated. Sub-agents can also run on a
+different model from the parent. See
+[one git worktree per session](workspace.md#one-git-worktree-per-session) and
+[sub-agents](tools.md#sub-agents-on-other-models).
+
+## Hand it the browser
+
+`/browser launch` gives the agent a Chrome window to drive: navigate, click,
+type, screenshot, test your dev server on localhost. It runs with its own
+profile, so sign-in pages like Google accept it, and sites you log in to stay
+logged in for later sessions. When a page needs you to sign in, the agent
+leaves it on screen and asks.
+
+`/browser attach` joins the Chrome, Chromium or Edge you already have open
+instead, logins and all, and works in a tab of its own. That's what makes "check
+my email" or "file this in the tracker" possible, and it's also the risky mode:
+the agent can act as every account that browser is signed in to. See
+[the browser](tools.md#browser-per-conversation).
+
+## Make it yours
+
+An extension is one Python file that can add slash commands, tools, guardrails
+on tool calls, or extra instructions, and `/reload` picks up changes without a
+restart. Skills in your repository become slash commands. There are themes, vi
+mode, a configurable shortcut prefix, and per-repository settings. See the
+[extension guide](https://github.com/aweis89/pcode/blob/master/src/pcode/extension_guide.md)
+and [configuration](configuration.md).
+
+## Reference
+
+- [Getting started](getting-started.md): install, pick a workspace, run
+  non-interactively with `--print`, shell completion.
+- [Providers and models](providers.md), [Configuration](configuration.md),
+  [Commands and keys](commands.md)
+- [Tools](tools.md), [MCP servers](mcp.md),
+  [Working in a repository](workspace.md)
+- [Sessions and recovery](sessions.md),
+  [Context, limits and caching](context.md), [The transcript](transcript.md)
+
+Working on pcode itself? The contributor notes live in
+[`dev/`](https://github.com/aweis89/pcode/tree/master/dev) in the repository.
