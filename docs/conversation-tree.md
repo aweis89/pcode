@@ -1,8 +1,8 @@
 # Conversation tree navigation
 
-Use `/tree` to browse the current conversation, and to fork it while the agent is
-idle.
-This follows the user/assistant selection model of
+`/tree` lets you go back to any earlier point in the conversation and continue
+from there, keeping every branch. It opens a browser of the current conversation;
+forking works while the agent is idle. This follows the user/assistant selection model of
 [pi-coding-agent's session tree](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md).
 
 The picker is laid out like `/resume`: the tree on the left, and on the right a
@@ -50,19 +50,18 @@ tools; it does not generate summaries of the branch you leave.
 
 ## What changes when navigating
 
-The model's history, task plan, and saved-session transcript/tool replay follow the
-selected path, not the most recently written branch. `/tools` also shows calls on
-the selected path. The terminal transcript is rebuilt for that path using the
-same `transcript_max_chars` budget as resume and `/redraw`; abandoned-branch output
-is no longer mixed into the displayed conversation. Usage and completed-turn
-counters remain **session totals**, including other branches.
+The model's history, the task plan, and what a resumed session replays all
+follow the selected path, not the most recently written branch. `/tools` shows
+calls on the selected path. The terminal transcript is redrawn for that path
+(up to `transcript_max_chars`, as on resume and `/redraw`), so output from the
+branch you left no longer appears. Usage and completed-turn counters remain
+**session totals**, including other branches.
 
-Navigation operates at **turn boundaries**, not individual tool calls. A turn
-includes the user prompt and the entire assistant/tool loop. Failed or interrupted
-turns are marked and continue from their last safe checkpoint (or their ancestor
-when no checkpoint exists). Pending tool calls are never treated as completed.
-Interrupted tool effects remain in the diagnostic ledger; navigation neither
-replays tools nor marks unresolved effects as completed.
+Navigation works at **turn boundaries**, not individual tool calls: a turn is
+your prompt plus everything the model did in response. Failed or interrupted
+turns are marked and continue from their last checkpoint (or from the turn
+before, if they have none). Navigation never replays tools or treats a tool call
+that never finished as completed.
 
 **Switching context does not undo file edits, shell commands, network requests, or
 other tool effects.** All branches share the current workspace. If you need to
@@ -70,11 +69,11 @@ restore files, use your version-control workflow separately. MCP enablement stay
 as currently configured; navigation does not reconnect disabled servers.
 
 While a turn is running or prompts are queued, `/tree` opens **read-only**: the
-header says `read-only while working` and Enter does not switch context. A
-running turn writes back the history a checkout would install, so the checkout
-would silently lose. Cancel with Ctrl+C or wait for completion to fork — or ask
-the branch a [side question](side-questions.md) with `/btw`, which runs in
-parallel without touching the conversation.
+header says `read-only while working` and Enter does not switch context, since
+the running turn would overwrite the switch when it finishes. Cancel with Ctrl+C
+or wait for the turn to end to fork, or ask about the branch with a
+[side question](side-questions.md) (`/btw`), which runs in parallel without
+touching the conversation.
 
 A `/btw` thread worth keeping can be
 [merged into the tree](side-questions.md#keeping-a-thread) from its viewer. Its
@@ -85,17 +84,8 @@ checkpoint you can continue from like any turn.
 
 With normal session saving, branches and the selected position survive restart,
 even if you navigate without sending another message. `/resume` chooses a saved
-session; `/tree` navigates within it. Existing saved sessions appear as a linear
-tree automatically. Structured histories (including tool calls/results) continue
-to use Harness's native safe checkpoints. Tree links and selection events live in
-the private, append-only session journal.
-
-Every journal record names the turn it belongs to (`run_id`), and the tree, branch
-replay and the history reader use that name rather than the record's position in
-the file. Journals written before that carry no name, so they fall back to "the
-last turn started", which was always true when one turn ran at a time. Records
-from a turn on another branch are therefore skipped on replay rather than
-absorbed into whichever turn happened to start last.
+session; `/tree` navigates within it. Sessions saved before branching existed
+open as a single straight branch.
 
 With `--no-save`, the tree exists only in memory and disappears on exit. Browsing
 an empty conversation does not create session files. `/new` starts a separate tree

@@ -1,27 +1,31 @@
 # The transcript
 
+The conversation lives in your terminal's normal scrollback, so you can scroll,
+select, and search it with the terminal or tmux. This page covers what gets
+written there and the settings that control it.
+
 ## Command previews
 
 Shell tool calls show a compact two-row preview with their result and duration.
-Long arguments and embedded scripts are abbreviated; short commands remain readable.
-Previews are redacted and terminal-control sanitized. Failure excerpts remain visible.
-There is currently no command to expand previews or show full command outputs.
+Long arguments and embedded scripts are abbreviated; short commands stay
+readable. Previews are redacted and stripped of terminal control sequences.
+Failure excerpts stay visible. There is no command to expand a preview or show a
+command's full output in scrollback; use `/tools` for that.
 
 ## Edit diffs and streaming previews
 
-Completed `edit_file` and `write_file` calls show compact unified diffs in
-scrollback by default. These compare the contents used by the operation, not
-Git's working-tree diff, so they don't fold in earlier user changes. New files
-are marked as created; unchanged files have no patch. Failed calls aren't
-presented as successful edits.
+Completed `edit_file` and `write_file` calls leave a compact unified diff in
+scrollback by default. The diff compares the contents the operation used, not
+Git's working tree, so it doesn't fold in earlier changes of yours. New files are
+marked as created; unchanged files have no patch. Failed calls aren't shown as
+successful edits.
 
-While the model generates a file-tool call, a bounded preview shows the proposed
-replacement or write content, labeled **not applied**. It only exposes completed
-lines from incomplete arguments. This preview uses the live panel's shared
-height budget (`command_preview_lines`), independently of command-output
-visibility. It disappears on execution, cancellation, or failure and is never
-saved as an applied change. Providers that send arguments all at once may have
-no visible streaming phase.
+While the model is still generating a file-tool call, a preview shows the
+proposed replacement or file content, labeled **not applied**. It shows only
+complete lines. It shares the live panel's height budget
+(`command_preview_lines`) and disappears on execution, cancellation, or failure;
+it is never saved as an applied change. Providers that send arguments all at
+once may skip this phase.
 
 ```text
 /show-edits off   Hide edit blocks and previews, and redraw retained scrollback
@@ -29,111 +33,105 @@ no visible streaming phase.
 /show-edits       Toggle visibility
 ```
 
-The choice is saved for the next launch. `pcode config set show_edits on|off`
-also sets the startup default. Like `/redraw`, toggling rebuilds terminal history;
-it does not rerun tools or change files.
+The choice is saved for the next launch; `pcode config set show_edits on|off`
+sets it from the shell. Like `/redraw`, toggling rebuilds terminal history. It
+doesn't rerun tools or change files.
 
-Completed diffs are saved in the session journal and restored with the recent
-transcript on resume, even if the files have since changed. Hidden diffs are
-still retained; hiding is not deletion. Old sessions without captured diffs
-continue to show their existing transcript without reconstructing file changes.
+Completed diffs are saved with the session and come back on resume, even if the
+files have since changed. Hiding diffs doesn't delete them. Sessions saved
+before diffs were captured show their transcript without reconstructed diffs.
 
-Diff capture omits sensitive paths, redacts recognizable credentials and terminal
-controls, and bounds file inputs to 256 Ki characters / 4,000 lines. Saved previews
-are capped at 400 patch lines / 64 Ki characters; each displayed block shows at
-most 60 wrapped patch rows, with an omission marker. Binary, unreadable, and large
-before-snapshots get an explicit unavailable notice instead of a misleading patch.
-These previews aren't guaranteed to be applicable patches. Shell commands,
-formatters, external writers, and other tools are outside this capture mechanism.
+Limits:
+
+- Sensitive paths are skipped, and recognizable credentials and terminal
+  controls are redacted.
+- Files over 256 Ki characters or 4,000 lines aren't diffed.
+- A saved diff is capped at 400 patch lines / 64 Ki characters, and each block
+  on screen shows at most 60 wrapped rows, with an omission marker.
+- Binary, unreadable, and too-large files get an "unavailable" notice instead of
+  a misleading patch.
+- These diffs aren't guaranteed to apply as patches. Changes made by shell
+  commands, formatters, or other tools aren't captured.
 
 ## Saved thinking in scrollback
 
-Press **Ctrl+T** or use `/show-thinking [on|off]` to show or hide provider-exposed
-thinking text. When enabled, thinking streams into normal terminal scrollback in
-a muted, dim style, distinct from the answer. Complete lines are printed as they
-arrive; the unfinished last line is flushed at the block boundary or when a turn
-ends, fails, or is cancelled. Thinking no longer appears in the Tasks/Tools
-header or a separate live panel.
-
-The toggle saves the default and triggers the same retained-transcript rebuild
-as `/redraw`, so it reveals or hides earlier thinking too, including text received
-while hidden. It works during a turn and after completion, preserves the editor
-draft, and does not duplicate answer/tool output. The usual redraw limitations
-apply: regeneration clears pre-pcode terminal history and projects the bounded
-retained transcript, not an unlimited terminal archive. Redirected output cannot
-be retroactively erased or redrawn.
+Press **Ctrl+T** or use `/show-thinking [on|off]` to show or hide the thinking
+text a provider exposes. When on, thinking streams into scrollback in a dim,
+muted style, distinct from the answer.
 
 ```sh
 pcode config set show_thinking on   # Default is off
 ```
 
-**Privacy and persistence:** readable thinking is recorded in saved sessions even
-when hidden. Resuming a session restores thinking alongside its retained transcript;
-the complete text remains in the session journal. Interrupted blocks are retained
-too. Display redaction is not redaction of session files. Provider signatures and
-redacted/opaque thinking blocks are not printed or added to the readable-thinking
-journal events, but native model-message history may still contain them for
-continuation. `--no-save` disables session persistence, not in-process replay or
-terminal scrollback. Turning visibility off is not secure deletion of terminal,
-log, or session history. Older sessions without thinking journal events cannot
-retroactively populate this view from their native model history.
+The toggle saves the default and rebuilds the retained transcript like
+`/redraw`, so it also reveals or hides earlier thinking, including text that
+arrived while hidden. It works mid-turn, keeps your draft, and doesn't duplicate
+answers or tool output. The usual [redraw limits](#regenerating-the-terminal-transcript)
+apply, and output redirected to a file or pipe can't be redrawn.
 
-There is no longer an 8,192-character thinking tail or a thinking-row limit.
-Legacy `thinking_display` and `thinking_lines` preferences are ignored. Provider
-summaries may themselves be abbreviated: this view shows the readable text the
-provider actually exposes, **not hidden internal reasoning**. Delegated agents'
-thinking is still not forwarded into the parent's transcript.
+This view shows the readable text the provider actually exposes, which may
+itself be a summary. It is **not hidden internal reasoning**. There is no length
+or row limit. Sub-agents' thinking isn't shown in the parent transcript (use
+`/workers`). The old `thinking_display` and `thinking_lines` preferences are
+ignored.
 
-For direct Anthropic models, enabling the view also requests visible thinking on
-the next turn: adaptive thinking for supported models, otherwise an explicit
-2,048-token legacy budget, with `display: "summarized"`. This can increase latency
-and token usage. Turning it off removes that request override and restores provider
-defaults, rather than explicitly disabling reasoning. In-flight requests and the
-separately selected effort are unchanged. Codex requests `summary: "auto"`
-independently of visibility. Meridian still needs upstream thinking generation and
-thinking forwarding; pcode does not mutate an external proxy's global settings.
-See the Meridian setup section for the isolated managed-instance option.
+**Privacy:** readable thinking is saved in sessions even while hidden, and
+resume restores it. Hiding it isn't redaction or deletion of the terminal, logs,
+or session files. Opaque or redacted provider thinking is never printed, though
+the model's message history may still carry it for continuation. `--no-save`
+turns off session files, not the terminal scrollback. Older sessions saved
+without thinking records can't show it retroactively.
+
+Provider behavior:
+
+- Direct Anthropic models: turning the view on also asks for visible thinking
+  on the next turn (adaptive thinking where supported, otherwise a 2,048-token
+  budget, summarized). This can add latency and token use. Turning it off drops
+  that request and restores provider defaults; it doesn't disable reasoning.
+  Requests already in flight and the selected effort are unchanged.
+- Codex always requests thinking summaries, whatever this setting says.
+- Meridian needs thinking generation and forwarding enabled upstream; pcode
+  doesn't change an external proxy's settings. See the Meridian setup section
+  for the isolated managed-instance option.
 
 ## Error logs in scrollback
 
-Errors and failed-tool diagnostics render as fenced Markdown code blocks using
-Rich and the active code theme. Logs stay literal, even if they contain Markdown
-or backticks. By default, each error shows at most **20 wrapped body lines**, plus
-its heading and two code-block padding rows. Long logs keep their tail and include
-a truncation marker within that limit.
+Errors and failed-tool diagnostics appear as code blocks in the active code
+theme. Their text stays literal, even if it contains Markdown or backticks. Each
+error shows at most **20 wrapped body lines** by default; a longer log keeps its
+tail and shows a truncation marker.
 
 ```sh
 pcode config set error_scrollback_lines 40  # Positive integer; default 20
 ```
 
-This line limit also works through `/config` and applies on the next launch.
+This also works through `/config` and applies on the next launch.
 
-By default, a failed tool call does not write its diagnostic to scrollback. It
-keeps the same compact summary line a successful call leaves, marked `✗` in the
-error colour instead of `✓`, so the failed call stays visible without its log.
-Enable `tool_error_scrollback` for the full diagnostic:
+By default a failed tool call doesn't write its diagnostic to scrollback. It
+leaves the same compact summary line a successful call does, marked `✗` in the
+error color instead of `✓`. Turn on `tool_error_scrollback` to get the full
+diagnostic:
 
 ```sh
 pcode config set tool_error_scrollback on  # Failed-tool diagnostics (default off)
 ```
 
-Command failures still follow command visibility below: with mirroring off they
-keep only their summary line, and with mirroring on they show that line plus the
-captured output, the output arriving only once this option is on. Application
-errors remain visible either way, as do warnings and cancellation notices.
-Saved diagnostics are not disabled or trimmed by these display settings.
-Command diagnostics retain a separate safety bound of 200 lines / 32,000
-characters, after redaction.
+Failed commands follow [command output](#command-output-in-scrollback) instead:
+with `show_commands` off they keep only their summary line; with it on, they
+show that line plus captured output, but the output only appears when
+`tool_error_scrollback` is also on. Application errors, warnings, and
+cancellation notices are always shown. These display settings don't change what
+is saved. Saved command diagnostics are capped at 200 lines / 32,000 characters
+after redaction.
 
 ## Delegated work in scrollback
 
-A sub-agent's tool calls are written beneath the `delegate_task` row they belong
-to, indented, once that delegate settles. Parallel delegates therefore keep
-their own steps together instead of interleaving. Each step is a compact summary
-line, commands included: `show_commands` mirroring and `tool_error_scrollback`
-diagnostics apply to the main agent's calls only, and a child's full output stays
-in the inspector. If a turn is cancelled before its delegate settles, the steps
-the sub-agent finished are written flush when the cancellation is reported.
+A sub-agent's tool calls are written indented beneath the `delegate_task` row
+they belong to, once that delegate finishes, so parallel delegates don't
+interleave. Each step is one summary line, commands included: `show_commands`
+and `tool_error_scrollback` apply only to the main agent's calls, and a child's
+full output stays in `/tools`. If you cancel before a delegate finishes, the
+steps it completed are written when the cancellation is reported.
 
 ```text
 ✓ Delegate task  worker · Fix the flaky test → Completed  41.2s
@@ -145,7 +143,7 @@ the sub-agent finished are written flush when the cancellation is reported.
 
 With `group_tools` on (the default), a run of consecutive tool calls leaves one line in
 scrollback instead of one per call. While the run is going, the status row
-counts it at the right (`✓7 ✗1 tools`); the full line is written once something else
+counts it at the right (`✓7 ✗1 tools`). The full line is written once something else
 reaches scrollback (the model's reply, a diff, mirrored command output) or the
 turn ends. `/tools` still lists every call.
 
@@ -160,45 +158,40 @@ pcode config set group_tools off  # One line per call instead (default on)
 ✓ 2 ✗ 1 tools · Read file ✓2 · Search code ✗1
 ```
 
-A failed call folds into the run too. `✓` counts successes and `✗` counts
-failures, both for the run as a whole at the start of the line and for each
-tool (`Read file ✓4`, `Run shell ✓5 ✗1`, `Search code ✗1`). `/tools failed` browses just the
-failures. A
-delegate keeps its own line, with its sub-agent's calls folded the same way
-beneath it. A run of one call keeps that call's usual line, and a background
-job's exit notice is never folded in. `/group-tools on`, `/group-tools off`, or bare
-`/group-tools` switch it for the session, save the default, and rebuild earlier
-scrollback to match.
+`✓` counts successes and `✗` failures, for the run as a whole at the start of
+the line and per tool after it. Failed calls fold into the run too; `/tools
+failed` lists just the failures. A delegate keeps its own line, with its
+sub-agent's calls grouped the same way beneath it. A run of one call keeps its
+usual line, and a background job's exit notice is never folded in.
+
+`/group-tools on`, `/group-tools off`, or bare `/group-tools` (toggle) switch it
+for the session, save the default, and rebuild earlier scrollback to match.
 
 ## Command output in scrollback
 
-By default, a settled command leaves the same compact summary line every other
-tool leaves, with the command preview inline after the elapsed time. Long summaries
-truncate to the terminal width instead of wrapping. Captured output stays in the
-mutable tool panel. A background job's exit uses the same line with its id
-after the label, as in `✓ Run shell · j12 · exit 0 · 4.1s · make test`. It is written
-where the model collected the result with `wait_for_job` or `job_output`, or
-once the session is idle if nothing collected it. Enable
-`show_commands` to mirror **every settled shell tool call and its captured
-output** into permanent terminal scrollback (a failed call mirrors its output
-only with `tool_error_scrollback` on):
+By default a finished command leaves a compact summary line like any other tool,
+with the command inline after the elapsed time. Long lines are cut at the
+terminal width rather than wrapped. The captured output is available in `/tools`.
+
+A background job's exit uses the same line with its id after the label:
+`✓ Run shell · j12 · exit 0 · 4.1s · make test`. It is written where the model
+collected the result with `wait_for_job` or `job_output`, or once the session is
+idle if nothing collected it.
+
+Turn on `show_commands` to mirror **every finished shell tool call and its
+captured output** into scrollback. A failed call's output is mirrored only when
+`tool_error_scrollback` is also on.
 
 ```sh
 pcode config set show_commands on             # Mirror commands and output (default off)
-pcode config set command_scrollback_lines 80  # Positive integer; default 20
-pcode config set command_preview_lines 10     # Live output height cap; default 10
+pcode config set command_scrollback_lines 80  # Output rows per block; default 20
+pcode config set command_preview_lines 10     # Live output height; default 10
 pcode config set show_commands off            # Summary lines only (default)
 ```
 
-Each mirrored block shows a success/failure indicator, the tool label, the job
-id, elapsed time, and a shell-highlighted invocation on a `$` line. A finished
-job's `[jN · exit C · elapsed]` line is dropped from the mirrored output, since
-the heading already carries all three; an unfinished job's marker, which also
-names its pid and how to get back to it, stays put. Captured output stays
-literal, with its indentation preserved and no Markdown parsing or extra block
-padding. Process polling details without a command are shown without a `$` prefix:
-
-The heading sits on the block's opening line, and a plain line closes it:
+Each mirrored block has a heading with a ✓/✗ indicator, the tool label, the job
+id, and elapsed time, then the command on a highlighted `$` line, then the
+output, literally and with its indentation kept:
 
 ```text
 ✓ Run shell · j7 · 0.4s ───────────────────────────────────
@@ -207,139 +200,126 @@ The heading sits on the block's opening line, and a plain line closes it:
 ────────────────────────────────────────────────────────────
 ```
 
+A finished job's `[jN · exit C · elapsed]` line is dropped from the output
+because the heading already says it. An unfinished job's marker, which names its
+pid and how to get back to it, stays. Process-polling entries without a command
+have no `$` line.
+
 Details:
 
-- It covers the current `shell` tool; delegated calls keep their summary line
-  (see [delegated work](#delegated-work-in-scrollback)). Saved legacy
-  `run_command`, `start_command`, `check_command`, and `stop_command` entries also
-  remain displayable. Other tools are unaffected.
-- Active foreground `shell` calls show a preview above the prompt, refreshed as
-  complete lines arrive from the combined stdout/stderr log. Harness emits at most
-  the first 16,000 bytes; a capped preview is marked, and further output stays in
-  the command log. Ctrl+G controls both preview and scrollback.
-  The live block is drawn like the settled one: the same heading on an opening
-  line (with `⟳` and the elapsed time, since nothing has finished yet), the same
-  indented `$` line, and a closing line instead of a box.
-  `command_preview_lines` caps the live output at 10 wrapped rows by default
-  (positive integer, excluding the command and block lines). The preview uses
-  space left after the editor, queued prompts, and Tasks/Tools panel. Under tight
-  height pressure, task rows yield only enough to retain a one-line output tail.
-  For parallel calls,
-  the most recently updated command is shown; all calls remain in the tool panel.
-  Programs that buffer their own output must flush it (for example, `python -u`).
-- On completion the transient preview disappears and one settled block is
-  written to scrollback, without duplicate streamed lines. Preview updates are
-  not saved in session history. Background `shell` calls return PID/log/status
-  handles rather than streaming output after the call ends.
-- Failed commands follow the same show/hide setting as successful commands.
-  When shown, they print one block containing captured output (or the saved
-  diagnostic if output is unavailable). There is no separate error visibility option.
-- Output is redacted and sanitized before display, then bounded to
-  `command_scrollback_lines` wrapped output rows (default 20), taken from the end.
-  An upstream-truncated tail may start inside a credential with its opening marker
-  missing. In that case pcode omits the tail from scrollback and inspection, keeps
-  the process/log/status handles, and leaves the raw model result unchanged.
-  A separate omission marker counts omitted rendered rows. The command, marker,
-  and subtle top/bottom borders are outside this budget, so even a budget of one
-  retains the final output row. The capture step retains its own 128 KiB payload bound.
-- Verbose commands can push earlier conversation out of terminal history, so
-  raise your terminal or tmux scrollback limit before enabling this.
+- It covers the `shell` tool, plus legacy `run_command`, `start_command`,
+  `check_command`, and `stop_command` entries in older saved sessions. Other
+  tools, and [delegated calls](#delegated-work-in-scrollback), keep their
+  summary line.
+- While a foreground `shell` call runs, a live preview above the prompt shows
+  its combined stdout/stderr as complete lines arrive. It looks like the settled
+  block, with `⟳` and a running elapsed time. It is capped at
+  `command_preview_lines` wrapped rows (not counting the command and border
+  lines) and uses whatever height is left after the editor, queued prompts, and
+  the Tasks/Tools panel; in a cramped pane it keeps at least a one-line tail.
+  With parallel calls, the most recently updated one is shown.
+- The preview shows at most the first 16,000 bytes of output; a capped preview
+  is marked, and the rest stays in the command log. Programs that buffer their
+  own output must flush it to appear live (for example, `python -u`).
+- When the command finishes, the preview disappears and one settled block is
+  written, without repeating streamed lines. Previews aren't saved. Background
+  `shell` calls return PID/log/status handles instead of streaming.
+- When shown, a failed command prints one block with its captured output, or
+  the saved diagnostic if there is none.
+- Output is redacted and sanitized, then trimmed to the last
+  `command_scrollback_lines` wrapped rows, with a marker counting what was
+  omitted. The command, marker, and borders don't count against the budget, so
+  even a budget of 1 keeps the final output row. Capture itself is capped at
+  128 KiB.
+- If upstream truncation leaves the output starting partway through a
+  credential, pcode hides that output from scrollback and `/tools` rather than
+  risk showing part of it. The process, log, and status handles stay, and the
+  model's result is unchanged.
+- Verbose commands can push earlier conversation out of terminal history. Raise
+  your terminal or tmux scrollback limit before turning this on.
 
-Press **Ctrl+G** to turn mirroring on or off for the rest of the session; it also
-saves the default, so the next launch starts in the state you left.
-`/show-commands on` and `/show-commands off` do the same, and bare `/show-commands`
-toggles. Toggling rebuilds the retained scrollback immediately:
-turn it on to reveal earlier captured commands and their outputs; turn it off to
-remove all command blocks, including failures. No commands
-are rerun. Future completions use the same setting.
-
-Ctrl+S cycles send modes instead of opening forward incremental search;
-prompt_toolkit's incremental search is disabled entirely, so Ctrl+R does
-nothing either. prompt_toolkit disables terminal XON/XOFF flow control while the
-prompt is active, so Ctrl+S reaches the application instead of pausing terminal
-output.
+Press **Ctrl+G** to toggle mirroring; it saves the default, so the next launch
+starts the way you left it. `/show-commands on`, `/show-commands off`, and bare
+`/show-commands` do the same. Toggling rebuilds retained scrollback right away:
+on reveals earlier commands and their output, off removes every command block,
+failures included. Nothing is rerun.
 
 These settings also work through `/config` and apply on the next launch.
 
 ## Paced scrollback
 
-Model text reaches scrollback one settled Markdown block at a time, so without
-pacing a whole paragraph appears in one frame after a pause. By default
-(`typed`), settled prose (paragraphs, lists, headings, quotes, and thinking)
-is typed out a few characters per frame on a live row just below scrollback,
-and each row is written to scrollback once it is complete. The text is already
-rendered, so nothing reflows while it types: line breaks and styling are final
-from the first character, and indentation appears at once rather than being
-typed. Code blocks, tables, rules, and tool output roll in a row per frame
-instead, since half a code line or table border reads badly.
+The model's reply reaches scrollback one finished Markdown block at a time, so
+without pacing a whole paragraph would appear at once after a pause. By default
+(`typed`), finished prose (paragraphs, lists, headings, quotes, and thinking) is
+typed out a few characters per frame on a live row, and each row moves to
+scrollback once complete. The text is already rendered, so nothing reflows while
+it types: line breaks and styling are final from the first character, and
+indentation appears at once. Code blocks, tables, rules, and tool output roll in
+a row per frame instead, since half a code line or table border reads badly.
 
-Typing runs at about 360 characters a second, close to a model's own pace.
-When a burst arrives faster than that, typing speeds up to finish it in about
-two seconds and stays at that speed until everything queued is written. Rows
-rolled in whole go one per frame, sped up the same way to finish in about a
-second. The two queue behind each other, so prose followed by a long code
-block can take about three seconds to land. A popup or the end of a session
-writes whatever is left at once.
-Rendering, ordering, and the transcript retained for resume or redraw are
-unchanged; a redraw or resize rebuild always lands whole.
+Typing runs at about 360 characters a second, close to a model's own pace. When
+a burst arrives faster than that, typing speeds up to finish it in about two
+seconds. Rows rolled in whole go one per frame, sped up to finish in about a
+second. The two queue behind each other, so prose followed by a long code block
+can take about three seconds to land. Opening a popup or ending the session
+writes whatever is left at once, and a redraw or resize rebuild always lands
+whole. Pacing changes only how text appears, not what is written or retained.
 
 ```sh
 pcode config set paced_scrollback rows  # Roll every block in by row
-pcode config set paced_scrollback off   # Write every block in one frame
+pcode config set paced_scrollback off   # Write every block at once
 ```
 
-The default is `typed`; changes apply on next launch. An older saved `on` falls
-back to the default.
+The default is `typed`; changes apply on the next launch. An older saved `on`
+falls back to the default.
 
 ## Regenerating the terminal transcript
 
-`/redraw` rebuilds the retained transcript at the current terminal width and with
-current display settings. Ctrl+G, `/show-commands`, `/show-edits`,
-`/theme`, and `/syntax`
-use the same replay mechanism. The draft, active tool panel, and unfinished model
-text are preserved; replay neither calls tools nor changes model history.
+`/redraw` rebuilds the retained transcript at the current terminal width with
+the current display settings. Ctrl+G, `/show-commands`, `/show-edits`,
+`/show-thinking`, `/group-tools`, `/theme`, and `/syntax` rebuild it the same
+way. Your draft, the live tool panel, and unfinished model text are kept; a
+rebuild never calls tools or changes model history.
 
-The transcript also rebuilds automatically after a terminal size change settles.
-Height changes rebuild history too, so live preview fragments do not remain in
-scrollback after the pane shrinks. To disable automatic replay:
+The transcript also rebuilds automatically once a terminal resize settles,
+including height changes, so live preview fragments don't linger in scrollback
+after the pane shrinks. It waits for a drag to finish rather than rebuilding at
+every intermediate size. To turn it off:
 
 ```sh
 pcode config set regenerate_on_resize off  # Default on; applies on next launch
 ```
 
-Resize replay is debounced to avoid rebuilding on every intermediate size during
-a drag. Without it, the editor still resizes normally; `/redraw` remains available
-for an explicit transcript reflow.
+With it off, the editor still resizes normally, completed output is left for
+the terminal to reflow, and `/redraw` is still available.
 
-Closing an alternate-screen popup (modal dialog), such as `/tree`, `/links`,
-`/model`, `/resume`, `/status`, `/tools`, or `/diffs`, also rebuilds the retained
-transcript. This restores the conversation even if the terminal lost its previous
-screen contents. Dismissal with Escape does the same; the editor draft is preserved.
-Popup restoration is independent of `regenerate_on_resize`.
+Closing a full-screen popup such as `/tree`, `/links`, `/model`, `/resume`,
+`/status`, `/tools`, or `/diffs` (including with Escape) also rebuilds the
+transcript, which restores the conversation if the terminal lost its screen
+contents. Your draft is kept. This happens even with `regenerate_on_resize` off.
 
-**Terminal-history warning:** regeneration clears the terminal's visible screen
-and scrollback, including shell output from before pcode started. It then rebuilds
-only the transcript retained by this pcode process. This uses the normal-screen
-ANSI erase-scrollback sequence (verified in tmux); terminals that ignore that
-sequence may leave older copies in history. Redirected/non-terminal output is not
-cleared or redrawn; resume prints the retained slice once without terminal escapes.
+**Terminal-history warning:** a rebuild clears the terminal's screen and
+scrollback, including shell output from before pcode started, then redraws only
+the transcript this pcode process retained. Terminals that ignore the
+clear-scrollback escape sequence may keep older copies in history. Output
+redirected to a file or pipe isn't cleared or redrawn; there, resume prints the
+retained transcript once, as plain text.
 
-Resume (`--continue` or `/resume`) loads the selected conversation path from disk
-into the same retention log, then performs a redraw. Switching branches with
-`/tree` also replaces the displayed history rather than appending another preview.
-Thinking, edits, and saved command results are retained even when hidden, so later
-visibility toggles work on resumed history too. Tools are never re-executed.
+Resume (`--continue` or `/resume`) loads the selected conversation from disk,
+then redraws. Switching branches with `/tree` replaces the displayed history
+rather than appending to it. Thinking, edits, and command results are retained
+even while hidden, so visibility toggles work on resumed history too. Tools are
+never re-executed.
 
-One setting controls the text budget for both live redraw and resume:
+One setting caps how much text is retained for both redraw and resume:
 
 ```sh
 pcode config set transcript_max_chars 2000000  # Default; applies on next launch
 ```
 
-The budget counts estimated retained text characters, not rendered lines, bytes,
-or model tokens. Oldest entries are evicted first; the newest entry is kept even
-if it alone exceeds the budget. A tiny-write guard scales with the same setting
-(one entry per 100 budget characters, at least one entry; **20,000 entries** at the
-default). If history was evicted, redraw shows an omission notice. Saved sessions,
-model context, and diagnostics are unaffected. Ordinary redraw does not reread
-the archive; resume rebuilds the retained slice from it.
+The budget counts characters of retained text, not rendered lines, bytes, or
+model tokens. The oldest entries are dropped first; the newest entry is always
+kept, even if it alone exceeds the budget. The number of entries is also capped
+at one per 100 budget characters (20,000 at the default), so many tiny writes
+can't pile up. When older history has been dropped, a redraw says so. Saved
+sessions, model context, and diagnostics are unaffected.

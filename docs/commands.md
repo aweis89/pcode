@@ -1,152 +1,148 @@
 # Commands and keys
 
-## Offline preview and commands
-
-```sh
-uv run pcode                 # no model, canned replies only
-uv run pcode --theme-preview # print a sample and the style gallery, then exit
-uv run pcode --theme light   # light input palette
-uv run pcode --theme auto    # detect terminal background at startup
-```
+## Slash commands
 
 Type `/` to open the command menu, then narrow it by typing. Use Tab or the
 arrow keys to choose. Enter accepts a selected completion; another Enter runs it.
 
-Type `@` anywhere in a prompt to reference a workspace file. The menu matches
-any part of the path, so `@ui.py` finds `src/pcode/ui.py`; files whose name
-matches come first, and each row shows the file's size. Accepting a match
-replaces `@…` with the workspace-relative path, `./src/pcode/ui.py`, which is
-the form the model's file tools take, so it can read or search the file without
-guessing where it lives (a name containing spaces is quoted). References are
-underlined in the editor. The candidate list comes from `git ls-files` (tracked
-plus untracked, honoring `.gitignore`). Outside a Git checkout it comes from
-ripgrep, which skips hidden entries and honors `.ignore` files, with build
-directories such as `node_modules` excluded on top; a pure-Python directory walk
-covers a machine with no ripgrep. The listing is refreshed at most every ten
-seconds, and completion blocks the editor while it runs, which is why the fast
-path matters on a large tree.
-
-The path is all that is sent: pcode never reads a referenced file for you, so
-the model decides whether reading it is worth a call. The menu shows each
-candidate's size so that cost is visible before you pick.
-
-- `/theme-preview`: fictional Markdown, code, diff, table, and tool summaries,
-  followed by a gallery of every installed Pygments style with the commands that
-  select one. Never calls the model, even in live mode, and does not enter its
-  conversation history. `--theme-preview` (formerly `--demo`, still accepted)
-  prints the same thing without a terminal.
-- `/theme light`, `/theme dark`, or `/theme auto`: change the input and future output palette.
-  Auto uses the terminal background detected at startup with an OSC 11 query,
-  falling back to `COLORFGBG`, then dark when unavailable (including redirected
-  output). Auto is the built-in default; saved theme choices still take precedence.
-  Restart pcode after changing your terminal background. Restore auto mode
-  with `/theme auto` or `pcode config set theme auto`.
-  `/theme` alone toggles. The palette decides which `/syntax` setting applies
-  (`syntax_dark` or `syntax_light`); normal body text and the overall background
-  stay terminal-native either way.
-- `/syntax NAME`: choose the colors for the active palette and save them as that
-  palette's default; `/syntax` alone reports the current choice.
-  `/syntax terminal` is the default: scrollback, fenced code (`ansi_dark` /
-  `ansi_light`), the prompt, task rows and the completion popup all use the
-  terminal's own ANSI colors, so pcode follows whatever scheme the terminal runs.
-  Any Pygments style (`/syntax gruvbox-dark`, `/syntax monokai`) switches to
-  pcode's own colors instead: headings, links, quotes and tables use the palette,
-  and code, popup and prompt are derived from that style. See
-  [Code highlighting styles](configuration.md#code-highlighting-styles) for the
-  list; `/theme-preview` renders every style, marking the one in use. Retained
-  scrollback is rebuilt with the new colors, just like `/redraw`.
-- Session, conversation-tree, model, and tool popups share terminal-default
-  backgrounds and text, with reverse-video selection highlights. They follow your
-  terminal background automatically, independently of `/theme` and `/syntax`.
-  Opening a popup cancels other popup requests already waiting, so pressing
-  Ctrl+L twice quickly opens one picker, not a second one after dismissal.
-  Queued messages and non-popup commands are kept; a fresh request after closing
-  the popup opens it normally.
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
 - `/login [claude|openai-codex]`: sign in in a browser. `claude` (the default) runs
   `claude auth login` for the login `claude:` models use ([details](providers.md#signing-in));
   `openai-codex` uses Pydantic AI's OAuth flow (no CLI required). pcode's own Anthropic
   sign-in and Meridian are [turned off](providers.md#sign-in-with-your-anthropic-account).
-  `/logout [anthropic|openai-codex]` removes pcode's stored login, leaving CLI credentials untouched. Both require an idle conversation.
-- `/model`: searchable model picker for configured providers (keeps the conversation;
-  applies from the next request when chosen mid-run).
+  `/logout [anthropic|openai-codex]` removes pcode's stored login, leaving CLI credentials
+  untouched. Both require an idle conversation.
+- `/model`: searchable model picker for configured providers. Keeps the conversation;
+  chosen mid-run, it applies from the next request.
 - `/subagents [MODEL ...|off]`: the models `delegate_task` may run a sub-agent on; each
   word completes from the `/model` catalog. Bare lists them, `off` clears them
   ([details](tools.md#sub-agents-on-other-models)).
-- `/tools`: scrollable tool-call inspector for the current conversation, including resumed calls.
-- `/tools failed`: open the same inspector filtered to failures.
+- `/tools`: the [tool-call inspector](#tool-call-inspector) for the current conversation,
+  including resumed calls. `/tools failed` opens it filtered to failures.
 - `/diffs`: review the session's work as a git diff, one entry per file, in a
   full-screen popup (see [Diff browser](#diff-browser)).
-- `/links`: pick a URL from the active conversation branch (your prompts, tool
-  arguments and captured results, or the assistant's replies, last appearance first).
-  Tool links show the tool name; duplicate URLs appear once, at their most recent
-  position. The picker opens in its search line: typing searches URLs, labels, and
-  sources, case-insensitively, filtering as you type, while `↑`/`↓` move the
-  selection. `Enter` opens the selected URL. `Esc` clears the search, or closes the
-  picker when the search is empty. Tab moves to the list. **Ctrl+T** shows/hides tool
-  links (shown by default; URLs also present in prompts or replies remain when tools
-  are hidden) and **Ctrl+F** returns to the search, from either one. Filters reset when
-  you reopen `/links`.
-  Output omitted by truncation or stored only in a spill file is not searched. Open the selection
-  in the default browser via
-  `open` (macOS), `xdg-open` (Linux), or the shell association (Windows). Useful
-  when the terminal or an older tmux does not make rendered links clickable.
+- `/links`: pick a URL from the active conversation branch: your prompts, tool
+  arguments and results, or the assistant's replies, most recent first. Duplicate
+  URLs appear once, at their latest position; tool links show the tool name.
+  The picker opens in its search line: typing filters URLs, labels, and sources
+  (case-insensitive) while `↑`/`↓` move the selection, and Tab moves to the list.
+  `Enter` opens the URL in the default browser (`open` on macOS, `xdg-open` on
+  Linux, the shell association on Windows). `Esc` clears the search, or closes the
+  picker when the search is empty. **Ctrl+T** shows/hides tool links (shown by
+  default; URLs also in prompts or replies stay) and **Ctrl+F** returns to the
+  search. Filters reset when you reopen it. Output dropped by truncation or stored
+  only in a spill file isn't searched. Handy when your terminal or tmux doesn't
+  make links clickable.
 - `/status`: current model, workspace, session storage path, completed turns, token usage,
-  and a breakdown of the prompt overhead the model is re-sent every request — see
-  [Where the fixed prompt goes](context.md#where-the-fixed-prompt-goes). Opens a popup in the
-  interactive editor; prints inline when there is no editor.
+  and a breakdown of the prompt overhead re-sent with every request (see
+  [Where the fixed prompt goes](context.md#where-the-fixed-prompt-goes)). Opens a popup in
+  the interactive editor; prints inline otherwise.
 - `/usage`: plan limits and spend for the Claude Code and Codex logins, fetched when you
   run it. Subscription seats show the session (5h) and weekly percentages with their resets,
-  including per-model weekly caps. Seats billed at API rates show the monthly spend against
+  including per-model weekly caps. Seats billed at API rates show monthly spend against
   its cap (for example `Spend: $652.42 of $2,500.00 (26%)`). No admin key is needed: Claude
   reads the login of the current `CLAUDE_CONFIG_DIR` (from the Keychain on macOS, else
   `.credentials.json`), and Codex uses pcode's `/login openai-codex` or the Codex CLI's
   `auth.json`, through `PCODE_LLM_PROXY` when set. Both endpoints are undocumented and can
   change. An expired Claude Code token is reported, never refreshed, so Claude Code stays
-  signed in. Plain API keys have no per-user usage endpoint and are not covered.
-- `/resend`: retry from the last checkpoint without a new message; shows the previous prompt and spinner.
+  signed in. Plain API keys have no per-user usage endpoint and aren't covered.
+- `/resend`: retry from the last checkpoint without a new message; shows the previous
+  prompt and spinner.
 - `/jobs [stop ID|stop all|watch ID|unwatch]`: bare `/jobs` opens a popup listing this
-  session's shell jobs, running first, beside the selected job's command and live output log.
-  **Ctrl+W** pins or unpins its output tail in the command preview, **Ctrl+K** stops it, and
-  Enter/Esc closes. The subcommands do the same without the popup. Jobs outlive the turn that
-  started them — see [Shell jobs](tools.md#shell-jobs).
+  session's shell jobs, running first, beside the selected job's command and live output.
+  **Ctrl+W** pins or unpins its output tail in the command preview, **Ctrl+K** stops it,
+  and Enter/Esc closes. The subcommands do the same without the popup. Jobs outlive the
+  turn that started them; see [Shell jobs](tools.md#shell-jobs).
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
-- `/autocompact on|off`: toggle automatic LLM compaction (saved user preference; default on).
-- `/new`: start a new saved conversation; clears the screen and retained scrollback, keeps input history.
+- `/autocompact on|off`: toggle automatic compaction (saved; default on).
+- `/new`: start a new saved conversation; clears the screen and retained scrollback,
+  keeps input history.
 - `/resume`: browse and search saved conversations by their prompts; resume one in place.
-- `/switch [HOST | - | new [PROMPT]]`: pick another running [background session](sessions.md#background-sessions)
-  and show it here, or start a new one; the session left keeps working.
-- `/restart`: restart this background session's host on the pcode installed now, keeping the conversation.
+- `/switch [HOST | - | new [PROMPT]]`: pick another running
+  [background session](sessions.md#background-sessions) and show it here, or start a new
+  one; the session you leave keeps working.
+- `/restart`: restart this background session's host on the pcode installed now, keeping
+  the conversation.
 - `/stop`: end this background session's host and quit. Quitting any other way (Ctrl+D,
   `/quit`) does the same.
-- `/detach`: quit but leave this background session's host running; `pcode --attach` returns to it.
-- `/tree`: [browse and fork the conversation](conversation-tree.md); select a user prompt to
-  edit it, or an assistant response to continue from there. Existing branches are kept.
-  Readable at any time; forking waits for the running turn.
-- `/btw QUESTION`: [ask a side question](side-questions.md) against the context the model is
-  working with right now, without interrupting or queueing it. The answer opens in a popup
-  when it is ready (`btw_auto_open`); a bare `/btw` opens the answers at any time, and
-  **Ctrl+R** there [asks a follow-up](side-questions.md#following-up) to the selected answer;
-  **Ctrl+S** and **Ctrl+T** [keep a thread](side-questions.md#keeping-a-thread) as a summary
-  or a merged `/tree` branch.
-  `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks on other models instead, one
-  side question per model ([choosing the model](side-questions.md#choosing-the-model)).
+- `/detach`: quit but leave this background session's host running; `pcode --attach`
+  returns to it.
+- `/tree`: [browse and fork the conversation](conversation-tree.md); select a user prompt
+  to edit it, or an assistant response to continue from there. Existing branches are kept.
+  Browsable at any time; forking waits for the running turn.
+- `/btw QUESTION`: [ask a side question](side-questions.md) against the context the model
+  is working with right now, without interrupting or queueing it. The answer opens in a
+  popup when ready (`btw_auto_open`); bare `/btw` opens the answers at any time. There,
+  **Ctrl+R** [asks a follow-up](side-questions.md#following-up), and **Ctrl+S** and
+  **Ctrl+T** [keep a thread](side-questions.md#keeping-a-thread) as a summary or a merged
+  `/tree` branch. `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks other models
+  instead, one side question each ([choosing the model](side-questions.md#choosing-the-model)).
   A `+EFFORT` suffix (`$openai:gpt-5+high`), or a bare `+EFFORT` word for the
-  conversation's model, picks that question's reasoning effort from the `/effort` levels.
-- `/workers`: follow delegated workers in a popup, live and read-only: each worker's
-  assignment, plan, prose and tool calls, which the transcript only summarizes under its
-  delegate row. Works while the turn runs. **Ctrl+T** shows or hides reasoning. Workers are kept in
-  memory for the session, so a resumed session starts with none.
+  conversation's model, sets that question's reasoning effort from the `/effort` levels.
+- `/workers`: follow delegated workers live in a read-only popup: each worker's
+  assignment, plan, prose, and tool calls, which the transcript only summarizes. Works
+  while the turn runs. **Ctrl+T** shows or hides reasoning. Workers are kept in memory
+  only, so a resumed session starts with none.
 - `/skill:NAME [text]`: run a discovered skill; see
-  [Skills as slash commands](workspace.md#skills-as-slash-commands) for naming and configuration.
-- `/quit` (alias `/exit`): exit.
+  [Skills as slash commands](workspace.md#skills-as-slash-commands).
+- `/theme light`, `/theme dark`, `/theme auto`: change the input and future output
+  palette; bare `/theme` toggles. Auto (the built-in default) detects the terminal
+  background at startup, falling back to `COLORFGBG`, then dark (including for
+  redirected output). A saved theme takes precedence. Restart pcode after changing your
+  terminal background. `pcode config set theme auto` also restores auto mode, and
+  `pcode --theme light|dark|auto` picks the palette for one launch. The
+  palette decides which `/syntax` setting applies (`syntax_dark` or `syntax_light`);
+  body text and background stay terminal-native either way.
+- `/syntax NAME`: choose colors for the active palette and save them as its default;
+  bare `/syntax` reports the current choice. `/syntax terminal` is the default:
+  scrollback, fenced code, the prompt, task rows, and menus all use the terminal's own
+  ANSI colors, so pcode follows your terminal's scheme. Any Pygments style
+  (`/syntax gruvbox-dark`, `/syntax monokai`) switches to pcode's own colors: headings,
+  links, quotes, and tables use the palette, and code, popups, and prompt are derived
+  from the style. See [Code highlighting styles](configuration.md#code-highlighting-styles).
+  Retained scrollback is rebuilt with the new colors, like `/redraw`.
+- `/theme-preview`: sample Markdown, code, diffs, tables, and tool summaries, then a
+  gallery of every installed Pygments style (current one marked) with the command that
+  selects it. Never calls the model and isn't added to the conversation.
+  `pcode --theme-preview` (formerly `--demo`, still accepted) prints the same and exits.
+- `/redraw`: rebuild the transcript at the current width; see
+  [Regenerating the terminal transcript](transcript.md#regenerating-the-terminal-transcript).
+- `/quit` (alias `/exit`): exit. It cancels a running turn and waits for its cleanup first.
+
+Toggles such as `/show-thinking`, `/show-tasks`, `/show-edits`, `/show-commands`,
+`/group-tools`, and `/autohide-tasks` are described with the features they control,
+on this page and in [the transcript](transcript.md).
+
+Popups (sessions, conversation tree, models, tools) use the terminal's default
+background and text with reverse-video selection, whatever `/theme` and `/syntax`
+say. Opening a popup cancels popup requests already waiting, so pressing Ctrl+L
+twice quickly opens one picker, not a second after you close the first. Queued
+messages and other commands are unaffected, and asking again after closing opens
+the popup normally.
+
+### File references with `@`
+
+Type `@` anywhere in a prompt to reference a workspace file. The menu matches any
+part of the path, so `@ui.py` finds `src/pcode/ui.py`; files whose name matches
+come first, and each row shows the file's size. Accepting a match inserts the
+workspace-relative path, `./src/pcode/ui.py`, which is what the model's file tools
+take (names with spaces are quoted). References are underlined in the editor.
+
+Only the path is sent. pcode never reads the file for you, so the model decides
+whether reading it is worth a call; the size in the menu shows that cost up front.
+
+In a Git checkout, candidates are tracked plus untracked files, honoring
+`.gitignore`. Elsewhere they come from ripgrep (skipping hidden entries, honoring
+`.ignore`, and excluding build directories such as `node_modules`), or a plain
+directory walk when ripgrep isn't installed. The list refreshes at most every ten
+seconds, so a brand-new file can take a moment to appear.
 
 ## Keys and layout
 
-The Ctrl+*letter* keys below that pick a mode, open a picker or toggle a
-widget are shortcuts: they follow the [shortcut prefix](#shortcut-prefix), so
-with a leader such as Ctrl+P, Ctrl+S becomes Ctrl+P then `s`. Enter, the
-arrows, Ctrl+J, Ctrl+C and Ctrl+D never change.
+The Ctrl+*letter* keys below that pick a mode, open a picker, or toggle a widget
+are shortcuts: they follow the [shortcut prefix](#shortcut-prefix), so with a
+leader such as Ctrl+P, Ctrl+S becomes Ctrl+P then `s`. Enter, the arrows,
+Ctrl+J, Ctrl+C, and Ctrl+D never change.
 
 | Key | Action |
 | --- | --- |
@@ -160,59 +156,134 @@ arrows, Ctrl+J, Ctrl+C and Ctrl+D never change.
 | Ctrl+N / Ctrl+P | Raise / lower reasoning effort for the next turn |
 | Ctrl+^ (Ctrl+6) | Back to the session this terminal showed before (`/switch -`) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
+| Ctrl+T | Show/hide thinking (saves the default) |
 | Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first) |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
 | Ctrl+D | Exit on empty idle input (stopping a background session's host); cancel during generation |
 
-Press **Ctrl+O** or use `/show-tasks [on|off]` to hide or show the Tasks/Tools
-widget without stopping work or clearing task/tool history. The current prompt
-and queue remain visible. Visibility is saved across launches (default: on);
-use `pcode config set show_tasks off` to set the default from the shell.
+Ctrl+S reaches pcode rather than pausing terminal output, because terminal flow
+control is off while the prompt is active. There is no incremental history
+search, so Ctrl+R does nothing at the prompt. Ctrl+O replaces the editor's
+insert-newline binding; Ctrl+J still inserts a newline.
 
-Delegated sub-agents are listed in the widget beneath your active task. A
-finished delegate stays, reading `Done` (or `Failed`), along with its own task
-list, until you move to another task or the next turn starts.
-
-`/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
-as soon as the model finishes a turn, keeping the idle prompt compact; it
-returns on the next turn, and Ctrl+O brings it back immediately. Default: off.
-
-The widget sits at the top of the editor box by default (`attach_tasks=on`):
-its heading becomes the editor's top border and a divider separates the tasks
-from your draft. Queued prompts sit above the combined box. Use
-`/config set attach_tasks off` to draw it in a separate box above the editor,
-or `/config set attach_tasks on` to attach it again. Both apply immediately
-and save the preference; `pcode config set attach_tasks off` sets it from the shell.
-Ctrl+O replaces the editor’s insert-newline binding; Ctrl+J still inserts a newline.
-
-`pcode config set tasks_max_height 0.5` caps the widget and the editor box
-together at half the screen; a whole number such as `20` caps them at that many
-rows instead. The tasks get the room first and the editor keeps at least one
-text row, so a long plan lists more of its steps while a long draft scrolls
-inside the editor. Unset (the default), the widget stays at no more than 10 rows
-or half the screen, whichever is smaller, and the editor grows into whatever is left.
-
-**Ctrl+Y** copies whatever is in the editor right now, so a draft can be moved
-somewhere else without sending it. A collapsed paste marker is expanded first:
-what lands on the clipboard is what Enter would send. It replaces `yank` in
-Emacs editing mode (`Ctrl+X r y` still pastes from the kill ring) and
-copy-character-from-above in vi insert mode. Copying uses a
-local helper (`pbcopy`, `wl-copy`, `xclip`) or OSC 52 over ssh, the same as the
-popups, and truncates at 64 KiB.
+**Ctrl+Y** copies whatever is in the editor, so you can move a draft elsewhere
+without sending it. A collapsed paste marker is expanded first, so the clipboard
+gets exactly what Enter would send. It replaces `yank` in Emacs mode
+(`Ctrl+X r y` still pastes from the kill ring) and copy-character-from-above in
+vi insert mode. Copying uses a local helper (`pbcopy`, `wl-copy`, `xclip`) or
+OSC 52 over ssh, like the popups, and truncates at 64 KiB.
 
 **Setting acknowledgements are transient.** Toggles and display settings
 (`/show-thinking`, `/show-tasks`, `/show-edits`, `/show-commands`,
-`/group-tools`, `/autohide-tasks`, `/autocompact`, `/theme`, `/syntax`, `/effort`)
-answer on a line directly above the spinner, just over the editor, and clear
-themselves after five seconds. They never enter terminal scrollback, so
-flipping a display option repeatedly does not litter the transcript, and a
-transcript rebuild (`/redraw`, resize replay) neither preserves nor duplicates
-them. Long acknowledgements wrap to the pane and are capped at six rows.
-Everything else a command reports — `/status`, `/mcp`, `/help`, login flows,
-session and model changes, warnings, and errors — still goes to scrollback.
-Without a live panel (redirected output, `--print`) an acknowledgement falls
-back to a printed notice.
+`/group-tools`, `/autohide-tasks`, `/autocompact`, `/theme`, `/syntax`,
+`/effort`) answer on a line just above the editor and clear after five seconds.
+They never enter scrollback, so flipping an option repeatedly doesn't litter the
+transcript. Long acknowledgements wrap and are capped at six rows. Everything
+else a command reports (`/status`, `/mcp`, `/help`, login flows, session and
+model changes, warnings, errors) goes to scrollback. Without a live panel
+(redirected output, `--print`), acknowledgements are printed instead.
+
+### The editor
+
+The input sits at the bottom of the pane from startup: one line plus its border.
+It grows upward for wrapped text or newlines and shrinks as text is removed.
+Completions appear above it. Very long input scrolls within the available
+height. Multiline bracketed paste works; mouse capture is off.
+
+Wrapping is word-aware: a word that would straddle the right edge moves to the
+next row whole. This is display only; the text you send is unchanged. A single
+word wider than the pane still has to split.
+
+The editor stays usable while the model works, including multiline input,
+history, slash completion, and `@` references. See
+[Sending while the agent is working](#sending-while-the-agent-is-working).
+Editor history is kept in memory only.
+
+## Tasks/Tools widget
+
+Tasks and running tool calls share one compact widget above the editor. Task
+rows show status icons and keep the active item in view. Running tool calls
+appear beneath the active task with tree guides (`├──`, `└──`, `│`); with no
+active task, they appear unparented. The newest running call is shown in the
+status row just above the widget instead of being repeated inside it. Each row
+shows a status icon, tool name, elapsed time, and a truncated path or command.
+A call leaves the widget when it finishes and gets its line in
+[scrollback](transcript.md) instead; calls still running when a turn ends are
+dropped from the widget.
+
+The status row always reads the same way: a spinner, what the turn is doing,
+what it is doing it to, and on the right the run's tool count and how long
+this phase has lasted.
+
+```text
+⠋ Thinking                                                    8s
+⠋ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
+⠋ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
+⠋ ◈ Compacting context ▸ keep tests                           4s
+```
+
+A spinner means the turn is waiting on that row; background jobs get a static
+`⟳` instead. The phase is the one highlighted word, and a stall shows as its
+clock climbing (`Thinking · 40s`). A call that just finished stays for a
+moment, marked `✓` or `✗`, so a burst of quick calls reads as progress rather
+than flicker. `◈` marks work pcode runs itself, such as compaction.
+
+Press **Ctrl+O** or use `/show-tasks [on|off]` to hide or show the widget without
+stopping work or clearing tasks. The prompt and queue stay visible. Visibility
+is saved (default on); `pcode config set show_tasks off` sets it from the shell.
+
+`/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
+when the model finishes a turn, keeping the idle prompt compact. It returns on
+the next turn, and Ctrl+O brings it back immediately. Default off.
+
+By default the widget is attached to the top of the editor box
+(`attach_tasks=on`): its heading becomes the editor's top border, with a divider
+between tasks and your draft. Queued prompts sit above the combined box.
+`/config set attach_tasks off` draws it in a separate box above the editor, and
+`/config set attach_tasks on` attaches it again. Both apply immediately and save
+the preference; `pcode config set attach_tasks off` works from the shell.
+
+`pcode config set tasks_max_height 0.5` caps the widget and editor together at
+half the screen; a whole number such as `20` caps them at that many rows. Tasks
+get the room first and the editor keeps at least one text row, so a long plan
+shows more steps while a long draft scrolls inside the editor. Unset (the
+default), the widget takes at most 10 rows or half the screen, whichever is
+smaller, and the editor grows into what's left. In small panes the widget
+shrinks further, keeping the active task and newest calls; an empty widget is
+hidden.
+
+Task additions and status changes show up as soon as the model starts streaming
+them, before the tool runs. Those early updates are provisional: the tool result
+confirms them, and a cancellation or failure discards them. Only confirmed plans
+are saved. Successful planning calls update the task rows without adding tool
+rows; failed ones stay visible as failed calls. Plans persist across turns and
+resumed sessions; `/new` clears them.
+
+### Delegated sub-agents
+
+A running `delegate_task` has its own row, starting with `✦` instead of a status
+icon and drawn in its own color, so it never reads as one of your tasks. It
+shows the agent, elapsed time, phase, and the purpose the model gave (or the
+start of its assignment). The phase is `Waiting for model`, `Thinking`,
+`Working` (one of its tools is running), or `Responding` while it runs, then
+`Done` or `Failed`.
+
+A sub-agent that plans shows up to three of its tasks beneath it, centered on
+its active task, with its running tool calls nested the same way. Its plan is
+separate from yours: never saved and never merged into your plan. A finished
+delegate stays listed with its plan until your active task changes or the next
+turn starts. The built-in worker always plans; an extension's delegate can opt
+in (see "Sub-agents" in pcode's extension guide).
+
+```text
+* Fix the flaky login test
+└── ⟳ ✦ Worker · 12.4s · Working · Investigate the retry path
+    ├── ✓ Read the retry code
+    ├── * Reproduce the failure
+    │   └── ⟳ Run shell · 1.2s · pytest -q tests/test_login.py
+    └── ○ Report back
+```
 
 ## Shortcut prefix
 
@@ -235,45 +306,51 @@ including a popup's search line or the `/btw` editor.
 
 At the prompt the letters are `s` send mode, `l` model, `n`/`p` more/less
 effort, `o` tasks widget, `t` thinking, `g` command output, `^` previous
-session and `y` copy the draft. Each popup lists its own in its footer; see
+session, and `y` copy the draft. Each popup lists its own in its footer; see
 [Popup keys](#popup-keys).
 
 A leader takes over whatever its key did before: with `ctrl+p`, Ctrl+P no
 longer moves up a line or lowers effort (that is now Ctrl+P `p`). Keys nothing
 else uses make the least surprising leaders: `ctrl+space`, `ctrl+]`, `ctrl+\`,
 or a function key such as `f2`. A leader is built from Ctrl+*key* (a letter,
-space, `]`, `\`, `^` or `_`) and F1–F24; Ctrl+C, Ctrl+D, Ctrl+H, Ctrl+I,
-Ctrl+J, Ctrl+M and Ctrl+[ are refused because the terminal sends them as
-Backspace, Tab, Enter and Esc, or pcode needs them everywhere.
+space, `]`, `\`, `^`, or `_`) and F1–F24. Ctrl+C, Ctrl+D, Ctrl+H, Ctrl+I,
+Ctrl+J, Ctrl+M, and Ctrl+[ are refused because terminals send them as
+Backspace, Tab, Enter, and Esc, or pcode needs them everywhere.
 
 The prompt reads `key_prefix` at launch; popups read it as each one opens.
 
 ## Optional vi editing
 
-The prompt uses Emacs-style editing by default. Enable vi bindings for subsequent
-launches with:
+The prompt uses Emacs-style editing by default. To use vi bindings from the next
+launch:
 
 ```sh
 pcode config set editing_mode vi
 ```
 
-You can also run `/config set editing_mode vi` in a session, then restart pcode.
-The editor starts in insert mode; press Escape for normal mode and `i` or `a` to
-resume inserting. Use `o` / `O` in normal mode to open a line below / above
-and enter insert mode. Standard vi motions and editing commands are available.
-Enter still submits (or accepts a selected completion), and Ctrl+J inserts a
-newline. Escape is prioritized in vi mode: Escape followed by Enter submits,
-rather than inserting a newline. Alt+Enter is therefore a newline shortcut only
-in Emacs mode. Other pcode application shortcuts retain their existing behavior.
+`/config set editing_mode vi` in a session works too, followed by a restart.
+Restore the default with `pcode config set editing_mode emacs` or
+`pcode config unset editing_mode`.
+
+The editor starts in insert mode; Escape switches to normal mode, and `i` or `a`
+resume inserting. `o` / `O` in normal mode open a line below / above. Standard vi
+motions and editing commands work. Enter still submits (or accepts a selected
+completion), and Ctrl+J inserts a newline. Escape takes priority in vi mode, so
+Escape then Enter submits rather than inserting a newline; that's why Alt+Enter
+is a newline only in Emacs mode. Other pcode shortcuts are unchanged.
+
+Vi mode waits only 100 ms for a terminal escape sequence to complete, so Escape
+enters normal mode without a noticeable pause. Very slow or laggy connections
+may occasionally split an escape sequence.
 
 **Shift+Enter inserts a newline** when your terminal sends a distinct CSI-u or
-xterm modifyOtherKeys sequence. Ctrl+J supports both the traditional LF byte and
+xterm modifyOtherKeys sequence for it. Ctrl+J works as the plain LF byte or
 those extended encodings. If your terminal sends ordinary Enter for Shift+Enter,
-pcode cannot distinguish them: configure Shift+Enter to send Ctrl+J (the single
-LF byte, hex `0a`, often written `\x0a`). This is a terminal key mapping, not a
-pcode setting; verify it inside tmux too if you use it. The ↓ key inserts a
-newline whenever it would otherwise do nothing (last line, no completion menu,
-not browsing older history), so it works even where no chord gets through.
+pcode can't tell them apart: map Shift+Enter to send Ctrl+J (the single LF byte,
+hex `0a`, often written `\x0a`) in your terminal's settings, and check it inside
+tmux too if you use it. The ↓ key inserts a newline whenever it would otherwise
+do nothing (last line, no completion menu, not browsing history), so it works
+even where no chord gets through.
 
 ## Newlines in tmux
 
@@ -284,7 +361,7 @@ neither:
 - tmux only asks the outer terminal for modified keys when its terminfo
   advertises `extkeys`; Ghostty's and kitty's do not, so declare it.
 - `extended-keys on` forwards those keys only to apps that opted into the
-  protocol themselves. pcode (prompt_toolkit) does not, so use `always`.
+  protocol themselves. pcode does not, so use `always`.
 
 ```tmux
 set -as terminal-features ',xterm-ghostty:extkeys'
@@ -292,161 +369,80 @@ set -g extended-keys always
 set -g extended-keys-format csi-u
 ```
 
-Reload, then detach and reattach: `#{client_termfeatures}` is computed when a
-client connects. Check with `cat -v`: Shift+Enter should print `^[[13;2u`. If
-Ctrl+J prints `^[[B` instead, a remapper (Karabiner, a Ghostty `keybind`) is
-turning it into ↓ before tmux sees it; ↓ still inserts a newline on the last
-line, so that is usually fine.
-
-Vi mode uses a 100 ms terminal escape-sequence timeout and an eager Escape binding.
-This avoids waiting for an Alt-key chord before entering normal mode; particularly
-slow or fragmented terminal connections may need a longer timeout in future.
-
-Restore the default with `pcode config set editing_mode emacs` or
-`pcode config unset editing_mode`.
-
-The input is bottom-aligned from startup, with one editable line plus its border.
-It expands upward for wrapped text or explicit newlines, and shrinks when text is
-removed. Completion appears above the frame. Very long input scrolls within the
-available pane height. Multiline bracketed paste works; mouse capture is off.
-
-Wrapping is word aware: a word that would straddle the right edge moves to the
-next row whole, instead of being cut in half. The buffer text is unchanged — the
-padding is display only, so editing positions, selection, and what gets sent are
-all unaffected. A single word wider than the pane still has to be split.
-
-Tasks and concurrent tool activity share one compact widget above the editor.
-Task rows show status icons and keep the active item visible. Background tool
-calls appear beneath the active task with tree guides (`├──`, `└──`, `│`) that
-make parent/child relationships clear. This view follows the currently active
-item, rather than recording historical task ownership. The newest running call
-appears in the status row above the widget instead of being repeated inside it.
-
-The status row always reads the same way: a spinner, what the turn is doing,
-what it is doing it to, and on the right the run's tool count and how long
-this phase has lasted.
-
-```text
-⠋ Thinking                                                    8s
-⠋ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
-⠋ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
-⠋ ◈ Compacting context ▸ keep tests                           4s
-```
-
-A spinner means the turn is waiting on that row; background jobs get a static
-`⟳` instead. The phase is the one highlighted word, and a stall shows as its
-clock climbing (`Thinking · 40s`). A call that just finished stays for a
-moment, marked `✓` or `✗`, so a burst of quick calls reads as progress rather
-than flicker. `◈` marks work pcode runs itself, such as compaction.
-When there is no active task (including no plan), background tools appear as
-unparented rows rather than beneath a completed or pending task.
-
-A running `delegate_task` keeps its own row, and a sub-agent that plans shows up
-to three of its tasks indented beneath it, centred on its active task, with its
-current tool calls nested under that task the same way. The sub-agent's plan is
-separate from yours: it is never saved and never merged into your plan. A
-finished delegate stays listed with its plan until your active task changes or
-the next turn starts. The built-in worker always plans this way; an extension's delegate opts in by giving
-its agent `IdentifiedPlanning()` from `pcode.planning` (see "Sub-agents" in
-`src/pcode/extension_guide.md`).
-
-A delegate's row starts with `✦` instead of a status icon, and has its own colour
-while it runs, so it never reads as one of your tasks. It reads agent, elapsed
-time, phase, then the purpose the model gave `delegate_task` (or, without one,
-the opening of its assignment). While it runs, the phase is `Waiting for model`, `Thinking`,
-`Working` (one of its tools is running), or `Responding` (writing its answer);
-once it settles, the phase becomes `Done` or `Failed`.
-
-```text
-* Fix the flaky login test
-└── ⟳ ✦ Worker · 12.4s · Working · Investigate the retry path
-    ├── ✓ Read the retry code
-    ├── * Reproduce the failure
-    │   └── ⟳ Run shell · 1.2s · pytest -q tests/test_login.py
-    └── ○ Report back
-```
-
-The shared height budget shrinks in small panes, preserving the active task and
-the newest tool calls. Empty tool slots are not reserved, and an empty widget is
-hidden. Each call updates in place from running to success/failure; cancellation
-marks unfinished calls as interrupted, not undone. Rows show a status icon, tool
-name, elapsed time, and truncated path/command summary, without call numbers or
-run counters. The latest ten calls remain in bounded internal history, and saved
-session resume restores this history independently of conversation replay.
-Task additions and status changes preview as soon as their fields arrive in the
-model's streamed tool arguments, without waiting for the full response or tool
-execution. These previews are display-only: tool results reconcile them to the
-confirmed plan, and cancellation or failure discards any unconfirmed preview.
-Only confirmed plans are saved. Successful planning operations update the task
-rows without duplicate tool rows; failed planning operations remain visible as
-failed calls. Plans and tools persist across turns and saved-session resumes;
-`/new` clears both.
-Routine tool summaries no longer enter conversation scrollback. `/tools` opens a
-read-only alternate-screen inspector, separate from this ten-call activity panel.
-It retains all live conversation calls, including successful planning operations.
-The non-interactive `--theme-preview` sample still prints its fictional tool
-summaries.
+Reload, then detach and reattach: tmux works out a client's features when it
+connects. Check with `cat -v`: Shift+Enter should print `^[[13;2u`. If Ctrl+J
+prints `^[[B` instead, a remapper (Karabiner, a Ghostty `keybind`) is turning it
+into ↓ before tmux sees it; ↓ still inserts a newline on the last line, so that
+is usually fine.
 
 ## Status line
 
-The line below the editor shows the workspace/branch, full `provider:model`
+The line below the editor shows the workspace/branch, the full `provider:model`
 identifier, reasoning effort, and activity. Live models also show context, for
-example `12.5k/200k` (tokens used / effective working window).
+example `12.5k/200k` (tokens used / working window). Long paths shrink first,
+and narrow terminals may cut off trailing details; send mode and working status
+take priority over model and path.
 
-Used context is the **latest completed request's input tokens**, including cached
-input, not cumulative session usage. It updates as each request completes, so it
-moves during a long tool loop rather than only at the end of the turn, and it
-follows the selected conversation history when resuming or navigating branches.
-It does not include unsent drafts, subsequent tool results, or a response still
-streaming.
-The working window is shared with compaction. Pcode first uses metadata from the
-actual serving provider: Codex's authenticated models endpoint or Anthropic's
-Models API. Otherwise it uses an exact provider/model match from
-[Models.dev](https://models.dev/), where the serving endpoint matches. Codex never
-borrows ordinary OpenAI API limits, and custom proxies or Anthropic subscription
-OAuth do not silently inherit direct-API limits. Catalog values remain advisory.
-When separate input and combined-context ceilings are available, the smaller
-ceiling is used; output capacity is retained separately, not added to input.
+Used context is the **latest completed request's input tokens**, including
+cached input, not cumulative usage. It updates after each request, so it moves
+during a long tool loop, and it follows the selected history when you resume or
+switch branches. It doesn't include your draft, tool results not yet sent, or a
+response still streaming. It shows `0` for an empty conversation or before usage
+is reported. `/status` shows cumulative session input/output usage.
 
-Metadata refreshes happen outside rendering, on startup, model selection, and
-before requests when stale. Public metadata is cached for 24 hours in
-`$XDG_CACHE_HOME/pcode/model-context-v1.json` (default `~/.cache/pcode/`). Native
-metadata is cached for one hour **in memory per model instance**, not across
-accounts or processes. Fetches have a three-second deadline and failures retain
-last-known values with a one-minute retry backoff. No pricing is loaded into the
-context cache or displayed. Unknown limits show `?`; a first run offline can thus
-show `?`, and Codex needs a successful native lookup or an explicit override.
-Used context shows `0` when the conversation is empty or usage has not been
-reported yet.
-Long paths shrink first; narrow terminals may truncate trailing context details.
-`/status` continues to show cumulative session input/output usage.
+The working window is the same one compaction uses. pcode takes it from the
+serving provider when it can (Codex's models endpoint or Anthropic's Models
+API), otherwise from an exact provider/model match on
+[Models.dev](https://models.dev/). Codex never borrows ordinary OpenAI API
+limits, and custom proxies or Anthropic subscription logins don't inherit
+direct-API limits. When separate input and total-context limits are known, the
+smaller one is used. Public metadata is cached for 24 hours in
+`$XDG_CACHE_HOME/pcode/model-context-v1.json` (default `~/.cache/pcode/`).
+Unknown limits show `?`, so a first run offline can show `?`, and Codex needs a
+successful lookup or an explicit override.
 
 ## Sending while the agent is working
 
-Enter uses the saved `send_mode` (default: `steering`). **Ctrl+S** cycles
+Enter uses the saved `send_mode` (default `steering`). **Ctrl+S** cycles
 `steering` → `queue` → `interrupt` for the *next* send only: the status bar
-shows the picked mode with `(once)` next to it, and the saved default comes back
-as soon as a prompt is sent. Mode and working status take
-priority over model and path metadata in narrow panes. Existing queued messages
-keep their submission mode.
+shows the picked mode with `(once)`, and the saved default returns as soon as a
+prompt is sent. Messages already queued keep the mode they were sent with. Each
+send clears the editor for another draft; the toolbar shows the mode and the
+number of pending messages.
 
 - **steering**: deliver input at the next model request, after active tools finish.
-  A shell command the turn is waiting on does not hold that request back: the
-  wait ends and hands the model a [job](tools.md#shell-jobs) handle, and the
-  command keeps running. Pending input is labeled “Steering (next model
-  request)”; once delivered, it replaces the active prompt in the task bar. If
-  the turn finishes before then, send it as a follow-up turn.
+  A shell command the turn is waiting on doesn't hold that request back: the wait
+  ends and hands the model a [job](tools.md#shell-jobs) handle, and the command
+  keeps running. Pending input is labeled “Steering (next model request)”; once
+  delivered, it replaces the active prompt in the task bar. If the turn finishes
+  first, it's sent as a follow-up turn.
 - **queue**: wait for the current turn to finish, then start a follow-up turn.
+  Queued messages run in order.
 - **interrupt**: cancel the current turn, discard pending messages, and send the
-  new message after cancellation cleanup completes. A shell command the turn was
-  waiting on keeps running as a [job](tools.md#shell-jobs); you are redirecting
-  the model, not cancelling its work. Ctrl+C does stop it.
+  new message once cancellation finishes. A shell command the turn was waiting on
+  keeps running as a [job](tools.md#shell-jobs): you're redirecting the model,
+  not cancelling its work. Ctrl+C does stop it.
 
-Set the default with `pcode config set send_mode steering` (or `queue` / `interrupt`).
-`/config set send_mode queue` changes the default for the next launch; Ctrl+S
-overrides it for one send without changing it. Idle input starts a normal turn in every mode. Slash
-commands retain their existing behavior, and Ctrl+D (or Ctrl+C on an empty
-prompt) still cancels and clears pending messages.
+Set the default with `pcode config set send_mode steering` (or `queue` /
+`interrupt`); `/config set send_mode queue` changes it for the next launch.
+Input sent while idle starts a normal turn in every mode.
+
+Slash commands run separately from the model, so help, inspection, theme,
+context, and effort commands work while it's busy. `/model` also works and
+applies from the next request. `/new`, `/resume`, `/login`, and `/logout` need
+an idle conversation: cancel or wait, then retry.
+
+Cancelling:
+
+- Ctrl+D cancels the current turn and clears queued messages, keeping your
+  unsent draft and cursor.
+- Ctrl+C discards the draft first, so cancelling with it takes a second press
+  when the prompt has text. It also clears queued messages.
+- A failed turn clears queued messages too, rather than running more requests.
+  Queued slash commands are kept.
+- The queue lives in memory until each message is sent.
+- Cancelling never undoes tool effects that already happened. After a failed or
+  cancelled run, the conversation resumes from the last settled point when safe.
 
 ## Running a command yourself: `!command`
 
@@ -462,15 +458,13 @@ scrollback when it ends (the last `command_scrollback_lines` rows). Ctrl+C kills
 the command and its process group. There is no timeout.
 
 The model hears about it with your next message, as if it had called the
-`shell` tool itself: the request carries a `shell` tool call for that command
-followed by its output (and `[exit code: N]` when non-zero). The result goes
-through the same `tool_output_*` reduction as real tool results, so a long test
-log over `tool_output_threshold` characters is spilled to a `read_tool_result`
-handle with a `tool_output_preview_chars` preview, and the model reads only
-the slices it needs. A `!command` typed while a turn is running waits its turn
-in the queue, whatever the send mode; nothing is sent to the model until you
-send a message, so `!make test` followed by `why did that fail?` is the usual
-shape.
+`shell` tool itself: it sees the command and its output (plus `[exit code: N]`
+when non-zero). Long output is handled like any tool result: over
+`tool_output_threshold` characters it is stored behind a `read_tool_result`
+handle with a `tool_output_preview_chars` preview, and the model reads only the
+slices it needs. A `!command` typed during a turn waits in the queue whatever
+the send mode, and nothing reaches the model until you send a message, so
+`!make test` followed by `why did that fail?` is the usual pattern.
 
 ## Popup keys
 
@@ -510,13 +504,14 @@ With the default `ctrl` prefix they are:
 With a leader, each is the leader then the letter: Ctrl+P `y` copies.
 
 Selected rows and scrollbars follow the active theme and syntax colors, like
-completion menus. Popup bodies keep the terminal's default background. With
-terminal syntax colors, selections use reverse video in the terminal's accent
-color and scrollbar thumbs use that accent too.
+completion menus; popup bodies keep the terminal's default background. With
+terminal syntax colors, selections use reverse video and scrollbars use the
+terminal's accent color.
 
 Popups capture the mouse by default: clicks select rows and the wheel scrolls
-whichever pane is under the pointer, but a plain drag no longer selects text. Most terminals still
-select with a modifier held while dragging (usually Shift; Option in iTerm2). In tmux, mouse events reach pcode only with
+whichever pane is under the pointer, but a plain drag no longer selects text.
+Most terminals still select while you hold a modifier and drag (usually Shift;
+Option in iTerm2). In tmux, mouse events reach pcode only with
 `tmux set -g mouse on`. To leave the mouse to the terminal instead, so a plain
 drag selects text and copy-on-select works:
 
@@ -524,37 +519,37 @@ drag selects text and copy-on-select works:
 pcode config set popup_mouse off
 ```
 
-Terminals that support alternate scroll mode still turn the wheel into ↑/↓
-then, moving the selection or the pane a line at a time. The setting is read as each popup opens, so no restart
-is needed.
+Terminals with alternate scroll mode still turn the wheel into ↑/↓ then, moving
+the selection or the pane a line at a time. The setting is read as each popup
+opens, so no restart is needed.
 
 ## Diff browser
 
-`/diffs` opens a full-screen popup showing one net git diff per file, however
-many times the file was edited, using the same diff colors as scrollback. The
-first line says what is being compared:
+`/diffs` opens a full-screen popup with one net git diff per file, however many
+times the file was edited, in the same colors as scrollback. The first line says
+what is being compared:
 
 - **In a linked worktree** (the default with `worktree on`): the whole branch
   against its merge-base with the mainline branch, including uncommitted and
-  untracked files. That is what a merge would bring in, whichever tool made the
+  untracked files. That's what a merge would bring in, whichever tool made the
   change (file tools, the shell, a formatter, a worker). Merging mainline into
-  the branch moves the merge-base, so mainline's own changes never show up here.
+  the branch moves the merge-base, so mainline's own changes never show up.
 - **In any other checkout**: uncommitted changes against `HEAD`, limited to the
   files this session's file tools edited, since anything else dirty may be
-  yours. Those files show all of their changes, including ones made before the
-  session or by hand. Files changed only through the shell are not listed.
-- **Outside git**, or when git cannot produce the diff (no commits yet, a
+  yours. Those files show all their changes, including ones made before the
+  session or by hand. Files changed only through the shell aren't listed.
+- **Outside git**, or when git can't produce the diff (no commits yet, a
   detached mainline): the individual tool edits, newest first, with the reason
-  in the title.
+  in the title. Resumed and branched conversations show the edits of their own
+  branch; nothing is re-read from disk or re-applied.
 
-Untracked files are included without touching your staging area: the working
-tree is recorded into a throwaway copy of the index, which is deleted
-afterwards. Untracked files that look sensitive (`.env`, keys, credentials) are
-listed but never read, and tracked ones show only their line counts. Secrets in
-other diffs are redacted as in scrollback. A file's diff is clipped at 2,000
-lines, and one over 1 MB shows only its counts.
+Untracked files are included without touching your staging area. Untracked files
+that look sensitive (`.env`, keys, credentials) are listed but never read, and
+tracked ones show only their line counts. Secrets in other diffs are redacted as
+in scrollback. A file's diff is clipped at 2,000 lines, and a file over 1 MB
+shows only its counts.
 
-The diff fills most of the screen; a small file selector sits at the bottom.
+The diff fills most of the screen, with a small file selector at the bottom.
 Keys are listed in the header:
 
 - The browser opens in the search line, searching paths (see Ctrl+F below).
@@ -563,129 +558,100 @@ Keys are listed in the header:
 - Tab/Shift+Tab switch between the file list and the diff. The
   [popup keys](#popup-keys) act on whichever has focus; Ctrl+Home/Ctrl+End jump
   to the first or last line of the diff.
-- **Ctrl+F** opens a search for whichever pane has focus. In the file list
-  it filters files by path; in the diff it filters to changes whose diff has a
-  matching line and jumps the diff to the first one. Matching is fuzzy: a plain
-  substring, or joined word prefixes such as `ed_ui` for `edit_ui.py` or
-  `sel_row` for `selected_row`. Every word of the query must match. Up/Down
-  still move the file selection while typing; Enter returns to the pane.
-  Switching panes and pressing Ctrl+F again starts a fresh query for that scope.
+- **Ctrl+F** searches whichever pane has focus. In the file list it filters
+  files by path; in the diff it filters to changes with a matching line and
+  jumps to the first one. Matching is fuzzy: a plain substring, or joined word
+  prefixes such as `ed_ui` for `edit_ui.py` or `sel_row` for `selected_row`.
+  Every word of the query must match. Up/Down still move the file selection
+  while typing; Enter returns to the pane. Switching panes and pressing Ctrl+F
+  again starts a fresh query for that pane.
 - **Ctrl+S**/**Ctrl+R** jump to the next/previous matching diff line (Emacs's
   search keys), from either pane or the search line.
 - Escape or Ctrl+C closes the popup and restores the editor draft.
 
-The tool-edit fallback reads saved sessions back from the journal on the active
-branch, so resumed and branched conversations show the edits that belong to
-them; nothing is re-read from disk and no edit is re-applied.
-
 ## Tool-call inspector
 
-Use `/tools` or `/tools failed`, including during an active turn.
-The inspector shows a snapshot of the calls available when opened; reopen it to
-see newer results. The model keeps running while the inspector is open, and
-terminal output is buffered until it closes. Inspection never reruns a tool.
+`/tools` (or `/tools failed`) opens a browser of every tool call in the current
+conversation, including during a turn. It shows the calls available when you
+open it; reopen it to see newer ones. The model keeps running while it's open,
+and scrollback catches up when you close it. Inspecting never reruns a tool.
 
 - Calls are newest first. The inspector opens in the search field, so typing
   filters straight away while arrows move the selection; Enter moves to the call
-  list. Tab/Shift+Tab move between the search field, call list, and detail pane.
-- **Ctrl+Y** copies the selected call's command (its whole arguments payload when
-  it has no command) and **Ctrl+O** copies the returned output.
-  Copying uses `pbcopy`/`wl-copy`/`xclip` when one is installed and OSC 52
-  otherwise; over ssh it tries OSC 52 first. tmux forwards OSC 52 only with
-  `tmux set -g set-clipboard on`. Payloads are truncated at 64 KiB, and the
-  header says what was copied or that copying failed.
-- **Ctrl+X** toggles failures, **Ctrl+T** cycles tool-name filters, and **Ctrl+F**
-  focuses search. Search matches tool names/statuses and command/summary
-  previews, not the complete output payload. Like every popup shortcut, these
-  act from any pane, including the search field.
-- In details, use arrows to scroll by line, PageUp/PageDown by page, or Ctrl+U/Ctrl+D
-  by half a page. Ctrl+U/Ctrl+D also half-page the call list, including while
-  typing a search. The session browser shares these controls.
-- Mouse clicks and wheel scrolling reach the popup unless `popup_mouse` is `off`;
-  see [popup keys](#popup-keys) for the text-selection tradeoff.
-- Escape or Ctrl+C closes only the inspector and restores the editor draft.
-- Wide terminals show calls and details side by side; narrow terminals stack them.
+  list. Tab/Shift+Tab move between the search field, call list, and details.
+- **Ctrl+Y** copies the selected call's command (or its whole arguments when it
+  has no command) and **Ctrl+O** copies its output. Copying uses
+  `pbcopy`/`wl-copy`/`xclip` when installed and OSC 52 otherwise; over ssh it
+  tries OSC 52 first. tmux passes OSC 52 through only with
+  `tmux set -g set-clipboard on`. Copies are truncated at 64 KiB, and the header
+  says what was copied or that copying failed.
+- **Ctrl+X** toggles failures only, **Ctrl+T** cycles tool-name filters, and
+  **Ctrl+F** focuses search. Search matches tool names, statuses, and
+  command/summary previews, not the full output. These work from any pane,
+  including the search field.
+- In details, arrows scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D
+  by half a page. Ctrl+U/Ctrl+D also half-page the call list, even while typing
+  a search. The session browser uses the same keys.
+- Mouse clicks and the wheel work unless `popup_mouse` is `off`; see
+  [popup keys](#popup-keys).
+- Escape or Ctrl+C closes the inspector and restores the editor draft.
+- Wide terminals show calls and details side by side; narrow ones stack them.
 
-Details include the call/run IDs, timestamp and duration when captured, structured
-arguments, framework outcome, and returned output/error. Commands and results are
-both shown as blocks, highlighted when the payload is code or JSON and verbatim
-otherwise. When `shfmt` is available on `PATH`, shell commands are formatted as
-Bash with two-space indentation. Formatting never executes the command. Results
-are cached (up to 128 commands); a missing binary, formatting error, or 250 ms
-timeout silently falls back to the built-in formatter. The fallback breaks
-one-line commands at unquoted top-level `;` and `&&`/`||`, and preserves existing
-multiline layout. `shfmt` may keep compact blocks on one line rather than fully
-expanding them.
+Details include call and run IDs, timestamp and duration when captured,
+structured arguments, outcome, and the returned output or error. Commands and
+results are shown as blocks, highlighted when they're code or JSON and verbatim
+otherwise. Shell commands are formatted as Bash with `shfmt` when it's on your
+`PATH` (the command is never executed); otherwise pcode breaks one-line commands
+at top-level `;`, `&&`, and `||` and keeps existing multiline layout. Each
+command line starts with a display-only `$ `. **Ctrl+Y** still copies the
+command exactly as run.
 
-Every logical command line starts with a display-only `$ `, before any
-indentation; soft-wrapped rows do not get another marker. **Ctrl+Y** still copies the
-original command exactly as run, without markers or formatting changes. Nonzero command exits,
-timeouts, and tool retries are failures; interruption and unknown results remain
-distinct. Command tools show an **Execution** row saying whether the model asked
-to wait (`foreground`) or to be handed a job handle (`background`); background
-calls are also tagged in the call list, so search matches `background`.
-Background launch/check/stop calls show their process ID and related
-calls when available. A successful launch is not proof that the process finished
-successfully.
+Nonzero exits, timeouts, and tool retries count as failures; interrupted calls
+and unknown results are marked separately. Command tools show an **Execution**
+row saying whether the model waited (`foreground`) or took a job handle
+(`background`); background calls are tagged in the list, so searching
+`background` finds them. Background launch, check, and stop calls show their
+process ID and related calls when available. A successful launch doesn't mean
+the process finished successfully.
 
-Provider-executed web searches (Anthropic's native `web_search`, used when the
+Provider-run web searches (Anthropic's native `web_search`, used when the
 `web_search` preference is `auto`) list each hit's title, URL, and age. The page
-text itself arrives encrypted for the provider and is replayed to the model on
-later requests; there is no client-side key, so the inspector cannot show it.
-Local searches (Exa or DuckDuckGo) and `get_page` return plain text and show in
-full.
+text arrives encrypted for the provider, so the inspector can't show it. Local
+searches (Exa or DuckDuckGo) and `get_page` return plain text and show in full.
 
-Saved inspection data is a redacted display projection in `transcript.jsonl`, not
-an execution or recovery log. It survives resume and failures in later model
-requests. Metadata is indexed incrementally; result payloads are read on selection.
-Arguments and results are each capped at 128 Ki characters, with explicit truncation
-markers. Tool-side truncation is preserved, not recoverable by the inspector.
-Unsaved conversations retain at most 8 MiB of payload text; older evicted details
-are labeled while call metadata remains. `/new` resets the inspector history.
-Older saved calls remain browsable but show a missing-details label where their
-journal did not capture arguments/results. Preview mode shows its recent fixtures.
-Redaction is best-effort, not a guarantee that arbitrary sensitive content is removed.
+What the inspector shows is a redacted copy saved in the session's
+`transcript.jsonl`, not an execution log. It survives resume and later failed
+requests. Limits:
 
-The editor avoids full-screen erase sequences that terminals such as tmux can
-copy into scrollback, leaving duplicate borders after a resize. Repeated
-horizontal and vertical shrink/grow cycles, including multiline drafts, are
-covered by real-tmux tests with cursor-position reports enabled.
+- Arguments and results are each capped at 128 Ki characters, with truncation
+  markers. Output a tool had already truncated can't be recovered here.
+- Unsaved (`--no-save`) conversations keep at most 8 MiB of payload text; older
+  details are dropped and labeled, while the call list stays.
+- `/new` resets the inspector.
+- Calls from older sessions that didn't capture arguments or results show a
+  missing-details label.
+- Redaction is best-effort, not a guarantee that all sensitive content is removed.
 
-Live responses stream as literal text into normal terminal scrollback, including
-Markdown markers. Complete lines are printed once; only the unfinished display
-line is live. Rich's `Text.wrap()` wraps at spaces using the current terminal width, keeping
-words together across streamed chunks. The separating space becomes a newline;
-explicit newlines and indentation are retained. Tokens longer than the available
-width must still split. The live tail stays small. Finishing a message flushes the
-tail without replacing the response
-with rendered Markdown. Tool summaries live inside the task widget.
-`/theme-preview` and restored session messages still use Rich Markdown.
+## Scrollback and history
 
-The editor remains usable throughout generation, including multiline input,
-history, slash completion, and `@` file references. Enter sends using the active mode (steering by
-default) and clears the editor for another draft; the toolbar shows the mode and
-pending message count. Steering messages join the next model request; queue-mode
-messages run in order after the current turn finishes. Ctrl+S cycles the mode for the next send. Slash commands use a separate async
-handler, so help, inspection, theme, context, and effort controls remain available
-while the model works. `/model` also opens while working and applies from the next
-request. `/new`, `/resume`, `/login`, and `/logout` require an idle conversation: cancel
-or wait, then retry. `/quit` (or `/exit`) cancels the active run and waits for its
-cleanup before exiting. Ctrl+D cancels the current turn, clears queued messages,
-and preserves the unsubmitted draft and cursor. Ctrl+C discards the draft first,
-so cancelling with it takes a second press when the prompt has text. A failed turn also
-clears queued messages rather than automatically running more requests. Commands
-are not discarded with that queue. The queue is in memory only, not saved until
-submitted to the runtime.
+Use your terminal or tmux scrollback, selection, and search for conversation
+history. The conversation isn't drawn in an alternate screen; only popups are.
 
-Use terminal/tmux scrollback, selection, and search for conversation history.
-The conversation has no alternate screen or application-owned viewport; only the
-temporary tool inspector uses the alternate screen. Resizing
-does not re-render completed responses; reflow is up to the terminal, and explicit
-line breaks remain. Known limitation: narrowing a pane during streaming can leave
-a copy of the unfinished line in scrollback when prompt_toolkit erases its old
-layout after the terminal has reflowed the input frame. A tmux regression test
-tracks this as an expected failure; committed lines are not reprinted.
+Replies appear in scrollback as rendered Markdown (headings, lists, highlighted
+code, tables), one finished block at a time. A paragraph or heading appears once
+it ends, a code block once its closing fence arrives, and a list or quote once
+the next block starts or the reply ends, so each shows up whole. Already written
+blocks are never rewritten, so a Markdown reference link defined later in a
+reply doesn't update earlier text. The spinner and task widget stay live while a
+block is in progress. See [Paced scrollback](transcript.md#paced-scrollback) for
+how blocks are animated in, and [the transcript](transcript.md) for what else is
+written there.
 
-Editor history remains in memory; live model messages and transcript events are
-saved unless `--no-save` is set. Failed/cancelled runs recover settled checkpoints
-when safe. Cancellation never undoes completed tool effects.
+Live model messages and transcript events are saved unless `--no-save` is set.
+
+## Offline preview
+
+Run `pcode` with no model configured (no `--model` and no saved default) and it
+opens an offline preview: the full interface, answering with canned replies and
+sample tool activity instead of calling a model. It's a quick way to try the
+keys, popups, and themes. `pcode --theme-preview` prints a style sample and exits.

@@ -89,6 +89,10 @@ class ConversationTree:
         elif kind == "tree_selected":
             self.path(record["node_id"])
             self.active = record["node_id"]
+        # Attribute by the record's own run_id, not its position, so a record from
+        # another branch's turn is never absorbed into whichever turn started last.
+        # Journals from before run_id fall back to `recording` (see
+        # `SessionJournal.active_records`).
         elif (node := self.nodes.get(record.get("run_id") or self.recording)) is not None:
             if kind == "Message":
                 node.response = record["markdown"]

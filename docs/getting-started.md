@@ -1,109 +1,113 @@
 # Getting started
 
-## Install with Homebrew
+## Install
 
-With [Homebrew](https://brew.sh/) installed:
+With [Homebrew](https://brew.sh/):
 
 ```sh
 brew tap aweis89/pcode https://github.com/aweis89/pcode.git
 brew install --HEAD aweis89/pcode/pcode
-pcode --theme-preview
-pcode -m openai-codex:gpt-5.6-luna
 ```
 
-This repository doubles as a Homebrew tap. The explicit repository URL is
-required because its name is `pcode`, not `homebrew-pcode`. There are no tagged
-releases yet, so the formula installs the latest `master` with `--HEAD`, rather
-than a stable release. These commands become available once `Formula/pcode.rb`
-is published to GitHub.
+The repository doubles as its own tap, which is why the URL is needed. There
+are no tagged releases yet, so `--HEAD` installs the latest `master`. Homebrew
+installs pcode and its dependencies into a private environment without touching
+your global Python, and adds `shfmt` for nicer command formatting in `/tools`.
 
-Homebrew installs `shfmt` for indented shell-command previews in `/tools`.
-Non-Homebrew installs can optionally install `shfmt` separately and put it on
-`PATH`; pcode falls back to its built-in formatter when it is unavailable.
-
-Homebrew installs Python 3.13 and uses `uv` at build time to install the
-application and its locked dependencies into a private environment. Installation
-requires network access to fetch Python packages; it does not modify your global
-Python environment. Run `pcode` directly after installation (no `uv run` needed).
-Provider authentication is still required for live models; see
-[providers and models](providers.md).
-
-To update or uninstall:
+To update or remove it:
 
 ```sh
-brew update
-brew upgrade --fetch-HEAD aweis89/pcode/pcode
-# To remove:
-brew uninstall pcode
-brew untap aweis89/pcode
+brew update && brew upgrade --fetch-HEAD aweis89/pcode/pcode
+brew uninstall pcode && brew untap aweis89/pcode
 ```
 
-The formula includes offline smoke tests: `brew test aweis89/pcode/pcode`.
-This is an upstream tap, not a formula in `homebrew/core`.
+To install from a checkout instead, see [run from source](#run-from-source).
 
-## Run from source
+## Sign in and pick a model
 
-With [uv](https://docs.astral.sh/uv/) installed, from this directory:
+Use a subscription you already have, or any provider API key:
 
 ```sh
-uv run pcode -m openai-codex:gpt-5.6-luna
+pcode -m claude:claude-sonnet-5          # Claude subscription, via Claude Code's own login
+pcode -m openai-codex:gpt-5.6-luna       # ChatGPT subscription
+pcode -m anthropic:claude-sonnet-5       # with ANTHROPIC_API_KEY set; other providers work the same way
 ```
 
-## Pick a workspace and send a first prompt
+If you're not signed in yet, run `/login claude` or `/login openai-codex`
+inside pcode; both sign in through the provider's own flow in your browser.
+Ctrl+L (or `/model`) opens a model picker at any time, and the model you pick
+is saved, so later a bare `pcode` is enough. See
+[providers and models](providers.md) for every provider.
 
-The current directory is the Coder workspace; select another repository with `-C`:
+## Your first session
+
+pcode works in the current directory. Start it in a repository, or point it at
+one with `-C`:
 
 ```sh
-uv run pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
+cd ~/src/my-app && pcode
+pcode -C ~/src/my-app "What does this repository do? Cite the relevant files."
 ```
 
-For a bare `pcode` command available outside this project:
+A prompt on the command line is sent as the first message, then the editor
+opens as usual. You can start typing straight away, before the editor has
+finished loading. If pcode asks whether to trust the repository, that's about
+running code the repository ships (its extensions and setup scripts); see
+[trusting a repository's own code](configuration.md#trusting-a-repositorys-own-code).
+
+!!! warning "The agent acts with your permissions"
+    There is no approval prompt: the agent edits files and runs commands as
+    you. See [tool permissions](tools.md#tool-permissions).
+
+A few things worth knowing on day one:
+
+- **Enter while the agent is working** steers the running turn with your
+  message. Ctrl+C cancels it.
+- **Ctrl+G** shows every command and its output in scrollback; press it again
+  to fold them back to summaries. See
+  [scrollback and transparency](guide/scrollback.md).
+- **`/tools`** shows every call the agent made, with its full output.
+- **`/btw QUESTION`** asks about the running turn without interrupting it.
+- **`/help`** lists every command.
+
+Conversations save automatically once you send the first prompt.
+`pcode --continue` resumes the latest one in this directory, and `/resume`
+browses them all.
+
+## Recommended: a worktree per session
+
+If you'll run more than one session on a repository, give each its own git
+worktree so they can't trample each other's edits:
 
 ```sh
-uv tool install --editable '.[claude]'   # or `make install`
-pcode -m openai-codex:gpt-5.6-luna -C /path/to/repo
+pcode config project set worktree on   # this repository
+pcode config set worktree on           # every repository
 ```
 
-The `claude` extra adds [`claude:` models](providers.md#claude-code-provider),
-which bundle the Claude Code CLI (about 215 MB). Leave it out with
-`uv tool install --editable .` or `make install EXTRAS=` if you do not need them.
+See [parallel agents](guide/parallel.md).
 
-Try asking: `What does this repository do? Read the README and cite relevant files.`
-Live conversations save automatically when the first model prompt is submitted.
+## Scripting with `--print`
 
-You can start typing immediately after launching `pcode`, before the editor
-appears. Startup input is kept for the editor, including text typed during theme
-detection. If a repository trust question appears, answer it before typing your
-prompt.
-
-A prompt on the command line is sent as the first message, then the editor opens
-as usual. Add `-p`/`--print` to skip the editor: the reply goes to stdout, tool
-activity and errors go to stderr, and the exit status reports whether the turn
-succeeded. On a terminal the reply is rendered Markdown, block by block as each
-response settles; redirected to a file or a pipe it is the Markdown source,
-streamed as it arrives. While it works, the terminal's
-[tab progress bar](configuration.md#tab-progress-bar) shows it busy, as the
-editor does. Without a prompt argument, `--print` reads one from stdin.
-With `--attach`, it sends the prompt (or a slash command such as `/stop`) to a
-running background session instead; see
-[Scripting a running host](sessions.md#scripting-a-running-host).
+`-p`/`--print` skips the editor: the reply goes to stdout, tool activity and
+errors to stderr, and the exit status says whether the turn succeeded. Without
+a prompt argument it reads one from stdin.
 
 ```sh
-pcode "Summarize the open TODOs in this repo"          # first message, then interactive
-pcode -p "Which files handle sessions?" > answer.md    # non-interactive
-git diff | pcode -p --no-save                          # prompt from stdin
-pcode -p --continue "And the tests for those?"         # continue this directory's latest session
+pcode -p "Which files handle sessions?" > answer.md
+git diff | pcode -p --no-save "Review this diff"
+pcode -p --continue "And the tests for those?"
 ```
-Opening the app, using commands, or quitting without a prompt creates no session.
-`/new` resets context without deleting the old conversation; its replacement is
-created on the next model prompt.
+
+On a terminal the reply is rendered Markdown; piped or redirected it's the
+Markdown source, streamed as it arrives. With `--attach`, `--print` sends the
+prompt to a running background session instead; see
+[scripting a running host](sessions.md#scripting-a-running-host).
 
 ## Shell completion
 
 `pcode --completions SHELL` prints a completion script for `zsh`, `fish`, or
-`bash`. It is generated from the argument parser itself, so flags and their
-choices (themes, color styles, shells) stay in step with the installed version;
-regenerate after upgrading.
+`bash`. It's generated from the installed version, so regenerate after
+upgrading. `--attach` completes the IDs of running sessions.
 
 ```sh
 pcode --completions zsh > ~/.zsh/completions/_pcode   # directory must be on $fpath
@@ -111,8 +115,17 @@ pcode --completions fish > ~/.config/fish/completions/pcode.fish
 echo 'eval "$(pcode --completions bash)"' >> ~/.bashrc
 ```
 
-The zsh script works either autoloaded from `$fpath` or sourced from `.zshrc`.
+## Run from source
 
-`--attach` completes the IDs of running session hosts, each described by its
-state, checkout, and first prompt. The script looks them up when you press Tab
-(through a hidden `pcode __complete hosts`), so the list is always current.
+With [uv](https://docs.astral.sh/uv/), from a checkout:
+
+```sh
+uv run pcode -m openai-codex:gpt-5.6-luna      # this checkout only
+uv tool install --editable '.[claude]'         # a bare `pcode` everywhere (or `make install`)
+```
+
+The `claude` extra adds [`claude:` models](providers.md#claude-code-provider)
+and bundles the Claude Code CLI (about 215 MB). Leave it out with
+`uv tool install --editable .` or `make install EXTRAS=` if you don't need
+them. Install `shfmt` yourself for formatted commands in `/tools`; without it,
+pcode uses a simpler built-in formatter.

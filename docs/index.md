@@ -41,12 +41,12 @@ next.
 | Ctrl+G, `/show-commands` | Mirror each command and its output into scrollback, or hide them |
 | `/show-edits` | Show or hide the diff of every file edit |
 | `/show-thinking` | Show or hide the model's readable reasoning |
-| `/group-tools` | Fold a run of tool calls into one line: `✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1` |
+| `/group-tools` | Fold each run of tool calls into one line (on by default): `✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1` |
 | Ctrl+O, `/show-tasks` | Show or hide the live task and tool panel |
 
 Resizing the terminal re-renders at the new width too, so a narrowed pane
 doesn't leave half-wrapped wreckage behind. Replay never reruns a tool. See
-[the transcript](transcript.md#regenerating-the-terminal-transcript).
+[scrollback and transparency](guide/scrollback.md).
 
 ## Nothing hidden: `/tools`
 
@@ -55,8 +55,8 @@ first, including while a turn is still running: the exact command, its
 arguments, how long it took, and the full output it returned. Filter to
 failures with Ctrl+X, search by name or command, and copy a command (Ctrl+Y) or
 its output (Ctrl+O) to run or paste yourself. It survives resume, so you can
-audit what happened in a session from last week. See the
-[tool-call inspector](commands.md#tool-call-inspector).
+audit what happened in a session from last week. See
+[scrollback and transparency](guide/scrollback.md#every-command-nothing-hidden-tools).
 
 ## Rewind and fork with `/tree`
 
@@ -93,7 +93,7 @@ That makes jobs a good fit for terminal-heavy work: watching a CI run and
 fixing what fails, starting a dev server and testing against it, or running a
 slow suite while editing something else. `/jobs` lists what's running and shows
 each log; jobs even survive pcode restarting and are picked up by the next
-session. See [shell jobs](tools.md#shell-jobs).
+session. See [a shell for long-running work](guide/shell.md).
 
 ## Your Claude subscription, the supported way
 
@@ -162,12 +162,22 @@ to merge it. `/worktree clean` removes finished worktrees and lists any it kept
 and why, so it can't lose work. A setup script can run in each new worktree to
 install dependencies or copy untracked config like `.envrc`.
 
-Sub-agents can be isolated the same way: turn on `worker_isolation` and each
-delegated task works on its own branch starting from the parent's commit, and
-comes back to be reviewed and integrated. Sub-agents can also run on a
-different model from the parent. See
-[one git worktree per session](workspace.md#one-git-worktree-per-session) and
-[sub-agents](tools.md#sub-agents-on-other-models).
+See [parallel agents](guide/parallel.md).
+
+## Sub-agents in parallel, in plain sight
+
+Inside one session the agent can split work across several workers running at
+once: one per failing test, one per API handler, one per repository to survey.
+Each starts with a clean context and its own plan, so the main conversation
+only gets their results.
+
+Sub-agents in most tools are a black box until they return. In pcode, the task
+panel lists each running worker with its purpose, and `/workers` opens a live
+view of all of them: each worker's assignment, plan, streamed text, every tool
+call it makes, and its reasoning if you want it. Workers can run on a
+different model from the parent (`/subagents`), and with `worker_isolation` on
+each one edits in its own worktree and comes back as a branch to review. See
+[parallel agents](guide/parallel.md#sub-agents-in-parallel).
 
 ## Hand it the browser
 
@@ -188,20 +198,22 @@ the agent can act as every account that browser is signed in to. See
 An extension is one Python file that can add slash commands, tools, guardrails
 on tool calls, or extra instructions, and `/reload` picks up changes without a
 restart. Skills in your repository become slash commands. There are themes, vi
-mode, a configurable shortcut prefix, and per-repository settings. See the
-[extension guide](https://github.com/aweis89/pcode/blob/master/src/pcode/extension_guide.md)
-and [configuration](configuration.md).
+mode, a configurable shortcut prefix, and per-repository settings. See
+[extending pcode](guide/extending.md).
 
-## Reference
+## Where to go next
 
-- [Getting started](getting-started.md): install, pick a workspace, run
-  non-interactively with `--print`, shell completion.
-- [Providers and models](providers.md), [Configuration](configuration.md),
-  [Commands and keys](commands.md)
-- [Tools](tools.md), [MCP servers](mcp.md),
-  [Working in a repository](workspace.md)
-- [Sessions and recovery](sessions.md),
-  [Context, limits and caching](context.md), [The transcript](transcript.md)
+- [Getting started](getting-started.md): install, sign in, first session.
+- Guide: [scrollback and transparency](guide/scrollback.md),
+  [a shell for long-running work](guide/shell.md),
+  [parallel agents](guide/parallel.md), [extending pcode](guide/extending.md).
+- Reference: [providers and models](providers.md),
+  [configuration](configuration.md), [commands and keys](commands.md),
+  [tools](tools.md), [MCP servers](mcp.md),
+  [working in a repository](workspace.md), [sessions](sessions.md),
+  [conversation tree](conversation-tree.md),
+  [side questions](side-questions.md),
+  [context, limits and caching](context.md), [the transcript](transcript.md).
 
 Working on pcode itself? The contributor notes live in
 [`dev/`](https://github.com/aweis89/pcode/tree/master/dev) in the repository.

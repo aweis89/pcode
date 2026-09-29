@@ -443,3 +443,30 @@ explicit command to turn on Thinking Passthrough for an external proxy.
 The per-request CLI start, about 0.5 s per tool round, is inherent to Meridian;
 `claude:` models avoid it. When Meridian does start fresh it replays history as
 flattened text. Items 1 and 4 make that rarer but cannot change the format.
+
+### Requests and telemetry
+
+Moved from the user reference. Every Meridian request carries
+`x-meridian-agent: passthrough`, so pcode, not Meridian's built-in agent, runs
+the tools, and `x-litellm-session-id`, derived from the pcode conversation ID
+(`MeridianSessionIdentity` in `src/pcode/meridian.py`). Tool rounds and
+saved-session resume reuse it; `/new` and independent delegates get their own,
+even in parallel. After compaction the ID gains a suffix from the summary (item 1
+above).
+
+Meridian's request telemetry should show `lineage=continuation` on ordinary
+follow-up tool rounds. Repeated `independent-request:headerless-tool-result`
+means the running client lacks the session header; restart pcode after upgrading,
+since a running Python process does not reload it.
+
+When the spinner sits silent, compare the telemetry's queue wait, time to first
+byte, upstream duration, status and lineage. An early first byte is not
+necessarily visible text, and a large output-token count alone does not show what
+happened during the pause. "Waiting for model…" means no new displayable event,
+not necessarily an idle upstream connection.
+
+The private instance runs with an empty plugin directory and working directory,
+checks `/health` and its effective settings before connecting, and links the
+user's Meridian profiles into its configuration rather than copying them. That is
+configuration and session isolation, not an authentication sandbox: Meridian
+still reads the Claude login.
