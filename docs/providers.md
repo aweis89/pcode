@@ -124,7 +124,7 @@ pcode -m anthropic:<model-id>   # then: /login
   an endpoint scoped to it: compatibility support, not an official third-party OAuth
   integration. Entitlements, quotas, and server behavior can change at any time; the
   supported path remains `ANTHROPIC_API_KEY`. See
-  [Anthropic provider options](anthropic-providers.md) for the account risk of this
+  [Anthropic provider options](https://github.com/aweis89/pcode/blob/master/dev/anthropic-providers.md) for the account risk of this
   route and the alternatives.
 - The advertised Claude Code version gates which models the endpoint accepts: below
   a model's floor it answers `400 claude_code_version_too_old` rather than naming
@@ -261,7 +261,7 @@ models are left out of `/model` and naming one says what to install. pcode keeps
 conversation and hands it pcode's system prompt and tools; the CLI makes the API
 requests and pcode runs every tool itself. Compared with Meridian, which starts a
 new CLI process behind a Node proxy for every request, a tool round costs no
-process start. [Anthropic provider options](anthropic-providers.md#direct-sdk-provider)
+process start. [Anthropic provider options](https://github.com/aweis89/pcode/blob/master/dev/anthropic-providers.md#direct-sdk-provider)
 has the design and measurements.
 
 ### Signing in
@@ -327,7 +327,7 @@ Other behavior worth knowing:
 
 [Meridian](https://github.com/rynfar/meridian) runs Claude Code behind a local
 Anthropic-compatible API, so a `meridian:` model uses your Claude subscription
-through Anthropic's own client. [Anthropic provider options](anthropic-providers.md)
+through Anthropic's own client. [Anthropic provider options](https://github.com/aweis89/pcode/blob/master/dev/anthropic-providers.md)
 compares it with `/login`.
 
 ```sh

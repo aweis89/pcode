@@ -7,7 +7,7 @@ credentials, no spend, and real tool loops rather than a synthetic script.
 
 Output is content-free by construction. Prompts carry file contents and command
 output, so this prints counts, digests, and token totals only -- never message
-text. See docs/prompt-caching.md for what the numbers mean.
+text. See dev/prompt-caching.md for what the numbers mean.
 """
 
 from __future__ import annotations

@@ -125,7 +125,7 @@ Regression coverage checks request structure, not simulated cache-hit counts:
 Live confirmation requires observing cache reads advance with the conversation
 while writes mostly track new content, rather than repeatedly tracking the whole
 tail since the last user prompt. A passing wire test does not prove provider-side
-reuse. See [prompt cache notices](context.md#prompt-cache-notices)
+reuse. See [prompt cache notices](../docs/context.md#prompt-cache-notices)
 for what the transcript reports and how to read fingerprint dumps.
 
 ## Delegated runs
