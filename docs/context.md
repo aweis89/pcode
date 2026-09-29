@@ -165,7 +165,20 @@ reduction. There is no per-tool configuration.
 ## Prompt cache notices
 
 When a request reuses much less of the prompt cache than an earlier one had
-built up, pcode adds a muted line to the transcript:
+built up, pcode adds a muted note to the end of the footer under the editor,
+kept until your next prompt:
+
+```text
+~/p/pcode@main · steering · claude:claude-opus-5-5 (high) · 92k/1m · cache miss 0/166k
+```
+
+That reads "reused 0 of about 166k cached tokens"; `cache drop 41k/166k` means
+some was reused. A sub-agent's drop is labeled `sub-agent cache …`. The note is
+the last thing in the footer, so a narrow pane drops it first. It never goes into
+the scrollback.
+
+The full notice is saved with the session (in `transcript.jsonl` in its session
+directory), where `make cache-report` and later debugging can read it:
 
 ```text
 Prompt cache: request 1 reused 0 of ~48,210 tokens cached in an earlier turn (anthropic/claude-sonnet-4-5).
@@ -175,7 +188,7 @@ This is information, not an error, and it does not interrupt the run. Expect one
 after `/compact` (the summary replaces the cached history), after enabling an MCP
 server or extension (the tool list changes), or when you come back after the
 provider's cache has expired. The notice reports what was measured, not a guessed
-cause. Notices survive redraw and resume.
+cause.
 
 A notice appears when cache reads fall below half of an earlier cached prefix of
 at least 1,024 tokens. The first request of a turn is compared with the previous
@@ -193,9 +206,10 @@ pcode config set cache_notices on    # Default
 
 Turning them off does not remove notices already in a saved session.
 
-When a notice follows another request in the same turn, it adds a line comparing
-the two, such as `Request fingerprints unchanged; 2 messages appended (~10s gap),
-cause unknown.` or `Message N of M changed`. With `debug` on
+When a notice follows another request in the same turn, the saved notice adds a
+line comparing the two, such as `Tool definitions changed (added …)`,
+`Request fingerprints unchanged; 2 messages appended (~10s gap), cause unknown.`
+or `Message N of M changed`. With `debug` on
 (`pcode config set debug on`), pcode also writes the recent requests' fingerprints
 to `~/.local/state/pcode/cache-diagnostics/` (`XDG_STATE_HOME` is honored) and
 the notice names the file:

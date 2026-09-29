@@ -145,7 +145,7 @@ def test_tool_edit_cache_and_plan_events_use_real_presentation_only(tmp_path, mo
     assert "COMMAND_OUTPUT" in output
     assert "FAILED_FILE" in output
     assert "fictional.py" in output
-    assert "CACHE_WARNING" in output
+    assert "CACHE_WARNING" not in output  # a footer note, never scrollback
     assert result["event_counts"]["ToolSummary"] == 2
 
 

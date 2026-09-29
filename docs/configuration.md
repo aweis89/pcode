@@ -159,7 +159,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `paced_scrollback` | `typed` | `typed`, `rows`, `off` (type settled prose out, or roll blocks in a row per frame; see [the transcript](transcript.md#paced-scrollback)) |
 | `regenerate_on_resize` | `on` | `on`, `off` (rebuild scrollback at the new size after a resize; applies on next launch) |
 | `transcript_max_chars` | `2000000` | Positive integer, retained text budget shared by resume and redraw; applies on next launch |
-| `cache_notices` | `on` | `on`, `off` (note in the transcript when a request reuses less of the prompt cache; see [prompt cache notices](context.md#prompt-cache-notices)) |
+| `cache_notices` | `on` | `on`, `off` (footer note, saved with the session, when a request reuses less of the prompt cache; see [prompt cache notices](context.md#prompt-cache-notices)) |
 | `terminal_progress` | `auto` | `auto`, `on`, `off` (the terminal's [tab progress bar](#tab-progress-bar) while a turn runs; OSC 9;4) |
 | `desktop_notifications` | `on` | `on`, `off` (desktop notification when a background session finishes; OSC 9) |
 

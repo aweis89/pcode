@@ -126,7 +126,7 @@ Live confirmation requires observing cache reads advance with the conversation
 while writes mostly track new content, rather than repeatedly tracking the whole
 tail since the last user prompt. A passing wire test does not prove provider-side
 reuse. See [prompt cache notices](../docs/context.md#prompt-cache-notices)
-for what the transcript reports, and [reading a cache notice](#reading-a-cache-notice)
+for what the footer and the saved session report, and [reading a cache notice](#reading-a-cache-notice)
 for the fingerprint comparison and dumps.
 
 ## Delegated runs

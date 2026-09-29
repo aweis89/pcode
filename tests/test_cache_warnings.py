@@ -325,7 +325,7 @@ def replay_text(transcript):
     return stream.getvalue()
 
 
-def test_notice_survives_saved_session_reopen_and_redraw(tmp_path):
+def test_notice_is_journaled_but_not_redrawn_on_reopen(tmp_path):
     saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
     runtime = runtime_for([(8000, 0), (0, 0)], saved)
     try:
@@ -344,16 +344,15 @@ def test_notice_survives_saved_session_reopen_and_redraw(tmp_path):
             console=Console(file=StringIO(), width=80, color_system=None),
         )
         app.replay()
+        # The journal keeps the notice for diagnosis; a redraw never prints it.
         for _ in range(2):
-            text = replay_text(app.transcript)
-            assert text.count("Prompt cache: request 2 reused 0 of ~8,000") == 1
-            assert "!" not in text
+            assert "Prompt cache" not in replay_text(app.transcript)
     finally:
         reopened.close()
 
 
 @pytest.mark.parametrize("thinking", [False, True])
-def test_live_notice_flushes_output_in_order_and_sanitizes(thinking):
+def test_live_notice_goes_to_the_footer_not_the_output(thinking):
     class Runtime:
         session = None
 
@@ -378,19 +377,9 @@ def test_live_notice_flushes_output_in_order_and_sanitizes(thinking):
         assert buffer.getvalue() == ""
         await output.flush()
         text = buffer.getvalue()
-        assert (
-            text.index("Before notice") < text.index("Prompt cache:") < text.index("After notice")
-        )
-        assert text.count("Prompt cache: [red]literal[/red]") == 1
-        assert "evil" not in text and "\x1b" not in text and "!" not in text
-        assert replay_text(app.transcript).count("Prompt cache:") == 1
-        # Muted like other informational notes, not the warning style.
-        (notice,) = [
-            obj
-            for objects, _, _ in app.transcript.replay()
-            for obj in objects
-            if "Prompt cache:" in getattr(obj, "plain", "")
-        ]
-        assert notice.style == "pcode.muted"
+        # Output around the notice is unaffected; the notice is a footer note only.
+        assert text.index("Before notice") < text.index("After notice")
+        assert "Prompt cache" not in text and "Prompt cache" not in replay_text(app.transcript)
+        assert app.activity.cache_note == "cache drop"
 
     asyncio.run(run())

@@ -1,10 +1,14 @@
-"""Report prompt-cache reuse drops as transcript notices, from Harness's detector.
+"""Report prompt-cache reuse drops, from Harness's detector.
+
+The full notice goes to the session journal for diagnosis; the terminal shows
+only a short footer label (`footer_label`), not a scrollback line.
 
 A drop is information, not a fault: /compact, a new tool, or an expired
 provider cache all shorten what the next request can reuse. The notice says
 how much was reused so the cost is visible; it never claims a cause.
 """
 
+import re
 import warnings
 from dataclasses import dataclass, field
 
@@ -13,6 +17,7 @@ from pydantic_ai.messages import NativeToolCallPart
 from pydantic_ai_harness.warn_on_cache_busts import CacheBustWarning, WarnOnCacheBusts
 
 from pcode.cache_diagnostics import CacheDiagnostics
+from pcode.context_usage import compact_tokens
 from pcode.tool_display import command_text
 
 
@@ -36,6 +41,24 @@ def notice_text(step: int, read: int, established: int, model: str, *, earlier_t
     source = "tokens cached in an earlier turn" if earlier_turn else "previously cached tokens"
     suffix = f" ({model})" if model else ""
     return f"Prompt cache: request {step} reused {read:,} of ~{established:,} {source}{suffix}."
+
+
+_REUSE = re.compile(r"reused ([\d,]+) of ~([\d,]+)")
+
+
+def footer_label(text: str) -> str:
+    """The footer's short form of a notice, e.g. `cache miss 0/166k`.
+
+    The notice itself is kept whole in the session journal for diagnosis; the
+    footer only says a drop happened and how large it was.
+    """
+    found = _REUSE.search(text)
+    if found is None:
+        return "cache drop"
+    read, established = (int(value.replace(",", "")) for value in found.groups())
+    kind = "miss" if read == 0 else "drop"
+    label = f"cache {kind} {compact_tokens(read)}/{compact_tokens(established)}"
+    return f"sub-agent {label}" if text.startswith("Sub-agent:") else label
 
 
 @dataclass

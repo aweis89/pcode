@@ -264,3 +264,55 @@ def test_send_mode_survives_long_model_and_path(tmp_path, monkeypatch, mode, wid
     text = fragment_list_to_text(app.toolbar())
     assert text.startswith(f" {mode}")
     assert cell_len(text) <= width
+
+
+def test_a_cache_drop_is_a_footer_note_not_a_scrollback_line(tmp_path, monkeypatch):
+    from pcode.runtime import CacheBust
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    app, stream = make_app(tmp_path, monkeypatch, width=200)
+    text = (
+        "Prompt cache: request 25 reused 0 of ~165,832 previously cached tokens "
+        "(claude/claude-opus-5-5).\nRequest fingerprints unchanged; cause unknown."
+    )
+    app.output = SimpleNamespace(
+        app=SimpleNamespace(invalidate=lambda: None), begin_turn=lambda text: None
+    )
+    app.turn_event(CacheBust(text))
+    assert fragment_list_to_text(app.toolbar()).endswith("preview · cache miss 0/165.8k")
+    assert "Prompt cache" not in stream.getvalue()
+
+    # A new turn starts without the last one's note.
+    app.turn_started("next", echo=False)
+    assert "cache" not in fragment_list_to_text(app.toolbar())
+
+
+def test_the_cache_note_is_cut_before_the_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    app, _ = make_app(tmp_path / "p/pcode", monkeypatch, width=32)
+    app.activity.cache_note = "cache miss 0/165.8k"
+    assert fragment_list_to_text(app.toolbar()) == " ~/p/pcode · steering · preview…"
+
+
+@pytest.mark.parametrize(
+    ("text", "label"),
+    [
+        (
+            "Prompt cache: request 2 reused 0 of ~18,597 previously cached tokens.",
+            "cache miss 0/18.6k",
+        ),
+        (
+            "Prompt cache: request 9 reused 41,200 of ~1,250,000 tokens cached in an earlier turn.",
+            "cache drop 41.2k/1.25m",
+        ),
+        (
+            "Sub-agent: Prompt cache: request 3 reused 0 of ~900 previously cached tokens.",
+            "sub-agent cache miss 0/900",
+        ),
+        ("something else entirely", "cache drop"),
+    ],
+)
+def test_footer_label_keeps_only_the_size_of_the_drop(text, label):
+    from pcode.cache_warnings import footer_label
+
+    assert footer_label(text) == label
