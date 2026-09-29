@@ -126,7 +126,8 @@ Live confirmation requires observing cache reads advance with the conversation
 while writes mostly track new content, rather than repeatedly tracking the whole
 tail since the last user prompt. A passing wire test does not prove provider-side
 reuse. See [prompt cache notices](../docs/context.md#prompt-cache-notices)
-for what the transcript reports and how to read fingerprint dumps.
+for what the transcript reports, and [reading a cache notice](#reading-a-cache-notice)
+for the fingerprint comparison and dumps.
 
 ## Delegated runs
 
@@ -195,6 +196,31 @@ generation cannot carry the request on its own. The retries use
 both the clamp and summarize tiers are made to run. Provider errors trigger the
 fallback; cancellation is not caught, and a genuine outage still surfaces after
 every step has been tried.
+
+## Reading a cache notice
+
+Moved from the user reference. Token counts alone cannot say *why* a prefix
+stopped matching, so pcode fingerprints every model request of a turn and keeps
+a rolling window of the last few. A notice that follows an earlier request in
+the same turn gains a one-line comparison, which describes what pcode observed,
+not a proven cause:
+
+- `Request fingerprints unchanged`: the tracked instructions, tools, settings,
+  and earlier messages match, and new messages were appended. These are
+  application-level fingerprints, not the final HTTP payload, so the cause is
+  unknown; the measured gap alone does not establish cache expiry.
+- `Message N of M changed`: something rewrote history in place, and N is the
+  first message that moved. `Instructions changed`, `Tool definitions changed`,
+  `Cache settings changed`, and `History shrank` cover changes that sit ahead of,
+  or instead of, a message edit.
+
+With `debug` on, the window is dumped to `cache-diagnostics/`. Each entry holds
+digests, sizes, part kinds, token counts and breakpoint positions, never prompt
+text, which would leak the files and command output the agent read. Compare
+consecutive entries to find the message that moved.
+
+The notice itself comes from Harness's
+[cache monitor](https://pydantic.dev/docs/ai/harness/warn-on-cache-busts/).
 
 ## Reading the provider's verdict from past sessions
 

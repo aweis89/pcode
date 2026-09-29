@@ -2,10 +2,9 @@
 
 ## Where the fixed prompt goes
 
-The footer's token count is one number, which does not say why it is that
-large. `/status` also
-breaks down the **prompt overhead**: the instructions and tool
-schemas the provider is re-sent on every request, whatever the conversation did.
+`/status` breaks down the **prompt overhead**: the instructions and tool
+definitions sent with every request, before any conversation. Use it to see why
+the footer's token count is as large as it is.
 
 ```
 Prompt overhead           ~7.4k tokens · 3% of 200k · estimated
@@ -24,22 +23,21 @@ Prompt overhead           ~7.4k tokens · 3% of 200k · estimated
     Largest               write_plan 625 · grep 314 · edit_file 310 · shell 259
 ```
 
-Each repository instruction file gets its own row, so it is obvious when a global
-`AGENTS.md` costs more than everything else combined. `Assistant config` is the
-discovery block: **skills cost a path, not a body**, because pcode passes their
-location and the model reads `SKILL.md` with a tool only when the skill runs. See
+Each instruction file gets its own row, so a global `AGENTS.md` that costs more
+than everything else combined stands out. `Assistant config` lists discovered
+skills: **a skill costs its path, not its body**, because the model reads
+`SKILL.md` only when the skill runs. See
 [Skills as slash commands](workspace.md#skills-as-slash-commands).
 
-The rows are read from the last request's resolved instructions and tool
-definitions, not re-derived, so they describe what was actually sent. Before the
-first request there is nothing to attribute and the row says so. Token counts are
-the same 4-characters-per-token estimate compaction uses, so they are comparable
-with its threshold rather than exact provider counts.
+The rows describe what the last request actually sent, so before the first
+request there is nothing to show. Counts are estimates (about 4 characters per
+token), the same ones compaction uses, not exact provider counts.
 
 ## Context compaction
 
-`/compact` makes a tool-free LLM call using the current model/provider credentials.
-Optional instructions add focus without replacing the standard continuation summary:
+Compaction replaces older conversation history with a summary so a long session
+fits in the model's context window. `/compact` asks the current model for the
+summary, with no tools; optional instructions add focus to the standard summary:
 
 ```text
 /compact
@@ -48,86 +46,77 @@ Optional instructions add focus without replacing the standard continuation summ
 /autocompact off
 ```
 
-The summary preserves goals and constraints, decisions, current state, exact artifacts,
-verification results, and next steps/blockers. Recent messages are retained verbatim
-with a token budget (up to 20k, scaled down for smaller windows); a single oversized
-settled tool batch is summarized too rather than splitting its call/result pair.
-Repeated compaction updates the previous summary. Summarizer tool-result input is
-capped at 16k characters per result rather than Harness's default 500 characters.
-Summaries are lossy: pre-compaction tool results remain available through the
-session/tool history (including spill handles for reduced results), and the model
-should retrieve spilled output or re-read source files when exact details matter.
+The summary keeps goals and constraints, decisions, current state, exact
+artifacts, verification results, and next steps or blockers. Recent messages
+stay verbatim (up to about 20k tokens, less for smaller windows), and compacting
+again updates the previous summary. Summaries are lossy, but earlier tool results
+stay reachable through the session history and spill handles, so the model can
+re-read output or source files when exact details matter. Old tool results are
+never cleared before compaction runs.
 
-Manual compaction requires an idle live session. Ctrl+C cancels it; queued prompts
-wait until it finishes and are cleared on cancellation/failure. Short histories are
-a no-op. Empty, invalid, or non-shrinking summaries are rejected without changing
-active history. The result shows estimated before/after tokens; the context indicator
-uses `~` until a new provider response supplies a measured count. Summary requests
-contribute to session usage totals, not the completed-user-turn count.
+Manual compaction needs an idle live session. Ctrl+C cancels it; queued prompts
+wait for it and are cleared if it is cancelled or fails. A short history is left
+alone, and a summary that is empty, invalid, or no smaller is rejected without
+changing anything. The result shows estimated before and after tokens, and the
+context indicator shows `~` until the next response gives a measured count.
+Summary requests count toward session usage totals, not the turn count.
 
-Each successful manual compaction adds a selectable `/tree` checkpoint on the current
-branch. It survives restart immediately, even without a subsequent prompt. Original
-checkpoints, sibling branches, plan IDs/state, transcript, and tool-effect records are
-retained. Navigating to a compaction checkpoint never runs a model or replays tools.
-Unsaved sessions keep the same checkpoint in memory. Compaction is not deletion or
-redaction of the saved conversation.
+Each manual compaction adds a `/tree` checkpoint on the current branch, saved
+immediately (in memory for unsaved sessions). Earlier checkpoints, branches, plan
+state, transcript, and tool records are kept, and returning to a compaction
+checkpoint never runs a model or replays tools. Compaction does not delete or
+redact the saved conversation.
 
-Automatic compaction is **on by default**. `/autocompact off` saves a user preference
+Automatic compaction is **on by default**; `/autocompact off` saves that choice
 in `~/.config/pcode/preferences.json` (or `$XDG_CONFIG_HOME/pcode/preferences.json`).
-When enabled, pcode checks before every model request, including inside tool loops,
-using provider usage plus estimated new input/tool results and tool schemas. It
-triggers around 90% of the deployment window, reserved further for the
-resolved output-token ceiling on smaller windows or large max-output settings.
-Automatic summaries are persisted as safe checkpoints of the current run before the
-next request. If compaction cannot make enough room, the run stops with an error;
-it does not loop over summaries, silently drop history, or replay completed tools.
-There is no automatic retry of provider context-overflow errors in this version.
+pcode checks before every model request, including within a turn, and compacts
+at about 90% of the context window, leaving more room on small windows or with a
+large output limit. Automatic summaries are saved as checkpoints before the next
+request. If compaction cannot free enough room, the run stops with an error
+rather than dropping history or replaying tools. A provider's context-overflow
+error is not retried automatically.
 
-Model catalog windows are advisory. Unknown deployments skip automatic compaction;
-enabling it interactively requires a known window or an explicit override. For a
-custom proxy, gated model window, or incorrect catalog entry, set the actual limit:
+The window comes from the model catalog. For a model with no known window,
+automatic compaction is skipped, and turning it on interactively requires a known
+window or an override. For a custom proxy, a gated window, or a wrong catalog
+entry, set the real limit:
 
 ```sh
 PCODE_CONTEXT_WINDOW=128000 pcode --model your-provider:your-model
 ```
 
-The override applies to both the status line and compaction in the current process,
-including model switches; update it if you change deployments. It is capped by
-known provider input/maximum-context limits. For Codex, a larger window is only
-used explicitly when its metadata advertises that maximum; pcode does not opt into
-long context just because a generic model catalog advertises it. A summary can still fail if the
-existing history itself is too large for the summarizer request. Failure leaves the
-source history available rather than falling back to destructive truncation.
+The override applies to the status line and compaction for the whole process,
+including after model switches, so update it if you change deployments. It
+cannot exceed the provider's known limit. Codex uses a larger window only when
+its own metadata advertises one. If the history is too large even for the
+summary request, pcode retries with less detail; if that also fails, the history
+is left unchanged.
 
-Pcode removes Coder's default clearing of old tool results at 70% context usage so
-that evidence is not discarded before the summarizer sees it. With auto-compaction
-off, use `/compact` proactively or `/new` for unrelated work.
+With automatic compaction off, run `/compact` before the window fills, or `/new`
+for unrelated work.
 
 ## Model output limits
 
-Anthropic requires a `max_tokens` ceiling for each response, including thinking
-and tool-call arguments. Pcode resolves that ceiling from the serving model's
-metadata on each request (also for delegated agents and after model switches).
-Authenticated metadata takes precedence; public catalog limits are used only for
-matching provider endpoints. If no output limit is known, pcode uses 16,384 tokens
-instead of Pydantic AI's 4,096-token fallback. Explicit model settings take precedence,
-and other providers keep their existing defaults.
+Anthropic models need a maximum response length, which covers thinking and
+tool-call arguments too. pcode sets it from the model's advertised maximum on
+each request, including for delegated agents and after model switches. When no
+limit is known it uses 16,384 tokens. An explicit model setting wins, and other
+providers keep their own defaults.
 
-This is a ceiling, not a requested response length or reasoning budget. Thinking
-visibility and effort settings do not change it. The compaction summarizer retains
-its separate, smaller output budget. Automatic compaction accounts for the resolved
-ceiling, but reserves at most half the working window so small context overrides
-remain usable. Provider limits still apply; truncation is not automatically retried.
+This is a ceiling, not a target length or a reasoning budget, and thinking and
+effort settings do not change it. Compaction summaries use their own smaller
+limit. Automatic compaction leaves room for the ceiling, but never more than
+half the window, so small `PCODE_CONTEXT_WINDOW` overrides stay usable. A
+response cut off at the limit is not retried.
 
 ## Tool output limits
 
-Pcode uses [Harness ToolOutputLimits](https://pydantic.dev/docs/ai/harness/tool-output-limits/)
-to reduce large results **once, before they enter model history**. By default, a
-result of 10,000 characters or more is stored on disk; the model receives a handle
-and a 1,000-character head/tail preview, plus a small retrieval header. Smaller
-results pass through unchanged. This replaces Coder's 64,000-character truncation
-and applies to the main agent and worker, including web/MCP tools and delegation
-results. It makes no extra LLM calls and does not require automatic compaction.
+Large tool results are cut down **once, before they enter the model's history**.
+By default a result of 10,000 characters or more is saved to disk, and the model
+gets a handle plus a 1,000-character preview of its start and end. Smaller
+results pass through unchanged. This applies to every tool, including web, MCP,
+and delegation results, for the main agent and workers. It makes no extra model
+calls and works with automatic compaction off.
 
 ```sh
 pcode config set tool_output_mode spill          # Default: store, preview, read back
@@ -142,59 +131,57 @@ pcode config set tool_output_mode off            # No new result reduction
 pcode config unset tool_output_mode              # Restore default spill mode
 ```
 
-These settings also work through `/config`, with tab completion and validation.
-They are snapshotted when the agent is constructed; restart pcode to apply them to
-an existing conversation. They do not rewrite oversized results already in history.
-All budgets are characters, not tokens. Keep the preview and truncation budgets
-below the trigger threshold to save context. Spill previews always show both ends;
-`tool_output_strategy` applies only to truncation and the spill-failure fallback.
+- These settings also work through `/config`, with tab completion and validation.
+  Restart pcode to apply them to an existing conversation. They do not change
+  results already in history.
+- All budgets are characters, not tokens. Keep the preview and truncation budgets
+  below the threshold to save context.
+- Spill previews always show both ends; `tool_output_strategy` applies only to
+  `truncate` mode and to the fallback when a spill cannot be saved.
 
-The model uses `read_tool_result(handle, offset, limit, from_end, pattern)` to
-retrieve selected lines or literal substring matches. Readback is exempt from
-reduction and bounded by Harness to 1,000 lines / 50,000 content characters per call.
-Structured returns are stored as indented JSON for paging. For a single line longer
-than the readback cap, the agent is also told how to read a character range from the
-spill file with shell. Retrieval stays available in `off` and `truncate` modes so
-older handles still work after resuming a saved session.
+The model reads spilled output back with `read_tool_result`, by line range or
+matching text, up to 1,000 lines or 50,000 characters per call. For a single
+line longer than that, it is told how to read a character range with the shell.
+Readback keeps working in `off` and `truncate` modes, so handles in a resumed
+session still work.
 
 Spills live in `$XDG_STATE_HOME/pcode/tool-results` (default
-`~/.local/state/pcode/tool-results`), under an owner-only directory shared by pcode
-workspaces and runs. They contain **raw tool output**, not the terminal's redacted
-projection, and are written even with `--no-save`. This is local storage, not an
-isolation boundary or encrypted credential store. To avoid new spill files, use
-`truncate` or `off`; that does not delete existing spills, sessions, or shell logs.
-By default spills are kept indefinitely. A nonzero retention schedules best-effort
-background pruning on new writes, based on modification time, not last access.
-Pruning or deleting files can break old handles; the read tool then asks the model
-to rerun the original tool. Reset retention to `0` to disable future pruning.
+`~/.local/state/pcode/tool-results`), an owner-only directory shared by all
+workspaces. They hold **raw tool output**, not the redacted version the terminal
+shows, and are written even with `--no-save`. This is plain local storage, not
+encrypted or isolated. `truncate` or `off` stops new spill files but does not
+delete existing spills, sessions, or shell logs.
 
-Spilling preserves the result received by the limiter, not data a tool already
-omitted. File-read pagination and the shell's native 16 KB output-tail cap still
-apply, even in `off` mode. The full command output remains in the shell log. Shell
-PID/log/status handles are kept outside the reduction budget, including with tiny
-budgets or head truncation. Reduced shell bodies are omitted from the inspection
-projection when their clipped text no longer has reliable redaction context; the
-live preview remains separate. Store failures fall back to lossy truncation.
-LLM summarization, multiple size bands, and per-tool configuration are not exposed.
+Spills are kept forever by default. A nonzero `tool_output_retention_hours`
+prunes older spills in the background as new ones are written, by modification
+time. A pruned or deleted spill breaks its handle, and the model is told to rerun
+the original tool. Set retention back to `0` to stop pruning.
+
+Spilling only keeps what the tool returned. File-read paging and the shell's
+16 KB output tail still apply, even in `off` mode; full command output stays in
+the shell log. The shell's process ID, log path, and status always survive
+reduction. There is no per-tool configuration.
 
 ## Prompt cache notices
 
-For the planning-specific cache issue and why reminders are now append-only, see
-[prompt caching and plan reminders](https://github.com/aweis89/pcode/blob/master/dev/prompt-caching.md). `make cache-report`
-summarizes how prompt caching actually performed in saved sessions.
-
 When a request reuses much less of the prompt cache than an earlier one had
-established, pcode adds a muted line to the transcript saying how much was reused:
+built up, pcode adds a muted line to the transcript:
 
 ```text
 Prompt cache: request 1 reused 0 of ~48,210 tokens cached in an earlier turn (anthropic/claude-sonnet-4-5).
 ```
 
-This is information, not an error. Expect one after `/compact` (the summary
-replaces the history the cache held), after enabling an MCP server or extension
-(the tool list moves), or when you return after the provider's cache has
-expired. The notice says what was measured, never a guessed cause, and it does
-not interrupt the run. Notices survive redraw and saved-session resume.
+This is information, not an error, and it does not interrupt the run. Expect one
+after `/compact` (the summary replaces the cached history), after enabling an MCP
+server or extension (the tool list changes), or when you come back after the
+provider's cache has expired. The notice reports what was measured, not a guessed
+cause. Notices survive redraw and resume.
+
+A notice appears when cache reads fall below half of an earlier cached prefix of
+at least 1,024 tokens. The first request of a turn is compared with the previous
+turn only if the conversation was idle less than the provider's cache lifetime
+(about 5 minutes); after that the cache is gone anyway. A sustained drop is
+reported once until reads recover. Notices never include prompt text.
 
 Notices are **on by default**, for the main agent and sub-agents. Turn them off
 with `cache_notices`, then restart pcode or use `/reload`:
@@ -206,23 +193,12 @@ pcode config set cache_notices on    # Default
 
 Turning them off does not remove notices already in a saved session.
 
-Harness's [cache monitor](https://pydantic.dev/docs/ai/harness/warn-on-cache-busts/)
-decides when to report: cache reads below half of an established prefix of at
-least 1,024 tokens. The first request of a turn is compared with what the previous
-turn cached, as long as the conversation has not been idle longer than the
-provider's ~5 minute cache lifetime; after that the old cache is gone anyway, so
-nothing is reported. A sustained drop is reported once until reads recover, and
-nothing is reported if the provider never reports an established cache. No prompt
-contents are included.
-
-### What moved the prefix
-
-The token counts alone cannot say *why* a prefix stopped matching, so pcode
-fingerprints every model request of a turn and keeps a rolling window of the last
-few. When a notice follows an earlier request in the same turn, it gains a
-one-line comparison. With `debug` on (`pcode config set debug on`), the window is
-also written to `~/.local/state/pcode/cache-diagnostics/` (`XDG_STATE_HOME` is
-honored) and the notice names the file:
+When a notice follows another request in the same turn, it adds a line comparing
+the two, such as `Request fingerprints unchanged; 2 messages appended (~10s gap),
+cause unknown.` or `Message N of M changed`. With `debug` on
+(`pcode config set debug on`), pcode also writes the recent requests' fingerprints
+to `~/.local/state/pcode/cache-diagnostics/` (`XDG_STATE_HOME` is honored) and
+the notice names the file:
 
 ```text
 Prompt cache: request 14 reused 3,712 of ~10,752 previously cached tokens (provider/model).
@@ -230,20 +206,9 @@ Request fingerprints unchanged; 2 messages appended (~10s gap), cause unknown.
 Request fingerprints: ~/.local/state/pcode/cache-diagnostics/20260919T035812-4821-step14.json
 ```
 
-The comparison describes what pcode observed, not a proven cause:
-
-- **`Request fingerprints unchanged`** — the tracked instructions, tools,
-  settings, and earlier messages match; new messages were appended. These are
-  application-level fingerprints, not the final HTTP payload. The cause remains
-  unknown; the measured gap alone does not establish cache expiry.
-- **`Message N of M changed`** — something rewrote history in place, and the named
-  index is the first one that moved. `Instructions changed`, `Tool definitions
-  changed`, `Cache settings changed`, and `History shrank` cover the cases that sit
-  ahead of, or instead of, a message edit.
-
-The dump holds digests, sizes, part kinds, token counts and breakpoint positions
-for each request in the window — never prompt text, which would otherwise leak the
-file contents and command output the agent had read. Compare consecutive entries
-to see exactly which message moved. Set `PCODE_CACHE_DIAGNOSTICS=off` to disable
-the dumps even with `debug` on, or to a directory path to write them elsewhere; the
-notice itself is unaffected.
+The files contain sizes, digests, and token counts, never prompt text. Set
+`PCODE_CACHE_DIAGNOSTICS=off` to skip them even with `debug` on, or to a
+directory to write them there; the notice itself is unaffected. `make cache-report`
+summarizes cache performance across saved sessions.
+[Prompt caching](https://github.com/aweis89/pcode/blob/master/dev/prompt-caching.md#reading-a-cache-notice)
+explains how to read the comparison and the files.

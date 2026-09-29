@@ -116,6 +116,20 @@ dialogs, and editor state remain mutable, outside `Transcript`.
 Approvals are not implemented. Model request-count limits are explicitly
 disabled; there is no monetary budget guard.
 
+## Offline preview
+
+`uv run pcode` with no model and no saved default runs `PreviewRuntime`
+(`src/pcode/runtime.py`): canned replies and fictional tool summaries, no host
+process, no API keys. It exercises the editor, popups, `/tools` (which shows the
+preview's own fixtures), and themes without a model call.
+
+```sh
+uv run pcode                 # no model, canned replies only
+uv run pcode --theme-preview # print a sample and the style gallery, then exit
+uv run pcode --theme light   # light input palette
+uv run pcode --theme auto    # detect terminal background at startup (OSC 11)
+```
+
 ## Session hosts
 
 Every interactive session with a model runs in a host process. `SessionController`
@@ -125,6 +139,11 @@ attaches over the socket protocol with a `RemoteController` and runs only its ow
 commands (`TERMINAL_COMMANDS`). `--no-host` and `--print` run a controller
 in-process with `PreviewApp` as its view. The user-facing side is
 [background sessions](../docs/sessions.md#background-sessions).
+
+Each host is its own process listening on a Unix socket. An attaching terminal
+is sent the conversation so far, then every event as the turn produces it, which
+is how switching to a session mid-turn resumes streaming text and running
+commands in place.
 
 Traps:
 
@@ -150,6 +169,27 @@ Traps:
 `tests/test_session_host.py` covers the wire format, host logic, and switching
 away mid-turn and back over a real socket. `make test-socket` reruns the fast
 suite with each session in a host (see `AGENTS.md` for what that changes).
+
+## One turn at a time
+
+Two conversation turns never run in parallel, and much of the code assumes it:
+the conversation tree records events against a single "recording" cursor, the
+runtime keeps one history, plan store, request checkpoint and shell, the session
+journal is a single append-only stream, and the transcript and activity widget
+present one stream of tool and text events. `/btw` side questions fit inside
+that because their answers land in their own surface and they cannot touch the
+plan or start workers. This is also why `/tree` is read-only while a turn runs.
+
+## Worktrees from the Makefile
+
+`make worktree NAME=...` (and the other `python -m pcode.worktree` targets) uses
+the name as given, without the `pcode-` prefix session worktrees get, so a
+session's exit cleanup treats such a worktree as hand-made and only reports it.
+`make worktree-clean` runs `/worktree clean` from the main checkout, and
+`make clean-merged` follows it by deleting branches the default branch already
+contains, locally and on origin (`ARGS=--dry-run` lists them first). It is the
+fix for merged branches left behind by worktrees removed by hand, since
+`git branch -d` refuses a branch a worktree still holds.
 
 ## Resource profiling
 
