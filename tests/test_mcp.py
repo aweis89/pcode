@@ -608,3 +608,47 @@ def test_a_server_that_cannot_connect_costs_only_its_own_tools(stdio_server):
     asyncio.run(turn())
     assert len(warnings) == 2 and "mcp_local_echo" in requests[-1]
     assert_processes_closed(stdio_server)
+
+
+@pytest.mark.parametrize("phase", ["list", "close"])
+def test_a_connection_that_drops_mid_turn_does_not_fail_the_turn(stdio_server, phase):
+    """A server that connects, then fails listing tools or closing, costs only its tools."""
+    from pydantic_ai.toolsets import WrapperToolset
+
+    class Dropped(WrapperToolset):
+        async def get_tools(self, ctx):
+            if phase == "list":
+                raise ConnectionError("connection closed")
+            return await super().get_tools(ctx)
+
+        async def __aexit__(self, *args):
+            await super().__aexit__(*args)
+            if phase == "close":
+                raise ConnectionError("could not reach the server to close")
+
+    requests = []
+
+    async def model(messages, info):
+        requests.append({tool.name for tool in info.function_tools})
+        yield "done"
+
+    runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+    warnings = []
+    runtime.warning_notice = warnings.append
+    asyncio.run(runtime.mcp.enable("local"))
+    runtime.mcp.enabled["local"] = Dropped(runtime.mcp.enabled["local"])
+
+    events = asyncio.run(_collect(runtime.stream("hello")))
+    assert requests, events
+    if phase == "list":
+        assert "mcp_local_echo" not in requests[-1]
+        assert set(runtime.mcp.unavailable) == {"local"}
+        assert len(warnings) == 1 and "MCP server 'local' failed to connect" in warnings[0]
+    else:
+        assert "mcp_local_echo" in requests[-1]
+        assert runtime.mcp.unavailable == {} and warnings == []
+    assert_processes_closed(stdio_server)
+
+
+async def _collect(stream):
+    return [event async for event in stream]
