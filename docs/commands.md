@@ -91,6 +91,12 @@ candidate's size so that cost is visible before you pick.
   in the default browser via
   `open` (macOS), `xdg-open` (Linux), or the shell association (Windows). Useful
   when the terminal or an older tmux does not make rendered links clickable.
+- `/copy`: copy the last response to the system clipboard. A quote renders with a
+  `▌` rail and wraps to the terminal, which makes it awkward to select by hand, so
+  when the response holds quotes or fenced code blocks a picker lists each one
+  (without its `>` markers) beside the whole response. Enter copies the selection.
+  pcode asks the model to put text meant for pasting elsewhere, such as a message
+  to send, in a quote. **Ctrl+Y** with an empty editor does the same.
 - `/status`: current model, workspace, session storage path, completed turns, token usage,
   and a breakdown of the prompt overhead the model is re-sent every request — see
   [Where the fixed prompt goes](context.md#where-the-fixed-prompt-goes). Opens a popup in the
@@ -151,7 +157,7 @@ arrows, Ctrl+J, Ctrl+C and Ctrl+D never change.
 | Ctrl+N / Ctrl+P | Raise / lower reasoning effort for the next turn |
 | Ctrl+^ (Ctrl+6) | Back to the session this terminal showed before (`/switch -`) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
-| Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first) |
+| Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first); with an empty editor, `/copy` the last response |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
 | Ctrl+D | Exit on empty idle input (stopping a background session's host); cancel during generation |
@@ -188,7 +194,8 @@ or half the screen, whichever is smaller, and the editor grows into whatever is 
 somewhere else without sending it. A collapsed paste marker is expanded first:
 what lands on the clipboard is what Enter would send. It replaces `yank` in
 Emacs editing mode (`Ctrl+X r y` still pastes from the kill ring) and
-copy-character-from-above in vi insert mode. Copying uses a
+copy-character-from-above in vi insert mode. With nothing typed it runs
+`/copy` instead, to copy the last response or a quote from it. Copying uses a
 local helper (`pbcopy`, `wl-copy`, `xclip`) or OSC 52 over ssh, the same as the
 popups, and truncates at 64 KiB.
 
@@ -478,7 +485,7 @@ With the default `ctrl` prefix they are:
 | `/switch` | Ctrl+F search · Ctrl+N new session · Ctrl+X stop (twice) |
 | `/jobs` | Ctrl+W watch in the preview · Ctrl+K stop |
 | `/links` | Ctrl+F search · Ctrl+T show/hide tool links |
-| `/tree` | Ctrl+Y copy the selection |
+| `/tree` | Ctrl+Y copy the selection, or pick a quote or code block from a response |
 | `/workers` | Ctrl+T thinking |
 
 With a leader, each is the leader then the letter: Ctrl+P `y` copies.
