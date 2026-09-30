@@ -1,10 +1,14 @@
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
+import leaked_processes
 import pytest
+
+RUN_KEY = pytest.StashKey[str]()
 
 # Private tmux servers are parented to init, so a pytest that dies without
 # running fixture teardown (SIGKILL, a timeout, an abandoned CI runner) strands
@@ -48,6 +52,23 @@ def pytest_configure(config):
         "markers",
         "in_process(reason): looks inside the in-process session; skipped with --transport socket",
     )
+    # Only the controller: a worker reaping its run would stop its siblings.
+    # Tagging here, before xdist spawns workers, puts the tag in theirs too.
+    if not hasattr(config, "workerinput"):
+        reap = leaked_processes.reap_dead_runs()
+        if reap:
+            print(f"\nstopped {len(reap)} processes an earlier test run leaked", file=sys.stderr)
+        config.stash[RUN_KEY] = leaked_processes.tag_run()
+
+
+def pytest_unconfigure(config):
+    identity = config.stash.get(RUN_KEY, None)
+    if identity is None:
+        return
+    leaked = leaked_processes.reap_run(identity)
+    if leaked:
+        lines = "".join(f"\n  {line}" for line in leaked)
+        print(f"\nstopped {len(leaked)} processes this test run leaked:{lines}", file=sys.stderr)
 
 
 def pytest_collection_modifyitems(config, items):
