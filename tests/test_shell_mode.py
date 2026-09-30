@@ -53,6 +53,16 @@ def test_shell_command_parsing(text, expected):
     assert shell_command(text) == expected
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [("", "❯ "), ("hello", "❯ "), ("say !hi", "❯ "), ("!", "$ "), ("  !ls", "$ ")],
+)
+def test_prompt_prefix_marks_shell_drafts(text, expected):
+    from pcode.ui import prompt_prefix
+
+    assert prompt_prefix(text) == expected
+
+
 def test_execute_streams_combined_output_and_exit_code(tmp_path):
     chunks = []
 

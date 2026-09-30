@@ -54,6 +54,7 @@ from pcode.paste import MARKER_PATTERN, PastedText
 from pcode.preferences import SETTINGS, SYNTAX_THEMES, TERMINAL_SYNTAX, load_preferences
 from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
+from pcode.shell_mode import SHELL_PREFIX
 from pcode.syntax_colors import derive_colors
 from pcode.task_prompt import TaskPrompt
 from pcode.theme import detect_theme
@@ -1532,7 +1533,14 @@ class TerminalOutput:
 
 
 PROMPT_PREFIX = "❯ "
+# Same width as PROMPT_PREFIX, so wrapping is unchanged when the draft flips.
+SHELL_PROMPT_PREFIX = "$ "
 CONTINUATION_PREFIX = "· "
+
+
+def prompt_prefix(text: str) -> str:
+    """The prompt marker for a draft: `$` once it is a `!command`, else the chevron."""
+    return SHELL_PROMPT_PREFIX if text.lstrip().startswith(SHELL_PREFIX) else PROMPT_PREFIX
 
 
 def create_prompt(
@@ -1716,7 +1724,7 @@ def create_prompt(
         output = CursorSafeOutput(output if output is not None else create_output())
     session = PromptSession(
         output=output,
-        message=[("class:prompt", PROMPT_PREFIX)],
+        message=lambda: [("class:prompt", prompt_prefix(session.default_buffer.text))],
         prompt_continuation=lambda width, line, soft: [
             ("class:prompt", "  " if soft else CONTINUATION_PREFIX)
         ],
