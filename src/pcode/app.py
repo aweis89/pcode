@@ -37,12 +37,14 @@ from pcode.error_report import error_message
 from pcode.preferences import (
     SETTINGS,
     SYNTAX_THEMES,
+    THINKING_KEYS,
     apply_effort,
     apply_thinking,
     effort_for,
     load_preferences,
     parse_height,
     save_preferences,
+    thinking_settings,
 )
 from pcode.prefix_keys import shortcut_label
 from pcode.runtime import (
@@ -739,12 +741,18 @@ class PreviewApp:
         )
         state = "on" if self.activity.show_thinking else "off"
         lines = [f"Show thinking: {state}. Usage: /show-thinking [on|off] ({self.shortcut('t')})"]
-        if (self.model or "").startswith("anthropic:"):
-            lines.append(
-                "Anthropic thinking request: "
-                + ("enabled" if self.activity.show_thinking else "provider default")
-                + " (next turn). Enabling thinking can increase latency and token usage."
+        model = self.model or ""
+        if model.split(":", 1)[0] in THINKING_KEYS:
+            shown = self.activity.show_thinking
+            requested = bool(thinking_settings(model, None, shown))
+            line = (
+                "Thinking summaries: requested from the next turn; the status row shows them."
+                if requested
+                else "Thinking summaries: not requested from the next turn."
             )
+            if shown and requested and not thinking_settings(model, None, False):
+                line += " Enabling thinking can increase latency and token usage."
+            lines.append(line)
         if self.activity.show_thinking and (self.model or "").startswith("meridian:"):
             lines.append(meridian_thinking_note(*self.controller.meridian_thinking_state()))
         self.transcript.flash("\n".join(lines))

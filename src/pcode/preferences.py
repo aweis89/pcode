@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -796,24 +797,76 @@ def apply_effort(agent, model: str, effort: str | None) -> None:
     agent.model_settings = settings
 
 
+# Claude models whose thinking is on with no `thinking` field, per Anthropic's
+# thinking docs. Asking them for readable summaries changes what the stream
+# carries, not whether or how much they think.
+ANTHROPIC_THINKS_BY_DEFAULT = re.compile(
+    r"claude-(?:(?:opus|sonnet)-(?:[5-9]|\d{2,})\b|fable|mythos)"
+)
+
+
+def openai_profile(model: str, resolved=None) -> dict:
+    """The profile for an OpenAI `model`, from `resolved` when it is a model object."""
+    profile = getattr(resolved, "profile", None)
+    if profile is not None:
+        return profile
+    from pydantic_ai.profiles.openai import openai_model_profile
+
+    return openai_model_profile(model.split(":", 1)[-1]) or {}
+
+
+def thinking_settings(model: str, resolved, shown: bool) -> dict:
+    """The request settings that make thinking readable, for the status row and scrollback.
+
+    `shown` is the scrollback toggle. Where readable thinking costs nothing extra
+    it is always requested, so the status row can follow it; where it would turn
+    thinking on, or can fail the request, it waits for the toggle.
+    """
+    provider = model.split(":", 1)[0]
+    if provider == "anthropic":
+        profile = anthropic_profile(model, resolved)
+        if profile.get("anthropic_supports_adaptive_thinking") and (
+            shown or ANTHROPIC_THINKS_BY_DEFAULT.search(model)
+        ):
+            return {"anthropic_thinking": {"type": "adaptive", "display": "summarized"}}
+        if shown:
+            # Older models think only when asked. The budget is below the
+            # adapter's default max_tokens (4096); effort and output limits
+            # are never changed as a side effect of visibility.
+            return {
+                "anthropic_thinking": {
+                    "type": "enabled",
+                    "budget_tokens": 2048,
+                    "display": "summarized",
+                }
+            }
+    elif provider in ("openai", "openai-responses"):
+        # OpenAI has one summarizer per model, and `auto` picks it. An API-key
+        # organisation that is not verified gets a 400 for asking, so it waits
+        # for the toggle. (`openai-codex:` always asks: see `cache_settings`.)
+        if shown and openai_profile(model, resolved).get("openai_supports_reasoning"):
+            return {"openai_reasoning_summary": "auto"}
+    return {}
+
+
+# The settings `thinking_settings` owns, by provider; others are left alone.
+THINKING_KEYS = {
+    "anthropic": ("anthropic_thinking",),
+    "openai": ("openai_reasoning_summary",),
+    "openai-responses": ("openai_reasoning_summary",),
+}
+
+
 def apply_thinking(agent, model: str, shown: bool) -> None:
-    """Request visible Anthropic thinking on future turns, not just a UI preview."""
-    if not model.startswith("anthropic:"):
+    """Request readable thinking on future turns, not just a UI preview."""
+    keys = THINKING_KEYS.get(model.split(":", 1)[0])
+    if keys is None:
         return
     current = getattr(agent, "model_settings", None)
-    if not shown and not current:
+    wanted = thinking_settings(model, getattr(agent, "model", None), shown)
+    if not wanted and not any(key in (current or {}) for key in keys):
         return
-    settings = dict(current or {})
-    if shown:
-        profile = anthropic_profile(model, getattr(agent, "model", None))
-        settings["anthropic_thinking"] = (
-            {"type": "adaptive", "display": "summarized"}
-            if profile.get("anthropic_supports_adaptive_thinking")
-            else {"type": "enabled", "budget_tokens": 2048, "display": "summarized"}
-        )
-        # The legacy budget is below the adapter's default max_tokens (4096).
-        # Do not change effort or output limits as a side effect of visibility.
-    else:
-        settings.pop("anthropic_thinking", None)
+    settings = {k: v for k, v in (current or {}).items() if k not in keys}
+    settings.update(wanted)
     # Replace instead of mutating settings captured by an in-flight run.
     agent.model_settings = settings or None

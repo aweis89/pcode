@@ -26,6 +26,7 @@ from pcode.preferences import apply_effort, apply_thinking, save_preferences
         ("claude-sonnet-4-5", {"type": "enabled", "budget_tokens": 2048, "display": "summarized"}),
         ("claude-sonnet-4-6", {"type": "adaptive", "display": "summarized"}),
         ("claude-opus-4-7", {"type": "adaptive", "display": "summarized"}),
+        ("claude-opus-5", {"type": "adaptive", "display": "summarized"}),
     ],
 )
 @pytest.mark.parametrize("auth", ["api-key", "oauth"])
@@ -160,6 +161,11 @@ def test_thinking_stream_request_and_persistable_events(name, expected, auth, tm
                             "".join(e.text for e in events if isinstance(e, ThinkingDelta))
                             == "PRIVATE_THINKING"
                         )
+                    elif name == "claude-opus-5":
+                        # It thinks anyway, so off still asks for summaries: the
+                        # status row shows them while scrollback does not.
+                        assert requests[-1]["thinking"] == expected
+                        assert any(isinstance(e, ThinkingDelta) for e in events)
                     else:
                         assert "thinking" not in requests[-1]
                         assert not any(isinstance(e, ThinkingDelta) for e in events)
@@ -236,6 +242,23 @@ def test_other_routes_are_untouched(model):
     for shown in (True, False):
         apply_thinking(agent, model, shown)
         assert agent.model_settings is settings
+
+
+@pytest.mark.parametrize("provider", ["openai", "openai-responses"])
+def test_openai_summaries_follow_the_toggle_on_reasoning_models(provider):
+    agent = SimpleNamespace(model_settings={"openai_reasoning_effort": "high"})
+    apply_thinking(agent, f"{provider}:o4-mini", True)
+    assert agent.model_settings == {
+        "openai_reasoning_effort": "high",
+        "openai_reasoning_summary": "auto",
+    }
+    # Off never asks: an unverified API organisation gets a 400 for asking.
+    apply_thinking(agent, f"{provider}:o4-mini", False)
+    assert agent.model_settings == {"openai_reasoning_effort": "high"}
+    # A model that does not reason is never sent a reasoning setting.
+    agent = SimpleNamespace(model_settings=None)
+    apply_thinking(agent, f"{provider}:gpt-4.1", True)
+    assert agent.model_settings is None
 
 
 def test_resume_applies_current_thinking_preference(monkeypatch, tmp_path):

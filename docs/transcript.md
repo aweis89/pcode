@@ -61,6 +61,13 @@ muted style, distinct from the answer. Either way, the latest line of thinking
 shows faded on the status row while the model thinks, so you can follow along
 without keeping it in scrollback.
 
+With it off, pcode still asks for thinking summaries wherever that is free:
+`claude:`, `openai-codex:`, and `anthropic:` models that think by default
+(Opus and Sonnet 5 and later). Elsewhere it waits for the toggle. Older
+`anthropic:` models only think when asked, so turning it on also turns their
+thinking on. `openai:` API keys can be refused summaries until the organisation
+is verified, so pcode only asks for them while the toggle is on.
+
 ```sh
 pcode config set show_thinking on   # Default is off
 ```
