@@ -14,6 +14,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -31,6 +32,8 @@ SCENES = HERE / "scenes"
 OUT = HERE.parents[1] / "docs" / "assets" / "screenshots"
 DEMO_ROOT = Path("/tmp/pcode-demo")
 TIMEOUT = 30
+# What changes on a settled screen: spinner frames and running calls' clocks.
+TICKING = re.compile(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◜◠◝◞◡◟]|\d+(\.\d+)?s\b")
 
 # status off: the pane gets the whole window, so SIZE is the screenshot size.
 TMUX_CONF = """\
@@ -115,11 +118,11 @@ class Pane:
             time.sleep(0.1)
 
     def still(self, quiet: float = 0.6) -> None:
-        """Wait until the screen stops changing, ignoring the spinner's frame."""
+        """Wait until the screen stops changing, ignoring spinners and clocks."""
         deadline = time.monotonic() + TIMEOUT
         previous, since = None, time.monotonic()
         while time.monotonic() < deadline:
-            screen = "".join(c for c in self.screen() if c not in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◜◠◝◞◡◟")
+            screen = TICKING.sub("", self.screen())
             if screen != previous:
                 previous, since = screen, time.monotonic()
             elif time.monotonic() - since >= quiet:
