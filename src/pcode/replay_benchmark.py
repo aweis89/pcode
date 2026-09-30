@@ -117,7 +117,7 @@ async def replay_journal(
     snapshot: JournalSnapshot, output: TerminalOutput, settings: ReplaySettings
 ):
     """Measure shared live presentation code; no prompt app, backend, or session writer."""
-    activity = Activity(show_thinking=settings.show_thinking)
+    activity = Activity(thinking_mode="scrollback" if settings.show_thinking else "off")
     transcript = Transcript(
         output.console,
         activity=activity,

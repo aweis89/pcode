@@ -27,15 +27,15 @@ def test_thinking_retained_without_old_tail_limit_and_hidden_by_default():
     text = "FIRST_THOUGHT\n" + "reasoning line\n" * 2000 + "LAST_THOUGHT\n"
     transcript.thinking(text)
     assert rendered(transcript) == ""
-    transcript.activity.show_thinking = True
+    transcript.activity.thinking_mode = "scrollback"
     assert rendered(transcript) == text + "\n"
-    transcript.activity.show_thinking = False
+    transcript.activity.thinking_mode = "off"
     assert rendered(transcript) == ""
     assert len(transcript.log.entries) == 1
 
 
 def test_thinking_is_muted_and_sanitizes_controls():
-    transcript = Transcript(Console(file=StringIO()), activity=Activity(show_thinking=True))
+    transcript = Transcript(Console(file=StringIO()), activity=Activity(thinking_mode="scrollback"))
     transcript.thinking("hello\n\x1b[31mworld\x1b[0m\r\x00\x1b]0;title\x07\n")
     replay = transcript.replay()
     assert replay[0][0][0].style == "pcode.thinking"
@@ -47,10 +47,11 @@ def test_thinking_is_muted_and_sanitizes_controls():
 
 def test_show_thinking_preference(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert SETTINGS["show_thinking"].default == "off"
-    assert not PreviewApp().activity.show_thinking
-    save_preferences(show_thinking="on")
-    assert load_preferences()["show_thinking"] == "on"
+    assert SETTINGS["show_thinking"].default == "status-line"
+    assert PreviewApp().activity.thinking_mode == "status-line"
+    assert not PreviewApp().activity.show_thinking  # Scrollback is opt-in.
+    save_preferences(show_thinking="scrollback")
+    assert load_preferences()["show_thinking"] == "scrollback"
     assert PreviewApp().activity.show_thinking
 
 
@@ -69,14 +70,18 @@ def test_show_thinking_command_redraws_and_saves_default(tmp_path, monkeypatch):
     )
     app.activity.busy = True
     app.transcript.thinking("RETAINED_REASONING\n")
-    assert app.registry.dispatch("/show-thinking on")
+    assert app.registry.dispatch("/show-thinking scrollback")
     assert "RETAINED_REASONING" in redraws[-1]
-    assert load_preferences()["show_thinking"] == "on"
-    assert app.registry.dispatch("/show-thinking")  # Bare toggles.
+    assert load_preferences()["show_thinking"] == "scrollback"
+    assert app.registry.dispatch("/show-thinking")  # Bare cycles, wrapping to off.
     assert len(redraws) == 2
     assert "RETAINED_REASONING" not in redraws[-1]
     assert load_preferences()["show_thinking"] == "off"
-    assert app.registry.dispatch("/show-thinking on")
+    # Off and status-line both keep it out of scrollback: nothing to redraw.
+    assert app.registry.dispatch("/show-thinking")
+    assert load_preferences()["show_thinking"] == "status-line"
+    assert len(redraws) == 2
+    assert app.registry.dispatch("/show-thinking scrollback")
     assert app.registry.dispatch("/show-thinking off")
     assert "RETAINED_REASONING" not in redraws[-1]
     assert load_preferences()["show_thinking"] == "off"
@@ -86,7 +91,7 @@ def test_show_thinking_command_redraws_and_saves_default(tmp_path, monkeypatch):
     completions = SlashCompleter(app.registry).get_completions(
         Document("/show-thinking "), CompleteEvent()
     )
-    assert [item.text for item in completions] == ["on", "off"]
+    assert [item.text for item in completions] == ["off", "status-line", "scrollback"]
 
 
 def test_meridian_thinking_toggle_explains_upstream_requirement(tmp_path, monkeypatch):
@@ -94,13 +99,13 @@ def test_meridian_thinking_toggle_explains_upstream_requirement(tmp_path, monkey
     output = StringIO()
     app = PreviewApp(console=Console(file=output))
     app.model = "meridian:claude-fable-5-1"
-    assert app.registry.dispatch("/show-thinking on")
+    assert app.registry.dispatch("/show-thinking scrollback")
     assert "Thinking Passthrough" in output.getvalue()
     assert "only changes pcode's display" in output.getvalue()
 
 
 def test_tasks_heading_never_contains_thinking_and_legacy_settings_are_ignored():
-    save_preferences(show_thinking="on", thinking_display="expanded", thinking_lines="5")
+    save_preferences(show_thinking="scrollback", thinking_display="expanded", thinking_lines="5")
     app = PreviewApp()
     app.activity.plan = [{"content": "Investigate", "status": "in_progress"}]
     app.transcript.thinking("**Inspecting workspace**\n")
@@ -114,7 +119,7 @@ def test_streaming_lines_are_retained_once_and_keep_answer_order():
     async def run():
         buffer = StringIO()
         app = PreviewApp(console=Console(file=buffer))
-        app.activity.show_thinking = True
+        app.activity.thinking_mode = "scrollback"
         with create_pipe_input() as pipe:
             prompt = create_prompt(
                 app.registry, activity=app.activity, input=pipe, output=DummyOutput()
@@ -142,7 +147,7 @@ def test_streaming_lines_are_retained_once_and_keep_answer_order():
             assert not writer._thinking_tail
             shown = rendered(app.transcript)
             assert shown.count("First line") == 1
-            app.activity.show_thinking = False
+            app.activity.thinking_mode = "off"
             hidden = rendered(app.transcript)
             assert "First line" not in hidden
             assert "Answer" in hidden
@@ -168,7 +173,7 @@ def test_thinking_style_is_dim_and_theme_aware(theme, mode, source):
     transcript = Transcript(
         console,
         theme=theme,
-        activity=Activity(show_thinking=True),
+        activity=Activity(thinking_mode="scrollback"),
         preferences={"syntax_dark": "gruvbox-dark", "syntax_light": "gruvbox-light"}
         if mode == "palette"
         else {"syntax_dark": "terminal", "syntax_light": "terminal"},
@@ -202,7 +207,9 @@ def test_thinking_style_is_dim_and_theme_aware(theme, mode, source):
 )
 def test_thinking_renders_muted_markdown_only_for_display(source, expected):
     buffer = StringIO()
-    transcript = Transcript(Console(file=buffer, width=60), activity=Activity(show_thinking=True))
+    transcript = Transcript(
+        Console(file=buffer, width=60), activity=Activity(thinking_mode="scrollback")
+    )
     transcript.thinking(source)
     assert rendered(transcript) == expected
     assert buffer.getvalue() == render_raw(transcript)
@@ -220,7 +227,9 @@ def render_raw(transcript):
 
 def test_streamed_thinking_renders_split_markdown_and_buffers_code_and_lists():
     buffer = StringIO()
-    transcript = Transcript(Console(file=buffer, width=60), activity=Activity(show_thinking=True))
+    transcript = Transcript(
+        Console(file=buffer, width=60), activity=Activity(thinking_mode="scrollback")
+    )
     with create_pipe_input() as pipe:
         app = PreviewApp()
         prompt = create_prompt(app.registry, input=pipe, output=DummyOutput())

@@ -352,6 +352,6 @@ def test_print_shows_thinking_only_when_preferred(shown):
         runtime=Runtime(),
         console=Console(file=transcript, color_system=None, width=80),
     )
-    app.activity.show_thinking = shown
+    app.activity.thinking_mode = "scrollback" if shown else "off"
     assert asyncio.run(app.run_print_async("go", stdout=StringIO()))
     assert ("visible reasoning" in transcript.getvalue()) is shown

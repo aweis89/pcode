@@ -51,7 +51,7 @@ def test_resume_redraws_more_than_40_records_and_restores_hidden_payloads(saved)
         runtime=SimpleNamespace(session=saved),
         console=Console(file=StringIO(), force_terminal=True),
     )
-    app.activity.show_thinking = False
+    app.activity.thinking_mode = "off"
     app.transcript.command_scrollback = False
     app.transcript.print("OLD_SESSION")
     output = Mock()
@@ -64,7 +64,7 @@ def test_resume_redraws_more_than_40_records_and_restores_hidden_payloads(saved)
     assert text.index("FIRST_PROMPT") < text.index("STEERING_PROMPT") < text.index("ANSWER_000")
     assert text.count("ANSWER_000") == text.count("ANSWER_079") == 1
     assert "HIDDEN_THOUGHT" not in text and "HIDDEN_RESULT" not in text
-    app.activity.show_thinking = True
+    app.activity.thinking_mode = "scrollback"
     app.transcript.command_scrollback = True
     shown = rendered(app.transcript)
     assert shown.count("HIDDEN_THOUGHT") == shown.count("HIDDEN_RESULT") == 1
@@ -230,7 +230,7 @@ def test_resume_preserves_separate_thinking_block_boundaries(saved, streamed):
         runtime=SimpleNamespace(session=saved),
         console=Console(file=StringIO()),
     )
-    app.activity.show_thinking = True
+    app.activity.thinking_mode = "scrollback"
     app.replay()
     assert app.transcript.log.entries[-1].args == ("FIRST\n\nSECOND\n\n",)
     assert "FIRSTSECOND" not in rendered(app.transcript)

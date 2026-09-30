@@ -38,12 +38,14 @@ from pcode.preferences import (
     SETTINGS,
     SYNTAX_THEMES,
     THINKING_KEYS,
+    THINKING_MODES,
     apply_effort,
     apply_thinking,
     effort_for,
     load_preferences,
     parse_height,
     save_preferences,
+    thinking_mode_preference,
     thinking_settings,
 )
 from pcode.prefix_keys import shortcut_label
@@ -142,7 +144,7 @@ class PreviewApp:
             attach_tasks=load_preferences().get("attach_tasks", SETTINGS["attach_tasks"].default)
             == "on",
             tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
-            show_thinking=load_preferences().get("show_thinking") == "on",
+            thinking_mode=thinking_mode_preference(),
         )
         self.preview = PreviewRuntime()
         # The conversation itself, with this terminal as its view.
@@ -192,7 +194,7 @@ class PreviewApp:
         if agent is not None and model:
             apply_effort(agent, model, effort_for(model))
         if agent is not None and model:
-            apply_thinking(agent, model, self.activity.show_thinking)
+            apply_thinking(agent, model, self.activity.thinking_mode)
         self.transcript = Transcript(
             console or Console(),
             theme or load_preferences().get("theme", SETTINGS["theme"].default),
@@ -340,9 +342,10 @@ class PreviewApp:
             ),
             Command(
                 "/show-thinking",
-                f"Thinking in scrollback: on / off; bare toggles ({shortcut_label('t')})",
+                "Where thinking shows: off / status-line / scrollback; bare cycles "
+                f"({shortcut_label('t')})",
                 self.show_thinking,
-                ("on", "off"),
+                THINKING_MODES,
                 group="Display",
             ),
             Command(
@@ -727,33 +730,48 @@ class PreviewApp:
             f"Group tools: {'on' if grouped else 'off'}. Usage: /group-tools [on|off]"
         )
 
-    def set_show_thinking(self, shown: bool) -> None:
-        self.activity.show_thinking = shown
-        self.controller.set_thinking(shown)
-        self.persist_defaults(show_thinking="on" if shown else "off")
-        self.transcript.regenerate()
+    def set_thinking_mode(self, mode: str) -> None:
+        scrollback = self.activity.show_thinking
+        self.activity.thinking_mode = mode
+        self.controller.set_thinking(mode)
+        self.persist_defaults(show_thinking=mode)
+        # Only scrollback's own thinking needs the transcript rebuilt.
+        if self.activity.show_thinking != scrollback:
+            self.transcript.regenerate()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
 
     def show_thinking(self, argument: str) -> None:
-        self.set_show_thinking(
-            self.toggle_argument("/show-thinking", argument, self.activity.show_thinking)
-        )
-        state = "on" if self.activity.show_thinking else "off"
-        lines = [f"Show thinking: {state}. Usage: /show-thinking [on|off] ({self.shortcut('t')})"]
+        """`/show-thinking [off|status-line|scrollback]`; bare (and Ctrl+T) cycles."""
+        if argument and argument not in THINKING_MODES:
+            raise ValueError(f"Usage: /show-thinking [{'|'.join(THINKING_MODES)}]")
+        if not argument:
+            current = self.activity.thinking_mode
+            index = THINKING_MODES.index(current) if current in THINKING_MODES else -1
+            argument = THINKING_MODES[(index + 1) % len(THINKING_MODES)]
+        self.set_thinking_mode(argument)
+        lines = [
+            f"Thinking: {argument}. Usage: /show-thinking [{'|'.join(THINKING_MODES)}]; "
+            f"bare cycles ({self.shortcut('t')})"
+        ]
         model = self.model or ""
-        if model.split(":", 1)[0] in THINKING_KEYS:
-            shown = self.activity.show_thinking
-            requested = bool(thinking_settings(model, None, shown))
-            line = (
-                "Thinking summaries: requested from the next turn; the status row shows them."
-                if requested
-                else "Thinking summaries: not requested from the next turn."
-            )
-            if shown and requested and not thinking_settings(model, None, False):
-                line += " Enabling thinking can increase latency and token usage."
-            lines.append(line)
-        if self.activity.show_thinking and (self.model or "").startswith("meridian:"):
+        provider = model.split(":", 1)[0]
+        if provider in THINKING_KEYS:
+            wanted = thinking_settings(model, None, argument)
+            display = wanted.get("anthropic_thinking", {}).get("display")
+            if display == "updates":
+                lines.append("Asks for progress updates between tool calls from the next turn.")
+            elif wanted:
+                lines.append("Asks for thinking summaries from the next turn.")
+            else:
+                lines.append("Asks for no readable thinking from the next turn.")
+            if wanted and provider == "anthropic":
+                lines.append(
+                    "Models that think only when asked will think: more latency and tokens."
+                )
+            elif wanted:
+                lines.append("An unverified OpenAI organisation is refused summaries; use off.")
+        if argument != "off" and model.startswith("meridian:"):
             lines.append(meridian_thinking_note(*self.controller.meridian_thinking_state()))
         self.transcript.flash("\n".join(lines))
 
@@ -1921,7 +1939,7 @@ class PreviewApp:
             on_submit=submit,
             on_cancel=cancel,
             on_tasks=self.set_show_tasks,
-            on_thinking=self.set_show_thinking,
+            on_thinking=self.show_thinking,
             on_commands=lambda: self.show_commands(""),
             on_effort=self.adjust_effort,
             on_send_mode=self.cycle_send_mode,

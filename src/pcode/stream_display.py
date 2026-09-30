@@ -134,11 +134,13 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         activity.think(event.text)
     elif isinstance(event, Thinking):
         output.finish_thinking(event.text)
-        # Held on the row until the phase moves on; the next block replaces it.
-        activity.thinking_done = True
+        if activity.thought_done and event.text:
+            # A block that arrived whole, with no deltas before it.
+            activity.think(event.text)
+        # Held on the thinking row; the next block replaces it.
+        activity.thought_done = True
     elif isinstance(event, TextDelta):
         output.finish_thinking()
-        activity.thinking = ""
         output.delta(event.text)
         activity.status = "Responding…"
     elif isinstance(event, CacheBust):

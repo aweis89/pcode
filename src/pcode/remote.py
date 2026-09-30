@@ -453,8 +453,8 @@ class RemoteController:
         self._end_command_waits()
         self.peer.notify("cancel")
 
-    def set_thinking(self, shown: bool) -> None:
-        self.peer.notify("set_thinking", shown)
+    def set_thinking(self, mode: str) -> None:
+        self.peer.notify("set_thinking", mode)
 
     def adjust_effort(self, direction: int) -> None:
         self.peer.notify("adjust_effort", direction)

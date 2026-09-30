@@ -189,8 +189,8 @@ class _Client:
     def cancel(self) -> None:
         self.host.controller.cancel()
 
-    def set_thinking(self, shown: bool) -> None:
-        self.host.controller.set_thinking(shown)
+    def set_thinking(self, mode: str) -> None:
+        self.host.controller.set_thinking(mode)
 
     def adjust_effort(self, direction: int) -> None:
         self.host.controller.adjust_effort(direction)
@@ -688,7 +688,7 @@ def _parser() -> argparse.ArgumentParser:
 
 async def _serve(args: argparse.Namespace) -> None:
     from pcode.app import _enter_worktree, _resume_workspace
-    from pcode.preferences import load_preferences, set_project_root
+    from pcode.preferences import load_preferences, set_project_root, thinking_mode_preference
     from pcode.project_trust import prompt_trust
     from pcode.sessions import SavedSession, first_prompt
     from pcode.worktree import leave_worktree
@@ -738,7 +738,7 @@ async def _serve(args: argparse.Namespace) -> None:
     controller.resuming = saved is not None
     controller._needs_runtime = True
     controller.startup_pending = True
-    controller.activity.show_thinking = load_preferences().get("show_thinking") == "on"
+    controller.activity.thinking_mode = thinking_mode_preference()
     controller.register_skills()
     await host.serve()
     loop = asyncio.get_running_loop()

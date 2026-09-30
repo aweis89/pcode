@@ -162,7 +162,7 @@ Ctrl+J, Ctrl+C, and Ctrl+D never change.
 | Ctrl+N / Ctrl+P | Raise / lower reasoning effort for the next turn |
 | Ctrl+^ (Ctrl+6) | Back to the session this terminal showed before (`/switch -`) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
-| Ctrl+T | Show/hide thinking (saves the default) |
+| Ctrl+T | Cycle where thinking shows: off, status line, scrollback (saves the default) |
 | Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first); with an empty editor, `/copy` the last response |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
@@ -259,7 +259,7 @@ this phase has lasted.
 
 ```text
 ⠋ Thinking                                                    8s
-⠋ Thinking · …the status row is mostly empty while it thinks 3s
+  Tracing the resize path
 ⠋ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
 ⠋ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
 ⠋ ◈ Compacting context ▸ keep tests                           4s
@@ -270,6 +270,9 @@ A spinner means the turn is waiting on that row; background jobs get a static
 clock climbing (`Thinking · 40s`). A call that just finished stays for a
 moment, marked `✓` or `✗`, so a burst of quick calls reads as progress rather
 than flicker. `◈` marks work pcode runs itself, such as compaction.
+The indented line is the model's newest thought, faded on its own row under
+the status row until the turn ends; that is the default `/show-thinking
+status-line` mode (see [thinking](transcript.md#thinking-status-line-or-scrollback)).
 
 Press **Ctrl+O** or use `/show-tasks [on|off]` to hide or show the widget without
 stopping work or clearing tasks. The prompt and queue stay visible. Visibility

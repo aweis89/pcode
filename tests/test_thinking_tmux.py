@@ -4,7 +4,7 @@ import shutil
 import time
 
 import pytest
-from test_tmux import SPINNER_ROW, capture, input_rows, settle, until, without_status_row
+from test_tmux import capture, input_rows, settle, thought_row, until, without_status_row
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -17,7 +17,7 @@ from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
 from pcode.preferences import save_preferences
 
-save_preferences(show_thinking="on", autohide_tasks="off")
+save_preferences(show_thinking="scrollback", autohide_tasks="off")
 async def model(messages, info):
     app.activity.plan = [{"content": "ACTIVE_TASK", "status": "in_progress"}]
     for i in range(30):
@@ -60,9 +60,8 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = written(pane, "REASONING_29", running=True)
     assert_compact(screen)
-    # The open block's latest line also shows, faded, on the status row.
-    status = next(line for line in screen.splitlines() if line.startswith(SPINNER_ROW))
-    assert "Thinking · REASONING_29 live text" in status
+    # Scrollback carries it, so there is no thinking row repeating it.
+    assert not thought_row(screen)
     for i in range(30):
         assert history(pane).count(f"REASONING_{i:02d}") == 1
     lines = history(pane).splitlines()
@@ -75,6 +74,11 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     until(lambda: "REASONING_" not in history(pane), lambda: history(pane))
     screen = capture(pane, "draft preserved", running=True)
     assert_compact(screen)
+    # Ctrl+T cycles: status line next, where the newest thought gets its row.
+    pane("send-keys", "-t", "preview:0.0", "C-t")
+    screen = settle(pane, lambda screen: bool(thought_row(screen)), running=True)
+    assert thought_row(screen) == "REASONING_29 live text", screen
+    assert "REASONING_" not in history(pane)
     pane("send-keys", "-t", "preview:0.0", "C-t")
     written(pane, "REASONING_29", running=True)
     assert history(pane).count("REASONING_00") == 1
@@ -88,7 +92,7 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     # The same toggle works after the turn, rather than clearing thinking forever.
     pane("send-keys", "-t", "preview:0.0", "C-t")
     until(lambda: "REASONING_" not in history(pane), lambda: history(pane))
-    pane("send-keys", "-t", "preview:0.0", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "C-t")
     written(pane, "REASONING_29")
     assert history(pane).count("REASONING_00") == 1
 
@@ -118,9 +122,9 @@ def test_completed_thinking_stays_in_scrollback(pane):
     capture(pane, "Public answer")
     assert history(pane).count("REASONING_29") == 1
     pane("send-keys", "-t", "preview:0.0", "/show-thinking off", "Enter")
-    capture(pane, "Show thinking: off")
+    capture(pane, "Thinking: off")
     assert "REASONING_" not in history(pane)
-    pane("send-keys", "-t", "preview:0.0", "/show-thinking on", "Enter")
-    capture(pane, "Show thinking: on")
+    pane("send-keys", "-t", "preview:0.0", "/show-thinking scrollback", "Enter")
+    capture(pane, "Thinking: scrollback")
     assert history(pane).count("REASONING_00") == 1
     assert history(pane).count("Public answer") == 1

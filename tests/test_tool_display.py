@@ -166,7 +166,7 @@ def test_tool_lines_group_together_and_are_blank_separated_from_prose():
 
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=80, color_system=None), activity=Activity())
-    transcript.activity.show_thinking = True
+    transcript.activity.thinking_mode = "scrollback"
     transcript.events(
         (
             Thinking("Reading first."),

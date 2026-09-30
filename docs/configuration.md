@@ -144,7 +144,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `theme` | `auto` | `dark`, `light`, `auto` |
 | `syntax_dark` | `terminal` | `terminal` or a Pygments style, for the dark palette |
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
-| `show_thinking` | `off` | `on`, `off` (show the model's readable reasoning in scrollback; `/show-thinking`) |
+| `show_thinking` | `status-line` | `off`, `status-line`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`) |
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; `/show-edits`) |
 | `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+G or `/show-commands`) |
 | `group_tools` | `on` | `on`, `off` (fold each run of tool calls into one line; `/group-tools`, see [grouping tool calls](transcript.md#grouping-tool-calls)) |
