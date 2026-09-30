@@ -606,7 +606,7 @@ class SessionController:
             ),
             Command(
                 "/mcp",
-                "Manage MCP servers: list / enable NAME / disable NAME / logout NAME",
+                "Manage MCP servers: list / enable NAME|all / disable NAME / logout NAME",
                 self.mcp,
                 ("list", "enable", "disable"),
                 free_arguments=True,
@@ -1350,6 +1350,27 @@ class SessionController:
             cancelled=f"MCP '{name}' sign-in cancelled; server remains off.",
         )
 
+    def start_mcp_enable_all(self) -> None:
+        """Enable every configured server not already on (`all` wins over a server so named)."""
+        from pcode.mcp import config_path, configured_servers
+
+        names = [
+            name for name in sorted(configured_servers()) if name not in self.runtime.mcp.enabled
+        ]
+        if not names:
+            self.view.note(f"Every MCP server in {config_path()} is already enabled.")
+            return
+        self.view.note(
+            f"Enabling MCP {', '.join(names)}. OAuth sign-in happens now if needed; "
+            "Ctrl+C cancels. No model request is made."
+        )
+        self.start_mcp_task(
+            ", ".join(names),
+            self.enable_mcp_each(names),
+            status="Enabling all MCP servers — complete browser sign-in if prompted…",
+            cancelled="MCP enable cancelled; servers not yet enabled remain off.",
+        )
+
     def start_skill_mcp(self, skill: str, names) -> None:
         """Enable what `skill` declares before its prompt, which waits on MCP work."""
         from pcode.mcp import config_path, configured_servers
@@ -1384,7 +1405,7 @@ class SessionController:
         )
         self.start_mcp_task(
             ", ".join(wanted),
-            self.enable_skill_mcp(skill, wanted),
+            self.enable_mcp_each(wanted, reason=f" for the {skill} skill"),
             status=f"Enabling MCP for the {skill} skill — complete sign-in if prompted…",
             cancelled=f"MCP sign-in for the {skill} skill cancelled; its prompt was not sent.",
         )
@@ -1666,6 +1687,7 @@ class SessionController:
         ]
         return (
             "list",
+            *(("enable all",) if names else ()),
             *(f"enable {name}" for name in sorted(names)),
             *(f"disable {name}" for name in sorted(enabled)),
             *(f"logout {name}" for name in oauth),
@@ -1694,12 +1716,12 @@ class SessionController:
                 self.view.note("No MCP servers configured. Add an mcpServers object here.")
             self.view.note(
                 'MCP defaults to off unless a server sets "enabled": true. '
-                "Use /mcp enable NAME, /mcp disable NAME, or /mcp logout NAME."
+                "Use /mcp enable NAME (or all), /mcp disable NAME, or /mcp logout NAME."
             )
             return
         if len(parts) != 2 or parts[0] not in {"enable", "disable", "logout"}:
             raise ValueError(
-                "Usage: /mcp list | /mcp enable NAME | /mcp disable NAME | /mcp logout NAME"
+                "Usage: /mcp list | /mcp enable NAME|all | /mcp disable NAME | /mcp logout NAME"
             )
         # Slash commands precede queued (not yet running) prompts. In particular,
         # an enable + prompt submitted in one input batch must authenticate first.
@@ -1711,7 +1733,9 @@ class SessionController:
         if state is None:
             raise ValueError("MCP requires a live model. Start pcode with -m PROVIDER:MODEL.")
         action, name = parts
-        if action == "enable":
+        if parts == ["enable", "all"]:
+            self.start_mcp_enable_all()
+        elif action == "enable":
             if name in enabled:
                 self.view.note(f"MCP '{name}' is already enabled.")
             else:
@@ -1746,15 +1770,15 @@ class SessionController:
             # not create a session or silently persist a separate diagnostics file.
             self.view.note(error_report(error))
 
-    async def enable_skill_mcp(self, skill: str, names: list[str]) -> None:
-        """Enable a skill's servers in order; one that fails stays off, the rest proceed."""
+    async def enable_mcp_each(self, names: list[str], *, reason: str = "") -> None:
+        """Enable servers in order; one that fails stays off, the rest proceed."""
         for name in names:
             try:
                 await self.runtime.mcp.enable(name)
             except Exception as error:
                 self.report_mcp_error(name, error)
             else:
-                self.view.note(f"MCP '{name}' enabled for the {skill} skill.")
+                self.view.note(f"MCP '{name}' enabled{reason}.")
 
     async def enable_mcp_defaults(self, names: list[str]) -> None:
         """Enable `"enabled": true` servers, using saved sign-ins but never a browser."""
