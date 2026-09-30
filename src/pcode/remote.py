@@ -25,7 +25,13 @@ from uuid import uuid4
 
 from pcode.aside import Aside, Asides
 from pcode.commands import Command, CommandRegistry
-from pcode.controller import MODEL_COMMANDS, SESSION_FIELDS, VIEW_CALLS, SessionController
+from pcode.controller import (
+    MODEL_COMMANDS,
+    SESSION_FIELDS,
+    VIEW_CALLS,
+    SessionController,
+    mcp_enable,
+)
 from pcode.host_protocol import (
     LINE_LIMIT,
     PROTOCOL,
@@ -432,7 +438,7 @@ class RemoteController:
         self.peer.notify("submit", text, mode)
 
     def command(self, text: str, tag=None) -> None:
-        if text.split()[0] in MODEL_COMMANDS or text.split()[:2] == ["/mcp", "enable"]:
+        if text.split()[0] in MODEL_COMMANDS or mcp_enable(text):
             self.activity.busy = True
         self._command_waits.append(self.activity.begin_wait(f"Running {text.split()[0]}"))
         self.peer.notify("command", text, tag)
