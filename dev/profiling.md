@@ -57,10 +57,13 @@ appends one line to `~/.local/state/pcode/stalls.jsonl` (rotated to
 tail -n 5 ~/.local/state/pcode/stalls.jsonl | jq '{at, stall_ms, status, top: .stacks[0].frames[:6]}'
 ```
 
-`stacks[].frames` lists the innermost frame first. `<garbage collection>` at
-the top means a GC pass was running. A freeze you noticed with no line near its
-time means the loop was free, so look at the terminal (synchronized output held
-open) rather than at pcode. A process suspended by Ctrl+Z or a debugger is not
+`stall_ms` is how late the heartbeat ran, so it can read up to one beat (50 ms)
+short of the freeze: a 100–150 ms blip may go unlogged. `stacks[].frames` lists
+the innermost frame first. Empty `stacks` means the stall held the GIL the whole
+time, so the watcher never got to sample it: a GC pass (compare `gc_ms` with
+`stall_ms`) or one long C call. A freeze you noticed with no line near its time
+means the loop was free, so look at the terminal (synchronized output held open)
+rather than at pcode. A suspended process (Ctrl+Z, a sleeping laptop) is not
 logged. It only covers the terminal process. A session host is a separate
 process, and a stall there shows up as late output, not as lost keystrokes.
 
