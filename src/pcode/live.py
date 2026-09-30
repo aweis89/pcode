@@ -37,6 +37,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
 from pydantic_ai_harness.shell import (
@@ -120,6 +121,14 @@ from pcode.tool_display import (
     target,
 )
 from pcode.turn import TurnContext
+
+
+def _local_workspace(agent) -> Path | None:
+    """The directory of the agent's own `LocalWorkspace` capability, if it has one."""
+    for capability in agent.root_capability.capabilities:
+        if isinstance(capability, LocalWorkspace):
+            return Path(capability.working_dir)
+    return None
 
 
 class AgentRuntime:
@@ -453,6 +462,7 @@ class AgentRuntime:
                 agent.run_stream_events(
                     None if joined else pending.pop(),
                     message_history=messages,
+                    workspace=self._run_workspace(agent),
                     toolsets=self.mcp.toolsets(),
                     conversation_id=conversation_id,
                     capabilities=capabilities,
@@ -666,10 +676,19 @@ class AgentRuntime:
 
     def _workspace_dir(self) -> Path:
         """The directory the agent's `LocalWorkspace` works in, else the process's own."""
-        for capability in self.agent.root_capability.capabilities:
-            if isinstance(capability, LocalWorkspace):
-                return Path(capability.working_dir)
-        return Path.cwd()
+        return _local_workspace(self.agent) or Path.cwd()
+
+    @staticmethod
+    def _run_workspace(agent) -> LocalWorkspaceBackend | None:
+        """The run's workspace, named explicitly rather than taken from history.
+
+        Pydantic AI records each run's workspace on its responses and, left to
+        choose, refuses history recorded in another directory. pcode continues
+        sessions elsewhere on purpose (a removed worktree's session moves to the
+        mainline, `-C DIR --continue`), and the history stays byte-identical.
+        """
+        directory = _local_workspace(agent)
+        return None if directory is None else LocalWorkspaceBackend(directory)
 
     async def record_shell(self, run: ShellRun) -> str | ToolReturn:
         """Queue a finished `!command` as a shell tool exchange for the next request.
@@ -1013,6 +1032,7 @@ class AgentRuntime:
             self.agent.run_stream_events(
                 prompt,
                 message_history=context.messages(),
+                workspace=self._run_workspace(self.agent),
                 toolsets=self.mcp.toolsets(),
                 conversation_id=self.conversation_id,
                 run_id=run_id,

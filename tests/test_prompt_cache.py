@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from anthropic_mock import assert_instructions_breakpoint
 
 from pcode.agent import create_agent
 from pcode.cache_settings import ANTHROPIC_CACHE_SETTINGS, model_settings
@@ -114,7 +115,4 @@ def test_cache_control_reaches_the_wire(tmp_path, monkeypatch):
     body = bodies[0]
     assert body["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
     assert body["tools"][-1]["cache_control"]
-    # The instructions breakpoint closes the static instructions. Workspace-derived
-    # ones (repository context, file-tool base) follow it, stable per session, and
-    # the automatic breakpoint above covers them.
-    assert any(block.get("cache_control") for block in body["system"])
+    assert_instructions_breakpoint(body["system"])

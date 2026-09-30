@@ -70,3 +70,23 @@ def anthropic_response(request, message: dict, **kwargs) -> httpx2.Response:
             **kwargs,
         )
     return httpx2.Response(200, json=message, **kwargs)
+
+
+# Instructions Harness reads from the workspace at run start. Pydantic AI 2.52
+# places the instructions breakpoint after the static ones, so these follow it.
+WORKSPACE_DERIVED = (
+    "File tools accept",
+    "<context-file",
+    "<assistant-configuration",
+    "No assistant configuration",
+)
+
+
+def assert_instructions_breakpoint(system):
+    """The last static block carries the breakpoint; only workspace-derived ones follow."""
+    marked = [index for index, block in enumerate(system) if block.get("cache_control")]
+    assert marked, "no instructions breakpoint"
+    after = system[marked[-1] + 1 :]
+    assert all(block["text"].startswith(WORKSPACE_DERIVED) for block in after), [
+        block["text"][:40] for block in after
+    ]
