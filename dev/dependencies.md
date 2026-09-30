@@ -105,6 +105,20 @@ outside it. Legacy walker results keep that convention; the selected Coder
 paths. Protected write patterns still apply at any depth. File events retain
 relative `path` plus absolute `root_dir`.
 
+The opt-in `security` extension (`src/pcode/extensions/security.py`, policy in
+`src/pcode/sandbox.py`) puts write roots back in as a `before_tool_execute` hook
+rather than in `_resolve_path`. It resolves `path` the way the tools do
+(workspace base, realpath), so keep the two in step if resolution changes. Code
+mode's nested reads go through the same hook. The shell half sets
+`jobs.COMMAND_SANDBOX` around each `shell` call, and `JobRegistry.launch` runs the
+job *supervisor* under that argv prefix (`sandbox-exec -p <profile>` or `bwrap`).
+Wrapping the supervisor rather than the command keeps `CommandStartedEvent`,
+`list_jobs` and the transcript showing the model's command, and a stop still
+signals the whole process group. In a Seatbelt profile the last matching rule
+wins, which the generated profile relies on (allow roots, then re-deny the
+guarded paths). Policy state that must survive `/reload` (`SESSION_GRANTS`)
+lives in `pcode.sandbox`, because `/reload` re-imports the extension.
+
 Forward `cwd`, `tools`, `content_hashes`, and `max_read_chars` when constructing
 the display toolset. Omitting them silently restores legacy tools and hash-bearing
 schemas, and removes Coder's read pagination budget. The `coder` extra supplies

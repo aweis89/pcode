@@ -4,9 +4,73 @@
 
 **The agent edits files and runs shell commands for real. There is no approval
 UI.** pcode has no permission model of its own and does not rely on prompt text
-as a safety control. When you need enforcement, run pcode inside a sandbox (a
-container, a VM, or an OS sandbox such as `sandbox-exec` or `bwrap`); otherwise
-use a trusted repository and a safe working environment.
+as a safety control. When you need enforcement, turn on the bundled
+[security extension](#write-policy-and-shell-sandbox-opt-in), or run all of pcode
+inside a container or VM; otherwise use a trusted repository and a safe working
+environment.
+
+### Write policy and shell sandbox (opt-in)
+
+`/extensions on security` limits where the agent can write, for the file tools
+and for every `shell` command, using one policy:
+
+- **Writable:** the workspace, its repository's main checkout (which covers
+  every `.worktrees/` sibling), temp directories, `~/.cache`,
+  `~/Library/Caches` and `~/.npm`, plus anything you grant.
+- **Read-only even inside those:** pcode's config directory, any `.pcode/`
+  directory and any `.git/hooks/`. Writing there would let the agent switch the
+  policy off or run code outside the sandbox later.
+- **Unreadable:** SSH private keys, `~/.aws`, `~/.gnupg`, `~/.netrc`, the GitHub
+  CLI's and Docker's stored logins, and pcode's, Codex's and Claude Code's
+  credential files.
+
+Shell commands run under macOS's built-in `sandbox-exec`, or `bwrap` on Linux.
+A write outside the policy fails with "Operation not permitted", and the
+transcript still shows the command as typed. With no sandbox available, the
+`shell` tool refuses to run rather than running unprotected. Your own `!`
+commands are never sandboxed.
+
+Grant more with `/add-dir`:
+
+```text
+/add-dir ../other-repo                  # this session
+/add-dir --global ~/.local/share/chezmoi  # every session
+/add-dir --global ~/work/AGENTS.md        # a single file
+/add-dir                                # show the current policy
+```
+
+Global grants are saved in `security.json` beside `preferences.json`, which you
+can also edit by hand:
+
+```json
+{
+  "write": ["~/.local/share/chezmoi", "~/go"],
+  "deny_read": ["~/.ssh/id_*", "~/.aws", "~/.kube"],
+  "shell_sandbox": true
+}
+```
+
+`deny_read`, when present, replaces the default list. `"shell_sandbox": false`
+keeps the file-tool checks but runs shell commands unsandboxed. A file that
+isn't valid JSON blocks writes and shell commands until you fix it, rather than
+silently dropping the policy.
+
+What it does not cover:
+
+- **Network access** is unrestricted.
+- **Environment variables** reach shell commands as usual, so a token exported
+  by direnv is still visible to them.
+- **MCP servers** run as their own processes, outside the sandbox.
+- **Files the repository runs later.** A `Makefile`, `.envrc` or `.git/config`
+  the agent edits can still run code when you use it outside the sandbox.
+- **Single-file grants are tighter for the file tools than for the shell.**
+  Many shell tools (`sed -i`, editors) replace a file by writing a sibling and
+  renaming it, which needs the directory. Grant the directory, or let the agent
+  use `edit_file`.
+- **Build tools with other caches** (`~/go`, `~/.cargo`, `uv tool install`
+  writing to `~/.local`) fail until you grant their directories.
+- **Linux** protects `.pcode/` and `.git/hooks/` only where they already exist
+  when a command starts.
 
 File tools accept absolute paths anywhere the OS permits, including other
 worktrees and temporary directories. Relative paths (including `..`) always
