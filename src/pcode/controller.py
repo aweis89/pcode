@@ -383,8 +383,10 @@ VIEW_CALLS = frozenset(
 transportable(Bridge)
 
 
-def _mcp_enable(text: str) -> bool:
-    return text.split()[:2] == ["/mcp", "enable"]
+def mcp_enable(text: str) -> bool:
+    """An /mcp command that may sign in, which prompts queued behind it wait for."""
+    words = text.split()
+    return words[:1] == ["/mcp"] and words[1:2] in (["enable"], ["enable-all"])
 
 
 def wake_row(text: str) -> tuple[str, str]:
@@ -606,9 +608,9 @@ class SessionController:
             ),
             Command(
                 "/mcp",
-                "Manage MCP servers: list / enable NAME|all / disable NAME / logout NAME",
+                "Manage MCP servers: list / enable NAME / enable-all / disable NAME / logout NAME",
                 self.mcp,
-                ("list", "enable", "disable"),
+                ("list", "enable", "enable-all", "disable"),
                 free_arguments=True,
                 argument_provider=self.mcp_arguments,
                 group="Model",
@@ -884,7 +886,7 @@ class SessionController:
         if text.split()[0] in MODEL_COMMANDS:
             self.pending_model_command += 1
             self.activity.busy = True
-        if _mcp_enable(text):
+        if mcp_enable(text):
             self.pending_mcp += 1
             # Enter + Ctrl+C in one input batch must cancel activation before
             # its command worker has had a chance to start OAuth.
@@ -894,7 +896,7 @@ class SessionController:
         """A command from `command` is being handled: it no longer holds the session busy."""
         if text.split()[0] in MODEL_COMMANDS:
             self.pending_model_command -= 1
-        elif _mcp_enable(text):
+        elif mcp_enable(text):
             self.pending_mcp -= 1
         else:
             return
@@ -1351,7 +1353,7 @@ class SessionController:
         )
 
     def start_mcp_enable_all(self) -> None:
-        """Enable every configured server not already on (`all` wins over a server so named)."""
+        """Enable every configured server not already on."""
         from pcode.mcp import configured_servers
 
         names = [
@@ -1687,7 +1689,7 @@ class SessionController:
         ]
         return (
             "list",
-            *(("enable all",) if names else ()),
+            *(("enable-all",) if names else ()),
             *(f"enable {name}" for name in sorted(names)),
             *(f"disable {name}" for name in sorted(enabled)),
             *(f"logout {name}" for name in oauth),
@@ -1716,12 +1718,15 @@ class SessionController:
                 self.view.note("No MCP servers configured. Add an mcpServers object here.")
             self.view.note(
                 'MCP defaults to off unless a server sets "enabled": true. '
-                "Use /mcp enable NAME (or all), /mcp disable NAME, or /mcp logout NAME."
+                "Use /mcp enable NAME, /mcp enable-all, /mcp disable NAME, or /mcp logout NAME."
             )
             return
-        if len(parts) != 2 or parts[0] not in {"enable", "disable", "logout"}:
+        if parts != ["enable-all"] and (
+            len(parts) != 2 or parts[0] not in {"enable", "disable", "logout"}
+        ):
             raise ValueError(
-                "Usage: /mcp list | /mcp enable NAME|all | /mcp disable NAME | /mcp logout NAME"
+                "Usage: /mcp list | /mcp enable NAME | /mcp enable-all | /mcp disable NAME "
+                "| /mcp logout NAME"
             )
         # Slash commands precede queued (not yet running) prompts. In particular,
         # an enable + prompt submitted in one input batch must authenticate first.
@@ -1732,10 +1737,11 @@ class SessionController:
             raise ValueError("MCP cannot be changed while working. Cancel or wait, then retry.")
         if state is None:
             raise ValueError("MCP requires a live model. Start pcode with -m PROVIDER:MODEL.")
-        action, name = parts
-        if parts == ["enable", "all"]:
+        if parts == ["enable-all"]:
             self.start_mcp_enable_all()
-        elif action == "enable":
+            return
+        action, name = parts
+        if action == "enable":
             if name in enabled:
                 self.view.note(f"MCP '{name}' is already enabled.")
             else:

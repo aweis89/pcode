@@ -30,6 +30,7 @@ from pcode.controller import (
     TERMINAL_COMMANDS,
     SessionController,
     delivered_job,
+    mcp_enable,
     meridian_thinking_note,
 )
 from pcode.error_report import error_message
@@ -1854,7 +1855,7 @@ class PreviewApp:
             commands = [text for kind, text, _ in early if kind == "command"]
             prompts = len(early) - len(commands)
             early.clear()
-            if any(text.split()[:2] == ["/mcp", "enable"] for text in commands):
+            if any(mcp_enable(text) for text in commands):
                 self.transcript.warning("Pending MCP enable command cancelled.")
             if any(text.split()[0] in MODEL_COMMANDS for text in commands):
                 self.transcript.warning("Pending model command cancelled.")
@@ -1874,7 +1875,7 @@ class PreviewApp:
                 name = text.split(maxsplit=1)[0]
                 if early is not None and name not in TERMINAL_COMMANDS:
                     early.append(("command", text, self._popup_generation))
-                    if name in MODEL_COMMANDS or text.split()[:2] == ["/mcp", "enable"]:
+                    if name in MODEL_COMMANDS or mcp_enable(text):
                         # As in-process: Ctrl+C now cancels it, not the draft.
                         self.activity.busy = True
                 else:
