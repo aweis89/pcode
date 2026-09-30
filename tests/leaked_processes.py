@@ -10,9 +10,9 @@ the tag however it detached.
 At the end of a run the controller stops everything still tagged with its own
 id. A run that died before its teardown (SIGKILL, a stopped job) cannot, so
 each run first stops processes tagged by a run whose controller is gone.
-Processes whose environment cannot be read (Apple platform binaries such as
-`/bin/sleep`) are invisible to this; the leaks that matter here are Python and
-tmux.
+Processes whose environment macOS hides (Apple platform binaries such as
+`/bin/sh` and `/bin/sleep`, so a bare shell loop) are invisible to this; the
+leaks that matter here are Python and tmux, which are not.
 """
 
 import os
@@ -65,7 +65,11 @@ def _stop(processes: list[psutil.Process]) -> list[str]:
     described = []
     for process in processes:
         try:
-            described.append(f"{process.pid} {' '.join(process.cmdline())[:120]}")
+            command = " ".join(process.cmdline())[:120]
+        except psutil.Error:
+            command = "?"
+        described.append(f"{process.pid} {command}")
+        try:
             process.send_signal(signal.SIGTERM)
         except psutil.Error:
             pass
