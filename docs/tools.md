@@ -25,7 +25,12 @@ and for every `shell` command, using one policy:
   credential files.
 
 Shell commands run under macOS's built-in `sandbox-exec`, or `bwrap` on Linux.
-A write outside the policy fails with "Operation not permitted", and the
+These are the same OS-level mechanisms Anthropic's
+[sandbox runtime](https://github.com/anthropic-experimental/sandbox-runtime) uses
+for Claude Code's sandboxing: a Seatbelt profile generated per command on macOS,
+bubblewrap on Linux. pcode generates its own profile from the policy above, so
+there is nothing extra to install. Unlike that runtime, it doesn't filter
+network traffic. A write outside the policy fails with "Operation not permitted", and the
 transcript still shows the command as typed. With no sandbox available, the
 `shell` tool refuses to run rather than running unprotected. Your own `!`
 commands are never sandboxed.
