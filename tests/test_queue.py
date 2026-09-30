@@ -473,6 +473,109 @@ def test_commands_run_while_model_waits(inspector_command):
     asyncio.run(run())
 
 
+def test_tools_lists_every_call_of_the_running_turn(tmp_path):
+    """/tools mid-turn shows the turn's finished calls, not only the running one.
+
+    The turn creates its session journal lazily, as a real first turn does. A
+    terminal attached to a host (the socket transport) learns the journal's path
+    only from the host, and its copy of the tree was stale until the turn ended.
+    """
+
+    async def run():
+        from pcode.inspection import ToolArchive
+        from pcode.inspector_ui import ToolInspector
+        from pcode.runtime import ToolStarted, ToolSummary
+        from pcode.sessions import SavedSession
+
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        class Runtime:
+            session = None
+            recovery_blocked = ""
+            inspections = ToolArchive()
+
+            async def stream(self, text):
+                self.session = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
+                self.session.append("turn_started", prompt=text, run_id="run-1", sync=True)
+                for index in (1, 2):
+                    for event in (
+                        ToolStarted("read_file", f"file{index}.py", f"call-{index}"),
+                        ToolSummary("read_file", "done", call_id=f"call-{index}"),
+                    ):
+                        self.session.event(event, run_id="run-1")
+                        yield event
+                running = ToolStarted("shell", "make test", "call-3")
+                self.session.event(running, run_id="run-1")
+                yield running
+                started.set()
+                await finish.wait()
+                yield Message("done")
+
+        runtime = Runtime()
+        app = PreviewApp(model="test:local", runtime=runtime, console=Console(file=StringIO()))
+        with create_pipe_input() as pipe:
+            session = None
+            inspector = None
+
+            def prompt(*args, **kwargs):
+                nonlocal session
+                session = create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+                return session
+
+            def browser(*args, **kwargs):
+                nonlocal inspector
+                inspector = ToolInspector(*args, **kwargs)
+                return inspector
+
+            async def wait_for(predicate):
+                async with asyncio.timeout(5):
+                    while not predicate():
+                        await asyncio.sleep(0.01)
+
+            with (
+                patch("pcode.app.create_prompt", prompt),
+                patch("pcode.inspector_ui.ToolInspector", browser),
+            ):
+                task = asyncio.create_task(app.run_async())
+                try:
+                    await wait_for(lambda: session is not None and session.app.is_running)
+                    pipe.send_text("first\r")
+                    await asyncio.wait_for(started.wait(), 5)
+                    await wait_for(
+                        lambda: any(
+                            call.event.call_id == "call-3" for call in app.activity.tools.calls
+                        )
+                    )
+                    pipe.send_text("/tools\r")
+                    await wait_for(lambda: inspector is not None and inspector.app.is_running)
+                    calls = {call.call_id: call.state for call in inspector.archive.calls}
+                    assert calls == {
+                        "call-1": "succeeded",
+                        "call-2": "succeeded",
+                        "call-3": "running",
+                    }
+                    pipe.send_text("\x1b")
+                    await wait_for(lambda: not inspector.app.is_running)
+                    finish.set()
+                    await wait_for(lambda: not app.activity.busy)
+                    pipe.send_text("/quit\r")
+                    await asyncio.wait_for(task, 5)
+                finally:
+                    finish.set()
+                    # A failed assertion leaves the modal open, and cancelling
+                    # the app underneath it never returns.
+                    if inspector is not None and inspector.app.is_running:
+                        inspector.app.exit()
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                    if runtime.session is not None:
+                        runtime.session.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.in_process("a hosted /quit detaches; the turn carries on in the host")
 @pytest.mark.parametrize("command", ["/quit", "/exit"])
 def test_quit_cancels_active_run(command):
