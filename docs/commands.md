@@ -251,6 +251,8 @@ A call leaves the widget when it finishes and gets its line in
 [scrollback](transcript.md) instead; calls still running when a turn ends are
 dropped from the widget.
 
+![A turn three steps into a five-step plan: done steps ticked, the test run in progress with its shell call in the status row, the last step still pending](assets/screenshots/tasks.svg)
+
 The status row always reads the same way: a spinner, what the turn is doing,
 what it is doing it to, and on the right the run's tool count and how long
 this phase has lasted.
