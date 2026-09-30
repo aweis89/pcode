@@ -8,6 +8,7 @@ from copy import deepcopy
 
 import pytest
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import LocalWorkspace
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
     ModelRequest,
@@ -127,7 +128,10 @@ def test_http_failure_after_tool_keeps_tool_result_and_diagnostics(tmp_path, mon
             yield "Continued without calling the file tool again."
 
     runtime = AgentRuntime(
-        Agent(FunctionModel(stream_function=model), capabilities=[Coder(tmp_path)]), saved
+        Agent(
+            FunctionModel(stream_function=model), capabilities=[LocalWorkspace(tmp_path), Coder()]
+        ),
+        saved,
     )
 
     async def run():
@@ -662,7 +666,10 @@ def test_compacted_session_still_resumes_and_navigates_to_an_earlier_turn(tmp_pa
             yield f"Answer {calls}."
 
     runtime = AgentRuntime(
-        Agent(FunctionModel(stream_function=model), capabilities=[Coder(tmp_path)]), saved
+        Agent(
+            FunctionModel(stream_function=model), capabilities=[LocalWorkspace(tmp_path), Coder()]
+        ),
+        saved,
     )
 
     async def run():
@@ -767,7 +774,9 @@ def test_opening_a_busy_session_continues_a_copy_from_its_last_safe_step(tmp_pat
                 await release.wait()
             yield f"Answer to {prompt}."
 
-        agent = Agent(FunctionModel(stream_function=model), capabilities=[Coder(tmp_path)])
+        agent = Agent(
+            FunctionModel(stream_function=model), capabilities=[LocalWorkspace(tmp_path), Coder()]
+        )
         runtime = AgentRuntime(agent, saved)
         _ = [event async for event in runtime.stream("First question")]
         settled = deepcopy(runtime.history)

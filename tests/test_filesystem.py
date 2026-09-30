@@ -1,16 +1,35 @@
+"""pcode's file tools: unconfined paths on a stable workspace base.
+
+Harness does the work (`root_dir='/'`, relative paths from the workspace); these
+pin the contract pcode relies on, through the tools Coder actually registers.
+"""
+
 import asyncio
+from functools import partial
 from pathlib import Path
 
 import pytest
 from pydantic_ai import ModelRetry
+from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 from pydantic_ai_harness.filesystem import (
-    DirectoryListedEvent,
     FileChangeRequestEvent,
     FileReadEvent,
+    FilesSearchedEvent,
     FileWrittenEvent,
 )
 
 from pcode.workspace_filesystem import WorkspaceFileSystem
+
+
+class Bound:
+    """A toolset's direct methods, bound to one local workspace."""
+
+    def __init__(self, workspace: Path, **options):
+        self.toolset = WorkspaceFileSystem(**options).get_toolset()
+        self.backend = LocalWorkspaceBackend(workspace)
+
+    def __getattr__(self, name):
+        return partial(getattr(self.toolset, name), workspace=self.backend)
 
 
 @pytest.fixture
@@ -26,15 +45,26 @@ def paths(tmp_path):
     return workspace, external
 
 
+def test_the_whole_host_is_reachable_from_a_workspace_base(paths):
+    workspace, _ = paths
+    filesystem = WorkspaceFileSystem()
+    assert filesystem.root_dir == "/"
+    # Protected-file rules match at any depth, since paths are relative to `/`.
+    assert all(pattern.startswith("**/") for pattern in filesystem.read_only_patterns)
+    # Copying Coder's capability keeps its settings.
+    copied = WorkspaceFileSystem.from_filesystem(WorkspaceFileSystem(max_read_lines=7))
+    assert copied.max_read_lines == 7 and copied.root_dir == "/"
+
+
 def test_external_file_lifecycle_and_conflicts(paths):
     workspace, external = paths
-    fs = WorkspaceFileSystem(workspace).get_toolset()
+    fs = Bound(workspace)
 
     async def run():
         target = external / "new" / "sample.txt"
-        with pytest.raises(ModelRetry, match="Use create_directory first"):
+        with pytest.raises(ModelRetry, match="does not exist"):
             await fs.write_file(str(target), "first")
-        await fs.create_directory(str(target.parent))
+        target.parent.mkdir()
         await fs.write_file(str(target), "first")
         assert "first" in await fs.read_file("../external/new/sample.txt")
         await fs.edit_file(str(target), "first", "second")
@@ -42,56 +72,29 @@ def test_external_file_lifecycle_and_conflicts(paths):
         with pytest.raises(ModelRetry, match="[Hh]ash"):
             await fs.write_file(str(target), "lost", expected_hash="stale")
         assert target.read_text() == "second"
-        assert "type: file" in await fs.file_info(str(target))
         assert "inside marker" in await fs.read_file("inside.txt")
 
     asyncio.run(run())
 
 
 @pytest.mark.parametrize("style", ["absolute", "parent", "symlink"])
-def test_external_walkers_return_reusable_absolute_paths(paths, style):
+def test_external_walkers_return_reusable_paths(paths, style):
     workspace, external = paths
-    fs = WorkspaceFileSystem(workspace).get_toolset()
+    fs = Bound(workspace)
     (external / ".ignored.txt").write_text("outside hidden")
-    (external / "dangling").symlink_to(external / "missing")
     selected = {"absolute": str(external), "parent": "../external", "symlink": "alias"}[style]
 
     async def run():
-        expected = str(external / "outside.txt")
-        listing = await fs.list_directory(selected)
-        found = await fs.find_files("*.txt", path=selected)
-        searched = await fs.search_files("outside", path=selected, include_glob="*.txt")
-        assert listing == f"{expected}  (15 bytes)"
-        assert found == expected
-        assert searched == f"{expected}:1:outside marker"
+        listed = (await fs.list_files(path=selected)).splitlines()
+        (found,) = [line for line in listed if line.endswith("outside.txt")]
+        assert not any(".ignored" in line for line in listed)
+        # A returned path, relative to the workspace, reads the same file back.
         assert "outside marker" in await fs.read_file(found)
-        assert await fs.search_files("marker", path=expected) == f"{expected}:1:outside marker"
+        searched = await fs.grep("outside", path=selected)
+        assert searched.splitlines()[0].endswith("outside.txt:1:outside marker")
         # Default traversal stays workspace-local, not host-wide.
-        assert await fs.find_files("*.txt") == "inside.txt"
-        assert await fs.search_files("inside") == "inside.txt:1:inside marker"
-
-    asyncio.run(run())
-
-
-def test_external_globs_hidden_entries_and_limits(paths):
-    workspace, external = paths
-    source = external / "src"
-    source.mkdir()
-    for name in ("one.py", "two.py", ".hidden.py"):
-        (source / name).write_text("match\nmatch\n")
-    fs = WorkspaceFileSystem(
-        workspace, max_list_results=1, max_find_results=1, max_search_results=1
-    ).get_toolset()
-
-    async def run():
-        assert "truncated at 1 entries" in await fs.list_directory(str(source))
-        assert "truncated at 1 matches" in await fs.find_files("*.py", path=str(source))
-        result = await fs.search_files("match", path=str(external), include_glob="src/*.py")
-        assert result == f"{source}/one.py:1:match\n[... truncated at 1 matches]"
-        with pytest.raises(ModelRetry, match="absolute"):
-            await fs.find_files(str(source / "*.py"), path=str(external))
-        with pytest.raises(ModelRetry, match="Invalid regex"):
-            await fs.search_files("[", path=str(external))
+        assert "outside.txt" not in await fs.list_files()
+        assert await fs.grep("inside") == "inside.txt:1:inside marker"
 
     asyncio.run(run())
 
@@ -110,7 +113,7 @@ def test_protected_writes_apply_at_any_depth(paths, relative, location, depth):
     requested = str(target)
     if location == "alias":
         requested = str(Path("alias") / depth / relative)
-    fs = WorkspaceFileSystem(workspace).get_toolset()
+    fs = Bound(workspace)
 
     async def run():
         with pytest.raises(ModelRetry, match="protected"):
@@ -122,18 +125,32 @@ def test_protected_writes_apply_at_any_depth(paths, relative, location, depth):
     assert target.read_text() == "synthetic fixture"
 
 
-def test_patterns_authorize_canonical_external_targets(paths):
+def test_a_symlink_to_a_protected_file_is_protected(paths):
     workspace, external = paths
-    fs = WorkspaceFileSystem(
-        workspace, allowed_patterns=["*.txt"], denied_patterns=[str(external / "outside.txt")]
-    ).get_toolset()
+    protected = external / ".env"
+    protected.write_text("synthetic fixture")
+    (workspace / "innocent.txt").symlink_to(protected)
+    fs = Bound(workspace)
+
+    async def run():
+        with pytest.raises(ModelRetry, match="protected"):
+            await fs.write_file("innocent.txt", "replacement")
+
+    asyncio.run(run())
+    assert protected.read_text() == "synthetic fixture"
+
+
+def test_denied_patterns_apply_to_canonical_external_targets(paths):
+    workspace, external = paths
+    denied = str(external / "outside.txt").lstrip("/")
+    fs = Bound(workspace, denied_patterns=[denied])
 
     async def run():
         with pytest.raises(ModelRetry, match="denied"):
             await fs.read_file("alias/outside.txt")
-        assert await fs.list_directory(str(external)) == "(empty directory)"
-        assert await fs.find_files("*", path=str(external)) == "No matches found."
-        assert await fs.search_files("marker", path=str(external)) == "No matches found."
+        with pytest.raises(ModelRetry, match="denied"):
+            await fs.read_file(str(external / "outside.txt"))
+        assert "outside.txt" not in await fs.list_files(path=str(external))
         assert "inside marker" in await fs.read_file("inside.txt")
 
     asyncio.run(run())
@@ -142,33 +159,38 @@ def test_patterns_authorize_canonical_external_targets(paths):
 def test_symlink_loop_is_recoverable(paths):
     workspace, external = paths
     (external / "loop").symlink_to(external / "loop")
-    fs = WorkspaceFileSystem(workspace).get_toolset()
+    fs = Bound(workspace)
 
     async def run():
-        with pytest.raises(ModelRetry, match="symlink loop"):
+        with pytest.raises(ModelRetry):
             await fs.read_file(str(external / "loop"))
-        assert str(external / "loop") not in await fs.list_directory(str(external))
+        assert "loop" not in await fs.list_files(path=str(external))
 
     asyncio.run(run())
 
 
-def test_external_events_identify_actual_targets(paths):
+def test_events_locate_their_files_from_the_filesystem_root(paths):
     workspace, external = paths
-    fs = WorkspaceFileSystem(workspace).get_toolset()
+    toolset = WorkspaceFileSystem().get_toolset()
     events = []
 
     class Context:
+        tool_call_id = "call-1"
+        tool_name = None
+        tool_manager = None
+        workspace = Workspace(LocalWorkspaceBackend(paths[0]))
+
         async def emit(self, event):
             events.append(event)
 
     async def run():
         ctx = Context()
-        await fs._read_file_tool(ctx, "alias/outside.txt")
-        await fs._write_file_tool(ctx, str(external / "new.txt"), "new")
-        await fs._list_directory_tool(ctx, str(external))
-        await fs._read_file_tool(ctx, "inside.txt")
-        with pytest.raises(ModelRetry):
-            await fs._read_file_tool(ctx, str(external / "missing"))
+        await toolset._read_file_tool(ctx, "alias/outside.txt")
+        await toolset._write_file_tool(ctx, str(external / "new.txt"), "new")
+        await toolset._grep_tool(ctx, "marker", path=str(external))
+        await toolset._read_file_tool(ctx, "inside.txt")
+        # A miss is an answer, not traversal evidence: no event.
+        assert "not found" in await toolset._read_file_tool(ctx, str(external / "missing"))
 
     asyncio.run(run())
     # Change requests are pre-mutation events, not successful traversal evidence.
@@ -176,35 +198,15 @@ def test_external_events_identify_actual_targets(paths):
     assert [type(e) for e in events] == [
         FileReadEvent,
         FileWrittenEvent,
-        DirectoryListedEvent,
+        FilesSearchedEvent,
         FileReadEvent,
     ]
+    # A file reached through a symlink keeps the name it was reached by.
     assert [Path(e.root_dir) / e.path for e in events] == [
-        external / "outside.txt",
+        workspace / "alias" / "outside.txt",
         external / "new.txt",
         external,
         workspace / "inside.txt",
     ]
     assert all(not Path(e.path).is_absolute() for e in events)
-    assert events[2].entry_count == 2
-    assert events[0].content_hash
-    assert events[1].content_hash
-    assert events[3].root_dir == str(workspace)
-
-
-def test_external_symlink_metadata_and_protected_target(paths):
-    workspace, external = paths
-    (workspace / "file-link").symlink_to(external / "outside.txt")
-    protected = external / ".env"
-    protected.write_text("synthetic fixture")
-    (workspace / "innocent.txt").symlink_to(protected)
-    fs = WorkspaceFileSystem(workspace).get_toolset()
-
-    async def run():
-        assert f"symlink_target: {external}" in await fs.file_info("alias")
-        assert f"symlink_target: {external}/outside.txt" in await fs.file_info("file-link")
-        with pytest.raises(ModelRetry, match="protected"):
-            await fs.write_file("innocent.txt", "replacement")
-
-    asyncio.run(run())
-    assert protected.read_text() == "synthetic fixture"
+    assert events[0].content_hash and events[1].content_hash

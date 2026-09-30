@@ -9,7 +9,6 @@ import httpx2
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import CombinedCapability
-from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
 from pydantic_ai.models.anthropic import AnthropicModel
@@ -157,10 +156,11 @@ def test_thinking_only_4096_failure_is_avoided_on_the_wire(metadata, streaming):
                         return await response.get_output()
                 return (await agent.run("Think")).output
 
-            with pytest.raises(UnexpectedModelBehavior, match="token limit"):
-                await invoke([])
+            # Pydantic AI 2.52 stopped defaulting to 4096 itself; pcode's resolved
+            # limit still decides what is asked for.
+            assert await invoke([]) == "Completed"
+            assert seen[0]["max_tokens"] > 4096
             assert await invoke([ModelOutputLimits()]) == "Completed"
-            assert seen[0]["max_tokens"] == 4096
             assert seen[-1]["max_tokens"] == 128_000
             assert all(b["thinking"] == {"type": "adaptive"} for b in seen)
 

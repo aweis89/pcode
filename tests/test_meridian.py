@@ -6,6 +6,7 @@ from io import StringIO
 
 import httpx2
 import pytest
+from anthropic_mock import anthropic_response
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
@@ -273,9 +274,9 @@ def test_session_identity_survives_tool_rounds_resume_and_parallel_delegation(
                 for kind, payload in events
             )
             return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=data)
-        return httpx2.Response(
-            200,
-            json={
+        return anthropic_response(
+            request,
+            {
                 "id": "msg_test",
                 "type": "message",
                 "role": "assistant",
@@ -574,9 +575,9 @@ def test_deferred_tools_are_found_with_local_search(monkeypatch):
             stop = "tool_use"
         else:
             content, stop = [{"type": "text", "text": "done"}], "end_turn"
-        return httpx2.Response(
-            200,
-            json={
+        return anthropic_response(
+            request,
+            {
                 "id": f"msg-{len(bodies)}",
                 "type": "message",
                 "role": "assistant",

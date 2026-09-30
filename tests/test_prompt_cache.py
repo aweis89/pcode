@@ -114,4 +114,7 @@ def test_cache_control_reaches_the_wire(tmp_path, monkeypatch):
     body = bodies[0]
     assert body["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
     assert body["tools"][-1]["cache_control"]
-    assert body["system"][-1]["cache_control"]
+    # The instructions breakpoint closes the static instructions. Workspace-derived
+    # ones (repository context, file-tool base) follow it, stable per session, and
+    # the automatic breakpoint above covers them.
+    assert any(block.get("cache_control") for block in body["system"])

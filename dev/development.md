@@ -241,4 +241,4 @@ not the original session's CPU, live prompt redraws, or external processes.
 
 The latest Harness website can describe a newer Coder composition than the pinned
 release. Implementation follows the installed release's public API
-(`make harness-src` checks out the pinned source).
+(`make harness-src` checks out the locked release).

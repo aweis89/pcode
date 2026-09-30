@@ -1,8 +1,10 @@
 .DEFAULT_GOAL := help
 .PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve screenshots cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall
 
-HARNESS_DIR := tmp/pydantic-ai-harness
-HARNESS_URL := https://github.com/pydantic/pydantic-ai-harness.git
+# Harness lives in the pydantic-ai repo (src/pydantic_ai_harness, docs/harness,
+# tests/harness) and ships with each Pydantic AI release.
+HARNESS_DIR := tmp/pydantic-ai
+HARNESS_URL := https://github.com/pydantic/pydantic-ai.git
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -57,13 +59,14 @@ cache-report: ## Report prompt-cache behavior from saved sessions (SESSION=lates
 shell-report: ## Report how the model used the shell tool in saved sessions (SESSION=latest|all|<id>)
 	uv run python scripts/shell_report.py $(or $(SESSION),latest) $(ARGS)
 
-harness-src: ## Check out upstream Harness source at the pinned SHA under tmp/
-	@sha=$$(sed -n 's/.*pydantic-ai-harness\.git@\([0-9a-f]\{40\}\).*/\1/p' pyproject.toml); \
-	if [ -z "$$sha" ]; then echo 'no pinned Harness SHA in pyproject.toml' >&2; exit 1; fi; \
-	if [ ! -d $(HARNESS_DIR)/.git ]; then git clone --quiet $(HARNESS_URL) $(HARNESS_DIR); fi; \
-	git -C $(HARNESS_DIR) cat-file -e "$$sha^{commit}" 2>/dev/null || git -C $(HARNESS_DIR) fetch --quiet origin; \
-	git -C $(HARNESS_DIR) checkout --quiet --detach "$$sha"; \
-	echo "$(HARNESS_DIR) @ $$sha"
+harness-src: ## Check out upstream Harness source at the locked Pydantic AI release under tmp/
+	@version=$$(awk '/^name = "pydantic-ai-slim"$$/ {getline; gsub(/version = |"/, ""); print; exit}' uv.lock); \
+	if [ -z "$$version" ]; then echo 'no locked pydantic-ai-slim in uv.lock' >&2; exit 1; fi; \
+	tag="v$$version"; \
+	if [ ! -d $(HARNESS_DIR)/.git ]; then git clone --quiet --filter=blob:none --no-checkout $(HARNESS_URL) $(HARNESS_DIR); fi; \
+	git -C $(HARNESS_DIR) rev-parse --verify --quiet "$$tag^{commit}" >/dev/null || git -C $(HARNESS_DIR) fetch --quiet origin tag "$$tag"; \
+	git -C $(HARNESS_DIR) checkout --quiet --detach "$$tag"; \
+	echo "$(HARNESS_DIR) @ $$tag"
 
 worktree: ## Create an isolated worktree under .worktrees/ (make worktree NAME=fix-foo [BASE=ref]); `pcode --worktree` does this per session
 	@uv run python -m pcode.worktree new $(NAME) $(if $(BASE),--base $(BASE))

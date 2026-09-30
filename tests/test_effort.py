@@ -3,6 +3,7 @@ from io import StringIO
 from types import SimpleNamespace
 
 import pytest
+from anthropic_mock import anthropic_response
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
@@ -241,9 +242,9 @@ def anthropic_request_body(model_name, send):
 
     def handle(request):
         requests.append(json.loads(request.content))
-        return httpx2.Response(
-            200,
-            json={
+        return anthropic_response(
+            request,
+            {
                 "id": "msg_test",
                 "type": "message",
                 "role": "assistant",

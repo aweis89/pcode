@@ -131,7 +131,8 @@ def test_delegated_anthropic_requests_carry_cache_control(tmp_path):
     for body in bodies:
         assert body["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
         assert body["tools"][-1]["cache_control"]
-        assert body["system"][-1]["cache_control"]
+        # Workspace-derived instructions follow the static breakpoint.
+        assert any(block.get("cache_control") for block in body["system"])
 
 
 @pytest.mark.parametrize(

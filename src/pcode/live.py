@@ -25,6 +25,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
     ToolReturn,
 )
+from pydantic_ai.capabilities import LocalWorkspace
 from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
@@ -99,6 +100,7 @@ from pcode.runtime import (
 from pcode.sessions import SavedSession, SessionError
 from pcode.shell import ShellPreview, result_projection
 from pcode.shell_mode import ShellRun, reduce_result, shell_exchange
+from pcode.shell_tools import JobShell
 from pcode.steering import Steering
 from pcode.token_accounting import TokenAccounting, TokenTotals
 from pcode.tool_display import (
@@ -656,9 +658,18 @@ class AgentRuntime:
     def shell_environment(self) -> tuple[Path, dict[str, str] | None]:
         """Where and with what environment `!command` runs: the agent's own shell settings."""
         for capability in self.agent.root_capability.capabilities:
+            if isinstance(capability, JobShell):
+                return Path(capability.workdir), capability.env
             if isinstance(capability, Shell):
-                return Path(capability.cwd or Path.cwd()), capability.env
+                return self._workspace_dir(), capability.env
         return Path.cwd(), None
+
+    def _workspace_dir(self) -> Path:
+        """The directory the agent's `LocalWorkspace` works in, else the process's own."""
+        for capability in self.agent.root_capability.capabilities:
+            if isinstance(capability, LocalWorkspace):
+                return Path(capability.working_dir)
+        return Path.cwd()
 
     async def record_shell(self, run: ShellRun) -> str | ToolReturn:
         """Queue a finished `!command` as a shell tool exchange for the next request.
@@ -960,13 +971,14 @@ class AgentRuntime:
             if any(isinstance(c, Planning) for c in self.agent.root_capability.capabilities)
             else None
         )
-        filesystem_root = next(
-            (
-                Path(c.cwd or c.root_dir)
+        # Relative edit paths resolve from the workspace, whatever `root_dir` bounds.
+        filesystem_root = (
+            self._workspace_dir()
+            if any(
+                isinstance(c, FileSystem) and not c.read_only
                 for c in self.agent.root_capability.capabilities
-                if isinstance(c, FileSystem) and not c.read_only
-            ),
-            None,
+            )
+            else None
         )
         edit_preview = (
             StreamingEditPreview(filesystem_root) if filesystem_root is not None else None

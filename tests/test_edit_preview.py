@@ -100,6 +100,7 @@ def test_toggle_persists_and_requests_redraw(tmp_path):
 @pytest.mark.parametrize("outcome", ["done", "cancel", "error"])
 def test_runtime_streams_previews_but_never_saves_them(tmp_path, outcome):
     from pydantic_ai import Agent
+    from pydantic_ai.capabilities import LocalWorkspace
     from pydantic_ai.messages import ToolReturnPart
     from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
@@ -129,7 +130,8 @@ def test_runtime_streams_previews_but_never_saves_them(tmp_path, outcome):
     async def exercise():
         saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
         agent = Agent(
-            FunctionModel(stream_function=model), capabilities=[DisplayFileSystem(tmp_path)]
+            FunctionModel(stream_function=model),
+            capabilities=[LocalWorkspace(tmp_path), DisplayFileSystem()],
         )
         runtime = AgentRuntime(agent, saved)
         observed = []

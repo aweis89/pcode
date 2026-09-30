@@ -5,6 +5,8 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.workspaces import LocalWorkspaceBackend
+from pydantic_ai_harness.coder._capability import MAX_READ_CHARS
 from pydantic_ai_harness.filesystem import FileSystem
 
 from pcode.agent import create_coder
@@ -17,7 +19,7 @@ def test_coder_preserves_upstream_tools_schemas_and_read_budget(tmp_path, monkey
     coder = create_coder(tmp_path)
     files = next(c for c in coder.capabilities if isinstance(c, FileSystem))
     assert files.content_hashes is False
-    assert files.max_read_chars == 60000
+    assert files.max_read_chars == MAX_READ_CHARS
     assert set(files.tools) == {"read_file", "write_file", "edit_file", "list_files", "grep"}
 
     async def model(messages, info):
@@ -45,8 +47,10 @@ def test_coder_preserves_upstream_tools_schemas_and_read_budget(tmp_path, monkey
     (tmp_path / "large.txt").write_text("abcdefghij\n" * 10000)
 
     async def read():
-        result = await files.get_toolset().read_file("large.txt", limit=10000)
-        assert len(result) <= 60000
+        result = await files.get_toolset().read_file(
+            "large.txt", limit=10000, workspace=LocalWorkspaceBackend(tmp_path)
+        )
+        assert len(result) <= MAX_READ_CHARS
         assert "Use offset=" in result
         assert "hash:" not in result
 
@@ -96,8 +100,9 @@ def test_bundled_ripgrep_works_without_activating_the_tool_environment(tmp_path,
 
     async def run():
         tools = files.get_toolset()
-        assert "sample.txt" in await tools.list_files()
-        assert "BUNDLED_RG_MARKER" in await tools.grep("BUNDLED_RG_MARKER")
+        workspace = LocalWorkspaceBackend(tmp_path)
+        assert "sample.txt" in await tools.list_files(workspace=workspace)
+        assert "BUNDLED_RG_MARKER" in await tools.grep("BUNDLED_RG_MARKER", workspace=workspace)
 
     asyncio.run(run())
 
@@ -112,9 +117,12 @@ def test_native_ripgrep_tools_keep_external_paths_and_hidden_ancestor_access(tmp
 
     async def run():
         toolset = files.get_toolset()
-        paths = await toolset.list_files(path="../external")
+        local = LocalWorkspaceBackend(workspace)
+        paths = await toolset.list_files(path="../external", workspace=local)
         assert "../external/sample.py" in paths
-        result = await toolset.grep("SEARCH_MARKER", path="../external", glob="*.py")
+        result = await toolset.grep(
+            "SEARCH_MARKER", path="../external", glob="*.py", workspace=local
+        )
         assert "../external/sample.py:1:SEARCH_MARKER" in result
 
     asyncio.run(run())

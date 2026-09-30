@@ -27,9 +27,10 @@ def test_a_tool_call_in_a_deleted_workspace_ends_the_turn_once(tmp_path, monkeyp
     async def respond(messages, info):
         nonlocal requests
         requests += 1
+        # Removed mid-run, from elsewhere, after the run started in it.
+        shutil.rmtree(workspace)
         yield {0: DeltaToolCall(name="shell", json_args='{"command": "ls"}')}
 
-    shutil.rmtree(workspace)
     with pytest.raises(WorkspaceGoneError) as caught:
         agent.run_sync("look around", model=FunctionModel(stream_function=respond))
     # No correction was offered, so the model was never asked to try again.
@@ -40,6 +41,25 @@ def test_a_tool_call_in_a_deleted_workspace_ends_the_turn_once(tmp_path, monkeyp
     # It is not the model's doing, and no budget would have helped.
     assert "retry limit" not in message
     assert "credentials" not in message
+
+
+def test_a_run_in_a_deleted_workspace_stops_before_the_model(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+    agent = create_agent("test", workspace)
+    requests = 0
+
+    async def respond(messages, info):
+        nonlocal requests
+        requests += 1
+        yield "unreachable"
+
+    shutil.rmtree(workspace)
+    # Named by pcode, ahead of Harness's generic `WorkspaceUnavailableError`.
+    with pytest.raises(WorkspaceGoneError, match="no longer exists"):
+        agent.run_sync("look around", model=FunctionModel(stream_function=respond))
+    assert requests == 0
 
 
 def test_require_workspace_passes_a_live_directory(tmp_path):

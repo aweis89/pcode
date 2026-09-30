@@ -13,8 +13,8 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | --- | --- | --- | --- |
 | prompt_toolkit (`prompt-toolkit`) | 3.0.53 | [Docs](https://python-prompt-toolkit.readthedocs.io/en/stable/) | [python-prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) |
 | Rich (`rich`) | 14.3.4 | [Docs](https://rich.readthedocs.io/en/stable/) | [rich](https://github.com/Textualize/rich) |
-| Pydantic AI (`pydantic-ai-slim`) | 2.50.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
-| Pydantic AI Harness (`pydantic-ai-harness`) | 0.35.1.dev14+a7bbe89 (commit `a7bbe89fd855138916d4f64060479f4ddb0ef9b0`) | [Docs](https://ai.pydantic.dev/harness/) | [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) |
+| Pydantic AI (`pydantic-ai-slim`) | 2.52.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
+| Pydantic AI Harness (`pydantic-ai-harness`) | 0.52.0 (released with Pydantic AI 2.52.0) | [Docs](https://pydantic.dev/docs/ai/harness/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `src/pydantic_ai_harness/`) |
 | Playwright (`playwright`, via the Harness `playwright` extra; Chromium downloaded on first `/browser` use) | 1.63.0 | [Docs](https://playwright.dev/python/) | [playwright-python](https://github.com/microsoft/playwright-python) |
 | Claude Agent SDK (`claude-agent-sdk`, bundles the Claude Code CLI) | 0.2.160 (CLI 2.1.283) | [Docs](https://code.claude.com/docs/en/agent-sdk/python) | [claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python) |
 
@@ -44,26 +44,28 @@ upstream tests, examples, and documentation sources.
 ### Local Harness checkout
 
 Harness upstream source is the one dependency worth reading in full, because the
-installed wheel omits the `docs/`, `tests/`, `examples/`, and `integration_tests/`
-trees. `make harness-src` checks it out under `tmp/pydantic-ai-harness`
-(gitignored) at the SHA pinned in `pyproject.toml`:
+installed wheel omits its docs and tests. Harness lives in the Pydantic AI
+repository and ships with each Pydantic AI release, so `make harness-src` checks
+that repository out under `tmp/pydantic-ai` (gitignored, blobless) at the tag of
+the `pydantic-ai-slim` version locked in `uv.lock`:
 
 ```sh
-make harness-src   # prints "tmp/pydantic-ai-harness @ <sha>"
+make harness-src   # prints "tmp/pydantic-ai @ v<version>"
 ```
 
-The target reads the SHA from `pyproject.toml`, so it cannot drift from the pin.
-It clones when the directory is absent, fetches only when the pinned commit is
-missing, and leaves a **detached** HEAD at that commit — rerun it after changing
-the pin, and never commit work on top of it. Takes about six seconds cold.
+The target reads the version from `uv.lock`, so it cannot drift from the lock.
+It clones when the directory is absent, fetches only when the tag is missing,
+and leaves a **detached** HEAD at that tag — rerun it after upgrading, and never
+commit work on top of it. Takes about half a minute cold. Harness's source is
+`src/pydantic_ai_harness/pydantic_ai_harness/`, its tests `tests/harness/`.
 
-`docs/coder.md`, `docs/repo-context.md`, `docs/compaction.md`,
-`docs/subagents.md`, and `docs/shell.md` cover the capabilities pcode composes.
+`docs/harness/coder.md`, `docs/harness/repo-context.md`, `docs/harness/compaction.md`,
+`docs/harness/subagents.md`, and `docs/harness/shell.md` cover the capabilities
+pcode composes; `docs/workspace.md` covers `ctx.workspace`.
 Read these instead of the website, which tracks `main` and can describe an
 unreleased API. Installed `site-packages` still decides what actually runs: the
 checkout is for docs, tests, and history, not a substitute for verifying the
-installed source. Do not build or install pcode from it — the dependency is
-pinned by SHA.
+installed source. Do not build or install pcode from it.
 
 ## Where to look for this project
 
@@ -88,22 +90,19 @@ pinned by SHA.
 
 ### File access and worker shell
 
-`src/pcode/workspace_filesystem.py` retains pcode's path/protection policy around
-Harness's `FileSystem` and `FileSystemToolset`: relative paths keep the workspace base, but absolute paths,
-parent traversal, and external symlinks are allowed. Removing only the containment
-check is insufficient: list/search/find inline `relative_to` calls, events need a
-reconstructable location, and missing-parent writes assume a workspace-relative
-parent. The adapter retains upstream read/write/edit implementations and adapts
-the three walkers. `DisplayFileSystem` layers mutation evidence on top of it;
-compare those with installed source on upgrades. Keep
-`tests/test_filesystem.py`, the real-tool tests in `tests/test_live.py`, and the
-repository-context tests when changing this integration.
+`src/pcode/workspace_filesystem.py` sets pcode's path policy on Harness's own
+`FileSystem`: `root_dir='/'` lifts the boundary, so absolute paths, parent
+traversal and external symlinks work, while relative paths resolve from the
+workspace's working directory and `list_files`/`grep` return paths relative to
+it (external ones as `..` paths). Nothing is overridden but construction and the
+instructions. `DisplayFileSystem` layers mutation evidence on top; compare it
+with installed source on upgrades. Keep `tests/test_filesystem.py`, the
+real-tool tests in `tests/test_live.py`, and the repository-context tests when
+changing this integration.
 
-Allow/deny matching remains workspace-relative inside the workspace and absolute
-outside it. Legacy walker results keep that convention; the selected Coder
-`list_files`/`grep` tools return paths relative to `cwd`, including external `..`
-paths. Protected write patterns still apply at any depth. File events retain
-relative `path` plus absolute `root_dir`.
+Allow/deny/read-only patterns match the path relative to `/` (no leading slash),
+so read-only patterns get a `**/` prefix to apply at any depth. File events carry
+a `path` relative to `root_dir`, which is `/`.
 
 The opt-in `security` extension (`src/pcode/extensions/security.py`, policy in
 `src/pcode/sandbox.py`) puts write roots back in as a `before_tool_execute` hook
@@ -119,9 +118,10 @@ wins, which the generated profile relies on (allow roots, then re-deny the
 guarded paths). Policy state that must survive `/reload` (`SESSION_GRANTS`)
 lives in `pcode.sandbox`, because `/reload` re-imports the extension.
 
-Forward `cwd`, `tools`, `content_hashes`, and `max_read_chars` when constructing
-the display toolset. Omitting them silently restores legacy tools and hash-bearing
-schemas, and removes Coder's read pagination budget. The `coder` extra supplies
+Forward `tools`, `content_hashes`, and `max_read_chars` when constructing the
+display toolset. Omitting them silently restores legacy tools and hash-bearing
+schemas, and removes Coder's read pagination budget. `max_retries` is dropped on
+purpose, so the `tool_retries` preference governs file tools too. The `coder` extra supplies
 ripgrep, but an installed `pcode` entry point does not activate its environment's
 `bin` on PATH. `create_coder` appends that bin directory when `rg` is absent,
 without changing existing executable precedence. Test outside `uv run` too.
@@ -908,10 +908,34 @@ we cannot reconstruct provider-omitted content.
 
 ## Live shell output
 
-Harness is pinned by full Git SHA in `pyproject.toml`, not only a uv source
-override, so `make install` also receives the pin. Hatch requires
-`allow-direct-references = true` for editable and wheel builds with this dependency.
-The verified revision is `a7bbe89fd855138916d4f64060479f4ddb0ef9b0`.
+Harness comes from PyPI, pinned to one minor (`>=0.52.0,<0.53`). It pins
+`pydantic-ai-slim` to its own release exactly (Harness 0.52.x ships with Pydantic
+AI 2.52.x), so upgrade the two together.
+
+Since Harness 0.52 every capability works through the run's workspace
+(`ctx.workspace`) rather than a directory argument: `Coder(path)`,
+`Shell.cwd`, `FileSystem.cwd` and `RepoContext.workspace_dir` are deprecated and
+ignored. `create_coder` attaches `LocalWorkspace(workspace)`, and a run without
+one fails at its start. `WorkspaceGuard` runs first so a deleted worktree is named
+before Harness reports a generic `WorkspaceUnavailableError`. Upstream
+`SubAgents` passes the parent's `ctx.workspace` to every delegate explicitly, so
+isolated delegation hands its child run a context with the task worktree's own
+workspace. Coder's own `SubAgents` is off (`sub_agents=False`); pcode's
+`WorkspaceSubAgents` provides `delegate_task`.
+
+A `LocalWorkspace` passes commands only `PATH`, `HOME` and locale variables.
+pcode's commands don't go through it: `JobShell` runs them through `pcode.jobs`
+with the whole host environment (direnv tokens included) from its own
+`workdir`, minus `LLM_API_KEY_ENV_PATTERNS`, which Coder applied before it left
+the environment to the workspace.
+
+File tools are `WorkspaceFileSystem`: Harness's toolset with `root_dir='/'`, so
+paths are unconfined while relative ones resolve from the workspace and walked
+paths come back relative to it; read-only patterns get a `**/` prefix to match at
+any depth. `DisplayFileSystemToolset` takes the before snapshot for edit
+previews in `_request`, which Harness calls under its per-file lock just before
+writing, and reads through the real path so an alias to a sensitive file is
+hidden like the file.
 
 Coder selects `Shell(tools=['shell'], default_timeout=270)`. Pcode replaces that
 capability with `pcode.shell_tools.JobShell`, which keeps upstream's command
@@ -1075,29 +1099,24 @@ install with the `PATH` npm and the proxy's own install, found from `/health`'s
 `claudeExecutable.path` inside the package, with the npm in that prefix.
 
 
-### Completed file diffs (verified pinned Harness revision)
+### Completed file diffs (verified Harness 0.52.0)
 
-`FileWrittenEvent` still has no before/after contents. The new `FileEditedEvent`
-contains a bounded diff, but it is already truncated and not secret-redacted;
-it cannot replace pcode's full-source redaction and precise counts. Reading the
-file when either event reaches the UI cannot recover the previous version.
-`DisplayFileSystemToolset` keeps in-operation evidence capture. On upgrades,
-compare `_write_file` and `_edit_file` with installed source, including descriptor
-checks, hashes, recoverable errors, canonical newlines, and result strings.
+`FileWrittenEvent` still has no before/after contents. `FileEditedEvent` carries
+a bounded diff, but it is already truncated and not secret-redacted; it cannot
+replace pcode's full-source redaction and precise counts. Reading the file when
+either event reaches the UI cannot recover the previous version.
 
-`_edit_file` now takes a sequence of `Replacement` objects, not old/new positional
-strings. Apply all replacements before one guarded write, honor the upstream
-change-request cancellation/revalidation, and emit one completed diff. Forward
-`content_hashes=False` into the toolset and use `_hash_suffix` for model results;
-events still carry hashes. The write adapter retains pcode's existing descriptor
-snapshot semantics rather than upstream's pre-write request/snapshot flow.
-
-Writes capture old contents through the same descriptor before truncation.
-Unconditional writes try read/write access for capture, falling back to the
-original write-only access when reading isn't permitted; missing evidence must
-not make an otherwise valid write fail. The edit adapter uses the exact text
-already read for replacement. Neither adapter makes the underlying operation
-transactional against arbitrary external writers.
+`DisplayFileSystemToolset` leaves Harness's `_write_file` and `_edit_file`
+alone and captures evidence at their seam: `_request` runs under the per-file
+lock (`_changing`, keyed by workspace object and real path) after validation
+and before the write, so the snapshot it reads is the content being replaced.
+The after side is the written content, or the same `Replacement`s applied to
+the snapshot. A result starting `Wrote `/`Edited ` is the success signal; errors
+and listener refusals emit nothing. A snapshot the workspace refuses to read
+(write-only file) omits the diff rather than failing the write. On upgrades,
+check that `_request` is still called inside the lock and before the write, and
+that the result strings are unchanged. Nothing here makes the operation
+transactional against writers outside the run.
 
 Pydantic AI exposes tool arguments through `ToolCallPartDelta.args_delta`.
 `StreamingEditPreview` handles single pairs and replacement arrays without

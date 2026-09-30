@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic_ai import ModelRetry, RunContext
+from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 from pydantic_ai_harness.subagents import SubAgents
 from pydantic_ai_harness.subagents._toolset import SubAgentToolset
 
@@ -254,8 +255,13 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
                     "The parent will review and integrate your result. Stop all jobs before "
                     "finishing; remaining jobs will be terminated when delegation ends."
                 )
+                # Harness hands a delegate the parent's `ctx.workspace`; this
+                # one works in its own checkout instead.
+                child_ctx = replace(
+                    ctx, workspace=Workspace(LocalWorkspaceBackend(record.worktree))
+                )
                 output = await self._run_delegation(
-                    ctx,
+                    child_ctx,
                     agent_name,
                     replace(self._agents[agent_name], agent=worker),
                     task=prompt,

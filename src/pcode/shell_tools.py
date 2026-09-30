@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import codecs
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -55,9 +56,12 @@ _MATCH_BUDGET_CHARS = 262_144
 class JobShellToolset(ShellToolset[AgentDepsT]):
     """Harness's shell toolset with its persistent tool replaced by job tools."""
 
-    def __init__(self, *, jobs: JobRegistry, **kwargs: Any) -> None:
+    def __init__(self, *, jobs: JobRegistry, workdir: Path, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._jobs = jobs
+        # Jobs run on this host through `pcode.jobs`, not `ctx.workspace`, so
+        # the toolset keeps its own start directory (upstream's is deprecated).
+        self._workdir = workdir
         # Harness registered its own persistent `shell` from the tool list.
         # Drop it and register ours under the same name, so the model sees one
         # shell tool and the UI wiring keyed on that name still matches.
@@ -73,17 +77,19 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         """Per-run instance, but the registry is shared: jobs outlive the run."""
         return JobShellToolset[AgentDepsT](
             jobs=self._jobs,
-            cwd=self._initial_cwd,
+            workdir=self._workdir,
             allowed_commands=self._allowed_commands,
             denied_commands=self._denied_commands,
             denied_operators=self._denied_operators,
             default_timeout=self._default_timeout,
             max_output_chars=self._max_output_chars,
+            max_file_bytes=self._max_file_bytes,
             persist_cwd=self._persist_cwd,
             allow_interactive=self._allow_interactive,
             env=self._env,
             denied_env_patterns=self._denied_env_patterns,
             tools=self._tools,
+            id=self.id,
         )
 
     async def __aexit__(self, *args: Any) -> None:
@@ -137,7 +143,7 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         wait = self._wait_seconds(timeout)
         job = self._jobs.launch(
             command,
-            cwd=self._initial_cwd,
+            cwd=self._workdir,
             env=self._resolve_env(),
             background=background,
             purpose=purpose,
@@ -419,21 +425,31 @@ class _OutputStream:
             pass
 
 
+@dataclass
 class JobShell(Shell[AgentDepsT]):
-    """`Shell`, but its commands are jobs this session can name and come back to."""
+    """`Shell`, but its commands are jobs this session can name and come back to.
 
-    def get_toolset(self) -> JobShellToolset[AgentDepsT]:
+    Commands start in `workdir` with `env` as their whole environment: they
+    run through `pcode.jobs` on this host, not through `ctx.workspace`, whose
+    local backend passes on only `PATH` and `HOME`.
+    """
+
+    workdir: Path = field(default_factory=Path.cwd, kw_only=True)
+
+    def _make_toolset(self) -> JobShellToolset[AgentDepsT]:
         return JobShellToolset[AgentDepsT](
             jobs=registry(),
-            cwd=Path(self.cwd),
+            workdir=Path(self.workdir),
             allowed_commands=self.allowed_commands,
             denied_commands=self.denied_commands,
             denied_operators=self.denied_operators,
             default_timeout=self.default_timeout,
             max_output_chars=self.max_output_chars,
+            max_file_bytes=self.max_file_bytes,
             persist_cwd=self.persist_cwd,
             allow_interactive=self.allow_interactive,
             env=self.env,
             denied_env_patterns=self.denied_env_patterns,
             tools=self.tools,
+            id=self.id or "shell",
         )

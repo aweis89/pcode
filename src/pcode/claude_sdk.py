@@ -43,6 +43,7 @@ from anthropic import AsyncAnthropic
 from anthropic._models import construct_type
 from anthropic.types.beta import BetaRawMessageStreamEvent
 from pydantic_ai import RunContext
+from pydantic_ai._utils import PeekableAsyncStream
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.models import (
@@ -1294,7 +1295,8 @@ class ClaudeModel(AnthropicModel):
         session = checkout.session
         ok = False
         try:
-            events = _Events(session.response())
+            # `_process_streamed_response` peeks the first event before reading.
+            events = PeekableAsyncStream(_Events(session.response()))
             stream = await self._process_streamed_response(events, parameters, settings)
             yield stream
             # Anything short of the whole message leaves the process mid-turn.

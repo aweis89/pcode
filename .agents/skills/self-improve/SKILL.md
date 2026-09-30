@@ -23,13 +23,13 @@ FileSystem, Shell, SubAgents, Planning, compaction, or step persistence, read
 the pinned checkout, not the site:
 
 ```sh
-make harness-src        # prints "tmp/pydantic-ai-harness @ <sha>"
+make harness-src        # prints "tmp/pydantic-ai @ v<version>"
 ```
 
 | Need | Read |
 | --- | --- |
-| How a capability is meant to be used | `tmp/pydantic-ai-harness/docs/<name>.md` |
-| What it actually does | `tmp/pydantic-ai-harness/pydantic_ai_harness/<name>/` and `tests/` beside it |
+| How a capability is meant to be used | `tmp/pydantic-ai/docs/harness/<name>.md` |
+| What it actually does | `tmp/pydantic-ai/src/pydantic_ai_harness/pydantic_ai_harness/<name>/` and `tmp/pydantic-ai/tests/harness/<name>/` |
 
 ## Working on pcode
 

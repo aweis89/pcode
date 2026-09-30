@@ -23,8 +23,8 @@ def test_inventory_is_metadata_only_and_preserves_instructions(tmp_path):
     skill = tmp_path / ".claude/skills/example/SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("Asset body should not be loaded")
-    capability = AutomaticRepoContext(workspace_dir=tmp_path)
-    instructions = capability.get_instructions()
+    capability = AutomaticRepoContext(root=tmp_path)
+    instructions = capability.preload().instructions_text()
     assert "Repository development guidance" in instructions
     assert ".claude/skills/example/SKILL.md" in instructions
     assert "Asset body should not be loaded" not in instructions
@@ -34,13 +34,13 @@ def test_inventory_is_metadata_only_and_preserves_instructions(tmp_path):
 
 def test_inventory_cached_within_run_and_refreshed_between_runs(tmp_path):
     async def run():
-        capability = AutomaticRepoContext(workspace_dir=tmp_path)
-        first = await capability.for_run(None)
-        assert "No assistant configuration directories" in first.get_instructions()
+        capability = AutomaticRepoContext(root=tmp_path)
+        first = (await capability.for_run(None)).preload()
+        assert "No assistant configuration directories" in first.instructions_text()
         (tmp_path / ".agents").mkdir()
-        assert "No assistant configuration directories" in first.get_instructions()
-        second = await first.for_run(None)
-        assert '"root":".agents"' in second.get_instructions()
+        assert "No assistant configuration directories" in first.instructions_text()
+        second = (await first.for_run(None)).preload()
+        assert '"root":".agents"' in second.instructions_text()
 
     asyncio.run(run())
 
@@ -80,9 +80,9 @@ def test_worker_uses_automatic_context(tmp_path, monkeypatch):
     capabilities = constructor.call_args.kwargs["capabilities"]
     context = next(cap for cap in capabilities if isinstance(cap, AutomaticRepoContext))
     assert context.home_dir == tmp_path.resolve()
-    assert "Inherited worker guidance" in context.get_instructions()
+    assert "Inherited worker guidance" in context.preload().instructions_text()
     assert context.get_toolset() is None
-    assert "inventory_agent_context" not in context.get_instructions()
+    assert "inventory_agent_context" not in context.preload().instructions_text()
 
 
 def test_startup_summary_reports_only_selected_instructions(tmp_path):
@@ -92,7 +92,7 @@ def test_startup_summary_reports_only_selected_instructions(tmp_path):
     (root / "agents").mkdir(parents=True)
     (root / "agents/helper.md").write_text("agent body")
     (root / "settings.json").write_text('{"hooks": {}}')
-    capability = AutomaticRepoContext(workspace_dir=tmp_path)
+    capability = AutomaticRepoContext(root=tmp_path)
     # Instruction reads are allowed; asset bodies must never be read.
     from pathlib import Path
 
@@ -106,23 +106,23 @@ def test_startup_summary_reports_only_selected_instructions(tmp_path):
         text = "\n".join(capability.startup_summary())
     assert text == "Loaded repository instructions: CLAUDE.md"
     # The asset inventory reaches the model, not the startup notes.
-    assert ".claude" in capability.get_instructions()
+    assert ".claude" in capability.preload().instructions_text()
 
 
 def test_startup_summary_empty_repository(tmp_path):
-    summary = AutomaticRepoContext(workspace_dir=tmp_path).startup_summary()
+    summary = AutomaticRepoContext(root=tmp_path).startup_summary()
     assert summary == []
 
 
 def test_startup_summary_instructions_only(tmp_path):
     (tmp_path / "AGENTS.md").write_text("Repository guidance")
-    summary = AutomaticRepoContext(workspace_dir=tmp_path).startup_summary()
+    summary = AutomaticRepoContext(root=tmp_path).startup_summary()
     assert summary == ["Loaded repository instructions: AGENTS.md"]
 
 
 def test_startup_summary_omits_discovered_configuration(tmp_path):
     (tmp_path / ".claude").mkdir()
-    assert AutomaticRepoContext(workspace_dir=tmp_path).startup_summary() == []
+    assert AutomaticRepoContext(root=tmp_path).startup_summary() == []
 
 
 def test_app_displays_actual_agent_context_and_preview_stays_local(tmp_path, monkeypatch):
@@ -198,7 +198,7 @@ def test_walk_up_loads_both_filenames_in_ancestor_first_order(tmp_path, monkeypa
     (repo / "sibling/AGENTS.md").write_text("Sibling must not load")
 
     context = create_repo_context(workspace)
-    instructions = context.get_instructions()
+    instructions = context.preload().instructions_text()
     bodies = [
         "Home guidance",
         "Project Claude guidance",
@@ -218,7 +218,7 @@ def test_workspace_at_home_loads_home_only(tmp_path):
     (tmp_path / "AGENTS.md").write_text("Home workspace guidance")
     context = create_repo_context(tmp_path)
     assert context.home_dir == tmp_path.resolve()
-    assert "Home workspace guidance" in context.get_instructions()
+    assert "Home workspace guidance" in context.preload().instructions_text()
     assert context.startup_summary() == ["Loaded repository instructions: AGENTS.md"]
 
 
@@ -233,7 +233,7 @@ def test_workspace_outside_home_still_loads_ancestors(tmp_path, monkeypatch):
     (workspace / "AGENTS.md").write_text("Outside home workspace guidance")
     context = create_repo_context(workspace)
     assert context.home_dir == Path(workspace.resolve().anchor)
-    instructions = context.get_instructions()
+    instructions = context.preload().instructions_text()
     assert "Unrelated home guidance" not in instructions
     assert instructions.index("Outside home ancestor guidance") < instructions.index(
         "Outside home workspace guidance"
@@ -250,8 +250,8 @@ def test_symlinked_workspace_uses_resolved_ancestry(tmp_path):
     alias = alias_parent / "project"
     alias.symlink_to(real, target_is_directory=True)
     context = create_repo_context(alias)
-    assert context.workspace_dir == real.resolve()
-    instructions = context.get_instructions()
+    assert context.root == real.resolve()
+    instructions = context.preload().instructions_text()
     assert "Real ancestor guidance" in instructions
     assert "Alias ancestor must not load" not in instructions
 
@@ -263,7 +263,7 @@ def test_walk_up_deduplicates_contents_and_symlink_targets(tmp_path):
     (tmp_path / "AGENTS.md").symlink_to("CLAUDE.md")
     (workspace / "AGENTS.md").write_text("Shared guidance")
     context = create_repo_context(workspace)
-    assert context.get_instructions().count("Shared guidance") == 1
+    assert context.preload().instructions_text().count("Shared guidance") == 1
     assert context.startup_summary() == [
         f"Loaded repository instructions: {tmp_path / 'CLAUDE.md'}"
     ]
@@ -277,14 +277,14 @@ def test_ancestor_instructions_refresh_between_runs_not_within_run(tmp_path):
 
     async def run():
         context = create_repo_context(workspace)
-        first = await context.for_run(None)
-        assert "Original ancestor guidance" in first.get_instructions()
+        first = (await context.for_run(None)).preload()
+        assert "Original ancestor guidance" in first.instructions_text()
         instruction_file.write_text("Updated ancestor guidance")
-        assert "Original ancestor guidance" in first.get_instructions()
-        second = await first.for_run(None)
+        assert "Original ancestor guidance" in first.instructions_text()
+        second = (await first.for_run(None)).preload()
         assert second.home_dir == context.home_dir
-        assert "Updated ancestor guidance" in second.get_instructions()
-        assert "Original ancestor guidance" not in second.get_instructions()
+        assert "Updated ancestor guidance" in second.instructions_text()
+        assert "Original ancestor guidance" not in second.instructions_text()
 
     asyncio.run(run())
 

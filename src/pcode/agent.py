@@ -11,7 +11,7 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import Capability, CombinedCapability
+from pydantic_ai.capabilities import Capability, CombinedCapability, LocalWorkspace
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
@@ -22,7 +22,7 @@ from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
-from pydantic_ai_harness.shell import Shell
+from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
 from pydantic_ai_harness.subagents import ModelOption, SubAgent
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
@@ -163,7 +163,8 @@ def create_coder(
         os.environ["PATH"] = os.pathsep.join(
             part for part in (os.environ.get("PATH", ""), str(bundled_bin)) if part
         )
-    coder = Coder(workspace)
+    # Delegation is pcode's own `WorkspaceSubAgents`, added below.
+    coder = Coder(sub_agents=False)
     output_limits = create_tool_output_limits()
     # Keep Coder's tool selection, including its persistent shell. File display
     # and repository discovery remain local adapters; planning is now opt-in.
@@ -174,13 +175,17 @@ def create_coder(
     # blanket-rename everything either: `replace()`-copied children compare
     # fields with their parent and a renamed parent breaks that match.
     coder.capabilities = [
-        # The pinned Coder's sole plain Capability holds its base instructions.
+        # Coder's sole plain Capability holds its base instructions (and a
+        # project line pcode's file-tool instructions already cover).
         Capability(instructions=CODER_INSTRUCTIONS)
         if type(capability) is Capability
         else create_repo_context(workspace)
         if isinstance(capability, RepoContext)
         # Named so /status can attribute its prompt; ids never reach the model.
-        else replace(DisplayFileSystem.from_filesystem(capability), id="file_tools")
+        # No per-toolset retry budget: the `tool_retries` preference governs.
+        else replace(
+            DisplayFileSystem.from_filesystem(capability), id="file_tools", max_retries=None
+        )
         if isinstance(capability, FileSystem)
         # Replace Coder's 64k truncation, so it cannot cut data before spilling.
         else output_limits
@@ -195,6 +200,9 @@ def create_coder(
     # Ahead of the other capabilities in the list, so a tool call in a deleted
     # workspace stops before anything tries to read or write in it.
     coder.capabilities.insert(0, WorkspaceGuard(workspace))
+    # Harness capabilities read and write through `ctx.workspace`. Commands
+    # bypass it (see `JobShell`), so it needs none of the host's environment.
+    coder.capabilities.insert(1, LocalWorkspace(workspace))
     # Isolated workers build their own coder, so each CLI runs in its checkout.
     coder.capabilities.append(ClaudeWorkspace(workspace))
     coder.capabilities.append(IdentifiedPlanning())
@@ -224,9 +232,15 @@ def create_coder(
             # can wait on, report and stop. See `pcode.shell_tools`. Copied
             # field by field (including `id`) because a capability binds its
             # instructions to its id in `__init__`.
-            coder.capabilities[index] = JobShell(
-                **{f.name: getattr(capability, f.name) for f in fields(capability) if f.init}
-            )
+            # Commands inherit the whole host environment (see `JobShell`), so
+            # keep provider credentials out of it, as Coder did before it left
+            # the environment to the workspace.
+            values = {f.name: getattr(capability, f.name) for f in fields(capability) if f.init}
+            values["denied_env_patterns"] = [
+                *values["denied_env_patterns"],
+                *LLM_API_KEY_ENV_PATTERNS,
+            ]
+            coder.capabilities[index] = JobShell(**values, workdir=workspace)
     # Compose the worker from the same capabilities rather than maintaining a
     # second tool/policy list. Per-run capability state is still managed upstream.
     # These are supplied by SubAgents.shared_capabilities instead (also for
