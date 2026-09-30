@@ -335,6 +335,13 @@ SETTINGS = {
         PROFILE_MODES,
         description="Record each session's resource use; cpu/memory add a slow tracer",
     ),
+    # A heartbeat task and one polling thread; cheap enough to leave on so the
+    # freeze nobody expected is already logged when it happens.
+    "stall_log": Setting(
+        "on",
+        ("on", "off"),
+        description="Log what blocked the editor whenever typing stalls over 100 ms",
+    ),
     "transcript_max_chars": Setting(
         str(CHAR_BUDGET),
         positive_integer=True,

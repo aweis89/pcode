@@ -1955,9 +1955,20 @@ class PreviewApp:
                     session.app.invalidate()
                 await asyncio.sleep(BRANCH_POLL_SECONDS)
 
+        stalls = None
+        if load_preferences().get("stall_log", SETTINGS["stall_log"].default) == "on":
+            from pcode.stall_log import StallWatch
+
+            # Read from the watcher thread: plain attribute reads only.
+            stalls = StallWatch(
+                context=lambda: {"busy": self.activity.busy, "status": self.activity.status}
+            )
+
         def start():
             restore_stdin()
             replay_pending_input(session.app)
+            if stalls is not None:
+                session.app.create_background_task(stalls.heartbeat())
             session.app.create_background_task(watch_branch())
             session.app.create_background_task(output.run())
             session.app.create_background_task(run_local_commands())
@@ -1978,6 +1989,8 @@ class PreviewApp:
             # Before `leave_controller` closes the connection the stop goes out on.
             self.stop_host_on_exit()
         finally:
+            if stalls is not None:
+                stalls.stop()
             if self._progress is not None:
                 self._progress.close()
                 self._progress = None

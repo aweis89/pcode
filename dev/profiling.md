@@ -43,6 +43,27 @@ pruning removes them, and they record source filenames and function names, so
 treat an always-on default as local debug output rather than something to leave
 running on a shared machine.
 
+## Typing freezes: the stall log
+
+A freeze while typing (keys stop echoing, then a whole word appears) means the
+terminal's event loop was blocked, or the terminal held a frame back. Profiles
+average that away. The `stall_log` setting (on by default) catches it instead:
+a heartbeat task runs every 50 ms, and a watcher thread samples the loop
+thread's stack whenever the heartbeat is more than 100 ms late. Each stall
+appends one line to `~/.local/state/pcode/stalls.jsonl` (rotated to
+`stalls.jsonl.1` past 1 MB):
+
+```sh
+tail -n 5 ~/.local/state/pcode/stalls.jsonl | jq '{at, stall_ms, status, top: .stacks[0].frames[:6]}'
+```
+
+`stacks[].frames` lists the innermost frame first. `<garbage collection>` at
+the top means a GC pass was running. A freeze you noticed with no line near its
+time means the loop was free, so look at the terminal (synchronized output held
+open) rather than at pcode. A process suspended by Ctrl+Z or a debugger is not
+logged. It only covers the terminal process. A session host is a separate
+process, and a stall there shows up as late output, not as lost keystrokes.
+
 ## Capture a focused trace
 
 If pcode itself is consuming CPU, repeat a short representative workload with
