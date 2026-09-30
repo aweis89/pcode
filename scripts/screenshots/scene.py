@@ -12,6 +12,7 @@ against a throwaway repo.
 import asyncio
 import json
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -37,6 +38,11 @@ class Call:
 # request after each round of tool results.
 
 
+# pcode appends reminders (the plan, limit warnings) as user-prompt parts
+# opening with a tag such as `<plan-reminder>`. They are not the user's prompt.
+REMINDER = re.compile(r"\s*<[a-z-]+>")
+
+
 def _latest_prompt(messages) -> tuple[str, int]:
     """The last user prompt, and how many model responses followed it."""
     responses = 0
@@ -48,7 +54,8 @@ def _latest_prompt(messages) -> tuple[str, int]:
                 if isinstance(part, UserPromptPart):
                     content = part.content
                     text = content if isinstance(content, str) else " ".join(map(str, content))
-                    return text, responses
+                    if not REMINDER.match(text):
+                        return text, responses
     return "", responses
 
 
