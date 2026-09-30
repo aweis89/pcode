@@ -340,7 +340,7 @@ SETTINGS = {
     "stall_log": Setting(
         "on",
         ("on", "off"),
-        description="Log what blocked the editor whenever typing stalls over 100 ms",
+        description="Log what blocked the editor whenever typing stalls ~150 ms or more",
     ),
     "transcript_max_chars": Setting(
         str(CHAR_BUDGET),

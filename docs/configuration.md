@@ -217,7 +217,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | --- | --- | --- |
 | `debug` | `off` | `on`, `off` (also write request fingerprints to disk with each cache notice) |
 | `profile` | `off` | `off`, `resources`, `cpu`, `memory` (capture each session's resource use; see [profiling](https://github.com/aweis89/pcode/blob/master/dev/profiling.md)) |
-| `stall_log` | `on` | `on`, `off` (when the editor stops responding for over 100 ms, append what was running to `~/.local/state/pcode/stalls.jsonl`) |
+| `stall_log` | `on` | `on`, `off` (when the editor stops responding for roughly 150 ms or more, append what was running to `~/.local/state/pcode/stalls.jsonl`) |
 
 ## Tab progress bar
 
