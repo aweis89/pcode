@@ -78,7 +78,9 @@ Each mode asks the provider for the text that suits it:
 - **Other `anthropic:` models**: summaries. Models older than Opus and Sonnet 5
   only think when asked, so `scrollback` turns their thinking on (more latency
   and tokens) and `status-line` leaves them alone.
-- **`claude:`**: always summaries. Its CLI can't ask for progress updates.
+- **`claude:`**: always summaries. Under its CLI the model writes progress notes
+  as ordinary text, which already streams as part of the answer, so summaries
+  are what give the row something to show.
 - **`openai:` and `openai-responses:`**: each model's most detailed summary, in
   either mode. An API organisation that isn't verified is refused summaries;
   switch to `off` if that happens.

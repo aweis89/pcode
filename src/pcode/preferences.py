@@ -841,6 +841,14 @@ def thinking_settings(model: str, resolved, mode: str) -> dict:
     each model's most detailed summarizer. `claude:` always gets summaries
     and `openai-codex:` detailed ones, whatever the mode (see
     `claude_sdk.SessionConfig` and `cache_settings`).
+
+    `claude:` is left on summaries on purpose. Its CLI rejects
+    `--thinking-display updates`, and sends `updates` itself only on some
+    logins (not a subscription's). `CLAUDE_CODE_EXTRA_BODY` plus
+    `ANTHROPIC_BETAS` can force it, and the server accepts that, but under
+    the CLI's harness Opus 5.5 writes its progress notes as ordinary text:
+    forcing `updates` only hid the reasoning, and left the row empty
+    (checked live, CLI 2.1.283).
     """
     if mode not in ("status-line", "scrollback"):
         return {}
