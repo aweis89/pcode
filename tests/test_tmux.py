@@ -412,6 +412,15 @@ def test_draft_and_cursor_survive_stream_completion_and_width_resize(pane, relea
 
 
 @pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
+def test_shell_draft_swaps_prompt_marker(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "!ls")
+    assert "❯ !ls" not in capture(pane, "$ !ls")
+    pane("send-keys", "-t", "preview:0.0", "C-a", "Delete")
+    capture(pane, "❯ ls")
+
+
+@pytest.mark.parametrize("pane", [LIVE_SCRIPT], indirect=True)
 def test_immediate_cancellation_unlocks_editor(pane):
     capture(pane, "❯")
     # Deliver submission and cancellation together, before the model task can start.
