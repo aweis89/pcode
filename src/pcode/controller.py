@@ -1352,13 +1352,13 @@ class SessionController:
 
     def start_mcp_enable_all(self) -> None:
         """Enable every configured server not already on (`all` wins over a server so named)."""
-        from pcode.mcp import config_path, configured_servers
+        from pcode.mcp import configured_servers
 
         names = [
             name for name in sorted(configured_servers()) if name not in self.runtime.mcp.enabled
         ]
         if not names:
-            self.view.note(f"Every MCP server in {config_path()} is already enabled.")
+            self.view.note("Every configured MCP server is already enabled.")
             return
         self.view.note(
             f"Enabling MCP {', '.join(names)}. OAuth sign-in happens now if needed; "
