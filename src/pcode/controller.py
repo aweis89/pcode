@@ -1197,9 +1197,16 @@ class SessionController:
         failure = None
         cancelled = False
         source = runtime.stream(None if resend else text)
+        # A turn creates the session's journal on first use. Attached terminals
+        # read it from disk (/tools, /diffs), so they need its path mid-turn,
+        # not only once the turn ends.
+        journaled = getattr(runtime, "session", None) is not None
         try:
             async with aclosing(source) as stream:
                 async for event in stream:
+                    if not journaled and getattr(runtime, "session", None) is not None:
+                        journaled = True
+                        self.view.session_changed()
                     self.view.turn_event(event)
                     if (job_id := delivered_job(event)) is not None:
                         self.report_delivered_job(job_id)

@@ -141,8 +141,13 @@ class HostedSession:
             self.jobs = JobsView(Path(home))
 
     def refresh(self) -> None:
+        from pcode.sessions import SessionError
+
         if self.session is not None:
-            self.session.refresh()
+            try:
+                self.session.refresh()
+            except (OSError, SessionError, ValueError):
+                pass  # Keep what was read; the next refresh catches up.
 
     def stop(self, *, keep_worktree: bool = False) -> None:
         self.controller.peer.notify("stop", keep_worktree)

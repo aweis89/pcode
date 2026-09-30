@@ -841,6 +841,11 @@ class PreviewApp:
 
         failed = self.inspector_requested == "failed"
         self.inspector_requested = None
+        if self.hosted:
+            # A host's journal is only re-read when a turn ends, so mid-turn the
+            # tree would still end at the previous turn, and the branch filter
+            # below would drop every call the running turn has made.
+            self.runtime.refresh()
         saved = getattr(self.runtime, "session", None)
         if saved is not None or hasattr(self.runtime, "inspections"):
             # The browser owns a snapshot, never the archive streaming mutates.
@@ -850,8 +855,7 @@ class PreviewApp:
             archive = deepcopy(getattr(self.runtime, "inspections", None) or ToolArchive())
             if saved is not None:
                 await asyncio.to_thread(archive.update, saved.directory / "transcript.jsonl")
-            if self.hosted:
-                self.add_running_tools(archive)
+            self.add_running_tools(archive)
         else:
             archive = ToolArchive()
             for call in self.activity.tools.calls:
@@ -875,7 +879,11 @@ class PreviewApp:
             await inspector.run()
 
     def add_running_tools(self, archive) -> None:
-        """A host's journal says what finished; this terminal's panel, what runs now."""
+        """The journal says what finished; the tools panel, what still runs.
+
+        A journal read mid-turn cannot tell a running call from an abandoned one,
+        so it marks both `unknown`.
+        """
         running = [call.event for call in self.activity.tools.calls if call.settled is None]
         listed = {call.call_id: call for call in archive.calls}
         for event in running:
