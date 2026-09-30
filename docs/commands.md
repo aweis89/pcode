@@ -259,6 +259,7 @@ this phase has lasted.
 
 ```text
 ⠋ Thinking                                                    8s
+⠋ Thinking · …the status row is mostly empty while it thinks 3s
 ⠋ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
 ⠋ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
 ⠋ ◈ Compacting context ▸ keep tests                           4s

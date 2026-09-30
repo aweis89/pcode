@@ -131,10 +131,14 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
     if isinstance(event, ThinkingDelta):
         output.finish()
         output.thinking_delta(event.text)
+        activity.think(event.text)
     elif isinstance(event, Thinking):
         output.finish_thinking(event.text)
+        # Held on the row until the phase moves on; the next block replaces it.
+        activity.thinking_done = True
     elif isinstance(event, TextDelta):
         output.finish_thinking()
+        activity.thinking = ""
         output.delta(event.text)
         activity.status = "Responding…"
     elif isinstance(event, CacheBust):

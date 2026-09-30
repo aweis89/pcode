@@ -57,7 +57,9 @@ Limits:
 
 Press **Ctrl+T** or use `/show-thinking [on|off]` to show or hide the thinking
 text a provider exposes. When on, thinking streams into scrollback in a dim,
-muted style, distinct from the answer.
+muted style, distinct from the answer. Either way, the latest line of thinking
+shows faded on the status row while the model thinks, so you can follow along
+without keeping it in scrollback.
 
 ```sh
 pcode config set show_thinking on   # Default is off

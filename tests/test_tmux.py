@@ -252,6 +252,11 @@ def scrollback(pane):
 SPINNER_ROW = BUSY_FRAMES
 
 
+def without_status_row(text):
+    """A capture minus the status row, which echoes the latest line of thinking."""
+    return "\n".join(line for line in text.splitlines() if not line.startswith(SPINNER_ROW))
+
+
 def input_rows(screen):
     lines = screen.splitlines()
     assert any(mode in lines[-1] for mode in SEND_MODES), screen
@@ -1285,9 +1290,12 @@ def test_thinking_toggle_redraws_scrollback_without_growing_prompt(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "❯", running=True)
-    assert "SAVED_REASONING_TEXT" not in screen
+    assert "SAVED_REASONING_TEXT" not in without_status_row(screen)
     pane("send-keys", "-t", "preview:0.0", "C-t")
-    screen = capture(pane, "SAVED_REASONING_TEXT", running=True)
+    screen = settle(
+        pane, lambda screen: "SAVED_REASONING_TEXT" in without_status_row(screen), running=True
+    )
+    assert "SAVED_REASONING_TEXT" in without_status_row(screen)
     assert input_rows(screen) == 1
     capture(pane, "Public answer while thinking is visible", running=True)
     for width, height in ((80, 24), (120, 40)):

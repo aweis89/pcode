@@ -241,6 +241,51 @@ def test_phase_clock_restarts_when_the_phase_changes(monkeypatch):
     assert clock() == "0s"
 
 
+def test_thinking_row_shows_the_latest_thought_faded_whatever_scrollback_shows():
+    from rich.cells import cell_len
+
+    from pcode.runtime import TextDelta, Thinking, ThinkingDelta
+    from pcode.stream_display import present_stream_event
+    from pcode.ui import Activity
+
+    class Output:
+        """Accepts every output call; `app.invalidate()` included."""
+
+        def __getattr__(self, name):
+            return self if name == "app" else lambda *args: None
+
+    activity = Activity(prompt_state="running", status="Thinking…", show_thinking=False)
+
+    def feed(event):
+        present_stream_event(
+            event, output=Output(), transcript=None, activity=activity, present=None
+        )
+
+    def thought(width=80):
+        return styled(activity.status_fragments("⠋", width)).get("activity.thinking")
+
+    assert thought() is None
+    feed(ThinkingDelta("**Reading the code**\n\nThe status row"))
+    feed(ThinkingDelta(" is empty\n\n"))
+    assert thought() == " · The status row is empty"
+    # A long line keeps its newest words, cut from the front.
+    feed(ThinkingDelta("so " + "word " * 40 + "newest"))
+    row = activity.status_fragments("⠋", 50)
+    assert cell_len("".join(text for _, text in row)) == 50
+    assert thought(50).startswith(" · …") and thought(50).endswith("newest")
+    # An ended block is held until the next one replaces it.
+    feed(Thinking("done"))
+    assert thought().endswith("newest")
+    feed(ThinkingDelta("Next idea"))
+    assert thought() == " · Next idea"
+    # Only the Thinking phase shows it; the answer clears it.
+    activity.status = "Responding…"
+    assert thought() is None
+    feed(TextDelta("Answer"))
+    activity.status = "Thinking…"
+    assert thought() is None
+
+
 @pytest.mark.parametrize("width", [0, 1, 2, 3, 12, 40, 100])
 def test_status_row_truncates_to_terminal_width(width):
     from rich.cells import cell_len

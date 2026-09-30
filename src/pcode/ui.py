@@ -149,6 +149,8 @@ class Palette:
                 "activity.phase": f"nodim {self.accent} bold",
                 "activity.detail": "nodim",
                 "activity.meta": self.muted,
+                # The model's streaming thought, faded behind the `Thinking` phase.
+                "activity.thinking": f"italic {self.muted}",
                 # System work is pcode's own: the badge and accent mark it, and
                 # its queued rows keep an italic detail.
                 "activity.system": self.accent,
@@ -329,6 +331,8 @@ PHASE_GAP_SECONDS = 1.0
 PHASE_WORDS = 3
 # Cells of detail worth more than the status row's tally and clock.
 DETAIL_MIN_CELLS = 16
+# Characters of streamed thinking kept for the status row: its latest line.
+THINKING_KEEP = 2000
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -374,6 +378,9 @@ class StatusLine:
     separator: str = "·"
     # A just-finished call held on the row: its detail is muted, not live.
     settled: bool = False
+    # The detail is the model's streaming thought: faded, and cut from the
+    # front so the newest words stay in view.
+    thought: bool = False
 
     def fragments(self, spinner: str, width: int) -> list[tuple[str, str]]:
         if width < 1:
@@ -383,7 +390,8 @@ class StatusLine:
             head.append(("class:activity.badge", f"{self.badge} "))
         head.append(("class:activity.phase", self.phase))
         needed = sum(cell_len(text) for _, text in head)
-        detail = f" {self.separator} {plain(self.detail, limit=None)}" if self.detail else ""
+        lead = f" {self.separator} "
+        detail = f"{lead}{plain(self.detail, limit=None)}" if self.detail else ""
         # The meta column gives way before the detail is cut to a stub.
         wanted = needed + min(cell_len(detail), DETAIL_MIN_CELLS)
         meta = [part for part in (self.tally, self._clock()) if part]
@@ -393,7 +401,13 @@ class StatusLine:
         room = width - (cell_len(suffix) + 2 if suffix else 0)
         # A detail with no room to say anything is dropped, not left as `·…`.
         if detail and room - needed >= DETAIL_MIN_CELLS // 2:
-            style = "class:activity.meta" if self.settled else "class:activity.detail"
+            if self.thought:
+                style = "class:activity.thinking"
+                detail = lead + tail_cells(detail[len(lead) :], room - needed - cell_len(lead))
+            elif self.settled:
+                style = "class:activity.meta"
+            else:
+                style = "class:activity.detail"
             head.append((style, detail))
         fitted = fit_fragments(head, room)
         if not suffix:
@@ -403,6 +417,31 @@ class StatusLine:
 
     def _clock(self) -> str:
         return "" if self.elapsed is None else clock(self.elapsed)
+
+
+def tail_cells(text: str, width: int) -> str:
+    """The last `width` cells of `text`, marking a cut with a leading ellipsis."""
+    if cell_len(text) <= width:
+        return text
+    if width < 1:
+        return ""
+    kept: list[str] = []
+    cells = 1  # The ellipsis.
+    for char in reversed(text):
+        cells += cell_len(char)
+        if cells > width:
+            break
+        kept.append(char)
+    return "…" + "".join(reversed(kept)).lstrip()
+
+
+def latest_thought(text: str) -> str:
+    """The last non-empty line of streamed thinking, without Markdown emphasis."""
+    for line in reversed(text.splitlines()):
+        line = line.strip().lstrip("#").replace("**", "").strip()
+        if line:
+            return line
+    return ""
 
 
 def fit_fragments(fragments: list[tuple[str, str]], width: int) -> list[tuple[str, str]]:
@@ -509,11 +548,23 @@ class Activity:
     # What this terminal is waiting on (the session host starting, a command
     # it has not finished): its own state, never synced from the host.
     waits: list[Wait] = field(default_factory=list)
+    # The tail of the thinking block streaming now, shown faded on the status
+    # row whether or not scrollback shows thinking. Derived from the events
+    # this terminal renders, never synced from the host.
+    thinking: str = ""
+    # The last thinking block ended; the next delta starts a new one.
+    thinking_done: bool = False
     # The status row's phase clock: (phase, since, last drawn). Drawing state,
     # so it is never compared, copied into a repr, or synced from the host.
     _phase: tuple[str, float, float] = field(
         default=("", 0.0, 0.0), init=False, repr=False, compare=False
     )
+
+    def think(self, text: str) -> None:
+        """Add streamed thinking, keeping only enough to show its latest line."""
+        if self.thinking_done:
+            self.thinking, self.thinking_done = "", False
+        self.thinking = (self.thinking + text)[-THINKING_KEEP:]
 
     def begin_wait(self, label: str) -> Wait:
         """Start a wait that shows a spinner row once it outlasts the grace period."""
@@ -624,6 +675,7 @@ class Activity:
         self.prompt_kind = "user"
         self.prompt_detail = ""
         self.status = ""
+        self.thinking = ""
         self.tasks_autohidden = False
 
     def height_cap(self, rows: int) -> int | None:
@@ -653,6 +705,7 @@ class Activity:
     def start_prompt(self, text: str, *, kind: str = "user", detail: str = "") -> None:
         """Show a running row, tagged so system work never looks like typed input."""
         self.tasks_autohidden = False
+        self.thinking = ""
         self.prompt = text
         self.prompt_kind = kind
         self.prompt_detail = detail
@@ -726,7 +779,9 @@ class Activity:
             # Written for a call that has since finished; the model has the turn.
             phase, detail = "Waiting for model", ""
         line = StatusLine(phase, detail, tally=tally, elapsed=self._phase_seconds(phase))
-        if call is not None:
+        if phase == "Thinking" and not detail and (thought := latest_thought(self.thinking)):
+            line.detail, line.thought = thought, True
+        elif call is not None:
             # Just finished: held briefly and marked done, so a burst of fast
             # calls reads as progress rather than strobing.
             line.detail = f"{'✗' if call.failed else '✓'} {call.line(timed=False)}"
