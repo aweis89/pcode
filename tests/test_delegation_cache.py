@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx2
 import pytest
 from anthropic import AsyncAnthropic
+from anthropic_mock import assert_instructions_breakpoint
 from pydantic_ai import Agent
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
@@ -131,8 +132,7 @@ def test_delegated_anthropic_requests_carry_cache_control(tmp_path):
     for body in bodies:
         assert body["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
         assert body["tools"][-1]["cache_control"]
-        # Workspace-derived instructions follow the static breakpoint.
-        assert any(block.get("cache_control") for block in body["system"])
+        assert_instructions_breakpoint(body["system"])
 
 
 @pytest.mark.parametrize(

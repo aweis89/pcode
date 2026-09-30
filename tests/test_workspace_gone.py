@@ -184,3 +184,52 @@ def test_the_guard_reaches_a_delegated_worker(tmp_path, monkeypatch):
     assert any(
         isinstance(capability, WorkspaceGuard) for capability in worker.root_capability.capabilities
     )
+
+
+def test_a_session_continues_in_another_directory(tmp_path, monkeypatch):
+    """Pydantic AI records each run's workspace; pcode moves sessions on purpose.
+
+    A removed worktree's session continues in the mainline, and `-C DIR
+    --continue` picks another checkout. The recorded workspace must not block
+    either: the new run works in its own directory.
+    """
+    import asyncio
+
+    from pcode.live import AgentRuntime
+    from pcode.runtime import Message
+
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    first, second = tmp_path / "worktree", tmp_path / "mainline"
+    first.mkdir()
+    second.mkdir()
+    (second / "here.txt").write_text("mainline marker")
+    sessions = tmp_path / "sessions"
+    turns = 0
+
+    async def respond(messages, info):
+        nonlocal turns
+        turns += 1
+        if turns == 2:
+            yield {0: DeltaToolCall(name="read_file", json_args='{"path": "here.txt"}')}
+        else:
+            yield f"answer {turns}"
+
+    model = FunctionModel(stream_function=respond)
+
+    async def run():
+        saved = SavedSession.create("test:local", first, sessions)
+        runtime = AgentRuntime(create_agent("test", first), saved)
+        runtime.agent.model = model
+        assert Message("answer 1") in [e async for e in runtime.stream("first")]
+        runtime.close()
+        reopened = SavedSession.open(saved.info.id, sessions)
+        moved = AgentRuntime(create_agent("test", second), reopened)
+        moved.agent.model = model
+        await moved.restore()
+        assert moved.history, "the recorded turn is what carries the old workspace"
+        try:
+            assert Message("answer 3") in [e async for e in moved.stream("second")]
+        finally:
+            moved.close()
+
+    asyncio.run(run())

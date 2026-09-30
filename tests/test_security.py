@@ -257,3 +257,24 @@ def test_shell_commands_run_inside_the_sandbox(repo, tmp_path, monkeypatch):
     assert (repo / "inside.txt").read_text() == "in\n"
     assert not (outside / "x").exists()
     assert "Operation not permitted" in results[0] and "refused" in results[0]
+
+
+def test_file_tools_are_checked_where_the_tool_resolves_them(repo, monkeypatch):
+    """`link/..` collapses as text before the link is followed, as Harness does it.
+
+    Following `link` first would check a path deep inside the workspace while the
+    tool writes beside it, outside every writable root.
+    """
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    deep = repo / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    (repo / "link").symlink_to(deep, target_is_directory=True)
+    escaped = repo.parent / "escaped.txt"
+    api = load(repo, monkeypatch)
+    results = run(
+        repo,
+        api.capabilities(),
+        [("write_file", {"path": "link/../../escaped.txt", "content": "no"})],
+    )
+    assert not escaped.exists()
+    assert "outside the writable paths" in results[0]

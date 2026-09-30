@@ -52,7 +52,7 @@ def setup(pcode) -> None:
         if name not in WRITE_TOOLS and name not in READ_TOOLS:
             return args
         raw = str(args.get("path") or ".")
-        target = sandbox.real(raw, workspace)
+        target = sandbox.tool_target(raw, workspace)
         current = enforced(policy)
         if name in WRITE_TOOLS and not current.can_write(target):
             pcode.ui.notify(f"Blocked write to {target}", "warning")

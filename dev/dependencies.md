@@ -107,7 +107,11 @@ a `path` relative to `root_dir`, which is `/`.
 The opt-in `security` extension (`src/pcode/extensions/security.py`, policy in
 `src/pcode/sandbox.py`) puts write roots back in as a `before_tool_execute` hook
 rather than in `_resolve_path`. It resolves `path` the way the tools do
-(workspace base, realpath), so keep the two in step if resolution changes. Code
+(`sandbox.tool_target`: join onto the workspace and normalize as text, so
+`link/..` collapses before any symlink is followed and `~` stays literal, then
+realpath), so keep the two in step if resolution changes. Following `link`
+before `..`, as `sandbox.real` does, checks a different file than the tool
+writes. Code
 mode's nested reads go through the same hook. The shell half sets
 `jobs.COMMAND_SANDBOX` around each `shell` call, and `JobRegistry.launch` runs the
 job *supervisor* under that argv prefix (`sandbox-exec -p <profile>` or `bwrap`).
@@ -923,6 +927,17 @@ isolated delegation hands its child run a context with the task worktree's own
 workspace. Coder's own `SubAgents` is off (`sub_agents=False`); pcode's
 `WorkspaceSubAgents` provides `delegate_task`.
 
+Pydantic AI records the run's workspace as `workspace_ref` on each response
+and refuses to continue history recorded in another directory. pcode moves
+sessions on purpose (a removed worktree's session continues in the mainline,
+`-C DIR --continue`), so `live.py` names the workspace on each run
+(`workspace=LocalWorkspaceBackend(dir)`), which takes precedence over the ref
+in history. Two things that look simpler don't work: clearing the refs from
+history changes the messages, which breaks the byte-identical request prefix
+side questions and thread merges rely on; and a `LocalWorkspace` subclass that
+ignores the ref fails the run's check that the capability returned the
+workspace it was asked for.
+
 A `LocalWorkspace` passes commands only `PATH`, `HOME` and locale variables.
 pcode's commands don't go through it: `JobShell` runs them through `pcode.jobs`
 with the whole host environment (direnv tokens included) from its own
@@ -936,6 +951,16 @@ any depth. `DisplayFileSystemToolset` takes the before snapshot for edit
 previews in `_request`, which Harness calls under its per-file lock just before
 writing, and reads through the real path so an alias to a sensitive file is
 hidden like the file.
+
+The port leans on private upstream names, which the `<0.53` pin keeps stable
+but an upgrade must recheck: `FileSystemToolset._request`, `_write_file`,
+`_edit_file`, `_apply_replacements`, `_is_binary`; `repo_context._inventory.scan_assets`
+and `_loader.discover_instruction_files`; `RepoContext._working_dir`,
+`_render_instructions`, `_context_files`; `ShellToolset._resolve_env`; and
+`pydantic_ai._utils.PeekableAsyncStream` in `claude_sdk.py`. With `root_dir='/'`,
+`allowed_patterns`/`denied_patterns` match paths relative to `/` (no leading
+slash); nothing in pcode sets them, but a workspace-relative pattern would need
+a `**/` prefix.
 
 Coder selects `Shell(tools=['shell'], default_timeout=270)`. Pcode replaces that
 capability with `pcode.shell_tools.JobShell`, which keeps upstream's command

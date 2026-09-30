@@ -19,6 +19,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import posixpath
 import re
 import shutil
 import sys
@@ -97,6 +98,18 @@ def real(path: str | Path, base: Path | None = None) -> Path:
     if not candidate.is_absolute() and base is not None:
         candidate = base / candidate
     return Path(os.path.realpath(candidate))
+
+
+def tool_target(path: str, workspace: Path) -> Path:
+    """Where a file tool's `path` leads, resolved the way Harness's file tools do.
+
+    Harness joins and normalizes as text first (`Workspace.resolve`: `link/..`
+    collapses before any symlink is followed, and `~` is not expanded), then
+    follows symlinks. `real` follows `link` before applying `..`, which can name
+    a different file than the tool touches.
+    """
+    joined = posixpath.normpath(posixpath.join(str(workspace), path))
+    return Path(os.path.realpath(joined))
 
 
 def within(path: Path, root: Path) -> bool:
