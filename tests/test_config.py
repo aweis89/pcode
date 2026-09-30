@@ -58,6 +58,7 @@ def test_defaults_and_path_do_not_create_files():
         "cache_notices": "on",
         "debug": "off",
         "profile": "off",
+        "stall_log": "on",
         "show_thinking": "off",
         "show_tasks": "on",
         "autohide_tasks": "off",
