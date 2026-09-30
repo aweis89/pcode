@@ -181,9 +181,9 @@ vi insert mode. With nothing typed it runs `/copy` instead, to copy the last
 response or a quote from it. Copying uses a local helper (`pbcopy`, `wl-copy`,
 `xclip`) or OSC 52 over ssh, like the popups, and truncates at 64 KiB.
 
-Delegated sub-agents are listed in the widget beneath your active task. A
-finished delegate stays, reading `Done` (or `Failed`), along with its own task
-list, until you move to another task or the next turn starts.
+Delegated sub-agents are listed in the widget beneath your active task while
+they run. A finished one leaves the widget; its outcome shows briefly on the
+status row and stays in the transcript.
 
 `/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
 as soon as the model finishes a turn, keeping the idle prompt compact; it
@@ -307,14 +307,13 @@ A running `delegate_task` has its own row, starting with `✦` instead of a stat
 icon and drawn in its own color, so it never reads as one of your tasks. It
 shows the agent, elapsed time, phase, and the purpose the model gave (or the
 start of its assignment). The phase is `Waiting for model`, `Thinking`,
-`Working` (one of its tools is running), or `Responding` while it runs, then
-`Done` or `Failed`.
+`Working` (one of its tools is running), or `Responding`. The status row reads
+`Done` or `Failed` for a moment once it finishes.
 
 A sub-agent that plans shows up to three of its tasks beneath it, centered on
 its active task, with its running tool calls nested the same way. Its plan is
-separate from yours: never saved and never merged into your plan. A finished
-delegate stays listed with its plan until your active task changes or the next
-turn starts. The built-in worker always plans; an extension's delegate can opt
+separate from yours: never saved and never merged into your plan, and it leaves
+with the delegate. The built-in worker always plans; an extension's delegate can opt
 in (see "Sub-agents" in pcode's extension guide).
 
 ```text

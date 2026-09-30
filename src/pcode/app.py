@@ -531,7 +531,6 @@ class PreviewApp:
             self.output.app.invalidate()
 
     def turn_started(self, text: str, *, echo: bool) -> None:
-        # The last turn's finished delegates stay listed only until this one.
         self.activity.tools.clear()
         self.activity.cache_note = ""
         if echo:
@@ -571,7 +570,8 @@ class PreviewApp:
         self.activity.plan_preview = None
         self.transcript.settle_tools()
         self.output.end_turn()
-        self.activity.tools.end_turn()
+        # Drop whatever the turn left running.
+        self.activity.tools.clear()
         self.activity.workers.end_turn()
 
     def finish_text(self) -> None:

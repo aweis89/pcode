@@ -65,11 +65,6 @@ class ToolCall:
     failed: bool = False
 
     @property
-    def finished_delegate(self) -> bool:
-        """A settled delegate stays listed, with its plan, like a completed task."""
-        return self.event.name == DELEGATE and self.settled is not None
-
-    @property
     def elapsed(self) -> float:
         """Seconds so far; a settled call keeps the duration it finished with."""
         return (self.settled if self.settled is not None else monotonic()) - self.started
@@ -128,15 +123,14 @@ class ToolCall:
 class ToolHistory:
     """Calls still in flight, oldest first. A result removes its call.
 
-    Delegates are the exception: a finished one stays, with its plan, until
-    the parent moves to another task or the next turn starts, the way the
-    parent's completed tasks stay listed.
+    A delegate leaves the same way, taking its plan and its own calls with it:
+    the status row holds its outcome briefly and scrollback keeps it.
     """
 
     calls: list[ToolCall] = field(default_factory=list)
     # The last call to leave, kept only so the status row can hold it.
     recent: ToolCall | None = None
-    # Each delegate's plan, keyed by its call id; it leaves with the delegate.
+    # Each running delegate's plan, keyed by its call id.
     plans: dict[str, list[dict]] = field(default_factory=dict)
 
     def record_plan(self, call_id: str, items: list[dict]) -> None:
@@ -157,16 +151,14 @@ class ToolHistory:
             existing.failed = event.failed
             existing.settled = monotonic()
             self.recent = existing
-            if existing.event.name == DELEGATE:
-                # Its own calls are done; the delegate and its plan stay listed.
-                self.calls = [
-                    c for c in self.calls if c.event.parent_call_id != existing.event.call_id
-                ]
-            else:
-                # A sub-agent's calls leave the way the parent's do: scrollback
-                # keeps them under their delegate. Held here instead, a row
-                # would appear only once its call had finished, then vanish.
-                self.calls.remove(existing)
+            # A sub-agent's calls leave the way the parent's do: scrollback
+            # keeps them under their delegate. A finished delegate takes any
+            # still listed, and its plan, with it.
+            call_id = existing.event.call_id
+            self.calls = [
+                c for c in self.calls if c is not existing and c.event.parent_call_id != call_id
+            ]
+            self.plans.pop(call_id, None)
         elif existing is not None:
             # A restated start carries fresh progress, not a new invocation.
             existing.event = event
@@ -178,29 +170,10 @@ class ToolHistory:
         self.plans.clear()
         self.recent = None
 
-    def end_turn(self) -> None:
-        """Drop whatever the turn left running; finished delegates stay listed."""
-        self._keep(lambda c: c.finished_delegate)
-        self.recent = None
-
-    def retire_finished(self) -> None:
-        """The parent moved to another task, so finished delegates leave.
-
-        Every row hangs under the task active now, so a delegate that finished
-        under an earlier one would otherwise read as part of the new one.
-        """
-        self._keep(lambda c: not c.finished_delegate)
-
-    def _keep(self, keep) -> None:
-        """Keep only the calls `keep` accepts, and the plans of those still here."""
-        self.calls = [c for c in self.calls if keep(c)]
-        kept = {c.event.call_id for c in self.calls}
-        self.plans = {k: v for k, v in self.plans.items() if k in kept}
-
     @property
     def animating(self) -> bool:
-        """Something on the panel still ticks; a finished delegate's row is frozen."""
-        return any(not c.finished_delegate for c in self.calls)
+        """Every call on the panel is live, so any of them keeps its clock ticking."""
+        return bool(self.calls)
 
     @property
     def active(self) -> ToolCall | None:
@@ -236,25 +209,16 @@ class ToolHistory:
     def _delegates(self) -> list[ToolCall]:
         """Delegates that get a panel row.
 
-        Finished ones, plus running ones beside the status row, plus any with
-        a plan even while it holds the status row: otherwise its tasks would
-        vanish every time the sub-agent went back to the model and the
-        delegate took the row back.
+        Those beside the status row, plus any with a plan even while it holds
+        the status row: otherwise its tasks would vanish every time the
+        sub-agent went back to the model and the delegate took the row back.
         """
         active = self.active
         return [
             c
             for c in self.calls
-            if c.event.name == DELEGATE
-            and (c.settled is not None or c is not active or self.plans.get(c.event.call_id))
+            if c.event.name == DELEGATE and (c is not active or self.plans.get(c.event.call_id))
         ]
-
-    def _shown_delegates(self, count: int) -> list[ToolCall]:
-        """At most `count` delegates in start order, dropping the oldest finished first."""
-        delegates = self._delegates()
-        finished = [c for c in delegates if c.settled is not None]
-        surplus = set(map(id, finished[: max(0, len(delegates) - count)]))
-        return [c for c in delegates if id(c) not in surplus][:count]
 
     def plan_rows(self) -> int:
         """Rows the running delegates' plans would fill, before any budget."""
@@ -281,7 +245,7 @@ class ToolHistory:
         if count <= 0:
             return []
         calls = self.background
-        delegates = self._shown_delegates(count)
+        delegates = self._delegates()[:count]
         remaining = count - len(delegates)
         nodes = []
         for parent in delegates:
@@ -308,21 +272,15 @@ class ToolHistory:
 
 
 def _call_row(call: ToolCall) -> tuple[str, str]:
-    """A running call's row, or a delegate's in either state.
+    """A running call's row.
 
     A delegate's `✦` stands in for the status icon, and it has a colour of
-    its own while it runs: with a task's icon in front, a sub-agent would read
-    as one of the parent's tasks, and as a child of whichever task names it.
-    Nothing else settles here, since a finished call leaves the panel.
+    its own: with a task's icon in front, a sub-agent would read as one of
+    the parent's tasks, and as a child of whichever task names it.
     """
     if call.event.name == DELEGATE:
-        return ("class:plan" if call.settled is not None else "class:plan.agent"), call.line()
+        return "class:plan.agent", call.line()
     return "class:plan.active", f"⟳ {call.line()}"
-
-
-def active_step(items: list[dict]) -> str | None:
-    """The id of the task in progress, or None between tasks."""
-    return next((item.get("id") for item in items if item.get("status") == "in_progress"), None)
 
 
 def plan_window(items: list[dict], count: int) -> tuple[range, int | None]:
