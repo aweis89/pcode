@@ -205,8 +205,10 @@ class JobRegistry:
             directory = home / f"j{self._counter}"
             directory.mkdir(parents=True, exist_ok=True)
         try:
+            sandbox = COMMAND_SANDBOX.get()
+            prefix = [] if sandbox is None else sandbox(directory)
             process = subprocess.Popen(
-                [sys.executable, str(_SUPERVISOR), str(directory), command],
+                [*prefix, sys.executable, str(_SUPERVISOR), str(directory), command],
                 cwd=cwd,
                 env=None if env is None else dict(env),
                 stdin=subprocess.DEVNULL,
@@ -541,6 +543,14 @@ def _remove_if_empty(directory: Path) -> None:
     except OSError:
         pass
 
+
+# Set around one tool call by a sandboxing extension (the bundled `security`):
+# given a job's directory, the argv that runs its supervisor inside a sandbox.
+# Wrapping the supervisor rather than the command keeps the command text the
+# user and model see unchanged, and a stop still signals the whole group.
+COMMAND_SANDBOX: ContextVar[Callable[[Path], list[str]] | None] = ContextVar(
+    "command_sandbox", default=None
+)
 
 _REGISTRY = JobRegistry(state=jobs_root)
 _WORKER_REGISTRY: ContextVar[JobRegistry | None] = ContextVar("worker_job_registry", default=None)

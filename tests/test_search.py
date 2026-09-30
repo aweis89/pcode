@@ -64,6 +64,7 @@ def test_bundled_extension_is_discovered_last_and_shadowed_by_user_files(tmp_pat
     assert load_extensions(tmp_path).report(tmp_path) == [
         "browser (bundled): /browser",
         "ponytail (bundled): off by default (/extensions on ponytail)",
+        "security (bundled): off by default (/extensions on security)",
         "session_history (bundled): 2 tools",
         "web_research (bundled): 2 tools",
     ]
