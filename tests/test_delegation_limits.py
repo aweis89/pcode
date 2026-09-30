@@ -55,10 +55,11 @@ def test_child_runs_past_the_parents_near_exhausted_request_budget(tmp_path):
     # The parent starts 50 requests in, which is the library's default cap. The
     # child is unaffected and uncapped: it runs to its own stopping point.
     assert child_requests == LONG_CHILD_REQUESTS
-    # Its own budget keeps those requests off the parent's ledger, so a long
-    # delegation cannot exhaust the turn. Tokens still aggregate (see
+    # The child counts against its own budget while it runs; Harness adds its
+    # requests to the parent's ledger once it ends. pcode's turns set no request
+    # cap, so that total cannot end the turn. Tokens aggregate the same way (see
     # tests/test_delegation_cache.py).
-    assert result.usage.requests == 52
+    assert result.usage.requests == 52 + LONG_CHILD_REQUESTS
     assert usage.input_tokens == result.usage.input_tokens
 
 

@@ -39,10 +39,18 @@ def require_workspace(workspace: Path) -> None:
 
 
 class WorkspaceGuard(AbstractCapability):
-    """Check the workspace still exists before each tool call."""
+    """Check the workspace still exists before a run and before each tool call.
+
+    The run-start check comes first in the capability list, so it names the
+    missing directory before Harness's own capabilities fail on it with a
+    generic `WorkspaceUnavailableError`.
+    """
 
     def __init__(self, workspace: Path) -> None:
         self.workspace = Path(workspace)
+
+    async def before_run(self, ctx) -> None:
+        require_workspace(self.workspace)
 
     async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
         require_workspace(self.workspace)

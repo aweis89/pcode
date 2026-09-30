@@ -1,5 +1,6 @@
 import asyncio
 import os
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -8,7 +9,7 @@ import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import CombinedCapability
+from pydantic_ai.capabilities import CombinedCapability, LocalWorkspace
 from pydantic_ai.messages import RetryPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness import Coder
@@ -61,7 +62,9 @@ def test_stream_runs_real_coder_read_tool_and_retains_history(tmp_path):
             yield "I remember the previous answer."
 
     runtime = AgentRuntime(
-        Agent(FunctionModel(stream_function=model), capabilities=[Coder(tmp_path)])
+        Agent(
+            FunctionModel(stream_function=model), capabilities=[LocalWorkspace(tmp_path), Coder()]
+        )
     )
 
     async def run():
@@ -115,13 +118,15 @@ def test_coder_file_paths_are_unconfined_but_workspace_relative(tmp_path, outsid
         "symlink": "link.txt",
     }[outside_path]
     coder = create_coder(workspace)
-    assert next(c for c in coder.capabilities if isinstance(c, Shell)).cwd == workspace
+    assert next(c for c in coder.capabilities if isinstance(c, Shell)).workdir == workspace
+    local = next(c for c in coder.capabilities if isinstance(c, LocalWorkspace))
+    assert Path(local.working_dir) == workspace
     context = next(c for c in coder.capabilities if isinstance(c, RepoContext))
-    assert context.workspace_dir == workspace
+    assert context.root == workspace
     filesystem = next(c for c in coder.capabilities if isinstance(c, FileSystem))
     # The workspace remains the base, not an access boundary.
-    assert Path(filesystem.root_dir) == workspace
-    assert filesystem.protected_patterns
+    assert filesystem.root_dir == "/"
+    assert all(pattern.startswith("**/") for pattern in filesystem.read_only_patterns)
     requests = 0
 
     async def model(messages, info):
@@ -172,18 +177,15 @@ def test_coder_allows_all_commands_by_default(tmp_path):
         "stop_job",
         "list_jobs",
     ]
-    assert shell.denied_env_patterns == LLM_API_KEY_ENV_PATTERNS
+    # Commands get the whole host environment, minus provider credentials.
+    assert list(shell.denied_env_patterns) == list(LLM_API_KEY_ENV_PATTERNS)
     # direnv's banner would otherwise corrupt piped command output.
     assert shell.env["DIRENV_LOG_FORMAT"] == ""
     assert shell.env["PATH"] == os.environ["PATH"]
-
-    async def run():
-        # Previously excluded executables, without inspecting real environment values.
-        toolset = shell.get_toolset()
-        assert "allowed" in await toolset.run_command("printf allowed")
-        assert "allowed" in await toolset.run_command("python3 -c 'print(\"allowed\")'")
-
-    asyncio.run(run())
+    env = {**shell.env, "ANTHROPIC_API_KEY": "synthetic", "KEEP_ME": "1"}
+    resolved = replace(shell, env=env).get_toolset()._resolve_env()
+    assert "ANTHROPIC_API_KEY" not in resolved
+    assert resolved["KEEP_ME"] == "1"
 
 
 def test_a_run_writes_into_the_turn_context_it_was_given():

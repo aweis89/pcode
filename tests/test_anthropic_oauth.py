@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx2
 import pytest
+from anthropic_mock import anthropic_response
 from pydantic_ai import Agent
 from rich.console import Console
 
@@ -432,7 +433,7 @@ def test_requests_carry_bearer_auth_and_claude_code_wire_markers(store, monkeypa
         # A 401 makes the SDK invalidate its token cache and retry once.
         if len(requests) == 1:
             return httpx2.Response(401, json={"error": {"message": "expired"}})
-        return httpx2.Response(200, json=MESSAGE)
+        return anthropic_response(request, MESSAGE)
 
     exchanges = []
     transport = token_endpoint(
@@ -482,7 +483,7 @@ def test_subscription_requests_send_the_2025_web_tool_versions(store):
 
     def handle(request):
         requests.append(json.loads(request.content))
-        return httpx2.Response(200, json=MESSAGE)
+        return anthropic_response(request, MESSAGE)
 
     async def run():
         async with httpx2.AsyncClient(transport=httpx2.MockTransport(handle)) as client:

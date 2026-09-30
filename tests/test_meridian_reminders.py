@@ -6,6 +6,7 @@ import json
 import httpx2
 import pytest
 from anthropic import AsyncAnthropic
+from anthropic_mock import anthropic_response
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.models.anthropic import AnthropicModel
@@ -35,9 +36,9 @@ def test_wire_prefix_tools_plan_changes_and_saved_resume(plan, warning, provider
                 if n < 4
                 else [{"type": "text", "text": "done"}]
             )
-            return httpx2.Response(
-                200,
-                json={
+            return anthropic_response(
+                request,
+                {
                     "id": f"msg_{n}",
                     "type": "message",
                     "role": "assistant",

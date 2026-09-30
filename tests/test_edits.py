@@ -3,6 +3,7 @@ from io import StringIO
 
 import pytest
 from pydantic_ai import ModelRetry
+from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 from rich.console import Console
 
 from pcode.edits import MAX_SOURCE, completed_change
@@ -12,10 +13,15 @@ from pcode.ui import Transcript
 
 
 class Context:
-    tool_call_id = "edit-1"
+    """The parts of a run context the file tools use, on a local workspace."""
 
-    def __init__(self):
+    tool_call_id = "edit-1"
+    tool_name = None
+    tool_manager = None
+
+    def __init__(self, root):
         self.events = []
+        self.workspace = Workspace(LocalWorkspaceBackend(root))
 
     async def emit(self, event):
         self.events.append(event)
@@ -27,9 +33,9 @@ class Context:
 
 def test_mutations_capture_actual_contents_and_failed_edits_emit_nothing(tmp_path):
     async def exercise():
-        toolset = DisplayFileSystem(root_dir=tmp_path).get_toolset()
-        ctx = Context()
-        await toolset._write_file(ctx, "example.py", "context\r\nold\r\n")
+        toolset = DisplayFileSystem().get_toolset()
+        ctx = Context(tmp_path)
+        await toolset._write_file_tool(ctx, "example.py", "context\r\nold\r\n")
         created = ctx.changes[-1]
         assert created.operation == "created" and created.added == 2
         assert "--- /dev/null" in created.patch
@@ -39,7 +45,7 @@ def test_mutations_capture_actual_contents_and_failed_edits_emit_nothing(tmp_pat
         assert "-old" in changed.patch and "+new" in changed.patch
         assert (changed.added, changed.removed) == (1, 1)
         assert (tmp_path / "example.py").read_bytes() == b"context\r\nnew\r\n"
-        await toolset._write_file(ctx, "example.py", "overwrite\n")
+        await toolset._write_file_tool(ctx, "example.py", "overwrite\n")
         assert "-new" in ctx.changes[-1].patch
         await toolset._edit_file_tool(ctx, "example.py", "overwrite", "overwrite")
         assert ctx.changes[-1].operation == "unchanged"
@@ -48,7 +54,7 @@ def test_mutations_capture_actual_contents_and_failed_edits_emit_nothing(tmp_pat
             with pytest.raises(ModelRetry):
                 await toolset._edit_file_tool(ctx, "example.py", *args[:2], expected_hash=args[2])
         with pytest.raises(ModelRetry):
-            await toolset._write_file(ctx, "example.py", "bad", expected_hash="stale")
+            await toolset._write_file_tool(ctx, "example.py", "bad", expected_hash="stale")
         assert len(ctx.changes) == count
         assert (tmp_path / "example.py").read_text() == "overwrite\n"
 
@@ -86,7 +92,7 @@ def test_completed_diffs_retained_while_hidden_and_reprojected():
 
 
 def test_read_only_adapter_never_exposes_writes(tmp_path):
-    original = DisplayFileSystem(root_dir=tmp_path, read_only=True)
+    original = DisplayFileSystem(read_only=True)
     assert original.get_toolset().__class__.__name__ == "FilteredToolset"
 
 
@@ -99,6 +105,7 @@ def test_completed_changes_survive_resume_without_rereading_files(tmp_path):
     import json
 
     from pydantic_ai import Agent
+    from pydantic_ai.capabilities import LocalWorkspace
     from pydantic_ai.messages import ToolReturnPart
     from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
@@ -127,7 +134,8 @@ def test_completed_changes_survive_resume_without_rereading_files(tmp_path):
         saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
         identity = saved.info.id
         agent = Agent(
-            FunctionModel(stream_function=model), capabilities=[DisplayFileSystem(tmp_path)]
+            FunctionModel(stream_function=model),
+            capabilities=[LocalWorkspace(tmp_path), DisplayFileSystem()],
         )
         runtime = AgentRuntime(agent, saved)
         events = [event async for event in runtime.stream("write a file")]
@@ -160,9 +168,9 @@ def test_write_only_destination_still_writes_without_a_diff(tmp_path):
     path.chmod(0o200)
 
     async def exercise():
-        ctx = Context()
-        toolset = DisplayFileSystem(root_dir=tmp_path).get_toolset()
-        await toolset._write_file(ctx, path.name, "new\n")
+        ctx = Context(tmp_path)
+        toolset = DisplayFileSystem().get_toolset()
+        await toolset._write_file_tool(ctx, path.name, "new\n")
         assert ctx.changes[-1].omitted == "Before snapshot unavailable"
         assert not ctx.changes[-1].patch
 
@@ -179,9 +187,9 @@ def test_sensitive_symlink_target_is_not_captured(tmp_path):
     (tmp_path / "alias.py").symlink_to(target)
 
     async def exercise():
-        ctx = Context()
-        toolset = DisplayFileSystem(root_dir=tmp_path).get_toolset()
-        await toolset._write_file(ctx, "alias.py", "new synthetic contents\n")
+        ctx = Context(tmp_path)
+        toolset = DisplayFileSystem().get_toolset()
+        await toolset._write_file_tool(ctx, "alias.py", "new synthetic contents\n")
         assert ctx.changes[-1].path == "[sensitive path]"
         assert not ctx.changes[-1].patch
 
@@ -193,15 +201,15 @@ def test_overwrite_non_utf8_content_and_missing_parent(tmp_path):
     path.write_bytes(b"\xff\xfe")
 
     async def exercise():
-        ctx = Context()
-        toolset = DisplayFileSystem(root_dir=tmp_path).get_toolset()
-        await toolset._write_file(ctx, "binary", "text\n")
+        ctx = Context(tmp_path)
+        toolset = DisplayFileSystem().get_toolset()
+        await toolset._write_file_tool(ctx, "binary", "text\n")
         assert ctx.changes[-1].omitted == "Binary or non-UTF-8 content"
         count = len(ctx.changes)
         with pytest.raises(ModelRetry):
-            await toolset._write_file(ctx, "missing/child", "no")
+            await toolset._write_file_tool(ctx, "missing/child", "no")
         with pytest.raises(ModelRetry):
-            await toolset._write_file(ctx, ".env", "no")
+            await toolset._write_file_tool(ctx, ".env", "no")
         assert len(ctx.changes) == count
 
     asyncio.run(exercise())
@@ -210,15 +218,22 @@ def test_overwrite_non_utf8_content_and_missing_parent(tmp_path):
 
 def test_parallel_writes_capture_their_own_operation(tmp_path):
     async def exercise():
-        toolset = DisplayFileSystem(root_dir=tmp_path).get_toolset()
-        contexts = [Context(), Context()]
+        toolset = DisplayFileSystem().get_toolset()
+        contexts = [Context(tmp_path), Context(tmp_path)]
+        # Two tool calls in one run share its workspace, which Harness locks per file.
+        contexts[1].workspace = contexts[0].workspace
         await asyncio.gather(
-            toolset._write_file(contexts[0], "x.py", "first\n"),
-            toolset._write_file(contexts[1], "x.py", "second\n"),
+            toolset._write_file_tool(contexts[0], "x.py", "first\n"),
+            toolset._write_file_tool(contexts[1], "x.py", "second\n"),
         )
-        assert "+first" in contexts[0].changes[-1].patch
-        assert "-first" in contexts[1].changes[-1].patch
-        assert "+second" in contexts[1].changes[-1].patch
+        # Either may take the file's lock first; each reports its own write,
+        # and the later one diffs from the earlier one's content.
+        first, second = contexts[0].changes[-1], contexts[1].changes[-1]
+        assert "+first" in first.patch and "+second" in second.patch
+        created, replaced = sorted([first, second], key=lambda c: c.operation != "created")
+        assert created.operation == "created" and replaced.operation == "edited"
+        earlier = "first" if created is first else "second"
+        assert f"-{earlier}" in replaced.patch
 
     asyncio.run(exercise())
 
@@ -238,19 +253,19 @@ def test_external_mutations_keep_absolute_evidence_paths(tmp_path):
     (workspace / "alias.py").symlink_to(target)
 
     async def exercise():
-        ctx = Context()
-        toolset = DisplayFileSystem(root_dir=workspace).get_toolset()
-        with pytest.raises(ModelRetry, match="Use create_directory first"):
-            await toolset._write_file(ctx, str(external / "missing" / "sample.py"), "no")
+        ctx = Context(workspace)
+        toolset = DisplayFileSystem().get_toolset()
+        with pytest.raises(ModelRetry, match="does not exist"):
+            await toolset._write_file_tool(ctx, str(external / "missing" / "sample.py"), "no")
         assert not ctx.changes
-        await toolset._write_file(ctx, "../external/sample.py", "old\n")
+        await toolset._write_file_tool(ctx, "../external/sample.py", "old\n")
         assert ctx.changes[-1].path == str(target)
         assert ctx.changes[-1].operation == "created"
         assert "+old" in ctx.changes[-1].patch
         await toolset._edit_file_tool(ctx, "alias.py", "old", "new")
         assert ctx.changes[-1].path == str(target)
         assert "-old" in ctx.changes[-1].patch and "+new" in ctx.changes[-1].patch
-        await toolset._write_file(ctx, str(target), "last\n")
+        await toolset._write_file_tool(ctx, str(target), "last\n")
         assert ctx.changes[-1].path == str(target)
         assert "-new" in ctx.changes[-1].patch and "+last" in ctx.changes[-1].patch
         assert target.read_text() == "last\n"
@@ -266,9 +281,9 @@ def test_external_alias_does_not_capture_sensitive_contents(tmp_path):
     (workspace / "alias.py").symlink_to(target)
 
     async def exercise():
-        ctx = Context()
-        toolset = DisplayFileSystem(root_dir=workspace).get_toolset()
-        await toolset._write_file(ctx, "alias.py", "new synthetic contents\n")
+        ctx = Context(workspace)
+        toolset = DisplayFileSystem().get_toolset()
+        await toolset._write_file_tool(ctx, "alias.py", "new synthetic contents\n")
         assert ctx.changes[-1].path == "[sensitive path]"
         assert not ctx.changes[-1].patch
 

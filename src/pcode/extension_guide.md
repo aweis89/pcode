@@ -263,9 +263,11 @@ for `hooks`, `tools`, `tools-advanced`, `toolsets`, or `agent`, and
 `docs/capabilities/overview.md` or `docs/capabilities/custom.md` for
 capabilities (there is no `capabilities.md`). The installed source is beside
 this file's package (`import pydantic_ai; pydantic_ai.__file__`) and wins when
-a doc disagrees. Harness capabilities (`pydantic_ai_harness`) have their docs in
-the same repository as their source: `https://github.com/pydantic/pydantic-ai-harness`,
-under `docs/<name>.md`.
+a doc disagrees. Harness capabilities (`pydantic_ai_harness`) live in the same
+repository and release: their docs are under `docs/harness/<name>.md` at the
+same `vX.Y.Z` tag. Every Harness capability reads and writes through the run's
+workspace (`ctx.workspace`); pcode attaches a `LocalWorkspace` on the session's
+directory.
 
 ## Complete example
 
