@@ -169,7 +169,7 @@ def test_commands_completion_reset_and_model_switch(tmp_path):
     def completions(text):
         return [c.text for c in completer.get_completions(Document(text), CompleteEvent())]
 
-    assert completions("/mcp en") == ["enable docs", "enable other"]
+    assert completions("/mcp en") == ["enable all", "enable docs", "enable other"]
     assert completions("/mcp disable ") == ["disable docs"]
     assert completions("/mcp enable d") == ["enable docs"]
     handle_command(app, "/mcp enable missing")
@@ -184,6 +184,17 @@ def test_commands_completion_reset_and_model_switch(tmp_path):
     handle_command(app, "/new")
     assert app.runtime.mcp.toolsets() == []
     assert AgentRuntime(Agent("test")).mcp.toolsets() == []
+
+
+def test_enable_all_enables_every_configured_server(tmp_path):
+    write_config({"docs": {"command": sys.executable}, "other": {"command": sys.executable}})
+    app, output = make_app(tmp_path)
+    handle_command(app, "/mcp enable docs")
+    handle_command(app, "/mcp enable all")
+    assert set(app.runtime.mcp.enabled) == {"docs", "other"}
+    assert "MCP 'other' enabled." in output.getvalue()
+    handle_command(app, "/mcp enable all")
+    assert "already enabled" in output.getvalue()
 
 
 def test_busy_rejects_changes_but_allows_listing(tmp_path):

@@ -234,6 +234,9 @@ editing it, disable and enable the server again.
 - `/mcp enable NAME` makes a server's tools available from the next turn in the
   **current conversation**. Switching models keeps the selection, and enabling
   twice does nothing.
+- `/mcp enable all` enables every configured server that is not already on, one
+  at a time, opening a browser for any OAuth sign-in. A server that fails stays
+  off and the rest still enable.
 - OAuth servers connect during `/mcp enable` to sign in; other servers first
   connect on the next turn. A server that accepts the connection without
   credentials and only rejects tool calls enables silently, and its first
