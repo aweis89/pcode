@@ -1,14 +1,19 @@
 """Temporary alternate-screen diff browser, separate from inline scrollback."""
 
+import asyncio
+import dataclasses
+from collections.abc import Callable, Sequence
+
 from prompt_toolkit.application import Application
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Always, has_focus
+from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.widgets import Frame, Label, TextArea
 
 from pcode.edit_transcript import DiffLexer
 from pcode.edits import edit_text
+from pcode.git_diff import DiffView
 from pcode.popup_ui import (
     bind_list_paging,
     fuzzy_match,
@@ -28,6 +33,26 @@ KEYS = (
     "Type to search paths, Enter to leave · Tab Focus · Esc Close"
 )
 PROMPTS = {"paths": "Search paths: ", "diffs": "Search diff lines: "}
+LOADING = DiffView("Loading…", [], "Loading…")
+
+
+def first_view(
+    loaders: Sequence[Callable[[], DiffView]],
+) -> tuple[int, dict[int, DiffView]]:
+    """Load views in order until one has changes and open on it, else on the first.
+
+    Returns the index to open on and every view loaded on the way.
+    """
+    loaded = {}
+    for index, load in enumerate(loaders):
+        loaded[index] = view = load()
+        if view.changes:
+            if index:
+                loaded[index] = dataclasses.replace(
+                    view, title=f"{view.title} · opened here: earlier views are empty"
+                )
+            return index, loaded
+    return 0, loaded
 
 
 def change_title(change: EditCompleted) -> str:
@@ -70,20 +95,41 @@ class EditBrowser:
     searches paths and filters the list; in the diff it searches diff lines,
     filters the list to changes with a match, and jumps the diff to the first.
     Changes are listed in the order given; `title` says what they are.
+
+    Given `views`, the ``v`` shortcut cycles through them: each loader runs
+    off the event loop the first time it is shown and is kept for the rest of
+    the popup. `loaded` holds views already loaded, including `view`, the one
+    to open on. A switch keeps the search and, where the new view has it, the
+    selected file.
     """
 
     def __init__(
         self,
-        changes,
+        changes=(),
         *,
         title: str = "Edit diffs",
         empty: str = EMPTY,
+        views: Sequence[Callable[[], DiffView]] = (),
+        loaded: dict[int, DiffView] | None = None,
+        view: int = 0,
         code_theme: str = "monokai",
         key_prefix: str | None = None,
         **app_options,
     ) -> None:
-        self.changes = list(changes)
-        self.empty = empty
+        if not views:
+            opening = DiffView(title, list(changes), empty)
+            views, loaded, view = [lambda: opening], {0: opening}, 0
+        self.views = list(views)
+        self.loaded = dict(loaded or {})
+        self.view = view
+        self.pending: set[int] = set()
+        self.keep: str | None = None
+        if view not in self.loaded:
+            self.loaded[view] = self.views[view]()
+        current = self.loaded[view]
+        self.title = current.title
+        self.changes = list(current.changes)
+        self.empty = current.empty
         self.visible: list[EditCompleted] = []
         self.selected: EditCompleted | None = None
         self.scope = "paths"
@@ -144,6 +190,10 @@ class EditBrowser:
         def previous_match(event):
             self.jump(-1)
 
+        @shortcuts.add("v", "Next view", filter=Condition(lambda: len(self.views) > 1))
+        def next_view(event):
+            self.show_view((self.view + 1) % len(self.views))
+
         header = Label(
             lambda: (
                 f"{self.position()}/{len(self.visible)} · "
@@ -152,13 +202,17 @@ class EditBrowser:
         )
         root = HSplit(
             [
-                Label(title),
+                Label(self.heading),
                 header,
                 Label(KEYS),
                 Label(shortcuts.summary),
                 self.query,
                 Frame(self.diff, title="Diff"),
-                Frame(self.files, title="Files", height=list_pane_height(len(self.changes))),
+                Frame(
+                    self.files,
+                    title="Files",
+                    height=lambda: list_pane_height(len(self.changes)),
+                ),
             ]
         )
         self.app = Application(
@@ -170,6 +224,41 @@ class EditBrowser:
             style=popup_style(app_options.pop("style", None)),
             **app_options,
         )
+        self.refresh()
+
+    def heading(self) -> str:
+        if len(self.views) == 1:
+            return self.title
+        return f"View {self.view + 1}/{len(self.views)} · {self.title}"
+
+    def show_view(self, index: int) -> None:
+        # Remembered across a load, which shows nothing selected meanwhile.
+        if self.selected is not None:
+            self.keep = self.selected.path
+        self.view = index
+        if index in self.loaded:
+            self.apply(self.loaded[index])
+            return
+        self.apply(LOADING)
+        if index not in self.pending:
+            self.pending.add(index)
+            self.app.create_background_task(self.load(index))
+
+    async def load(self, index: int) -> None:
+        try:
+            view = await asyncio.to_thread(self.views[index])
+        except Exception as error:  # a broken loader must not take the popup down
+            view = DiffView("View failed", [], f"Could not load this view: {error}")
+        self.loaded[index] = view
+        self.pending.discard(index)
+        if self.view == index:
+            self.apply(view)
+            self.app.invalidate()
+
+    def apply(self, view: DiffView) -> None:
+        """Show `view`, staying on the selected file if the new view has it."""
+        self.title, self.changes, self.empty = view.title, list(view.changes), view.empty
+        self.selected = next((c for c in self.changes if c.path == self.keep), None)
         self.refresh()
 
     def position(self) -> int:

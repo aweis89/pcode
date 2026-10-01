@@ -182,6 +182,7 @@ def test_shared_checkout_shows_only_edited_files_against_head(repo):
     short = git(repo, "rev-parse", "--short", "HEAD")
     assert view.title == (
         f"Git diff · uncommitted changes vs HEAD ({short}) · only files edited this session"
+        " · no starting commit recorded"
     )
     assert session_diff(workspace, []).changes == []
     assert session_diff(workspace, ["../../elsewhere.py"]).changes == []
@@ -198,23 +199,85 @@ def edited(path: str, call_id: str) -> EditCompleted:
     return EditCompleted(call_id, path, "edited", "@@ -1 +1 @@\n-a\n+b", 1, 1)
 
 
-def test_app_prefers_the_git_view_and_falls_back_to_tool_edits(repo, linked, tmp_path, monkeypatch):
+def test_app_offers_git_views_then_the_tool_edit_log(repo, linked, tmp_path, monkeypatch):
     (linked.path / "new.py").write_text("x\n")
     app = PreviewApp(console=Console(file=StringIO()), workspace=linked.path)
-    assert [change.path for change in app.diff_view().changes] == ["new.py"]
+    views = [load() for load in app.diff_views()]
+    assert [[change.path for change in view.changes] for view in views] == [
+        ["new.py"],
+        ["new.py"],
+        [],
+    ]
+    assert views[2].title == "Tool edits, newest first"
 
     outside = tmp_path / "plain"
     outside.mkdir()
     app = PreviewApp(console=Console(file=StringIO()), workspace=outside)
     app.present_events((edited("first.py", "1"), edited("second.py", "2")))
-    view = app.diff_view()
-    assert view.title == "Tool edits, newest first"
-    assert [change.path for change in view.changes] == ["second.py", "first.py"]
+    (log,) = [load() for load in app.diff_views()]
+    assert log.title == "Tool edits, newest first"
+    assert [change.path for change in log.changes] == ["second.py", "first.py"]
 
     def broken(*args):
         raise GitDiffError("git diff failed: boom")
 
-    monkeypatch.setattr(git_diff, "session_diff", broken)
-    view = app.diff_view()
-    assert view.title == "Tool edits, newest first · git diff unavailable: git diff failed: boom"
-    assert len(view.changes) == 2
+    monkeypatch.setattr(git_diff, "session_views", broken)
+    (log,) = [load() for load in app.diff_views()]
+    assert log.title == "Tool edits, newest first · git diff unavailable: git diff failed: boom"
+    assert len(log.changes) == 2
+
+    # A git view that fails later is kept, naming the error, beside the others.
+    monkeypatch.setattr(git_diff, "session_views", lambda *args: [lambda: broken()])
+    failed, log = [load() for load in app.diff_views()]
+    assert failed.title == "Git diff · git diff unavailable: git diff failed: boom"
+    assert failed.changes == [] and len(log.changes) == 2
+
+
+def test_shared_checkout_keeps_committed_session_work(repo):
+    commit(repo, "a.py", "one\n")
+    start = git(repo, "rev-parse", "HEAD")
+    since = git(repo, "log", "-1", "--format=%cI")
+    # A pulled commit: someone else's, touching a file the session never did.
+    (repo / "theirs.py").write_text("x\n")
+    git(repo, "add", "theirs.py")
+    git(repo, "-c", "user.email=other@example.com", "commit", "-q", "-m", "theirs")
+    (repo / "a.py").write_text("two\n")  # a tool edit, then committed
+    commit(repo, "shell.py", "made by a shell command\n")  # never a tool edit
+    git(repo, "commit", "-q", "-am", "agent")
+    (repo / "a.py").write_text("three\n")  # and edited again, uncommitted
+
+    net, uncommitted = [load() for load in git_diff.session_views(repo, ["a.py"], start, since)]
+    assert list(by_path(net)) == ["a.py", "shell.py"]
+    assert "-one" in by_path(net)["a.py"].patch and "+three" in by_path(net)["a.py"].patch
+    assert net.title.startswith(
+        f"Git diff · since the session started ({git(repo, 'rev-parse', '--short', start)})"
+    )
+    assert list(by_path(uncommitted)) == ["a.py"]
+    assert "-two" in by_path(uncommitted)["a.py"].patch
+
+    # HEAD no longer descends from the start: back to uncommitted, edited files only.
+    git(repo, "reset", "-q", "--hard", f"{start}~1")
+    commit(repo, "a.py", "rewritten\n")
+    (repo / "a.py").write_text("dirty\n")
+    view = git_diff.session_diff(repo, ["a.py"], start, since)
+    assert list(by_path(view)) == ["a.py"] and view.title.endswith("HEAD moved off the start")
+    assert git_diff.session_diff(repo, ["a.py"], "--output=/tmp/x", since).title.endswith(
+        "HEAD moved off the start"
+    )
+
+
+def test_new_sessions_record_their_starting_commit(repo, tmp_path):
+    from pcode.sessions import SavedSession
+
+    session = SavedSession.create("test", repo, root=tmp_path / "sessions")
+    try:
+        assert session.info.start_commit == git(repo, "rev-parse", "HEAD")
+    finally:
+        session.close()
+    outside = tmp_path / "plain"
+    outside.mkdir()
+    session = SavedSession.create("test", outside, root=tmp_path / "sessions")
+    try:
+        assert session.info.start_commit is None
+    finally:
+        session.close()

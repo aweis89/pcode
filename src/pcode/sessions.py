@@ -36,6 +36,8 @@ class SessionInfo(BaseModel):
     workspace: str
     # Preserve project scope even after a linked worktree has been removed.
     project: str | None = None
+    # HEAD when the session began, so /diffs still shows work once it is committed.
+    start_commit: str | None = None
     created: str
     updated: str
     status: str = "new"
@@ -630,12 +632,13 @@ class SavedSession(SessionJournal):
         identity = identity or str(uuid4())
         directory = root / identity
         directory.mkdir(mode=0o700)
-        from pcode.worktree import project_checkout
+        from pcode.worktree import head_commit, project_checkout
 
         project = project_checkout(workspace)
         info = SessionInfo(
             id=identity,
             project=str(project) if project else None,
+            start_commit=head_commit(workspace) if project else None,
             model=model,
             workspace=str(workspace.resolve()),
             created=now(),

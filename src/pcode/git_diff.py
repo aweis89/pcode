@@ -4,8 +4,12 @@ A linked worktree belongs to its session, so its whole branch is compared with
 the merge-base on the mainline branch. That is exactly what a merge would bring
 in, and it stays right after `/worktree merge` merges mainline into the branch,
 where a remembered starting commit would claim mainline's changes too. A shared
-checkout compares HEAD with only the files this session's tools edited, since
-anything else dirty there may be the user's.
+checkout has no branch of its own, so it compares the working tree with the
+commit the session started from, but only for files this session's tools edited
+or its commits touched, since anything else there may be the user's. A commit
+counts as the session's when it is new since the start, was made after the
+session began, and by this checkout's git identity; a pulled commit is neither.
+Each view also has a companion showing only what is not yet committed.
 
 `git diff` never shows untracked files, and staging them would change the
 user's index. So the working tree is recorded into a throwaway copy of the index
@@ -20,8 +24,9 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from pcode import worktree
@@ -58,25 +63,47 @@ class DiffView:
     empty: str
 
 
-def session_diff(workspace: Path, edited: Iterable[str]) -> DiffView | None:
-    """The git view of `workspace`, or None outside a git repository.
+def session_views(
+    workspace: Path,
+    edited: Iterable[str],
+    start: str | None = None,
+    since: str | None = None,
+) -> list[Callable[[], DiffView]]:
+    """Loaders for the git views of `workspace`, the session's net work first.
 
-    `edited` holds the paths this session's file tools changed, relative to the
-    workspace; only a shared checkout uses them.
+    Empty outside a git repository. `edited` holds the paths this session's
+    file tools changed, relative to the workspace; `start` is the commit the
+    session began at and `since` when (ISO 8601). Only a shared checkout uses
+    them. Each loader runs git and may raise GitDiffError.
     """
     try:
         if worktree.project_checkout(workspace) is None:
-            return None
+            return []
         linked = worktree.describe(workspace)
-        if linked is not None:
-            return branch_diff(linked)
-        return edited_files_diff(workspace, edited)
     except worktree.WorktreeError as error:
         raise GitDiffError(str(error)) from error
+    if linked is not None:
+        return [partial(branch_diff, linked), partial(uncommitted_diff, linked.path)]
+    edited = list(edited)
+    return [
+        partial(edited_files_diff, workspace, edited, start, since),
+        partial(uncommitted_diff, workspace, edited, start, since, shared=True),
+    ]
+
+
+def session_diff(
+    workspace: Path, edited: Iterable[str], start: str | None = None, since: str | None = None
+) -> DiffView | None:
+    """The session's net git view of `workspace`, or None outside a git repository."""
+    views = session_views(workspace, edited, start, since)
+    return views[0]() if views else None
 
 
 def branch_diff(linked: worktree.Worktree) -> DiffView:
-    mainline = worktree.mainline_branch(linked.main)
+    try:
+        mainline = worktree.mainline_branch(linked.main)
+    except worktree.WorktreeError as error:
+        raise GitDiffError(str(error)) from error
     base = _git(linked.path, "merge-base", "HEAD", mainline).decode().strip()
     branch, mainline = plain(linked.branch), plain(mainline)
     return DiffView(
@@ -87,22 +114,100 @@ def branch_diff(linked: worktree.Worktree) -> DiffView:
     )
 
 
-def edited_files_diff(workspace: Path, edited: Iterable[str]) -> DiffView:
+def edited_files_diff(
+    workspace: Path, edited: Iterable[str], start: str | None = None, since: str | None = None
+) -> DiffView:
+    """A shared checkout's session work: the working tree against the starting commit.
+
+    Falls back to uncommitted changes against HEAD, in edited files only, when
+    no start was recorded or HEAD no longer descends from it (a rebase, a
+    branch switch).
+    """
+    top = _toplevel(workspace)
+    edited_paths = _top_relative(workspace, top, edited)
+    if start is None or not _is_ancestor(top, start):
+        why = "no starting commit recorded" if start is None else "HEAD moved off the start"
+        return DiffView(
+            f"Git diff · uncommitted changes vs HEAD ({_short(top, 'HEAD')})"
+            f" · only files edited this session · {why}",
+            _diff(top, "HEAD", only=edited_paths) if edited_paths else [],
+            "No uncommitted changes in files edited this session.",
+        )
+    paths = edited_paths | _committed(top, start, since)
+    return DiffView(
+        f"Git diff · since the session started ({_short(top, start)})"
+        " · files this session edited or committed, including uncommitted and new files",
+        _diff(top, start, only=paths) if paths else [],
+        "No changes since the session started in files it edited or committed.",
+    )
+
+
+def uncommitted_diff(
+    workspace: Path,
+    edited: Iterable[str] = (),
+    start: str | None = None,
+    since: str | None = None,
+    *,
+    shared: bool = False,
+) -> DiffView:
+    """What the next commit would take in; a shared checkout limits it to session files."""
+    top = _toplevel(workspace)
+    short = _short(top, "HEAD")
+    if not shared:
+        return DiffView(
+            f"Git diff · uncommitted changes vs HEAD ({short}) · including new files",
+            _diff(top, "HEAD"),
+            "No uncommitted changes.",
+        )
+    paths = _top_relative(workspace, top, edited)
+    if start is not None and _is_ancestor(top, start):
+        paths |= _committed(top, start, since)
+    return DiffView(
+        f"Git diff · uncommitted changes vs HEAD ({short}) · only files this session touched",
+        _diff(top, "HEAD", only=paths) if paths else [],
+        "No uncommitted changes in files this session touched.",
+    )
+
+
+def _toplevel(workspace: Path) -> Path:
     top = Path(_git(workspace, "rev-parse", "--show-toplevel").decode().strip()).resolve()
     if not _git(workspace, "rev-parse", "--verify", "--quiet", "HEAD^{commit}", check=False):
         raise GitDiffError("the repository has no commits yet")
+    return top
+
+
+def _top_relative(workspace: Path, top: Path, edited: Iterable[str]) -> set[str]:
     paths = set()
     for path in edited:
         # Tool paths are relative to the workspace, which may sit below the top level.
         location = Path(os.path.normpath(workspace / path))
         if location.is_relative_to(top):
             paths.add(location.relative_to(top).as_posix())
-    return DiffView(
-        f"Git diff · uncommitted changes vs HEAD ({_short(top, 'HEAD')})"
-        " · only files edited this session",
-        _diff(top, "HEAD", only=paths) if paths else [],
-        "No uncommitted changes in files edited this session.",
-    )
+    return paths
+
+
+def _is_ancestor(top: Path, start: str) -> bool:
+    """Whether HEAD still descends from `start`; a commit git lost is not an ancestor."""
+    # The hash comes from session.json; never let it reach git as an option.
+    if not re.fullmatch(r"[0-9a-f]{40,64}", start):
+        return False
+    try:
+        _git(top, "merge-base", "--is-ancestor", start, "HEAD")
+    except GitDiffError:
+        return False
+    return True
+
+
+def _committed(top: Path, start: str, since: str | None) -> set[str]:
+    """Paths touched by the session's own commits after `start`."""
+    args = ["log", "--format=", "--name-only", "-z", "--no-renames", "--no-merges"]
+    args.append("--no-show-signature")
+    if since:
+        args.append(f"--since={since}")
+    email = _git(top, "config", "user.email", check=False).decode().strip()
+    if email:
+        args += ["--fixed-strings", f"--committer=<{email}>"]
+    return _paths(_git(top, *args, f"{start}..HEAD", "--"))
 
 
 def _diff(top: Path, base: str, only: set[str] | None = None) -> list[EditCompleted]:
@@ -146,8 +251,12 @@ def _diff(top: Path, base: str, only: set[str] | None = None) -> list[EditComple
                 env=env,
                 input=listing,
             )
-        names = _git(top, "diff", *DIFF_OPTIONS, "--name-status", "-z", base, env=env)
-        patch = _git(top, "diff", *DIFF_OPTIONS, "--patch", base, env=env)
+        # Limit git itself, not just the result: against a start commit, a pull
+        # would otherwise patch every file it brought in. Literal pathspecs
+        # (set above); a rename with one side outside `only` shows as one side.
+        paths = ["--", *sorted(only)] if only is not None else []
+        names = _git(top, "diff", *DIFF_OPTIONS, "--name-status", "-z", base, *paths, env=env)
+        patch = _git(top, "diff", *DIFF_OPTIONS, "--patch", base, *paths, env=env)
     finally:
         Path(scratch).unlink(missing_ok=True)
     changes = [

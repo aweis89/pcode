@@ -66,6 +66,17 @@ def project_checkout(path: Path) -> Path | None:
         return None
 
 
+def head_commit(path: Path) -> str | None:
+    """The full hash `HEAD` names at `path`; None outside git or before the first commit."""
+    try:
+        result = _git(path, "rev-parse", "--verify", "--quiet", "HEAD^{commit}", check=False)
+    except OSError:
+        return None
+    if result.returncode:
+        return None
+    return result.stdout.strip() or None
+
+
 def repo_scope(path: Path) -> Path:
     """The identity to group a workspace by: its main checkout, or itself.
 
