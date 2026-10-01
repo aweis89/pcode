@@ -125,7 +125,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `meridian_managed` | `auto` | `auto`, `on`, `off` (use a running Meridian proxy or start a private one; see [Meridian](providers.md#which-meridian-pcode-uses)) |
 | `claude_idle_processes` | `1` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes each session keeps warm (about 120 MB each beyond the first); `0` stops each when its turn ends. None are kept under memory pressure |
 | `claude_idle_minutes` | `10` | Positive integer, minutes a finished `claude:` CLI process is kept warm |
-| `retry_attempts` | `1` | Whole number, automatic retries after a dropped connection; `0` disables. See [retries](sessions.md#retries-and-resend) |
+| `retry_attempts` | `3` | Whole number, automatic retries after a dropped connection; `0` disables. See [retries](sessions.md#retries-and-resend) |
 
 ### Editor and keys
 

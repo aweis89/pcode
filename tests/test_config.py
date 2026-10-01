@@ -52,7 +52,7 @@ def test_defaults_and_path_do_not_create_files():
         "desktop_notifications": "on",
         "terminal_progress": "auto",
         "worktree_exit": "ask",
-        "retry_attempts": "1",
+        "retry_attempts": "3",
         "tool_retries": "3",
         "strict_tools": "on",
         "cache_notices": "on",
@@ -432,7 +432,7 @@ def test_error_scrollback_settings_round_trip():
 
 
 @pytest.mark.parametrize("value", ["0", "1", "3"])
-@pytest.mark.parametrize("key,default", [("retry_attempts", "1"), ("worker_concurrency", "0")])
+@pytest.mark.parametrize("key,default", [("retry_attempts", "3"), ("worker_concurrency", "0")])
 def test_whole_number_settings_round_trip(value, key, default):
     assert configure(["get", key]) == default
     configure(["set", key, value])
@@ -442,7 +442,7 @@ def test_whole_number_settings_round_trip(value, key, default):
 
 
 @pytest.mark.parametrize("value", ["-1", "1.5", "many", "", " 1", "１"])
-@pytest.mark.parametrize("key,default", [("retry_attempts", "1"), ("worker_concurrency", "0")])
+@pytest.mark.parametrize("key,default", [("retry_attempts", "3"), ("worker_concurrency", "0")])
 def test_whole_number_settings_reject_invalid_values(value, key, default):
     with pytest.raises(ValueError, match="whole number"):
         configure(["set", key, value])

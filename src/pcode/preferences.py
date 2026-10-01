@@ -300,7 +300,7 @@ SETTINGS = {
         description="Worktree with unmerged commits on exit: ask, merge and remove, or keep",
     ),
     "retry_attempts": Setting(
-        "1",
+        "3",
         whole_number=True,
         description="Automatic retries after a dropped connection; 0 disables",
     ),

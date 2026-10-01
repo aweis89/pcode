@@ -345,14 +345,14 @@ between turns.
 
 ## Retries and `/resend`
 
-Dropped provider connections and transport timeouts get one automatic retry by
-default (two attempts per submitted turn). The retry picks up from the failed
+Dropped provider connections and transport timeouts get three automatic retries by
+default (four attempts per submitted turn). The retry picks up from the failed
 request's checkpoint, completed tool results included, without adding a
 "continue" prompt. Partial output from the failed attempt may stay on screen but
 is not sent again. Retries show the failure and attempt count.
 
 ```sh
-pcode config set retry_attempts 3   # Three extra attempts per turn, next launch
+pcode config set retry_attempts 5   # Five extra attempts per turn, next launch
 pcode config set retry_attempts 0   # Disable automatic retries
 ```
 
