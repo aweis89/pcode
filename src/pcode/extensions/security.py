@@ -2,9 +2,10 @@
 
 Opt in with `/extensions on security`. The policy lives in `pcode.sandbox`:
 writes only under the repository, temp and cache dirs, and paths you grant;
-reads anywhere except credential files. `/add-dir PATH` grants a directory or
-file for this session, `/add-dir --global PATH` for every session (saved in
-`security.json` beside preferences.json), and `/add-dir` alone shows the policy.
+reads anywhere except credential files. `/allow-writes PATH` grants a directory
+or file for this session, `/allow-writes --global PATH` for every session (saved
+in `security.json` beside preferences.json), and `/allow-writes` alone shows the
+policy.
 """
 
 from pathlib import Path
@@ -25,7 +26,7 @@ INSTRUCTIONS = (
     "writable; pcode's config, `.pcode/` and `.git/hooks/` are not; credential "
     "files are unreadable. A refused write fails with a message or "
     "'Operation not permitted'. Do not work around it; ask the user to run "
-    "`/add-dir PATH` when a task needs another location."
+    "`/allow-writes PATH` when a task needs another location."
 )
 
 
@@ -61,7 +62,7 @@ def setup(pcode) -> None:
             else:
                 reason = f"{raw} is outside the writable paths. {current.explain()}"
             raise ModelRetry(
-                f"{reason} If this write is intended, ask the user to run `/add-dir <path>`."
+                f"{reason} If this write is intended, ask the user to run `/allow-writes <path>`."
             )
         if not current.can_read(target):
             pcode.ui.notify(f"Blocked read of {target}", "warning")
@@ -87,13 +88,15 @@ def setup(pcode) -> None:
         finally:
             COMMAND_SANDBOX.reset(token)
 
-    def add_dir(argument: str) -> None:
+    def allow_writes(argument: str) -> None:
         text = argument.strip()
         persist = text == "--global" or text.startswith("--global ")
         text = text.removeprefix("--global").strip()
+        if text.startswith("--"):
+            raise ValueError("Usage: /allow-writes [--global] PATH")
         if not text:
             if persist:
-                raise ValueError("Usage: /add-dir [--global] PATH")
+                raise ValueError("Usage: /allow-writes [--global] PATH")
             pcode.ui.notify(_summary(policy()))
             return
         # The rest is one path, spaces included.
@@ -127,7 +130,8 @@ def setup(pcode) -> None:
 
     pcode.instructions(INSTRUCTIONS)
     pcode.register_command(
-        "/add-dir",
+        "/allow-writes",
         "Allow writes to a directory or file: this session, or --global for all",
-        add_dir,
+        allow_writes,
+        complete_paths=True,
     )

@@ -21,7 +21,6 @@ from pcode.runtime import (
     ToolSummary,
 )
 from pcode.terminal_notify import TabProgress, terminal_fd
-from pcode.tool_panel import active_step
 
 
 def present_events(events, *, activity, transcript, edits) -> None:
@@ -131,8 +130,14 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
     if isinstance(event, ThinkingDelta):
         output.finish()
         output.thinking_delta(event.text)
+        activity.think(event.text)
     elif isinstance(event, Thinking):
         output.finish_thinking(event.text)
+        if activity.thought_done and event.text:
+            # A block that arrived whole, with no deltas before it.
+            activity.think(event.text)
+        # Held on the thinking row; the next block replaces it.
+        activity.thought_done = True
     elif isinstance(event, TextDelta):
         output.finish_thinking()
         output.delta(event.text)
@@ -152,8 +157,6 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
     elif isinstance(event, RunStatus):
         activity.status = event.text
     elif isinstance(event, PlanUpdated):
-        if active_step(event.items) != active_step(activity.plan):
-            activity.tools.retire_finished()
         activity.plan = event.items
     elif isinstance(event, PlanPreview):
         activity.plan_preview = event.items

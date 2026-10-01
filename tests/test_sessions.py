@@ -487,14 +487,14 @@ def test_thinking_persists_and_replays_after_reopen_even_when_hidden(tmp_path, o
             assert thinking[0]["text"] == thought
             assert "OPAQUE_SIGNATURE" not in repr(list(reopened.records()))
             app = PreviewApp(model="test:local", runtime=runtime, console=Console(file=StringIO()))
-            app.activity.show_thinking = False
+            app.activity.thinking_mode = "off"
             app.replay()
             assert "FIRST_THOUGHT" not in repr(app.transcript.replay())
-            app.set_show_thinking(True)
+            app.set_thinking_mode("scrollback")
             replay = repr(app.transcript.replay())
             assert replay.count("FIRST_THOUGHT") == 1
             assert replay.count("LAST_THOUGHT") == 1
-            app.set_show_thinking(False)
+            app.set_thinking_mode("off")
             assert "FIRST_THOUGHT" not in repr(app.transcript.replay())
         finally:
             runtime.close()

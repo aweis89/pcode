@@ -1,6 +1,7 @@
 """One registry drives dispatch, help, and slash completion."""
 
-from collections.abc import Callable, Iterable
+import asyncio
+from collections.abc import AsyncGenerator, Callable, Iterable
 from dataclasses import dataclass
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
@@ -84,6 +85,17 @@ class CommandRegistry:
 class SlashCompleter(Completer):
     def __init__(self, registry: CommandRegistry) -> None:
         self.registry = registry
+
+    async def get_completions_async(
+        self, document: Document, complete_event: CompleteEvent
+    ) -> AsyncGenerator[Completion, None]:
+        # Argument completers can touch the filesystem (a path on a slow mount);
+        # a thread keeps a stalled read from freezing the prompt on every key.
+        completions = await asyncio.to_thread(
+            lambda: list(self.get_completions(document, complete_event))
+        )
+        for completion in completions:
+            yield completion
 
     def get_completions(self, document: Document, complete_event: CompleteEvent):
         text = document.text_before_cursor

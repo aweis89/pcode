@@ -144,6 +144,7 @@ terminal on a different protocol version is refused with a message saying so.
 uv run pcode --sessions
 uv run pcode --continue                             # this directory's newest session
 uv run pcode --continue SESSION_ID
+uv run pcode --continue SESSION_ID --fork          # branch off a copy, keep the original
 uv run pcode -m openai-codex:gpt-5.6-sol --no-save  # opt out for a sensitive session
 ```
 
@@ -202,10 +203,20 @@ finished turn instead.
 
 The copy works in the same directory as the original, so if both edit files
 their changes land in one checkout. Quitting either one does not remove or
-merge a shared `pcode-` worktree while the other is still open in it.
+merge a shared `pcode-` worktree while the other is still open in it, or has
+turns it could be resumed with there.
 
 A session still running in a [background host](#background-sessions) is not
 copied: `--continue` and `/resume` show it where it runs instead.
+
+### Forking a session on purpose
+
+`pcode --continue SESSION --fork` always continues a copy, whether or not the
+session is open anywhere, including one running in a background host. Use it to
+try a different direction from the same history while keeping the original
+conversation exactly as it was. The copy gets its own ID and works in the same
+directory as the original, as above. To branch from an earlier point inside one
+session instead, use [`/tree`](conversation-tree.md).
 
 ### When the workspace was deleted
 

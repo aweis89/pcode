@@ -35,14 +35,19 @@ from pcode.controller import (
 )
 from pcode.error_report import error_message
 from pcode.preferences import (
+    ANTHROPIC_THINKS_BY_DEFAULT,
     SETTINGS,
     SYNTAX_THEMES,
+    THINKING_KEYS,
+    THINKING_MODES,
     apply_effort,
     apply_thinking,
     effort_for,
     load_preferences,
     parse_height,
     save_preferences,
+    thinking_mode_preference,
+    thinking_settings,
 )
 from pcode.prefix_keys import shortcut_label
 from pcode.runtime import (
@@ -140,7 +145,7 @@ class PreviewApp:
             attach_tasks=load_preferences().get("attach_tasks", SETTINGS["attach_tasks"].default)
             == "on",
             tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
-            show_thinking=load_preferences().get("show_thinking") == "on",
+            thinking_mode=thinking_mode_preference(),
         )
         self.preview = PreviewRuntime()
         # The conversation itself, with this terminal as its view.
@@ -190,7 +195,7 @@ class PreviewApp:
         if agent is not None and model:
             apply_effort(agent, model, effort_for(model))
         if agent is not None and model:
-            apply_thinking(agent, model, self.activity.show_thinking)
+            apply_thinking(agent, model, self.activity.thinking_mode)
         self.transcript = Transcript(
             console or Console(),
             theme or load_preferences().get("theme", SETTINGS["theme"].default),
@@ -338,9 +343,10 @@ class PreviewApp:
             ),
             Command(
                 "/show-thinking",
-                f"Thinking in scrollback: on / off; bare toggles ({shortcut_label('t')})",
+                "Where thinking shows: off / status-line / scrollback; bare cycles "
+                f"({shortcut_label('t')})",
                 self.show_thinking,
-                ("on", "off"),
+                THINKING_MODES,
                 group="Display",
             ),
             Command(
@@ -531,7 +537,6 @@ class PreviewApp:
             self.output.app.invalidate()
 
     def turn_started(self, text: str, *, echo: bool) -> None:
-        # The last turn's finished delegates stay listed only until this one.
         self.activity.tools.clear()
         self.activity.cache_note = ""
         if echo:
@@ -571,7 +576,8 @@ class PreviewApp:
         self.activity.plan_preview = None
         self.transcript.settle_tools()
         self.output.end_turn()
-        self.activity.tools.end_turn()
+        # Drop whatever the turn left running.
+        self.activity.tools.clear()
         self.activity.workers.end_turn()
 
     def finish_text(self) -> None:
@@ -725,27 +731,48 @@ class PreviewApp:
             f"Group tools: {'on' if grouped else 'off'}. Usage: /group-tools [on|off]"
         )
 
-    def set_show_thinking(self, shown: bool) -> None:
-        self.activity.show_thinking = shown
-        self.controller.set_thinking(shown)
-        self.persist_defaults(show_thinking="on" if shown else "off")
-        self.transcript.regenerate()
+    def set_thinking_mode(self, mode: str) -> None:
+        scrollback = self.activity.show_thinking
+        self.activity.thinking_mode = mode
+        self.controller.set_thinking(mode)
+        self.persist_defaults(show_thinking=mode)
+        # Only scrollback's own thinking needs the transcript rebuilt.
+        if self.activity.show_thinking != scrollback:
+            self.transcript.regenerate()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
 
     def show_thinking(self, argument: str) -> None:
-        self.set_show_thinking(
-            self.toggle_argument("/show-thinking", argument, self.activity.show_thinking)
-        )
-        state = "on" if self.activity.show_thinking else "off"
-        lines = [f"Show thinking: {state}. Usage: /show-thinking [on|off] ({self.shortcut('t')})"]
-        if (self.model or "").startswith("anthropic:"):
-            lines.append(
-                "Anthropic thinking request: "
-                + ("enabled" if self.activity.show_thinking else "provider default")
-                + " (next turn). Enabling thinking can increase latency and token usage."
-            )
-        if self.activity.show_thinking and (self.model or "").startswith("meridian:"):
+        """`/show-thinking [off|status-line|scrollback]`; bare (and Ctrl+T) cycles."""
+        if argument and argument not in THINKING_MODES:
+            raise ValueError(f"Usage: /show-thinking [{'|'.join(THINKING_MODES)}]")
+        if not argument:
+            current = self.activity.thinking_mode
+            index = THINKING_MODES.index(current) if current in THINKING_MODES else -1
+            argument = THINKING_MODES[(index + 1) % len(THINKING_MODES)]
+        self.set_thinking_mode(argument)
+        lines = [
+            f"Thinking: {argument}. Usage: /show-thinking [{'|'.join(THINKING_MODES)}]; "
+            f"bare cycles ({self.shortcut('t')})"
+        ]
+        model = self.model or ""
+        provider = model.split(":", 1)[0]
+        if provider in THINKING_KEYS:
+            wanted = thinking_settings(model, None, argument)
+            display = wanted.get("anthropic_thinking", {}).get("display")
+            if display == "updates":
+                lines.append("Asks for progress updates between tool calls from the next turn.")
+            elif wanted:
+                lines.append("Asks for thinking summaries from the next turn.")
+            else:
+                lines.append("Asks for no readable thinking from the next turn.")
+            if provider == "anthropic":
+                # Only scrollback turns thinking on, and only where it was off.
+                if wanted and not ANTHROPIC_THINKS_BY_DEFAULT.search(model):
+                    lines.append("This model only thinks when asked: more latency and tokens.")
+            elif wanted:
+                lines.append("An unverified OpenAI organisation is refused summaries; use off.")
+        if argument != "off" and model.startswith("meridian:"):
             lines.append(meridian_thinking_note(*self.controller.meridian_thinking_state()))
         self.transcript.flash("\n".join(lines))
 
@@ -1305,7 +1332,9 @@ class PreviewApp:
         self.controller = controller
         controller.on_closed = self.host_closed
         if forked := welcome.get("forked_from"):
-            note += f" · continuing a copy of {forked}, which was open elsewhere"
+            note += f" · continuing a copy of {forked}"
+            if not welcome.get("fork_requested"):
+                note += ", which was open elsewhere"
         self._attach_note = note
         self.activity.reset()
         if self._progress is not None:
@@ -1911,7 +1940,7 @@ class PreviewApp:
             on_submit=submit,
             on_cancel=cancel,
             on_tasks=self.set_show_tasks,
-            on_thinking=self.set_show_thinking,
+            on_thinking=self.show_thinking,
             on_commands=lambda: self.show_commands(""),
             on_effort=self.adjust_effort,
             on_send_mode=self.cycle_send_mode,
@@ -2242,6 +2271,11 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--fork",
+        action="store_true",
+        help="With --continue: always continue a copy, leaving the original session unchanged",
+    )
+    parser.add_argument(
         "--session-dir", type=Path, help="Override the private session storage directory"
     )
     parser.add_argument(
@@ -2418,7 +2452,8 @@ async def _stopping_provider_processes(main):
 
 def forked_note(saved) -> str:
     """Say where a copied session came from, and that the two share a workspace."""
-    note = f"Continuing a copy of session {saved.forked_from}, which is open in another process."
+    note = f"Continuing a copy of session {saved.forked_from}"
+    note += "." if saved.fork_requested else ", which is open in another process."
     active = saved.tree.nodes.get(saved.tree.active) if saved.tree.active else None
     if active is not None and active.status == "interrupted":
         note += " Its running turn was copied up to its last safe step; /resend carries it on."
@@ -2516,7 +2551,8 @@ def _run_hosted(args: argparse.Namespace) -> None:
         model = args.model or load_preferences().get("model")
         resume = None
         if args.resume:
-            # One already running in a host was routed to --attach by the caller.
+            # One already running in a host was routed to --attach by the caller,
+            # unless --fork asked for a copy of it.
             path = resolve_session(args.resume, args.session_dir, workspace)
             resume, model = path.name, read_info(path).model
         if not model:
@@ -2529,6 +2565,7 @@ def _run_hosted(args: argparse.Namespace) -> None:
             no_save=args.no_save,
             worktree=args.worktree,
             no_worktree=args.no_worktree,
+            fork=args.fork,
         )
         launch = HostLaunch(identity, process, log)
     app = PreviewApp(
@@ -2604,6 +2641,10 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         return
     if args.resume and (args.no_save or args.theme_preview):
         parser.error("--continue cannot be combined with --no-save or --theme-preview")
+    if args.fork and not args.resume:
+        parser.error("--fork needs --continue")
+    if args.fork and args.attach is not None:
+        parser.error("--fork cannot be combined with --attach")
     if args.compact and not args.sessions:
         parser.error("--compact applies to --sessions")
     if args.print:
@@ -2675,7 +2716,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             else load_preferences().get("session_host", SETTINGS["session_host"].default) == "on"
         )
     )
-    if args.resume and args.attach is None and not args.print:
+    if args.resume and not args.fork and args.attach is None and not args.print:
         running = _running_host(args.resume, args.session_dir, args.workspace or Path.cwd())
         if running is not None:
             print(
@@ -2701,7 +2742,11 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             from pcode.sessions import SavedSession, SessionError
 
             saved = SavedSession.open(
-                args.resume, args.session_dir, args.workspace or Path.cwd(), fork_if_open=True
+                args.resume,
+                args.session_dir,
+                args.workspace or Path.cwd(),
+                fork_if_open=True,
+                fork=args.fork,
             )
             try:
                 if args.model and args.model != saved.info.model:
@@ -2774,7 +2819,8 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         if app is not None and app.model and hasattr(app.runtime, "close"):
             app.runtime.close()
         if saved is not None:
-            saved.close()
+            # A copy made for a resume that never started is removed, not listed.
+            saved.close() if app is not None else saved.abandon()
 
 
 if __name__ == "__main__":

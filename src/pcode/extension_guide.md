@@ -143,6 +143,9 @@ pcode.register_command(
 )
 ```
 
+Pass `complete_paths=True` to Tab-complete the argument (after any leading
+`--option` words) as a file or directory path.
+
 Handlers run on the terminal's event loop, so keep them quick. Raise
 `ValueError("message")` to show a usage error. A name pcode already uses is
 reported and skipped. Commands cannot send a prompt to the model; to do that,

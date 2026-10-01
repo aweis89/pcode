@@ -121,9 +121,9 @@ def test_toggle_renders_above_the_editor_instead_of_entering_scrollback():
             return stream.getvalue()
 
     screen = asyncio.run(run())
-    assert "Show thinking: off" in screen
+    assert "Thinking: off" in screen
     # The frame below it proves the notice is chrome above the editor.
-    assert screen.index("Show thinking: off") < screen.index("┌")
+    assert screen.index("Thinking: off") < screen.index("┌")
 
 
 def test_typed_row_sits_directly_under_scrollback_above_the_spinner():

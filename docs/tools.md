@@ -35,14 +35,17 @@ transcript still shows the command as typed. With no sandbox available, the
 `shell` tool refuses to run rather than running unprotected. Your own `!`
 commands are never sandboxed.
 
-Grant more with `/add-dir`:
+Grant more with `/allow-writes`:
 
 ```text
-/add-dir ../other-repo                  # this session
-/add-dir --global ~/.local/share/chezmoi  # every session
-/add-dir --global ~/work/AGENTS.md        # a single file
-/add-dir                                # show the current policy
+/allow-writes ../other-repo                     # this session
+/allow-writes --global ~/.local/share/chezmoi   # every session
+/allow-writes --global ~/work/AGENTS.md         # a single file
+/allow-writes                                   # show the current policy
 ```
+
+Press Tab while typing the path to complete it, including `~/` and paths
+outside the repository.
 
 Global grants are saved in `security.json` beside `preferences.json`, which you
 can also edit by hand:

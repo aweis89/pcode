@@ -77,6 +77,18 @@ def test_worktree_is_kept_while_another_session_is_open_in_it(repo, tmp_path):
     assert not created.path.exists()
 
 
+def test_worktree_is_kept_for_a_closed_session_that_can_be_resumed_there(repo, tmp_path):
+    """Leaving a `--fork` copy keeps the worktree its original will resume in."""
+    created, session, app = make(repo, tmp_path)
+    other = SavedSession.create("test:local", created.path, tmp_path / "sessions")
+    other.info.turns = 1
+    other.save_info()
+    other.close()
+    out = leave(app)
+    assert f"session {other.info.id} still works in" in out
+    assert created.path.exists()
+
+
 def test_untouched_worktree_and_empty_session_are_deleted(repo, tmp_path):
     created, session, app = make(repo, tmp_path)
     out = leave(app)

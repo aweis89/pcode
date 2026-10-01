@@ -493,7 +493,7 @@ def test_thinking_warning_is_shown_once_and_only_when_dropped(monkeypatch, tmp_p
     output = StringIO()
     app = PreviewApp(console=Console(file=output))
     app.model = "meridian:claude-opus-5"
-    app.activity.show_thinking = True
+    app.activity.thinking_mode = "scrollback"
     state = ["http://127.0.0.1:3456", False]
     monkeypatch.setattr(app.controller, "meridian_thinking_state", lambda: tuple(state))
 

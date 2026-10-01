@@ -53,18 +53,45 @@ Limits:
 - These diffs aren't guaranteed to apply as patches. Changes made by shell
   commands, formatters, or other tools aren't captured.
 
-## Saved thinking in scrollback
+## Thinking: status line or scrollback
 
-Press **Ctrl+T** or use `/show-thinking [on|off]` to show or hide the thinking
-text a provider exposes. When on, thinking streams into scrollback in a dim,
-muted style, distinct from the answer.
+`/show-thinking` picks where the thinking a provider exposes shows up. **Ctrl+T**
+or a bare `/show-thinking` cycles through the modes:
+
+| Mode | Shows |
+| --- | --- |
+| `status-line` (default) | The newest thought, faded, on its own row under the status row |
+| `scrollback` | The full thinking, streamed into scrollback in a dim style |
+| `off` | Nothing, and pcode asks the provider for nothing extra |
+
+The thinking row stays for the rest of the turn once a thought arrives, so a
+running tool on the status row doesn't hide it, and the last thought usually
+explains the calls that follow. Where a summary has section titles, as OpenAI's
+do, the row shows the newest title rather than the prose under it.
+
+Each mode asks the provider for the text that suits it:
+
+- **Opus 5.5, Sonnet 5.5, Fable and Mythos 5.1 over `anthropic:`**: `status-line`
+  asks for progress updates, the short notes these models write between tool
+  calls for whoever is watching. The row stays empty while the model reasons
+  and fills in as it moves between tools. `scrollback` asks for full summaries.
+- **Other `anthropic:` models**: summaries. Models older than Opus and Sonnet 5
+  only think when asked, so `scrollback` turns their thinking on (more latency
+  and tokens) and `status-line` leaves them alone.
+- **`claude:`**: always summaries. Under its CLI the model writes progress notes
+  as ordinary text, which already streams as part of the answer, so summaries
+  are what give the row something to show.
+- **`openai:` and `openai-responses:`**: each model's most detailed summary, in
+  either mode. An API organisation that isn't verified is refused summaries;
+  switch to `off` if that happens.
+- **`openai-codex:`**: always detailed summaries.
 
 ```sh
-pcode config set show_thinking on   # Default is off
+pcode config set show_thinking scrollback   # Default is status-line
 ```
 
-The toggle saves the default and rebuilds the retained transcript like
-`/redraw`, so it also reveals or hides earlier thinking, including text that
+Switching into or out of `scrollback` saves the default and rebuilds the retained
+transcript like `/redraw`, so it also reveals or hides earlier thinking, including text that
 arrived while hidden. It works mid-turn, keeps your draft, and doesn't duplicate
 answers or tool output. The usual [redraw limits](#regenerating-the-terminal-transcript)
 apply, and output redirected to a file or pipe can't be redrawn.
