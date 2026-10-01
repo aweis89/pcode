@@ -328,8 +328,8 @@ def test_the_viewer_sends_a_follow_up_typed_in_its_editor():
 
             try:
                 await asyncio.sleep(0.05)
-                # Opens on the list, not the editor.
-                assert app.layout.has_focus(browser.list)
+                # Opens on the answer (a lone thread shows no list), not the editor.
+                assert app.layout.has_focus(browser.detail)
                 await press("\x12")  # Ctrl+R
                 assert app.layout.has_focus(browser.input.area)
                 assert "Enter Send" in browser.hints()
@@ -359,9 +359,9 @@ def test_the_viewer_sends_a_follow_up_typed_in_its_editor():
                 await press("!")
                 assert "Wait" not in browser.input._title()
 
-                # Esc steps back to the list and keeps the draft; Esc there closes.
+                # Esc steps back out of the editor, keeping the draft; Esc there closes.
                 await press("\x1b", wait=0.7)
-                assert app.layout.has_focus(browser.list)
+                assert app.layout.has_focus(browser.detail)
                 assert browser.input.text == "too soon?!"
                 pipe.send_text("\x1b")
                 await asyncio.wait_for(task, 2)

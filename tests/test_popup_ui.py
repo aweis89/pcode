@@ -171,7 +171,7 @@ def test_popup_content_half_pages_and_full_pages(tmp_path, kind):
 
 def _popups(tmp_path, options):
     """Every alternate-screen popup, with each keyboard-scrollable TextArea it shows."""
-    from pcode.aside import Asides
+    from pcode.aside import Aside, Asides
     from pcode.aside_ui import AsideBrowser
     from pcode.conversation_tree import ConversationTree
     from pcode.edit_ui import EditBrowser
@@ -186,7 +186,10 @@ def _popups(tmp_path, options):
     info = session_info_dialog([("Model", "test:local")], **options)
     edits = EditBrowser([EditCompleted("1", "a.py", "edited", "+x", added=1)], **options)
     tree = TreeBrowser(ConversationTree(), **options)
-    asides = AsideBrowser(Asides(), **options)
+    # Two threads, since a lone one reads full width with no list to page.
+    records = Asides()
+    records.items.extend([Aside(question="one?"), Aside(question="two?")])
+    asides = AsideBrowser(records, **options)
     sessions = SessionBrowser([], root=tmp_path, workspace=tmp_path, **options)
     tools = ToolInspector(ToolArchive(), **options)
     # The links picker opens in its search line; the read-only window is the list.

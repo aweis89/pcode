@@ -419,7 +419,8 @@ class PopupInput:
         # main prompt registers them too, but a popup can open without it.
         configure_newline_keys()
         self.submit = submit
-        # Where Esc returns focus: the popup's list, usually.
+        # Where Esc returns focus: the popup's list, usually. A callable picks
+        # it as Esc is pressed, for a popup whose list can be hidden.
         self.home = home
         self.title = title
         self.placeholder = placeholder
@@ -459,7 +460,7 @@ class PopupInput:
             # The draft stays: Esc steps out to browse, it does not discard.
             # From a prompt it cancels that, bringing the draft back.
             self._restore()
-            event.app.layout.focus(self.home)
+            event.app.layout.focus(self.home() if callable(self.home) else self.home)
 
         frame = Frame(self.area, title=self._title)
         self.container = HSplit(

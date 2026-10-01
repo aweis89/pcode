@@ -136,6 +136,9 @@ class AsideBrowser:
             self.selected = self.threads[-1][0].thread if self.threads else None
         self._rendered: tuple | None = None
         self._refreshing = False
+        # Enter on the list reads the selected thread full width; Esc brings
+        # the list back. A lone thread never shows the list at all.
+        self.reading = False
         self._ids: list[str] = []
         self.notice = ""
         # The copy or link picker over the viewer, while one is open.
@@ -148,7 +151,7 @@ class AsideBrowser:
         self.input = (
             PopupInput(
                 self.follow_up,
-                home=self.list,
+                home=self.home,
                 title=self.input_title,
                 placeholder="Ask a follow-up about this answer…",
                 shortcuts=shortcuts,
@@ -160,9 +163,21 @@ class AsideBrowser:
         self.detail.bind_scrolling(keys, paging=self.input.editing if self.input else None)
         bind_list_paging(keys, self.list, has_focus(self.list))
 
-        @keys.add("escape", eager=True)
-        @keys.add("c-c")
         @keys.add("enter")
+        def enter(event):
+            if self.listing():
+                self.read(event.app)
+            else:
+                event.app.exit(result=None)
+
+        @keys.add("escape", eager=True)
+        def escape(event):
+            if self.reading and len(self.threads) > 1:
+                self.back_to_list(event.app)
+            else:
+                event.app.exit(result=None)
+
+        @keys.add("c-c")
         def close(event):
             event.app.exit(result=None)
 
@@ -217,16 +232,24 @@ class AsideBrowser:
                 + (f" · {self.notice}" if self.notice else "")
             )
         )
+        listing = Condition(self.listing)
         wide = VSplit(
             [
-                Frame(self.list, title="Questions", width=Dimension(weight=2)),
+                ConditionalContainer(
+                    Frame(self.list, title="Questions", width=Dimension(weight=2)), listing
+                ),
                 Frame(self.detail, title="Answer", width=Dimension(weight=3)),
             ]
         )
         narrow = HSplit(
             [
-                Frame(
-                    self.list, title="Questions", height=lambda: list_pane_height(len(self.threads))
+                ConditionalContainer(
+                    Frame(
+                        self.list,
+                        title="Questions",
+                        height=lambda: list_pane_height(len(self.threads)),
+                    ),
+                    listing,
                 ),
                 Frame(self.detail, title="Answer"),
             ]
@@ -255,7 +278,7 @@ class AsideBrowser:
         self.app = Application(
             # Opens on the list, never the editor: the viewer can open by itself
             # when an answer lands, mid-keystroke at the main prompt.
-            layout=Layout(popup_container(overlaid, shortcuts), focused_element=self.list),
+            layout=Layout(popup_container(overlaid, shortcuts), focused_element=self.home()),
             key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(),
@@ -263,6 +286,23 @@ class AsideBrowser:
             **app_options,
         )
         self.refresh()
+
+    def listing(self) -> bool:
+        """Whether the question list is on screen: several threads, none opened to read."""
+        return not self.reading and len(self.threads) > 1
+
+    def home(self):
+        """Where focus rests outside the editor: the list when shown, else the answer."""
+        return self.list if self.listing() else self.detail
+
+    def read(self, app) -> None:
+        """Hide the list so the selected thread's answer gets the whole width."""
+        self.reading = True
+        app.layout.focus(self.detail)
+
+    def back_to_list(self, app) -> None:
+        self.reading = False
+        app.layout.focus(self.list)
 
     def editing(self) -> bool:
         return self.input is not None and self.app.layout.has_focus(self.input.area)
@@ -279,6 +319,10 @@ class AsideBrowser:
             return "Esc Cancel (brings the follow-up draft back) · Tab Focus"
         if self.editing():
             return "Esc Back to the list (keeps the draft) · Tab Focus"
+        if self.listing():
+            return "Tab Focus · Enter Read · Esc Close"
+        if self.reading and len(self.threads) > 1:
+            return "Tab Focus · Esc Back to the questions · Enter Close"
         return "Tab Focus · Enter/Esc Close"
 
     def bridgeable(self) -> bool:
