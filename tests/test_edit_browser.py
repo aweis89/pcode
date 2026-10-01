@@ -14,7 +14,8 @@ from rich.syntax import Syntax
 
 from pcode.app import PreviewApp
 from pcode.edit_transcript import DiffLexer
-from pcode.edit_ui import EditBrowser
+from pcode.edit_ui import EditBrowser, first_view
+from pcode.git_diff import DiffView
 from pcode.runtime import EditCompleted
 
 
@@ -242,6 +243,56 @@ def test_file_list_keeps_its_rows_when_the_diff_is_long():
                 assert ui.diff.window.render_info.window_height > 6
 
     asyncio.run(run())
+
+
+def test_views_cycle_lazily_keeping_the_search_and_the_selected_file():
+    net = DiffView("Net", [change("a.py"), change("b.py")], "none")
+    calls = []
+
+    def uncommitted():
+        calls.append("uncommitted")
+        return DiffView("Uncommitted", [change("c.py"), change("b.py", patch="+later")], "none")
+
+    async def run():
+        with create_pipe_input() as pipe:
+            ui = EditBrowser(
+                views=[lambda: net, uncommitted], loaded={0: net}, input=pipe, output=DummyOutput()
+            )
+            assert ui.heading() == "View 1/2 · Net" and calls == []
+            task = asyncio.create_task(ui.run())
+            await asyncio.sleep(0.05)
+            pipe.send_text("\r\x1b[B")  # leave the search line, select b.py
+            await asyncio.sleep(0.05)
+            assert ui.selected.path == "b.py"
+            pipe.send_text("\x16\x16\x16")  # Ctrl+V, cycling past the loading view
+            for _ in range(40):
+                await asyncio.sleep(0.025)
+                if ui.title == "Uncommitted":
+                    break
+            assert ui.heading() == "View 2/2 · Uncommitted"
+            assert ui.selected.path == "b.py" and "+later" in ui.diff.text
+            assert calls == ["uncommitted"]  # loaded once, though shown twice while loading
+            pipe.send_text("\x06c")  # a path search survives a switch
+            await asyncio.sleep(0.05)
+            pipe.send_text("\x16")
+            await asyncio.sleep(0.05)
+            assert ui.title == "Net" and ui.visible == [] and ui.query.text == "c"
+            pipe.send_text("\x16")
+            await asyncio.sleep(0.05)
+            assert calls == ["uncommitted"] and [c.path for c in ui.visible] == ["c.py"]
+            pipe.send_text("\x1b")
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+
+
+def test_first_view_opens_on_the_first_with_changes():
+    empty = DiffView("Git", [], "none")
+    log = DiffView("Tool edits", [change("a.py")], "none")
+    index, loaded = first_view([lambda: empty, lambda: log])
+    assert index == 1 and loaded[0] is empty
+    assert loaded[1].title == "Tool edits · opened here: earlier views are empty"
+    assert first_view([lambda: empty, lambda: empty]) == (0, {0: empty, 1: empty})
 
 
 def test_slash_command_dispatches_and_collects_changes():

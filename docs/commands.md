@@ -543,7 +543,7 @@ With the default `ctrl` prefix they are:
 | --- | --- |
 | `/btw` | Ctrl+R follow up · Ctrl+Y copy answer · Ctrl+O open a link · Ctrl+S summarize into the conversation · Ctrl+T merge into `/tree` · Ctrl+K stop running |
 | `/tools` | Ctrl+F search · Ctrl+X failures only · Ctrl+T tool filter · Ctrl+Y copy command · Ctrl+O copy output |
-| `/diffs` | Ctrl+F search the focused pane · Ctrl+S / Ctrl+R next / previous match |
+| `/diffs` | Ctrl+F search the focused pane · Ctrl+S / Ctrl+R next / previous match · Ctrl+V next view |
 | `/resume` | Ctrl+F search · Ctrl+R responses too · Ctrl+G all workspaces · Ctrl+X delete (twice) |
 | `/switch` | Ctrl+F search · Ctrl+N new session · Ctrl+X stop (twice) |
 | `/jobs` | Ctrl+W watch in the preview · Ctrl+K stop |
@@ -577,21 +577,41 @@ opens, so no restart is needed.
 
 `/diffs` opens a full-screen popup with one net git diff per file, however many
 times the file was edited, in the same colors as scrollback. The first line says
-what is being compared:
+what is being compared. It opens on the session's net work:
 
 - **In a linked worktree** (the default with `worktree on`): the whole branch
   against its merge-base with the mainline branch, including uncommitted and
   untracked files. That's what a merge would bring in, whichever tool made the
   change (file tools, the shell, a formatter, a worker). Merging mainline into
   the branch moves the merge-base, so mainline's own changes never show up.
-- **In any other checkout**: uncommitted changes against `HEAD`, limited to the
-  files this session's file tools edited, since anything else dirty may be
-  yours. Those files show all their changes, including ones made before the
-  session or by hand. Files changed only through the shell aren't listed.
-- **Outside git**, or when git can't produce the diff (no commits yet, a
-  detached mainline): the individual tool edits, newest first, with the reason
-  in the title. Resumed and branched conversations show the edits of their own
-  branch; nothing is re-read from disk or re-applied.
+- **In any other checkout**: everything since the commit the session started
+  from, limited to files this session's file tools edited or its own commits
+  touched, so work stays visible after the agent commits it. A commit counts as
+  the session's when it was made after the session began by your git identity,
+  so pulled commits are left out (without a `user.email`, only the time
+  counts). Your own commits count too, including another session's in the
+  same checkout, and a session resumed much later still compares against
+  where it started. Those files show all their changes since the start,
+  including ones you made by hand. Files changed through the shell
+  appear once they're committed. If `HEAD` no longer descends from the start (a
+  rebase or branch switch), or the session predates this, it falls back to
+  uncommitted changes in edited files, and the title says so.
+
+Ctrl+V (the `v` shortcut) cycles to two more views:
+
+- **Uncommitted**: what the next commit would take in, against `HEAD`. In a
+  checkout other than a linked worktree, it's limited to the same session
+  files.
+- **Tool edits**: each edit the file tools made, newest first, including ones
+  later reverted. Resumed and branched conversations show the edits of their
+  own branch; nothing is re-read from disk or re-applied. Outside git this is
+  the only view.
+
+Each view loads the first time you show it. If the net view is empty, the
+browser opens on the first view that isn't and says so. A switch keeps your
+search, and stays on the selected file if the new view has it. When git can't
+produce a view (no commits yet, a detached mainline), that view names the
+reason.
 
 Untracked files are included without touching your staging area. Untracked files
 that look sensitive (`.env`, keys, credentials) are listed but never read, and

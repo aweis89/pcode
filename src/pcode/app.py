@@ -1007,31 +1007,59 @@ class PreviewApp:
             if record.get("kind") == "EditCompleted"
         ]
 
-    def diff_view(self):
-        """The git view of this session's work, or its tool edits where git has none."""
+    def diff_views(self):
+        """Loaders for /diffs: the session's git views, then its tool edit log.
+
+        A git view that fails becomes an empty view naming the error, so the
+        others stay reachable.
+        """
+        from pcode import git_diff
         from pcode.edit_ui import EMPTY
-        from pcode.git_diff import DiffView, GitDiffError, session_diff
+        from pcode.git_diff import DiffView, GitDiffError
 
         edits = self.recorded_edits()
+        info = getattr(getattr(self.runtime, "session", None), "info", None)
         reason = ""
         try:
-            view = session_diff(self.workspace, [edit.path for edit in edits])
+            views = git_diff.session_views(
+                self.workspace,
+                [edit.path for edit in edits],
+                getattr(info, "start_commit", None),
+                getattr(info, "created", None),
+            )
         except GitDiffError as error:
-            view, reason = None, f" · git diff unavailable: {plain(str(error), limit=160)}"
-        if view is not None:
+            views, reason = [], f" · git diff unavailable: {plain(str(error), limit=160)}"
+
+        def guarded(load):
+            def view():
+                try:
+                    return load()
+                except GitDiffError as error:
+                    detail = f"git diff unavailable: {plain(str(error), limit=160)}"
+                    return DiffView(f"Git diff · {detail}", [], detail.capitalize() + ".")
+
             return view
-        return DiffView(f"Tool edits, newest first{reason}", list(reversed(edits)), EMPTY)
+
+        def tool_log():
+            return DiffView(f"Tool edits, newest first{reason}", list(reversed(edits)), EMPTY)
+
+        return [*map(guarded, views), tool_log]
 
     async def browse_diffs(self, output: TerminalOutput, session) -> None:
-        from pcode.edit_ui import EditBrowser
+        from pcode.edit_ui import EditBrowser, first_view
 
         self.diffs_requested = False
-        view = await asyncio.to_thread(self.diff_view)
+
+        def load():
+            loaders = self.diff_views()
+            return loaders, *first_view(loaders)
+
+        loaders, index, loaded = await asyncio.to_thread(load)
         async with self.popup(output, session) as modal_input:
             browser = EditBrowser(
-                view.changes,
-                title=view.title,
-                empty=view.empty,
+                views=loaders,
+                loaded=loaded,
+                view=index,
                 code_theme=self.transcript.code_theme,
                 input=modal_input,
                 output=session.app.output,
