@@ -52,14 +52,15 @@ def failing_model(failures, error=dropped_connection):
     return model, calls
 
 
-def test_dropped_connection_is_retried_once_by_default():
-    model, calls = failing_model(1)
+def test_dropped_connection_is_retried_three_times_by_default():
+    model, calls = failing_model(3)
     runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
     try:
         run(runtime, "hello")
     finally:
         runtime.close()
-    assert len(calls) == 2
+    assert runtime.retry_attempts == 3
+    assert len(calls) == 4
 
 
 def test_retries_are_bounded_by_the_saved_preference():
