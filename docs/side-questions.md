@@ -87,7 +87,12 @@ order, opening on the newest question. Each follow-up:
 - **runs where the thread began:** the same model, effort and conversation id,
   even if `/model` or `/effort` has changed the conversation's since. A thread
   started with `$MODEL` or `+LEVEL` keeps them; a `/btw` that fanned out to
-  several models is one thread per model.
+  several models is one thread per model. A follow-up can start with one
+  `$MODEL[+LEVEL]` or `+LEVEL` word of its own, read as in `/btw`, to switch
+  models: `$MODEL` moves the thread to that model, and a bare `+LEVEL` keeps
+  the thread's model at another effort. The next follow-up stays where this one
+  went. A switched follow-up still sees the whole thread, but starts without its
+  prompt cache.
 - **waits for the answer before it.** Sending while the newest answer is still
   arriving is refused in the editor's title, and the draft stays. If a
   follow-up fails, the next one continues from the last answer that arrived; a
@@ -180,8 +185,10 @@ is the question.
 Typing `$` in a `/btw` line completes model names from the same catalog as the
 `/model` picker, matching any part of the name (`$opus` finds
 `anthropic:claude-opus-…`). It works for each `$` word in the leading run; once
-the question starts, `$` is ordinary text, and it never completes in a normal
-prompt or `!` shell mode.
+the question starts, `$` is ordinary text. A normal prompt can start with one
+`$PROVIDER:MODEL[+LEVEL]` or `+LEVEL` word to
+[pick its model](commands.md#slash-commands) for that turn alone, and `$`
+completes there too.
 
 - **No `$`:** the conversation's model, sharing its prompt cache as described
   above. Naming the conversation's own model is the same thing.

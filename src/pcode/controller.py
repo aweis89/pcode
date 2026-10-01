@@ -26,6 +26,7 @@ from pcode.aside import (
     model_fragment,
     model_labels,
     parse_models,
+    prompt_target,
     summary_request,
 )
 from pcode.commands import Command, CommandRegistry
@@ -886,6 +887,10 @@ class SessionController:
         than being spliced into a running one. `owner` hears when it starts,
         or that it was dropped; a steering message never starts a turn.
         """
+        if mode == "steering" and prompt_target(text)[0] is not None:
+            # A turn cannot change models mid-request: a prompt naming one gets
+            # its own turn on it, never spliced into one that starts first.
+            mode = "queue"
         if mode == "interrupt" and self.turn_running():
             self.clear_queue()
             self.interrupt_pending = True
@@ -1192,6 +1197,31 @@ class SessionController:
             self.view.session_changed()
             await self.view.after_turn()
 
+    async def stream_on(self, target: SideTarget, prompt: str):
+        """Stream a turn of `prompt` on `target` alone, from `$MODEL` or `+EFFORT`.
+
+        The conversation keeps its own model: only this turn's requests go to
+        `target`, and the next prompt is back where /model left it. Resolving
+        happens here, inside the turn, so a bad name fails it like any other
+        turn failure.
+        """
+        if not prompt:
+            raise ValueError("Nothing to send after the model; add the prompt after it.")
+        self.check_effort(target)
+        options = await self.target_options(target)
+        if "model" in options:
+            self.view.note(
+                f"This prompt runs on {target.model}"
+                + (f" at {target.effort} effort" if target.effort else "")
+                + f"; the conversation stays on {self.model}. Another model starts "
+                "without the conversation's prompt cache, so it pays for the whole prompt."
+            )
+        elif target.effort:
+            self.view.note(f"This prompt runs at {target.effort} effort.")
+        async with aclosing(self.runtime.stream(prompt, **options)) as stream:
+            async for event in stream:
+                yield event
+
     async def run_turn(
         self,
         text: str,
@@ -1232,7 +1262,12 @@ class SessionController:
             runtime.warning_notice = self.view.warning
         failure = None
         cancelled = False
-        source = runtime.stream(None if resend else text)
+        chosen, prompt = (None, text) if resend or wake else prompt_target(text)
+        source = (
+            self.stream_on(chosen, prompt)
+            if chosen is not None
+            else runtime.stream(None if resend else text)
+        )
         # A turn creates the session's journal on first use. Attached terminals
         # read it from disk (/tools, /diffs), so they need its path mid-turn,
         # not only once the turn ends.
@@ -3046,18 +3081,45 @@ class SessionController:
             raise ValueError("/btw needs a model; this is a local UI preview.")
         if self.startup_pending or self.startup_error is not None:
             raise ValueError("/btw is unavailable until the agent has started.")
-        # Refused the way /effort refuses it, before anything starts, rather
-        # than asking at an effort the provider would reject. The conversation's
-        # own model is judged on the object /effort judges, so one command
-        # cannot accept what the other refuses; another model is judged on its
-        # name, which is all that is known before `side_model` resolves it.
-        agent = getattr(self.runtime, "agent", None)
         for target in models:
-            name = target.model or self.model
-            resolved = getattr(agent, "model", None) if name == self.model else None
-            if target.effort and effort_setting(name, resolved) is None:
-                raise ValueError(effort_unavailable(name))
+            self.check_effort(target)
         await self.start_aside(question, models)
+
+    def check_effort(self, target: SideTarget) -> None:
+        """Refuse an effort the way /effort refuses it, before anything starts.
+
+        Rather than asking at an effort the provider would reject. The
+        conversation's own model is judged on the object /effort judges, so
+        one command cannot accept what the other refuses; another model is
+        judged on its name, which is all that is known before `side_model`
+        resolves it.
+        """
+        if not target.effort:
+            return
+        agent = getattr(self.runtime, "agent", None)
+        name = target.model or self.model
+        resolved = getattr(agent, "model", None) if name == self.model else None
+        if effort_setting(name, resolved) is None:
+            raise ValueError(effort_unavailable(name))
+
+    async def target_options(self, target: SideTarget) -> dict:
+        """How a run asks `target`: `AgentRuntime.aside`/`stream` keyword arguments.
+
+        Another model is resolved now, so a bad name fails before anything is
+        sent. The conversation's own model needs nothing, or, at another
+        effort, its settings with that effort applied, taken now so a later
+        /effort cannot reach a run already asked.
+        """
+        from pcode.agent import side_model, with_effort
+
+        if target.model not in ("", self.model):
+            return {"model": await asyncio.to_thread(side_model, target.model, target.effort)}
+        if not target.effort:
+            return {}
+        agent = self.runtime.agent
+        return {
+            "settings": with_effort(self.model, agent.model, agent.model_settings, target.effort)
+        }
 
     async def start_aside(self, question: str, models: list[SideTarget] | None = None) -> None:
         """Run a side question in the background, on the context available now.
@@ -3068,33 +3130,15 @@ class SessionController:
         anything starts. An effort on the conversation's own model stays on
         that path, with the effort applied to its settings for that question.
         """
-        from pcode.agent import side_model, with_effort
-
         models = models or [SideTarget()]
         others = [target for target in models if target.model not in ("", self.model)]
-        resolved = {}
-        if others:
-            chosen = await asyncio.to_thread(
-                lambda: [side_model(target.model, target.effort) for target in others]
-            )
-            resolved = dict(zip(others, chosen))
+        options = [await self.target_options(target) for target in models]
         labels = model_labels(models)
-
-        def options_for(target: SideTarget) -> dict:
-            if target in resolved:
-                return {"model": resolved[target]}
-            if not target.effort:
-                return {}
-            # Taken now, like the context: a later /effort must not reach it.
-            agent = self.runtime.agent
-            settings = with_effort(self.model, agent.model, agent.model_settings, target.effort)
-            return {"settings": settings}
-
         tree = getattr(self.runtime, "tree", None)
-        for target in models:
+        for target, chosen in zip(models, options):
             self.asides.start(
                 question,
-                self._aside_work(question, options_for(target)),
+                self._aside_work(question, chosen),
                 model=target.model,
                 label=labels[target],
                 effort=target.effort,
@@ -3115,14 +3159,21 @@ class SessionController:
                 "this question does not join it. /btw opens the answer."
             )
 
-    def _aside_work(self, question: str, options: dict):
-        """The background run for one side question, streaming into its record."""
+    def _aside_work(self, question: str, options: dict, target: SideTarget | None = None):
+        """The background run for one side question, streaming into its record.
+
+        `target` is resolved in the run, so a follow-up naming a model it
+        cannot use fails in its thread, where it was asked.
+        """
 
         async def work(aside):
             def report(answer: str, activity: str) -> None:
                 self.asides.update(aside, answer=answer, activity=activity)
 
-            return await self.runtime.aside(question, report=report, **options)
+            chosen = options
+            if target is not None:
+                chosen = {**options, **await self.target_options(target)}
+            return await self.runtime.aside(question, report=report, **chosen)
 
         return work
 
@@ -3130,18 +3181,42 @@ class SessionController:
         """Ask `question` as a follow-up in a side question's thread.
 
         It continues from the thread's newest answer, on the model and effort
-        that answered it; see `AgentRuntime.aside`. Raises `ValueError` when
-        there is nothing to continue yet, which the viewer shows as is.
+        that answered it unless the question starts with a `$MODEL[+EFFORT]`
+        or `+EFFORT` of its own, as `/btw` does; see `AgentRuntime.aside`.
+        Raises `ValueError` when there is nothing to continue yet, or the
+        target is unusable, which the viewer shows as is.
         """
+        models, question = parse_models(question)
+        if len(models) > 1:
+            raise ValueError("A follow-up asks one model; start a new /btw to ask several.")
         follows = self.asides.follows(thread)
+        target = self.follow_up_target(follows, models[0]) if models else None
+        options = {"after": follows.reply}
+        if target is not None:
+            options["fresh"] = True
         self.asides.start(
             question,
-            self._aside_work(question, {"after": follows.reply}),
-            model=follows.model,
-            label=follows.label,
-            effort=follows.effort,
+            self._aside_work(question, options, target),
+            model=target.model if target else follows.model,
+            label=model_labels([target])[target] if target else follows.label,
+            effort=target.effort if target else follows.effort,
             thread=thread,
         )
+
+    def follow_up_target(self, follows: Aside, target: SideTarget) -> SideTarget | None:
+        """Where a follow-up naming `target` runs, read against its thread; `None` stays put.
+
+        A bare `+EFFORT` keeps the thread's model, and naming the
+        conversation's model means it, not whatever the thread is on. Naming
+        exactly where the thread already runs changes nothing, so the follow-up
+        keeps the thread's cache rather than starting a new session.
+        """
+        model = target.model or follows.model
+        target = SideTarget("" if model == self.model else model, target.effort)
+        if (target.model, target.effort) == (follows.model, follows.effort):
+            return None
+        self.check_effort(target)
+        return target
 
     def check_bridge(self, thread: str) -> Aside:
         """The answer a thread would be brought into the conversation from.

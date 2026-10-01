@@ -10,6 +10,7 @@ prompt: anything added ahead of the history would miss the cache.
 """
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from time import monotonic
@@ -33,6 +34,8 @@ MODEL_MARK = "$"
 # `+high` asks on the conversation's model at that effort; `$model+high` on
 # another model. The levels are the ones /effort accepts.
 EFFORT_MARK = "+"
+# How every provider prefix is spelled (`openai-codex`, `google-gla`).
+PROVIDER_NAME = re.compile(r"[a-z][a-z0-9_-]*")
 ASIDE_MODEL_USAGE = (
     f"Usage: /btw [$PROVIDER:MODEL[+EFFORT] | +EFFORT ...] QUESTION (EFFORT: {'|'.join(EFFORTS)})"
 )
@@ -185,6 +188,29 @@ def parse_models(argument: str) -> tuple[list[SideTarget], str]:
             f"At most {ASIDE_MODEL_LIMIT} models per side question; got {len(models)}."
         )
     return models, rest
+
+
+def prompt_target(text: str) -> tuple[SideTarget | None, str]:
+    """Split a leading `$PROVIDER:MODEL[+EFFORT]` or `+EFFORT` word off a prompt.
+
+    A prompt is free text, so unlike `/btw` nothing here is refused: a word
+    only names a target when it reads as one unmistakably, a model with its
+    provider (`$openai:gpt-5`, never `$HOME` or `$PATH:/usr/bin`, whose
+    uppercase "provider" no provider is named like) or a real effort level
+    (`+high`, never `+1`), and anything else leaves the prompt as typed. One
+    word only, since one prompt runs one turn.
+    """
+    word, *tail = text.lstrip().split(maxsplit=1) or [""]
+    rest = tail[0] if tail else ""
+    if word.startswith(EFFORT_MARK):
+        effort = word.removeprefix(EFFORT_MARK)
+        return (SideTarget(effort=effort), rest) if effort in EFFORTS else (None, text)
+    if word.startswith(MODEL_MARK):
+        model, effort = split_effort(word.removeprefix(MODEL_MARK))
+        provider, colon, name = model.partition(":")
+        if colon and PROVIDER_NAME.fullmatch(provider) and name:
+            return SideTarget(model, effort), rest
+    return None, text
 
 
 def _leading_word(argument: str) -> str | None:

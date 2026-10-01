@@ -99,7 +99,16 @@ class SlashCompleter(Completer):
 
     def get_completions(self, document: Document, complete_event: CompleteEvent):
         text = document.text_before_cursor
-        if not text.startswith("/") or "\n" in document.text or document.text_after_cursor:
+        if "\n" in document.text or document.text_after_cursor:
+            return
+        if text.startswith(("$", "+")) and not any(char.isspace() for char in text):
+            # A prompt's leading `$MODEL` or `+EFFORT` picks its model the way
+            # /btw's does, so it completes from the same catalog.
+            btw = self.registry.find("/btw")
+            if btw is not None and btw.argument_completer is not None:
+                yield from btw.argument_completer(text)
+            return
+        if not text.startswith("/"):
             return
         if not any(char.isspace() for char in text):
             for command in self.registry.commands:
