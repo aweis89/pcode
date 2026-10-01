@@ -92,6 +92,8 @@ def setup(pcode) -> None:
         text = argument.strip()
         persist = text == "--global" or text.startswith("--global ")
         text = text.removeprefix("--global").strip()
+        if text.startswith("--"):
+            raise ValueError("Usage: /allow-writes [--global] PATH")
         if not text:
             if persist:
                 raise ValueError("Usage: /allow-writes [--global] PATH")

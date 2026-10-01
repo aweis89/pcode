@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from prompt_toolkit.document import Document
@@ -57,6 +58,11 @@ def test_extension_commands_complete_paths_in_process_and_attached(tmp_path):
     completer = SlashCompleter(registry)
     found = completer.get_completions(Document("/grant d"), None)
     assert [completion.text for completion in found] == ["docs/"]
+
+    async def completed_off_the_loop():
+        return [c.text async for c in completer.get_completions_async(Document("/grant d"), None)]
+
+    assert asyncio.run(completed_off_the_loop()) == ["docs/"]
 
     controller = RemoteController(view=None, activity=type("Activity", (), {})())
     controller.workspace = tmp_path

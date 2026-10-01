@@ -218,6 +218,8 @@ def test_allow_writes_grants_for_the_session_or_globally(repo, tmp_path, monkeyp
     assert "Writable:" in notices[-1] and str(sandbox.real(other)) in notices[-1]
     with pytest.raises(ValueError, match="does not exist"):
         command.handler(str(tmp_path / "missing"))
+    with pytest.raises(ValueError, match="Usage"):
+        command.handler(f"--forever {other}")
 
 
 def test_a_broken_config_blocks_writes_instead_of_dropping_the_policy(repo, monkeypatch):
