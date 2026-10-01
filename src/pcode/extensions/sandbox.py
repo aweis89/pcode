@@ -1,8 +1,8 @@
 """Write roots for the file tools and an OS sandbox around the model's shell.
 
 Opt in with `/extensions on sandbox`. The policy lives in `pcode.sandbox`:
-writes only under the repository, temp and cache dirs, and paths you grant;
-reads anywhere except credential files. `/allow-writes PATH` grants a directory
+writes only under the repository, temp, cache and package dirs, and paths you
+grant; reads anywhere except credential files. `/allow-writes PATH` grants a directory
 or file for this session, `/allow-writes --global PATH` for every session (saved
 in `sandbox.json` beside preferences.json), and `/allow-writes` alone shows the
 policy.
@@ -22,8 +22,8 @@ READ_TOOLS = frozenset({"read_file", "list_files", "grep"})
 
 INSTRUCTIONS = (
     "File writes and shell commands run under a write policy: the workspace's "
-    "repository, temp and cache directories, and paths the user granted are "
-    "writable; pcode's config, `.pcode/` and `.git/hooks/` are not; credential "
+    "repository, temp, cache and package directories, and paths the user "
+    "granted are writable; pcode's config, `.pcode/` and `.git/hooks/` are not; credential "
     "files are unreadable. A refused write fails with a message or "
     "'Operation not permitted'. Do not work around it; ask the user to run "
     "`/allow-writes PATH` when a task needs another location."
