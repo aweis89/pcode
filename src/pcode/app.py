@@ -35,6 +35,7 @@ from pcode.controller import (
 )
 from pcode.error_report import error_message
 from pcode.preferences import (
+    ANTHROPIC_THINKS_BY_DEFAULT,
     SETTINGS,
     SYNTAX_THEMES,
     THINKING_KEYS,
@@ -765,10 +766,10 @@ class PreviewApp:
                 lines.append("Asks for thinking summaries from the next turn.")
             else:
                 lines.append("Asks for no readable thinking from the next turn.")
-            if wanted and provider == "anthropic":
-                lines.append(
-                    "Models that think only when asked will think: more latency and tokens."
-                )
+            if provider == "anthropic":
+                # Only scrollback turns thinking on, and only where it was off.
+                if wanted and not ANTHROPIC_THINKS_BY_DEFAULT.search(model):
+                    lines.append("This model only thinks when asked: more latency and tokens.")
             elif wanted:
                 lines.append("An unverified OpenAI organisation is refused summaries; use off.")
         if argument != "off" and model.startswith("meridian:"):

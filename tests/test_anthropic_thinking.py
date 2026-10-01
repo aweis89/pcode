@@ -200,7 +200,7 @@ def test_startup_and_toggle_preserve_effort_and_replace_settings():
     app.show_thinking("off")
     assert agent.model_settings == {"anthropic_effort": "medium"}
     assert "anthropic_thinking" in captured
-    app.set_thinking_mode("scrollback")  # Ctrl+T uses the same callback.
+    app.set_thinking_mode("scrollback")
     apply_effort(agent, app.model, "high")
     assert agent.model_settings["anthropic_thinking"] == {
         "type": "adaptive",
@@ -301,3 +301,55 @@ def test_resume_applies_current_thinking_preference(monkeypatch, tmp_path):
             app.runtime.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "name, updates",
+    [
+        ("claude-opus-5-5", True),
+        ("claude-opus-5-5-20260901", True),
+        ("claude-sonnet-5-5", True),
+        ("claude-fable-5", True),
+        ("claude-fable-5-1", True),
+        ("claude-mythos-5-1", True),
+        # A later model with a longer number is not assumed to support the beta.
+        ("claude-fable-50", False),
+        ("claude-opus-5-50", False),
+        ("claude-mythos-5-10", False),
+        ("claude-opus-5", False),
+    ],
+)
+def test_only_models_that_write_progress_updates_get_the_beta(name, updates):
+    from pcode.preferences import UPDATES_BETA, thinking_settings
+
+    profile = SimpleNamespace(profile={"anthropic_supports_adaptive_thinking": True})
+    wanted = thinking_settings(f"anthropic:{name}", profile, "status-line")
+    assert (wanted.get("anthropic_betas") == [UPDATES_BETA]) == updates
+
+
+@pytest.mark.parametrize(
+    "model, mode, warned",
+    [
+        ("anthropic:claude-opus-4-7", "scrollback", True),
+        ("anthropic:claude-opus-4-7", "status-line", False),
+        ("anthropic:claude-opus-5-5", "status-line", False),
+        ("anthropic:claude-opus-5-5", "scrollback", False),
+    ],
+)
+def test_the_cost_warning_is_only_for_turning_thinking_on(model, mode, warned):
+    output = StringIO()
+    app = PreviewApp(model=model, console=Console(file=output))
+    app.show_thinking(mode)
+    assert ("only thinks when asked" in output.getvalue()) == warned
+
+
+def test_an_unknown_mode_from_a_terminal_is_ignored():
+    agent = SimpleNamespace(model="anthropic:claude-opus-4-7", model_settings=None)
+    app = PreviewApp(
+        model=agent.model, runtime=SimpleNamespace(agent=agent), console=Console(file=StringIO())
+    )
+    app.controller.set_thinking("scrollback")
+    settings = agent.model_settings
+    app.controller.set_thinking("on")  # An older terminal's value.
+    assert app.activity.thinking_mode == "scrollback"
+    assert agent.model_settings is settings

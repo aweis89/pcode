@@ -34,6 +34,7 @@ from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
 from pcode.preferences import (
     EFFORTS,
     SETTINGS,
+    THINKING_MODES,
     apply_effort,
     apply_thinking,
     effort_for,
@@ -701,6 +702,8 @@ class SessionController:
 
     def set_thinking(self, mode: str) -> None:
         """Ask the provider for the readable thinking `mode` needs from the next request."""
+        if mode not in THINKING_MODES:
+            return  # From a mismatched terminal over the host socket; keep the current mode.
         self.activity.thinking_mode = mode
         agent = getattr(self.runtime, "agent", None)
         if agent is not None and self.model:

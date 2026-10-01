@@ -433,7 +433,8 @@ def tail_cells(text: str, width: int) -> str:
 
 
 # A summary section's title: `**Tracing the resize path**` or `## Tracing...`.
-THOUGHT_HEADING = re.compile(r"(\*\*|__)(?P<bold>.+?)\1|#{1,6}\s+(?P<hash>.+)")
+# One bold run only: `**A** and **B**` is prose with emphasis, not a title.
+THOUGHT_HEADING = re.compile(r"\*\*(?P<bold>[^*]+)\*\*|#{1,6}\s+(?P<hash>.+)")
 
 
 def latest_thought(text: str) -> str:
@@ -445,9 +446,16 @@ def latest_thought(text: str) -> str:
     updates) shows its newest line.
     """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    for line in reversed(lines):
-        if heading := THOUGHT_HEADING.fullmatch(line):
-            return (heading["bold"] or heading["hash"]).strip()
+    title, fenced = "", False
+    for line in lines:
+        if line.startswith("```"):
+            fenced = not fenced  # A `# comment` in a code block is not a title.
+        elif not fenced and (heading := THOUGHT_HEADING.fullmatch(line)):
+            title = (heading["bold"] or heading["hash"]).strip()
+    if title:
+        return title
+    # The buffer keeps the block's tail only (THINKING_KEEP), so a long
+    # section can outlive its title; its newest line stands in then.
     return lines[-1].replace("**", "") if lines else ""
 
 
