@@ -53,6 +53,9 @@ _DEVICE_WRITES = (
     '(literal "/dev/null")',
     '(literal "/dev/zero")',
     '(literal "/dev/dtracehelper")',
+    # Opening a new pseudo-terminal writes /dev/ptmx; without it `script`,
+    # `expect` and Python's `pty.openpty()` fail ("out of pty devices").
+    '(literal "/dev/ptmx")',
     '(regex #"^/dev/tty")',
     '(regex #"^/dev/fd/")',
 )
