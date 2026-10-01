@@ -562,8 +562,15 @@ Popups capture the mouse by default: clicks select rows and the wheel scrolls
 whichever pane is under the pointer, but a plain drag no longer selects text.
 Most terminals still select while you hold a modifier and drag (usually Shift;
 Option in iTerm2). In tmux, mouse events reach pcode only with
-`tmux set -g mouse on`. To leave the mouse to the terminal instead, so a plain
-drag selects text and copy-on-select works:
+`tmux set -g mouse on`.
+
+**Ctrl+Q** (the [shortcut prefix](#shortcut-prefix) then `q` with a leader)
+hands the mouse to the terminal while a popup stays open: a plain drag selects
+text again, and Ctrl+Q once more takes clicks and the wheel back. It lasts
+until the popup closes and works in every popup with shortcuts, from any pane,
+the search line and the `/btw` editor included. To leave the mouse to the
+terminal in every popup instead, so a plain drag selects text and copy-on-select
+works:
 
 ```sh
 pcode config set popup_mouse off

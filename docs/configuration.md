@@ -134,7 +134,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `send_mode` | `steering` | `steering`, `queue`, `interrupt` (what Enter does while a turn runs; see [sending while the agent is working](commands.md#sending-while-the-agent-is-working)) |
 | `editing_mode` | `emacs` | `emacs`, `vi` (prompt editor key bindings; see [vi editing](commands.md#optional-vi-editing)) |
 | `key_prefix` | `ctrl` | `ctrl` (shortcuts are Ctrl+letter chords), or a leader pressed before the letter, such as `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"`; the leader lists its shortcuts while it waits. See [shortcut prefix](commands.md#shortcut-prefix) |
-| `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, see [popup keys](commands.md#popup-keys)) |
+| `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, Ctrl+Q flips it inside one popup, see [popup keys](commands.md#popup-keys)) |
 | `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |
 
 ### Scrollback and display
