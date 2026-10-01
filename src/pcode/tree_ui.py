@@ -164,7 +164,7 @@ class TreeBrowser:
             layout=Layout(popup_container(overlaid, shortcuts), focused_element=self.list),
             key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
-            mouse_support=popup_mouse(),
+            mouse_support=popup_mouse(shortcuts),
             style=popup_style(app_options.pop("style", None)),
             **app_options,
         )

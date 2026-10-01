@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -210,6 +211,48 @@ def _popups(tmp_path, options):
 
 
 POPUPS = ["links", "session info", "edits", "tree", "asides", "sessions", "tools"]
+
+
+@pytest.mark.parametrize("name", [name for name in POPUPS if name != "session info"])
+def test_every_popup_hands_the_mouse_to_the_terminal_and_back(tmp_path, name):
+    """Ctrl+Q flips mouse capture while the popup stays open, for a native text selection."""
+
+    async def run():
+        with create_pipe_input() as pipe:
+            app, _ = _popups(tmp_path, {"input": pipe, "output": DummyOutput()})[name]
+            task = asyncio.create_task(app.run_async())
+            try:
+                await asyncio.sleep(0.05)
+                assert app.renderer.mouse_support()
+                for captured in (False, True):
+                    pipe.send_text("\x11")  # Ctrl+Q.
+                    await asyncio.sleep(0.05)
+                    assert app.renderer.mouse_support() is captured
+                    assert not task.done()
+            finally:
+                if not task.done():
+                    app.exit()
+                    await task
+
+    asyncio.run(run())
+
+
+def test_popup_mouse_toggle_starts_from_the_setting(monkeypatch):
+    from prompt_toolkit.application import Application
+
+    from pcode import popup_ui
+    from pcode.prefix_keys import PrefixKeys
+
+    monkeypatch.setattr(popup_ui, "load_preferences", lambda: {"popup_mouse": "off"})
+    shortcuts = PrefixKeys("ctrl+p")
+    captured = popup_ui.popup_mouse(shortcuts)
+    assert not captured()
+    assert "q Mouse on/off" in shortcuts.summary()
+    toggle = next(s for s in shortcuts.shortcuts if s.key == popup_ui.MOUSE_TOGGLE_KEY)
+    toggle.handler(SimpleNamespace(app=Application()))
+    assert captured()
+    # Without shortcuts there is nothing to toggle, only the setting.
+    assert not popup_ui.popup_mouse()()
 
 
 @pytest.mark.parametrize("name", POPUPS)

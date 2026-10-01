@@ -173,7 +173,7 @@ def links_dialog(
         layout=Layout(popup_container(dialog, shortcuts), focused_element=picker.query),
         key_bindings=shortcuts.key_bindings(KeyBindings()),
         full_screen=True,
-        mouse_support=popup_mouse(),
+        mouse_support=popup_mouse(shortcuts),
         input=input,
         output=output,
         style=popup_style(style),

@@ -103,13 +103,31 @@ def shortcut_hint(shortcuts: PrefixKeys):
     )
 
 
-def popup_mouse() -> bool:
-    """Whether popups capture the mouse, read as each one opens.
+# The popup shortcut that hands the mouse to the terminal and back. Ctrl+M is
+# Enter and Alt+M (WeeChat's toggle) arrives as an Escape that closes popups,
+# so this takes the one letter free in every popup that edits nothing common:
+# Ctrl+Q only displaces Emacs quoted-insert, and raw mode turns off XON/XOFF.
+MOUSE_TOGGLE_KEY = "q"
+
+
+def popup_mouse(shortcuts: PrefixKeys | None = None) -> Filter:
+    """Whether a popup captures the mouse: `popup_mouse`, read as it opens.
 
     Capturing gives clicks and wheel scrolling to the popup, but the terminal
-    then stops treating a drag as a text selection.
+    then stops treating a drag as a text selection. With ``shortcuts``, prefix
+    `q` flips it until the popup closes, to select some text and come back;
+    the renderer reads the filter every frame, so it applies at once.
     """
-    return load_preferences().get("popup_mouse", SETTINGS["popup_mouse"].default) == "on"
+    captured = load_preferences().get("popup_mouse", SETTINGS["popup_mouse"].default) == "on"
+    state = {"captured": captured}
+    if shortcuts is not None:
+
+        @shortcuts.add(MOUSE_TOGGLE_KEY, "Mouse on/off")
+        def toggle(event) -> None:
+            state["captured"] = not state["captured"]
+            event.app.invalidate()
+
+    return Condition(lambda: state["captured"])
 
 
 def popup_style(base=None):
