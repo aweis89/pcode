@@ -4,7 +4,7 @@ import shutil
 import time
 
 import pytest
-from test_tmux import capture, input_rows, until
+from test_tmux import capture, input_rows, settle, thought_row, until, without_status_row
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -17,7 +17,7 @@ from pcode.app import PreviewApp
 from pcode.live import AgentRuntime
 from pcode.preferences import save_preferences
 
-save_preferences(show_thinking="on", autohide_tasks="off")
+save_preferences(show_thinking="scrollback", autohide_tasks="off")
 async def model(messages, info):
     app.activity.plan = [{"content": "ACTIVE_TASK", "status": "in_progress"}]
     for i in range(30):
@@ -34,7 +34,13 @@ app.run()
 
 
 def history(pane):
-    return pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
+    """Scrollback plus the live panel, without the status row's echo of thinking."""
+    return without_status_row(pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0"))
+
+
+def written(pane, text, **kwargs):
+    """The first settled screen with `text` outside the status row."""
+    return settle(pane, lambda screen: text in without_status_row(screen), **kwargs)
 
 
 def assert_compact(screen):
@@ -52,8 +58,10 @@ def assert_compact(screen):
 def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    screen = capture(pane, "REASONING_29", running=True)
+    screen = written(pane, "REASONING_29", running=True)
     assert_compact(screen)
+    # Scrollback carries it, so there is no thinking row repeating it.
+    assert not thought_row(screen)
     for i in range(30):
         assert history(pane).count(f"REASONING_{i:02d}") == 1
     lines = history(pane).splitlines()
@@ -66,8 +74,13 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     until(lambda: "REASONING_" not in history(pane), lambda: history(pane))
     screen = capture(pane, "draft preserved", running=True)
     assert_compact(screen)
+    # Ctrl+T cycles: status line next, where the newest thought gets its row.
     pane("send-keys", "-t", "preview:0.0", "C-t")
-    capture(pane, "REASONING_29", running=True)
+    screen = settle(pane, lambda screen: bool(thought_row(screen)), running=True)
+    assert thought_row(screen) == "REASONING_29 live text", screen
+    assert "REASONING_" not in history(pane)
+    pane("send-keys", "-t", "preview:0.0", "C-t")
+    written(pane, "REASONING_29", running=True)
     assert history(pane).count("REASONING_00") == 1
     assert history(pane).count("REASONING_29") == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")  # Discards the draft.
@@ -79,8 +92,8 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     # The same toggle works after the turn, rather than clearing thinking forever.
     pane("send-keys", "-t", "preview:0.0", "C-t")
     until(lambda: "REASONING_" not in history(pane), lambda: history(pane))
-    pane("send-keys", "-t", "preview:0.0", "C-t")
-    capture(pane, "REASONING_29")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "C-t")
+    written(pane, "REASONING_29")
     assert history(pane).count("REASONING_00") == 1
 
 
@@ -88,11 +101,12 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
 def test_thinking_scrollback_resize_keeps_real_prompt_height_and_no_duplicates(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    capture(pane, "REASONING_29", running=True)
+    written(pane, "REASONING_29", running=True)
     for width, height in ((80, 24), (35, 16), (120, 40)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
         time.sleep(0.5)
-        screen = capture(pane, "REASONING_29", running=True, columns=width)
+        capture(pane, "", running=True, columns=width)
+        screen = written(pane, "REASONING_29", running=True)
         assert_compact(screen)
         assert history(pane).count("REASONING_00") == 1
         assert history(pane).count("REASONING_29") == 1
@@ -108,9 +122,9 @@ def test_completed_thinking_stays_in_scrollback(pane):
     capture(pane, "Public answer")
     assert history(pane).count("REASONING_29") == 1
     pane("send-keys", "-t", "preview:0.0", "/show-thinking off", "Enter")
-    capture(pane, "Show thinking: off")
+    capture(pane, "Thinking: off")
     assert "REASONING_" not in history(pane)
-    pane("send-keys", "-t", "preview:0.0", "/show-thinking on", "Enter")
-    capture(pane, "Show thinking: on")
+    pane("send-keys", "-t", "preview:0.0", "/show-thinking scrollback", "Enter")
+    capture(pane, "Thinking: scrollback")
     assert history(pane).count("REASONING_00") == 1
     assert history(pane).count("Public answer") == 1

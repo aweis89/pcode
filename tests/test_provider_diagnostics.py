@@ -62,6 +62,21 @@ def test_http_quota(body, expected):
     assert "private-body" not in message
 
 
+def test_unverified_openai_organisation_is_pointed_at_show_thinking_off():
+    body = {
+        "error": {
+            "message": "Your organization must be verified to generate reasoning summaries.",
+            "type": "invalid_request_error",
+        }
+    }
+    message = error_message(ModelHTTPError(400, "o4-mini", body))
+    assert "must be verified to generate reasoning summaries" in message
+    assert "`/show-thinking off`" in message
+    # Any other 400 keeps the provider's message alone.
+    other = error_message(ModelHTTPError(400, "o4-mini", {"error": {"message": "bad tool"}}))
+    assert "show-thinking" not in other
+
+
 def test_unrelated_error_keeps_generic_guidance():
     assert "Check the model string" in error_message(RuntimeError("unrelated"))
 

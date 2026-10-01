@@ -56,7 +56,7 @@ def host_for(app) -> SessionHost | None:
     for name in SETTINGS:
         setattr(target, name, getattr(source, name))
     target.runtime = source.runtime
-    target.activity.show_thinking = app.activity.show_thinking
+    target.activity.thinking_mode = app.activity.thinking_mode
     # A test's stand-in for a controller method (`app.controller.x = fake`) goes too.
     for name, value in vars(source).items():
         if callable(getattr(type(source), name, None)) and not name.startswith("__"):

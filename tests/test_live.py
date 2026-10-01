@@ -387,7 +387,7 @@ def test_thinking_scrollback_survives_turn_end_and_is_retained_when_hidden(outco
         app = PreviewApp(
             model="test:local", runtime=runtime, console=Console(file=output, color_system=None)
         )
-        app.activity.show_thinking = shown
+        app.activity.thinking_mode = "scrollback" if shown else "off"
         try:
             with create_pipe_input() as pipe:
                 session = create_prompt(
@@ -400,9 +400,9 @@ def test_thinking_scrollback_survives_turn_end_and_is_retained_when_hidden(outco
             assert ("REASONING_SENTINEL" in output.getvalue()) is shown
             assert "REASONING_SENTINEL" in repr(app.transcript.log.entries)
             assert not writer._thinking_tail
-            app.activity.show_thinking = True
+            app.activity.thinking_mode = "scrollback"
             assert "REASONING_SENTINEL" in repr(app.transcript.replay())
-            app.activity.show_thinking = False
+            app.activity.thinking_mode = "off"
             assert "REASONING_SENTINEL" not in repr(app.transcript.replay())
         finally:
             runtime.close()

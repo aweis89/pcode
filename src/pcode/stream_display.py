@@ -130,8 +130,14 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
     if isinstance(event, ThinkingDelta):
         output.finish()
         output.thinking_delta(event.text)
+        activity.think(event.text)
     elif isinstance(event, Thinking):
         output.finish_thinking(event.text)
+        if activity.thought_done and event.text:
+            # A block that arrived whole, with no deltas before it.
+            activity.think(event.text)
+        # Held on the thinking row; the next block replaces it.
+        activity.thought_done = True
     elif isinstance(event, TextDelta):
         output.finish_thinking()
         output.delta(event.text)

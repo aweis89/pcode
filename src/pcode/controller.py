@@ -34,6 +34,7 @@ from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
 from pcode.preferences import (
     EFFORTS,
     SETTINGS,
+    THINKING_MODES,
     apply_effort,
     apply_thinking,
     effort_for,
@@ -699,12 +700,14 @@ class SessionController:
         home = getattr(registry, "home", None)
         return home() if callable(home) else None
 
-    def set_thinking(self, shown: bool) -> None:
-        """Ask the provider for readable thinking (or not) from the next request."""
-        self.activity.show_thinking = shown
+    def set_thinking(self, mode: str) -> None:
+        """Ask the provider for the readable thinking `mode` needs from the next request."""
+        if mode not in THINKING_MODES:
+            return  # From a mismatched terminal over the host socket; keep the current mode.
+        self.activity.thinking_mode = mode
         agent = getattr(self.runtime, "agent", None)
         if agent is not None and self.model:
-            apply_thinking(agent, self.model, shown)
+            apply_thinking(agent, self.model, mode)
 
     async def query(self, name: str, *args):
         """One of QUERIES, for a terminal that cannot call the controller directly."""
@@ -2065,7 +2068,7 @@ class SessionController:
             create_agent, self.model, self.workspace, loaded.capabilities, loaded.subagents
         )
         apply_effort(agent, self.model, effort_for(self.model))
-        apply_thinking(agent, self.model, self.activity.show_thinking)
+        apply_thinking(agent, self.model, self.activity.thinking_mode)
         self.extensions = loaded
         self.runtime.replace_agent(agent)
         await self.runtime.refresh_context()
@@ -2140,7 +2143,7 @@ class SessionController:
 
     async def warn_meridian_thinking(self) -> None:
         """Say once when thinking display is on but the proxy drops thinking."""
-        if self._meridian_thinking_warned or not self.activity.show_thinking:
+        if self._meridian_thinking_warned or self.activity.thinking_mode == "off":
             return
         if not (self.model or "").startswith("meridian:"):
             return
@@ -2195,7 +2198,7 @@ class SessionController:
             create_agent, model, self.workspace, capabilities, subagents
         )
         apply_effort(agent, model, effort_for(model))
-        apply_thinking(agent, model, self.activity.show_thinking)
+        apply_thinking(agent, model, self.activity.thinking_mode)
         save = self.save_sessions or getattr(self.runtime, "session_factory", None) is not None
         factory = (lambda: self._create_session(model)) if save else None
         if recovering:
@@ -2795,7 +2798,7 @@ class SessionController:
             agent = getattr(runtime, "agent", None)
             if agent is not None:
                 apply_effort(agent, self.model, effort_for(self.model))
-                apply_thinking(agent, self.model, self.activity.show_thinking)
+                apply_thinking(agent, self.model, self.activity.thinking_mode)
             await self._finish_startup(runtime)
         elif self.resuming:
             await self.runtime.restore()
@@ -2832,7 +2835,7 @@ class SessionController:
             subagents = extensions.subagents if extensions else ()
             agent = create_agent(saved.info.model, target, capabilities, subagents)
             apply_effort(agent, saved.info.model, effort_for(saved.info.model))
-            apply_thinking(agent, saved.info.model, self.activity.show_thinking)
+            apply_thinking(agent, saved.info.model, self.activity.thinking_mode)
             runtime = AgentRuntime(agent, saved)
             await runtime.restore()
             await runtime.refresh_context()

@@ -7,7 +7,7 @@ policy (Seatbelt on macOS, bubblewrap on Linux), so the two cannot drift.
 
 Writes are allowed under the write roots: the workspace, its repository's main
 checkout (which holds every `.worktrees/` sibling), temp and cache directories,
-entries in `security.json`, and session grants from `/add-dir`. pcode's config
+entries in `security.json`, and session grants from `/allow-writes`. pcode's config
 directory, any `.pcode/` directory and any `.git/hooks/` stay read-only even
 inside a root, because writing there would let the model disable the extension
 or run code outside the sandbox later. Only a root granted at or below one of

@@ -42,7 +42,7 @@ The toggles, each saved as your default:
 | --- | --- |
 | Ctrl+G, `/show-commands` | Each shell command and its output |
 | `/show-edits` | The diff of each file edit |
-| `/show-thinking` | The model's readable reasoning |
+| `/show-thinking scrollback` | The model's readable reasoning |
 | `/group-tools` | One line per run of tool calls (the default) or one per call |
 | Ctrl+O, `/show-tasks` | The live task and tool panel above the editor |
 

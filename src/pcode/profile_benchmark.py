@@ -312,7 +312,7 @@ def _live(args, parser):
         return True
 
     app.controller.run_turn = replay_turns
-    app.activity.show_thinking = args.show_thinking
+    app.activity.thinking_mode = "scrollback" if args.show_thinking else "off"
     app.transcript.command_scrollback = args.command_scrollback
     with capture(args, args.profile):
         app.run()

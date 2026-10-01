@@ -567,14 +567,16 @@ def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
         return False
     if session is not None:
         # A copied session shares its original's worktree; never pull it out
-        # from under whichever of the two is still working there. Only asked
+        # from under the other one, open or waiting to be resumed. Only asked
         # with a session, whose module is then already loaded: a bare exit
         # must not import the agent stack.
-        from pcode.sessions import open_in
+        from pcode.sessions import sharing
 
-        others = open_in(linked.path, session.directory.parent, exclude=session.info.id)
+        others = sharing(linked.path, session.directory.parent, exclude=session.info.id)
         if others:
-            notify(f"worktree: kept; session {others[0]} is still open in {linked.path}")
+            other, running = others[0]
+            state = "is still open in" if running else "still works in"
+            notify(f"worktree: kept; session {other} {state} {linked.path}")
             return False
     resume = f"`pcode -C {linked.path} -c` resumes there"
 

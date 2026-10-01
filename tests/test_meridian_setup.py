@@ -236,7 +236,8 @@ def test_cancelled_login_stops_the_cli(monkeypatch, tmp_path):
 
     async def run():
         task = asyncio.create_task(ms.claude_login(lambda _: None, ms.LoginTarget(None, "x")))
-        while not pid_file.exists():
+        # The redirect creates the file before `echo` writes the pid into it.
+        while not (pid_file.exists() and pid_file.read_text().strip()):
             await asyncio.sleep(0.05)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

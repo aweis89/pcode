@@ -59,7 +59,7 @@ def test_defaults_and_path_do_not_create_files():
         "debug": "off",
         "profile": "off",
         "stall_log": "on",
-        "show_thinking": "off",
+        "show_thinking": "status-line",
         "show_tasks": "on",
         "autohide_tasks": "off",
         "attach_tasks": "on",

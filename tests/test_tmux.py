@@ -252,6 +252,30 @@ def scrollback(pane):
 SPINNER_ROW = BUSY_FRAMES
 
 
+def thought_row(screen):
+    """The thinking row: indented, directly under the status row."""
+    lines = screen.splitlines()
+    status = next((i for i, line in enumerate(lines) if line.startswith(SPINNER_ROW)), None)
+    if status is None or status + 1 >= len(lines):
+        return ""
+    row = lines[status + 1]
+    return row.strip() if row.startswith("   ") and row.strip() else ""
+
+
+def without_status_row(text):
+    """A capture minus the status row and the thinking row under it: scrollback only."""
+    lines = text.splitlines()
+    thought = thought_row(text)
+    kept = []
+    for index, line in enumerate(lines):
+        if line.startswith(SPINNER_ROW):
+            continue
+        if thought and index and lines[index - 1].startswith(SPINNER_ROW):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def input_rows(screen):
     lines = screen.splitlines()
     assert any(mode in lines[-1] for mode in SEND_MODES), screen
@@ -1274,31 +1298,47 @@ async def model(messages, info):
 
 runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
 app = PreviewApp(model="test:local", runtime=runtime)
-app.activity.show_thinking = False
+app.activity.thinking_mode = "off"
 app.persist_defaults = lambda **updates: None
 app.run()
 """
 
 
 @pytest.mark.parametrize("pane", [THINKING_SCRIPT], indirect=True)
-def test_thinking_toggle_redraws_scrollback_without_growing_prompt(pane):
+def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(pane):
+    def in_scrollback(screen):
+        return "SAVED_REASONING_TEXT" in without_status_row(screen)
+
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "❯", running=True)
-    assert "SAVED_REASONING_TEXT" not in screen
+    assert "SAVED_REASONING_TEXT" not in screen  # Off: nowhere.
+    # Status line: its own row under the status row, and not in scrollback.
     pane("send-keys", "-t", "preview:0.0", "C-t")
-    screen = capture(pane, "SAVED_REASONING_TEXT", running=True)
+    screen = settle(
+        pane, lambda screen: thought_row(screen) == "SAVED_REASONING_TEXT", running=True
+    )
+    assert thought_row(screen) == "SAVED_REASONING_TEXT", screen
+    assert not in_scrollback(screen)
     assert input_rows(screen) == 1
-    capture(pane, "Public answer while thinking is visible", running=True)
+    # Held through the answer: the row outlives its thinking block.
+    screen = capture(pane, "Public answer while thinking is visible", running=True)
+    assert thought_row(screen) == "SAVED_REASONING_TEXT", screen
+    # Scrollback: written above, and the row goes.
+    pane("send-keys", "-t", "preview:0.0", "C-t")
+    screen = settle(pane, in_scrollback, running=True)
+    assert in_scrollback(screen) and not thought_row(screen)
+    assert input_rows(screen) == 1
     for width, height in ((80, 24), (120, 40)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
         screen = capture(pane, "SAVED_REASONING_TEXT", running=True, columns=width)
         assert input_rows(screen) == 1
+    # Off again: gone from both.
     pane("send-keys", "-t", "preview:0.0", "C-t")
     screen = settle(pane, lambda screen: "SAVED_REASONING_TEXT" not in screen, running=True)
     assert "SAVED_REASONING_TEXT" not in screen
-    pane("send-keys", "-t", "preview:0.0", "C-t")
-    capture(pane, "SAVED_REASONING_TEXT", running=True)
+    pane("send-keys", "-t", "preview:0.0", "C-t", "C-t")
+    settle(pane, in_scrollback, running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "Run cancelled")
     assert "SAVED_REASONING_TEXT" in screen

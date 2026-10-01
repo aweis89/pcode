@@ -378,7 +378,7 @@ When a request fails, the error names the cause when pcode can tell: the proxy
 not answering, a private instance restarting, a Claude login to refresh with
 `/login meridian`, or a key the proxy rejected.
 
-To see thinking, `/show-thinking on` must be set and Meridian must forward
+To see thinking, `/show-thinking` must not be `off` and Meridian must forward
 thinking. A private instance does this already. For an external proxy,
 `/show-thinking` reports the proxy's setting, and pcode warns once per session
 when thinking display is on but the proxy is not forwarding it. Turn on the
