@@ -12,6 +12,7 @@ import os
 from pydantic_ai import ModelRetry, RunContext, Tool
 from pydantic_ai.capabilities import Capability
 
+from pcode.conversation_ids import base_conversation
 from pcode.diagnostics import redact
 from pcode.history import History, Scope, group_results, keyword_ranking, merge_rankings
 
@@ -63,7 +64,9 @@ def setup(pcode) -> None:
         """
         if not query.strip() or len(query) > 1000 or not 1 <= limit <= 20:
             raise ModelRetry("Provide a nonempty query of at most 1000 characters and limit 1..20.")
-        history = History(pcode.workspace, pcode.session_dir, ctx.conversation_id)
+        history = History(
+            pcode.workspace, pcode.session_dir, base_conversation(ctx.conversation_id)
+        )
         run_id = getattr(ctx, "run_id", None)
         try:
             # The turn making this call is not evidence: it would rank on the
@@ -106,7 +109,9 @@ def setup(pcode) -> None:
             "scan_complete": scan.scan_complete,
             "sessions_unreadable": scan.sessions_unreadable,
             "sessions_partial": scan.sessions_partial,
-            "results": group_results(chunks, ranking, query, limit, ctx.conversation_id, run_id),
+            "results": group_results(
+                chunks, ranking, query, limit, base_conversation(ctx.conversation_id), run_id
+            ),
             "warnings": warnings,
             "note": "No saved history in scope; unsaved conversations cannot be recalled."
             if not scan.sessions_in_scope
@@ -137,7 +142,9 @@ def setup(pcode) -> None:
             after: Opaque next_cursor from the preceding read, keeping other arguments unchanged.
                 Finish scan pagination first, then use next_offset for long turn text.
         """
-        history = History(pcode.workspace, pcode.session_dir, ctx.conversation_id)
+        history = History(
+            pcode.workspace, pcode.session_dir, base_conversation(ctx.conversation_id)
+        )
         try:
             return await asyncio.to_thread(
                 history.read,

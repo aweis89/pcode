@@ -153,8 +153,11 @@ def test_dollar_completes_models_only_among_leading_btw_words(monkeypatch):
     assert complete("/btw why $") == []
     assert complete("/btw $opus ") == []
     assert complete("/btw why") == []
-    # Nowhere else: not a normal prompt, shell mode, or another command.
-    assert complete("$opus") == []
+    # A prompt's own leading word picks its model, so it completes too.
+    assert complete("$opus") == [("$anthropic:claude-opus", -5)]
+    assert complete("$opus fix") == []
+    # Nowhere else: not later in a prompt, shell mode, or another command.
+    assert complete("fix $opus") == []
     assert complete("!echo $opus") == []
     assert complete("/compact $opus") == []
     assert model_fragment("$a $b") == "b"

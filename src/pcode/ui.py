@@ -1837,6 +1837,11 @@ def create_prompt(
                     get_app().current_buffer.text.startswith("/")
                     and "\n" not in get_app().current_buffer.text
                 )
+                # A leading `$MODEL` or `+EFFORT` while it is still the only word.
+                or (
+                    get_app().current_buffer.text.startswith(("$", "+"))
+                    and not any(char.isspace() for char in get_app().current_buffer.text)
+                )
                 or reference_fragment(get_app().current_buffer.document.text_before_cursor)
                 is not None
             )

@@ -13,7 +13,15 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   `/logout [anthropic|openai-codex]` removes pcode's stored login, leaving CLI credentials
   untouched. Both require an idle conversation.
 - `/model`: searchable model picker for configured providers. Keeps the conversation;
-  chosen mid-run, it applies from the next request.
+  chosen mid-run, it applies from the next request. To switch for one prompt only, start
+  it with `$PROVIDER:MODEL` (optionally `+EFFORT`, as in `$openai:gpt-5+high fix this`)
+  or a bare `+EFFORT` word; that turn runs there and the next prompt is back on the
+  conversation's model. `$` completes model names as it does in `/btw`. A `$` word
+  without a lowercase `provider:` part (`$HOME`) or an unknown `+` level is ordinary
+  text. Another model starts without the conversation's prompt cache, and automatic
+  compaction is skipped for its turn, since that model's window and summarizer would
+  decide what the conversation keeps. Such a prompt never steers a running turn; it
+  queues as its own. `/resend` of it asks the conversation's model.
 - `/subagents [MODEL ...|off]`: the models `delegate_task` may run a sub-agent on; each
   word completes from the `/model` catalog. Bare lists them, `off` clears them
   ([details](tools.md#sub-agents-on-other-models)).

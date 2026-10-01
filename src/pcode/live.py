@@ -3,9 +3,9 @@
 import asyncio
 import re
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing, nullcontext
+from contextlib import aclosing, asynccontextmanager, nullcontext
 from copy import deepcopy
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -54,6 +54,7 @@ from pcode.agent import SideModel, worker_toolsets
 from pcode.aside import SideReply
 from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, ContextTracking, summarize
+from pcode.conversation_ids import model_conversation
 from pcode.conversation_tree import ConversationTree
 from pcode.delegation import ChildActivity, ChildOutput
 from pcode.diagnostics import (
@@ -129,6 +130,30 @@ def _local_workspace(agent) -> Path | None:
         if isinstance(capability, LocalWorkspace):
             return Path(capability.working_dir)
     return None
+
+
+@dataclass(frozen=True)
+class TurnModel:
+    """What one turn runs on in place of the conversation's model, from `$MODEL` or `+EFFORT`.
+
+    `model` is another model, with its own settings; `settings` alone replace
+    the conversation model's for this turn, at another effort.
+    `conversation_id` is the one that model's requests carry; see
+    `AgentRuntime._model_conversation`.
+    """
+
+    model: SideModel | None
+    settings: dict | None
+    conversation_id: str
+
+    @asynccontextmanager
+    async def applied(self, agent):
+        settings = self.model.settings if self.model is not None else self.settings
+        if self.model is None and settings is None:
+            yield
+            return
+        with agent.override(model_settings=settings):
+            yield
 
 
 class AgentRuntime:
@@ -377,6 +402,7 @@ class AgentRuntime:
         model: SideModel | None = None,
         settings: dict | None = None,
         after: SideReply | None = None,
+        fresh: bool = False,
         framing: Callable[[str], str] | None = None,
     ) -> SideReply:
         """Answer `question` beside the conversation, recording nothing.
@@ -413,7 +439,11 @@ class AgentRuntime:
         messages rather than the conversation's newest context, on the agent,
         model, settings and conversation id it ran with. Its history is exactly
         what that run sent plus what it answered, so the follow-up reuses its
-        cache, even after /model replaced the conversation's agent.
+        cache, even after /model replaced the conversation's agent. A `model`
+        or `settings` given with it, or `fresh` for the conversation's own
+        model as it is now, switches the follow-up the way they switch a new
+        question: on the conversation's agent and with the conversation id that
+        model would get, at the price of that cache.
 
         `framing` turns `question` into the message sent, in place of the side
         question or follow-up framing; a thread's summary is asked that way.
@@ -422,10 +452,12 @@ class AgentRuntime:
         from pcode.aside_guard import AsideGuard
 
         agent = self.agent
-        if after is not None:
+        inherit = after is not None and not fresh and model is None and settings is None
+        if inherit:
             agent = agent if after.agent is None else after.agent
             model = after.model
             settings = after.settings
+        if after is not None:
             messages = list(after.messages)
         else:
             messages = self.aside_context()
@@ -440,17 +472,16 @@ class AgentRuntime:
         capabilities = [AsideGuard(), TokenAccounting(record=self.totals.add)]
         if joined:
             capabilities.append(Steering(lambda: [pending.pop()] if pending else []))
-        conversation_id = self.conversation_id
+        conversation_id = self._model_conversation(model, "btw")
         other: dict = {}
         if model is not None:
-            conversation_id = f"{self.conversation_id}.btw-{uuid4().hex[:8]}"
             other = {"model": model.model}
             override = agent.override(model_settings=model.settings)
         elif settings is not None:
             override = agent.override(model_settings=settings)
         else:
             override = nullcontext()
-        if after is not None:
+        if inherit:
             # A follow-up belongs to its thread's session, not a fresh one.
             conversation_id = after.conversation_id
         with override:
@@ -479,6 +510,15 @@ class AgentRuntime:
             model=model,
             settings=settings,
         )
+
+    def _model_conversation(self, model: SideModel | None, kind: str) -> str:
+        """The conversation id a run on `model` carries; `None` is the conversation's model.
+
+        Another model gets an id of its own; see `pcode.conversation_ids`.
+        """
+        if model is None:
+            return self.conversation_id
+        return model_conversation(self.conversation_id, kind)
 
     async def _aside_answer(self, events, report) -> tuple[str, list[ModelMessage]]:
         """Collect a side question's answer and its run's messages, reporting progress."""
@@ -737,8 +777,18 @@ class AgentRuntime:
                 return node.prompt
         raise SessionError("There is no earlier prompt to resend; send a message instead.")
 
-    async def stream(self, prompt: str | None) -> AsyncIterator[Event]:
+    async def stream(
+        self,
+        prompt: str | None,
+        *,
+        model: SideModel | None = None,
+        settings: dict | None = None,
+    ) -> AsyncIterator[Event]:
         """Retry only failed provider requests, with one budget per submitted turn.
+
+        `model` runs this turn alone on another model, and `settings` replaces
+        the conversation's model settings for it; see `TurnModel`. Retries keep
+        them, so a retried request goes where the failed one went.
 
         A history the current credential cannot replay is the exception: the
         same request would be rejected every time, so it is repaired once and
@@ -770,10 +820,13 @@ class AgentRuntime:
         attempt = 0
         repaired = False
         undeferred = False
+        chosen = None
+        if model is not None or settings is not None:
+            chosen = TurnModel(model, settings, self._model_conversation(model, "turn"))
         while True:
             try:
                 with profiled_activity("turn"):
-                    async with aclosing(self._turn(send)) as turn:
+                    async with aclosing(self._turn(send, chosen)) as turn:
                         async for event in turn:
                             yield event
             except Exception as error:
@@ -828,7 +881,9 @@ class AgentRuntime:
             else:
                 return
 
-    async def _turn(self, send: str | None) -> AsyncIterator[Event]:
+    async def _turn(
+        self, send: str | None, chosen: TurnModel | None = None
+    ) -> AsyncIterator[Event]:
         """Run one attempt. A `None` prompt continues from history without adding to it."""
         prompt = send or ""
         # This turn's state, read and written through one object rather than
@@ -864,7 +919,7 @@ class AgentRuntime:
         context.compaction_usage = RunUsage()
         tools_started = False
         try:
-            async with aclosing(self._stream(send, context)) as stream:
+            async with aclosing(self._stream(send, context, chosen)) as stream:
                 async for event in stream:
                     if isinstance(event, ToolStarted):
                         tools_started = True
@@ -887,6 +942,8 @@ class AgentRuntime:
                     yield event
         except BaseException as error:
             resend_blocked = tools_started and context.checkpoint.messages is None
+            # The model the failed request went to, which a `$MODEL` turn chose.
+            ran_on = chosen.model.model if chosen and chosen.model else self.agent.model
             if saved:
                 self._save_totals(saved.info)
             self.inspections.settle(
@@ -902,7 +959,7 @@ class AgentRuntime:
                     "turn_cancelled" if cancelled else "turn_failed",
                     run_id=run_id,
                     error=error_details(error),
-                    provider_context=provider_context(self.agent.model),
+                    provider_context=provider_context(ran_on),
                     resend_blocked=resend_blocked,
                     sync=True,
                 )
@@ -913,7 +970,7 @@ class AgentRuntime:
                     saved.record_error(
                         error,
                         run_id=run_id,
-                        provider_context=provider_context(self.agent.model),
+                        provider_context=provider_context(ran_on),
                     )
                 saved.info.status = "cancelled" if cancelled else "failed"
                 saved.save_info()
@@ -980,7 +1037,9 @@ class AgentRuntime:
                 self.session.append("steering", run_id=run_id, prompt=text)
         return messages
 
-    async def _stream(self, prompt: str | None, context: TurnContext) -> AsyncIterator[Event]:
+    async def _stream(
+        self, prompt: str | None, context: TurnContext, chosen: TurnModel | None = None
+    ) -> AsyncIterator[Event]:
         run_id = context.run_id
         await self.refresh_context()
         self._persist_child_runs()
@@ -1025,8 +1084,11 @@ class AgentRuntime:
         # sends explanatory text alongside its tool calls.
         # Enter the agent too: a run alone does not own a statically supplied
         # model's HTTP client. Exit closes it on success, failure, or cancellation.
+        chosen = chosen or TurnModel(None, None, self.conversation_id)
         async with (
+            chosen.applied(self.agent),
             self.agent,
+            chosen.model.model if chosen.model is not None else nullcontext(),
             worker_toolsets([self.mcp.live()]),
             enabled_servers(self.mcp.servers, self.mcp.unavailable),
             self.agent.run_stream_events(
@@ -1034,8 +1096,9 @@ class AgentRuntime:
                 message_history=context.messages(),
                 workspace=self._run_workspace(self.agent),
                 toolsets=[self.mcp.live()],
-                conversation_id=self.conversation_id,
+                conversation_id=chosen.conversation_id,
                 run_id=run_id,
+                **({"model": chosen.model.model} if chosen.model is not None else {}),
                 # Per-run capabilities bind to this turn's context, not to the
                 # runtime: what they publish and rewrite belongs to this turn.
                 capabilities=(
@@ -1051,7 +1114,15 @@ class AgentRuntime:
                         TokenAccounting(record=self.totals.add),
                         ContextTracking(self, context),
                     ]
-                    + ([AutoCompaction(self, context)] if self.auto_compact else [])
+                    # Compaction rewrites the conversation's history, so it is
+                    # judged on the conversation's model, never on a model one
+                    # `$MODEL` turn borrowed: its window and summarizer would
+                    # decide what the conversation keeps from then on.
+                    + (
+                        [AutoCompaction(self, context)]
+                        if self.auto_compact and chosen.model is None
+                        else []
+                    )
                 ),
                 # Explicitly disable the cap; omitting this restores the library default.
                 usage_limits=UsageLimits(request_limit=None),
