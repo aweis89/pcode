@@ -104,7 +104,7 @@ Allow/deny/read-only patterns match the path relative to `/` (no leading slash),
 so read-only patterns get a `**/` prefix to apply at any depth. File events carry
 a `path` relative to `root_dir`, which is `/`.
 
-The opt-in `security` extension (`src/pcode/extensions/security.py`, policy in
+The opt-in `sandbox` extension (`src/pcode/extensions/sandbox.py`, policy in
 `src/pcode/sandbox.py`) puts write roots back in as a `before_tool_execute` hook
 rather than in `_resolve_path`. It resolves `path` the way the tools do
 (`sandbox.tool_target`: join onto the workspace and normalize as text, so

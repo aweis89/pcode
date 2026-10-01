@@ -1,13 +1,13 @@
 """One write/read policy for the file tools and the model's shell commands.
 
-The bundled `security` extension enforces it twice: a tool hook refuses file-tool
+The bundled `sandbox` extension enforces it twice: a tool hook refuses file-tool
 writes (and reads of credential files) the policy rejects, and every `shell`
 command's job supervisor runs under an OS sandbox generated from the same
 policy (Seatbelt on macOS, bubblewrap on Linux), so the two cannot drift.
 
 Writes are allowed under the write roots: the workspace, its repository's main
 checkout (which holds every `.worktrees/` sibling), temp and cache directories,
-entries in `security.json`, and session grants from `/allow-writes`. pcode's config
+entries in `sandbox.json`, and session grants from `/allow-writes`. pcode's config
 directory, any `.pcode/` directory and any `.git/hooks/` stay read-only even
 inside a root, because writing there would let the model disable the extension
 or run code outside the sandbox later. Only a root granted at or below one of
@@ -45,7 +45,7 @@ DEFAULT_DENY_READ = (
 )
 CACHE_DIRS = ("~/.cache", "~/Library/Caches", "~/.npm")
 # Directory names that stay read-only wherever they appear: `.pcode` holds
-# project extensions (one named `security` would replace this one) and
+# project extensions (one named `sandbox` would replace this one) and
 # preferences; git hooks run later, outside any sandbox.
 GUARDED = ((".pcode",), (".git", "hooks"))
 _GUARDED_REGEXES = (r"/\.pcode(/|$)", r"/\.git/hooks(/|$)")
@@ -64,11 +64,11 @@ _REGEX_SPECIAL = set(".^$+(){}|\\")
 
 
 def config_path() -> Path:
-    return config_dir() / "security.json"
+    return config_dir() / "sandbox.json"
 
 
 def load_config() -> dict:
-    """`security.json`, or {} when absent. A malformed file raises ValueError."""
+    """`sandbox.json`, or {} when absent. A malformed file raises ValueError."""
     path = config_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -82,7 +82,7 @@ def load_config() -> dict:
 
 
 def add_global_grant(path: Path) -> None:
-    """Append `path` to `security.json`'s write list, for every future session."""
+    """Append `path` to `sandbox.json`'s write list, for every future session."""
     data = load_config()
     write = [str(entry) for entry in data.get("write", [])]
     if str(path) not in write:

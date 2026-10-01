@@ -544,7 +544,7 @@ def _remove_if_empty(directory: Path) -> None:
         pass
 
 
-# Set around one tool call by a sandboxing extension (the bundled `security`):
+# Set around one tool call by a sandboxing extension (the bundled `sandbox`):
 # given a job's directory, the argv that runs its supervisor inside a sandbox.
 # Wrapping the supervisor rather than the command keeps the command text the
 # user and model see unchanged, and a stop still signals the whole group.
