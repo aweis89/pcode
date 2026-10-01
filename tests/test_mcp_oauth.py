@@ -173,7 +173,7 @@ def test_sign_in_persists_across_enable_cycles_and_processes(monkeypatch):
     async def run():
         provider_holder = providers
         state = MCPState()
-        assert state.toolsets() == []
+        assert state.enabled == {}
         await state.enable("remote")
         provider = provider_holder[0]
         first = mcp_transport(state.enabled["remote"]).auth
@@ -207,7 +207,7 @@ def test_sign_in_persists_across_enable_cycles_and_processes(monkeypatch):
         assert (await stored.get_tokens()).access_token == "fake-refreshed-access-token"
         # Signing out forgets the credentials; the next enable needs a browser.
         await restarted.forget("remote")
-        assert restarted.toolsets() == []
+        assert restarted.enabled == {}
         with pytest.raises(SignInRequired):
             await MCPState().enable("remote", interactive=False)
         assert provider.browser_visits == 1
@@ -1020,7 +1020,7 @@ def test_enable_oauth_failure_or_cancel_leaves_server_off(monkeypatch, mode):
             task = asyncio.create_task(state.enable("remote"))
             try:
                 await asyncio.wait_for(provider.callback_started.wait(), 5)
-                assert state.toolsets() == []
+                assert state.enabled == {}
             finally:
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
@@ -1028,7 +1028,7 @@ def test_enable_oauth_failure_or_cancel_leaves_server_off(monkeypatch, mode):
         else:
             with pytest.raises(Exception):
                 await state.enable("remote")
-        assert state.toolsets() == []
+        assert state.enabled == {}
         assert mcp_transport(toolset).auth._callback_socket is None
         # Retry after failure/cancellation should succeed, without poisoning the client.
         provider.callback_mode = "success"
@@ -1070,7 +1070,7 @@ def test_enable_publishes_only_after_connection_teardown(monkeypatch, outcome):
         task = asyncio.create_task(state.enable("remote"))
         try:
             await asyncio.wait_for(exiting.wait(), 5)
-            assert state.toolsets() == []
+            assert state.enabled == {}
             if outcome == "cancel":
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):

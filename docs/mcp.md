@@ -231,9 +231,13 @@ editing it, disable and enable the server again.
 
 ## Activation and token usage
 
-- `/mcp enable NAME` makes a server's tools available from the next turn in the
-  **current conversation**. Switching models keeps the selection, and enabling
-  twice does nothing.
+- `/mcp enable NAME` makes a server's tools available in the **current
+  conversation**. Switching models keeps the selection, and enabling twice does
+  nothing.
+- You can enable or disable while the model is working. The running turn picks
+  up the change at its next model request, the way a steering message does.
+  Messages you send after `/mcp enable` wait until it finishes, so "use the new
+  server" reaches the model together with that server's tools.
 - `/mcp enable-all` enables every configured server that is not already on, one
   at a time, opening a browser for any OAuth sign-in. A server that fails stays
   off and the rest still enable.
@@ -241,15 +245,15 @@ editing it, disable and enable the server again.
   connect on the next turn. A server that accepts the connection without
   credentials and only rejects tool calls enables silently, and its first
   authentication error appears mid-turn.
-- Enabled servers connect at the start of each turn and close after it, even on
-  failure or cancellation. Local server processes do not keep running between
+- Enabled servers connect at the start of each turn (or, if enabled during one,
+  at its next request) and close after it, even on failure or cancellation. Local server processes do not keep running between
   turns.
 - A server that fails to connect costs only its own tools. The turn goes ahead,
   pcode prints a warning naming it (details go to the session's `errors.log`),
   and the model is told it failed to connect this turn. It stays enabled and is
   retried next turn; `/mcp disable NAME` stops that.
-- `/mcp disable NAME` removes its tools from later requests. You cannot enable or
-  disable during a turn. To reload a server after changing its configuration or
+- `/mcp disable NAME` removes its tools from later requests, including the rest
+  of a running turn. To reload a server after changing its configuration or
   environment, disable and enable it again.
 - `/new`, resumed conversations, and restarts start with **all servers off**
   except those marked `"enabled": true`. Which servers are on is never saved.

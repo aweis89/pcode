@@ -953,6 +953,10 @@ class SessionController:
 
     def take_steering(self) -> list[str]:
         """The runtime's hook: steering messages for the next model request."""
+        if self.mcp_task is not None or self.pending_mcp:
+            # Like queued prompts, steering waits for MCP work, so "/mcp enable
+            # x" then "use x" reaches the model once x's tools are there.
+            return []
         messages = self.prompts.take_steering()
         for text in messages:
             self.activity.start_prompt(text)
@@ -1321,11 +1325,18 @@ class SessionController:
     # Work beside the turn loop that holds queued prompts back
 
     def start_mcp_task(self, name, coroutine, *, status: str, cancelled: str) -> None:
-        """Run MCP work outside the model loop; queued prompts wait for it."""
+        """Run MCP work outside the model loop; queued prompts wait for it.
+
+        A running turn carries on beside it and sees the change from its next
+        model request. It keeps its status line and, should this fail, the
+        messages queued behind it, which were not waiting on this change.
+        """
         self.mcp_idle.clear()
         self.mcp_enabling = name
         self.activity.busy = True
-        self.activity.status = status
+        beside_turn = self.turn_running()
+        if not beside_turn:
+            self.activity.status = status
 
         def finished(task):
             success = False
@@ -1337,11 +1348,12 @@ class SessionController:
             except Exception as error:
                 self.report_mcp_error(name, error)
             finally:
-                if not success:
+                if not success and not beside_turn:
                     self.clear_queue()
                 self.mcp_task = None
                 self.refresh_busy()
-                self.activity.status = ""
+                if not beside_turn:
+                    self.activity.status = ""
                 self.mcp_enabling = None
                 self.mcp_idle.set()
                 self.view.redraw()
@@ -1404,12 +1416,12 @@ class SessionController:
         wanted = [name for name in names if name in configured and name not in state.enabled]
         if not wanted:
             return
-        # Same rule as /mcp enable: never swap toolsets under a running turn.
-        if self.mcp_task is not None or self.turn_running():
+        # Same rule as /mcp enable: one MCP change at a time.
+        if self.mcp_task is not None:
             listed = " ".join(f"`/mcp enable {name}`" for name in wanted)
             self.view.warning(
                 f"The {skill} skill asks for MCP {', '.join(wanted)}, which cannot be "
-                f"enabled while working. Run {listed} after this turn."
+                f"enabled while another MCP change is in progress. Run {listed} after it."
             )
             return
         self.view.note(
@@ -1739,13 +1751,12 @@ class SessionController:
                 "Usage: /mcp list | /mcp enable NAME | /mcp enable-all | /mcp disable NAME "
                 "| /mcp logout NAME"
             )
-        # Slash commands precede queued (not yet running) prompts. In particular,
-        # an enable + prompt submitted in one input batch must authenticate first.
-        if self.mcp_enabling or (
-            self.activity.busy
-            and (self.activity.prompt_state == "running" or not self.activity.queued)
-        ):
-            raise ValueError("MCP cannot be changed while working. Cancel or wait, then retry.")
+        # Slash commands precede queued prompts, and queued and steering
+        # messages wait for MCP work, so an enable + prompt submitted in one
+        # input batch authenticates first. A running turn sees the change from
+        # its next model request.
+        if self.mcp_enabling:
+            raise ValueError("Another MCP change is still in progress. Wait for it, then retry.")
         if state is None:
             raise ValueError("MCP requires a live model. Start pcode with -m PROVIDER:MODEL.")
         if parts == ["enable-all"]:
@@ -1761,16 +1772,22 @@ class SessionController:
             self.start_mcp_logout(name)
         else:
             state.disable(name)
-            self.view.note(f"MCP '{name}' disabled. Earlier results remain in history.")
+            self.view.note(
+                f"MCP '{name}' disabled{self.mid_turn()}. Earlier results remain in history."
+            )
 
     async def enable_mcp(self, name: str) -> None:
         """Authorize outside the model loop; publish only a successfully enabled server."""
         await self.runtime.mcp.enable(name)
         self.view.note(
-            f"MCP '{name}' enabled for this conversation. "
+            f"MCP '{name}' enabled for this conversation{self.mid_turn()}. "
             "Its tools can perform actions with the server's permissions. "
             "OAuth sign-ins are saved for future sessions; /mcp logout NAME forgets one."
         )
+
+    def mid_turn(self) -> str:
+        """Says when an MCP change reaches a turn already running."""
+        return ", from the running turn's next model request" if self.turn_running() else ""
 
     def report_mcp_error(self, name: str, error: Exception) -> None:
         """Keep MCP setup tracebacks even though no model turn was started."""
@@ -1795,7 +1812,7 @@ class SessionController:
             except Exception as error:
                 self.report_mcp_error(name, error)
             else:
-                self.view.note(f"MCP '{name}' enabled{reason}.")
+                self.view.note(f"MCP '{name}' enabled{reason}{self.mid_turn()}.")
 
     async def enable_mcp_defaults(self, names: list[str]) -> None:
         """Enable `"enabled": true` servers, using saved sign-ins but never a browser."""

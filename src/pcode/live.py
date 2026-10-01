@@ -457,13 +457,13 @@ class AgentRuntime:
             async with (
                 agent,
                 model.model if model is not None else nullcontext(),
-                worker_toolsets(self.mcp.toolsets()),
-                enabled_servers(self.mcp.servers(), self.mcp.unavailable),
+                worker_toolsets([self.mcp.live()]),
+                enabled_servers(self.mcp.servers, self.mcp.unavailable),
                 agent.run_stream_events(
                     None if joined else pending.pop(),
                     message_history=messages,
                     workspace=self._run_workspace(agent),
-                    toolsets=self.mcp.toolsets(),
+                    toolsets=[self.mcp.live()],
                     conversation_id=conversation_id,
                     capabilities=capabilities,
                     usage_limits=UsageLimits(request_limit=ASIDE_REQUEST_LIMIT),
@@ -1027,13 +1027,13 @@ class AgentRuntime:
         # model's HTTP client. Exit closes it on success, failure, or cancellation.
         async with (
             self.agent,
-            worker_toolsets(self.mcp.toolsets()),
-            enabled_servers(self.mcp.servers(), self.mcp.unavailable),
+            worker_toolsets([self.mcp.live()]),
+            enabled_servers(self.mcp.servers, self.mcp.unavailable),
             self.agent.run_stream_events(
                 prompt,
                 message_history=context.messages(),
                 workspace=self._run_workspace(self.agent),
-                toolsets=self.mcp.toolsets(),
+                toolsets=[self.mcp.live()],
                 conversation_id=self.conversation_id,
                 run_id=run_id,
                 # Per-run capabilities bind to this turn's context, not to the

@@ -63,12 +63,12 @@ def test_only_selected_config_is_expanded_and_validated(monkeypatch):
         }
     )
     state = MCPState()
-    assert state.toolsets() == []
+    assert state.enabled == {}
     assert set(configured_servers()) == {"good", "missing", "invalid"}
     asyncio.run(state.enable("good"))
-    original = state.toolsets()
+    original = state.enabled["good"]
     asyncio.run(state.enable("good"))
-    assert state.toolsets() == original
+    assert state.enabled["good"] is original
     with pytest.raises(ValueError, match="Missing MCP environment variable"):
         asyncio.run(state.enable("missing"))
     with pytest.raises(ValueError) as error:
@@ -77,7 +77,7 @@ def test_only_selected_config_is_expanded_and_validated(monkeypatch):
     assert set(state.enabled) == {"good"}
     config_path().write_text("broken")
     state.disable("good")
-    assert state.toolsets() == []
+    assert state.enabled == {}
 
 
 @pytest.mark.parametrize(
@@ -177,13 +177,13 @@ def test_commands_completion_reset_and_model_switch(tmp_path):
     handle_command(app, "/mcp once docs")
     assert "Usage: /mcp" in output.getvalue()
     handle_command(app, "/mcp disable docs")
-    assert app.runtime.mcp.toolsets() == []
+    assert app.runtime.mcp.enabled == {}
     handle_command(app, "/mcp enable docs")
     app.runtime.replace_agent(Agent("test"))
     assert set(app.runtime.mcp.enabled) == {"docs"}
     handle_command(app, "/new")
-    assert app.runtime.mcp.toolsets() == []
-    assert AgentRuntime(Agent("test")).mcp.toolsets() == []
+    assert app.runtime.mcp.enabled == {}
+    assert AgentRuntime(Agent("test")).mcp.enabled == {}
 
 
 def test_enable_all_enables_every_configured_server(tmp_path):
@@ -197,15 +197,35 @@ def test_enable_all_enables_every_configured_server(tmp_path):
     assert "already enabled" in output.getvalue()
 
 
-def test_busy_rejects_changes_but_allows_listing(tmp_path):
+def test_changes_go_ahead_beside_a_running_turn(tmp_path):
     write_config({"docs": {"command": sys.executable}})
     app, output = make_app(tmp_path)
-    app.activity.busy = True
-    handle_command(app, "/mcp enable docs")
-    assert app.runtime.mcp.toolsets() == []
-    assert "cannot be changed while working" in output.getvalue()
+    controller = app.controller
+
+    async def run():
+        turn = asyncio.create_task(asyncio.Event().wait())
+        controller.live_task = turn
+        app.activity.busy = True
+        app.activity.status = "Running shell…"
+        controller.prompts.put("use docs", "steering")
+        await controller.run_command("/mcp enable docs")
+        assert controller.mcp_task is not None
+        # Steering waits for the enable, so it arrives with the server's tools.
+        assert controller.take_steering() == []
+        # One MCP change at a time.
+        await controller.run_command("/mcp disable docs")
+        await asyncio.gather(controller.mcp_task, return_exceptions=True)
+        assert controller.take_steering() == ["use docs"]
+        # The turn keeps its status line.
+        assert app.activity.status == "Running shell…"
+        turn.cancel()
+
+    asyncio.run(run())
+    assert set(app.runtime.mcp.enabled) == {"docs"}
+    assert "Another MCP change is still in progress" in output.getvalue()
+    assert "from the running turn's next model request" in output.getvalue()
     handle_command(app, "/mcp list")
-    assert "docs: off" in output.getvalue()
+    assert "docs: enabled" in output.getvalue()
 
 
 def test_list_and_disable_survive_broken_config(tmp_path):
@@ -218,7 +238,7 @@ def test_list_and_disable_survive_broken_config(tmp_path):
     assert "docs: enabled" in output.getvalue()
     assert app.controller.mcp_arguments() == ("list", "disable docs")
     handle_command(app, "/mcp disable docs")
-    assert app.runtime.mcp.toolsets() == []
+    assert app.runtime.mcp.enabled == {}
 
 
 @pytest.fixture

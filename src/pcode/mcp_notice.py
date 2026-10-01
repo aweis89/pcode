@@ -10,7 +10,7 @@ earlier messages (and the provider's cached prefix) untouched. The same check
 restores the list after compaction drops it.
 """
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
@@ -29,19 +29,22 @@ INSTRUCTIONS = (
 
 # Set per turn by the runtime. A context variable rather than a capability
 # field because the worker is built once, from copies of these capabilities,
-# yet must see the servers enabled for the turn that delegated to it.
-_servers: ContextVar[tuple[tuple[str, str | None], ...]] = ContextVar("mcp_servers", default=())
-# A live view, read at each request: servers fail while the run enters its
-# toolsets, after this turn's list was published.
+# yet must see the servers enabled for the turn that delegated to it. Both are
+# live views, read at each request: a server can be enabled or disabled while
+# the turn runs, and fail while a step enters it.
+_servers: ContextVar[Callable[[], Mapping[str, str | None]]] = ContextVar(
+    "mcp_servers", default=dict
+)
 _unavailable: ContextVar[Mapping[str, str]] = ContextVar("mcp_unavailable", default={})
 
 
 @asynccontextmanager
 async def enabled_servers(
-    servers: Mapping[str, str | None], unavailable: Mapping[str, str] | None = None
+    servers: Callable[[], Mapping[str, str | None]],
+    unavailable: Mapping[str, str] | None = None,
 ):
     """Publish a turn's enabled servers (name -> description) to its agents."""
-    token = _servers.set(tuple(servers.items()))
+    token = _servers.set(servers)
     down = _unavailable.set(unavailable if unavailable is not None else {})
     try:
         yield
@@ -81,7 +84,7 @@ class MCPServers(AbstractCapability):
         return INSTRUCTIONS if self.instruct else None
 
     async def before_model_request(self, ctx, request_context):
-        servers = _servers.get()
+        servers = tuple(_servers.get()().items())
         # "None enabled" only retracts an earlier list; it is never news on its own.
         if servers or last_reminder(request_context.messages, TAG):
             append_reminder(request_context, TAG, render(servers, _unavailable.get()))
