@@ -274,12 +274,28 @@ class PromptQueue:
         self._sync()
         return count
 
-    def take_steering(self) -> list[str]:
-        """Remove and return the current steering messages; everything else keeps its place."""
+    def steering(self) -> int:
+        """How many current steering messages are waiting."""
+        items = self._drain()
+        for item in items:
+            self._items.put_nowait(item)
+        return sum(
+            1
+            for generation, _text, mode, _owner in items
+            if generation == self.generation and mode == "steering"
+        )
+
+    def take_steering(self, limit: int | None = None) -> list[str]:
+        """Remove and return the current steering messages, the first `limit` of
+        them if given; everything else keeps its place."""
         messages = []
         for item in self._drain():
             generation, text, mode, _owner = item
-            if generation == self.generation and mode == "steering":
+            if (
+                generation == self.generation
+                and mode == "steering"
+                and (limit is None or len(messages) < limit)
+            ):
                 messages.append(text)
                 index = next(
                     i
@@ -495,6 +511,11 @@ class SessionController:
         self.interrupt_pending = False
         # The MCP server (or "defaults") being enabled or signed out of.
         self.mcp_enabling: str | None = None
+        # The status row for that work, restored if a turn beside it ends first.
+        self.mcp_status = ""
+        # While MCP work is pending or running: how many steering messages sent
+        # before it may still reach the running turn. Later ones wait for it.
+        self.steering_before_mcp: int | None = None
         # Servers marked enabled in mcp.json, enabled without a browser after a
         # conversation starts (startup, /new, resume).
         self.mcp_defaults_requested = False
@@ -891,6 +912,7 @@ class SessionController:
             self.pending_model_command += 1
             self.activity.busy = True
         if mcp_enable(text):
+            self.hold_later_steering()
             self.pending_mcp += 1
             # Enter + Ctrl+C in one input batch must cancel activation before
             # its command worker has had a chance to start OAuth.
@@ -927,6 +949,8 @@ class SessionController:
             self.pending_model_command = 0
         if count := self.prompts.clear():
             self.view.note(f"Cleared {count} queued message(s).")
+        if self.steering_before_mcp is not None:
+            self.steering_before_mcp = 0
 
     def cancel(self) -> None:
         """Ctrl+C: clear the queue and stop what is running."""
@@ -953,11 +977,14 @@ class SessionController:
 
     def take_steering(self) -> list[str]:
         """The runtime's hook: steering messages for the next model request."""
-        if self.mcp_task is not None or self.pending_mcp:
-            # Like queued prompts, steering waits for MCP work, so "/mcp enable
-            # x" then "use x" reaches the model once x's tools are there.
-            return []
-        messages = self.prompts.take_steering()
+        # Like queued prompts, steering sent after MCP work waits for it, so
+        # "/mcp enable x" then "use x" reaches the model with x's tools.
+        if self.mcp_task is None and not self.pending_mcp:
+            self.steering_before_mcp = None
+        limit = self.steering_before_mcp
+        messages = self.prompts.take_steering(limit)
+        if limit is not None:
+            self.steering_before_mcp = limit - len(messages)
         for text in messages:
             self.activity.start_prompt(text)
             self.view.user(text)
@@ -1224,7 +1251,8 @@ class SessionController:
             failure = error
         finally:
             self.view.turn_ended()
-            self.activity.status = ""
+            # MCP work started beside the turn may outlast it.
+            self.activity.status = self.mcp_status if self.mcp_task is not None else ""
         # Abandoning a wait is the exception, not the rule: restore the safe
         # default so the next Ctrl+C-free cancellation cannot kill a command.
         self.set_cancel_policy("detach")
@@ -1331,8 +1359,10 @@ class SessionController:
         model request. It keeps its status line and, should this fail, the
         messages queued behind it, which were not waiting on this change.
         """
+        self.hold_later_steering()
         self.mcp_idle.clear()
         self.mcp_enabling = name
+        self.mcp_status = status
         self.activity.busy = True
         beside_turn = self.turn_running()
         if not beside_turn:
@@ -1352,9 +1382,11 @@ class SessionController:
                     self.clear_queue()
                 self.mcp_task = None
                 self.refresh_busy()
-                if not beside_turn:
+                if not self.turn_running():
                     self.activity.status = ""
                 self.mcp_enabling = None
+                self.mcp_status = ""
+                self.steering_before_mcp = None
                 self.mcp_idle.set()
                 self.view.redraw()
                 self.view.session_changed()
@@ -1363,10 +1395,20 @@ class SessionController:
         # A done callback also handles cancellation before the coroutine starts.
         self.mcp_task.add_done_callback(finished)
 
+    def hold_later_steering(self) -> None:
+        if self.steering_before_mcp is None:
+            self.steering_before_mcp = self.prompts.steering()
+
+    def cancels(self) -> str:
+        """How to abandon MCP work, which Ctrl+C stops along with any turn."""
+        return (
+            "Ctrl+C cancels it and the running turn." if self.turn_running() else "Ctrl+C cancels."
+        )
+
     def start_mcp_enable(self, name: str) -> None:
         self.view.note(
             f"Enabling MCP '{name}'. OAuth sign-in happens now if needed; "
-            "Ctrl+C cancels. No model request is made."
+            f"{self.cancels()} No model request is made."
         )
         self.start_mcp_task(
             name,
@@ -1387,7 +1429,7 @@ class SessionController:
             return
         self.view.note(
             f"Enabling MCP {', '.join(names)}. OAuth sign-in happens now if needed; "
-            "Ctrl+C cancels. No model request is made."
+            f"{self.cancels()} No model request is made."
         )
         self.start_mcp_task(
             ", ".join(names),
@@ -1426,7 +1468,7 @@ class SessionController:
             return
         self.view.note(
             f"Enabling MCP {', '.join(wanted)} for the {skill} skill. "
-            "OAuth sign-in happens now if needed; Ctrl+C cancels."
+            f"OAuth sign-in happens now if needed; {self.cancels()}"
         )
         self.start_mcp_task(
             ", ".join(wanted),
