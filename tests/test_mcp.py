@@ -169,9 +169,23 @@ def test_commands_completion_reset_and_model_switch(tmp_path):
     def completions(text):
         return [c.text for c in completer.get_completions(Document(text), CompleteEvent())]
 
-    assert completions("/mcp en") == ["enable-all", "enable docs", "enable other"]
-    assert completions("/mcp disable ") == ["disable docs"]
+    assert completions("/mcp en") == [
+        "enable-all",
+        "enable docs",
+        "enable docs --save",
+        "enable other",
+        "enable other --save",
+    ]
+    assert completions("/mcp disable ") == ["disable docs", "disable docs --save"]
+    assert completions("/mcp enable d") == ["enable docs", "enable docs --save"]
+    # Default on: disabling with --save is offered even while off, and enabling
+    # with --save is not once it is on (there is nothing left to save).
+    write_config({"docs": {"command": sys.executable, "enabled": True}})
     assert completions("/mcp enable d") == ["enable docs"]
+    handle_command(app, "/mcp disable docs")
+    assert completions("/mcp disable ") == ["disable docs --save"]
+    handle_command(app, "/mcp enable docs")
+    write_config({"docs": {"command": sys.executable}, "other": {"url": "https://example.com/mcp"}})
     handle_command(app, "/mcp enable missing")
     assert "Unknown MCP server" in output.getvalue()
     handle_command(app, "/mcp once docs")
@@ -195,6 +209,68 @@ def test_enable_all_enables_every_configured_server(tmp_path):
     assert "MCP 'other' enabled." in output.getvalue()
     handle_command(app, "/mcp enable-all")
     assert "already enabled" in output.getvalue()
+
+
+def test_save_flag_persists_the_default(tmp_path):
+    path = write_config({"docs": {"command": sys.executable, "direct": True}})
+    data = json.loads(path.read_text())
+    data["other"] = "kept"
+    path.write_text(json.dumps(data))
+    app, output = make_app(tmp_path)
+    handle_command(app, "/mcp enable docs --save")
+    assert set(app.runtime.mcp.enabled) == {"docs"}
+    saved = json.loads(path.read_text())
+    assert saved["mcpServers"]["docs"] == {
+        "command": sys.executable,
+        "direct": True,
+        "enabled": True,
+    }
+    assert saved["other"] == "kept"
+    assert "now on in every new conversation" in output.getvalue()
+    # Already on: --save still records the default.
+    handle_command(app, "/mcp disable docs --save")
+    assert not app.runtime.mcp.enabled
+    assert "enabled" not in json.loads(path.read_text())["mcpServers"]["docs"]
+    # Off and not saved on: disabling with --save is not an error.
+    handle_command(app, "/mcp disable docs --save")
+    assert "off by default" in output.getvalue()
+    handle_command(app, "/mcp enable docs")
+    handle_command(app, "/mcp enable docs --save")
+    assert json.loads(path.read_text())["mcpServers"]["docs"]["enabled"] is True
+    handle_command(app, "/mcp logout docs --save")
+    assert "Usage: /mcp" in output.getvalue()
+
+
+def test_save_writes_through_a_symlink_and_keeps_the_file(tmp_path, monkeypatch):
+    target = tmp_path / "dotfiles" / "mcp.json"
+    target.parent.mkdir()
+    target.write_text(json.dumps({"mcpServers": {"docs": {"command": "x", "description": "café"}}}))
+    target.chmod(0o644)
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+    monkeypatch.setenv("PCODE_MCP_CONFIG", str(link))
+    app, output = make_app(tmp_path)
+    handle_command(app, "/mcp disable docs --save")
+    handle_command(app, "/mcp --save enable docs")
+    assert "Usage: /mcp" in output.getvalue()
+    assert link.is_symlink()
+    assert target.stat().st_mode & 0o777 == 0o644
+    assert "café" in target.read_text()
+    from pcode.mcp import save_default
+
+    save_default("docs", True)
+    assert json.loads(target.read_text())["mcpServers"]["docs"]["enabled"] is True
+    assert link.is_symlink()
+
+
+def test_save_flag_does_not_persist_a_failed_enable(tmp_path):
+    path = write_config({"bad": {"command": ["not", "a", "string"]}})
+    app, output = make_app(tmp_path)
+    handle_command(app, "/mcp enable bad --save")
+    assert not app.runtime.mcp.enabled
+    assert "enabled" not in json.loads(path.read_text())["mcpServers"]["bad"]
+    handle_command(app, "/mcp disable missing --save")
+    assert "Could not save the MCP default" in output.getvalue()
 
 
 def test_changes_go_ahead_beside_a_running_turn(tmp_path):

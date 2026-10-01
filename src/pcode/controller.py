@@ -631,7 +631,8 @@ class SessionController:
             ),
             Command(
                 "/mcp",
-                "Manage MCP servers: list / enable NAME / enable-all / disable NAME / logout NAME",
+                "Manage MCP servers: list / enable NAME [--save] / enable-all / "
+                "disable NAME [--save] / logout NAME",
                 self.mcp,
                 ("list", "enable", "enable-all", "disable"),
                 free_arguments=True,
@@ -1405,14 +1406,14 @@ class SessionController:
             "Ctrl+C cancels it and the running turn." if self.turn_running() else "Ctrl+C cancels."
         )
 
-    def start_mcp_enable(self, name: str) -> None:
+    def start_mcp_enable(self, name: str, *, save: bool = False) -> None:
         self.view.note(
             f"Enabling MCP '{name}'. OAuth sign-in happens now if needed; "
             f"{self.cancels()} No model request is made."
         )
         self.start_mcp_task(
             name,
-            self.enable_mcp(name),
+            self.enable_mcp(name, save=save),
             status=f"Enabling MCP '{name}' — complete browser sign-in if prompted…",
             cancelled=f"MCP '{name}' sign-in cancelled; server remains off.",
         )
@@ -1752,11 +1753,25 @@ class SessionController:
             for name, raw in sorted(names.items())
             if isinstance(raw, dict) and raw.get("auth") == "oauth"
         ]
+        default_on = {
+            name for name, raw in names.items() if isinstance(raw, dict) and raw.get("enabled")
+        }
+        disable = []
+        for name in sorted(enabled.keys() | default_on):
+            if name in enabled:
+                disable.append(f"disable {name}")
+            if name in names:
+                disable.append(f"disable {name} --save")
         return (
             "list",
             *(("enable-all",) if names else ()),
-            *(f"enable {name}" for name in sorted(names)),
-            *(f"disable {name}" for name in sorted(enabled)),
+            *(
+                item
+                for name in sorted(names)
+                for item in (f"enable {name}", f"enable {name} --save")
+                if not (item.endswith("--save") and name in default_on and name in enabled)
+            ),
+            *disable,
             *(f"logout {name}" for name in oauth),
         )
 
@@ -1764,9 +1779,12 @@ class SessionController:
         from pcode.mcp import config_path, configured_servers
 
         parts = argument.split()
+        save = parts[-1:] == ["--save"]
+        if save:
+            parts = parts[:-1]
         state = getattr(self.runtime, "mcp", None)
         enabled = state.enabled if state else {}
-        if not parts or parts == ["list"]:
+        if not save and (not parts or parts == ["list"]):
             self.view.note(f"MCP config: {config_path()}")
             try:
                 names = configured_servers()
@@ -1783,15 +1801,17 @@ class SessionController:
                 self.view.note("No MCP servers configured. Add an mcpServers object here.")
             self.view.note(
                 'MCP defaults to off unless a server sets "enabled": true. '
-                "Use /mcp enable NAME, /mcp enable-all, /mcp disable NAME, or /mcp logout NAME."
+                "Use /mcp enable NAME, /mcp enable-all, /mcp disable NAME, or /mcp logout NAME. "
+                "Add --save to enable or disable to change the default too."
             )
             return
-        if parts != ["enable-all"] and (
-            len(parts) != 2 or parts[0] not in {"enable", "disable", "logout"}
+        if (parts != ["enable-all"] or save) and (
+            len(parts) != 2
+            or parts[0] not in ({"enable", "disable"} if save else {"enable", "disable", "logout"})
         ):
             raise ValueError(
-                "Usage: /mcp list | /mcp enable NAME | /mcp enable-all | /mcp disable NAME "
-                "| /mcp logout NAME"
+                "Usage: /mcp list | /mcp enable NAME [--save] | /mcp enable-all "
+                "| /mcp disable NAME [--save] | /mcp logout NAME"
             )
         # Slash commands precede queued prompts, and queued and steering
         # messages wait for MCP work, so an enable + prompt submitted in one
@@ -1806,19 +1826,34 @@ class SessionController:
             return
         action, name = parts
         if action == "enable":
-            if name in enabled:
-                self.view.note(f"MCP '{name}' is already enabled.")
-            else:
-                self.start_mcp_enable(name)
+            if name not in enabled:
+                self.start_mcp_enable(name, save=save)
+                return
+            self.view.note(f"MCP '{name}' is already enabled.")
         elif action == "logout":
             self.start_mcp_logout(name)
-        else:
+            return
+        elif name in enabled or not save:
             state.disable(name)
             self.view.note(
                 f"MCP '{name}' disabled{self.mid_turn()}. Earlier results remain in history."
             )
+        if save:
+            self.save_mcp_default(name, action == "enable")
 
-    async def enable_mcp(self, name: str) -> None:
+    def save_mcp_default(self, name: str, enabled: bool) -> None:
+        from pcode.mcp import config_path, save_default
+
+        try:
+            save_default(name, enabled)
+        except Exception as error:
+            # Best effort after the change itself succeeded: never report it as a failure.
+            self.view.warning(f"Could not save the MCP default ({error}); this applies only here.")
+            return
+        default = "on in every new conversation" if enabled else "off by default"
+        self.view.note(f"MCP '{name}' is now {default} ({config_path()}).")
+
+    async def enable_mcp(self, name: str, *, save: bool = False) -> None:
         """Authorize outside the model loop; publish only a successfully enabled server."""
         await self.runtime.mcp.enable(name)
         self.view.note(
@@ -1826,6 +1861,8 @@ class SessionController:
             "Its tools can perform actions with the server's permissions. "
             "OAuth sign-ins are saved for future sessions; /mcp logout NAME forgets one."
         )
+        if save:
+            self.save_mcp_default(name, True)
 
     def mid_turn(self) -> str:
         """Says when an MCP change reaches a turn already running."""

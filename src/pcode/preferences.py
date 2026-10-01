@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -660,17 +661,22 @@ def update_preferences(
         for key in remove:
             data.pop(key, None)
         data.update(updates)
-        _write_preferences(path, data)
+        write_json(path, data)
 
 
-def _write_preferences(path: Path, data: dict) -> None:
+def write_json(path: Path, data: dict) -> None:
     # Atomic replacement avoids leaving a partial file after an interrupted write.
     name = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as file:
             name = file.name
-            json.dump(data, file, indent=2)
+            json.dump(data, file, indent=2, ensure_ascii=False)
             file.write("\n")
+        # Keep an existing file's mode; a new one stays private (0600).
+        try:
+            shutil.copymode(path, name)
+        except FileNotFoundError:
+            pass
         os.replace(name, path)
     finally:
         if name is not None:
@@ -722,7 +728,7 @@ def save_model_effort(model: str, effort: str) -> None:
         stored = dict(stored) if isinstance(stored, dict) else {}
         stored[model] = effort
         data[MODEL_EFFORTS_KEY] = stored
-        _write_preferences(path, data)
+        write_json(path, data)
 
 
 def anthropic_profile(model: str | None, resolved=None) -> dict:

@@ -77,6 +77,10 @@ def configured_servers() -> dict[str, Any]:
         raise ValueError(f"MCP configuration not found: {path}") from None
     except (OSError, ValueError):
         raise ValueError(f"Cannot read MCP configuration: {path} (expected JSON)") from None
+    return _servers(data)
+
+
+def _servers(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict) or not isinstance(data.get("mcpServers"), dict):
         raise ValueError("MCP configuration must contain an mcpServers object.")
     servers = data["mcpServers"]
@@ -95,6 +99,32 @@ def default_servers() -> list[str]:
         for name, raw in configured_servers().items()
         if isinstance(raw, dict) and raw.get("enabled") is True
     )
+
+
+def save_default(name: str, enabled: bool) -> None:
+    """Set or clear a server's `"enabled": true`, leaving the rest of the file as is.
+
+    Off is the default, so turning one off drops the key rather than writing false.
+    """
+    from filelock import FileLock
+
+    from pcode.preferences import write_json
+
+    # Write through a symlink (a dotfile-managed config) rather than replacing it.
+    path = config_path().resolve()
+    with FileLock(str(path) + ".lock", timeout=5):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            raise ValueError(f"Cannot read MCP configuration: {path} (expected JSON)") from None
+        server = _servers(data).get(name)
+        if not isinstance(server, dict):
+            raise ValueError(f"Unknown MCP server '{name}'. Use /mcp list.")
+        if enabled:
+            server["enabled"] = True
+        else:
+            server.pop("enabled", None)
+        write_json(path, data)
 
 
 def _expand(value: Any) -> Any:
