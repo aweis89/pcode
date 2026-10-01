@@ -39,8 +39,9 @@ TERM_GRACE_SECONDS = 3.0
 # A lock file is created a moment before it is locked; leave young ones alone.
 STALE_LOCK_SECONDS = 60.0
 
-# Lock descriptors of the runs this process owns, by tag.
-_held: dict[str, int] = {}
+# Runs this process owns, by tag: the lock descriptor, and the environment it
+# tagged with the tag that was there before.
+_held: dict[str, tuple[int, object, str | None]] = {}
 
 
 def tag_run(environ=os.environ) -> str | None:
@@ -50,35 +51,50 @@ def tag_run(environ=os.environ) -> str | None:
     own, and must not reap the outer run's workers when it finishes. Returns
     None, leaving reaping off for the run, if the lock cannot be taken.
     """
+    path = str(RUNS_DIR / f"{uuid.uuid4().hex}.lock")
     try:
         RUNS_DIR.mkdir(mode=0o700, exist_ok=True)
-        path = str(RUNS_DIR / f"{uuid.uuid4().hex}.lock")
         fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return None
-    _held[path] = fd
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        Path(path).unlink(missing_ok=True)
+        return None
+    _held[path] = (fd, environ, environ.get(RUN_ENV))
     environ[RUN_ENV] = path
     return path
 
 
 def end_run(identity: str) -> None:
-    """Release a run's lock and remove its file."""
-    fd = _held.pop(identity, None)
-    if fd is not None:
-        Path(identity).unlink(missing_ok=True)
-        os.close(fd)
+    """Release a run's lock, remove its file, and put back the tag it replaced."""
+    held = _held.pop(identity, None)
+    if held is None:
+        return
+    fd, environ, previous = held
+    if environ.get(RUN_ENV) == identity:
+        if previous is None:
+            environ.pop(RUN_ENV, None)
+        else:
+            environ[RUN_ENV] = previous
+    Path(identity).unlink(missing_ok=True)
+    os.close(fd)
 
 
 def _alive(identity: str) -> bool:
-    """Whether the run may still be going. Only proof of its end counts as dead."""
+    """Whether the run may still be going. Only proof of its end counts as dead.
+
+    The proof is a lock file nobody holds. A missing file proves nothing: a
+    reaper with a private /tmp sees no one's files, and a run that ended
+    cleanly has already reaped its own processes.
+    """
     path = Path(identity)
     if path.parent != RUNS_DIR:
         return True
     try:
         fd = os.open(path, os.O_RDONLY)
-    except FileNotFoundError:
-        return False  # Ended cleanly: its lock file went with it.
     except OSError:
         return True
     try:
