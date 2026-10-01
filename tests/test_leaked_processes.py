@@ -1,8 +1,9 @@
 import os
+import signal
 import subprocess
 import sys
 import time
-import uuid
+from pathlib import Path
 
 import leaked_processes
 import psutil
@@ -47,13 +48,40 @@ def run():
 
     def start() -> str:
         identity = leaked_processes.tag_run({})
-        assert identity is not None
+        if identity is None:
+            pytest.skip(f"cannot take a run lock under {RUNS_DIR}")
         identities.append(identity)
         return identity
 
     yield start
     for identity in identities:
         leaked_processes.end_run(identity)
+
+
+@pytest.fixture
+def crashed_run():
+    """A run whose controller took its lock and was then SIGKILLed, skipping teardown."""
+    tests = Path(__file__).parent
+    script = (
+        f"import sys, time; sys.path.insert(0, {str(tests)!r}); import leaked_processes; "
+        "print(leaked_processes.tag_run({}), flush=True); time.sleep(60)"
+    )
+    holder = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+    identity = holder.stdout.readline().strip()
+    if identity == "None":
+        holder.kill()
+        holder.wait()
+        pytest.skip(f"cannot take a run lock under {RUNS_DIR}")
+    try:
+        assert leaked_processes._alive(identity)  # Held by another process.
+        holder.send_signal(signal.SIGKILL)
+        holder.wait()
+        yield identity
+    finally:
+        holder.kill()
+        holder.wait()
+        holder.stdout.close()
+        Path(identity).unlink(missing_ok=True)
 
 
 def gone(process: psutil.Process) -> bool:
@@ -73,36 +101,34 @@ def test_a_run_stops_what_it_leaked_and_nothing_else(spawn, run):
     assert not gone(other)
 
 
-def test_processes_of_a_run_that_ended_are_stopped(spawn, run):
-    ended = run()
-    leaked_processes.end_run(ended)  # Its lock file goes with it.
-    crashed = str(RUNS_DIR / f"crashed-{uuid.uuid4().hex}.lock")
-    open(crashed, "w").close()  # Its file stays, but nobody holds the lock.
-    try:
-        orphans = [spawn(ended), spawn(crashed)]
-        live = spawn(run())
+def test_processes_of_a_run_that_crashed_are_stopped(spawn, run, crashed_run):
+    assert not leaked_processes._alive(crashed_run)
+    orphan, live = spawn(crashed_run), spawn(run())
 
-        stopped = leaked_processes.reap_dead_runs([*orphans, live])
+    stopped = leaked_processes.reap_dead_runs([orphan, live])
 
-        # Another run starting now may reap the orphans first; either way they go.
-        assert {int(line.split()[0]) for line in stopped} <= {p.pid for p in orphans}
-        assert all(gone(process) for process in orphans)
-        assert not gone(live)
-    finally:
-        os.unlink(crashed)
+    # Another run starting now may reap the orphan first; either way it goes.
+    assert {line.split()[0] for line in stopped} <= {str(orphan.pid)}
+    assert gone(orphan)
+    assert not gone(live)
 
 
 def test_only_a_run_proven_over_is_dead(run):
     assert leaked_processes._alive(run())
     assert leaked_processes._alive("not-a-tag")
     assert leaked_processes._alive("/elsewhere/run.lock")
-    assert not leaked_processes._alive(str(RUNS_DIR / "never-existed.lock"))
+    # A missing file proves nothing: a reaper with a private /tmp sees none.
+    assert leaked_processes._alive(str(RUNS_DIR / "never-existed.lock"))
 
 
-def test_a_nested_run_takes_its_own_tag():
+def test_a_nested_run_takes_its_own_tag_and_gives_the_outer_one_back(run):
     environ = {RUN_ENV: "outer"}
     identity = leaked_processes.tag_run(environ)
+    if identity is None:
+        pytest.skip(f"cannot take a run lock under {RUNS_DIR}")
     try:
         assert environ[RUN_ENV] == identity != "outer"
     finally:
         leaked_processes.end_run(identity)
+    assert environ[RUN_ENV] == "outer"
+    assert not Path(identity).exists()
