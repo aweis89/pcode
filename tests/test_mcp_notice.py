@@ -6,7 +6,13 @@ from copy import deepcopy
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
 
@@ -148,6 +154,66 @@ def test_a_server_that_fails_to_connect_is_listed_as_unavailable():
         assert await turn() == [down, up]
 
     asyncio.run(run())
+
+
+def test_a_running_turn_follows_enable_and_disable_at_its_next_request():
+    """/mcp during a turn acts like steering: the next request has the change."""
+    events = []
+
+    class Tracked(FunctionToolset):
+        async def __aenter__(self):
+            events.append("enter")
+            return await super().__aenter__()
+
+        async def __aexit__(self, *args):
+            events.append("exit")
+            return await super().__aexit__(*args)
+
+    def lookup() -> str:
+        return "found"
+
+    seen = []
+
+    async def model(messages, info):
+        seen.append((sorted(tool.name for tool in info.function_tools), notices(messages)))
+        step = len(seen)
+        if step == 1:
+            runtime.mcp.enabled["docs"] = Tracked([lookup])
+            yield {0: DeltaToolCall(name="probe", json_args="{}", tool_call_id="p1")}
+        elif step == 2:
+            yield {0: DeltaToolCall(name="lookup", json_args="{}", tool_call_id="l1")}
+        elif step == 3:
+            runtime.mcp.disable("docs")
+            yield {0: DeltaToolCall(name="probe", json_args="{}", tool_call_id="p2")}
+        else:
+            yield "done"
+
+    agent = Agent(
+        FunctionModel(stream_function=model),
+        toolsets=[FunctionToolset([probe])],
+        capabilities=[MCPServers(instruct=False)],
+    )
+    runtime = AgentRuntime(agent)
+
+    async def run():
+        async for _ in runtime.stream("go"):
+            pass
+
+    asyncio.run(run())
+    listed, none = render([("docs", None)]), render([])
+    assert seen == [
+        (["probe"], []),
+        (["lookup", "probe"], [listed]),
+        (["lookup", "probe"], [listed]),
+        (["probe"], [listed, none]),
+    ]
+    # Connected once when enabled, closed once when disabled, not per step.
+    assert events == ["enter", "exit"]
+    assert any(
+        isinstance(part, ToolReturnPart) and part.content == "found"
+        for message in runtime.history
+        for part in getattr(message, "parts", ())
+    )
 
 
 def test_list_returns_after_compaction_drops_it():

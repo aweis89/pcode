@@ -461,6 +461,66 @@ def _isolated() -> type:
     return IsolatedServer
 
 
+@functools.cache
+def _live() -> type:
+    """The enabled servers as of each model request, not as of the turn's start.
+
+    A run otherwise fixes its toolsets when it starts, so `/mcp enable` during a
+    long turn would wait for the next one. Instead each step (a model request,
+    or the tool calls answering one) compares the run's entered servers with
+    `MCPState.enabled`: a server enabled meanwhile is connected and listed from
+    the next request on, one disabled is disconnected, and the rest keep their
+    connections. One instance per run (`for_run`), so concurrent runs (a side
+    question, a worker) never share entered state.
+    """
+    from dataclasses import dataclass, field
+
+    from pydantic_ai.toolsets import CombinedToolset
+
+    @dataclass
+    class LiveServers(CombinedToolset):
+        toolsets: list = field(default_factory=list)
+        state: Any = None
+        # name -> (the enabled toolset, the entered wrapper around it)
+        _entered: dict = field(default_factory=dict, init=False, compare=False, repr=False)
+
+        async def for_run(self, ctx):
+            return LiveServers(state=self.state)
+
+        async def for_run_step(self, ctx):
+            await self._sync()
+            return self
+
+        async def __aenter__(self):
+            await self._sync()
+            return self
+
+        async def __aexit__(self, *args: Any) -> bool | None:
+            entered, self._entered, self.toolsets = self._entered, {}, []
+            for _, wrapper in reversed(entered.values()):
+                await wrapper.__aexit__(*args)
+            return None
+
+        async def _sync(self) -> None:
+            wanted = dict(self.state.enabled)
+            for name, (toolset, wrapper) in list(self._entered.items()):
+                # Identity, not name: undefer() swaps a server's toolset in place.
+                if wanted.get(name) is not toolset:
+                    del self._entered[name]
+                    await wrapper.__aexit__(None, None, None)
+            isolated = _isolated()
+            for name, toolset in wanted.items():
+                if name not in self._entered:
+                    wrapper = isolated(toolset, server=name, state=self.state)
+                    # Never raises for a failed connection: IsolatedServer
+                    # records it and lists no tools instead.
+                    await wrapper.__aenter__()
+                    self._entered[name] = (toolset, wrapper)
+            self.toolsets = [wrapper for _, wrapper in self._entered.values()]
+
+    return LiveServers
+
+
 class MCPState:
     """Never persisted. Disabled servers have no toolsets, connections, or prompt cost."""
 
@@ -537,12 +597,10 @@ class MCPState:
         self.descriptions.pop(name, None)
         self.unavailable.pop(name, None)
 
-    def toolsets(self) -> list:
-        """The enabled servers, isolated so one that cannot connect costs only its tools."""
-        isolated = _isolated()
-        return [
-            isolated(toolset, server=name, state=self) for name, toolset in self.enabled.items()
-        ]
+    def live(self):
+        """The enabled servers as one toolset that follows `enabled` while a run is
+        in progress, each isolated so one that cannot connect costs only its tools."""
+        return _live()(state=self)
 
     def servers(self) -> dict[str, str | None]:
         """Enabled server names, sorted, with the descriptions configured for them."""

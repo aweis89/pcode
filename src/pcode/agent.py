@@ -101,8 +101,20 @@ AGENT_INSTRUCTIONS = (
 _worker_toolsets: ContextVar[Sequence] = ContextVar("worker_toolsets", default=())
 
 
-def worker_runtime_tools(ctx):
-    return CombinedToolset(list(_worker_toolsets.get()))
+@dataclass
+class WorkerRuntimeTools(CombinedToolset):
+    """Stands in for the delegating turn's runtime toolsets in each worker run.
+
+    Resolved once per run rather than by a per-step toolset function, which
+    would exit and re-enter them at every step, and through their own
+    `for_run`, so a live MCP toolset gets a fresh instance for this worker and
+    still follows /mcp changes at each of its steps.
+    """
+
+    toolsets: Sequence = ()
+
+    async def for_run(self, ctx):
+        return await CombinedToolset(list(_worker_toolsets.get())).for_run(ctx)
 
 
 @asynccontextmanager
@@ -335,7 +347,7 @@ def _create_worker(
             else "You share the parent's workspace: coordinate edits with the parent."
         ),
         capabilities=[*capabilities, *extensions],
-        toolsets=[worker_runtime_tools],
+        toolsets=[WorkerRuntimeTools()],
     )
 
 
