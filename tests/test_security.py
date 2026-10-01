@@ -1,6 +1,8 @@
 """The bundled security extension: write roots, credential reads, and the shell sandbox."""
 
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -257,6 +259,17 @@ def test_shell_commands_run_inside_the_sandbox(repo, tmp_path, monkeypatch):
     assert (repo / "inside.txt").read_text() == "in\n"
     assert not (outside / "x").exists()
     assert "Operation not permitted" in results[0] and "refused" in results[0]
+
+
+@pytest.mark.skipif(sandbox.backend() != "seatbelt", reason="needs macOS sandbox-exec")
+def test_sandboxed_commands_can_open_a_pseudo_terminal(repo, tmp_path):
+    prefix = sandbox.command_prefix(policy(repo), tmp_path)
+    script = "import os, pty; main, _ = pty.openpty(); print(os.ttyname(_))"
+    result = subprocess.run(
+        [*prefix, sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("/dev/tty")
 
 
 def test_file_tools_are_checked_where_the_tool_resolves_them(repo, monkeypatch):
