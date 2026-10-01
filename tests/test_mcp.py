@@ -207,10 +207,15 @@ def test_changes_go_ahead_beside_a_running_turn(tmp_path):
         controller.live_task = turn
         app.activity.busy = True
         app.activity.status = "Running shell…"
+        controller.prompts.put("earlier", "steering")
+        controller.command("/mcp enable docs")
         controller.prompts.put("use docs", "steering")
+        controller.command_started("/mcp enable docs")
         await controller.run_command("/mcp enable docs")
         assert controller.mcp_task is not None
-        # Steering waits for the enable, so it arrives with the server's tools.
+        # Steering sent after the enable waits for it, so it arrives with the
+        # server's tools; what was sent before is not held up.
+        assert controller.take_steering() == ["earlier"]
         assert controller.take_steering() == []
         # One MCP change at a time.
         await controller.run_command("/mcp disable docs")
@@ -224,6 +229,7 @@ def test_changes_go_ahead_beside_a_running_turn(tmp_path):
     assert set(app.runtime.mcp.enabled) == {"docs"}
     assert "Another MCP change is still in progress" in output.getvalue()
     assert "from the running turn's next model request" in output.getvalue()
+    assert "Ctrl+C cancels it and the running turn." in output.getvalue()
     handle_command(app, "/mcp list")
     assert "docs: enabled" in output.getvalue()
 

@@ -5,7 +5,9 @@ import json
 import logging
 import os
 import re
+import sys
 from collections.abc import Callable
+from contextlib import AsyncExitStack
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
@@ -471,7 +473,12 @@ def _live() -> type:
     `MCPState.enabled`: a server enabled meanwhile is connected and listed from
     the next request on, one disabled is disconnected, and the rest keep their
     connections. One instance per run (`for_run`), so concurrent runs (a side
-    question, a worker) never share entered state.
+    question, a worker) never share entered state. (`visit_and_replace` would
+    copy one without that state, but only durable execution calls it.)
+
+    The `<mcp-servers>` notice reads `MCPState` itself a moment later, in
+    `before_model_request`, so a change landing between the two can list a
+    server one request before (or after) its tools. The next request agrees.
     """
     from dataclasses import dataclass, field
 
@@ -492,13 +499,21 @@ def _live() -> type:
             return self
 
         async def __aenter__(self):
-            await self._sync()
+            # The run's exit stack only exits what entered successfully, so a
+            # cancelled first sync must close the servers it already opened.
+            try:
+                await self._sync()
+            except BaseException:
+                await self.__aexit__(*sys.exc_info())
+                raise
             return self
 
         async def __aexit__(self, *args: Any) -> bool | None:
             entered, self._entered, self.toolsets = self._entered, {}, []
-            for _, wrapper in reversed(entered.values()):
-                await wrapper.__aexit__(*args)
+            # A stack, so one exit that is cancelled or fails still runs the rest.
+            async with AsyncExitStack() as stack:
+                for _, wrapper in entered.values():
+                    stack.push_async_exit(wrapper)
             return None
 
         async def _sync(self) -> None:

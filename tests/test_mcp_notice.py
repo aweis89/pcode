@@ -216,6 +216,40 @@ def test_a_running_turn_follows_enable_and_disable_at_its_next_request():
     )
 
 
+def test_cancelling_the_first_connection_closes_the_servers_already_open():
+    from pydantic_ai.toolsets import CombinedToolset
+
+    events = []
+    started = asyncio.Event()
+
+    class Fast(FunctionToolset):
+        async def __aenter__(self):
+            events.append("fast enter")
+            return self
+
+        async def __aexit__(self, *args):
+            events.append("fast exit")
+
+    class Slow(FunctionToolset):
+        async def __aenter__(self):
+            started.set()
+            await asyncio.Event().wait()
+
+    state = MCPState()
+    state.enabled.update(fast=Fast([]), slow=Slow([]))
+
+    async def run():
+        # Entered as a run would: inside a stack that exits only what entered.
+        entering = asyncio.create_task(CombinedToolset([state.live()]).__aenter__())
+        await started.wait()
+        entering.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await entering
+
+    asyncio.run(run())
+    assert events == ["fast enter", "fast exit"]
+
+
 def test_list_returns_after_compaction_drops_it():
     runtime, requests = recording_runtime()
     summary = [
