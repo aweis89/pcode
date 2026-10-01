@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,8 @@ TERMINAL_SYNTAX = "terminal"
 SYNTAX_THEMES = (TERMINAL_SYNTAX, *sorted(get_all_styles()))
 
 EFFORTS = ("low", "medium", "high", "xhigh", "default")
+# `/show-thinking` and Ctrl+T, in cycling order.
+THINKING_MODES = ("off", "status-line", "scrollback")
 OPENAI_PROVIDERS = ("openai", "openai-chat", "openai-responses", "openai-codex")
 # Routes that reach a Claude model and so take Anthropic's own effort setting.
 ANTHROPIC_PROVIDERS = ("anthropic", "meridian", "claude")
@@ -412,7 +415,10 @@ SETTINGS = {
         description="Max height of the task list plus editor: rows, or 0.5 for half the screen",
     ),
     "show_thinking": Setting(
-        "off", ("on", "off"), description="Stream the model's thinking into the transcript"
+        "status-line",
+        THINKING_MODES,
+        description="Where the model's thinking shows: its own row under the status row, "
+        "streamed into scrollback, or nowhere",
     ),
     "editing_mode": Setting(
         "emacs", ("emacs", "vi"), description="Key bindings for the prompt editor"
@@ -796,24 +802,107 @@ def apply_effort(agent, model: str, effort: str | None) -> None:
     agent.model_settings = settings
 
 
-def apply_thinking(agent, model: str, shown: bool) -> None:
-    """Request visible Anthropic thinking on future turns, not just a UI preview."""
-    if not model.startswith("anthropic:"):
+# Claude models whose thinking is on with no `thinking` field, per Anthropic's
+# thinking docs. The status line (the default mode) only asks these for
+# readable thinking: on the rest, asking would turn thinking on, which costs
+# tokens and is refused alongside a non-default temperature.
+ANTHROPIC_THINKS_BY_DEFAULT = re.compile(
+    r"claude-(?:(?:opus|sonnet)-(?:[5-9]|\d{2,})\b|fable|mythos)"
+)
+# Models that write progress updates between tool calls, per Anthropic's
+# thinking docs. `display: "updates"` returns those short notes, written for
+# someone watching the agent, and nothing else: a status line's own format.
+# `(?!\d)`: `fable-5` must not also match a future `fable-50`, which would get
+# the beta (and a 400) without supporting it.
+ANTHROPIC_PROGRESS_UPDATES = re.compile(r"claude-(?:opus-5-5|sonnet-5-5|fable-5|mythos-5-1)(?!\d)")
+UPDATES_BETA = "thinking-display-updates-2026-08-18"
+
+
+def thinking_mode_preference() -> str:
+    """The saved `/show-thinking` mode, or its default."""
+    return load_preferences().get("show_thinking", SETTINGS["show_thinking"].default)
+
+
+def openai_profile(model: str, resolved=None) -> dict:
+    """The profile for an OpenAI `model`, from `resolved` when it is a model object."""
+    profile = getattr(resolved, "profile", None)
+    if profile is not None:
+        return profile
+    from pydantic_ai.profiles.openai import openai_model_profile
+
+    return openai_model_profile(model.split(":", 1)[-1]) or {}
+
+
+def thinking_settings(model: str, resolved, mode: str) -> dict:
+    """The request settings that make thinking readable in `mode`.
+
+    `off` asks for nothing. `status-line` wants short text: Anthropic's
+    progress updates where the model writes them, else summaries.
+    `scrollback` wants the fullest text the provider returns: Anthropic's
+    summaries (it never returns raw thinking) and OpenAI's `auto`, which is
+    each model's most detailed summarizer. `claude:` always gets summaries
+    and `openai-codex:` detailed ones, whatever the mode (see
+    `claude_sdk.SessionConfig` and `cache_settings`).
+
+    `claude:` is left on summaries on purpose. Its CLI rejects
+    `--thinking-display updates`, and sends `updates` itself only on some
+    logins (not a subscription's). `CLAUDE_CODE_EXTRA_BODY` plus
+    `ANTHROPIC_BETAS` can force it, and the server accepts that, but under
+    the CLI's harness Opus 5.5 writes its progress notes as ordinary text:
+    forcing `updates` only hid the reasoning, and left the row empty
+    (checked live, CLI 2.1.283).
+    """
+    if mode not in ("status-line", "scrollback"):
+        return {}
+    provider = model.split(":", 1)[0]
+    if provider == "anthropic":
+        if mode == "status-line" and not ANTHROPIC_THINKS_BY_DEFAULT.search(model):
+            return {}
+        if not anthropic_profile(model, resolved).get("anthropic_supports_adaptive_thinking"):
+            # Older models think only when asked. The budget is below the
+            # adapter's default max_tokens (4096); effort and output limits
+            # are never changed as a side effect of visibility.
+            return {
+                "anthropic_thinking": {
+                    "type": "enabled",
+                    "budget_tokens": 2048,
+                    "display": "summarized",
+                }
+            }
+        if mode == "status-line" and ANTHROPIC_PROGRESS_UPDATES.search(model):
+            return {
+                "anthropic_thinking": {"type": "adaptive", "display": "updates"},
+                "anthropic_betas": [UPDATES_BETA],
+            }
+        return {"anthropic_thinking": {"type": "adaptive", "display": "summarized"}}
+    if provider in ("openai", "openai-responses"):
+        # One summarizer per model; `auto` picks it, and a model that does not
+        # reason is never sent a reasoning setting. An API-key organisation
+        # that is not verified gets a 400 for asking: `off` is the way out.
+        if openai_profile(model, resolved).get("openai_supports_reasoning"):
+            return {"openai_reasoning_summary": "auto"}
+    return {}
+
+
+# The settings `thinking_settings` owns, by provider; others are left alone.
+# Nothing else in pcode sets `anthropic_betas`.
+THINKING_KEYS = {
+    "anthropic": ("anthropic_thinking", "anthropic_betas"),
+    "openai": ("openai_reasoning_summary",),
+    "openai-responses": ("openai_reasoning_summary",),
+}
+
+
+def apply_thinking(agent, model: str, mode: str) -> None:
+    """Request readable thinking for `mode` on future turns, not just a UI preview."""
+    keys = THINKING_KEYS.get(model.split(":", 1)[0])
+    if keys is None:
         return
     current = getattr(agent, "model_settings", None)
-    if not shown and not current:
+    wanted = thinking_settings(model, getattr(agent, "model", None), mode)
+    if not wanted and not any(key in (current or {}) for key in keys):
         return
-    settings = dict(current or {})
-    if shown:
-        profile = anthropic_profile(model, getattr(agent, "model", None))
-        settings["anthropic_thinking"] = (
-            {"type": "adaptive", "display": "summarized"}
-            if profile.get("anthropic_supports_adaptive_thinking")
-            else {"type": "enabled", "budget_tokens": 2048, "display": "summarized"}
-        )
-        # The legacy budget is below the adapter's default max_tokens (4096).
-        # Do not change effort or output limits as a side effect of visibility.
-    else:
-        settings.pop("anthropic_thinking", None)
+    settings = {k: v for k, v in (current or {}).items() if k not in keys}
+    settings.update(wanted)
     # Replace instead of mutating settings captured by an in-flight run.
     agent.model_settings = settings or None

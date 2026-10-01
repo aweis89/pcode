@@ -242,15 +242,30 @@ class ExtensionAPI:
         arguments: tuple[str, ...] = (),
         aliases: tuple[str, ...] = (),
         argument_descriptions: dict[str, str] | None = None,
+        complete_paths: bool = False,
     ) -> None:
         """Add a slash command. `handler(argument)` runs on the terminal's event loop.
 
         Without `arguments`, any text is accepted; with them, only those values,
-        and `argument_descriptions` labels each in the completion menu. Names
-        taken by pcode itself are reported and skipped, never overridden.
+        and `argument_descriptions` labels each in the completion menu.
+        `complete_paths` completes the argument, after any leading `--option`
+        words, as a filesystem path. Names taken by pcode itself are reported
+        and skipped, never overridden.
         """
         if not name.startswith("/"):
             name = "/" + name
+        completer = None
+        if complete_paths:
+            from pcode.path_completion import complete_paths as complete
+
+            workspace = Path(self.workspace)
+
+            # The name matters: an attached terminal runs its own completer of
+            # this name (`RemoteController.path_completions`).
+            def path_completions(argument: str):
+                return complete(argument, workspace)
+
+            completer = path_completions
         self.commands.append(
             Command(
                 name,
@@ -261,6 +276,7 @@ class ExtensionAPI:
                 free_arguments=not arguments,
                 group="Extensions",
                 argument_descriptions=argument_descriptions,
+                argument_completer=completer,
             )
         )
 

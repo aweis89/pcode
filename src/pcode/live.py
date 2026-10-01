@@ -1435,6 +1435,10 @@ def error_message(error: Exception, *, unexpected: str | None = None) -> str:
         details = error_details(error)
         detail = details.get("provider_message", "")
         suffix = f" {detail}" if detail else " See the saved session diagnostics."
+        if "reasoning summar" in detail.lower():
+            # An unverified OpenAI organisation, refused the summaries that
+            # `/show-thinking status-line` and `scrollback` ask for.
+            suffix += " `/show-thinking off` stops asking for them."
         return f"Provider request failed (HTTP {status}).{suffix}"
     if isinstance(error, ImportError):
         return "Provider dependency missing. Install its pydantic-ai-slim extra and try again."

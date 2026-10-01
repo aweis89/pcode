@@ -189,8 +189,8 @@ class _Client:
     def cancel(self) -> None:
         self.host.controller.cancel()
 
-    def set_thinking(self, shown: bool) -> None:
-        self.host.controller.set_thinking(shown)
+    def set_thinking(self, mode: str) -> None:
+        self.host.controller.set_thinking(mode)
 
     def adjust_effort(self, direction: int) -> None:
         self.host.controller.adjust_effort(direction)
@@ -491,6 +491,9 @@ class SessionHost:
                 getattr(self.controller.runtime, "session", None), "forked_from", None
             )
             or "",
+            "fork_requested": getattr(
+                getattr(self.controller.runtime, "session", None), "fork_requested", False
+            ),
             # Already encoded: a buffered call's arguments are whatever the view got.
             "calls": [
                 [name, encode(list(args)), encode(kwargs)] for name, args, kwargs in self.buffer
@@ -675,6 +678,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--resume")
+    parser.add_argument("--fork", action="store_true")
     parser.add_argument("--session-dir", type=Path)
     parser.add_argument("--no-save", action="store_true")
     parser.add_argument("--worktree", nargs="?", const=True)
@@ -684,7 +688,7 @@ def _parser() -> argparse.ArgumentParser:
 
 async def _serve(args: argparse.Namespace) -> None:
     from pcode.app import _enter_worktree, _resume_workspace
-    from pcode.preferences import load_preferences, set_project_root
+    from pcode.preferences import load_preferences, set_project_root, thinking_mode_preference
     from pcode.project_trust import prompt_trust
     from pcode.sessions import SavedSession, first_prompt
     from pcode.worktree import leave_worktree
@@ -706,8 +710,14 @@ async def _serve(args: argparse.Namespace) -> None:
     saved = None
     session_id = None
     if args.resume:
-        saved = SavedSession.open(args.resume, args.session_dir, workspace, fork_if_open=True)
-        workspace = Path(_resume_workspace(saved.info, workspace)).resolve()
+        saved = SavedSession.open(
+            args.resume, args.session_dir, workspace, fork_if_open=True, fork=args.fork
+        )
+        try:
+            workspace = Path(_resume_workspace(saved.info, workspace)).resolve()
+        except BaseException:
+            saved.abandon()  # A copy made for this resume is removed, not left listed.
+            raise
         entry.session_id = saved.info.id
         prompt = first_prompt(saved.info, saved.directory.parent)
         entry.title = "" if prompt.startswith("(") else prompt
@@ -728,7 +738,7 @@ async def _serve(args: argparse.Namespace) -> None:
     controller.resuming = saved is not None
     controller._needs_runtime = True
     controller.startup_pending = True
-    controller.activity.show_thinking = load_preferences().get("show_thinking") == "on"
+    controller.activity.thinking_mode = thinking_mode_preference()
     controller.register_skills()
     await host.serve()
     loop = asyncio.get_running_loop()

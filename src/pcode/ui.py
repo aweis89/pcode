@@ -51,7 +51,13 @@ from pcode.input_keys import configure_newline_keys
 from pcode.jobs import WATCHED_PREFIX
 from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN, PastedText
-from pcode.preferences import SETTINGS, SYNTAX_THEMES, TERMINAL_SYNTAX, load_preferences
+from pcode.preferences import (
+    SETTINGS,
+    SYNTAX_THEMES,
+    TERMINAL_SYNTAX,
+    THINKING_MODES,
+    load_preferences,
+)
 from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.shell_mode import SHELL_PREFIX
@@ -149,6 +155,9 @@ class Palette:
                 "activity.phase": f"nodim {self.accent} bold",
                 "activity.detail": "nodim",
                 "activity.meta": self.muted,
+                # The thinking row under the status row: the model's newest
+                # thought, faded so it never competes with the live phase.
+                "activity.thinking": f"italic {self.muted}",
                 # System work is pcode's own: the badge and accent mark it, and
                 # its queued rows keep an italic detail.
                 "activity.system": self.accent,
@@ -329,6 +338,8 @@ PHASE_GAP_SECONDS = 1.0
 PHASE_WORDS = 3
 # Cells of detail worth more than the status row's tally and clock.
 DETAIL_MIN_CELLS = 16
+# Characters of streamed thinking kept for the status row: its latest line.
+THINKING_KEEP = 2000
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -405,6 +416,49 @@ class StatusLine:
         return "" if self.elapsed is None else clock(self.elapsed)
 
 
+def tail_cells(text: str, width: int) -> str:
+    """The last `width` cells of `text`, marking a cut with a leading ellipsis."""
+    if cell_len(text) <= width:
+        return text
+    if width < 1:
+        return ""
+    kept: list[str] = []
+    cells = 1  # The ellipsis.
+    for char in reversed(text):
+        cells += cell_len(char)
+        if cells > width:
+            break
+        kept.append(char)
+    return "…" + "".join(reversed(kept)).lstrip()
+
+
+# A summary section's title: `**Tracing the resize path**` or `## Tracing...`.
+# One bold run only: `**A** and **B**` is prose with emphasis, not a title.
+THOUGHT_HEADING = re.compile(r"\*\*(?P<bold>[^*]+)\*\*|#{1,6}\s+(?P<hash>.+)")
+
+
+def latest_thought(text: str) -> str:
+    """What the thinking row says for one block of streamed thinking.
+
+    Detailed summaries (OpenAI's, and many of Anthropic's) come in titled
+    sections; the newest title reads at a glance where the prose under it
+    would scroll past. Untitled text (Anthropic's summaries, progress
+    updates) shows its newest line.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    title, fenced = "", False
+    for line in lines:
+        if line.startswith("```"):
+            fenced = not fenced  # A `# comment` in a code block is not a title.
+        elif not fenced and (heading := THOUGHT_HEADING.fullmatch(line)):
+            title = (heading["bold"] or heading["hash"]).strip()
+    if title:
+        return title
+    # The buffer keeps the block's tail only (THINKING_KEEP), so a long
+    # section can outlive its title; its newest line stands in then.
+    return lines[-1].replace("**", "") if lines else ""
+
+
 def fit_fragments(fragments: list[tuple[str, str]], width: int) -> list[tuple[str, str]]:
     """Cut styled fragments to `width` cells, marking a cut with an ellipsis.
 
@@ -472,7 +526,9 @@ class Activity:
     # screen below 1 (0.5 is half). None keeps the default layout.
     tasks_max_height: float | None = None
     tasks_autohidden: bool = False
-    show_thinking: bool = False
+    # Where the model's thinking shows: `off`, `status-line` (its own row
+    # under the status row), or `scrollback`. See THINKING_MODES.
+    thinking_mode: str = "status-line"
     busy: bool = False
     status: str = ""
     queued: int = 0
@@ -509,11 +565,46 @@ class Activity:
     # What this terminal is waiting on (the session host starting, a command
     # it has not finished): its own state, never synced from the host.
     waits: list[Wait] = field(default_factory=list)
+    # The tail of the newest thinking block, for the thinking row. Derived
+    # from the events this terminal renders, never synced from the host.
+    thought: str = ""
+    # No thinking block is open: the next delta (or whole block) starts one.
+    thought_done: bool = True
     # The status row's phase clock: (phase, since, last drawn). Drawing state,
     # so it is never compared, copied into a repr, or synced from the host.
     _phase: tuple[str, float, float] = field(
         default=("", 0.0, 0.0), init=False, repr=False, compare=False
     )
+
+    @property
+    def show_thinking(self) -> bool:
+        """Whether scrollback carries the model's thinking."""
+        return self.thinking_mode == "scrollback"
+
+    def think(self, text: str) -> None:
+        """Add streamed thinking; a new block replaces the last one."""
+        if not text:
+            return
+        if self.thought_done:
+            self.thought, self.thought_done = "", False
+        self.thought = (self.thought + text)[-THINKING_KEEP:]
+
+    def thought_fragments(self, width: int) -> list[tuple[str, str]]:
+        """The thinking row under the status row, in `status-line` mode.
+
+        Kept for the rest of the turn once a thought arrives: the last one
+        usually explains the tool calls that follow it, and a row that came
+        and went with every block would make the editor jump.
+        """
+        if self.thinking_mode != "status-line" or not self.status_shown or width < 3:
+            return []
+        thought = latest_thought(self.thought)
+        if not thought:
+            return []
+        # Indented past the spinner, so it reads as the phase's own detail.
+        return [
+            ("class:activity.thinking", "  " + tail_cells(plain(thought, limit=None), width - 2))
+        ]
 
     def begin_wait(self, label: str) -> Wait:
         """Start a wait that shows a spinner row once it outlasts the grace period."""
@@ -624,6 +715,7 @@ class Activity:
         self.prompt_kind = "user"
         self.prompt_detail = ""
         self.status = ""
+        self.thought, self.thought_done = "", True
         self.tasks_autohidden = False
 
     def height_cap(self, rows: int) -> int | None:
@@ -653,6 +745,7 @@ class Activity:
     def start_prompt(self, text: str, *, kind: str = "user", detail: str = "") -> None:
         """Show a running row, tagged so system work never looks like typed input."""
         self.tasks_autohidden = False
+        self.thought, self.thought_done = "", True
         self.prompt = text
         self.prompt_kind = kind
         self.prompt_detail = detail
@@ -1597,10 +1690,13 @@ def create_prompt(
         event.app.invalidate()
 
     @shortcuts.add("t", "Thinking")
-    def toggle_thinking(event: KeyPressEvent) -> None:
-        activity.show_thinking = not activity.show_thinking
+    def cycle_thinking(event: KeyPressEvent) -> None:
         if on_thinking is not None:
-            on_thinking(activity.show_thinking)
+            on_thinking("")  # Bare: the app cycles, persists and says which mode.
+        else:
+            modes = THINKING_MODES
+            index = modes.index(activity.thinking_mode) if activity.thinking_mode in modes else -1
+            activity.thinking_mode = modes[(index + 1) % len(modes)]
         event.app.invalidate()
 
     @shortcuts.add("g", "Command output", filter=on_commands is not None)
@@ -1962,6 +2058,10 @@ def create_prompt(
         return [("class:activity.group", row)] if row else []
 
     @per_render
+    def thought_row():
+        return activity.thought_fragments(session.app.output.get_size().columns - 1)
+
+    @per_render
     def aside_rows():
         return activity.aside_rows(spinner_frame(), session.app.output.get_size().columns - 1)
 
@@ -2001,6 +2101,7 @@ def create_prompt(
         return (
             bool(typing_row())
             + activity.status_shown
+            + len(thought_row())
             + len(group_rows())
             + len(notice_rows())
             + len(wait_rows())
@@ -2066,6 +2167,10 @@ def create_prompt(
             1,
         ),
         filter=Condition(lambda: activity.status_shown),
+    )
+    # Its own row, so a running tool taking the status row never hides it.
+    thought = ConditionalContainer(
+        spinner_rows(thought_row, 1), filter=Condition(lambda: bool(thought_row()))
     )
 
     def plan_body() -> Window:
@@ -2204,7 +2309,18 @@ def create_prompt(
         filter=Condition(lambda: bool(typing_row())),
     )
     activity_panel = HSplit(
-        [status_spacer, group, commands, notice, current_status, waits, asides, jobs, plan]
+        [
+            status_spacer,
+            group,
+            commands,
+            notice,
+            current_status,
+            thought,
+            waits,
+            asides,
+            jobs,
+            plan,
+        ]
     )
 
     @per_render

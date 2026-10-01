@@ -194,20 +194,20 @@ def test_file_tools_respect_the_policy(repo, tmp_path, monkeypatch):
     )
     assert (repo / "src" / "ok.py").read_text() == "x = 1\n"
     assert not outside.exists()
-    assert "outside the writable paths" in results[1] and "/add-dir" in results[1]
+    assert "outside the writable paths" in results[1] and "/allow-writes" in results[1]
     assert "protected location" in results[2]
     assert not (repo / ".pcode").exists()
     assert len(notices) == 2
 
 
-def test_add_dir_grants_for_the_session_or_globally(repo, tmp_path, monkeypatch):
+def test_allow_writes_grants_for_the_session_or_globally(repo, tmp_path, monkeypatch):
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     other = tmp_path / "other"
     other.mkdir()
     notices = []
     api = load(repo, monkeypatch, notices)
     (command,) = api.commands
-    assert command.name == "/add-dir"
+    assert command.name == "/allow-writes"
 
     command.handler(str(other))
     assert sandbox.SESSION_GRANTS == [sandbox.real(other)]
@@ -220,6 +220,8 @@ def test_add_dir_grants_for_the_session_or_globally(repo, tmp_path, monkeypatch)
     assert "Writable:" in notices[-1] and str(sandbox.real(other)) in notices[-1]
     with pytest.raises(ValueError, match="does not exist"):
         command.handler(str(tmp_path / "missing"))
+    with pytest.raises(ValueError, match="Usage"):
+        command.handler(f"--forever {other}")
 
 
 def test_a_broken_config_blocks_writes_instead_of_dropping_the_policy(repo, monkeypatch):

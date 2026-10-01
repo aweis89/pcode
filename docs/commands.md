@@ -162,7 +162,7 @@ Ctrl+J, Ctrl+C, and Ctrl+D never change.
 | Ctrl+N / Ctrl+P | Raise / lower reasoning effort for the next turn |
 | Ctrl+^ (Ctrl+6) | Back to the session this terminal showed before (`/switch -`) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
-| Ctrl+T | Show/hide thinking (saves the default) |
+| Ctrl+T | Cycle where thinking shows: off, status line, scrollback (saves the default) |
 | Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first); with an empty editor, `/copy` the last response |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
@@ -181,9 +181,9 @@ vi insert mode. With nothing typed it runs `/copy` instead, to copy the last
 response or a quote from it. Copying uses a local helper (`pbcopy`, `wl-copy`,
 `xclip`) or OSC 52 over ssh, like the popups, and truncates at 64 KiB.
 
-Delegated sub-agents are listed in the widget beneath your active task. A
-finished delegate stays, reading `Done` (or `Failed`), along with its own task
-list, until you move to another task or the next turn starts.
+Delegated sub-agents are listed in the widget beneath your active task while
+they run. A finished one leaves the widget; its outcome shows briefly on the
+status row and stays in the transcript.
 
 `/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
 as soon as the model finishes a turn, keeping the idle prompt compact; it
@@ -259,6 +259,7 @@ this phase has lasted.
 
 ```text
 ⠋ Thinking                                                    8s
+  Tracing the resize path
 ⠋ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
 ⠋ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
 ⠋ ◈ Compacting context ▸ keep tests                           4s
@@ -269,6 +270,9 @@ A spinner means the turn is waiting on that row; background jobs get a static
 clock climbing (`Thinking · 40s`). A call that just finished stays for a
 moment, marked `✓` or `✗`, so a burst of quick calls reads as progress rather
 than flicker. `◈` marks work pcode runs itself, such as compaction.
+The indented line is the model's newest thought, faded on its own row under
+the status row until the turn ends; that is the default `/show-thinking
+status-line` mode (see [thinking](transcript.md#thinking-status-line-or-scrollback)).
 
 Press **Ctrl+O** or use `/show-tasks [on|off]` to hide or show the widget without
 stopping work or clearing tasks. The prompt and queue stay visible. Visibility
@@ -307,19 +311,19 @@ A running `delegate_task` has its own row, starting with `✦` instead of a stat
 icon and drawn in its own color, so it never reads as one of your tasks. It
 shows the agent, elapsed time, phase, and the purpose the model gave (or the
 start of its assignment). The phase is `Waiting for model`, `Thinking`,
-`Working` (one of its tools is running), or `Responding` while it runs, then
-`Done` or `Failed`.
+`Working` (one of its tools is running), or `Responding`. The status row reads
+`Done` or `Failed` for a moment once it finishes, unless another call takes the
+row.
 
 A sub-agent that plans shows up to three of its tasks beneath it, centered on
 its active task, with its running tool calls nested the same way. Its plan is
-separate from yours: never saved and never merged into your plan. A finished
-delegate stays listed with its plan until your active task changes or the next
-turn starts. The built-in worker always plans; an extension's delegate can opt
-in (see "Sub-agents" in pcode's extension guide).
+separate from yours: never saved and never merged into your plan, and it leaves
+with the delegate. The built-in worker always plans; an extension's delegate can
+opt in (see "Sub-agents" in pcode's extension guide).
 
 ```text
 * Fix the flaky login test
-└── ⟳ ✦ Worker · 12.4s · Working · Investigate the retry path
+└── ✦ Worker · 12.4s · Working · Investigate the retry path
     ├── ✓ Read the retry code
     ├── * Reproduce the failure
     │   └── ⟳ Run shell · 1.2s · pytest -q tests/test_login.py

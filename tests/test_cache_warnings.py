@@ -367,7 +367,7 @@ def test_live_notice_goes_to_the_footer_not_the_output(thinking):
         app = PreviewApp(
             model="test:local", runtime=Runtime(), console=Console(file=buffer, color_system=None)
         )
-        app.activity.show_thinking = True
+        app.activity.thinking_mode = "scrollback"
         output = TerminalOutput(
             app.transcript.console, MagicMock(), rich_theme=lambda: app.transcript.rich_theme
         )

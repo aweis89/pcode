@@ -1,7 +1,6 @@
 import asyncio
 import json
 import re
-from types import SimpleNamespace
 
 import pytest
 from pydantic_ai import Agent
@@ -15,10 +14,8 @@ from pcode.agent import create_coder
 from pcode.delegation import DelegationReporting, _parent, stream_child_activity
 from pcode.live import AgentRuntime
 from pcode.runtime import ChildPlan, Message, PlanUpdated, TextDelta, ToolStarted, ToolSummary
-from pcode.stream_display import present_stream_event
 from pcode.tool_display import assignment, delegation_detail, target
 from pcode.tool_panel import ToolHistory, panel_fragments, task_panel_rows
-from pcode.ui import Activity
 
 
 def returns(messages):
@@ -422,76 +419,47 @@ def test_rejected_delegation_has_no_false_success():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("clear", ["clear", "end_turn"])
-def test_an_interrupted_delegate_leaves_the_panel(clear):
+def test_an_interrupted_delegate_leaves_the_panel():
     history = ToolHistory()
     history.record(delegate_started("explorer", "investigate", "parent"))
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
-    getattr(history, clear)()
+    history.clear()
     assert history.calls == []
     assert history.rows(3) == []
 
 
 @pytest.mark.parametrize("failed", [False, True])
-def test_a_finished_delegate_stays_listed_until_the_next_turn(failed, monkeypatch):
+def test_a_finished_delegate_leaves_the_panel_for_the_status_row(failed, monkeypatch):
+    """The status row holds its outcome briefly and scrollback keeps it."""
+    # The hold is timed; a loaded run must not outlast it before the assertion.
+    monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 1e9)
     history = ToolHistory()
     history.record(delegate_started("explorer", "investigate", "parent"))
     history.record_plan("parent", [{"content": "Look", "status": "completed"}])
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     history.record(ToolSummary("delegate_task", "explorer → Done", call_id="parent", failed=failed))
-    monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 0.0)
-    history.end_turn()
-    styled = task_panel_rows([], history, 10, "○")
-    rows = [text for _, text in styled]
-    state = "Failed" if failed else "Done"
-    # Muted like a completed task, but with no task icon: `✦` is its own.
-    assert styled[0][0] == "class:plan"
-    assert re.fullmatch(rf"✦ Explorer · \d+\.\ds · {state} · investigate", rows[0])
-    # Its sub-tasks stay with it; its calls do not.
-    assert rows[1:] == ["└── ✓ Look"]
-    assert not history.animating  # A finished row never keeps the idle screen redrawing.
-    history.clear()
+    # Its plan and its own calls go with it.
+    assert history.calls == [] and history.plans == {}
     assert task_panel_rows([], history, 10, "○") == []
+    assert not history.animating
+    state = "Failed" if failed else "Done"
+    assert re.fullmatch(rf"✦ Explorer · {state} · investigate", history.active.line(timed=False))
 
 
-def test_finished_delegates_leave_when_the_parent_moves_to_another_task():
-    """Rows hang under the task active now, so a finished one would join the next task."""
-    activity = Activity()
-    plan = [
-        {"id": "a", "content": "Hand off the fix", "status": "in_progress"},
-        {"id": "b", "content": "Hand off the feature", "status": "pending"},
-    ]
-    output = SimpleNamespace(app=SimpleNamespace(invalidate=lambda: None))
-
-    def show(event):
-        present_stream_event(
-            event, output=output, transcript=None, activity=activity, present=lambda _: None
-        )
-
-    show(PlanUpdated(plan))
-    for call_id in ("done", "live"):
-        activity.tools.record(delegate_started("worker", call_id, call_id))
-        activity.tools.record_plan(call_id, [{"content": "Look", "status": "pending"}])
-    activity.tools.record(ToolSummary("delegate_task", "done", call_id="done"))
-    # The same task, restated with other changes, keeps it.
-    show(PlanUpdated([dict(plan[0], content="Hand off the fix now"), plan[1]]))
-    assert [c.event.call_id for c in activity.tools.calls] == ["done", "live"]
-    show(PlanUpdated([dict(plan[0], status="completed"), dict(plan[1], status="in_progress")]))
-    # A running delegate stays, and so does its plan; the finished one's goes too.
-    assert [c.event.call_id for c in activity.tools.calls] == ["live"]
-    assert list(activity.tools.plans) == ["live"]
-
-
-def test_running_delegates_outrank_finished_ones_for_rows():
+def test_a_finished_delegate_leaves_its_siblings_running():
     history = ToolHistory()
-    for i in range(3):
-        history.record(delegate_started("worker", f"done-{i}", f"d{i}"))
-        history.record(ToolSummary("delegate_task", f"done-{i}", call_id=f"d{i}"))
-    history.record(delegate_started("worker", "running", "live"))
-    history.record(ToolStarted("read_file", "newest.py", "status-row"))
-    rows = [text for _, text in history.rows(3)]
-    assert len(rows) == 3
-    assert "done-0" not in "".join(rows) and "running" in rows[-1]
+    for call_id in ("done", "live"):
+        history.record(delegate_started("worker", call_id, call_id))
+        history.record_plan(call_id, [{"content": "Look", "status": "in_progress"}])
+        history.record(
+            ToolStarted("read_file", f"{call_id}.py", f"{call_id}:child", parent_call_id=call_id)
+        )
+    history.record(ToolSummary("delegate_task", "done", call_id="done"))
+    assert [c.event.call_id for c in history.calls] == ["live", "live:child"]
+    assert list(history.plans) == ["live"]
+    # A late plan for the finished one does not bring it back.
+    history.record_plan("done", [{"content": "Late", "status": "pending"}])
+    assert list(history.plans) == ["live"]
 
 
 def test_child_command_carries_what_it_ran(tmp_path):
@@ -656,11 +624,6 @@ def test_a_delegate_shows_its_plan_with_its_calls_under_the_active_task():
     history.record(ToolSummary("grep", "newest", call_id="status-row"))
     assert history.active.event.call_id == "parent"
     assert "├── * Fix the bug" in [text for _, text in task_panel_rows([], history, 10, "*")]
-    # And stays with it once it finishes.
-    history.record(ToolSummary("delegate_task", "worker → Completed", call_id="parent"))
-    rows = [text for _, text in task_panel_rows([], history, 10, "*")]
-    assert rows[0].startswith("✦ Worker") and " · Done · " in rows[0]
-    assert "├── * Fix the bug" in rows
 
 
 def test_a_short_panel_keeps_the_delegate_before_its_plan():
