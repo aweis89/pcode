@@ -1,10 +1,10 @@
 """Write roots for the file tools and an OS sandbox around the model's shell.
 
-Opt in with `/extensions on security`. The policy lives in `pcode.sandbox`:
+Opt in with `/extensions on sandbox`. The policy lives in `pcode.sandbox`:
 writes only under the repository, temp and cache dirs, and paths you grant;
 reads anywhere except credential files. `/allow-writes PATH` grants a directory
 or file for this session, `/allow-writes --global PATH` for every session (saved
-in `security.json` beside preferences.json), and `/allow-writes` alone shows the
+in `sandbox.json` beside preferences.json), and `/allow-writes` alone shows the
 policy.
 """
 
@@ -35,7 +35,7 @@ def setup(pcode) -> None:
     base = sandbox.base_roots(workspace)
 
     def policy() -> sandbox.Policy:
-        """Rebuilt per call, so edits to security.json and new grants apply at once."""
+        """Rebuilt per call, so edits to sandbox.json and new grants apply at once."""
         return sandbox.Policy.build(base, grants=sandbox.SESSION_GRANTS)
 
     def enforced(load):
@@ -44,7 +44,7 @@ def setup(pcode) -> None:
             return load()
         except ValueError as error:
             raise ModelRetry(
-                f"The security policy is invalid ({error}); ask the user to fix it."
+                f"The sandbox policy is invalid ({error}); ask the user to fix it."
             ) from error
 
     @pcode.hooks.on.before_tool_execute
@@ -115,7 +115,7 @@ def setup(pcode) -> None:
     def _summary(current: sandbox.Policy) -> str:
         shell = sandbox.backend() or "unavailable, shell disabled"
         if sandbox.load_config().get("shell_sandbox", True) is False:
-            shell = "off (security.json)"
+            shell = "off (sandbox.json)"
         lines = [
             "Writable:",
             *(f"  {root}" for root in current.write),

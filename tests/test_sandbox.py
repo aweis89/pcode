@@ -1,4 +1,4 @@
-"""The bundled security extension: write roots, credential reads, and the shell sandbox."""
+"""The bundled sandbox extension: write roots, credential reads, and the shell sandbox."""
 
 import json
 import subprocess
@@ -12,7 +12,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pcode import sandbox
 from pcode.agent import create_agent
 from pcode.ext import ExtensionAPI, ExtensionUI
-from pcode.extensions import security
+from pcode.extensions import sandbox as sandbox_ext
 from pcode.jobs import COMMAND_SANDBOX, JobRegistry
 
 
@@ -50,7 +50,7 @@ def test_guarded_paths_reopen_only_through_a_grant_inside_them(repo, tmp_path):
     rules = policy(repo, tmp_path, protected=[config])
     for path in (
         config / "extensions" / "x.py",
-        repo / ".pcode" / "extensions" / "security.py",
+        repo / ".pcode" / "extensions" / "sandbox.py",
         repo / ".git" / "hooks" / "pre-commit",
     ):
         assert not rules.can_write(path), path
@@ -104,7 +104,7 @@ def test_config_adds_write_roots_and_replaces_deny_list(repo, tmp_path):
 def test_malformed_config_is_an_error_and_global_grants_persist(tmp_path):
     sandbox.config_path().parent.mkdir(parents=True)
     sandbox.config_path().write_text("{nope")
-    with pytest.raises(ValueError, match="security.json"):
+    with pytest.raises(ValueError, match="sandbox.json"):
         sandbox.load_config()
     sandbox.config_path().write_text(json.dumps({"shell_sandbox": False}))
     sandbox.add_global_grant(tmp_path / "a")
@@ -155,8 +155,8 @@ def wait(jobs, job):
 def load(workspace, monkeypatch, notices=None):
     monkeypatch.setattr(sandbox, "base_roots", lambda workspace: [sandbox.real(workspace)])
     ui = ExtensionUI(lambda text, level: (notices if notices is not None else []).append(text))
-    api = ExtensionAPI("security", workspace, ui)
-    security.setup(api)
+    api = ExtensionAPI("sandbox", workspace, ui)
+    sandbox_ext.setup(api)
     return api
 
 
@@ -189,7 +189,7 @@ def test_file_tools_respect_the_policy(repo, tmp_path, monkeypatch):
         [
             ("write_file", {"path": "src/ok.py", "content": "x = 1\n"}),
             ("write_file", {"path": str(outside), "content": "no"}),
-            ("write_file", {"path": ".pcode/extensions/security.py", "content": "no"}),
+            ("write_file", {"path": ".pcode/extensions/sandbox.py", "content": "no"}),
         ],
     )
     assert (repo / "src" / "ok.py").read_text() == "x = 1\n"
@@ -230,7 +230,7 @@ def test_a_broken_config_blocks_writes_instead_of_dropping_the_policy(repo, monk
     sandbox.config_path().write_text("[")
     api = load(repo, monkeypatch)
     results = run(repo, api.capabilities(), [("write_file", {"path": "a.txt", "content": "x"})])
-    assert "security policy is invalid" in results[0]
+    assert "sandbox policy is invalid" in results[0]
     assert not (repo / "a.txt").exists()
 
 

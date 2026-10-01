@@ -5,13 +5,13 @@
 **The agent edits files and runs shell commands for real. There is no approval
 UI.** pcode has no permission model of its own and does not rely on prompt text
 as a safety control. When you need enforcement, turn on the bundled
-[security extension](#write-policy-and-shell-sandbox-opt-in), or run all of pcode
+[sandbox extension](#write-policy-and-shell-sandbox-opt-in), or run all of pcode
 inside a container or VM; otherwise use a trusted repository and a safe working
 environment.
 
 ### Write policy and shell sandbox (opt-in)
 
-`/extensions on security` limits where the agent can write, for the file tools
+`/extensions on sandbox` limits where the agent can write, for the file tools
 and for every `shell` command, using one policy:
 
 - **Writable:** the workspace, its repository's main checkout (which covers
@@ -47,7 +47,7 @@ Grant more with `/allow-writes`:
 Press Tab while typing the path to complete it, including `~/` and paths
 outside the repository.
 
-Global grants are saved in `security.json` beside `preferences.json`, which you
+Global grants are saved in `sandbox.json` beside `preferences.json`, which you
 can also edit by hand:
 
 ```json
