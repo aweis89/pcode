@@ -108,6 +108,9 @@ class AsideBrowser:
 
     Prefix `y` copies the newest answer and prefix `o` opens a link from the
     thread, with the same pickers as `/copy` and `/links`, over the viewer.
+
+    Enter on the list hides it to read the selected thread full width, and Esc
+    brings it back; a viewer opened on a single thread starts that way.
     """
 
     def __init__(
@@ -137,8 +140,9 @@ class AsideBrowser:
         self._rendered: tuple | None = None
         self._refreshing = False
         # Enter on the list reads the selected thread full width; Esc brings
-        # the list back. A lone thread never shows the list at all.
-        self.reading = False
+        # the list back. A viewer opened on a lone thread starts reading, so
+        # one that arrives meanwhile does not pull the list in beside it.
+        self.reading = len(self.threads) <= 1
         self._ids: list[str] = []
         self.notice = ""
         # The copy or link picker over the viewer, while one is open.
@@ -318,7 +322,8 @@ class AsideBrowser:
         if self.editing() and self.input.prompting:
             return "Esc Cancel (brings the follow-up draft back) · Tab Focus"
         if self.editing():
-            return "Esc Back to the list (keeps the draft) · Tab Focus"
+            where = "list" if self.listing() else "answer"
+            return f"Esc Back to the {where} (keeps the draft) · Tab Focus"
         if self.listing():
             return "Tab Focus · Enter Read · Esc Close"
         if self.reading and len(self.threads) > 1:

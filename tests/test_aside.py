@@ -802,9 +802,17 @@ def test_aside_browser_enter_reads_a_thread_without_the_list():
             second.settle("answered")
             asides.items.append(second)
             await asyncio.sleep(0.5)
-            # A second thread brings the list; Enter reads the selected one full width.
-            assert browser.listing()
-            await send("\x1b[A")  # Up, to the first thread.
+            # A second thread does not pull the list in beside the answer being
+            # read; Esc brings it, and Enter reads the selected thread full width.
+            assert not browser.listing()
+            assert "Esc Back to the questions" in browser.shortcuts()
+            await send("\x1b", wait=0.6)
+            assert browser.listing() and not task.done()
+            assert browser.app.layout.has_focus(browser.list)
+            assert browser.selected == first.thread
+            await send("\x1b[B")  # Down, to the second thread.
+            assert browser.selected == second.thread
+            await send("\x1b[A")  # Up, back to the first.
             assert browser.selected == first.thread
             await send("\r")
             assert not browser.listing() and not task.done()
