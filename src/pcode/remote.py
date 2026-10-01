@@ -179,8 +179,8 @@ class _Calls:
 
 
 # The host's argument completers a terminal can run itself: each reads only the
-# model catalog the host sends with its state.
-COMPLETERS = frozenset({"aside_completions", "model_list_completions"})
+# model catalog the host sends with its state, or the shared filesystem.
+COMPLETERS = frozenset({"aside_completions", "model_list_completions", "path_completions"})
 
 
 def _proxy(state: dict, controller: "RemoteController") -> Command:
@@ -215,6 +215,12 @@ class RemoteController:
 
     aside_completions = SessionController.aside_completions
     model_list_completions = SessionController.model_list_completions
+
+    def path_completions(self, argument: str):
+        """An extension command's path argument, resolved against the host's workspace."""
+        from pcode.path_completion import complete_paths
+
+        return complete_paths(argument, self.workspace)
 
     def __init__(self, view, activity) -> None:
         self.view = view
