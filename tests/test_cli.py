@@ -7,7 +7,7 @@ from pydantic_ai.exceptions import UserError
 from pydantic_ai.providers.openai_codex import CredentialsRefreshError
 
 from pcode.agent import create_agent
-from pcode.app import main
+from pcode.app import forked_note, main
 from pcode.live import error_message
 from pcode.sessions import SavedSession, list_sessions
 
@@ -82,6 +82,57 @@ def test_continue_copies_a_session_open_elsewhere(monkeypatch, tmp_path):
         assert len(list(root.iterdir())) == 2
     finally:
         saved.close()
+
+
+def test_fork_continues_a_copy_of_a_session_nobody_has_open(monkeypatch, tmp_path):
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    identity = saved.info.id
+    saved.close()
+    monkeypatch.setattr(
+        sys, "argv", ["pcode", "--continue", identity, "--fork", "--session-dir", str(root)]
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with patch("pcode.app.PreviewApp") as app:
+        main()
+    copy = app.call_args.kwargs["saved_session"]
+    assert copy.info.id != identity
+    assert copy.forked_from == identity
+    assert copy.fork_requested
+    assert forked_note(copy).startswith(f"Continuing a copy of session {identity}. ")
+    assert {path.name for path in root.iterdir()} == {identity, copy.info.id}
+    SavedSession.open(identity, root).close()  # The original stays free.
+
+
+def test_fork_skips_the_running_host_and_forks_in_a_new_one(monkeypatch, tmp_path):
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    saved.close()
+    argv = ["pcode", "-c", saved.info.id, "--fork", "--host", "--session-dir", str(root)]
+    monkeypatch.setattr(sys, "argv", [*argv, "-C", str(tmp_path)])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with (
+        patch("pcode.app._running_host", side_effect=AssertionError("attached")),
+        patch("pcode.project_trust.prompt_trust"),
+        patch("pcode.remote.spawn_host", return_value=("h1", None, tmp_path / "log")) as spawn,
+        patch("pcode.app._tidy_stopped_host"),
+        patch("pcode.app.PreviewApp"),
+    ):
+        main()
+    assert spawn.call_args.kwargs["resume"] == saved.info.id
+    assert spawn.call_args.kwargs["fork"] is True
+
+
+@pytest.mark.parametrize("extra", [[], ["--attach"]])
+def test_fork_needs_continue_without_attach(monkeypatch, extra, capsys):
+    argv = ["pcode", "--fork", *extra] if not extra else ["pcode", "-c", "--fork", *extra]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as raised:
+        main()
+    assert raised.value.code == 2
+    assert "--fork" in capsys.readouterr().err
 
 
 def test_no_save_never_creates_session(monkeypatch, tmp_path):

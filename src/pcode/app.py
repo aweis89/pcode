@@ -1305,7 +1305,9 @@ class PreviewApp:
         self.controller = controller
         controller.on_closed = self.host_closed
         if forked := welcome.get("forked_from"):
-            note += f" · continuing a copy of {forked}, which was open elsewhere"
+            note += f" · continuing a copy of {forked}"
+            if not welcome.get("fork_requested"):
+                note += ", which was open elsewhere"
         self._attach_note = note
         self.activity.reset()
         if self._progress is not None:
@@ -2242,6 +2244,11 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--fork",
+        action="store_true",
+        help="With --continue: always continue a copy, leaving the original session unchanged",
+    )
+    parser.add_argument(
         "--session-dir", type=Path, help="Override the private session storage directory"
     )
     parser.add_argument(
@@ -2418,7 +2425,8 @@ async def _stopping_provider_processes(main):
 
 def forked_note(saved) -> str:
     """Say where a copied session came from, and that the two share a workspace."""
-    note = f"Continuing a copy of session {saved.forked_from}, which is open in another process."
+    note = f"Continuing a copy of session {saved.forked_from}"
+    note += "." if saved.fork_requested else ", which is open in another process."
     active = saved.tree.nodes.get(saved.tree.active) if saved.tree.active else None
     if active is not None and active.status == "interrupted":
         note += " Its running turn was copied up to its last safe step; /resend carries it on."
@@ -2529,6 +2537,7 @@ def _run_hosted(args: argparse.Namespace) -> None:
             no_save=args.no_save,
             worktree=args.worktree,
             no_worktree=args.no_worktree,
+            fork=args.fork,
         )
         launch = HostLaunch(identity, process, log)
     app = PreviewApp(
@@ -2604,6 +2613,10 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         return
     if args.resume and (args.no_save or args.theme_preview):
         parser.error("--continue cannot be combined with --no-save or --theme-preview")
+    if args.fork and not args.resume:
+        parser.error("--fork needs --continue")
+    if args.fork and args.attach is not None:
+        parser.error("--fork cannot be combined with --attach")
     if args.compact and not args.sessions:
         parser.error("--compact applies to --sessions")
     if args.print:
@@ -2675,7 +2688,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             else load_preferences().get("session_host", SETTINGS["session_host"].default) == "on"
         )
     )
-    if args.resume and args.attach is None and not args.print:
+    if args.resume and not args.fork and args.attach is None and not args.print:
         running = _running_host(args.resume, args.session_dir, args.workspace or Path.cwd())
         if running is not None:
             print(
@@ -2701,7 +2714,11 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             from pcode.sessions import SavedSession, SessionError
 
             saved = SavedSession.open(
-                args.resume, args.session_dir, args.workspace or Path.cwd(), fork_if_open=True
+                args.resume,
+                args.session_dir,
+                args.workspace or Path.cwd(),
+                fork_if_open=True,
+                fork=args.fork,
             )
             try:
                 if args.model and args.model != saved.info.model:

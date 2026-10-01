@@ -533,6 +533,7 @@ def spawn_host(
     no_save: bool = False,
     worktree=None,
     no_worktree: bool = False,
+    fork: bool = False,
     directory: Path | None = None,
 ) -> tuple[str, subprocess.Popen, Path]:
     """Start a host from this process, so it inherits this terminal's environment."""
@@ -554,6 +555,8 @@ def spawn_host(
     ]
     if resume:
         argv += ["--resume", resume]
+        if fork:
+            argv.append("--fork")
     if session_dir:
         argv += ["--session-dir", str(session_dir)]
     if no_save:

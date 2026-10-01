@@ -491,6 +491,9 @@ class SessionHost:
                 getattr(self.controller.runtime, "session", None), "forked_from", None
             )
             or "",
+            "fork_requested": getattr(
+                getattr(self.controller.runtime, "session", None), "fork_requested", False
+            ),
             # Already encoded: a buffered call's arguments are whatever the view got.
             "calls": [
                 [name, encode(list(args)), encode(kwargs)] for name, args, kwargs in self.buffer
@@ -675,6 +678,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--resume")
+    parser.add_argument("--fork", action="store_true")
     parser.add_argument("--session-dir", type=Path)
     parser.add_argument("--no-save", action="store_true")
     parser.add_argument("--worktree", nargs="?", const=True)
@@ -706,7 +710,9 @@ async def _serve(args: argparse.Namespace) -> None:
     saved = None
     session_id = None
     if args.resume:
-        saved = SavedSession.open(args.resume, args.session_dir, workspace, fork_if_open=True)
+        saved = SavedSession.open(
+            args.resume, args.session_dir, workspace, fork_if_open=True, fork=args.fork
+        )
         workspace = Path(_resume_workspace(saved.info, workspace)).resolve()
         entry.session_id = saved.info.id
         prompt = first_prompt(saved.info, saved.directory.parent)
