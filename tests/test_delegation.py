@@ -429,8 +429,10 @@ def test_an_interrupted_delegate_leaves_the_panel():
 
 
 @pytest.mark.parametrize("failed", [False, True])
-def test_a_finished_delegate_leaves_the_panel_for_the_status_row(failed):
+def test_a_finished_delegate_leaves_the_panel_for_the_status_row(failed, monkeypatch):
     """The status row holds its outcome briefly and scrollback keeps it."""
+    # The hold is timed; a loaded run must not outlast it before the assertion.
+    monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 1e9)
     history = ToolHistory()
     history.record(delegate_started("explorer", "investigate", "parent"))
     history.record_plan("parent", [{"content": "Look", "status": "completed"}])
@@ -442,6 +444,22 @@ def test_a_finished_delegate_leaves_the_panel_for_the_status_row(failed):
     assert not history.animating
     state = "Failed" if failed else "Done"
     assert re.fullmatch(rf"✦ Explorer · {state} · investigate", history.active.line(timed=False))
+
+
+def test_a_finished_delegate_leaves_its_siblings_running():
+    history = ToolHistory()
+    for call_id in ("done", "live"):
+        history.record(delegate_started("worker", call_id, call_id))
+        history.record_plan(call_id, [{"content": "Look", "status": "in_progress"}])
+        history.record(
+            ToolStarted("read_file", f"{call_id}.py", f"{call_id}:child", parent_call_id=call_id)
+        )
+    history.record(ToolSummary("delegate_task", "done", call_id="done"))
+    assert [c.event.call_id for c in history.calls] == ["live", "live:child"]
+    assert list(history.plans) == ["live"]
+    # A late plan for the finished one does not bring it back.
+    history.record_plan("done", [{"content": "Late", "status": "pending"}])
+    assert list(history.plans) == ["live"]
 
 
 def test_child_command_carries_what_it_ran(tmp_path):

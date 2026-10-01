@@ -308,17 +308,18 @@ icon and drawn in its own color, so it never reads as one of your tasks. It
 shows the agent, elapsed time, phase, and the purpose the model gave (or the
 start of its assignment). The phase is `Waiting for model`, `Thinking`,
 `Working` (one of its tools is running), or `Responding`. The status row reads
-`Done` or `Failed` for a moment once it finishes.
+`Done` or `Failed` for a moment once it finishes, unless another call takes the
+row.
 
 A sub-agent that plans shows up to three of its tasks beneath it, centered on
 its active task, with its running tool calls nested the same way. Its plan is
 separate from yours: never saved and never merged into your plan, and it leaves
-with the delegate. The built-in worker always plans; an extension's delegate can opt
-in (see "Sub-agents" in pcode's extension guide).
+with the delegate. The built-in worker always plans; an extension's delegate can
+opt in (see "Sub-agents" in pcode's extension guide).
 
 ```text
 * Fix the flaky login test
-└── ⟳ ✦ Worker · 12.4s · Working · Investigate the retry path
+└── ✦ Worker · 12.4s · Working · Investigate the retry path
     ├── ✓ Read the retry code
     ├── * Reproduce the failure
     │   └── ⟳ Run shell · 1.2s · pytest -q tests/test_login.py
