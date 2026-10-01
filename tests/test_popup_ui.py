@@ -247,10 +247,12 @@ def test_popup_mouse_toggle_starts_from_the_setting(monkeypatch):
     shortcuts = PrefixKeys("ctrl+p")
     captured = popup_ui.popup_mouse(shortcuts)
     assert not captured()
-    assert "q Mouse on/off" in shortcuts.summary()
+    # The footer names what the key does next, so it also tells the state.
+    assert "q Capture mouse" in shortcuts.summary()
     toggle = next(s for s in shortcuts.shortcuts if s.key == popup_ui.MOUSE_TOGGLE_KEY)
     toggle.handler(SimpleNamespace(app=Application()))
     assert captured()
+    assert "q Release mouse" in shortcuts.summary()
     # Without shortcuts there is nothing to toggle, only the setting.
     assert not popup_ui.popup_mouse()()
 

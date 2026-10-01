@@ -81,10 +81,15 @@ def shortcut_label(key: str, prefix: str | None = None) -> str:
 @dataclass(frozen=True)
 class Shortcut:
     key: str
-    label: str
+    # A callable for a toggle whose name follows its state, read per render.
+    title: str | Callable[[], str]
     handler: Callable[[KeyPressEvent], None]
     # Whether the shortcut applies right now; it is hidden and inert otherwise.
     filter: Filter
+
+    @property
+    def label(self) -> str:
+        return self.title() if callable(self.title) else self.title
 
 
 class PrefixKeys:
@@ -129,10 +134,11 @@ class PrefixKeys:
             self.pending = False
             event.app.invalidate()
 
-    def add(self, key: str, label: str, *, filter: FilterOrBool = True):
+    def add(self, key: str, label: str | Callable[[], str], *, filter: FilterOrBool = True):
         """Register a shortcut: ``key`` after the leader, or Ctrl+``key``.
 
-        ``label`` names it in footers and the leader's hint, so keep it short.
+        ``label`` names it in footers and the leader's hint, so keep it short;
+        a callable is read each time, for a toggle that says what it does next.
         """
         if key not in _CHORDABLE or f"c-{key}" in RESERVED_CHORDS:
             raise ValueError(f"{key!r} cannot be a shortcut: it has no free Ctrl chord")

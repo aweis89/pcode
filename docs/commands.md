@@ -566,9 +566,12 @@ Option in iTerm2). In tmux, mouse events reach pcode only with
 
 **Ctrl+Q** (the [shortcut prefix](#shortcut-prefix) then `q` with a leader)
 hands the mouse to the terminal while a popup stays open: a plain drag selects
-text again, and Ctrl+Q once more takes clicks and the wheel back. It lasts
-until the popup closes and works in every popup with shortcuts, from any pane,
-the search line and the `/btw` editor included. To leave the mouse to the
+text again, and Ctrl+Q once more takes clicks and the wheel back. The footer
+says which it will do next ("Release mouse" or "Capture mouse"). It lasts until
+the popup closes and works in every popup with shortcuts, from any pane, the
+search line and the `/btw` editor included. In tmux with `mouse on`, a released
+drag goes to tmux's copy mode instead; hold the modifier above for the
+terminal's own selection. To leave the mouse to the
 terminal in every popup instead, so a plain drag selects text and copy-on-select
 works:
 

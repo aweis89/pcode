@@ -122,7 +122,10 @@ def popup_mouse(shortcuts: PrefixKeys | None = None) -> Filter:
     state = {"captured": captured}
     if shortcuts is not None:
 
-        @shortcuts.add(MOUSE_TOGGLE_KEY, "Mouse on/off")
+        @shortcuts.add(
+            MOUSE_TOGGLE_KEY,
+            lambda: "Release mouse" if state["captured"] else "Capture mouse",
+        )
         def toggle(event) -> None:
             state["captured"] = not state["captured"]
             event.app.invalidate()
