@@ -26,6 +26,7 @@ import os
 import signal
 import time
 import uuid
+from collections.abc import MutableMapping
 from pathlib import Path
 
 import psutil
@@ -36,12 +37,14 @@ RUN_ENV = "PCODE_TEST_RUN"
 RUNS_DIR = Path("/tmp") / f"pcode-test-runs-{os.getuid()}"
 # How long a tagged process gets to exit on SIGTERM before SIGKILL.
 TERM_GRACE_SECONDS = 3.0
-# A lock file is created a moment before it is locked; leave young ones alone.
-STALE_LOCK_SECONDS = 60.0
+# How long a dead run's lock file stays. Once it is gone the run reads alive
+# (a missing file proves nothing), so anything of the run a scan missed would
+# be immune from then on; a day gives later runs time to catch it.
+STALE_LOCK_SECONDS = 24 * 60 * 60
 
 # Runs this process owns, by tag: the lock descriptor, and the environment it
 # tagged with the tag that was there before.
-_held: dict[str, tuple[int, object, str | None]] = {}
+_held: dict[str, tuple[int, MutableMapping[str, str], str | None]] = {}
 
 
 def tag_run(environ=os.environ) -> str | None:
