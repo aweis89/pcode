@@ -774,6 +774,52 @@ def test_aside_browser_pickers_by_keyboard(monkeypatch, prefix, copy_key, link_k
     asyncio.run(run())
 
 
+def test_aside_browser_enter_reads_a_thread_without_the_list():
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from pcode.aside_ui import AsideBrowser
+
+    asides = Asides()
+    first = Aside(question="first?", answer="One.")
+    first.settle("answered")
+    asides.items.append(first)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            browser = AsideBrowser(asides, input=pipe, output=DummyOutput())
+            # A lone thread has nothing to choose between, so no list.
+            assert not browser.listing()
+            assert browser.app.layout.has_focus(browser.detail)
+            task = asyncio.create_task(browser.run())
+
+            async def send(keys, wait=0.1):
+                pipe.send_text(keys)
+                await asyncio.sleep(wait)
+
+            await asyncio.sleep(0.1)
+            second = Aside(question="second?", answer="Two.")
+            second.settle("answered")
+            asides.items.append(second)
+            await asyncio.sleep(0.5)
+            # A second thread brings the list; Enter reads the selected one full width.
+            assert browser.listing()
+            await send("\x1b[A")  # Up, to the first thread.
+            assert browser.selected == first.thread
+            await send("\r")
+            assert not browser.listing() and not task.done()
+            assert browser.app.layout.has_focus(browser.detail)
+            assert "One." in browser.detail.text(80)
+            # Esc steps back to the list, a second Esc closes.
+            await send("\x1b", wait=0.6)
+            assert browser.listing() and not task.done()
+            assert browser.app.layout.has_focus(browser.list)
+            pipe.send_text("\x1b")
+            assert await asyncio.wait_for(task, 2) is None
+
+    asyncio.run(run())
+
+
 def test_side_is_an_alias_for_btw():
     app = PreviewApp(
         model="test:local",

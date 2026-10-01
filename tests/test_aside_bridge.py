@@ -447,7 +447,7 @@ def test_the_viewer_asks_for_optional_summary_instructions_and_merges(prefix):
         def restored(browser):
             assert not browser.input.prompting
             assert browser.input.text == "half a follow-up"
-            assert browser.app.layout.has_focus(browser.list)
+            assert browser.app.layout.has_focus(browser.detail)
             assert "Summarize" not in browser.input._title()
 
         # A follow-up draft is set aside for the prompt, and Esc brings it back.
