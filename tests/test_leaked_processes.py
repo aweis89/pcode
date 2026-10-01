@@ -1,4 +1,5 @@
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -67,12 +68,15 @@ def crashed_run():
         "print(leaked_processes.tag_run({}), flush=True); time.sleep(60)"
     )
     holder = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
-    identity = holder.stdout.readline().strip()
-    if identity == "None":
-        holder.kill()
-        holder.wait()
-        pytest.skip(f"cannot take a run lock under {RUNS_DIR}")
+    identity = ""
     try:
+        ready, _, _ = select.select([holder.stdout], [], [], 30)
+        identity = holder.stdout.readline().strip() if ready else ""
+        if identity == "None":
+            pytest.skip(f"cannot take a run lock under {RUNS_DIR}")
+        assert Path(identity).parent == RUNS_DIR, (
+            f"lock holder printed {identity!r} (exit {holder.poll()})"
+        )
         assert leaked_processes._alive(identity)  # Held by another process.
         holder.send_signal(signal.SIGKILL)
         holder.wait()
@@ -81,7 +85,8 @@ def crashed_run():
         holder.kill()
         holder.wait()
         holder.stdout.close()
-        Path(identity).unlink(missing_ok=True)
+        if identity and Path(identity).parent == RUNS_DIR:
+            Path(identity).unlink(missing_ok=True)
 
 
 def gone(process: psutil.Process) -> bool:
