@@ -137,7 +137,9 @@ scopes added to its consent screen. Without a client ID, sign-in fails with
 ## Default-on servers
 
 Set `"enabled": true` to enable a server whenever a conversation starts: at
-launch, after `/new`, and on resume.
+launch, after `/new`, and on resume. `/mcp enable NAME --save` does it for you:
+it enables the server now and, once that succeeds, writes `"enabled": true` into
+`mcp.json`. `/mcp disable NAME --save` turns it off and removes the setting.
 
 ```json
 {
@@ -256,7 +258,8 @@ editing it, disable and enable the server again.
   of a running turn. To reload a server after changing its configuration or
   environment, disable and enable it again.
 - `/new`, resumed conversations, and restarts start with **all servers off**
-  except those marked `"enabled": true`. Which servers are on is never saved.
+  except those marked `"enabled": true`. Which servers are on is saved only when
+  you add `--save` to `/mcp enable` or `/mcp disable`.
 - Off servers add nothing to requests. Enabled servers cost context for their
   results, and for their tool definitions once they are direct or found by search.
   Disabling does not remove earlier results from history.
