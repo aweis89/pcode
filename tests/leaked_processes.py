@@ -13,49 +13,81 @@ each run first stops processes tagged by a run whose controller is gone.
 Processes whose environment macOS hides (Apple platform binaries such as
 `/bin/sh` and `/bin/sleep`, so a bare shell loop) are invisible to this; the
 leaks that matter here are Python and tmux, which are not.
+
+A run is alive while its controller holds an exclusive `flock` on the file its
+tag names; the kernel drops the lock the moment the controller dies, however it
+dies. Not a pid and start time: psutil's `create_time()` on macOS shifts with
+`kern.boottime`, so after a clock step two processes disagree about the same
+controller, and a live run's workers were once reaped that way.
 """
 
+import fcntl
 import os
 import signal
+import time
+import uuid
+from pathlib import Path
 
 import psutil
 
 RUN_ENV = "PCODE_TEST_RUN"
+# Fixed, not tempfile.gettempdir(): tests and nested runs change TMPDIR, and
+# every run must look for a lock where its owner put it. The tag is the path.
+RUNS_DIR = Path("/tmp") / f"pcode-test-runs-{os.getuid()}"
 # How long a tagged process gets to exit on SIGTERM before SIGKILL.
 TERM_GRACE_SECONDS = 3.0
+# A lock file is created a moment before it is locked; leave young ones alone.
+STALE_LOCK_SECONDS = 60.0
+
+# Lock descriptors of the runs this process owns, by tag.
+_held: dict[str, int] = {}
 
 
-def run_id(process: psutil.Process) -> str:
-    return f"{process.pid}-{process.create_time():.3f}"
-
-
-def tag_run() -> str:
-    """Tag this process, and so everything it starts, as a fresh run.
+def tag_run(environ=os.environ) -> str | None:
+    """Start a run: hold its lock and tag `environ`, so everything started after carries it.
 
     Overwrites an inherited tag: a pytest started by a test is a run of its
-    own, and must not reap the outer run's workers when it finishes.
+    own, and must not reap the outer run's workers when it finishes. Returns
+    None, leaving reaping off for the run, if the lock cannot be taken.
     """
-    os.environ[RUN_ENV] = run_id(psutil.Process())
-    return os.environ[RUN_ENV]
+    try:
+        RUNS_DIR.mkdir(mode=0o700, exist_ok=True)
+        path = str(RUNS_DIR / f"{uuid.uuid4().hex}.lock")
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return None
+    _held[path] = fd
+    environ[RUN_ENV] = path
+    return path
+
+
+def end_run(identity: str) -> None:
+    """Release a run's lock and remove its file."""
+    fd = _held.pop(identity, None)
+    if fd is not None:
+        Path(identity).unlink(missing_ok=True)
+        os.close(fd)
 
 
 def _alive(identity: str) -> bool:
-    """Whether the run's controller may still be running.
-
-    Only proof of death counts: the pid is gone, or now names a different
-    process. Anything short of that (a malformed tag, a refused lookup) keeps
-    the run alive, since reaping a live run kills its workers mid-test.
-    """
-    try:
-        pid = int(identity.partition("-")[0])
-    except ValueError:
+    """Whether the run may still be going. Only proof of its end counts as dead."""
+    path = Path(identity)
+    if path.parent != RUNS_DIR:
         return True
     try:
-        return run_id(psutil.Process(pid)) == identity
-    except psutil.NoSuchProcess:
-        return False
-    except psutil.Error:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return False  # Ended cleanly: its lock file went with it.
+    except OSError:
         return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except OSError:
+        return True  # Held (or unknowable): the controller is still there.
+    finally:
+        os.close(fd)
+    return False
 
 
 def _tagged(keep, candidates=None) -> list[psutil.Process]:
@@ -100,9 +132,19 @@ def reap_run(identity: str) -> list[str]:
 
 
 def reap_dead_runs(candidates=None) -> list[str]:
-    """Stop processes tagged by runs whose controller has exited.
+    """Stop processes tagged by runs that have ended, and drop those runs' lock files.
 
     `candidates` limits the search, so a test can check this without reaping
     the whole machine from inside a worker.
     """
-    return _stop(_tagged(keep=_alive, candidates=candidates))
+    stopped = _stop(_tagged(keep=_alive, candidates=candidates))
+    if candidates is None and RUNS_DIR.is_dir():
+        now = time.time()
+        for path in RUNS_DIR.glob("*.lock"):
+            try:
+                young = now - path.stat().st_mtime < STALE_LOCK_SECONDS
+            except OSError:
+                continue
+            if not young and not _alive(str(path)):
+                path.unlink(missing_ok=True)
+    return stopped
