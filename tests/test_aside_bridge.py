@@ -478,6 +478,6 @@ def test_the_viewer_without_bridging_has_no_bridge_keys():
     asides.items.append(answered("why?", "because"))
     browser = AsideBrowser(asides, output=None, input=None)
     assert browser.input is None
-    assert [shortcut.key for shortcut in browser.prefix_keys.shortcuts] == ["y", "k"]
+    assert [shortcut.key for shortcut in browser.prefix_keys.shortcuts] == ["y", "o", "k"]
     keys = {binding.keys for binding in browser.app.key_bindings.bindings}
     assert ("c-s",) not in keys and ("c-t",) not in keys
