@@ -1,6 +1,7 @@
 """The bundled sandbox extension: write roots, credential reads, and the shell sandbox."""
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -61,6 +62,49 @@ def test_guarded_paths_reopen_only_through_a_grant_inside_them(repo, tmp_path):
     granted = policy(repo, tmp_path, config / "extensions", protected=[config])
     assert granted.can_write(config / "extensions" / "x.py")
     assert not granted.can_write(config / "preferences.json")
+
+
+def _store_rules(repo, tmp_path):
+    # Only the roots under tmp_path: the temp dir is a root and contains it.
+    scratch = sandbox.real(tmp_path)
+    roots = [root for root in sandbox.base_roots(repo) if root.is_relative_to(scratch)]
+    return sandbox.Policy(write=roots, protected=[], deny_read=[])
+
+
+def test_package_stores_are_writable_but_install_dirs_are_not(repo, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("GOMODCACHE", raising=False)
+    monkeypatch.setenv("GOPATH", "relative/go")  # Ignored, as Go does.
+    monkeypatch.setenv("CARGO_HOME", str(tmp_path / "cargo"))
+    rules = _store_rules(repo, tmp_path)
+    home, cargo = sandbox.real(home), sandbox.real(tmp_path / "cargo")
+    for path in (
+        home / "go" / "pkg" / "mod" / "x",
+        home / "go" / "pkg" / "sumdb" / "x",
+        cargo / "registry" / "src" / "x",
+        cargo / "git" / "x",
+    ):
+        assert rules.can_write(path), path
+    for path in (
+        home / "go" / "bin" / "x",
+        cargo / "bin" / "x",
+        home / ".local" / "bin" / "x",
+        home / ".local" / "share" / "uv" / "tools" / "x",
+        home / ".local" / "share" / "uv" / "python" / "x",
+    ):
+        assert not rules.can_write(path), path
+
+
+def test_go_stores_follow_the_first_gopath_entry(repo, tmp_path, monkeypatch):
+    first, second = tmp_path / "go1", tmp_path / "go2"
+    monkeypatch.setenv("GOPATH", f"{first}{os.pathsep}{second}")
+    monkeypatch.setenv("GOMODCACHE", str(tmp_path / "mods"))
+    rules = _store_rules(repo, tmp_path)
+    assert rules.can_write(sandbox.real(tmp_path / "mods") / "x")
+    assert rules.can_write(sandbox.real(first) / "pkg" / "sumdb" / "x")
+    assert not rules.can_write(sandbox.real(first) / "pkg" / "mod" / "x")
+    assert not rules.can_write(sandbox.real(second) / "pkg" / "sumdb" / "x")
 
 
 def test_a_file_grant_covers_only_that_file(repo, tmp_path):

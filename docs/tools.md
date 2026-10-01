@@ -3,10 +3,11 @@
 ## Tool permissions
 
 **The agent edits files and runs shell commands for real. There is no approval
-UI.** pcode has no permission model of its own and does not rely on prompt text
-as a safety control. When you need enforcement, turn on the bundled
-[sandbox extension](#write-policy-and-shell-sandbox-opt-in), or run all of pcode
-inside a container or VM; otherwise use a trusted repository and a safe working
+UI, and no sandbox unless you turn one on.** pcode does not rely on prompt text
+as a safety control. If you want the agent sandboxed, run
+`/extensions on sandbox` (see
+[below](#write-policy-and-shell-sandbox-opt-in)), or run all of pcode inside a
+container or VM. Otherwise use a trusted repository and a safe working
 environment.
 
 ### Write policy and shell sandbox (opt-in)
@@ -17,20 +18,34 @@ and for every `shell` command, using one policy:
 - **Writable:** the workspace, its repository's main checkout (which covers
   every `.worktrees/` sibling), temp directories, `~/.cache`,
   `~/Library/Caches` and `~/.npm`, plus anything you grant.
+- **Also writable, once they exist:** the stores Go and Cargo download
+  dependencies into (`~/go/pkg/mod`, `~/go/pkg/sumdb`, and `registry/` and
+  `git/` under `~/.cargo`, following `GOPATH`, `GOMODCACHE` and `CARGO_HOME`).
+  Places programs get installed are left out on purpose, since something put
+  there would later run outside the sandbox: `~/go/bin`, `~/.cargo/bin`,
+  `~/.local/bin`, uv's tools and Pythons, and Homebrew. So `go install`,
+  `cargo install`, `uv tool install`, `uv python install` and `brew install`
+  need a grant.
 - **Read-only even inside those:** pcode's config directory, any `.pcode/`
   directory and any `.git/hooks/`. Writing there would let the agent switch the
   policy off or run code outside the sandbox later.
 - **Unreadable:** SSH private keys, `~/.aws`, `~/.gnupg`, `~/.netrc`, the GitHub
-  CLI's and Docker's stored logins, and pcode's, Codex's and Claude Code's
-  credential files.
+  CLI's, Docker's and uv's stored logins, and pcode's, Codex's and Claude
+  Code's credential files.
 
 Shell commands run under macOS's built-in `sandbox-exec`, or `bwrap` on Linux.
 These are the same OS-level mechanisms Anthropic's
 [sandbox runtime](https://github.com/anthropic-experimental/sandbox-runtime) uses
 for Claude Code's sandboxing: a Seatbelt profile generated per command on macOS,
-bubblewrap on Linux. pcode generates its own profile from the policy above, so
-there is nothing extra to install. Unlike that runtime, it doesn't filter
-network traffic. A write outside the policy fails with "Operation not permitted", and the
+bubblewrap on Linux. pcode generates its own profile from the policy above.
+Unlike that runtime, it doesn't filter network traffic.
+
+macOS needs nothing extra. On Linux, install your distribution's `bubblewrap`
+package. The Homebrew formula pulls in its own copy, but on Ubuntu 24.04 and
+later only the distribution's `/usr/bin/bwrap` is allowed to run, so pcode
+prefers it when both are present.
+
+A write outside the policy fails with "Operation not permitted", and the
 transcript still shows the command as typed. With no sandbox available, the
 `shell` tool refuses to run rather than running unprotected. Your own `!`
 commands are never sandboxed.
@@ -75,8 +90,11 @@ What it does not cover:
   Many shell tools (`sed -i`, editors) replace a file by writing a sibling and
   renaming it, which needs the directory. Grant the directory, or let the agent
   use `edit_file`.
-- **Build tools with other caches** (`~/go`, `~/.cargo`, `uv tool install`
-  writing to `~/.local`) fail until you grant their directories.
+- **Shared caches and stores.** They're used by every project, so code the
+  agent changes in one (a crate's `build.rs`, a Go module) runs when you build
+  another project outside the sandbox.
+- **Other build tools' stores** (Gradle, Maven, pnpm) fail until you grant
+  their directories.
 - **Linux** protects `.pcode/` and `.git/hooks/` only where they already exist
   when a command starts.
 

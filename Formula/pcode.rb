@@ -7,6 +7,11 @@ class Pcode < Formula
   depends_on "python@3.13"
   depends_on "shfmt"
 
+  # The sandbox extension's shell sandbox on Linux (macOS ships sandbox-exec).
+  on_linux do
+    depends_on "bubblewrap"
+  end
+
   # This upstream tap uses uv.lock rather than duplicating its dependency tree
   # as Homebrew resources. Dependency downloads require network access at build time.
   def install

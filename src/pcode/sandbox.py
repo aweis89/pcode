@@ -6,12 +6,13 @@ command's job supervisor runs under an OS sandbox generated from the same
 policy (Seatbelt on macOS, bubblewrap on Linux), so the two cannot drift.
 
 Writes are allowed under the write roots: the workspace, its repository's main
-checkout (which holds every `.worktrees/` sibling), temp and cache directories,
-entries in `sandbox.json`, and session grants from `/allow-writes`. pcode's config
-directory, any `.pcode/` directory and any `.git/hooks/` stay read-only even
-inside a root, because writing there would let the model disable the extension
-or run code outside the sandbox later. Only a root granted at or below one of
-those paths reopens it. Reads are open except a deny list of credential files.
+checkout (which holds every `.worktrees/` sibling), temp, cache and package
+directories, entries in `sandbox.json`, and session grants from `/allow-writes`.
+pcode's config directory, any `.pcode/` directory and any `.git/hooks/` stay
+read-only even inside a root, because writing there would let the model
+disable the extension or run code outside the sandbox later. Only a root
+granted at or below one of those paths reopens it. Reads are open except a deny
+list of credential files.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ DEFAULT_DENY_READ = (
     "~/.docker/config.json",
     "~/.codex/auth.json",
     "~/.claude/.credentials.json",
+    "~/.local/share/uv/credentials",
 )
 CACHE_DIRS = ("~/.cache", "~/Library/Caches", "~/.npm")
 # Directory names that stay read-only wherever they appear: `.pcode` holds
@@ -131,7 +133,37 @@ def base_roots(workspace: Path) -> list[Path]:
     if temp.parent.is_relative_to("/private/var/folders"):
         roots.append(temp.parent)
     roots += [real(entry) for entry in CACHE_DIRS]
+    roots += package_stores()
     return _unique(roots)
+
+
+def package_stores() -> list[Path]:
+    """Go's and Cargo's download stores, where builds fetch dependencies.
+
+    Directories of executables on PATH (`~/go/bin`, `~/.cargo/bin`,
+    `~/.local/bin`, the Homebrew prefix) and uv's data dir (pcode's own tool
+    venv, managed Pythons) stay out: code planted there runs later outside
+    the sandbox.
+    """
+    gopath = Path(_env_dir("GOPATH", "~/go"))
+    cargo = Path(_env_dir("CARGO_HOME", "~/.cargo"))
+    stores = [
+        _env_dir("GOMODCACHE", str(gopath / "pkg" / "mod")),
+        gopath / "pkg" / "sumdb",
+        cargo / "registry",
+        cargo / "git",
+    ]
+    return [real(store) for store in stores]
+
+
+def _env_dir(name: str, default: str) -> str:
+    """An env var naming a directory (the first, for a list like GOPATH).
+
+    Ignored unless absolute, as Go does: a relative path would resolve
+    against pcode's directory rather than the tool's.
+    """
+    value = os.path.expanduser(os.environ.get(name, "").split(os.pathsep)[0])
+    return value if os.path.isabs(value) else default
 
 
 def glob_regex(pattern: str) -> str:
@@ -275,9 +307,17 @@ def backend() -> str | None:
     """Which OS sandbox this machine offers, or None."""
     if sys.platform == "darwin" and shutil.which("sandbox-exec"):
         return "seatbelt"
-    if sys.platform.startswith("linux") and shutil.which("bwrap"):
+    if sys.platform.startswith("linux") and _bwrap():
         return "bwrap"
     return None
+
+
+def _bwrap() -> str | None:
+    """The distribution's bwrap first: Ubuntu 24.04+ lets only `/usr/bin/bwrap`
+    create namespaces, and a Homebrew copy earlier on PATH would shadow it."""
+    if os.access("/usr/bin/bwrap", os.X_OK):
+        return "/usr/bin/bwrap"
+    return shutil.which("bwrap")
 
 
 def command_prefix(policy: Policy, job_directory: Path) -> list[str]:
@@ -294,7 +334,7 @@ def command_prefix(policy: Policy, job_directory: Path) -> list[str]:
             policy.seatbelt_profile([job_directory]),
         ]
     if kind == "bwrap":
-        return [shutil.which("bwrap") or "bwrap", *policy.bwrap_args([job_directory])]
+        return [_bwrap() or "bwrap", *policy.bwrap_args([job_directory])]
     raise RuntimeError("No OS sandbox is available (sandbox-exec on macOS, bwrap on Linux).")
 
 
