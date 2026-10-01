@@ -25,9 +25,9 @@ side question is reading the answer while the turn is still running. A bare
 streams it.
 
 - **↑ / ↓:** move through the questions, or scroll the answer when it has focus.
-- **Enter** (on the list): read the selected thread full width, with the list
-  hidden. **Escape** brings the list back. With a single thread there is no
-  list to choose from, so the answer always gets the whole popup.
+- **Enter:** read the selected thread full width, with the question list
+  hidden; **Escape** brings the list back. A viewer that opens on a single
+  thread starts full width, and Escape shows the list once a second arrives.
 - **Tab:** move between the question list, the answer pane and the follow-up
   editor.
 - **Ctrl+R:** type a [follow-up](#following-up) to the selected answer.
@@ -40,8 +40,9 @@ streams it.
 - **Ctrl+O:** pick a link from the selected thread's questions and answers and
   open it in the browser, as `/links` does for the conversation.
 - **Ctrl+K:** stop every running side question, keeping the records.
-- **Enter / Escape / Ctrl+C** (with no list on screen): close the popup and
-  restore the editor draft. Ctrl+C closes it from anywhere.
+- **Escape / Ctrl+C:** close the popup and restore the editor draft (Escape
+  from a full-width thread first brings the list back). Enter closes it too
+  when there is no list to pick from.
 
 The Ctrl shortcuts work from the list, the answer and the follow-up editor
 alike, and follow the [shortcut prefix](commands.md#shortcut-prefix): with a
@@ -71,9 +72,10 @@ question can become a short back-and-forth without leaving the popup. Press
 Shift+Enter, where the terminal reports it) adds a line. The draft grows to six
 rows before it scrolls, and **PgUp / PgDn** scroll the answer while you type.
 **Escape** leaves the editor and keeps the draft, returning to the list, or to
-the answer when the list is hidden; from there Escape works as above. The viewer always opens on the list (or the answer, for a single
-thread), never in the editor, because
-it can open by itself while you are typing at the main prompt.
+the answer when the list is hidden; from there Escape works as above. The
+viewer always opens on the list (or the answer, for a single thread), never in
+the editor, because it can open by itself while you are typing at the main
+prompt.
 
 A follow-up joins the selected question's **thread**. The list shows one row per
 thread, with a follow-up count, and the answer pane shows the whole exchange in
