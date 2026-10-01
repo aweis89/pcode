@@ -105,6 +105,23 @@ def test_fork_continues_a_copy_of_a_session_nobody_has_open(monkeypatch, tmp_pat
     SavedSession.open(identity, root).close()  # The original stays free.
 
 
+def test_fork_is_removed_when_startup_fails_after_copying(monkeypatch, tmp_path):
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    saved.close()
+    argv = ["pcode", "-c", saved.info.id, "--fork", "--session-dir", str(root)]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with (
+        patch("pcode.project_trust.prompt_trust", side_effect=OSError("no")),
+        patch("pcode.app.PreviewApp"),
+        pytest.raises(SystemExit),
+    ):
+        main()
+    assert [path.name for path in root.iterdir()] == [saved.info.id]
+
+
 def test_fork_skips_the_running_host_and_forks_in_a_new_one(monkeypatch, tmp_path):
     root = tmp_path / "sessions"
     saved = SavedSession.create("test:local", tmp_path, root)

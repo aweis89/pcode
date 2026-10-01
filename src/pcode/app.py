@@ -2524,7 +2524,8 @@ def _run_hosted(args: argparse.Namespace) -> None:
         model = args.model or load_preferences().get("model")
         resume = None
         if args.resume:
-            # One already running in a host was routed to --attach by the caller.
+            # One already running in a host was routed to --attach by the caller,
+            # unless --fork asked for a copy of it.
             path = resolve_session(args.resume, args.session_dir, workspace)
             resume, model = path.name, read_info(path).model
         if not model:
@@ -2791,7 +2792,8 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         if app is not None and app.model and hasattr(app.runtime, "close"):
             app.runtime.close()
         if saved is not None:
-            saved.close()
+            # A copy made for a resume that never started is removed, not listed.
+            saved.close() if app is not None else saved.abandon()
 
 
 if __name__ == "__main__":

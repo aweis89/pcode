@@ -105,19 +105,25 @@ def is_open(directory: Path) -> bool:
     return False
 
 
-def open_in(workspace: Path, root: Path | None = None, exclude: str | None = None) -> list[str]:
-    """IDs of sessions working in `workspace` that are open, other than `exclude`.
+def sharing(
+    workspace: Path, root: Path | None = None, exclude: str | None = None
+) -> list[tuple[str, bool]]:
+    """Other sessions still using `workspace`, as (ID, open) pairs, excluding `exclude`.
 
-    A session copied because its original was busy shares that original's
-    directory, so tidying a worktree on the way out has to ask this first.
+    A copied session (`--fork`, or one whose original was busy) shares that
+    original's directory, so tidying a worktree on the way out has to ask this
+    first. One counts while it is open or has a finished turn to resume.
     """
     root = root or session_root()
     home = str(workspace.resolve())
-    return [
-        info.id
-        for info in list_sessions(root)
-        if info.workspace == home and info.id != exclude and is_open(root / info.id)
-    ]
+    found = []
+    for info in list_sessions(root):
+        if info.workspace != home or info.id == exclude:
+            continue
+        running = is_open(root / info.id)
+        if running or info.turns:
+            found.append((info.id, running))
+    return found
 
 
 def delete_session(identity: str, root: Path | None = None) -> None:

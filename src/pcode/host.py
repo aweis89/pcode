@@ -713,7 +713,11 @@ async def _serve(args: argparse.Namespace) -> None:
         saved = SavedSession.open(
             args.resume, args.session_dir, workspace, fork_if_open=True, fork=args.fork
         )
-        workspace = Path(_resume_workspace(saved.info, workspace)).resolve()
+        try:
+            workspace = Path(_resume_workspace(saved.info, workspace)).resolve()
+        except BaseException:
+            saved.abandon()  # A copy made for this resume is removed, not left listed.
+            raise
         entry.session_id = saved.info.id
         prompt = first_prompt(saved.info, saved.directory.parent)
         entry.title = "" if prompt.startswith("(") else prompt

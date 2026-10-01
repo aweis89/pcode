@@ -203,7 +203,8 @@ finished turn instead.
 
 The copy works in the same directory as the original, so if both edit files
 their changes land in one checkout. Quitting either one does not remove or
-merge a shared `pcode-` worktree while the other is still open in it.
+merge a shared `pcode-` worktree while the other is still open in it, or has
+turns it could be resumed with there.
 
 A session still running in a [background host](#background-sessions) is not
 copied: `--continue` and `/resume` show it where it runs instead.
