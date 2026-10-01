@@ -8,7 +8,7 @@ from pathlib import Path
 import leaked_processes
 import pytest
 
-RUN_KEY = pytest.StashKey[str]()
+RUN_KEY = pytest.StashKey[str | None]()
 
 # Private tmux servers are parented to init, so a pytest that dies without
 # running fixture teardown (SIGKILL, a timeout, an abandoned CI runner) strands
@@ -66,7 +66,9 @@ def pytest_unconfigure(config):
     identity = config.stash.get(RUN_KEY, None)
     if identity is None:
         return
+    # Reap while still holding the lock, so no other run takes this one for dead.
     leaked = leaked_processes.reap_run(identity)
+    leaked_processes.end_run(identity)
     if leaked:
         lines = "".join(f"\n  {line}" for line in leaked)
         print(f"\nstopped {len(leaked)} processes this test run leaked:{lines}", file=sys.stderr)
