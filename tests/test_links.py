@@ -151,6 +151,21 @@ def test_links_dialog_search_and_tool_filter():
     asyncio.run(run())
 
 
+def test_links_dialog_tab_moves_from_the_search_line_to_the_list():
+    links = [Link("https://old.test"), Link("https://new.test")]
+
+    async def run():
+        with create_pipe_input() as pipe:
+            dialog = links_dialog(links, input=pipe, output=DummyOutput())
+            task = asyncio.create_task(dialog.run_async())
+            await asyncio.sleep(0.05)
+            # In the list, `j` is not typed into the search, so Enter still opens.
+            pipe.send_text("\tj\r")
+            assert await asyncio.wait_for(task, 2) == "https://new.test"
+
+    asyncio.run(run())
+
+
 def test_links_dialog_can_recover_when_tools_are_only_links():
     async def run():
         with create_pipe_input() as pipe:

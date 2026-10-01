@@ -1,6 +1,7 @@
 # Side questions (`/btw`)
 
-`/btw QUESTION` asks about what the model is doing **while it is doing it**. The
+`/btw QUESTION` (or `/side QUESTION`, the same command) asks about what the
+model is doing **while it is doing it**. The
 question runs as a separate request alongside the turn, against the same
 context. The turn is not interrupted or steered, and the question stays out of
 the conversation unless you choose to keep it.
@@ -29,8 +30,12 @@ streams it.
 - **Ctrl+R:** type a [follow-up](#following-up) to the selected answer.
 - **Ctrl+S / Ctrl+T:** [bring the thread into the conversation](#keeping-a-thread),
   as a summary or merged into the tree.
-- **Ctrl+Y:** copy the selected thread's newest answer to the clipboard as raw
-  markdown (also works mid-stream, taking what has arrived so far).
+- **Ctrl+Y:** copy the selected thread's newest answer to the clipboard as
+  markdown, secrets redacted (also works mid-stream, taking what has arrived so far). As with
+  `/copy`, an answer holding quotes or code blocks opens a picker to copy just
+  one of them.
+- **Ctrl+O:** pick a link from the selected thread's questions and answers and
+  open it in the browser, as `/links` does for the conversation.
 - **Ctrl+K:** stop every running side question, keeping the records.
 - **Enter / Escape / Ctrl+C:** close the popup and restore the editor draft.
 

@@ -76,10 +76,11 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/tree`: [browse and fork the conversation](conversation-tree.md); select a user prompt
   to edit it, or an assistant response to continue from there. Existing branches are kept.
   Browsable at any time; forking waits for the running turn.
-- `/btw QUESTION`: [ask a side question](side-questions.md) against the context the model
+- `/btw QUESTION` (alias `/side`): [ask a side question](side-questions.md) against the context the model
   is working with right now, without interrupting or queueing it. The answer opens in a
   popup when ready (`btw_auto_open`); bare `/btw` opens the answers at any time. There,
-  **Ctrl+R** [asks a follow-up](side-questions.md#following-up), and **Ctrl+S** and
+  **Ctrl+R** [asks a follow-up](side-questions.md#following-up), **Ctrl+Y** and **Ctrl+O**
+  copy and open links as `/copy` and `/links` do, and **Ctrl+S** and
   **Ctrl+T** [keep a thread](side-questions.md#keeping-a-thread) as a summary or a merged
   `/tree` branch. `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks other models
   instead, one side question each ([choosing the model](side-questions.md#choosing-the-model)).
@@ -540,7 +541,7 @@ With the default `ctrl` prefix they are:
 
 | Popup | Shortcuts |
 | --- | --- |
-| `/btw` | Ctrl+R follow up · Ctrl+Y copy answer · Ctrl+S summarize into the conversation · Ctrl+T merge into `/tree` · Ctrl+K stop running |
+| `/btw` | Ctrl+R follow up · Ctrl+Y copy answer · Ctrl+O open a link · Ctrl+S summarize into the conversation · Ctrl+T merge into `/tree` · Ctrl+K stop running |
 | `/tools` | Ctrl+F search · Ctrl+X failures only · Ctrl+T tool filter · Ctrl+Y copy command · Ctrl+O copy output |
 | `/diffs` | Ctrl+F search the focused pane · Ctrl+S / Ctrl+R next / previous match |
 | `/resume` | Ctrl+F search · Ctrl+R responses too · Ctrl+G all workspaces · Ctrl+X delete (twice) |

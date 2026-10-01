@@ -519,6 +519,7 @@ class SessionController:
                 "+EFFORT the effort); "
                 "bare opens the answers",
                 self.aside,
+                aliases=("/side",),
                 free_arguments=True,
                 argument_completer=self.aside_completions,
                 group="Inspect",

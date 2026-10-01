@@ -10,10 +10,18 @@ from collections.abc import Callable
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Always, has_focus
+from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
-from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
+from prompt_toolkit.layout import (
+    ConditionalContainer,
+    DynamicContainer,
+    Float,
+    FloatContainer,
+    HSplit,
+    Layout,
+    VSplit,
+)
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Frame, Label, TextArea
 from rich.markdown import Markdown
@@ -22,6 +30,9 @@ from rich.theme import Theme
 
 from pcode.aside import Aside, Asides, Bridge
 from pcode.clipboard import copy as copy_to_clipboard
+from pcode.copy_ui import Snippet, SnippetPicker, snippets
+from pcode.links import Link, extract_links, open_link, remember_link
+from pcode.links_ui import LinkPicker
 from pcode.popup_ui import (
     PopupInput,
     RichPane,
@@ -94,6 +105,9 @@ class AsideBrowser:
     asking for optional instructions in the editor. Either closes the viewer,
     returning a `Bridge` from `run`; `check_bridge(thread)` raises `ValueError`
     when it cannot yet.
+
+    Prefix `y` copies the newest answer and prefix `o` opens a link from the
+    thread, with the same pickers as `/copy` and `/links`, over the viewer.
     """
 
     def __init__(
@@ -124,6 +138,8 @@ class AsideBrowser:
         self._refreshing = False
         self._ids: list[str] = []
         self.notice = ""
+        # The copy or link picker over the viewer, while one is open.
+        self.picker: SnippetPicker | LinkPicker | None = None
         self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
         self.list.window.cursorline = Always()
         self.detail = RichPane(theme=rich_theme, color_system=color_system)
@@ -150,19 +166,27 @@ class AsideBrowser:
         def close(event):
             event.app.exit(result=None)
 
+        # Shortcuts are inert while a copy or link picker is over the viewer:
+        # one would otherwise act, or move focus, behind it.
+        idle = Condition(lambda: self.picker is None)
+
         if ask is not None:
 
-            @shortcuts.add("r", "Follow up")
+            @shortcuts.add("r", "Follow up", filter=idle)
             def reply(event):
                 self.input.open(event.app)
 
-        @shortcuts.add("y", "Copy answer")
+        @shortcuts.add("y", "Copy answer", filter=idle)
         def copy_answer(event):
             self.copy(event.app.output)
 
+        @shortcuts.add("o", "Open a link", filter=idle)
+        def open_links(event):
+            self.choose_link()
+
         if self.check_bridge is not None:
 
-            @shortcuts.add("s", "Summarize into the conversation")
+            @shortcuts.add("s", "Summarize into the conversation", filter=idle)
             def summarize(event):
                 if self.bridgeable():
                     thread = self.selected
@@ -173,12 +197,12 @@ class AsideBrowser:
                         submit=lambda text: self.finish(Bridge(thread, "summary", text)),
                     )
 
-            @shortcuts.add("t", "Merge into /tree")
+            @shortcuts.add("t", "Merge into /tree", filter=idle)
             def merge(event):
                 if self.bridgeable():
                     self.finish(Bridge(self.selected, "merge"))
 
-        @shortcuts.add("k", "Stop running")
+        @shortcuts.add("k", "Stop running", filter=idle)
         def stop(event):
             # Same key meaning as in /jobs: stop the work, keep the record.
             self.asides.cancel()
@@ -220,10 +244,18 @@ class AsideBrowser:
                 Label(shortcuts.summary),
             ]
         )
+        picker = Frame(
+            DynamicContainer(lambda: self.picker.container if self.picker else HSplit([])),
+            title=lambda: "Links" if isinstance(self.picker, LinkPicker) else "Copy",
+        )
+        overlaid = FloatContainer(
+            root_container,
+            floats=[Float(ConditionalContainer(picker, Condition(lambda: bool(self.picker))))],
+        )
         self.app = Application(
             # Opens on the list, never the editor: the viewer can open by itself
             # when an answer lands, mid-keystroke at the main prompt.
-            layout=Layout(popup_container(root_container, shortcuts), focused_element=self.list),
+            layout=Layout(popup_container(overlaid, shortcuts), focused_element=self.list),
             key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(),
@@ -329,14 +361,89 @@ class AsideBrowser:
         self.refresh()
 
     def copy(self, output=None) -> None:
-        """Copy the thread's newest answer as written, even while it is still arriving."""
-        answered = [aside for aside in self.current() if aside.answer]
+        """Copy the thread's newest answer, even while it is still arriving.
+
+        As `/copy` does: the redacted text the pane shows, and an answer
+        holding quotes or code blocks opens a picker to copy just one.
+        """
+        answered = [literal(aside.answer) for aside in self.current()]
+        answered = [answer for answer in answered if answer]
         if not answered:
             self.notice = "No answer to copy"
             return
-        copied, truncated = copy_to_clipboard(answered[-1].answer, output)
+        choices = snippets(answered[-1])
+        if len(choices) > 1:
+            self.open_picker(
+                lambda close: SnippetPicker(
+                    choices,
+                    on_pick=lambda snippet: self.copy_snippet(close, snippet, output),
+                    on_cancel=close,
+                    shortcuts=self.prefix_keys,
+                )
+            )
+            return
+        self.copy_text("answer", answered[-1], output)
+
+    def copy_snippet(self, close, snippet: Snippet, output=None) -> None:
+        close()
+        self.copy_text(
+            "answer" if snippet.kind == "response" else snippet.kind, snippet.text, output
+        )
+
+    def copy_text(self, name: str, text: str, output=None) -> None:
+        copied, truncated = copy_to_clipboard(text, output)
         limit = " (truncated)" if truncated else ""
-        self.notice = f"Copied answer{limit}" if copied else "Could not copy answer"
+        self.notice = f"Copied {name}{limit}" if copied else f"Could not copy {name}"
+
+    def links(self) -> list[Link]:
+        """URLs in the selected thread's questions and answers, oldest first.
+
+        From the raw text, as `/links` reads the conversation: redaction would
+        cut a URL holding a token short, and the browser would get the stub.
+        """
+        found: dict[str, Link] = {}
+        for aside in self.current():
+            for text, source in ((aside.question, "user"), (aside.answer, "assistant")):
+                for link in extract_links(text, source):
+                    remember_link(found, link)
+        return list(found.values())
+
+    def choose_link(self) -> None:
+        """Pick a URL from the selected thread and open it in the browser, as `/links` does."""
+        links = self.links()
+        if not links:
+            self.notice = "No links in this side thread"
+            return
+
+        def pick(close, url: str) -> None:
+            close()
+            try:
+                open_link(url)
+            except (OSError, RuntimeError) as error:
+                self.notice = f"Could not open {url}: {error}"
+                return
+            self.notice = f"Opened {url}"
+
+        self.open_picker(
+            lambda close: LinkPicker(
+                links,
+                on_pick=lambda url: pick(close, url),
+                on_cancel=close,
+                shortcuts=self.prefix_keys,
+            )
+        )
+
+    def open_picker(self, build) -> None:
+        """Show `build(close)` over the viewer; `close` puts focus back where it was."""
+        previous = self.app.layout.current_window
+
+        def close() -> None:
+            self.picker = None
+            self.app.layout.focus(previous)
+
+        self.picker = build(close)
+        # A link picker opens in its search line, so typing filters at once.
+        self.app.layout.focus(getattr(self.picker, "query", None) or self.picker.list)
 
     def details(self, thread: list[Aside]) -> tuple[list, int]:
         """The thread's questions and answers in order, and where the newest begins."""

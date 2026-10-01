@@ -93,7 +93,7 @@ class SnippetPicker:
     `/tree` does; ``snippet_dialog`` wraps it in an application of its own.
     """
 
-    def __init__(self, choices: list[Snippet], on_pick, on_cancel) -> None:
+    def __init__(self, choices: list[Snippet], on_pick, on_cancel, *, shortcuts=None) -> None:
         self.choices = choices
         self.on_pick = on_pick
         self.list = TextArea(
@@ -123,7 +123,8 @@ class SnippetPicker:
 
         self.container = HSplit(
             [self.list, Label("↑↓ Select · Enter copy · Esc cancel")],
-            key_bindings=keys,
+            # Gated by the host's `PrefixKeys`, so a waiting leader owns Enter and Esc.
+            key_bindings=shortcuts.gate(keys) if shortcuts else keys,
             modal=True,
         )
 

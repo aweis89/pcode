@@ -656,6 +656,136 @@ def test_aside_browser_copies_the_selected_answer(monkeypatch):
     assert browser.notice == "Could not copy answer"
 
 
+def test_aside_browser_copies_a_code_block_through_the_picker(monkeypatch):
+    from pcode import aside_ui
+    from pcode.aside_ui import AsideBrowser
+    from pcode.copy_ui import SnippetPicker
+
+    copies: list[str] = []
+    monkeypatch.setattr(
+        aside_ui,
+        "copy_to_clipboard",
+        lambda text, output=None: (copies.append(text), (True, False))[1],
+    )
+    asides = Asides()
+    aside = Aside(question="how?", answer="Run this:\n\n```sh\nmake test\n```\n")
+    aside.settle("answered")
+    asides.items.append(aside)
+    browser = AsideBrowser(asides, output=None, input=None)
+    browser.copy()
+    assert isinstance(browser.picker, SnippetPicker)
+    assert copies == []
+    # The picker starts on the code block, as /copy's does.
+    browser.picker.on_pick(browser.picker.selected())
+    assert copies == ["make test"]
+    assert browser.picker is None
+    assert browser.notice == "Copied code"
+
+
+def test_aside_browser_opens_a_link_from_the_selected_thread(monkeypatch):
+    from pcode import aside_ui
+    from pcode.aside_ui import AsideBrowser
+    from pcode.links_ui import LinkPicker
+
+    opened: list[str] = []
+    monkeypatch.setattr(aside_ui, "open_link", opened.append)
+    asides = Asides()
+    browser = AsideBrowser(asides, output=None, input=None)
+    browser.choose_link()
+    assert browser.notice == "No links in this side thread"
+    assert browser.picker is None
+
+    aside = Aside(
+        question="see https://q.test?", answer="Read [the docs](https://docs.test) first."
+    )
+    aside.settle("answered")
+    asides.items.append(aside)
+    browser.refresh()
+    assert [link.url for link in browser.links()] == ["https://q.test", "https://docs.test"]
+    browser.choose_link()
+    assert isinstance(browser.picker, LinkPicker)
+    # Newest first, so the answer's link is selected; typing filters.
+    assert browser.picker.selected() == "https://docs.test"
+    browser.picker.query.text = "q.test"
+    assert browser.picker.selected() == "https://q.test"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "copy_key", "link_key", "follow_up_key"),
+    [("ctrl", "\x19", "\x0f", "\x12"), ("ctrl+p", "\x10y", "\x10o", "\x10r")],
+)
+def test_aside_browser_pickers_by_keyboard(monkeypatch, prefix, copy_key, link_key, follow_up_key):
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from pcode import aside_ui
+    from pcode.aside_ui import AsideBrowser
+
+    opened: list[str] = []
+    copies: list[str] = []
+    monkeypatch.setattr(aside_ui, "open_link", opened.append)
+    monkeypatch.setattr(
+        aside_ui,
+        "copy_to_clipboard",
+        lambda text, output=None: (copies.append(text), (True, False))[1],
+    )
+    asides = Asides()
+    aside = Aside(
+        question="see https://q.test", answer="Docs: https://docs.test\n\n```sh\nmake test\n```"
+    )
+    aside.settle("answered")
+    asides.items.append(aside)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            browser = AsideBrowser(
+                asides,
+                ask=lambda thread, question: None,
+                key_prefix=prefix,
+                input=pipe,
+                output=DummyOutput(),
+            )
+            task = asyncio.create_task(browser.run())
+
+            async def send(keys):
+                pipe.send_text(keys)
+                await asyncio.sleep(0.1)
+
+            await asyncio.sleep(0.1)
+            await send(link_key)
+            # Other shortcuts are inert under the picker: no follow-up editor opens.
+            await send(follow_up_key)
+            assert not browser.editing()
+            await send("q.test\r")
+            assert opened == ["https://q.test"]
+            assert browser.picker is None
+            await send(copy_key)
+            await send("\r")
+            assert copies == ["make test"]
+            assert browser.notice == "Copied code"
+            # Esc backs out of a picker, leaving the viewer open.
+            await send(link_key)
+            await send("\x1b")
+            await asyncio.sleep(0.6)
+            assert browser.picker is None and not task.done()
+            pipe.send_text("\x1b")
+            assert await asyncio.wait_for(task, 2) is None
+
+    asyncio.run(run())
+
+
+def test_side_is_an_alias_for_btw():
+    app = PreviewApp(
+        model="test:local",
+        runtime=AgentRuntime(Agent(TestModel())),
+        console=Console(file=StringIO()),
+    )
+    app.activity.busy = True
+    start = app.controller.start_aside = AsyncMock()
+    asyncio.run(app.controller.dispatch("/side why this file?", idle=False))
+    start.assert_awaited_once_with("why this file?", [])
+
+
 def test_tree_browser_is_read_only_while_a_turn_runs():
     from pcode.conversation_tree import ConversationTree
     from pcode.tree_ui import TreeBrowser
