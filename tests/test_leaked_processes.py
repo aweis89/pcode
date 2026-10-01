@@ -64,10 +64,20 @@ def test_processes_of_a_run_that_died_are_stopped(spawn):
     orphan = spawn("999999-1.000")  # No such controller.
     live = spawn(leaked_processes.run_id(psutil.Process()))
 
-    leaked_processes.reap_dead_runs()
+    stopped = leaked_processes.reap_dead_runs([orphan, live])
 
+    assert [line.split()[0] for line in stopped] == [str(orphan.pid)]
     assert gone(orphan)
     assert not gone(live)
+
+
+def test_a_run_that_cannot_be_checked_counts_as_alive(monkeypatch):
+    def refused(pid):
+        raise psutil.AccessDenied(pid)
+
+    monkeypatch.setattr(leaked_processes.psutil, "Process", refused)
+    assert leaked_processes._alive("123-1.000")
+    assert leaked_processes._alive("not-a-tag")
 
 
 def test_a_nested_run_takes_its_own_tag(monkeypatch):

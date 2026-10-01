@@ -40,16 +40,28 @@ def tag_run() -> str:
 
 
 def _alive(identity: str) -> bool:
+    """Whether the run's controller may still be running.
+
+    Only proof of death counts: the pid is gone, or now names a different
+    process. Anything short of that (a malformed tag, a refused lookup) keeps
+    the run alive, since reaping a live run kills its workers mid-test.
+    """
     try:
-        return run_id(psutil.Process(int(identity.partition("-")[0]))) == identity
-    except (ValueError, psutil.Error):
+        pid = int(identity.partition("-")[0])
+    except ValueError:
+        return True
+    try:
+        return run_id(psutil.Process(pid)) == identity
+    except psutil.NoSuchProcess:
         return False
+    except psutil.Error:
+        return True
 
 
-def _tagged(keep) -> list[psutil.Process]:
+def _tagged(keep, candidates=None) -> list[psutil.Process]:
     me = os.getpid()
     found = []
-    for process in psutil.process_iter():
+    for process in psutil.process_iter() if candidates is None else candidates:
         if process.pid == me:
             continue
         try:
@@ -87,6 +99,10 @@ def reap_run(identity: str) -> list[str]:
     return _stop(_tagged(keep=lambda tag: tag != identity))
 
 
-def reap_dead_runs() -> list[str]:
-    """Stop processes tagged by runs whose controller has exited."""
-    return _stop(_tagged(keep=_alive))
+def reap_dead_runs(candidates=None) -> list[str]:
+    """Stop processes tagged by runs whose controller has exited.
+
+    `candidates` limits the search, so a test can check this without reaping
+    the whole machine from inside a worker.
+    """
+    return _stop(_tagged(keep=_alive, candidates=candidates))

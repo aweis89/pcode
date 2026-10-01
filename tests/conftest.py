@@ -55,9 +55,10 @@ def pytest_configure(config):
     # Only the controller: a worker reaping its run would stop its siblings.
     # Tagging here, before xdist spawns workers, puts the tag in theirs too.
     if not hasattr(config, "workerinput"):
-        reap = leaked_processes.reap_dead_runs()
-        if reap:
-            print(f"\nstopped {len(reap)} processes an earlier test run leaked", file=sys.stderr)
+        reaped = leaked_processes.reap_dead_runs()
+        if reaped:
+            lines = "".join(f"\n  {line}" for line in reaped)
+            print(f"\nstopped {len(reaped)} processes from dead runs:{lines}", file=sys.stderr)
         config.stash[RUN_KEY] = leaked_processes.tag_run()
 
 
