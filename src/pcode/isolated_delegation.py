@@ -183,6 +183,45 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         self.add_function(self.discard_task)
         self.add_function(self.list_task_worktrees)
 
+    def _prepare_delegate(self, ctx, tool_def):
+        """Offer `model` as any `provider:model` name, not only a /subagents key.
+
+        The description is static, so the schema stays cache-stable however
+        many names get resolved on demand.
+        """
+        tool_def = super()._prepare_delegate(ctx, tool_def)
+        if tool_def is None:
+            return None
+        schema = {**tool_def.parameters_json_schema}
+        schema["properties"] = {
+            **schema.get("properties", {}),
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional model to run the sub-agent on, as provider:model "
+                    "(e.g. openai-codex:gpt-5.5, anthropic:claude-sonnet-4-5), "
+                    "such as for a second opinion from another model. Omit it to use "
+                    "the session's model."
+                ),
+            },
+        }
+        return replace(tool_def, parameters_json_schema=schema)
+
+    def _resolve_model_key(self, agent_name, sub_agent, key):
+        """Resolve a name off the /subagents menu the way /btw resolves one."""
+        if key is not None and key not in self._models:
+            from pydantic_ai_harness.subagents import ModelOption
+
+            from pcode.agent import side_model
+
+            try:
+                chosen = side_model(key)
+            except ValueError as error:
+                raise ModelRetry(str(error)) from error
+            # Kept for later delegations in this session; the schema never lists it.
+            self._models[key] = ModelOption(chosen.model, settings=chosen.settings)
+        return super()._resolve_model_key(agent_name, sub_agent, key)
+
     async def delegate_task(
         self,
         ctx: RunContext,
