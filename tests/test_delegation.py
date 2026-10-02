@@ -11,6 +11,7 @@ from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
 
 from pcode.agent import create_coder
+from pcode.claude_sdk import ClaudeConnectionError
 from pcode.delegation import DelegationReporting, _parent, stream_child_activity
 from pcode.live import AgentRuntime
 from pcode.runtime import ChildPlan, Message, PlanUpdated, TextDelta, ToolStarted, ToolSummary
@@ -98,6 +99,78 @@ def test_real_parallel_children_are_correlated_streamed_and_inspectable(tmp_path
         } == {("worker", "Read sample.txt (0)"), ("worker", "Read sample.txt (1)")}
         assert len(runtime.inspections.calls) == 4  # Phase changes don't create new calls.
         assert all(c.state == "succeeded" for c in runtime.inspections.calls)
+
+    asyncio.run(run())
+
+
+def test_a_dropped_child_request_is_resent_without_rerunning_its_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr("pcode.delegation.RETRY_DELAY", 0)
+    (tmp_path / "sample.txt").write_text("workspace evidence")
+    sent = []
+
+    async def model(messages, info):
+        if "delegate_task" in {t.name for t in info.function_tools}:
+            yield "Parent answer" if returns(messages) else {0: delegate(0, "worker")}
+            return
+        sent.append(len(messages))
+        if not returns(messages):
+            yield {
+                0: DeltaToolCall(
+                    name="read_file", json_args='{"path":"sample.txt"}', tool_call_id="read"
+                )
+            }
+        elif len(sent) == 2:
+            raise ClaudeConnectionError("test", "API Error: Connection dropped (ECONNRESET)")
+        else:
+            yield "Child answer"
+
+    runtime = AgentRuntime(
+        Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)])
+    )
+
+    async def run():
+        events = [e async for e in runtime.stream("Explore")]
+        delegated = next(
+            e for e in events if isinstance(e, ToolSummary) and e.name == "delegate_task"
+        )
+        assert delegated.outcome == "ok" and delegated.result == "Child answer"
+        reads = [e for e in events if isinstance(e, ToolSummary) and e.name == "read_file"]
+        assert len(reads) == 1
+        assert "Reconnecting 1/3" in {
+            e.activity for e in events if isinstance(e, ToolStarted) and e.name == "delegate_task"
+        }
+
+    asyncio.run(run())
+    # The failed request went again exactly as sent, after the tool it followed.
+    assert sent == [sent[0], sent[1], sent[1]]
+
+
+def test_a_crashed_worker_leaves_the_turn_and_its_siblings_running(tmp_path):
+    async def model(messages, info):
+        if "delegate_task" in {t.name for t in info.function_tools}:
+            if returns(messages):
+                yield "Parent answer"
+            else:
+                yield {0: delegate(0, "worker"), 1: delegate(1, "worker")}
+            return
+        if "(0)" in messages[0].parts[-1].content:
+            raise RuntimeError("private crash")
+        await asyncio.sleep(0.05)
+        yield "Sibling answer"
+
+    runtime = AgentRuntime(
+        Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)])
+    )
+
+    async def run():
+        events = [e async for e in runtime.stream("Explore")]
+        assert [e.markdown for e in events if isinstance(e, Message)] == ["Parent answer"]
+        outcomes = {
+            e.call_id: e.outcome
+            for e in events
+            if isinstance(e, ToolSummary) and e.name == "delegate_task"
+        }
+        assert outcomes == {"parent-0": "contained", "parent-1": "ok"}
 
     asyncio.run(run())
 

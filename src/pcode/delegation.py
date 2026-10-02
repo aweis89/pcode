@@ -6,12 +6,15 @@ pairs concurrent children with their own parent tool call. No global event queue
 or mutable per-agent handler is needed, and cancellation resets the binding.
 """
 
+import asyncio
+import logging
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from time import monotonic
 
 from pydantic_ai import CapabilityEvent, RunContext
+from pydantic_ai.agent import WrapperAgent
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -26,10 +29,14 @@ from pydantic_ai.messages import (
 )
 
 from pcode.cache_warnings import CacheBustEvent
+from pcode.diagnostics import transient
+from pcode.error_report import error_message
 from pcode.filesystem import FileChangeEvent
 from pcode.inspection import capture
 from pcode.jobs import registry
 from pcode.planning import PlanSnapshot
+from pcode.preferences import SETTINGS, load_preferences
+from pcode.retries import RequestCheckpoint
 from pcode.runtime import ToolStarted, ToolSummary
 from pcode.shell import result_projection
 from pcode.tool_display import (
@@ -45,6 +52,9 @@ from pcode.tool_display import (
 )
 
 _parent: ContextVar[RunContext | None] = ContextVar("delegation_parent", default=None)
+logger = logging.getLogger(__name__)
+# Seconds before a dropped child request is resent, as a turn waits.
+RETRY_DELAY = 1.0
 
 
 @dataclass(kw_only=True)
@@ -87,6 +97,44 @@ class DelegationReporting(AbstractCapability):
             return await handler(args)
         finally:
             _parent.reset(token)
+
+
+class ResumableAgent(WrapperAgent):
+    """Resend a sub-agent's request after a dropped connection, as a turn does.
+
+    Without this, one child's ECONNRESET fails its delegation outright. The
+    resend reuses `AgentRuntime.stream`'s rule: only a request that never got an
+    answer goes again, from the exact messages it carried, so no tool the child
+    already ran is run twice. A drop anywhere else still ends the child.
+    """
+
+    async def run(self, user_prompt=None, *, message_history=None, capabilities=None, **kwargs):
+        attempts = int(load_preferences().get("retry_attempts", SETTINGS["retry_attempts"].default))
+        attempt = 0
+        while True:
+            checkpoint = RequestCheckpoint()
+            try:
+                return await self.wrapped.run(
+                    user_prompt,
+                    message_history=message_history,
+                    capabilities=[*(capabilities or ()), checkpoint],
+                    **kwargs,
+                )
+            except Exception as error:
+                if attempt >= attempts or checkpoint.messages is None or not transient(error):
+                    raise
+                attempt += 1
+                user_prompt, message_history = None, checkpoint.messages
+                logger.warning(
+                    "Sub-agent %r: %s Retrying %d/%d",
+                    self.name,
+                    error_message(error),
+                    attempt,
+                    attempts,
+                )
+                if (parent := _parent.get()) is not None:
+                    await parent.emit(ChildActivity(activity=f"Reconnecting {attempt}/{attempts}"))
+                await asyncio.sleep(RETRY_DELAY)
 
 
 async def stream_child_activity(_ctx, events):

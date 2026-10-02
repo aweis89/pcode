@@ -19,6 +19,7 @@ from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 from pydantic_ai_harness.subagents import SubAgents
 from pydantic_ai_harness.subagents._toolset import SubAgentToolset
 
+from pcode.delegation import ResumableAgent
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.task_worktrees import TaskWorktrees
 from pcode.worktree import WorktreeError, describe, setup_scripts
@@ -286,6 +287,10 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             "workspace_mode": "isolated",
             "verification": "Worker-reported; see summary.",
         }
+
+    async def _run_delegation(self, ctx, agent_name, sub_agent, *, task, key):
+        resumable = replace(sub_agent, agent=ResumableAgent(sub_agent.agent))
+        return await super()._run_delegation(ctx, agent_name, resumable, task=task, key=key)
 
     async def _settle(self, *args, **kwargs):
         ended = await super()._settle(*args, **kwargs)
