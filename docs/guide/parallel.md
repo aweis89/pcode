@@ -80,8 +80,9 @@ also show under the parent's in scrollback and in `/tools`.
 
 ### Workers on other models
 
-By default workers run on the session's model. `/subagents` gives the agent a
-list of other models it may delegate to, for example a cheaper, faster model
+By default workers run on the session's model. Name another model in your
+request ("ask openai-codex:gpt-6-astra for a second opinion") and the worker runs
+on it. `/subagents` gives the agent a standing list of other models to pick from, for example a cheaper, faster model
 for mechanical changes, or a different vendor for a second opinion:
 
 ```text
