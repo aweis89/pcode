@@ -148,7 +148,8 @@ def newest_summary_only(messages) -> list:
     re-keeps every earlier summary inside that "first user message". Harness
     also anchors its update on the *last* summary part it finds, which in that
     merged request is the oldest one. A new summary always opens the history,
-    so the first summary part in order is the newest.
+    so the first summary part in order is the newest. Reported upstream as
+    pydantic/pydantic-ai#9686; drop this once a Harness release fixes it.
     """
     seen = False
     kept = []
