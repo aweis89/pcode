@@ -60,10 +60,18 @@ the saved session before the editor starts, then gates requests on recovery.
 Shutdown waits for in-flight construction to finish so late-created runtimes are
 cleaned up rather than abandoned.
 
-- `src/pcode/agent.py`: `Agent(model, capabilities=[Coder(workspace)])` definition;
-  independent of the terminal.
+pcode customizes Pydantic AI through capabilities and model/provider subclasses;
+[capabilities.md](capabilities.md) maps every one of them.
+
+- `src/pcode/agent.py`: `Agent(model, capabilities=[create_coder(...), *extensions])`
+  definition, where `create_coder` adapts Harness's `Coder`; independent of the terminal.
 - `src/pcode/live.py`: `run_stream_events()` adapter, history, and usage. It runs the
-  whole tool loop, including when the model emits text before tool calls.
+  whole tool loop, including when the model emits text before tool calls, and adds
+  the per-run capabilities.
+- `src/pcode/stream_events.py`: `EventTranslator`, which turns one run's Pydantic AI
+  and Harness events into pcode's runtime events.
+- `src/pcode/claude_sdk/`: `claude:` models, an `AnthropicModel` whose requests go
+  through a long-lived Claude Code CLI process instead of HTTP.
 - `src/pcode/turn.py`: the state one turn owns (history, queued shell exchanges,
   plan store, request checkpoint, in-flight context). The runtime holds the active
   branch's and exposes its fields under their original names; per-run capabilities
