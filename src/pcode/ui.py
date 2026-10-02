@@ -2309,7 +2309,6 @@ def create_prompt(
     install_fast_layout_division()
     activity = activity or Activity()
     callbacks = PromptCallbacks(
-        on_submit=on_submit,
         on_cancel=on_cancel,
         on_effort=on_effort,
         on_model=on_model,

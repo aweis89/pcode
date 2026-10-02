@@ -80,8 +80,11 @@ pcode customizes Pydantic AI through capabilities and model/provider subclasses;
 - `src/pcode/sessions.py`: private manifests/journals, session locking, and the
   official Harness SQLite step store; recovery uses its settled snapshots.
 - `src/pcode/diagnostics.py`: structured provider errors with best-effort redaction.
-- `src/pcode/ui.py`: prompt_toolkit editor and bottom-aligned layout, plus a batched
-  terminal writer for committed Markdown blocks.
+- `src/pcode/ui.py`: prompt_toolkit editor and bottom-aligned layout (`PromptLayout`),
+  plus a batched terminal writer for committed Markdown blocks.
+- `src/pcode/prompt_keys.py`: the editor's key bindings and leader-key shortcuts.
+- `src/pcode/controller.py`: `SessionController`, the session's queues, turns and
+  slash commands; `src/pcode/logins.py` holds its provider sign-in and sign-out.
 - `src/pcode/commands.py`: registry shared by dispatch, help, and completion.
 - `src/pcode/file_refs.py`: cached workspace file listing behind `@` completion.
 - `src/pcode/inspection.py`: bounded inspection projection and lazy journal index.

@@ -546,8 +546,9 @@ class SessionController:
     # --- Slash commands ---
 
     def register_commands(self) -> None:
-        # Registration order is /help's and completion's order, so the groups
-        # below run in the order the commands have always been listed.
+        # Registration order is /help's and completion's order. The helpers are
+        # consecutive runs of that order, not `group=` buckets: the groups
+        # interleave, and sorting by them would reorder /help.
         for command in (
             *self._aside_commands(),
             *self._model_commands(),

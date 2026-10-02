@@ -19,6 +19,7 @@ FIX = "Update dev/capabilities.md to match the code."
 
 
 def _capability_classes() -> set[str]:
+    """Module-level capability classes; nested ones (an extension's) aren't importable."""
     for module in pkgutil.walk_packages(pcode.__path__, "pcode."):
         importlib.import_module(module.name)
     return {
@@ -45,8 +46,8 @@ def _table_classes(text: str) -> set[str]:
 
 
 def test_every_capability_is_mapped():
-    text = MAP.read_text()
-    missing = sorted(name for name in _capability_classes() if f"`{name}`" not in text)
+    listed = _table_classes(MAP.read_text())
+    missing = sorted(_capability_classes() - listed)
     assert not missing, f"Capabilities missing from dev/capabilities.md: {missing}. {FIX}"
 
 

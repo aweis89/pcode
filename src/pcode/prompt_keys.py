@@ -26,7 +26,6 @@ from pcode.prefix_keys import PrefixKeys
 class PromptCallbacks:
     """What the prompt asks of the app. Any may be absent; its key then does less."""
 
-    on_submit: Callable | None = None
     on_cancel: Callable | None = None
     on_effort: Callable | None = None
     on_model: Callable | None = None
