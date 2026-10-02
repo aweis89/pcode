@@ -196,6 +196,52 @@ def test_browser_open_fronts_the_current_page(tmp_path, fresh_state, monkeypatch
     assert navigated == ["about:blank"]
 
 
+def test_browser_open_replaces_a_closed_page(tmp_path, fresh_state, monkeypatch):
+    """A tab or window the user closed is reopened, not a failed turn."""
+    from playwright.async_api import Error as PlaywrightError
+
+    fresh_state.enabled = True
+    _, extension = browser_extension(tmp_path)
+    open_tool = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_open"]
+    closed = SimpleNamespace(
+        url="https://x/old",
+        bring_to_front=AsyncMock(side_effect=PlaywrightError("Target page has been closed")),
+    )
+    fresh = SimpleNamespace(url="about:blank", bring_to_front=AsyncMock())
+
+    async def navigate(url):
+        fresh_state.session.page = fresh
+        return "navigated"
+
+    monkeypatch.setattr(fresh_state.toolset, "navigate", navigate)
+    monkeypatch.setattr(fresh_state, "arm", AsyncMock())
+    monkeypatch.setattr(fresh_state, "ensure_chrome", AsyncMock(return_value=""))
+    fresh_state.session.page = closed
+    assert asyncio.run(open_tool.function()).endswith("showing about:blank.")
+    fresh.bring_to_front.assert_awaited_once()
+
+
+def test_browser_open_reports_a_browser_that_stays_gone(tmp_path, fresh_state, monkeypatch):
+    from playwright.async_api import Error as PlaywrightError
+
+    fresh_state.enabled = True
+    _, extension = browser_extension(tmp_path)
+    open_tool = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_open"]
+
+    async def navigate(url):
+        fresh_state.session.page = SimpleNamespace(
+            url=url, bring_to_front=AsyncMock(side_effect=PlaywrightError("closed"))
+        )
+        return "navigated"
+
+    monkeypatch.setattr(fresh_state.toolset, "navigate", navigate)
+    monkeypatch.setattr(fresh_state, "arm", AsyncMock())
+    monkeypatch.setattr(fresh_state, "ensure_chrome", AsyncMock(return_value=""))
+    result = asyncio.run(open_tool.function())
+    assert result.startswith("Could not bring the browser to the front")
+    assert fresh_state.session.page is None
+
+
 def test_browser_tabs_lists_the_users_tabs_and_marks_ours(tmp_path, fresh_state, monkeypatch):
     """Tabs come from Chrome's target list, never from the pages, so a hung tab cannot stall it."""
     fresh_state.enabled = True
