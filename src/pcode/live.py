@@ -41,7 +41,12 @@ from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 from pcode import retries
 from pcode.agent import SideModel, worker_toolsets
 from pcode.aside import SideReply
-from pcode.compaction import AutoCompaction, ContextTracking, summarize
+from pcode.compaction import (
+    MIN_AUTO_COMPACT_TOKENS,
+    AutoCompaction,
+    ContextTracking,
+    summarize,
+)
 from pcode.conversation_ids import model_conversation
 from pcode.conversation_tree import ConversationTree
 from pcode.diagnostics import (
@@ -144,6 +149,12 @@ class AgentRuntime:
         self.session_factory = session_factory
         preferences = load_preferences()
         self.auto_compact = preferences.get("autocompact", "on") == "on"
+        # Tokens at which to compact even when the window has more room; None
+        # leaves the threshold to the model's window.
+        limit = preferences.get("autocompact_tokens")
+        self.auto_compact_limit: int | None = (
+            max(int(limit), MIN_AUTO_COMPACT_TOKENS) if limit else None
+        )
         # Snapshotted like autocompact: a saved default applies to the next launch.
         self.retry_attempts = int(
             preferences.get("retry_attempts", SETTINGS["retry_attempts"].default)

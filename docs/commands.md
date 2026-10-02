@@ -68,7 +68,9 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   and Enter/Esc closes. The subcommands do the same without the popup. Jobs outlive the
   turn that started them; see [Shell jobs](tools.md#shell-jobs).
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
-- `/autocompact on|off`: toggle automatic compaction (saved; default on).
+- `/autocompact on|off|TOKENS|auto`: toggle automatic compaction (saved; default on).
+  `/autocompact 200k` compacts once context reaches 200k tokens even if the window is
+  larger, and the footer shows usage against that cap; `auto` removes the cap.
 - `/new`: start a new saved conversation; clears the screen and retained scrollback,
   keeps input history.
 - `/resume`: browse and search saved conversations by their prompts; resume one in place.

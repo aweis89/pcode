@@ -28,6 +28,7 @@ from pcode.compaction import (
     auto_compaction_threshold,
     context_estimate,
     effective_window,
+    parse_token_count,
     summarize,
 )
 from pcode.context_usage import context_label
@@ -68,6 +69,19 @@ def test_auto_compaction_threshold_small_window_reserve_stays_proportional():
     threshold = auto_compaction_threshold(window, max_output_tokens=0)
     assert threshold == min(int(window * 0.9), window - window // 5)
     assert window - threshold <= window // 2
+
+
+@pytest.mark.parametrize(
+    "text,tokens", [("200k", 200_000), ("1.5M", 1_500_000), ("150_000", 150_000), ("20k", 20_000)]
+)
+def test_parse_token_count(text, tokens):
+    assert parse_token_count(text) == tokens
+
+
+@pytest.mark.parametrize("text", ["", "k", "abc", "19k", "-200k", "nan", "inf"])
+def test_parse_token_count_rejects(text):
+    with pytest.raises(ValueError):
+        parse_token_count(text)
 
 
 def history():
@@ -354,6 +368,31 @@ def test_auto_compacts_inside_tool_loop_and_saves_before_next_request(tmp_path, 
         assert "Tests failed; not yet fixed." in str(runtime.history)
         assert any("automatically" in text for text in notices)
         runtime.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("limit", [None, 20_000])
+def test_token_cap_compacts_before_the_window_fills(monkeypatch, limit):
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "1000000")
+
+    async def run():
+        summaries = []
+
+        async def stream(messages, info):
+            if "context summarization assistant" in (info.instructions or ""):
+                summaries.append(messages)
+                yield SUMMARY
+            else:
+                yield "continuing"
+
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=stream)))
+        runtime.history = history()
+        runtime.auto_compact = True
+        runtime.auto_compact_limit = limit
+        async for _ in runtime.stream("Continue"):
+            pass
+        assert len(summaries) == (1 if limit else 0)
 
     asyncio.run(run())
 

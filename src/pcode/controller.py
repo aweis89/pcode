@@ -661,9 +661,11 @@ class SessionController:
             ),
             Command(
                 "/autocompact",
-                "Compact automatically near the context limit: on / off",
+                "Compact automatically near the context limit: on / off / TOKENS (e.g. 200k) "
+                "/ auto",
                 self.autocompact,
-                ("on", "off"),
+                ("on", "off", "auto"),
+                free_arguments=True,
                 group="Session",
             ),
             Command(
@@ -706,7 +708,7 @@ class SessionController:
     # --- What the footer, an attached terminal, and the host read ---
 
     def context_label(self) -> str:
-        """The footer's context usage: tokens used of the model's window."""
+        """The footer's context usage: tokens used of the window or autocompact cap."""
         if not self.model or self.startup_pending or self.startup_error is not None:
             return ""
         from pcode.context_usage import context_label
@@ -715,8 +717,13 @@ class SessionController:
         history = getattr(self.runtime, "context_history", None)
         if history is None:
             history = getattr(self.runtime, "history", ())
+        cap = (
+            getattr(self.runtime, "auto_compact_limit", None)
+            if getattr(self.runtime, "auto_compact", False)
+            else None
+        )
         try:
-            return context_label(resolved or self.model, history)
+            return context_label(resolved or self.model, history, compact_at=cap)
         except Exception:  # noqa: BLE001 - a footer label must not break anything.
             return ""
 
@@ -2025,23 +2032,47 @@ class SessionController:
         self.start_compact(argument)
 
     def autocompact(self, argument: str) -> None:
+        """`on`/`off` toggle; `200k` caps when it fires; `auto` drops the cap."""
         if not self.model or not hasattr(self.runtime, "auto_compact"):
             raise ValueError("/autocompact requires a live model session.")
+        argument = argument.lower()
         if argument:
             if self.activity.busy or self.activity.queued_prompts:
                 raise ValueError("Change /autocompact while idle.")
-            from pcode.compaction import effective_window
+            from pcode.compaction import effective_window, parse_token_count
 
-            window = effective_window(self.runtime.agent.model)
-            if argument == "on" and window is None:
+            limit = None if argument in {"on", "off", "auto"} else parse_token_count(argument)
+            enabling = argument == "on" or limit is not None
+            if enabling and effective_window(self.runtime.agent.model) is None:
                 raise ValueError(
                     "Unknown context window. Set PCODE_CONTEXT_WINDOW to the deployment's "
                     "token limit before enabling automatic compaction."
                 )
-            self.runtime.auto_compact = argument == "on"
-            self.persist_defaults(autocompact=argument)
-        state = "on" if self.runtime.auto_compact else "off"
-        self.view.flash(f"Automatic compaction: {state}. Usage: /autocompact on|off")
+            if argument == "auto":
+                self.runtime.auto_compact_limit = None
+                self.forget_defaults("autocompact_tokens")
+            elif limit is not None:
+                self.runtime.auto_compact_limit = limit
+                self.persist_defaults(autocompact_tokens=str(limit))
+            if enabling:
+                # Setting a cap means you want compaction, so it also turns it on.
+                self.runtime.auto_compact = True
+                self.persist_defaults(autocompact="on")
+            elif argument == "off":
+                self.runtime.auto_compact = False
+                self.persist_defaults(autocompact="off")
+        self.view.flash(
+            f"Automatic compaction: {self.autocompact_state()}. "
+            "Usage: /autocompact on|off|200k|auto"
+        )
+
+    def autocompact_state(self) -> str:
+        from pcode.context_usage import compact_tokens
+
+        if not getattr(self.runtime, "auto_compact", False):
+            return "off"
+        limit = getattr(self.runtime, "auto_compact_limit", None)
+        return f"on at {compact_tokens(limit)}" if limit else "on (auto threshold)"
 
     def resend(self, argument: str, *, before_queue: bool = False) -> None:
         """Ask again from the settled checkpoint instead of typing "continue"."""
@@ -2503,8 +2534,7 @@ class SessionController:
             *self.overhead_overview(),
             (
                 "Automatic compaction",
-                ("on" if getattr(self.runtime, "auto_compact", False) else "off")
-                + " · /compact [focus] · /autocompact on|off",
+                self.autocompact_state() + " · /compact [focus] · /autocompact on|off|200k|auto",
             ),
         ]
         saved = self.runtime.session

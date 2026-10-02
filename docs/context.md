@@ -44,6 +44,8 @@ summary, with no tools; optional instructions add focus to the standard summary:
 /compact Preserve auth debugging findings, exact file paths, and failing tests
 /autocompact on
 /autocompact off
+/autocompact 200k
+/autocompact auto
 ```
 
 The summary keeps goals and constraints, decisions, current state, exact
@@ -71,7 +73,11 @@ Automatic compaction is **on by default**; `/autocompact off` saves that choice
 in `~/.config/pcode/preferences.json` (or `$XDG_CONFIG_HOME/pcode/preferences.json`).
 pcode checks before every model request, including within a turn, and compacts
 at about 90% of the context window, leaving more room on small windows or with a
-large output limit. Automatic summaries are saved as checkpoints before the next
+large output limit. To compact sooner, for example to keep a 1m-token model's
+requests cheaper and faster, set a cap with `/autocompact 200k` (also accepts
+`200000` or `1.5m`; minimum 20k). Compaction then fires at whichever comes first,
+the cap or the usual threshold, and the footer shows usage against the cap
+(`85k/200k`). `/autocompact auto` removes the cap. Automatic summaries are saved as checkpoints before the next
 request. If compaction cannot free enough room, the run stops with an error
 rather than dropping history or replaying tools. A provider's context-overflow
 error is not retried automatically.

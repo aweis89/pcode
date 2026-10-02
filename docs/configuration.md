@@ -186,6 +186,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `autocompact` | `on` | `on`, `off` |
+| `autocompact_tokens` | unset | Whole number of tokens (minimum 20000) at which to compact automatically; unset uses about 90% of the window |
 
 ### Sessions and worktrees
 

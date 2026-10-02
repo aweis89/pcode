@@ -260,6 +260,26 @@ class ContextTracking(AbstractCapability):
         return response
 
 
+# Below this a summary plus the recent history it keeps cannot fit, so every
+# automatic compaction would fail with "could not make enough room".
+MIN_AUTO_COMPACT_TOKENS = 20_000
+
+
+def parse_token_count(text: str) -> int:
+    """Read `200000`, `200k`, or `1.5m` as a token count."""
+    value = text.strip().lower().replace("_", "").replace(",", "")
+    scale = {"k": 1_000, "m": 1_000_000}.get(value[-1:], 1)
+    if scale != 1:
+        value = value[:-1]
+    try:
+        tokens = int(float(value) * scale)
+    except (ValueError, OverflowError):
+        raise ValueError(f"Not a token count: {text!r}. Use e.g. 200000 or 200k.") from None
+    if tokens < MIN_AUTO_COMPACT_TOKENS:
+        raise ValueError(f"Use at least {MIN_AUTO_COMPACT_TOKENS // 1000}k tokens.")
+    return tokens
+
+
 def auto_compaction_threshold(context_window: int, max_output_tokens: int) -> int:
     # Use most of the context window before lossy compaction, while reserving
     # enough capacity for the model's maximum possible response.
@@ -308,6 +328,9 @@ class AutoCompaction(AbstractCapability):
         # point: ModelOutputLimits wraps AutoCompaction (see get_ordering
         # above) and always sets it before this capability runs.
         threshold = auto_compaction_threshold(window, settings.get("max_tokens") or 0)
+        # A user cap only ever compacts earlier; it never overrides the reserve.
+        if limit := self.runtime.auto_compact_limit:
+            threshold = min(threshold, limit)
         before = context_estimate(
             request_context.messages, request_context.model_request_parameters
         )

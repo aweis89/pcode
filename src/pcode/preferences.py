@@ -446,6 +446,12 @@ SETTINGS = {
         ("on", "off"),
         description="Compact the conversation automatically as the context window fills",
     ),
+    "autocompact_tokens": Setting(
+        None,
+        positive_integer=True,
+        description="Compact automatically by this many context tokens, even if the window "
+        "has more room; unset uses about 90% of the window",
+    ),
     # On by default so the wheel scrolls popups; plain drag-to-select then needs
     # a modifier. Read when a popup opens, so no restart is needed.
     # Read as each popup opens; the main prompt picks it up on the next launch.

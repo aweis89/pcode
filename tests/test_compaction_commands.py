@@ -165,3 +165,33 @@ def test_manual_command_preview_rejection_and_autocompact_preference(monkeypatch
     app.activity.busy = True
     with pytest.raises(ValueError, match="idle"):
         app.controller.autocompact("on")
+
+
+def test_autocompact_token_cap_sets_threshold_footer_and_preference(monkeypatch):
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "128000")
+    runtime = AgentRuntime(Agent(TestModel()))
+    app = PreviewApp(model="test:local", runtime=runtime, console=Console(file=StringIO()))
+    assert runtime.auto_compact_limit is None
+    assert app.controller.context_label().endswith("/128k")
+    app.controller.autocompact("off")
+    app.registry.dispatch("/autocompact 50K")
+    assert runtime.auto_compact and runtime.auto_compact_limit == 50_000
+    assert load_preferences()["autocompact_tokens"] == "50000"
+    assert load_preferences()["autocompact"] == "on"
+    assert app.controller.context_label().endswith("/50k")
+    assert app.controller.autocompact_state() == "on at 50k"
+    assert AgentRuntime(Agent(TestModel())).auto_compact_limit == 50_000
+    # A cap above the window never raises the footer's budget.
+    app.controller.autocompact("1m")
+    assert app.controller.context_label().endswith("/128k")
+    for bad in ("lots", "5k", "inf"):
+        with pytest.raises(ValueError):
+            app.controller.autocompact(bad)
+    assert runtime.auto_compact_limit == 1_000_000
+    app.controller.autocompact("auto")
+    assert runtime.auto_compact and runtime.auto_compact_limit is None
+    assert "autocompact_tokens" not in load_preferences()
+    # Off hides the cap from the footer, since nothing will compact there.
+    app.controller.autocompact("200k")
+    app.controller.autocompact("off")
+    assert app.controller.context_label().endswith("/128k")
