@@ -143,25 +143,24 @@ def test_summarizer_is_tool_free_focused_incremental_and_pair_safe(monkeypatch):
     asyncio.run(run())
 
 
-def test_recompaction_updates_the_newest_summary_and_keeps_only_its_own(monkeypatch):
+@pytest.mark.parametrize("merged", [True, False])
+def test_recompaction_updates_the_newest_summary_and_keeps_only_its_own(monkeypatch, merged):
     from pcode.compaction import SUMMARY_PREFIX
 
     monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "100000")
+    newest = SystemPromptPart(SUMMARY_PREFIX + "newest summary")
+    oldest = SystemPromptPart(SUMMARY_PREFIX + "oldest summary")
+    first = UserPromptPart("Fix auth")
+    # A compaction leaves its summary in a request of its own; pydantic-ai
+    # merges that into the kept first user request on the next run.
+    if merged:
+        start = [ModelRequest(parts=[newest, oldest, first])]
+    else:
+        start = [ModelRequest(parts=[newest]), ModelRequest(parts=[oldest, first])]
 
     async def run():
         calls = []
-        # pydantic-ai merges the summary request into the kept first user
-        # request, so an earlier compaction leaves its summaries newest first.
-        source = [
-            ModelRequest(
-                parts=[
-                    SystemPromptPart(SUMMARY_PREFIX + "newest summary"),
-                    SystemPromptPart(SUMMARY_PREFIX + "oldest summary"),
-                    UserPromptPart("Fix auth"),
-                ]
-            ),
-            *history()[1:],
-        ]
+        source = [*start, *history()[1:]]
         result = await summarize(source, model=summary_model(calls))
         previous = calls[-1][0][-1].parts[0].content.split("<previous-summary>")[-1]
         assert "newest summary" in previous
@@ -192,9 +191,42 @@ def test_unmeasured_history_tokens_are_not_carried_forward_as_overhead(monkeypat
         source[-1].usage = RequestUsage(input_tokens=4 * estimate_token_count(source))
         result = await summarize(source, model=summary_model([]))
         assert result.changed
-        kept = estimate_token_count(result.messages)
-        # Scaled by the measured density, not padded by the whole ~150k gap.
-        assert kept <= result.after <= 4 * kept
+        # The kept tail is scaled by the measured density; the fresh summary
+        # is not, and the ~150k gap is not padded on as overhead.
+        summary, tail = result.messages[:1], result.messages[1:]
+        assert result.after == estimate_token_count(summary) + 4 * estimate_token_count(tail)
+
+    asyncio.run(run())
+
+
+def test_media_in_the_kept_tail_is_counted_apart_from_text_density(monkeypatch):
+    from pydantic_ai.messages import BinaryContent
+    from pydantic_ai_harness.compaction._shared import estimate_token_count
+
+    from pcode.compaction import MEDIA_TOKENS, text_and_media
+
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "1000000")
+    shot = BinaryContent(data=b"\x89PNG" + b"x" * 400_000, media_type="image/png")
+
+    async def run():
+        # Two images the heuristic counts as nothing, in a history the
+        # provider measured at its text plus those images.
+        source = [
+            *history(),
+            ModelRequest(parts=[UserPromptPart(["Why this layout?", shot, shot])]),
+            ModelResponse(parts=[TextPart("Looked")]),
+        ]
+        text, media = text_and_media(source)
+        assert media == 2
+        source[-1].usage = RequestUsage(input_tokens=text + 2 * MEDIA_TOKENS)
+        result = await summarize(source, model=summary_model([]))
+        assert "Why this layout?" in str(result.messages[1:])
+        assert 2 * MEDIA_TOKENS < result.after < 3 * MEDIA_TOKENS
+        # A tool return's image bytes are not read as text either.
+        returned = ModelRequest(parts=[ToolReturnPart("screenshot", ["page", shot], "s")])
+        assert estimate_token_count([returned]) > 100_000
+        tokens, media = text_and_media([returned])
+        assert tokens < 10 and media == 1
 
     asyncio.run(run())
 
