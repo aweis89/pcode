@@ -38,9 +38,10 @@ from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersis
 from pydantic_ai_harness.subagents import SubAgents
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
+from pcode import retries
 from pcode.agent import SideModel, worker_toolsets
 from pcode.aside import SideReply
-from pcode.compaction import AutoCompaction, ContextTracking, summarize
+from pcode.compaction import AutoCompaction, ContextTracking, effective_window, summarize
 from pcode.conversation_ids import model_conversation
 from pcode.conversation_tree import ConversationTree
 from pcode.diagnostics import (
@@ -64,7 +65,7 @@ from pcode.mcp import (
 from pcode.mcp_notice import enabled_servers
 from pcode.native_results import drop_unreadable_results, unreadable_native_results
 from pcode.plan_preview import StreamingPlanPreview
-from pcode.preferences import SETTINGS, load_preferences
+from pcode.preferences import SETTINGS, load_preferences, parse_token_count
 from pcode.profiling import activity as profiled_activity
 from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
@@ -143,6 +144,10 @@ class AgentRuntime:
         self.session_factory = session_factory
         preferences = load_preferences()
         self.auto_compact = preferences.get("autocompact", "on") == "on"
+        # Tokens at which to compact even when the window has more room; None
+        # leaves the threshold to the model's window.
+        limit = preferences.get("autocompact_tokens")
+        self.auto_compact_limit: int | None = parse_token_count(limit) if limit else None
         # Snapshotted like autocompact: a saved default applies to the next launch.
         self.retry_attempts = int(
             preferences.get("retry_attempts", SETTINGS["retry_attempts"].default)
@@ -633,10 +638,19 @@ class AgentRuntime:
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
         usage = RunUsage()
+        # Size the kept history and summary to the autocompact cap, as automatic
+        # compaction does, or the result can land just under it and recompact.
+        window = None
+        if self.auto_compact and (limit := self.auto_compact_limit):
+            window = min(effective_window(self.agent.model) or limit, limit)
         try:
             async with self.agent:
                 result = await summarize(
-                    self.history, model=self.agent.model, focus=focus or None, usage=usage
+                    self.history,
+                    model=self.agent.model,
+                    focus=focus or None,
+                    usage=usage,
+                    window=window,
                 )
         finally:
             # A cancelled/failed summary can still have incurred provider usage.
@@ -841,7 +855,7 @@ class AgentRuntime:
                     f"{error_message(error)} Retrying provider request "
                     f"{attempt}/{self.retry_attempts}…"
                 )
-                await asyncio.sleep(1)
+                await asyncio.sleep(retries.RETRY_DELAY)
             else:
                 return
 
@@ -1022,11 +1036,8 @@ class AgentRuntime:
             # judged on the conversation's model, never on a model one
             # `$MODEL` turn borrowed: its window and summarizer would
             # decide what the conversation keeps from then on.
-            + (
-                [AutoCompaction(self, context)]
-                if self.auto_compact and chosen.model is None
-                else []
-            )
+            # Installed whatever `auto_compact` says; it checks that per request.
+            + ([AutoCompaction(self, context)] if chosen.model is None else [])
         )
 
     async def _translator(self, context: TurnContext) -> EventTranslator:

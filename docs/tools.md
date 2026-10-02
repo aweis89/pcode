@@ -132,9 +132,20 @@ rather than gaining the worker's.
 
 ### Sub-agents on other models
 
-By default every sub-agent runs on the session's model. `/subagents` lets the
-model hand a delegation to a different model instead, with the worker's tools
-and permissions unchanged:
+By default every sub-agent runs on the session's model. A delegation can name
+another `provider:model` instead, with the worker's tools and permissions
+unchanged, so you can simply ask for a second opinion:
+
+```text
+❯ ask openai-codex:gpt-6-astra to review this diff
+```
+
+A name given this way is resolved the first time a delegation uses it; if it
+cannot be (an unknown provider, or one you are not signed in to), the model is
+told why and can pick another.
+
+`/subagents` lists models up front, so the model knows what it can pick without
+being told:
 
 ```text
 ❯ /subagents openai-codex:gpt-6-astra anthropic:claude-sonnet-5

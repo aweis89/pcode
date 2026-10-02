@@ -44,11 +44,13 @@ summary, with no tools; optional instructions add focus to the standard summary:
 /compact Preserve auth debugging findings, exact file paths, and failing tests
 /autocompact on
 /autocompact off
+/autocompact 200k
+/autocompact auto
 ```
 
 The summary keeps goals and constraints, decisions, current state, exact
 artifacts, verification results, and next steps or blockers. Recent messages
-stay verbatim (up to about 20k tokens, less for smaller windows), and compacting
+stay verbatim (up to about 20k tokens, less for smaller windows or caps), and compacting
 again updates the previous summary. Summaries are lossy, but earlier tool results
 stay reachable through the session history and spill handles, so the model can
 re-read output or source files when exact details matter. Old tool results are
@@ -75,6 +77,14 @@ large output limit. Automatic summaries are saved as checkpoints before the next
 request. If compaction cannot free enough room, the run stops with an error
 rather than dropping history or replaying tools. A provider's context-overflow
 error is not retried automatically.
+
+To compact sooner, for example to keep a 1m-token model's requests cheaper and
+faster, set a cap with `/autocompact 200k` (also `200000` or `1.5m`; minimum 50k,
+since the fixed prompt plus the kept history and summary need room). Compaction
+then fires at whichever comes first, the cap or the usual threshold, and when the
+cap is the lower of the two the footer shows usage against it (`85k/200k`).
+`/autocompact auto` removes the cap. Like on and off, the cap is saved and works
+mid-turn: it applies from the running turn's next model request.
 
 The window comes from the model catalog. For a model with no known window,
 automatic compaction is skipped, and turning it on interactively requires a known

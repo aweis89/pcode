@@ -78,6 +78,10 @@ installed source. Do not build or install pcode from it.
   Start with [Rich Console](https://rich.readthedocs.io/en/stable/console.html),
   Markdown, Syntax, and Text; inspect `rich/console.py` as needed.
   Rich owns permanent output; prompt_toolkit owns the mutable prompt and activity panels.
+  prompt_toolkit is pinned exactly because pcode uses its private API (the
+  scrollback handoff, renderer, layout division, input parser). Most of those
+  uses only read state, so a rename misrenders rather than raising. To upgrade,
+  run `tests/test_prompt_toolkit_internals.py` first, then `make test-all`.
 - **Agent creation and streaming:** `src/pcode/agent.py` and `src/pcode/live.py`.
   Start with [Pydantic AI streaming events](https://ai.pydantic.dev/agents/#streaming-all-events).
   Relevant installed source includes `pydantic_ai/agent/`, `messages.py`,

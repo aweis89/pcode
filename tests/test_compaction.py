@@ -32,6 +32,7 @@ from pcode.compaction import (
 )
 from pcode.context_usage import context_label
 from pcode.live import AgentRuntime
+from pcode.preferences import parse_token_count
 from pcode.sessions import SavedSession
 
 SUMMARY = "## Goal and constraints\nFix auth.\n## Verification\nTests failed; not yet fixed."
@@ -68,6 +69,19 @@ def test_auto_compaction_threshold_small_window_reserve_stays_proportional():
     threshold = auto_compaction_threshold(window, max_output_tokens=0)
     assert threshold == min(int(window * 0.9), window - window // 5)
     assert window - threshold <= window // 2
+
+
+@pytest.mark.parametrize(
+    "text,tokens", [("200k", 200_000), ("1.5M", 1_500_000), ("150_000", 150_000), ("50k", 50_000)]
+)
+def test_parse_token_count(text, tokens):
+    assert parse_token_count(text) == tokens
+
+
+@pytest.mark.parametrize("text", ["", "k", "abc", "49k", "-200k", "nan", "inf"])
+def test_parse_token_count_rejects(text):
+    with pytest.raises(ValueError):
+        parse_token_count(text)
 
 
 def history():
@@ -125,6 +139,94 @@ def test_summarizer_is_tool_free_focused_incremental_and_pair_safe(monkeypatch):
             ModelResponse(parts=[TextPart("ok")], usage=RequestUsage(input_tokens=99))
         )
         assert context_label("test:local", second.messages) == " · 99/100k"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("merged", [True, False])
+def test_recompaction_updates_the_newest_summary_and_keeps_only_its_own(monkeypatch, merged):
+    from pcode.compaction import SUMMARY_PREFIX
+
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "100000")
+    newest = SystemPromptPart(SUMMARY_PREFIX + "newest summary")
+    oldest = SystemPromptPart(SUMMARY_PREFIX + "oldest summary")
+    first = UserPromptPart("Fix auth")
+    # A compaction leaves its summary in a request of its own; pydantic-ai
+    # merges that into the kept first user request on the next run.
+    if merged:
+        start = [ModelRequest(parts=[newest, oldest, first])]
+    else:
+        start = [ModelRequest(parts=[newest]), ModelRequest(parts=[oldest, first])]
+
+    async def run():
+        calls = []
+        source = [*start, *history()[1:]]
+        result = await summarize(source, model=summary_model(calls))
+        previous = calls[-1][0][-1].parts[0].content.split("<previous-summary>")[-1]
+        assert "newest summary" in previous
+        assert "oldest summary" not in calls[-1][0][-1].parts[0].content
+        summaries = [
+            part.content
+            for message in result.messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, SystemPromptPart) and part.content.startswith(SUMMARY_PREFIX)
+        ]
+        assert summaries == [SUMMARY_PREFIX + SUMMARY]
+        assert "Fix auth" in str(result.messages)
+        assert is_provider_valid(result.messages)
+
+    asyncio.run(run())
+
+
+def test_unmeasured_history_tokens_are_not_carried_forward_as_overhead(monkeypatch):
+    from pydantic_ai_harness.compaction._shared import estimate_token_count
+
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "1000000")
+
+    async def run():
+        source = history()
+        # The provider billed four times what the character heuristic sees, as
+        # with thinking whose signature is billed but whose text is summarized.
+        source[-1].usage = RequestUsage(input_tokens=4 * estimate_token_count(source))
+        result = await summarize(source, model=summary_model([]))
+        assert result.changed
+        # The kept tail is scaled by the measured density; the fresh summary
+        # is not, and the ~150k gap is not padded on as overhead.
+        summary, tail = result.messages[:1], result.messages[1:]
+        assert result.after == estimate_token_count(summary) + 4 * estimate_token_count(tail)
+
+    asyncio.run(run())
+
+
+def test_media_in_the_kept_tail_is_counted_apart_from_text_density(monkeypatch):
+    from pydantic_ai.messages import BinaryContent
+    from pydantic_ai_harness.compaction._shared import estimate_token_count
+
+    from pcode.compaction import MEDIA_TOKENS, text_and_media
+
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "1000000")
+    shot = BinaryContent(data=b"\x89PNG" + b"x" * 400_000, media_type="image/png")
+
+    async def run():
+        # Two images the heuristic counts as nothing, in a history the
+        # provider measured at its text plus those images.
+        source = [
+            *history(),
+            ModelRequest(parts=[UserPromptPart(["Why this layout?", shot, shot])]),
+            ModelResponse(parts=[TextPart("Looked")]),
+        ]
+        text, media = text_and_media(source)
+        assert media == 2
+        source[-1].usage = RequestUsage(input_tokens=text + 2 * MEDIA_TOKENS)
+        result = await summarize(source, model=summary_model([]))
+        assert "Why this layout?" in str(result.messages[1:])
+        assert 2 * MEDIA_TOKENS < result.after < 3 * MEDIA_TOKENS
+        # A tool return's image bytes are not read as text either.
+        returned = ModelRequest(parts=[ToolReturnPart("screenshot", ["page", shot], "s")])
+        assert estimate_token_count([returned]) > 100_000
+        tokens, media = text_and_media([returned])
+        assert tokens < 10 and media == 1
 
     asyncio.run(run())
 
@@ -354,6 +456,72 @@ def test_auto_compacts_inside_tool_loop_and_saves_before_next_request(tmp_path, 
         assert "Tests failed; not yet fixed." in str(runtime.history)
         assert any("automatically" in text for text in notices)
         runtime.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("limit", [None, 50_000])
+def test_token_cap_compacts_before_the_window_fills(monkeypatch, limit):
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "1000000")
+
+    windows = []
+    real = summarize
+
+    async def spy(*args, window=None, **kwargs):
+        windows.append(window)
+        return await real(*args, window=window, **kwargs)
+
+    monkeypatch.setattr("pcode.compaction.summarize", spy)
+
+    async def run():
+        async def stream(messages, info):
+            if "context summarization assistant" in (info.instructions or ""):
+                yield SUMMARY
+            else:
+                yield "continuing"
+
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=stream)))
+        # Twice the cap: past it, but nowhere near 90% of the window.
+        runtime.history = history() * 2
+        runtime.auto_compact = True
+        runtime.auto_compact_limit = limit
+        async for _ in runtime.stream("Continue"):
+            pass
+        # Summary and kept history are budgeted from the cap, not the 1m window.
+        assert windows == ([50_000] if limit else [])
+
+    asyncio.run(run())
+
+
+def test_autocompact_change_mid_turn_applies_to_the_next_request(monkeypatch):
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "1000000")
+
+    async def run():
+        summaries = []
+
+        async def stream(messages, info):
+            if "context summarization assistant" in (info.instructions or ""):
+                summaries.append(messages)
+                yield SUMMARY
+            elif not any(isinstance(p, ToolReturnPart) for p in messages[-1].parts):
+                yield {0: DeltaToolCall(name="read", json_args="{}", tool_call_id="tool-1")}
+            else:
+                yield "done"
+
+        agent = Agent(FunctionModel(stream_function=stream))
+
+        @agent.tool_plain
+        def read() -> str:
+            # As `/autocompact 50k` typed while this tool runs would.
+            runtime.auto_compact, runtime.auto_compact_limit = True, 50_000
+            return "diagnostic result " * 5000
+
+        runtime = AgentRuntime(agent)
+        runtime.history = history() * 2
+        runtime.auto_compact = False
+        async for _ in runtime.stream("Continue"):
+            pass
+        assert len(summaries) == 1
 
     asyncio.run(run())
 

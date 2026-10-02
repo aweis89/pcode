@@ -751,12 +751,12 @@ class Activity:
     def displayed_plan(self) -> list[dict]:
         return self.plan if self.plan_preview is None else self.plan_preview
 
-    def plan_rows(self, budget: int, spinner: str):
+    def plan_rows(self, budget: int):
         if not self.tasks_shown:
             return []
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
-        icon = spinner if self.status_shown else "○"
+        icon = "⟳" if self.status_shown else "○"
         # A configured height is room the user asked the tasks to fill.
         max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
         return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
@@ -1732,8 +1732,8 @@ class PromptLayout:
         self.render_cache = None
         self.animation_task = None
         self.preview_body = lru_cache(maxsize=1)(_preview_body)
-        # One spinner for everything live: the status row, the active task, side
-        # questions and waits all show the same frame, so motion only ever means
+        # The status row, side questions and waits share a spinner frame.
+        # Plan steps use a static marker, so motion only ever means
         # "the turn is waiting on this". Who owns the work is the badge and colour.
         self.spinner = Spinner("dots")
         # Every frame is a full layout pass (~2-3ms), so the animation loop alone
@@ -1746,6 +1746,8 @@ class PromptLayout:
             max_height=20, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
         )
         self.menu.content.dont_extend_height = Always()
+        # Whether the open menu made the layout taller than the measured rows.
+        self.menu_overflowed = False
 
     def size(self):
         return self.session.app.output.get_size()
@@ -1785,7 +1787,7 @@ class PromptLayout:
                 # The editor box keeps one text row inside its two borders.
                 else max(1, cap - self.task_chrome() - 3)
             )
-        return self.activity.plan_rows(budget, self.spinner_frame())
+        return self.activity.plan_rows(budget)
 
     @_per_render
     def preview_layout(self):
@@ -2284,6 +2286,28 @@ class PromptLayout:
         elif self.animation_task is not None:
             self.animation_task.cancel()
             self.animation_task = None
+        self.replay_after_menu(app)
+
+    def replay_after_menu(self, app) -> None:
+        """Rebuild scrollback, as a resize does, once an overflowing menu closes.
+
+        A completion menu taller than the rows below the editor scrolls the
+        terminal, and prompt_toolkit never shrinks its screen again (each render
+        keeps at least the last height), so closing the menu leaves blank rows
+        under the editor where scrolled-away transcript used to be. The replay
+        resets the renderer and repaints that history.
+        """
+        transcript, renderer = self.transcript, app.renderer
+        if transcript is None or not transcript.replays_on_resize:
+            return
+        screen, available = renderer._last_screen, renderer._min_available_height
+        if renderer._in_alternate_screen or screen is None or available <= 0:
+            return
+        if self.session.default_buffer.complete_state is not None:
+            self.menu_overflowed |= screen.height > available
+        elif self.menu_overflowed:
+            self.menu_overflowed = False
+            transcript.regenerate()
 
 
 def create_prompt(
@@ -2361,19 +2385,9 @@ def create_prompt(
     session.layout = prompt_layout.layout()
     session.app.layout = session.layout
     if transcript is not None:
-        editor_app = session.app
-        session.app = Application(
-            layout=session.layout,
-            full_screen=False,
-            erase_when_done=True,
-            min_redraw_interval=1 / 30,
-            key_bindings=editor_app.key_bindings,
-            editing_mode=editor_app.editing_mode,
-            style=editor_app.style,
-            input=editor_app.input,
-            output=editor_app.output,
-            mouse_support=False,
-        )
+        # The app runs for the whole session, redrawn by streaming output and
+        # animation; cap that at the paced output's frame rate.
+        session.app.min_redraw_interval = 1 / 30
     session.app.before_render += prompt_layout.before_render
     session.app.after_render += prompt_layout.after_render
     if session.app.editing_mode == EditingMode.VI:

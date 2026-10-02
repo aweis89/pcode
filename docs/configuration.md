@@ -172,7 +172,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `job_wake` | `on` | `on`, `off` (start a turn when a job the model backgrounded finishes while idle; see [shell jobs](tools.md#shell-jobs)) |
 | `tool_retries` | `3` | Whole number, corrections the model gets per turn when a tool call has invalid arguments |
 | `strict_tools` | `on` | `on`, `off` (constrain `edit_file` arguments with Anthropic strict tool use) |
-| `subagent_models` | `` | `,`-separated models `delegate_task` may run a sub-agent on ([`/subagents`](tools.md#sub-agents-on-other-models)); empty runs every sub-agent on the session's model; `/reload` to apply |
+| `subagent_models` | `` | `,`-separated models `delegate_task` lists for running a sub-agent; others can still be named per delegation ([`/subagents`](tools.md#sub-agents-on-other-models)); empty runs every sub-agent on the session's model; `/reload` to apply |
 | `worker_concurrency` | `0` | `0` means unlimited; a positive integer caps concurrent built-in workers per session; `/reload` to apply |
 | `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |
 | `tool_output_threshold` | `10000` | Positive integer, characters that trigger reduction |
@@ -186,6 +186,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `autocompact` | `on` | `on`, `off` |
+| `autocompact_tokens` | unset | Tokens such as `200000` or `200k` (minimum 50k) at which to compact automatically; unset uses about 90% of the window |
 
 ### Sessions and worktrees
 

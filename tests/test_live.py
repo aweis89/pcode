@@ -202,7 +202,7 @@ def test_a_run_writes_into_the_turn_context_it_was_given():
         yield "An answer for the branch."
 
     runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
-    runtime.auto_compact = True  # Also binds AutoCompaction to the given context.
+    runtime.auto_compact = True  # AutoCompaction then snapshots into the given context.
     branch = TurnContext(run_id="branch")
 
     async def run():

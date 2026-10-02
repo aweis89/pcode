@@ -1,11 +1,12 @@
 import asyncio
 import json
 import re
+from copy import deepcopy
 
 import pytest
-from pydantic_ai import Agent
+from pydantic_ai import Agent, FunctionToolset
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
@@ -103,16 +104,45 @@ def test_real_parallel_children_are_correlated_streamed_and_inspectable(tmp_path
     asyncio.run(run())
 
 
-def test_a_dropped_child_request_is_resent_without_rerunning_its_tools(tmp_path, monkeypatch):
-    monkeypatch.setattr("pcode.delegation.RETRY_DELAY", 0)
-    (tmp_path / "sample.txt").write_text("workspace evidence")
-    sent = []
+DROPPED = "API Error: Connection dropped (ECONNRESET) secret-body"
+
+
+def worker_runtime(tmp_path, child):
+    """A real coder whose delegated workers answer from `child(messages, info)`."""
 
     async def model(messages, info):
         if "delegate_task" in {t.name for t in info.function_tools}:
-            yield "Parent answer" if returns(messages) else {0: delegate(0, "worker")}
+            if returns(messages) or any(
+                isinstance(p, RetryPromptPart) for m in messages for p in m.parts
+            ):
+                yield "Parent answer"
+            else:
+                yield {0: delegate(0, "worker"), 1: delegate(1, "worker")}
             return
-        sent.append(len(messages))
+        async for chunk in child(messages, info):
+            yield chunk
+
+    return AgentRuntime(
+        Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)])
+    )
+
+
+def delegations(events):
+    return {
+        e.call_id: e for e in events if isinstance(e, ToolSummary) and e.name == "delegate_task"
+    }
+
+
+def test_a_dropped_child_request_is_resent_without_rerunning_its_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr("pcode.retries.RETRY_DELAY", 0)
+    (tmp_path / "sample.txt").write_text("workspace evidence")
+    sent = []
+
+    async def child(messages, info):
+        if "(1)" in messages[0].parts[-1].content:
+            yield "Sibling answer"
+            return
+        sent.append(deepcopy(messages))
         if not returns(messages):
             yield {
                 0: DeltaToolCall(
@@ -120,59 +150,99 @@ def test_a_dropped_child_request_is_resent_without_rerunning_its_tools(tmp_path,
                 )
             }
         elif len(sent) == 2:
-            raise ClaudeConnectionError("test", "API Error: Connection dropped (ECONNRESET)")
+            raise ClaudeConnectionError("test", DROPPED)
         else:
             yield "Child answer"
 
-    runtime = AgentRuntime(
-        Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)])
-    )
-
     async def run():
-        events = [e async for e in runtime.stream("Explore")]
-        delegated = next(
-            e for e in events if isinstance(e, ToolSummary) and e.name == "delegate_task"
-        )
-        assert delegated.outcome == "ok" and delegated.result == "Child answer"
+        events = [e async for e in worker_runtime(tmp_path, child).stream("Explore")]
+        ended = delegations(events)
+        assert ended["parent-0"].outcome == "ok"
+        assert ended["parent-0"].result == "Child answer"
         reads = [e for e in events if isinstance(e, ToolSummary) and e.name == "read_file"]
         assert len(reads) == 1
         assert "Reconnecting 1/3" in {
-            e.activity for e in events if isinstance(e, ToolStarted) and e.name == "delegate_task"
+            e.activity for e in events if isinstance(e, ToolStarted) and e.call_id == "parent-0"
         }
 
     asyncio.run(run())
-    # The failed request went again exactly as sent, after the tool it followed.
-    assert sent == [sent[0], sent[1], sent[1]]
+    # The failed request, which carried the tool's result, went again as sent
+    # (pydantic-ai restamps a request each time it goes out).
+    assert len(sent) == 3
+    assert [m.parts for m in sent[2]] == [m.parts for m in sent[1]]
+    assert "workspace evidence" in returns(sent[1])[-1].model_response_str()
 
 
 def test_a_crashed_worker_leaves_the_turn_and_its_siblings_running(tmp_path):
-    async def model(messages, info):
-        if "delegate_task" in {t.name for t in info.function_tools}:
-            if returns(messages):
-                yield "Parent answer"
-            else:
-                yield {0: delegate(0, "worker"), 1: delegate(1, "worker")}
-            return
+    crashed = asyncio.Event()
+    attempts = []
+
+    async def child(messages, info):
         if "(0)" in messages[0].parts[-1].content:
-            raise RuntimeError("private crash")
-        await asyncio.sleep(0.05)
+            attempts.append(1)
+            crashed.set()
+            raise RuntimeError(f"private crash {DROPPED}")
+        # Still waiting on its model when its sibling crashes.
+        await crashed.wait()
+        await asyncio.sleep(0)
         yield "Sibling answer"
 
-    runtime = AgentRuntime(
-        Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)])
-    )
+    async def run():
+        events = [e async for e in worker_runtime(tmp_path, child).stream("Explore")]
+        assert [e.markdown for e in events if isinstance(e, Message)] == ["Parent answer"]
+        ended = delegations(events)
+        assert {k: e.outcome for k, e in ended.items()} == {
+            "parent-0": "contained",
+            "parent-1": "ok",
+        }
+        assert "secret-body" not in ended["parent-0"].result
+
+    asyncio.run(run())
+    # Not a dropped connection, so it is not resent.
+    assert attempts == [1]
+
+
+@pytest.mark.parametrize("where", ["model", "tool"])
+def test_a_drop_is_resent_only_from_the_request_and_only_so_often(tmp_path, monkeypatch, where):
+    """Past its retries a drop is contained; a drop inside a tool is never resent."""
+    monkeypatch.setattr("pcode.retries.RETRY_DELAY", 0)
+    attempts = []
+
+    async def dropped():
+        raise ClaudeConnectionError("test", DROPPED)
+
+    async def child(messages, info):
+        if "(1)" in messages[0].parts[-1].content:
+            yield "Sibling answer"
+            return
+        attempts.append(1)
+        if where == "model":
+            raise ClaudeConnectionError("test", DROPPED)
+        yield {0: DeltaToolCall(name="dropped", json_args="{}", tool_call_id="drop")}
+
+    if where == "tool":
+        monkeypatch.setattr("pcode.agent.WorkerRuntimeTools", lambda: FunctionToolset([dropped]))
+    runtime = worker_runtime(tmp_path, child)
 
     async def run():
         events = [e async for e in runtime.stream("Explore")]
-        assert [e.markdown for e in events if isinstance(e, Message)] == ["Parent answer"]
-        outcomes = {
-            e.call_id: e.outcome
+        ended = delegations(events)
+        assert ended["parent-0"].outcome == "contained"
+        assert ended["parent-1"].outcome == "ok"
+        assert "secret-body" not in ended["parent-0"].result
+        return {
+            e.activity
             for e in events
-            if isinstance(e, ToolSummary) and e.name == "delegate_task"
+            if isinstance(e, ToolStarted) and e.call_id == "parent-0" and e.activity
         }
-        assert outcomes == {"parent-0": "contained", "parent-1": "ok"}
 
-    asyncio.run(run())
+    activities = asyncio.run(run())
+    if where == "model":
+        assert len(attempts) == 4
+        assert {"Reconnecting 1/3", "Reconnecting 3/3"} <= activities
+    else:
+        assert len(attempts) == 1
+        assert not any(a.startswith("Reconnecting") for a in activities)
 
 
 @pytest.mark.parametrize("outcome", ["timeout", "budget", "failed", "contained"])

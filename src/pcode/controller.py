@@ -158,9 +158,7 @@ QUERIES = frozenset(
 
 # Commands that change the conversation itself, refused while a turn runs or
 # prompts wait (bar /compact and /resend sent while idle, which go first).
-IDLE_COMMANDS = frozenset(
-    {"/resend", "/new", "/resume", "/login", "/logout", "/compact", "/autocompact"}
-)
+IDLE_COMMANDS = frozenset({"/resend", "/new", "/resume", "/login", "/logout", "/compact"})
 
 # Commands that make a model request or change the toolset. Each holds the
 # session busy from Enter until its handler starts, so a Ctrl+C in the same
@@ -521,6 +519,8 @@ class SessionController:
         self.live_task: asyncio.Task | None = None
         self.mcp_task: asyncio.Task | None = None
         self.compact_task: asyncio.Task | None = None
+        # A browser sign-in: tracked like a turn so Ctrl+C cancels it.
+        self.login_task: asyncio.Task | None = None
         # Commands queued but not started that hold the session busy.
         self.pending_mcp = 0
         self.pending_model_command = 0
@@ -622,7 +622,7 @@ class SessionController:
             ),
             Command(
                 "/subagents",
-                "Models delegate_task may run sub-agents on: MODEL ... sets them, off clears, "
+                "Models delegate_task lists for sub-agents: MODEL ... sets them, off clears, "
                 "bare lists",
                 self.subagents,
                 free_arguments=True,
@@ -661,9 +661,11 @@ class SessionController:
             ),
             Command(
                 "/autocompact",
-                "Compact automatically near the context limit: on / off",
+                "Compact automatically near the context limit: on / off / TOKENS (e.g. 200k) "
+                "/ auto",
                 self.autocompact,
-                ("on", "off"),
+                ("on", "off", "auto"),
+                free_arguments=True,
                 group="Session",
             ),
             Command(
@@ -706,7 +708,7 @@ class SessionController:
     # --- What the footer, an attached terminal, and the host read ---
 
     def context_label(self) -> str:
-        """The footer's context usage: tokens used of the model's window."""
+        """The footer's context usage: tokens used of the window or autocompact cap."""
         if not self.model or self.startup_pending or self.startup_error is not None:
             return ""
         from pcode.context_usage import context_label
@@ -716,7 +718,7 @@ class SessionController:
         if history is None:
             history = getattr(self.runtime, "history", ())
         try:
-            return context_label(resolved or self.model, history)
+            return context_label(resolved or self.model, history, compact_at=self.compact_cap())
         except Exception:  # noqa: BLE001 - a footer label must not break anything.
             return ""
 
@@ -796,7 +798,8 @@ class SessionController:
         return name in TERMINAL_COMMANDS or self.registry.find(name) is not None
 
     def tasks(self) -> list[asyncio.Task]:
-        return [task for task in (self.live_task, self.mcp_task, self.compact_task) if task]
+        work = (self.live_task, self.mcp_task, self.compact_task, self.login_task)
+        return [task for task in work if task]
 
     def working(self) -> bool:
         """A turn, MCP work, or a history rewrite is running."""
@@ -1140,9 +1143,33 @@ class SessionController:
         if self.reload_requested:
             await self.reload_extensions()
         if self.login_requested:
-            await self.logins.perform_login()
+            await self.perform_login()
         if self.logout_requested:
             await self.logins.perform_logout()
+
+    async def perform_login(self) -> None:
+        """Run the requested sign-in as cancellable work, so Ctrl+C abandons it.
+
+        Waiting on a browser holds the session busy, which is what routes
+        Ctrl+C to `cancel` rather than to the draft. A cancelled sign-in ends
+        here; only the command loop's own cancellation propagates.
+        """
+        # Taken here, not in the task: a Ctrl+C landing before the task's first
+        # step must still consume the request, or the next command would rerun it.
+        source, self.login_requested = self.login_requested, None
+        task = asyncio.create_task(self.logins.perform_login(source))
+        self.login_task = task
+        self.activity.busy = True
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        finally:
+            self.login_task = None
+            self.refresh_busy()
+        if not task.cancelled():
+            task.result()
 
     async def run_command(self, text: str, *, before_queue: bool = False) -> None:
         """Run one of the session's own commands; a handler may be sync or async."""
@@ -2025,23 +2052,53 @@ class SessionController:
         self.start_compact(argument)
 
     def autocompact(self, argument: str) -> None:
+        """`on`/`off` toggle; `200k` caps when it fires; `auto` drops the cap."""
         if not self.model or not hasattr(self.runtime, "auto_compact"):
             raise ValueError("/autocompact requires a live model session.")
+        argument = argument.lower()
+        # Allowed mid-turn: AutoCompaction reads both settings before each request.
         if argument:
-            if self.activity.busy or self.activity.queued_prompts:
-                raise ValueError("Change /autocompact while idle.")
             from pcode.compaction import effective_window
+            from pcode.preferences import parse_token_count
 
-            window = effective_window(self.runtime.agent.model)
-            if argument == "on" and window is None:
+            limit = None if argument in {"on", "off", "auto"} else parse_token_count(argument)
+            enabling = argument == "on" or limit is not None
+            if enabling and effective_window(self.runtime.agent.model) is None:
                 raise ValueError(
                     "Unknown context window. Set PCODE_CONTEXT_WINDOW to the deployment's "
                     "token limit before enabling automatic compaction."
                 )
-            self.runtime.auto_compact = argument == "on"
-            self.persist_defaults(autocompact=argument)
-        state = "on" if self.runtime.auto_compact else "off"
-        self.view.flash(f"Automatic compaction: {state}. Usage: /autocompact on|off")
+            if argument == "auto":
+                self.runtime.auto_compact_limit = None
+                self.forget_defaults("autocompact_tokens")
+            elif limit is not None:
+                self.runtime.auto_compact_limit = limit
+                self.persist_defaults(autocompact_tokens=str(limit))
+            if enabling:
+                # Setting a cap means you want compaction, so it also turns it on.
+                self.runtime.auto_compact = True
+                self.persist_defaults(autocompact="on")
+            elif argument == "off":
+                self.runtime.auto_compact = False
+                self.persist_defaults(autocompact="off")
+        self.view.flash(
+            f"Automatic compaction: {self.autocompact_state()}. "
+            "Usage: /autocompact on|off|200k|auto"
+        )
+
+    def compact_cap(self) -> int | None:
+        """The token cap automatic compaction honors right now, if any."""
+        if not getattr(self.runtime, "auto_compact", False):
+            return None
+        return getattr(self.runtime, "auto_compact_limit", None)
+
+    def autocompact_state(self) -> str:
+        from pcode.context_usage import compact_tokens
+
+        if not getattr(self.runtime, "auto_compact", False):
+            return "off"
+        cap = self.compact_cap()
+        return f"on at {compact_tokens(cap)}" if cap else "on (auto threshold)"
 
     def resend(self, argument: str, *, before_queue: bool = False) -> None:
         """Ask again from the settled checkpoint instead of typing "continue"."""
@@ -2164,12 +2221,13 @@ class SessionController:
             if not configured:
                 self.view.note(
                     "No sub-agent models: sub-agents run on the session's model. "
-                    "/subagents MODEL [MODEL ...] lets delegate_task pick others."
+                    "/subagents MODEL [MODEL ...] lists others for delegate_task; it can also take "
+                    "any provider:model name per delegation."
                 )
                 return
             menu, problems = await asyncio.to_thread(subagent_menu, configured)
             lines = [
-                "Sub-agent models delegate_task may pick (without one, the session's model)"
+                "Sub-agent models listed for delegate_task (without one, the session's model)"
                 + (", set by this workspace's .pcode/preferences.json" if project else "")
                 + ":",
                 *(f"  {name}" for name in menu),
@@ -2503,8 +2561,7 @@ class SessionController:
             *self.overhead_overview(),
             (
                 "Automatic compaction",
-                ("on" if getattr(self.runtime, "auto_compact", False) else "off")
-                + " · /compact [focus] · /autocompact on|off",
+                self.autocompact_state() + " · /compact [focus] · /autocompact on|off|200k|auto",
             ),
         ]
         saved = self.runtime.session
@@ -2547,6 +2604,9 @@ class SessionController:
             window = context_window(resolved or self.model)
         except ContextWindowError:
             window = None
+        if window and (cap := self.compact_cap()):
+            # Measured against the budget compaction actually leaves, as the footer is.
+            window = min(window, cap)
         return overhead_rows(parameters, window=window)
 
     # --- Slow command jobs ---

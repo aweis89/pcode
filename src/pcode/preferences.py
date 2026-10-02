@@ -44,6 +44,8 @@ class Setting:
     height: bool = False
     # `ctrl`, or the leader key(s) pressed before a shortcut's letter.
     key_prefix: bool = False
+    # Tokens as `200000`, `200k`, or `1.5m`; see parse_token_count.
+    token_count: bool = False
     # One line shown beside the key in /config completions.
     description: str = ""
 
@@ -67,6 +69,8 @@ class Setting:
                     raise ValueError(f"Unknown model providers: {', '.join(sorted(unknown))}")
         elif self.key_prefix:
             parse_key_prefix(value)
+        elif self.token_count:
+            parse_token_count(value)
         elif self.height:
             if parse_height(value) is None:
                 raise ValueError(
@@ -86,6 +90,30 @@ class Setting:
                 raise ValueError(f"{key} must be one of: {', '.join(self.choices)}")
         elif not value or any(char.isspace() for char in value):
             raise ValueError(f"{key} must be a non-empty model name without whitespace.")
+
+
+# Compaction keeps up to an eighth of its budget verbatim plus a summary, on top
+# of the fixed prompt (instructions, tool schemas, MCP), which alone can pass
+# 10k. A cap much below this compacts every few requests or cannot make room.
+MIN_AUTO_COMPACT_TOKENS = 50_000
+
+
+def parse_token_count(text: str) -> int:
+    """Read `200000`, `200k`, or `1.5m` as an automatic compaction cap."""
+    value = text.strip().lower().replace("_", "").replace(",", "")
+    scale = {"k": 1_000, "m": 1_000_000}.get(value[-1:], 1)
+    if scale != 1:
+        value = value[:-1]
+    try:
+        tokens = int(float(value) * scale)
+    except (ValueError, OverflowError):
+        raise ValueError(f"Not a token count: {text!r}. Use e.g. 200000 or 200k.") from None
+    if tokens < MIN_AUTO_COMPACT_TOKENS:
+        raise ValueError(
+            f"Use at least {MIN_AUTO_COMPACT_TOKENS // 1000}k tokens: below that, compaction "
+            "cannot leave enough room."
+        )
+    return tokens
 
 
 def parse_height(value: str | None) -> float | None:
@@ -258,7 +286,7 @@ SETTINGS = {
     "subagent_models": Setting(
         "",
         name_list=True,
-        description="Models delegate_task may run a sub-agent on, comma-separated (/subagents)",
+        description="Models delegate_task lists for sub-agents, comma-separated (/subagents)",
     ),
     # An untouched worktree is always removed; uncommitted changes are always kept.
     "session_host": Setting(
@@ -445,6 +473,12 @@ SETTINGS = {
         "on",
         ("on", "off"),
         description="Compact the conversation automatically as the context window fills",
+    ),
+    "autocompact_tokens": Setting(
+        None,
+        token_count=True,
+        description="Compact automatically by this many context tokens (e.g. 200k), even if "
+        "the window has more room; unset uses about 90% of the window",
     ),
     # On by default so the wheel scrolls popups; plain drag-to-select then needs
     # a modifier. Read when a popup opens, so no restart is needed.

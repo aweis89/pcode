@@ -18,7 +18,10 @@ def compact_tokens(tokens: int | None) -> str:
     return str(tokens)
 
 
-def context_label(model: str | Model, history: Sequence[ModelMessage]) -> str:
+def context_label(
+    model: str | Model, history: Sequence[ModelMessage], *, compact_at: int | None = None
+) -> str:
+    """`· used/limit`, where the limit is the window or, when lower, `compact_at`."""
     # Input usage already includes cache reads/writes in Pydantic AI. Do not add
     # them again, sum previous requests, or count output as input context.
     # Deriving from history also follows resume, /new, and conversation checkout.
@@ -30,6 +33,9 @@ def context_label(model: str | Model, history: Sequence[ModelMessage]) -> str:
         # Invalid configuration must not crash terminal rendering. Compaction
         # reports the actionable validation error when invoked.
         window = None
+    if window is not None and compact_at:
+        # Automatic compaction fires there, so that is the budget worth showing.
+        window = min(window, compact_at)
     used = 0
     for message in reversed(history):
         if (message.metadata or {}).get(MARKER):

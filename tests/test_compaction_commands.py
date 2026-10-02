@@ -162,6 +162,37 @@ def test_manual_command_preview_rejection_and_autocompact_preference(monkeypatch
     app.controller.start_compact = Mock()
     app.registry.dispatch("/compact retain exact {identifiers}")
     app.controller.start_compact.assert_called_once_with("retain exact {identifiers}")
+    # Mid-turn changes are allowed: AutoCompaction reads them per request.
     app.activity.busy = True
-    with pytest.raises(ValueError, match="idle"):
-        app.controller.autocompact("on")
+    app.registry.dispatch("/autocompact on")
+    assert runtime.auto_compact
+
+
+def test_autocompact_token_cap_sets_threshold_footer_and_preference(monkeypatch):
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "128000")
+    runtime = AgentRuntime(Agent(TestModel()))
+    app = PreviewApp(model="test:local", runtime=runtime, console=Console(file=StringIO()))
+    assert runtime.auto_compact_limit is None
+    assert app.controller.context_label().endswith("/128k")
+    app.controller.autocompact("off")
+    app.registry.dispatch("/autocompact 60K")
+    assert runtime.auto_compact and runtime.auto_compact_limit == 60_000
+    assert load_preferences()["autocompact_tokens"] == "60000"
+    assert load_preferences()["autocompact"] == "on"
+    assert app.controller.context_label().endswith("/60k")
+    assert app.controller.autocompact_state() == "on at 60k"
+    assert AgentRuntime(Agent(TestModel())).auto_compact_limit == 60_000
+    # A cap above the window never raises the footer's budget.
+    app.controller.autocompact("1m")
+    assert app.controller.context_label().endswith("/128k")
+    for bad in ("lots", "20k", "inf"):
+        with pytest.raises(ValueError):
+            app.controller.autocompact(bad)
+    assert runtime.auto_compact_limit == 1_000_000
+    app.controller.autocompact("auto")
+    assert runtime.auto_compact and runtime.auto_compact_limit is None
+    assert "autocompact_tokens" not in load_preferences()
+    # Off hides the cap from the footer, since nothing will compact there.
+    app.controller.autocompact("200k")
+    app.controller.autocompact("off")
+    assert app.controller.context_label().endswith("/128k")

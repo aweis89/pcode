@@ -61,7 +61,7 @@ def test_rows_reach_pane_during_partial_arguments_without_persisting(tmp_path):
                     assert runtime.tree.nodes[runtime.tree.active].plan == []
                     count = len(event.items)
                     assert app.activity.panel_title() == f"Tasks 0/{count}"
-                    assert "Inspect 世界" in str(app.activity.plan_rows(10, "*"))
+                    assert "Inspect 世界" in str(app.activity.plan_rows(10))
                     (first_seen if count == 1 else second_seen).set()
 
         runtime.stream = observed

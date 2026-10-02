@@ -175,6 +175,14 @@ def test_created_plan_exposes_ids_for_atomic_status_updates(tmp_path):
     planning = next(c for c in create_coder(tmp_path).capabilities if isinstance(c, Planning))
     assert isinstance(planning, IdentifiedPlanning)
     assert "not task IDs" in planning.get_instructions()
+    # pcode's guidance replaces Harness's "multi-step work" trigger everywhere the model sees it.
+    assert "live checklist" in planning.get_instructions()
+    assert "multi-step" not in planning.get_instructions()
+    toolset = planning.get_toolset()
+    assert all("multi-step" not in tool.description for tool in toolset.tools.values())
+    assert "update_task_statuses" in toolset.tools["write_plan"].description
+    custom = IdentifiedPlanning(descriptions={"write_plan": "mine"}).get_toolset()
+    assert custom.tools["write_plan"].description == "mine"
     requests = 0
 
     async def model(messages, info):
@@ -232,24 +240,24 @@ def test_created_plan_exposes_ids_for_atomic_status_updates(tmp_path):
 
 @pytest.mark.parametrize("state", ["", "done", "failed", "cancelled"])
 @pytest.mark.parametrize("busy", [False, True])
-def test_unfinished_task_only_spins_during_live_turn(state, busy):
+def test_unfinished_task_has_static_active_marker_only_during_live_turn(state, busy):
     from pcode.ui import Activity
 
     items = [{"id": "one", "content": "Unfinished task", "status": "in_progress"}]
     activity = Activity(plan=items, prompt_state=state, busy=busy)
-    # Resumed, finished, failed, and cancelled turns stay static, even if input
-    # is queued. Do not rewrite the persisted task's status to stop animation.
-    first = activity.plan_rows(10, "⠋")
-    assert first == activity.plan_rows(10, "⠙")
+    # Resumed, finished, failed, and cancelled turns stay inactive, even if input
+    # is queued. Do not rewrite the persisted task's status to change its marker.
+    first = activity.plan_rows(10)
     assert first == [("class:plan.active", "○ Unfinished task")]
     assert items[0]["status"] == "in_progress"
 
     activity.prompt_state = "running"
-    assert activity.plan_rows(10, "⠋") == [("class:plan.active", "⠋ Unfinished task")]
-    assert activity.plan_rows(10, "⠙") == [("class:plan.active", "⠙ Unfinished task")]
+    for frame in ("⠋", "⠙"):
+        assert activity.status_fragments(frame, 80)[0] == ("class:activity.spinner", f"{frame} ")
+        assert activity.plan_rows(10) == [("class:plan.active", "⟳ Unfinished task")]
 
     activity.prompt_state = "done"
-    assert activity.plan_rows(10, "⠙") == first
+    assert activity.plan_rows(10) == first
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,7 @@ extension agents keep their own capabilities and shared-workspace semantics.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 from contextvars import ContextVar
@@ -17,13 +18,15 @@ from typing import Any, Literal
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 from pydantic_ai_harness.subagents import SubAgents
-from pydantic_ai_harness.subagents._toolset import SubAgentToolset
+from pydantic_ai_harness.subagents._toolset import SubAgentToolset, _Ended
 
 from pcode.delegation import ResumableAgent
+from pcode.error_report import error_message
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.task_worktrees import TaskWorktrees
 from pcode.worktree import WorktreeError, describe, setup_scripts
 
+logger = logging.getLogger(__name__)
 _outcome: ContextVar[str | None] = ContextVar("isolated_delegation_outcome", default=None)
 
 # Setup hooks run with no model watching and their output discarded, so a hang
@@ -167,6 +170,12 @@ class WorkspaceSubAgents(SubAgents):
             "Use list_task_worktrees to recover task IDs after restart. "
             "Never push worker branches or merge them directly into mainline. "
             "Ask the user before discard_task(confirm=True) destroys unintegrated work."
+            + (
+                # Harness's listing above reads as the only keys allowed.
+                "\nBesides the keys listed, `model` takes any other provider:model name."
+                if self._menu
+                else ""
+            )
         )
 
 
@@ -179,6 +188,53 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         self.add_function(self.integrate_task)
         self.add_function(self.discard_task)
         self.add_function(self.list_task_worktrees)
+
+    def _prepare_delegate(self, ctx, tool_def):
+        """Offer `model` as any `provider:model` name, not only a /subagents key.
+
+        The description is static, so the schema stays cache-stable however
+        many names get resolved on demand.
+        """
+        tool_def = super()._prepare_delegate(ctx, tool_def)
+        if tool_def is None:
+            return None
+        schema = {**tool_def.parameters_json_schema}
+        schema["properties"] = {
+            **schema.get("properties", {}),
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional model to run the sub-agent on, as provider:model (any "
+                    "/model name), such as for a second opinion from another model. "
+                    "Omit it to use the sub-agent's default, the session's model."
+                ),
+            },
+        }
+        return replace(tool_def, parameters_json_schema=schema)
+
+    async def _add_model(self, agent_name: str, key: str | None) -> None:
+        """Put a name off the /subagents menu on it, resolved the way /btw resolves one.
+
+        Harness's own key check then runs unchanged. A delegate restricted to
+        some keys is left for that check to refuse, without resolving anything.
+        """
+        sub_agent = self._agents.get(agent_name)
+        if key is None or key in self._models or sub_agent is None or sub_agent.models:
+            return
+        from pydantic_ai_harness.subagents import ModelOption
+
+        from pcode.agent import side_model
+
+        try:
+            # Reads logins and preferences from disk.
+            chosen = await asyncio.to_thread(side_model, key)
+        except ValueError as error:
+            raise ModelRetry(str(error)) from error
+        except Exception as error:
+            # A broken login file is the model's to work around, not a failed turn.
+            raise ModelRetry(f"Cannot use {key}: {type(error).__name__}: {error}") from error
+        # Kept for later delegations in this session; the schema never lists it.
+        self._models[key] = ModelOption(chosen.model, settings=chosen.settings)
 
     async def delegate_task(
         self,
@@ -209,6 +265,7 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         return await self._delegate(ctx, agent_name, task, workspace_mode, model)
 
     async def _delegate(self, ctx, agent_name, task, workspace_mode, model):
+        await self._add_model(agent_name, model)
         isolated = workspace_mode == "isolated" or (
             workspace_mode == "auto" and agent_name == "worker" and isolation_enabled()
         )
@@ -277,8 +334,10 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             raise
         except Exception as error:
             # Preserve the artifact even when Harness reports a retry or setup fails.
+            # A contained crash arrives as Harness's retry, already described.
+            summary = str(error) if isinstance(error, ModelRetry) else None
             record = await _finish(
-                store, record.task_id, "failed", f"{type(error).__name__}: {error}"
+                store, record.task_id, "failed", summary or f"{type(error).__name__}: {error}"
             )
         finally:
             _outcome.reset(token)
@@ -291,6 +350,27 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
     async def _run_delegation(self, ctx, agent_name, sub_agent, *, task, key):
         resumable = replace(sub_agent, agent=ResumableAgent(sub_agent.agent))
         return await super()._run_delegation(ctx, agent_name, resumable, task=task, key=key)
+
+    def _crash_outcome(self, agent_name, sub_agent, exc):
+        """Harness's containment, minus the raw exception text and the traceback.
+
+        Harness puts `str(exc)` in the parent's retry message, which the model,
+        the transcript and the panel all see; SDK messages can carry provider
+        bodies, so describe it the way a failed turn is described instead. Its
+        warning prints a traceback over the terminal, which has no log handler.
+        """
+        contain = sub_agent.contain_errors
+        if not (self._contain_errors if contain is None else contain):
+            raise exc
+        logger.debug("Contained crash from sub-agent %r", agent_name, exc_info=exc)
+        return _Ended(
+            outcome="contained",
+            output=(
+                f"Sub-agent {agent_name!r} crashed: {error_message(exc)} "
+                "Treat this as a recoverable failure and decide from existing evidence."
+            ),
+            cause=exc,
+        )
 
     async def _settle(self, *args, **kwargs):
         ended = await super()._settle(*args, **kwargs)

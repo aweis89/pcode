@@ -73,9 +73,7 @@ class Logins:
             "model until the token expires; use /login again or set ANTHROPIC_API_KEY."
         )
 
-    async def perform_login(self) -> None:
-        source = self.controller.login_requested
-        self.controller.login_requested = None
+    async def perform_login(self, source: str | None) -> None:
         if source == "openai-codex":
             await self.login_codex()
         elif source == "meridian":
@@ -204,7 +202,6 @@ class Logins:
         from pcode.auth import LoginError
 
         controller = self.controller
-        controller.login_requested = None
         self.view.note(
             "Opening claude.ai to sign in with your Anthropic account. "
             "If no browser opens, visit this URL (Ctrl+C cancels):"

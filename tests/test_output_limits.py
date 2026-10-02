@@ -212,7 +212,9 @@ def test_compaction_sees_resolved_limit_and_small_windows_remain_usable(
 ):
     selected = model()
     metadata[0][id(selected)] = ModelLimits(output=128_000)
-    runtime = SimpleNamespace(session=None, compaction_notice=lambda _: None)
+    runtime = SimpleNamespace(
+        session=None, compaction_notice=lambda _: None, auto_compact=True, auto_compact_limit=None
+    )
     turn = TurnContext(run_id="test")
     monkeypatch.setattr("pcode.compaction.effective_window", lambda _: window)
     monkeypatch.setattr("pcode.compaction.context_estimate", lambda *args: used)

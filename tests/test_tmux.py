@@ -179,8 +179,6 @@ def pane(request, tmp_path):
 
 # The spinner row leads with a `dots` frame, or a `line` frame for system work.
 BUSY_FRAMES = tuple(" " + frame + " " for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-# The active task spins with the status row's own frames: one spinner on screen.
-TASK_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # The footer always names the mode the next Enter sends with.
 SEND_MODES = ("steering", "queue", "interrupt")
@@ -315,6 +313,26 @@ def test_transcript_uses_terminal_scrollback(pane):
     assert "No files were" in history
     assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "0"
     assert "pcode  /  UI preview" in history
+
+
+def test_closing_a_menu_that_scrolled_the_screen_restores_the_transcript(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/theme-preview")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    capture(pane, GALLERY_TAIL)
+    # A full screen of transcript: the menu has no room and scrolls it away.
+    pane("send-keys", "-t", "preview:0.0", "-l", "/")
+    capture(pane, "List commands")
+    pane("send-keys", "-t", "preview:0.0", "C-c")
+
+    def above_editor(screen):
+        lines = screen.splitlines()
+        return lines[max(i for i, line in enumerate(lines) if line.startswith("┌")) - 1]
+
+    screen = settle(pane, lambda screen: "Input discarded" in above_editor(screen))
+    # Before the replay the screen kept the menu's height as blank rows.
+    assert "Input discarded" in above_editor(screen), screen
+    assert screen.splitlines()[0].strip(), screen
 
 
 @pytest.mark.parametrize("split", ["-h", "-v"])
@@ -825,16 +843,20 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, release, split):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "Task 8", running=True)
-    frames = TASK_FRAMES
-    first_frame = next(frame for frame in frames if f"{frame} Task 8" in screen)
+    assert "⟳ Task 8" in screen
+    first_frame = next(line[1] for line in screen.splitlines() if line.startswith(SPINNER_ROW))
     deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         animated = pane("capture-pane", "-p", "-t", "preview:0.0")
-        if any(f"{frame} Task 8" in animated for frame in frames if frame != first_frame):
+        assert "⟳ Task 8" in animated
+        if any(
+            line.startswith(SPINNER_ROW) and line[1] != first_frame
+            for line in animated.splitlines()
+        ):
             break
         time.sleep(0.03)
     else:
-        pytest.fail("Active plan spinner did not animate while waiting for a tool")
+        pytest.fail("Status spinner did not animate while the plan marker stayed static")
     assert "Tasks ·" not in screen and "Tools" not in screen
     lines = screen.splitlines()
     first_task = next(i for i, line in enumerate(lines) if "Task 6" in line)
@@ -958,7 +980,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     assert status.startswith(SPINNER_ROW) and "Run shell" in status
     assert not status.startswith("│")
     assert lines[task - 1].startswith("┌─ Tasks 0/1 ─")
-    assert lines[task].startswith("│") and lines[task][1] in TASK_FRAMES
+    assert lines[task].startswith("│⟳")
     assert lines[task + 1].startswith("└")
     assert lines[task + 2].startswith("┌")  # Editor, not another Tools widget.
     assert "Tools" not in screen and "Tasks ·" not in screen
@@ -980,7 +1002,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
                 break
             assert time.monotonic() < deadline, screen
             time.sleep(0.05)
-        assert lines[task].startswith("│") and lines[task][1] in TASK_FRAMES
+        assert lines[task].startswith("│⟳")
         assert "keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")  # Clears the draft.
@@ -1033,7 +1055,7 @@ def test_tasks_share_the_editor_box_by_default_and_config_applies_live(pane):
             time.sleep(0.05)
         heading, tasks, text_rows = attached_box(screen)
         assert heading.startswith("┌─ Tasks 0/1")
-        assert len(tasks) == 1 and tasks[0][1] in TASK_FRAMES
+        assert len(tasks) == 1 and tasks[0].startswith("│⟳")
         assert text_rows == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
     pane("send-keys", "-t", "preview:0.0", "C-c")
