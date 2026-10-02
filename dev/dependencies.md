@@ -681,7 +681,7 @@ remains separate and may also contain opaque signatures.
 
 ### Claude Agent SDK provider (verified 0.2.160, CLI 2.1.283)
 
-`claude:` models (`src/pcode/claude_sdk.py`) keep one `ClaudeSDKClient` per
+`claude:` models (`src/pcode/claude_sdk/`) keep one `ClaudeSDKClient` per
 conversation and park pcode's tool calls in an in-process MCP server; see
 [Anthropic provider options](anthropic-providers.md#what-shipped). Each item below
 was verified live against the bundled CLI, and most of them are traps:
@@ -750,7 +750,7 @@ was verified live against the bundled CLI, and most of them are traps:
   sends its own ceiling there, but not the 16k offline fallback: for a model with
   no known limits the CLI's default is higher.
 - `claude-agent-sdk` is the optional `claude` extra, and the dev group pulls in
-  `pcode[claude]` so the tests always have it. Code outside `claude_sdk.py` must
+  `pcode[claude]` so the tests always have it. Code outside `claude_sdk/` must
   not import the SDK: `models.claude_sdk_installed()` gates the picker, and
   `claude_model()` and `/login claude` report the missing extra.
 - `CLAUDE_CODE_MAX_RETRIES=0` makes an API error end the turn with an
@@ -957,7 +957,7 @@ but an upgrade must recheck: `FileSystemToolset._request`, `_write_file`,
 `_edit_file`, `_apply_replacements`, `_is_binary`; `repo_context._inventory.scan_assets`
 and `_loader.discover_instruction_files`; `RepoContext._working_dir`,
 `_render_instructions`, `_context_files`; `ShellToolset._resolve_env`; and
-`pydantic_ai._utils.PeekableAsyncStream` in `claude_sdk.py`. With `root_dir='/'`,
+`pydantic_ai._utils.PeekableAsyncStream` in `claude_sdk/model.py`. With `root_dir='/'`,
 `allowed_patterns`/`denied_patterns` match paths relative to `/` (no leading
 slash); nothing in pcode sets them, but a workspace-relative pattern would need
 a `**/` prefix.
