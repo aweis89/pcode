@@ -256,7 +256,7 @@ process doing a `query()` per request.
 
 ### What shipped
 
-`src/pcode/claude_sdk.py` implements the proposal against `claude-agent-sdk`
+`src/pcode/claude_sdk/` implements the proposal against `claude-agent-sdk`
 0.2.160, whose bundled CLI is 2.1.283. It departs from the sketch above in these
 ways:
 
