@@ -68,11 +68,11 @@ def test_prompt_collapses_paste_and_sends_full_text():
 
 
 def test_ctrl_y_copies_the_draft_with_pastes_expanded(monkeypatch):
-    import pcode.ui as ui
+    import pcode.prompt_keys as prompt_keys
 
     copied: list[str] = []
     monkeypatch.setattr(
-        ui,
+        prompt_keys,
         "copy_to_clipboard",
         lambda text, output=None: (copied.append(text), (True, False))[1],
     )
