@@ -26,7 +26,7 @@ GUIDANCE = (
     "call that completes it and starts the next. Use `add_task` for a step you discover "
     "midway; use `write_plan` only to create or restructure the plan, and pass the full "
     "plan when you do. Before your final reply, every step should be `completed` or "
-    "`cancelled`."
+    "`cancelled`, unless you are stopping to ask the user; then leave the rest as it is."
 )
 
 ID_GUIDANCE = (
@@ -61,7 +61,11 @@ class PlanSnapshot(CapabilityEvent, namespace="pcode_planning", name="snapshot")
 
 @dataclass
 class IdentifiedPlanning(Planning):
-    """Keep upstream validation/storage; change what the model is told about the plan."""
+    """Keep upstream validation/storage; change what the model is told about the plan.
+
+    GUIDANCE names the full core toolset. A caller narrowing `tools` or enabling
+    subtasks should pass its own `guidance`, as upstream's `tools` docs already advise.
+    """
 
     def __post_init__(self):
         # An explicit `descriptions` still wins per tool.
@@ -88,7 +92,7 @@ class IdentifiedPlanning(Planning):
         return await handler(request_context)
 
     def get_instructions(self):
-        # Same contract as upstream `guidance`: None is the default, "" opts out.
+        # As upstream: None means the default, "" drops it. The ID note always stays.
         guidance = GUIDANCE if self.guidance is None else self.guidance
         return (guidance + ID_GUIDANCE).strip()
 
