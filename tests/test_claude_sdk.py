@@ -42,6 +42,9 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import ModelRequestParameters
 
 import pcode.claude_sdk as claude
+from pcode.claude_sdk import resume as claude_resume
+from pcode.claude_sdk import session as claude_session
+from pcode.claude_sdk import session_pool as claude_pool
 from pcode.diagnostics import transient
 from pcode.meridian_reminders import append_reminder
 
@@ -353,15 +356,15 @@ class FakeCLI:
 @pytest.fixture(autouse=True)
 def plenty_of_memory(monkeypatch):
     """A busy machine must not evict the processes these tests expect to reuse."""
-    monkeypatch.setattr(claude, "memory_low", lambda: False)
+    monkeypatch.setattr(claude_pool, "memory_low", lambda: False)
 
 
 @pytest.fixture
 def world(monkeypatch):
     world = World()
-    monkeypatch.setattr(claude, "_client_factory", lambda options: FakeCLI(options, world))
-    monkeypatch.setattr(claude, "_pools", weakref.WeakKeyDictionary())
-    monkeypatch.setattr(claude, "_index", None)
+    monkeypatch.setattr(claude_session, "_client_factory", lambda options: FakeCLI(options, world))
+    monkeypatch.setattr(claude_pool, "_pools", weakref.WeakKeyDictionary())
+    monkeypatch.setattr(claude_pool, "_index", None)
     return world
 
 
@@ -380,7 +383,7 @@ def make_agent(**kwargs) -> tuple[Agent, list[str]]:
 
 def restart() -> None:
     """A new pcode process: no live sessions, the index reloaded from disk."""
-    claude._index = None
+    claude_pool._index = None
 
 
 def texts(content: list[dict]) -> list[str]:
@@ -732,7 +735,7 @@ def test_a_stray_call_poisons_no_fork_point_even_after_restart(world):
 
 
 def test_idle_processes_expire(world, monkeypatch):
-    monkeypatch.setattr(claude, "IDLE_SECONDS", 0.05)
+    monkeypatch.setattr(claude_pool, "IDLE_SECONDS", 0.05)
     agent, _ = make_agent()
     world.replies = [[("text", "ok")]]
 
@@ -747,9 +750,9 @@ def test_idle_processes_expire(world, monkeypatch):
 
 
 def test_memory_pressure_stops_idle_processes_between_turns(world, monkeypatch):
-    monkeypatch.setattr(claude, "PRESSURE_CHECK_SECONDS", 0.05)
+    monkeypatch.setattr(claude_pool, "PRESSURE_CHECK_SECONDS", 0.05)
     low = False
-    monkeypatch.setattr(claude, "memory_low", lambda: low)
+    monkeypatch.setattr(claude_pool, "memory_low", lambda: low)
     agent, _ = make_agent()
     world.replies = [[("text", "ok")]]
 
@@ -768,7 +771,7 @@ def test_memory_pressure_stops_idle_processes_between_turns(world, monkeypatch):
 
 
 def test_memory_pressure_releases_parked_processes_too(monkeypatch):
-    monkeypatch.setattr(claude, "memory_low", lambda: True)
+    monkeypatch.setattr(claude_pool, "memory_low", lambda: True)
 
     async def main():
         pool = claude.SessionPool(claude.ResumeIndex())
@@ -787,9 +790,9 @@ def test_memory_pressure_releases_parked_processes_too(monkeypatch):
 def test_idle_minutes_preference_sets_the_expiry(monkeypatch):
     from pcode.preferences import save_preferences
 
-    assert claude._idle_seconds() == claude.IDLE_SECONDS
+    assert claude_pool._idle_seconds() == claude_pool.IDLE_SECONDS
     save_preferences(claude_idle_minutes="3")
-    assert claude._idle_seconds() == 180
+    assert claude_pool._idle_seconds() == 180
 
 
 def test_a_message_the_cli_starts_itself_never_answers_pcode(world):
@@ -990,7 +993,7 @@ def test_start_failure_names_the_cli(world, monkeypatch):
         client.connect = connect
         return client
 
-    monkeypatch.setattr(claude, "_client_factory", refuse)
+    monkeypatch.setattr(claude_session, "_client_factory", refuse)
     agent, _ = make_agent()
     with pytest.raises(claude.ClaudeStartError, match="could not start: spawn failed"):
         run(lambda: agent.run("hi"))
@@ -1072,7 +1075,7 @@ def test_resume_index_persists_and_prunes(tmp_path, monkeypatch):
     assert len(path.read_text().splitlines()) == 1
     reloaded = claude.ResumeIndex(path)
     assert reloaded.get("k") == point
-    monkeypatch.setattr(claude, "INDEX_LIMIT", 4)
+    monkeypatch.setattr(claude_resume, "INDEX_LIMIT", 4)
     for number in range(6):
         index.add(f"k{number}", point)
     pruned = claude.ResumeIndex(path)
