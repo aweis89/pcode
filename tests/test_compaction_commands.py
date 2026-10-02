@@ -162,9 +162,10 @@ def test_manual_command_preview_rejection_and_autocompact_preference(monkeypatch
     app.controller.start_compact = Mock()
     app.registry.dispatch("/compact retain exact {identifiers}")
     app.controller.start_compact.assert_called_once_with("retain exact {identifiers}")
+    # Mid-turn changes are allowed: AutoCompaction reads them per request.
     app.activity.busy = True
-    with pytest.raises(ValueError, match="idle"):
-        app.controller.autocompact("on")
+    app.registry.dispatch("/autocompact on")
+    assert runtime.auto_compact
 
 
 def test_autocompact_token_cap_sets_threshold_footer_and_preference(monkeypatch):
@@ -174,17 +175,17 @@ def test_autocompact_token_cap_sets_threshold_footer_and_preference(monkeypatch)
     assert runtime.auto_compact_limit is None
     assert app.controller.context_label().endswith("/128k")
     app.controller.autocompact("off")
-    app.registry.dispatch("/autocompact 50K")
-    assert runtime.auto_compact and runtime.auto_compact_limit == 50_000
-    assert load_preferences()["autocompact_tokens"] == "50000"
+    app.registry.dispatch("/autocompact 60K")
+    assert runtime.auto_compact and runtime.auto_compact_limit == 60_000
+    assert load_preferences()["autocompact_tokens"] == "60000"
     assert load_preferences()["autocompact"] == "on"
-    assert app.controller.context_label().endswith("/50k")
-    assert app.controller.autocompact_state() == "on at 50k"
-    assert AgentRuntime(Agent(TestModel())).auto_compact_limit == 50_000
+    assert app.controller.context_label().endswith("/60k")
+    assert app.controller.autocompact_state() == "on at 60k"
+    assert AgentRuntime(Agent(TestModel())).auto_compact_limit == 60_000
     # A cap above the window never raises the footer's budget.
     app.controller.autocompact("1m")
     assert app.controller.context_label().endswith("/128k")
-    for bad in ("lots", "5k", "inf"):
+    for bad in ("lots", "20k", "inf"):
         with pytest.raises(ValueError):
             app.controller.autocompact(bad)
     assert runtime.auto_compact_limit == 1_000_000

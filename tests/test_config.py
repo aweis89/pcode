@@ -118,6 +118,7 @@ def test_defaults_and_path_do_not_create_files():
         ("editing_mode", "emacs"),
         ("autocompact", "on"),
         ("autocompact_tokens", "200000"),
+        ("autocompact_tokens", "200k"),
         ("attach_tasks", "on"),
         ("attach_tasks", "off"),
         ("paced_scrollback", "off"),

@@ -28,11 +28,11 @@ from pcode.compaction import (
     auto_compaction_threshold,
     context_estimate,
     effective_window,
-    parse_token_count,
     summarize,
 )
 from pcode.context_usage import context_label
 from pcode.live import AgentRuntime
+from pcode.preferences import parse_token_count
 from pcode.sessions import SavedSession
 
 SUMMARY = "## Goal and constraints\nFix auth.\n## Verification\nTests failed; not yet fixed."
@@ -72,13 +72,13 @@ def test_auto_compaction_threshold_small_window_reserve_stays_proportional():
 
 
 @pytest.mark.parametrize(
-    "text,tokens", [("200k", 200_000), ("1.5M", 1_500_000), ("150_000", 150_000), ("20k", 20_000)]
+    "text,tokens", [("200k", 200_000), ("1.5M", 1_500_000), ("150_000", 150_000), ("50k", 50_000)]
 )
 def test_parse_token_count(text, tokens):
     assert parse_token_count(text) == tokens
 
 
-@pytest.mark.parametrize("text", ["", "k", "abc", "19k", "-200k", "nan", "inf"])
+@pytest.mark.parametrize("text", ["", "k", "abc", "49k", "-200k", "nan", "inf"])
 def test_parse_token_count_rejects(text):
     with pytest.raises(ValueError):
         parse_token_count(text)
@@ -372,8 +372,40 @@ def test_auto_compacts_inside_tool_loop_and_saves_before_next_request(tmp_path, 
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("limit", [None, 20_000])
+@pytest.mark.parametrize("limit", [None, 50_000])
 def test_token_cap_compacts_before_the_window_fills(monkeypatch, limit):
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "1000000")
+
+    windows = []
+    real = summarize
+
+    async def spy(*args, window=None, **kwargs):
+        windows.append(window)
+        return await real(*args, window=window, **kwargs)
+
+    monkeypatch.setattr("pcode.compaction.summarize", spy)
+
+    async def run():
+        async def stream(messages, info):
+            if "context summarization assistant" in (info.instructions or ""):
+                yield SUMMARY
+            else:
+                yield "continuing"
+
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=stream)))
+        # Twice the cap: past it, but nowhere near 90% of the window.
+        runtime.history = history() * 2
+        runtime.auto_compact = True
+        runtime.auto_compact_limit = limit
+        async for _ in runtime.stream("Continue"):
+            pass
+        # Summary and kept history are budgeted from the cap, not the 1m window.
+        assert windows == ([50_000] if limit else [])
+
+    asyncio.run(run())
+
+
+def test_autocompact_change_mid_turn_applies_to_the_next_request(monkeypatch):
     monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "1000000")
 
     async def run():
@@ -383,16 +415,25 @@ def test_token_cap_compacts_before_the_window_fills(monkeypatch, limit):
             if "context summarization assistant" in (info.instructions or ""):
                 summaries.append(messages)
                 yield SUMMARY
+            elif not any(isinstance(p, ToolReturnPart) for p in messages[-1].parts):
+                yield {0: DeltaToolCall(name="read", json_args="{}", tool_call_id="tool-1")}
             else:
-                yield "continuing"
+                yield "done"
 
-        runtime = AgentRuntime(Agent(FunctionModel(stream_function=stream)))
-        runtime.history = history()
-        runtime.auto_compact = True
-        runtime.auto_compact_limit = limit
+        agent = Agent(FunctionModel(stream_function=stream))
+
+        @agent.tool_plain
+        def read() -> str:
+            # As `/autocompact 50k` typed while this tool runs would.
+            runtime.auto_compact, runtime.auto_compact_limit = True, 50_000
+            return "diagnostic result " * 5000
+
+        runtime = AgentRuntime(agent)
+        runtime.history = history() * 2
+        runtime.auto_compact = False
         async for _ in runtime.stream("Continue"):
             pass
-        assert len(summaries) == (1 if limit else 0)
+        assert len(summaries) == 1
 
     asyncio.run(run())
 

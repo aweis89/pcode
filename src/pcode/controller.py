@@ -158,9 +158,7 @@ QUERIES = frozenset(
 
 # Commands that change the conversation itself, refused while a turn runs or
 # prompts wait (bar /compact and /resend sent while idle, which go first).
-IDLE_COMMANDS = frozenset(
-    {"/resend", "/new", "/resume", "/login", "/logout", "/compact", "/autocompact"}
-)
+IDLE_COMMANDS = frozenset({"/resend", "/new", "/resume", "/login", "/logout", "/compact"})
 
 # Commands that make a model request or change the toolset. Each holds the
 # session busy from Enter until its handler starts, so a Ctrl+C in the same
@@ -717,13 +715,8 @@ class SessionController:
         history = getattr(self.runtime, "context_history", None)
         if history is None:
             history = getattr(self.runtime, "history", ())
-        cap = (
-            getattr(self.runtime, "auto_compact_limit", None)
-            if getattr(self.runtime, "auto_compact", False)
-            else None
-        )
         try:
-            return context_label(resolved or self.model, history, compact_at=cap)
+            return context_label(resolved or self.model, history, compact_at=self.compact_cap())
         except Exception:  # noqa: BLE001 - a footer label must not break anything.
             return ""
 
@@ -2036,10 +2029,10 @@ class SessionController:
         if not self.model or not hasattr(self.runtime, "auto_compact"):
             raise ValueError("/autocompact requires a live model session.")
         argument = argument.lower()
+        # Allowed mid-turn: AutoCompaction reads both settings before each request.
         if argument:
-            if self.activity.busy or self.activity.queued_prompts:
-                raise ValueError("Change /autocompact while idle.")
-            from pcode.compaction import effective_window, parse_token_count
+            from pcode.compaction import effective_window
+            from pcode.preferences import parse_token_count
 
             limit = None if argument in {"on", "off", "auto"} else parse_token_count(argument)
             enabling = argument == "on" or limit is not None
@@ -2066,13 +2059,19 @@ class SessionController:
             "Usage: /autocompact on|off|200k|auto"
         )
 
+    def compact_cap(self) -> int | None:
+        """The token cap automatic compaction honors right now, if any."""
+        if not getattr(self.runtime, "auto_compact", False):
+            return None
+        return getattr(self.runtime, "auto_compact_limit", None)
+
     def autocompact_state(self) -> str:
         from pcode.context_usage import compact_tokens
 
         if not getattr(self.runtime, "auto_compact", False):
             return "off"
-        limit = getattr(self.runtime, "auto_compact_limit", None)
-        return f"on at {compact_tokens(limit)}" if limit else "on (auto threshold)"
+        cap = self.compact_cap()
+        return f"on at {compact_tokens(cap)}" if cap else "on (auto threshold)"
 
     def resend(self, argument: str, *, before_queue: bool = False) -> None:
         """Ask again from the settled checkpoint instead of typing "continue"."""
@@ -2577,6 +2576,9 @@ class SessionController:
             window = context_window(resolved or self.model)
         except ContextWindowError:
             window = None
+        if window and (cap := self.compact_cap()):
+            # Measured against the budget compaction actually leaves, as the footer is.
+            window = min(window, cap)
         return overhead_rows(parameters, window=window)
 
     # --- Slow command jobs ---

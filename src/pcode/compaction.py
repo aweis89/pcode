@@ -260,26 +260,6 @@ class ContextTracking(AbstractCapability):
         return response
 
 
-# Below this a summary plus the recent history it keeps cannot fit, so every
-# automatic compaction would fail with "could not make enough room".
-MIN_AUTO_COMPACT_TOKENS = 20_000
-
-
-def parse_token_count(text: str) -> int:
-    """Read `200000`, `200k`, or `1.5m` as a token count."""
-    value = text.strip().lower().replace("_", "").replace(",", "")
-    scale = {"k": 1_000, "m": 1_000_000}.get(value[-1:], 1)
-    if scale != 1:
-        value = value[:-1]
-    try:
-        tokens = int(float(value) * scale)
-    except (ValueError, OverflowError):
-        raise ValueError(f"Not a token count: {text!r}. Use e.g. 200000 or 200k.") from None
-    if tokens < MIN_AUTO_COMPACT_TOKENS:
-        raise ValueError(f"Use at least {MIN_AUTO_COMPACT_TOKENS // 1000}k tokens.")
-    return tokens
-
-
 def auto_compaction_threshold(context_window: int, max_output_tokens: int) -> int:
     # Use most of the context window before lossy compaction, while reserving
     # enough capacity for the model's maximum possible response.
@@ -313,6 +293,10 @@ class AutoCompaction(AbstractCapability):
         return CapabilityOrdering(wrapped_by=[ModelOutputLimits])
 
     async def before_model_request(self, ctx, request_context):
+        # Installed on every turn and read per request, so /autocompact applies
+        # to the running turn's next request, not only the next turn.
+        if not self.runtime.auto_compact:
+            return request_context
         # Preserve the settled boundary even if summarization fails/cancels. In
         # --no-save mode there is no StepPersistence recovery to do this for us.
         if not self.runtime.session and is_provider_valid(request_context.messages):
@@ -329,8 +313,11 @@ class AutoCompaction(AbstractCapability):
         # above) and always sets it before this capability runs.
         threshold = auto_compaction_threshold(window, settings.get("max_tokens") or 0)
         # A user cap only ever compacts earlier; it never overrides the reserve.
+        # The summary and the history kept verbatim are sized from the window,
+        # so a cap shrinks that budget too, or the result can overshoot the cap.
         if limit := self.runtime.auto_compact_limit:
             threshold = min(threshold, limit)
+            window = min(window, limit)
         before = context_estimate(
             request_context.messages, request_context.model_request_parameters
         )
@@ -353,7 +340,12 @@ class AutoCompaction(AbstractCapability):
         if not result.changed or result.after >= threshold:
             raise CompactionError(
                 "Automatic compaction could not make enough room. "
-                "Use /compact with a focus, reduce input, or start /new."
+                + (
+                    "Raise the cap (/autocompact 300k or /autocompact auto), "
+                    if self.runtime.auto_compact_limit
+                    else ""
+                )
+                + "Use /compact with a focus, reduce input, or start /new."
             )
         # The snapshot lands before the next request. Do not replay a run or tools
         # to install it. Ordinary StepPersistence checkpoints supersede it later.

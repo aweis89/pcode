@@ -41,12 +41,7 @@ from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 from pcode import retries
 from pcode.agent import SideModel, worker_toolsets
 from pcode.aside import SideReply
-from pcode.compaction import (
-    MIN_AUTO_COMPACT_TOKENS,
-    AutoCompaction,
-    ContextTracking,
-    summarize,
-)
+from pcode.compaction import AutoCompaction, ContextTracking, summarize
 from pcode.conversation_ids import model_conversation
 from pcode.conversation_tree import ConversationTree
 from pcode.diagnostics import (
@@ -70,7 +65,7 @@ from pcode.mcp import (
 from pcode.mcp_notice import enabled_servers
 from pcode.native_results import drop_unreadable_results, unreadable_native_results
 from pcode.plan_preview import StreamingPlanPreview
-from pcode.preferences import SETTINGS, load_preferences
+from pcode.preferences import SETTINGS, load_preferences, parse_token_count
 from pcode.profiling import activity as profiled_activity
 from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
@@ -152,9 +147,7 @@ class AgentRuntime:
         # Tokens at which to compact even when the window has more room; None
         # leaves the threshold to the model's window.
         limit = preferences.get("autocompact_tokens")
-        self.auto_compact_limit: int | None = (
-            max(int(limit), MIN_AUTO_COMPACT_TOKENS) if limit else None
-        )
+        self.auto_compact_limit: int | None = parse_token_count(limit) if limit else None
         # Snapshotted like autocompact: a saved default applies to the next launch.
         self.retry_attempts = int(
             preferences.get("retry_attempts", SETTINGS["retry_attempts"].default)
@@ -1034,11 +1027,8 @@ class AgentRuntime:
             # judged on the conversation's model, never on a model one
             # `$MODEL` turn borrowed: its window and summarizer would
             # decide what the conversation keeps from then on.
-            + (
-                [AutoCompaction(self, context)]
-                if self.auto_compact and chosen.model is None
-                else []
-            )
+            # Installed whatever `auto_compact` says; it checks that per request.
+            + ([AutoCompaction(self, context)] if chosen.model is None else [])
         )
 
     async def _translator(self, context: TurnContext) -> EventTranslator:
