@@ -2361,19 +2361,9 @@ def create_prompt(
     session.layout = prompt_layout.layout()
     session.app.layout = session.layout
     if transcript is not None:
-        editor_app = session.app
-        session.app = Application(
-            layout=session.layout,
-            full_screen=False,
-            erase_when_done=True,
-            min_redraw_interval=1 / 30,
-            key_bindings=editor_app.key_bindings,
-            editing_mode=editor_app.editing_mode,
-            style=editor_app.style,
-            input=editor_app.input,
-            output=editor_app.output,
-            mouse_support=False,
-        )
+        # The app runs for the whole session, redrawn by streaming output and
+        # animation; cap that at the paced output's frame rate.
+        session.app.min_redraw_interval = 1 / 30
     session.app.before_render += prompt_layout.before_render
     session.app.after_render += prompt_layout.after_render
     if session.app.editing_mode == EditingMode.VI:
