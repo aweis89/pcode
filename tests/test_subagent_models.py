@@ -131,17 +131,20 @@ def test_a_delegation_runs_on_a_model_off_the_menu(tmp_path, monkeypatch):
     async def child(messages, info):
         yield "second opinion"
 
-    monkeypatch.setattr(
-        agent_module,
-        "side_model",
-        fake_side_model({"other:big": FunctionModel(stream_function=child)}),
-    )
+    resolve = fake_side_model({"other:big": FunctionModel(stream_function=child)})
+    resolved = []
+
+    def counting(name, effort=""):
+        resolved.append(name)
+        return resolve(name, effort)
+
+    monkeypatch.setattr(agent_module, "side_model", counting)
 
     async def parent(messages, info):
         returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
         retries = [p for m in messages for p in m.parts if type(p).__name__ == "RetryPromptPart"]
-        if returns:
-            seen["returned"] = returns[0].content
+        if len(returns) == 2:
+            seen["returned"] = [r.content for r in returns]
             yield "done"
             return
         name = "other:big" if retries else "nope:z"
@@ -151,7 +154,7 @@ def test_a_delegation_runs_on_a_model_off_the_menu(tmp_path, monkeypatch):
             0: DeltaToolCall(
                 name="delegate_task",
                 json_args=json.dumps({"agent_name": "worker", "task": "Review", "model": name}),
-                tool_call_id=f"call-{name}",
+                tool_call_id=f"call-{name}-{len(returns)}",
             )
         }
 
@@ -165,7 +168,9 @@ def test_a_delegation_runs_on_a_model_off_the_menu(tmp_path, monkeypatch):
 
     asyncio.run(run())
     assert "Cannot use nope:z: no credentials" in seen["retry"]
-    assert seen["returned"] == "second opinion"
+    assert seen["returned"] == ["second opinion", "second opinion"]
+    # A name is resolved once, then reused; a failed one is not remembered.
+    assert resolved == ["nope:z", "other:big"]
 
 
 def test_the_command_sets_lists_and_clears_the_models(tmp_path, monkeypatch):

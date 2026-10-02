@@ -2200,7 +2200,7 @@ class SessionController:
                 return
             menu, problems = await asyncio.to_thread(subagent_menu, configured)
             lines = [
-                "Sub-agent models delegate_task may pick (without one, the session's model)"
+                "Sub-agent models listed for delegate_task (without one, the session's model)"
                 + (", set by this workspace's .pcode/preferences.json" if project else "")
                 + ":",
                 *(f"  {name}" for name in menu),
