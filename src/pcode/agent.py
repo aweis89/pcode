@@ -159,121 +159,116 @@ def has_mcp_servers() -> bool:
         return False
 
 
-def create_coder(
-    workspace: Path, subagents: Sequence = (), extensions: Sequence = (), *, delegation: bool = True
-) -> CombinedCapability:
-    """Compose Harness's Coder with pcode's repository context and planning.
+def _init_fields(capability) -> dict:
+    """A dataclass capability's constructor arguments, to rebuild it as a subclass."""
+    return {f.name: getattr(capability, f.name) for f in fields(capability) if f.init}
 
-    `subagents` are extension-contributed Harness `SubAgent` entries, listed
-    beside the worker under the one `delegate_task` tool.
+
+def _adapt(capability, workspace: Path, output_limits):
+    """Map one of Coder's capabilities to pcode's replacement, or keep it.
+
+    Ids must be set at construction (`replace(..., id=...)` or the factory):
+    a `Capability` binds its instructions to its id in `__init__`, so a later
+    `capability.id = ...` is silently ignored by /status attribution. Do not
+    blanket-rename everything either: `replace()`-copied children compare
+    fields with their parent and a renamed parent breaks that match.
     """
-    workspace = workspace.resolve()
-    # uv tool entry points do not activate their environment's bin directory.
-    # Append it only when rg is missing, preserving the user's command precedence.
+    match capability:
+        # Coder's sole plain Capability holds its base instructions (and a
+        # project line pcode's file-tool instructions already cover). Exact type:
+        # every capability class below would also match `Capability()`.
+        case Capability() if type(capability) is Capability:
+            return Capability(instructions=CODER_INSTRUCTIONS)
+        case RepoContext():
+            return create_repo_context(workspace)
+        # Named so /status can attribute its prompt; ids never reach the model.
+        # No per-toolset retry budget: the `tool_retries` preference governs.
+        case FileSystem():
+            return replace(
+                DisplayFileSystem.from_filesystem(capability), id="file_tools", max_retries=None
+            )
+        # Replace Coder's 64k truncation, so it cannot cut data before spilling.
+        case ToolOutputLimits():
+            return output_limits
+        case WarnNearLimits():
+            return MeridianLimitWarnings(**_init_fields(capability))
+        case Shell():
+            return _job_shell(capability, workspace)
+        case _:
+            return capability
+
+
+def _job_shell(shell: Shell, workspace: Path) -> JobShell:
+    """Coder's persistent shell with commands run as named jobs.
+
+    Same execution model, but commands become named jobs the session can wait
+    on, report and stop. See `pcode.shell_tools`. Copied field by field
+    (including `id`) because a capability binds its instructions to its id in
+    `__init__`.
+    """
+    values = _init_fields(shell)
+    # direnv writes its status banner to stderr on every cd into a managed
+    # directory, which pollutes command output the agent parses (e.g.
+    # `... | jq`). An empty log format silences it.
+    values["env"] = {**(shell.env or os.environ), "DIRENV_LOG_FORMAT": ""}
+    # Commands inherit the whole host environment (see `JobShell`), so keep
+    # provider credentials out of it, as Coder did before it left the
+    # environment to the workspace.
+    values["denied_env_patterns"] = [*values["denied_env_patterns"], *LLM_API_KEY_ENV_PATTERNS]
+    return JobShell(**values, workdir=workspace)
+
+
+def _ensure_bundled_rg() -> None:
+    """uv tool entry points do not activate their environment's bin directory.
+
+    Append it only when rg is missing, preserving the user's command precedence.
+    """
     bundled_bin = Path(sys.executable).parent
     if shutil.which("rg") is None and (bundled_bin / "rg").is_file():
         os.environ["PATH"] = os.pathsep.join(
             part for part in (os.environ.get("PATH", ""), str(bundled_bin)) if part
         )
-    # Delegation is pcode's own `WorkspaceSubAgents`, added below.
-    coder = Coder(sub_agents=False)
-    output_limits = create_tool_output_limits()
-    # Keep Coder's tool selection, including its persistent shell. File display
-    # and repository discovery remain local adapters; planning is now opt-in.
-    #
-    # Ids must be set at construction (`replace(..., id=...)` or the factory):
-    # a `Capability` binds its instructions to its id in `__init__`, so a later
-    # `capability.id = ...` is silently ignored by /status attribution. Do not
-    # blanket-rename everything either: `replace()`-copied children compare
-    # fields with their parent and a renamed parent breaks that match.
-    coder.capabilities = [
-        # Coder's sole plain Capability holds its base instructions (and a
-        # project line pcode's file-tool instructions already cover).
-        Capability(instructions=CODER_INSTRUCTIONS)
-        if type(capability) is Capability
-        else create_repo_context(workspace)
-        if isinstance(capability, RepoContext)
-        # Named so /status can attribute its prompt; ids never reach the model.
-        # No per-toolset retry budget: the `tool_retries` preference governs.
-        else replace(
-            DisplayFileSystem.from_filesystem(capability), id="file_tools", max_retries=None
-        )
-        if isinstance(capability, FileSystem)
-        # Replace Coder's 64k truncation, so it cannot cut data before spilling.
-        else output_limits
-        if isinstance(capability, ToolOutputLimits)
-        else MeridianLimitWarnings(
-            **{f.name: getattr(capability, f.name) for f in fields(capability) if f.init}
-        )
-        if isinstance(capability, WarnNearLimits)
-        else capability
-        for capability in coder.capabilities
-    ]
-    # Ahead of the other capabilities in the list, so a tool call in a deleted
-    # workspace stops before anything tries to read or write in it.
-    coder.capabilities.insert(0, WorkspaceGuard(workspace))
-    # Harness capabilities read and write through `ctx.workspace`. Commands
-    # bypass it (see `JobShell`), so it needs none of the host's environment.
-    coder.capabilities.insert(1, LocalWorkspace(workspace))
-    # Isolated workers build their own coder, so each CLI runs in its checkout.
-    coder.capabilities.append(ClaudeWorkspace(workspace))
-    coder.capabilities.append(IdentifiedPlanning())
-    coder.capabilities.append(DelegationReporting())
-    coder.capabilities.append(MeridianSessionIdentity())
-    coder.capabilities.append(ModelOutputLimits())
-    # Ahead of the worker copy below, so a delegate edits under the same schema.
-    if strict_tools := create_strict_tools():
-        coder.capabilities.append(strict_tools)
-    # Ahead of the worker copy below, so a delegate that inherits MCP tools also
-    # learns which servers they come from.
-    coder.capabilities.append(MCPServers(instruct=has_mcp_servers()))
+
+
+def _cache_notices() -> CacheBustReporting | None:
     preferences = load_preferences()
-    cache_notices = None
-    if preferences.get("cache_notices", SETTINGS["cache_notices"].default) == "on":
-        cache_notices = CacheBustReporting(
-            dump_fingerprints=preferences.get("debug", SETTINGS["debug"].default) == "on"
-        )
-        coder.capabilities.append(cache_notices)
-    for index, capability in enumerate(coder.capabilities):
-        if isinstance(capability, Shell):
-            # direnv writes its status banner to stderr on every cd into a
-            # managed directory, which pollutes command output the agent parses
-            # (e.g. `... | jq`). An empty log format silences it.
-            capability.env = {**(capability.env or os.environ), "DIRENV_LOG_FORMAT": ""}
-            # Same execution model, but commands become named jobs the session
-            # can wait on, report and stop. See `pcode.shell_tools`. Copied
-            # field by field (including `id`) because a capability binds its
-            # instructions to its id in `__init__`.
-            # Commands inherit the whole host environment (see `JobShell`), so
-            # keep provider credentials out of it, as Coder did before it left
-            # the environment to the workspace.
-            values = {f.name: getattr(capability, f.name) for f in fields(capability) if f.init}
-            values["denied_env_patterns"] = [
-                *values["denied_env_patterns"],
-                *LLM_API_KEY_ENV_PATTERNS,
-            ]
-            coder.capabilities[index] = JobShell(**values, workdir=workspace)
-    # Compose the worker from the same capabilities rather than maintaining a
-    # second tool/policy list. Per-run capability state is still managed upstream.
-    # These are supplied by SubAgents.shared_capabilities instead (also for
-    # extension delegates); delegation itself is intentionally parent-only.
+    if preferences.get("cache_notices", SETTINGS["cache_notices"].default) != "on":
+        return None
+    return CacheBustReporting(
+        dump_fingerprints=preferences.get("debug", SETTINGS["debug"].default) == "on"
+    )
+
+
+def _worker_capabilities(capabilities: Sequence) -> list:
+    """The parent's capabilities, copied for the built-in worker.
+
+    Compose the worker from the same capabilities rather than maintaining a
+    second tool/policy list. Per-run capability state is still managed upstream.
+    The shared types are supplied by SubAgents.shared_capabilities instead (also
+    for extension delegates); delegation itself is intentionally parent-only.
+    """
     shared_types = (
         ToolOutputLimits,
         MeridianSessionIdentity,
         ModelOutputLimits,
         CacheBustReporting,
     )
-    worker_capabilities = [
+    return [
         copy(capability)
-        for capability in coder.capabilities
+        for capability in capabilities
         if not isinstance(capability, (*shared_types, ClearToolResults, DelegationReporting))
     ]
-    if code_mode := create_code_mode():
-        coder.capabilities.append(code_mode)
-        worker_capabilities.append(copy(code_mode))
-    if not delegation:
-        return CombinedCapability(worker_capabilities)
-    worker = _create_worker(worker_capabilities, extensions)
+
+
+def _delegation(
+    workspace: Path,
+    worker: Agent,
+    subagents: Sequence,
+    extensions: Sequence,
+    output_limits,
+    cache_notices: CacheBustReporting | None,
+) -> WorkspaceSubAgents:
+    """The `delegate_task` tool: the worker beside extension sub-agents."""
 
     @asynccontextmanager
     async def isolated_worker(child_workspace: Path):
@@ -293,33 +288,83 @@ def create_coder(
                 child_coder.capabilities.append(JobNotices(jobs))
                 yield _create_worker(child_coder.capabilities, child_extensions, isolated=True)
 
-    coder.capabilities.append(
-        WorkspaceSubAgents(
-            workspace=workspace,
-            worker_factory=isolated_worker,
-            agents=[
-                SubAgent(worker, usage_limits=SUBAGENT_USAGE_LIMITS),
-                *subagents,
-            ],
-            agent_folders=None,
-            # Unavailable names are left out here and reported by /subagents.
-            models=subagent_menu(subagent_models())[0],
-            event_stream_handler=stream_child_activity,
-            shared_capabilities=[
-                # Extension sub-agents have no coder of their own to set it.
-                ClaudeWorkspace(workspace, fallback=True),
-                MeridianSessionIdentity(),
-                ModelOutputLimits(),
-                *([replace(cache_notices)] if cache_notices else []),
-                ProviderCacheSettings(),
-                replace(output_limits),
-            ],
-        )
+    return WorkspaceSubAgents(
+        workspace=workspace,
+        worker_factory=isolated_worker,
+        agents=[
+            SubAgent(worker, usage_limits=SUBAGENT_USAGE_LIMITS),
+            *subagents,
+        ],
+        agent_folders=None,
+        # Unavailable names are left out here and reported by /subagents.
+        models=subagent_menu(subagent_models())[0],
+        event_stream_handler=stream_child_activity,
+        shared_capabilities=[
+            # Extension sub-agents have no coder of their own to set it.
+            ClaudeWorkspace(workspace, fallback=True),
+            MeridianSessionIdentity(),
+            ModelOutputLimits(),
+            *([replace(cache_notices)] if cache_notices else []),
+            ProviderCacheSettings(),
+            replace(output_limits),
+        ],
+    )
+
+
+def create_coder(
+    workspace: Path, subagents: Sequence = (), extensions: Sequence = (), *, delegation: bool = True
+) -> CombinedCapability:
+    """Compose Harness's Coder with pcode's repository context and planning.
+
+    `subagents` are extension-contributed Harness `SubAgent` entries, listed
+    beside the worker under the one `delegate_task` tool.
+    """
+    workspace = workspace.resolve()
+    _ensure_bundled_rg()
+    # Delegation is pcode's own `WorkspaceSubAgents`, added below.
+    coder = Coder(sub_agents=False)
+    output_limits = create_tool_output_limits()
+    # Keep Coder's tool selection, including its persistent shell (as a
+    # `JobShell`). File display and repository discovery remain local adapters;
+    # planning is now opt-in.
+    capabilities = [_adapt(c, workspace, output_limits) for c in coder.capabilities]
+    capabilities = [
+        # Ahead of the other capabilities in the list, so a tool call in a
+        # deleted workspace stops before anything tries to read or write in it.
+        WorkspaceGuard(workspace),
+        # Harness capabilities read and write through `ctx.workspace`. Commands
+        # bypass it (see `JobShell`), so it needs none of the host's environment.
+        LocalWorkspace(workspace),
+        *capabilities,
+        # Isolated workers build their own coder, so each CLI runs in its checkout.
+        ClaudeWorkspace(workspace),
+        IdentifiedPlanning(),
+        DelegationReporting(),
+        MeridianSessionIdentity(),
+        ModelOutputLimits(),
+    ]
+    # Ahead of the worker copy below, so a delegate edits under the same schema.
+    if strict_tools := create_strict_tools():
+        capabilities.append(strict_tools)
+    # Ahead of the worker copy below, so a delegate that inherits MCP tools also
+    # learns which servers they come from.
+    capabilities.append(MCPServers(instruct=has_mcp_servers()))
+    if cache_notices := _cache_notices():
+        capabilities.append(cache_notices)
+
+    worker_capabilities = _worker_capabilities(capabilities)
+    if code_mode := create_code_mode():
+        capabilities.append(code_mode)
+        worker_capabilities.append(copy(code_mode))
+    if not delegation:
+        return CombinedCapability(worker_capabilities)
+
+    worker = _create_worker(worker_capabilities, extensions)
+    capabilities.append(
+        _delegation(workspace, worker, subagents, extensions, output_limits, cache_notices)
     )
     # Summarize evidence before discarding it; pcode owns compaction.
-    return CombinedCapability(
-        [c for c in coder.capabilities if not isinstance(c, ClearToolResults)]
-    )
+    return CombinedCapability([c for c in capabilities if not isinstance(c, ClearToolResults)])
 
 
 def _create_worker(
