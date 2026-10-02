@@ -85,6 +85,8 @@ AGENT_INSTRUCTIONS = (
     "Use fenced code blocks with a language tag for multiline code or shell examples, "
     "and inline backticks for identifiers and short commands. Close all code fences. "
     "Write ordinary prose outside code blocks. "
+    "Full URLs are clickable in the terminal, so use them liberally and "
+    "prefer them over bare references like issue numbers or page titles. "
     # /copy offers quotes as their own choice, since the rendered rail and wrap
     # make them hard to select by hand.
     "Put text meant for the user to paste elsewhere in a > blockquote. "
