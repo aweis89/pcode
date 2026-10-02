@@ -196,50 +196,104 @@ def test_browser_open_fronts_the_current_page(tmp_path, fresh_state, monkeypatch
     assert navigated == ["about:blank"]
 
 
-def test_browser_open_replaces_a_closed_page(tmp_path, fresh_state, monkeypatch):
-    """A tab or window the user closed is reopened, not a failed turn."""
-    from playwright.async_api import Error as PlaywrightError
-
-    fresh_state.enabled = True
-    _, extension = browser_extension(tmp_path)
-    open_tool = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_open"]
-    closed = SimpleNamespace(
-        url="https://x/old",
-        bring_to_front=AsyncMock(side_effect=PlaywrightError("Target page has been closed")),
+def _page(url, *, closed=False, error=None):
+    return SimpleNamespace(
+        url=url, is_closed=lambda: closed, bring_to_front=AsyncMock(side_effect=error)
     )
-    fresh = SimpleNamespace(url="about:blank", bring_to_front=AsyncMock())
-
-    async def navigate(url):
-        fresh_state.session.page = fresh
-        return "navigated"
-
-    monkeypatch.setattr(fresh_state.toolset, "navigate", navigate)
-    monkeypatch.setattr(fresh_state, "arm", AsyncMock())
-    monkeypatch.setattr(fresh_state, "ensure_chrome", AsyncMock(return_value=""))
-    fresh_state.session.page = closed
-    assert asyncio.run(open_tool.function()).endswith("showing about:blank.")
-    fresh.bring_to_front.assert_awaited_once()
 
 
-def test_browser_open_reports_a_browser_that_stays_gone(tmp_path, fresh_state, monkeypatch):
-    from playwright.async_api import Error as PlaywrightError
-
+@pytest.fixture
+def open_browser(tmp_path, fresh_state, monkeypatch):
+    """`browser_open` over a session whose browser, context and navigate are fakes."""
     fresh_state.enabled = True
     _, extension = browser_extension(tmp_path)
-    open_tool = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_open"]
-
-    async def navigate(url):
-        fresh_state.session.page = SimpleNamespace(
-            url=url, bring_to_front=AsyncMock(side_effect=PlaywrightError("closed"))
-        )
-        return "navigated"
-
+    tool = extension.capabilities[0].get_toolset().toolsets[0].tools["browser_open"]
+    session = fresh_state.session
+    session._browser = SimpleNamespace(is_connected=lambda: True)
+    session._context = object()
+    navigate = AsyncMock(return_value="navigated")
     monkeypatch.setattr(fresh_state.toolset, "navigate", navigate)
     monkeypatch.setattr(fresh_state, "arm", AsyncMock())
     monkeypatch.setattr(fresh_state, "ensure_chrome", AsyncMock(return_value=""))
-    result = asyncio.run(open_tool.function())
-    assert result.startswith("Could not bring the browser to the front")
-    assert fresh_state.session.page is None
+    return SimpleNamespace(
+        run=lambda: asyncio.run(tool.function()), session=session, navigate=navigate
+    )
+
+
+def test_browser_open_replaces_a_closed_tab_in_the_same_context(open_browser, monkeypatch):
+    """A tab the user closed is replaced by a new tab, keeping the login; no reconnect."""
+    from playwright.async_api import Error as PlaywrightError
+
+    session = open_browser.session
+    closed = _page(
+        "https://x/old", closed=True, error=PlaywrightError("Target page has been closed")
+    )
+    fresh = _page("about:blank")
+
+    async def open_tab():
+        session.page = fresh
+        return fresh
+
+    monkeypatch.setattr(session, "open_tab", open_tab)
+    session.page, session.pages = closed, [closed]
+    assert open_browser.run().endswith("showing about:blank.")
+    closed.bring_to_front.assert_awaited_once()
+    fresh.bring_to_front.assert_awaited_once()
+    open_browser.navigate.assert_not_awaited()
+
+
+def test_browser_open_reconnects_when_the_browser_is_gone(open_browser):
+    """A dropped connection forgets its pages so navigate reconnects with a fresh tab."""
+    from playwright.async_api import Error as PlaywrightError
+
+    session = open_browser.session
+    session._browser = SimpleNamespace(is_connected=lambda: False)
+    stale = _page("https://x/old", error=PlaywrightError("Browser has been closed"))
+    fresh = _page("about:blank")
+
+    async def navigate(url):
+        assert session.pages == []
+        session.page = fresh
+        return "navigated"
+
+    open_browser.navigate.side_effect = navigate
+    session.page, session.pages = stale, [stale]
+    assert open_browser.run().endswith("showing about:blank.")
+    open_browser.navigate.assert_awaited_once_with("about:blank")
+
+
+def test_browser_open_reports_a_failure_on_a_live_tab(open_browser):
+    """An error on a tab that is still open is reported, and the tab is kept."""
+    from playwright.async_api import Error as PlaywrightError
+
+    session = open_browser.session
+    live = _page("https://x/login", error=PlaywrightError("Protocol error"))
+    session.page, session.pages = live, [live]
+    assert open_browser.run() == "Could not bring the browser to the front: Protocol error"
+    assert session.page is live and session.pages == [live]
+
+
+def test_browser_open_surfaces_why_navigate_failed(open_browser):
+    open_browser.navigate.return_value = "Browser unavailable: no Chrome on port 9222"
+    assert open_browser.run() == (
+        "The browser could not be opened: Browser unavailable: no Chrome on port 9222"
+    )
+
+
+def test_browser_open_gives_up_on_a_browser_that_keeps_closing(open_browser):
+    from playwright.async_api import Error as PlaywrightError
+
+    session = open_browser.session
+    session._browser = SimpleNamespace(is_connected=lambda: False)
+
+    async def navigate(url):
+        session.page = _page(url, error=PlaywrightError("closed"))
+        return "navigated"
+
+    open_browser.navigate.side_effect = navigate
+    assert open_browser.run().startswith("Could not bring the browser to the front: its window")
+    assert open_browser.navigate.await_count == 2
+    assert session.page is None
 
 
 def test_browser_tabs_lists_the_users_tabs_and_marks_ours(tmp_path, fresh_state, monkeypatch):
