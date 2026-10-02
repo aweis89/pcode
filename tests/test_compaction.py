@@ -143,6 +143,62 @@ def test_summarizer_is_tool_free_focused_incremental_and_pair_safe(monkeypatch):
     asyncio.run(run())
 
 
+def test_recompaction_updates_the_newest_summary_and_keeps_only_its_own(monkeypatch):
+    from pcode.compaction import SUMMARY_PREFIX
+
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "100000")
+
+    async def run():
+        calls = []
+        # pydantic-ai merges the summary request into the kept first user
+        # request, so an earlier compaction leaves its summaries newest first.
+        source = [
+            ModelRequest(
+                parts=[
+                    SystemPromptPart(SUMMARY_PREFIX + "newest summary"),
+                    SystemPromptPart(SUMMARY_PREFIX + "oldest summary"),
+                    UserPromptPart("Fix auth"),
+                ]
+            ),
+            *history()[1:],
+        ]
+        result = await summarize(source, model=summary_model(calls))
+        previous = calls[-1][0][-1].parts[0].content.split("<previous-summary>")[-1]
+        assert "newest summary" in previous
+        assert "oldest summary" not in calls[-1][0][-1].parts[0].content
+        summaries = [
+            part.content
+            for message in result.messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, SystemPromptPart) and part.content.startswith(SUMMARY_PREFIX)
+        ]
+        assert summaries == [SUMMARY_PREFIX + SUMMARY]
+        assert "Fix auth" in str(result.messages)
+        assert is_provider_valid(result.messages)
+
+    asyncio.run(run())
+
+
+def test_unmeasured_history_tokens_are_not_carried_forward_as_overhead(monkeypatch):
+    from pydantic_ai_harness.compaction._shared import estimate_token_count
+
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "1000000")
+
+    async def run():
+        source = history()
+        # The provider billed four times what the character heuristic sees, as
+        # with thinking whose signature is billed but whose text is summarized.
+        source[-1].usage = RequestUsage(input_tokens=4 * estimate_token_count(source))
+        result = await summarize(source, model=summary_model([]))
+        assert result.changed
+        kept = estimate_token_count(result.messages)
+        # Scaled by the measured density, not padded by the whole ~150k gap.
+        assert kept <= result.after <= 4 * kept
+
+    asyncio.run(run())
+
+
 def test_oversized_summary_request_retries_with_tighter_caps(monkeypatch):
     """Nothing upstream bounds the summary request, so it can be too large itself.
 
