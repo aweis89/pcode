@@ -73,6 +73,33 @@ async def _start(pcode) -> None:
         pcode.ui.notify(note)
 
 
+async def _replace_lost_page(session, page) -> bool:
+    """Give the session a live tab after the user closed `page` or the browser.
+
+    Harness keeps pointing at the last page it had once that page closes, so a
+    later call would fail on it forever. Returns False when `page` is still
+    open, so an unrelated failure is reported rather than abandoning a live tab.
+    """
+    from playwright.async_api import Error as PlaywrightError
+
+    browser = session._browser
+    connected = browser is not None and browser.is_connected()
+    if connected and not page.is_closed():
+        return False
+    if connected and session._context is not None:
+        try:
+            # Same context, so the login survives; the Chromium fallback would
+            # lose its cookies to a reconnect.
+            await session.open_tab()
+            return True
+        except PlaywrightError:
+            pass  # The context went with the window; reconnect below.
+    # The connection is gone: forget its pages so the next navigate reconnects.
+    session.page = None
+    session.pages = []
+    return True
+
+
 def _capability(pcode, toolset):
     """The browser tools, the open and login tools, and their guidance, sharing one session."""
     from playwright.async_api import Error as PlaywrightError
@@ -113,26 +140,23 @@ def _capability(pcode, toolset):
         needs them, such as a sign-in page, before asking them to act there.
         """
         await _start(pcode)
+        session = STATE.session
         for _ in range(2):
-            if STATE.session.page is None:
-                await toolset.navigate("about:blank")
-            page = STATE.session.page
-            if page is None:
-                return "The browser could not be opened."
+            if session.page is None:
+                result = await toolset.navigate("about:blank")
+                if session.page is None:
+                    return f"The browser could not be opened: {result}"
+            page = session.page
             try:
                 await page.bring_to_front()
-            except (PlaywrightError, BrowserUnavailableError):
-                # The user closed the tab or the window. Harness keeps pointing at
-                # the last page it had, so forget it: the next pass reconnects and
-                # opens a fresh tab instead of failing the whole turn.
-                STATE.session.page = None
-                STATE.session.launch_error = None
+            except PlaywrightError as error:
+                if not await _replace_lost_page(session, page):
+                    return f"Could not bring the browser to the front: {error}"
                 continue
             return f"The browser window is in front, showing {page.url}."
         return (
-            "Could not bring the browser to the front: the window was closed or stopped "
-            "responding. Check /browser status; if needed, use /browser off then "
-            "/browser launch or /browser attach."
+            "Could not bring the browser to the front: its window keeps closing. Check "
+            "/browser status; if needed, use /browser off then /browser launch or attach."
         )
 
     class Browser(Capability):
