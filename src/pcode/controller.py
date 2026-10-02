@@ -6,7 +6,6 @@ The terminal only renders and attaches over the socket; `--no-host` and
 
 import asyncio
 import inspect
-import os
 import threading
 from collections.abc import Callable
 from contextlib import aclosing
@@ -32,6 +31,7 @@ from pcode.aside import (
 from pcode.commands import Command, CommandRegistry
 from pcode.error_report import error_message
 from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
+from pcode.logins import Logins
 from pcode.preferences import (
     EFFORTS,
     SETTINGS,
@@ -431,6 +431,21 @@ class SessionController:
     Everything it shows goes through `view`; `activity` holds the live panel's
     session state (busy, queue, prompt row), which the view paints. The view is
     the terminal in-process (`PreviewApp`), or `pcode.host.HostView` in a host.
+
+    Areas of responsibility, in roughly the order their methods appear:
+
+    - Slash commands: registering the commands the session handles.
+    - Turn lifecycle: busy state, prompt and command queues, dispatch, turns,
+      steering, and cancellation.
+    - Background work: MCP enabling and sign-out, compaction, history rewrites.
+    - Shell jobs: the live panel's job rows, a watched tail, and job wake-ups.
+    - MCP servers: `/mcp` and saving default servers.
+    - History: `/compact`, `/autocompact`, `/resend`.
+    - The session: skills, extensions and sub-agents, building the runtime,
+      switching models, effort, worktrees, startup, and resuming.
+    - Side questions (`/btw`) and conversation branches (`/tree`).
+
+    Provider sign-in and sign-out live in `pcode.logins.Logins`, held as `logins`.
     """
 
     def __init__(self, view: SessionView, activity, runtime=None) -> None:
@@ -477,6 +492,8 @@ class SessionController:
         self.reload_requested = False
         self.login_requested: str | None = None
         self.logout_requested: str | None = None
+        # Runs the sign-ins and sign-outs those two ask for.
+        self.logins = Logins(self)
         # Side questions run beside the conversation instead of in it, so they
         # keep their own records and never enter the queue.
         self.asides = Asides()
@@ -526,15 +543,22 @@ class SessionController:
         self.registry = CommandRegistry()
         self.register_commands()
 
-    def register_commands(self) -> None:
-        from pcode.models import LEGACY_ANTHROPIC_AUTH, login_sources
+    # --- Slash commands ---
 
-        login_targets = (
-            "Anthropic, OpenAI Codex, or Claude Code (claude/meridian)"
-            if LEGACY_ANTHROPIC_AUTH
-            else "Claude Code or OpenAI Codex"
-        )
+    def register_commands(self) -> None:
+        # Registration order is /help's and completion's order, so the groups
+        # below run in the order the commands have always been listed.
         for command in (
+            *self._aside_commands(),
+            *self._model_commands(),
+            *self._session_commands(),
+            *self._resource_commands(),
+        ):
+            self.registry.register(command)
+
+    def _aside_commands(self) -> tuple[Command, ...]:
+        """The side question command."""
+        return (
             Command(
                 "/btw",
                 "Ask a side question beside the running turn ($MODEL ... picks models, "
@@ -546,6 +570,18 @@ class SessionController:
                 argument_completer=self.aside_completions,
                 group="Inspect",
             ),
+        )
+
+    def _model_commands(self) -> tuple[Command, ...]:
+        """Commands for the model, its sign-ins, and the extensions it runs with."""
+        from pcode.models import LEGACY_ANTHROPIC_AUTH, login_sources
+
+        login_targets = (
+            "Anthropic, OpenAI Codex, or Claude Code (claude/meridian)"
+            if LEGACY_ANTHROPIC_AUTH
+            else "Claude Code or OpenAI Codex"
+        )
+        return (
             Command(
                 "/model",
                 f"Choose a model; keeps the conversation ({shortcut_label('l')})",
@@ -563,14 +599,14 @@ class SessionController:
             Command(
                 "/login",
                 f"Sign in to {login_targets} in a browser",
-                self.login,
+                self.logins.login,
                 login_sources(),
                 group="Model",
             ),
             Command(
                 "/logout",
                 "Remove a stored login (anthropic or openai-codex)",
-                self.logout,
+                self.logins.logout,
                 ("anthropic", "openai-codex"),
                 group="Model",
             ),
@@ -598,6 +634,11 @@ class SessionController:
                 self.reload,
                 group="Model",
             ),
+        )
+
+    def _session_commands(self) -> tuple[Command, ...]:
+        """Commands for the conversation itself and its worktree."""
+        return (
             Command(
                 "/new", "Start a new conversation; clears the screen", self.new, group="Session"
             ),
@@ -630,6 +671,11 @@ class SessionController:
                 self.resend,
                 group="Session",
             ),
+        )
+
+    def _resource_commands(self) -> tuple[Command, ...]:
+        """Commands for what runs beside the model: MCP servers, shell jobs, plan usage."""
+        return (
             Command(
                 "/mcp",
                 "Manage MCP servers: list / enable NAME [--save] / enable-all / "
@@ -654,8 +700,9 @@ class SessionController:
                 self.usage,
                 group="Inspect",
             ),
-        ):
-            self.registry.register(command)
+        )
+
+    # --- What the footer, an attached terminal, and the host read ---
 
     def context_label(self) -> str:
         """The footer's context usage: tokens used of the model's window."""
@@ -742,6 +789,8 @@ class SessionController:
             result = await result
         return result
 
+    # --- Busy state ---
+
     def command_taken(self, name: str) -> bool:
         return name in TERMINAL_COMMANDS or self.registry.find(name) is not None
 
@@ -771,7 +820,7 @@ class SessionController:
             self.activity.queued_prompts or self.commands_pending or self.working()
         )
 
-    # Shell waits
+    # --- Shell waits ---
 
     def set_cancel_policy(self, policy: str) -> None:
         """Say what an abandoned shell wait should do to its command.
@@ -795,7 +844,7 @@ class SessionController:
         if registry is not None:
             registry.release_waits()
 
-    # Jobs
+    # --- Jobs ---
 
     def report_finished_jobs(self, job_id: str | None = None) -> list:
         """Announce job exits in scrollback, each one once. Returns those announced."""
@@ -876,7 +925,7 @@ class SessionController:
             job.announced.add("model")
         return "\n\n".join(notice_for(registry, job) for job in wakeable)
 
-    # Sending
+    # --- Sending ---
 
     def submit(self, text: str, mode: str, *, owner: MessageOwner | None = None) -> None:
         """Queue a message for the model, sent the way `mode` says.
@@ -940,7 +989,7 @@ class SessionController:
         if self.commands.empty() and not self.startup_commands:
             self.command_idle.set()
 
-    # Stopping
+    # --- Stopping ---
 
     def clear_queue(self) -> None:
         """Drop every queued message and pending command, saying what went."""
@@ -1090,9 +1139,9 @@ class SessionController:
         if self.reload_requested:
             await self.reload_extensions()
         if self.login_requested:
-            await self.perform_login()
+            await self.logins.perform_login()
         if self.logout_requested:
-            await self.perform_logout()
+            await self.logins.perform_logout()
 
     async def run_command(self, text: str, *, before_queue: bool = False) -> None:
         """Run one of the session's own commands; a handler may be sync or async."""
@@ -1112,7 +1161,7 @@ class SessionController:
         except ValueError as error:
             self.view.error(str(error))
 
-    # Turns
+    # --- Turns ---
 
     async def consume(self) -> None:
         """Run queued messages one at a time, each once nothing holds the queue."""
@@ -1386,7 +1435,7 @@ class SessionController:
         self.view.redraw()
         return True
 
-    # Work beside the turn loop that holds queued prompts back
+    # --- Work beside the turn loop that holds queued prompts back ---
 
     def start_mcp_task(self, name, coroutine, *, status: str, cancelled: str) -> None:
         """Run MCP work outside the model loop; queued prompts wait for it.
@@ -1612,7 +1661,7 @@ class SessionController:
         self.compact_task = asyncio.create_task(work)
         self.compact_task.add_done_callback(finished)
 
-    # Jobs: rows in the live panel, a watched tail, exits, and wake-ups
+    # --- Jobs: rows in the live panel, a watched tail, exits, and wake-ups ---
 
     async def watch_jobs(self) -> None:
         """Keep the jobs rows current, and report exits once the turn is over.
@@ -1772,7 +1821,7 @@ class SessionController:
         # Now, not at the watcher's next tick: the rows answer this command.
         self.refresh_jobs()
 
-    # MCP servers
+    # --- MCP servers ---
 
     def mcp_arguments(self) -> tuple[str, ...]:
         from pcode.mcp import configured_servers
@@ -1949,7 +1998,7 @@ class SessionController:
             "browser. This does not revoke the server-side grant."
         )
 
-    # Preferences the session saves (model, effort, autocompact)
+    # --- Preferences the session saves (model, effort, autocompact) ---
 
     def persist_defaults(self, **updates: str) -> None:
         try:
@@ -1965,7 +2014,7 @@ class SessionController:
         except (OSError, ValueError):
             self.view.warning("Could not update defaults; this change applies only here.")
 
-    # History: compaction and resending
+    # --- History: compaction and resending ---
 
     def compact(self, argument: str, *, before_queue: bool = False) -> None:
         if not self.model or not hasattr(self.runtime, "compact"):
@@ -2007,7 +2056,7 @@ class SessionController:
         self.activity.start_prompt(previous)
         self.activity.busy = True
 
-    # The session: its runtime, model, effort, extensions, skills, and sign-ins
+    # --- The session: its runtime, model, effort, extensions, and skills ---
 
     def register_skills(self) -> None:
         """Expose discovered SKILL.md assets as commands, skipping any collision."""
@@ -2036,6 +2085,8 @@ class SessionController:
         self.skill_requested = skill_prompt(skill, argument)
         if skill.mcp_servers:
             self.skill_mcp_requested = (skill.name, skill.mcp_servers)
+
+    # --- Extensions and sub-agents ---
 
     def register_extension_commands(self) -> None:
         """Expose extension commands, replacing the previous load's; built-ins win."""
@@ -2238,6 +2289,8 @@ class SessionController:
             session_dir=self.session_dir,
         )
 
+    # --- Runtime and model switching ---
+
     def _create_runtime(self):
         """Import and construct the backend off the terminal's event loop."""
         from pcode.agent import create_agent
@@ -2366,206 +2419,7 @@ class SessionController:
         self.warn_without_credentials()
         await self.warn_meridian_thinking()
 
-    def login(self, argument: str) -> None:
-        # Signing in stores a credential; it does not require the conversation to
-        # already be on Anthropic. A non-Anthropic session keeps its own model.
-        from pcode.models import login_sources
-
-        sources = login_sources()
-        source = argument.strip() or sources[0]
-        if source not in sources:
-            self.view.note(f"Usage: /login [{'|'.join(sources)}]")
-            return
-        self.login_requested = source
-
-    def logout(self, argument: str) -> None:
-        source = argument.strip() or "anthropic"
-        if source == "openai-codex":
-            self.logout_requested = source
-            return
-        if source != "anthropic":
-            self.view.note("Usage: /logout [anthropic|openai-codex]")
-            return
-        self.logout_anthropic()
-
-    def logout_anthropic(self) -> None:
-        from pcode.anthropic_oauth import credentials_path, delete_tokens
-        from pcode.auth import LoginError
-
-        try:
-            removed = delete_tokens(credentials_path())
-        except LoginError as error:
-            self.view.error(str(error))
-            return
-        if os.environ.get("PCODE_ANTHROPIC_AUTH", "").strip() == "oauth":
-            del os.environ["PCODE_ANTHROPIC_AUTH"]
-        # The stored sign-in is gone; a saved "oauth" choice would now resolve
-        # to a credential that no longer exists.
-        if load_preferences().get("anthropic_auth") == "oauth":
-            self.forget_defaults("anthropic_auth")
-        if not removed:
-            self.view.note("No stored Anthropic login to remove.")
-            return
-        self.view.note(
-            "Removed pcode's stored Anthropic login. This conversation keeps its current "
-            "model until the token expires; use /login again or set ANTHROPIC_API_KEY."
-        )
-
-    async def perform_login(self) -> None:
-        source = self.login_requested
-        self.login_requested = None
-        if source == "openai-codex":
-            await self.login_codex()
-        elif source == "meridian":
-            await self.login_meridian()
-        elif source == "claude":
-            await self.login_claude()
-        else:
-            await self.login_anthropic()
-
-    async def login_meridian(self) -> None:
-        """Run Claude Code's own sign-in for the Meridian this session uses."""
-        from pcode.auth import LoginError
-        from pcode.meridian_setup import claude_login, login_target
-
-        try:
-            target = await asyncio.to_thread(login_target)
-            self.view.note(
-                f"Signing in to Claude for Meridian ({target.label}) with `claude auth login`. "
-                "Finish in the browser (Ctrl+C cancels)."
-            )
-            status = await claude_login(self.view.note, target)
-            plan = status.get("subscriptionType")
-            self.view.note(
-                f"Signed in to Claude ({target.label}"
-                + (f", {plan} plan" if plan else "")
-                + "). Meridian uses it from its next request; pcode stores nothing."
-            )
-        except asyncio.CancelledError:
-            self.view.note("Claude sign-in cancelled.")
-            raise
-        except LoginError as error:
-            self.view.error(str(error))
-        except Exception:
-            self.view.error("Claude sign-in failed. No credential details were logged.")
-
-    async def login_claude(self) -> None:
-        """Run Claude Code's own sign-in for `claude:` models, with the CLI they run."""
-        from pcode.auth import LoginError
-        from pcode.claude_sdk import LOGIN_ENV, MISSING_SDK, cli_path
-        from pcode.meridian_setup import LoginTarget, claude_login
-        from pcode.models import claude_sdk_installed
-
-        if not claude_sdk_installed():
-            self.view.error(MISSING_SDK)
-            return
-        target = LoginTarget(os.environ.get("CLAUDE_CONFIG_DIR") or None, "Claude Code's login")
-        try:
-            self.view.note(
-                "Signing in to Claude Code with `claude auth login`. "
-                "Finish in the browser (Ctrl+C cancels)."
-            )
-            # Scrubbed as the requests are, so an API key cannot pass for the login.
-            status = await claude_login(
-                self.view.note,
-                target,
-                executable=cli_path(),
-                retry="/login claude",
-                extra_env=LOGIN_ENV,
-                for_meridian=False,
-            )
-            plan = status.get("subscriptionType")
-            self.view.note(
-                "Signed in to Claude Code"
-                + (f" ({plan} plan)" if plan else "")
-                + ". claude: models use it from their next request; pcode stores nothing."
-            )
-        except asyncio.CancelledError:
-            self.view.note("Claude sign-in cancelled.")
-            raise
-        except LoginError as error:
-            self.view.error(str(error))
-        except Exception:
-            self.view.error("Claude sign-in failed. No credential details were logged.")
-
-    async def login_codex(self) -> None:
-        from pcode.agent import codex_model
-        from pcode.auth import LoginError
-        from pcode.codex_login import credentials_path, login
-
-        self.view.note(
-            "Sign in with your ChatGPT account in the browser. "
-            "If no browser opens, visit this URL (Ctrl+C cancels):"
-        )
-        try:
-            await login(notify=self.view.note)
-            # Codex credentials are read when the model is built, so a Codex
-            # conversation must rebuild its model to adopt the new sign-in.
-            codex = (self.model or "").startswith("openai-codex:")
-            if codex and hasattr(self.runtime, "agent"):
-                self.runtime.agent.model = await asyncio.to_thread(codex_model, self.model)
-            self.view.note(
-                f"Signed in to OpenAI Codex. Credentials are stored in {credentials_path()} "
-                "(owner-only) and refreshed automatically; /logout openai-codex removes them."
-            )
-        except asyncio.CancelledError:
-            self.view.note("OpenAI Codex sign-in cancelled.")
-            raise
-        except LoginError as error:
-            self.view.error(str(error))
-        except Exception:
-            self.view.error("OpenAI Codex sign-in failed. No credential details were logged.")
-
-    async def perform_logout(self) -> None:
-        from pcode.auth import LoginError
-        from pcode.codex_login import credentials_path, delete_credentials
-
-        self.logout_requested = None
-        try:
-            removed = await asyncio.to_thread(delete_credentials, credentials_path())
-        except LoginError as error:
-            self.view.error(str(error))
-            return
-        self.view.note(
-            "Removed pcode's stored OpenAI Codex login. "
-            "New models fall back to the CLI login, if present; that login was not removed. "
-            "The current model retains its in-memory token until it expires."
-            if removed
-            else "No stored pcode OpenAI Codex login to remove. CLI login is unchanged."
-        )
-
-    async def login_anthropic(self) -> None:
-        from pcode.anthropic_oauth import AnthropicOAuthModel, credentials_path, login
-        from pcode.auth import LoginError
-
-        self.login_requested = None
-        self.view.note(
-            "Opening claude.ai to sign in with your Anthropic account. "
-            "If no browser opens, visit this URL (Ctrl+C cancels):"
-        )
-        try:
-            await login(notify=self.view.note)
-            # Only an Anthropic conversation adopts the new credential; a Codex
-            # or Meridian session keeps its own model and provider.
-            if self.model and self.model.startswith("anthropic:"):
-                self.runtime.agent.model = await asyncio.to_thread(AnthropicOAuthModel, self.model)
-            os.environ["PCODE_ANTHROPIC_AUTH"] = "oauth"
-            self.persist_defaults(anthropic_auth="oauth")
-            self.view.note(
-                f"Signed in to Anthropic. Credentials are stored in {credentials_path()} "
-                "(owner-only) and refreshed automatically; /logout removes them."
-            )
-            self.view.note(
-                "Future launches use this login automatically. "
-                "Set PCODE_ANTHROPIC_AUTH=api-key to use ANTHROPIC_API_KEY instead."
-            )
-        except asyncio.CancelledError:
-            self.view.note("Anthropic sign-in cancelled.")
-            raise
-        except LoginError as error:
-            self.view.error(str(error))
-        except Exception:
-            self.view.error("Anthropic sign-in failed. No credential details were logged.")
+    # --- Effort ---
 
     def current_effort(self) -> str:
         if not self.model:
@@ -2616,6 +2470,8 @@ class SessionController:
         # The provider default is unspecified; use medium as the starting point.
         index = levels.index(current) if current in levels else 1
         self.effort(levels[max(0, min(len(levels) - 1, index + direction))])
+
+    # --- Session overviews ---
 
     def session_overview(self) -> list[tuple[str, str]]:
         """Label/value rows describing the live conversation.
@@ -2692,6 +2548,8 @@ class SessionController:
             window = None
         return overhead_rows(parameters, window=window)
 
+    # --- Slow command jobs ---
+
     def defer(self, label: str, detail: str, job: Callable[[], list[str]]) -> None:
         """Run a slow command's work under a system badge, or inline without a terminal.
 
@@ -2753,6 +2611,8 @@ class SessionController:
         from pcode.usage import usage_report
 
         self.defer("Checking usage", "", usage_report)
+
+    # --- Worktrees ---
 
     def worktree(self, argument: str) -> None:
         from pcode import worktree
@@ -2828,6 +2688,8 @@ class SessionController:
             session.save_info()
         except OSError:
             pass
+
+    # --- Startup and new conversations ---
 
     def show_startup_context(self) -> None:
         """Report repository instructions and skills, each line only once.
@@ -2943,7 +2805,7 @@ class SessionController:
         if self.resuming:
             await runtime.restore()
 
-    # Resuming another saved conversation in this process
+    # --- Resuming another saved conversation in this process ---
 
     async def resume_session(self, identity: str) -> None:
         from pcode.agent import create_agent
@@ -3041,7 +2903,7 @@ class SessionController:
         self.view.commands_changed()
         self.view.note(f"Workspace: {workspace}")
 
-    # Side questions (/btw) and conversation branches (/tree)
+    # --- Side questions (/btw) and conversation branches (/tree) ---
 
     def aside_settled(self, aside) -> None:
         if aside.status == "answered":
