@@ -16,13 +16,10 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app, get_app_or_none
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import merge_completers
-from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
-from prompt_toolkit.filters import Always, Condition, has_focus, vi_mode
+from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
-from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.key_binding.vi_state import InputMode
-from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
@@ -42,7 +39,6 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode.block import INDENT, RULE, RUNNING, block_heading
-from pcode.clipboard import copy as copy_to_clipboard
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.edit_transcript import EditTranscript, edit_preview_rows
@@ -50,15 +46,15 @@ from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fr
 from pcode.input_keys import configure_newline_keys
 from pcode.jobs import WATCHED_PREFIX
 from pcode.layout_speed import install_fast_layout_division
-from pcode.paste import MARKER_PATTERN, PastedText
+from pcode.paste import MARKER_PATTERN
 from pcode.preferences import (
     SETTINGS,
     SYNTAX_THEMES,
     TERMINAL_SYNTAX,
-    THINKING_MODES,
     load_preferences,
 )
 from pcode.prefix_keys import PrefixKeys, shortcut_label
+from pcode.prompt_keys import PromptCallbacks, prompt_key_bindings
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.shell_mode import SHELL_PREFIX
 from pcode.syntax_colors import derive_colors
@@ -1636,6 +1632,660 @@ def prompt_prefix(text: str) -> str:
     return SHELL_PROMPT_PREFIX if text.lstrip().startswith(SHELL_PREFIX) else PROMPT_PREFIX
 
 
+def _completes_while_typing() -> bool:
+    text = get_app().current_buffer.text
+    return (
+        (text.startswith("/") and "\n" not in text)
+        # A leading `$MODEL` or `+EFFORT` while it is still the only word.
+        or (text.startswith(("$", "+")) and not any(char.isspace() for char in text))
+        or reference_fragment(get_app().current_buffer.document.text_before_cursor) is not None
+    )
+
+
+def _fit_editor(session: PromptSession) -> Window:
+    """The session's editor window, sized to its content and without search."""
+    # Retain PromptSession's editor/processors, but give its frame a content-sized
+    # height. The default frame expands into the CPR-reported space below the
+    # cursor, which can be almost the whole pane after a tmux split.
+    editor = session.layout.current_window
+    editor.height = None
+    editor.dont_extend_height = Always()
+    # No incremental search here: dropping the editor's search control makes
+    # prompt_toolkit's `control_is_searchable` false, so Ctrl+R, Ctrl+S, and vi's
+    # `/` and `?` never open an `I-search:` prompt this layout has no room for.
+    editor.content._search_buffer_control = None
+    return editor
+
+
+def _per_render(method):
+    """Cache a layout callback for the length of one redraw.
+
+    Layout callbacks are queried repeatedly during a single synchronous redraw.
+    Never retain their results across redraws: editor/menu/CPR and mutable
+    activity state can all change without going through one revision counter.
+    """
+
+    @wraps(method)
+    def cached(self, *args):
+        if self.render_cache is None:
+            return method(self, *args)
+        key = (method, self.size(), args)
+        if key not in self.render_cache:
+            self.render_cache[key] = method(self, *args)
+        return self.render_cache[key]
+
+    return cached
+
+
+def _preview_body(diff: bool, body: str, width: int, theme: str):
+    # Only the most recent body is retained. Titles and height/tail allocation
+    # stay outside this cache; width, kind and syntax theme affect rendering.
+    if diff:
+        return edit_preview_rows(body, width, theme)
+    return [
+        ("class:bottom-toolbar.text", row.plain)
+        for row in Text(command_text(body)).wrap(
+            Console(width=width), width, overflow="fold", no_wrap=False
+        )
+    ]
+
+
+def _spinner_rows(fragments, height) -> VSplit:
+    """Chrome rows outside a frame: spinners, notices and queued prompts.
+
+    One column of left padding so every row lines up with the task rows
+    inside the frame below instead of sitting against the terminal edge.
+    """
+    return VSplit(
+        [
+            Window(width=1),
+            Window(
+                FormattedTextControl(fragments, show_cursor=False),
+                height=height,
+                wrap_lines=False,
+                dont_extend_height=True,
+            ),
+        ],
+        height=height,
+    )
+
+
+class PromptLayout:
+    """The live block under scrollback: activity rows, tasks, previews and the editor.
+
+    Row callbacks read the session's current app on every call, since a
+    transcript prompt swaps in its own Application after the layout is built.
+    """
+
+    def __init__(
+        self,
+        session: PromptSession,
+        activity: Activity,
+        transcript: "Transcript | None",
+        shortcuts: PrefixKeys,
+    ):
+        self.session = session
+        self.activity = activity
+        self.transcript = transcript
+        self.shortcuts = shortcuts
+        self.editor = _fit_editor(session)
+        self.render_cache = None
+        self.animation_task = None
+        self.preview_body = lru_cache(maxsize=1)(_preview_body)
+        # One spinner for everything live: the status row, the active task, side
+        # questions and waits all show the same frame, so motion only ever means
+        # "the turn is waiting on this". Who owns the work is the badge and colour.
+        self.spinner = Spinner("dots")
+        # Every frame is a full layout pass (~2-3ms), so the animation loop alone
+        # costs a few percent of a core for the length of a turn. Rich's built-in
+        # interval is tuned for a dedicated terminal spinner, not for driving
+        # pcode's whole bottom block; slow it ~1.6x, which still reads as motion
+        # but noticeably cuts render frequency.
+        self.spinner.interval = round(self.spinner.interval * 1.6)
+        self.menu = CompletionsMenu(
+            max_height=20, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
+        )
+        self.menu.content.dont_extend_height = Always()
+
+    def size(self):
+        return self.session.app.output.get_size()
+
+    # Heights and rows, each computed at most once per redraw.
+
+    @_per_render
+    def frame_height(self) -> int:
+        """The editor box, including any tasks drawn inside it above a divider."""
+        tasks = self.attached_height()
+        live = self.preview_layout()
+        if live is not None:
+            return live[3] + tasks
+        size = self.size()
+        available = max(1, size.rows - 4 - self.activity_height() - tasks - len(self.queue_rows()))
+        cap = self.activity.height_cap(size.rows)
+        if cap is not None:
+            available = min(available, max(1, cap - 2 - self.tasks_height()))
+        text_height = self.editor.preferred_height(max(1, size.columns - 2), available).preferred
+        return min(text_height, available) + 2 + tasks
+
+    def refresh_interval(self) -> float:
+        """Seconds until the next frame."""
+        return self.spinner.interval / 1000
+
+    def spinner_frame(self) -> str:
+        return self.spinner.render(monotonic()).plain
+
+    @_per_render
+    def base_plan_rows(self, budget: int | None = None):
+        if budget is None:
+            rows = self.size().rows
+            cap = self.activity.height_cap(rows)
+            budget = (
+                min(10, max(1, rows // 2 - 2))
+                if cap is None
+                # The editor box keeps one text row inside its two borders.
+                else max(1, cap - self.task_chrome() - 3)
+            )
+        return self.activity.plan_rows(budget, self.spinner_frame())
+
+    @_per_render
+    def preview_layout(self):
+        """Allocate actual chrome/editor height first, then give output the remainder.
+
+        Keep the normal task viewport unless it would leave no output at all.
+        Only in that case trim task rows to preserve a one-line output tail.
+        Calculate all three heights together so editor wrapping cannot create a
+        circular dependency between frame_height and command_rows.
+        """
+        activity, transcript = self.activity, self.transcript
+        if transcript is None:
+            return None
+        edits = transcript.show_edits and activity.edit_previews
+        # A `!command` the user typed is shown while it runs whatever the
+        # scrollback setting for the model's commands says, and so is a job
+        # the user asked to watch; the model's own commands follow the setting.
+        commands = activity.command_outputs
+        if not (transcript.command_scrollback or activity.user_command):
+            commands = {
+                key: event for key, event in commands.items() if key.startswith(WATCHED_PREFIX)
+            }
+        if not edits and not commands:
+            return None
+        size = self.size()
+        width = max(1, size.columns - 2)
+        # One terminal row stays free for the non-full-screen renderer/CPR.
+        fixed = (
+            1
+            + int(self.session.bottom_toolbar is not None)
+            + self.status_height()
+            + len(self.queue_rows())
+            + self.menu.preferred_height(size.columns, size.rows).preferred
+        )
+        room = max(0, size.rows - fixed)
+        # Parallel calls share the preview; show the most recently updated call.
+        event = next(reversed((activity.edit_previews if edits else commands).values()))
+        # A sandboxed snippet is pending arguments like an edit, but it is code
+        # rather than a diff: no +/- coloring, and nothing has run yet.
+        code = bool(edits) and event.kind == "code"
+        heading = (
+            block_heading(
+                RUNNING,
+                "Preparing code · not yet run"
+                if code
+                else f"Preparing edit · {event.path} · not applied",
+            )
+            if edits
+            else command_heading(activity, event)
+        )
+        plans = self.base_plan_rows()
+        # Editor: two borders and at least one text row. Preview: two rule
+        # lines, the command, and at least one output row. Keep one task when
+        # possible.
+        # Attached tasks share the editor's top border and add only a divider.
+        chrome_rows = 1 if activity.attach_tasks else 2
+        task_floor = 1 + chrome_rows if plans else 0
+        editor_room = max(1, room - 2 - 4 - task_floor)
+        cap = activity.height_cap(size.rows)
+        if cap is not None:
+            tasks = len(plans) + chrome_rows if plans else 0
+            editor_room = min(editor_room, max(1, cap - 2 - tasks))
+        editor_rows = min(editor_room, self.editor.preferred_height(width, editor_room).preferred)
+        editor_height = editor_rows + 2
+        plan_budget = max(0, room - editor_height - 4 - chrome_rows)
+        if len(plans) > plan_budget:
+            plans = self.base_plan_rows(plan_budget)
+        plan_height = len(plans) + chrome_rows if plans else 0
+        # Chrome: the two rule lines, plus the indented `$ command` a shell
+        # preview repeats below its heading, exactly as scrollback does.
+        chrome = 2 if edits else 3
+        budget = min(transcript.command_preview_lines, room - editor_height - plan_height - chrome)
+        if budget <= 0:
+            return plans, "", [], editor_height
+        body = event.text if edits else event.output
+        rows = self.preview_body(bool(edits) and not code, body, width, transcript.code_theme)
+        if edits:
+            # A diff keeps its +/- gutter flush left, as the settled block does.
+            return plans, heading, rows[-budget:], editor_height
+        block = [("class:plan", "$ " + command_preview(event.command)), *rows[-budget:]]
+        return plans, heading, [(style, INDENT + text) for style, text in block], editor_height
+
+    def plan_rows(self):
+        live = self.preview_layout()
+        return live[0] if live is not None else self.base_plan_rows()
+
+    def preview_heading(self):
+        live = self.preview_layout()
+        return live[1] if live is not None else ""
+
+    def command_rows(self):
+        live = self.preview_layout()
+        return live[2] if live is not None else []
+
+    @_per_render
+    def notice_rows(self):
+        """Freeze the expiring notice for this render so height matches content.
+
+        A waiting leader's hint borrows the slot: it answers a keystroke and
+        goes with the next one, which is what a notice is for.
+        """
+        width = self.size().columns - 1
+        if self.shortcuts.pending:
+            return chrome_rows(self.shortcuts.hint_text(), width, "class:activity.system")
+        return self.activity.notice_rows(width)
+
+    @_per_render
+    def job_rows(self):
+        return self.activity.job_rows(JOB_ROWS)
+
+    @_per_render
+    def group_rows(self):
+        """The run's group line so far, when no status row carries its tally.
+
+        While a turn runs the count rides the status row instead, next to the
+        spinner that says it is still going; the full line reaches scrollback
+        when the run closes.
+        """
+        if self.transcript is None or self.activity.status_shown:
+            return []
+        row = self.transcript.pending_group_row(self.size().columns - 1)
+        return [("class:activity.group", row)] if row else []
+
+    @_per_render
+    def thought_row(self):
+        return self.activity.thought_fragments(self.size().columns - 1)
+
+    @_per_render
+    def aside_rows(self):
+        return self.activity.aside_rows(self.spinner_frame(), self.size().columns - 1)
+
+    @_per_render
+    def wait_rows(self):
+        """The terminal's own wait (the host starting, a command running there)."""
+        return self.activity.wait_fragments(self.spinner_frame(), self.size().columns - 1)
+
+    @_per_render
+    def typing_row(self):
+        """Prose still being typed out: the next scrollback row, drawn live."""
+        output = self.transcript.output if self.transcript is not None else None
+        return output.typing_fragments() if output is not None else []
+
+    @_per_render
+    def queue_rows(self):
+        budget = min(4, max(1, self.size().rows // 4))
+        return self.activity.queue_rows(budget)
+
+    def status_gap(self) -> bool:
+        """Whether the live panel needs its own blank row above it.
+
+        Scrollback separates blocks with a blank row, but the panel is not
+        scrollback: without this the spinner sits flush against the last tool
+        line. Depend only on state preview_layout already reads, so asking for
+        the gap cannot re-enter the layout calculation.
+        """
+        shown = (
+            self.activity.status_shown
+            or bool(self.group_rows())
+            or bool(self.notice_rows())
+            or bool(self.wait_rows())
+            or bool(self.aside_rows())
+            or bool(self.job_rows())
+        )
+        # A typed row is not written yet, so scrollback's own gap sits above it.
+        transcript = self.transcript
+        return (
+            shown
+            and transcript is not None
+            and (bool(self.typing_row()) or not transcript.ends_blank)
+        )
+
+    def status_height(self) -> int:
+        return (
+            bool(self.typing_row())
+            + self.activity.status_shown
+            + len(self.thought_row())
+            + len(self.group_rows())
+            + len(self.notice_rows())
+            + len(self.wait_rows())
+            + len(self.aside_rows())
+            + len(self.job_rows())
+            + self.status_gap()
+        )
+
+    def task_chrome(self) -> int:
+        """Rows the widget adds around its tasks: a divider attached, else a frame."""
+        return 1 if self.activity.attach_tasks else 2
+
+    def tasks_height(self) -> int:
+        """The widget's full height, wherever it is drawn."""
+        rows = self.plan_rows()
+        return len(rows) + self.task_chrome() if rows else 0
+
+    def plan_attached(self) -> bool:
+        return self.activity.attach_tasks and bool(self.plan_rows())
+
+    def attached_height(self) -> int:
+        """Rows attached tasks add to the editor box: the tasks plus a divider."""
+        return len(self.plan_rows()) + 1 if self.plan_attached() else 0
+
+    def activity_height(self) -> int:
+        rows = [] if self.activity.attach_tasks else self.plan_rows()
+        commands = self.command_rows()
+        return (
+            self.status_height()
+            + (len(rows) + 2 if rows else 0)
+            + (len(commands) + 2 if commands else 0)
+        )
+
+    def plan_text(self):
+        return panel_fragments(self.plan_rows(), self.size().columns - 2)
+
+    # Containers.
+
+    def panel_rows(self, rows) -> ConditionalContainer:
+        """Padded chrome rows for one row source, shown while it has any."""
+        return ConditionalContainer(
+            _spinner_rows(
+                lambda: panel_fragments(rows(), self.size().columns - 1),
+                lambda: len(rows()),
+            ),
+            filter=Condition(lambda: bool(rows())),
+        )
+
+    def plan_body(self) -> Window:
+        return Window(
+            FormattedTextControl(self.plan_text),
+            height=lambda: len(self.plan_rows()),
+            dont_extend_height=True,
+            wrap_lines=False,
+        )
+
+    def plan_heading_border(self) -> VSplit:
+        """A top border with the heading at the left; Frame can only center it."""
+        activity = self.activity
+        return VSplit(
+            [
+                Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
+                Label(
+                    lambda: panel_fragments(
+                        [
+                            (
+                                "class:plan.heading" if activity.displayed_plan else "bold",
+                                activity.panel_heading(),
+                            )
+                        ],
+                        self.size().columns - 8,
+                    ),
+                    style="class:frame.label",
+                    dont_extend_width=True,
+                ),
+                Window(FormattedTextControl(" "), width=1, style="class:frame.border"),
+                Window(char="─", style="class:frame.border"),
+                Window(char="┐", width=1, style="class:frame.border"),
+            ],
+            height=1,
+        )
+
+    def commands_block(self) -> ConditionalContainer:
+        # Framed the way scrollback frames the same run once it settles: the
+        # heading rides the opening rule, the body is indented, a rule closes it.
+        return ConditionalContainer(
+            HSplit(
+                [
+                    VSplit(
+                        [
+                            Label(
+                                lambda: panel_fragments(
+                                    [("class:block.heading", self.preview_heading())],
+                                    self.size().columns - 4,
+                                ),
+                                style="class:block.heading",
+                                dont_extend_width=True,
+                            ),
+                            Window(FormattedTextControl(" "), width=1, style="class:block.rule"),
+                            Window(char=RULE, style="class:block.rule"),
+                        ],
+                        height=1,
+                    ),
+                    Window(
+                        FormattedTextControl(
+                            lambda: panel_fragments(self.command_rows(), self.size().columns),
+                            show_cursor=False,
+                        ),
+                        height=lambda: len(self.command_rows()),
+                        dont_extend_height=True,
+                        wrap_lines=False,
+                    ),
+                    Window(char=RULE, height=1, style="class:block.rule"),
+                ],
+                height=lambda: len(self.command_rows()) + 2,
+            ),
+            filter=Condition(lambda: bool(self.command_rows())),
+        )
+
+    def activity_panel(self) -> HSplit:
+        """Everything live between scrollback and the editor, top to bottom."""
+        activity = self.activity
+        transcript = self.transcript
+        current_status = ConditionalContainer(
+            _spinner_rows(
+                lambda: activity.status_fragments(
+                    self.spinner_frame(),
+                    self.size().columns - 1,
+                    transcript.pending_tally() if transcript is not None else "",
+                ),
+                1,
+            ),
+            filter=Condition(lambda: activity.status_shown),
+        )
+        # Its own row, so a running tool taking the status row never hides it.
+        thought = ConditionalContainer(
+            _spinner_rows(self.thought_row, 1), filter=Condition(lambda: bool(self.thought_row()))
+        )
+        plan_frame = Frame(self.plan_body(), height=lambda: len(self.plan_rows()) + 2)
+        plan_frame.container.children[0] = self.plan_heading_border()
+        plan = ConditionalContainer(
+            plan_frame,
+            filter=Condition(lambda: bool(self.plan_rows()) and not activity.attach_tasks),
+        )
+        # Keep the turn and its activity adjacent even when the root layout justifies
+        # the transcript and editor across the remaining terminal height.
+        commands = self.commands_block()
+        status_spacer = ConditionalContainer(Window(height=1), filter=Condition(self.status_gap))
+        # Flush left, where scrollback will draw the same line once the run closes.
+        group = ConditionalContainer(
+            Window(
+                FormattedTextControl(self.group_rows, show_cursor=False),
+                height=lambda: len(self.group_rows()),
+                wrap_lines=False,
+                dont_extend_height=True,
+            ),
+            filter=Condition(lambda: bool(self.group_rows())),
+        )
+        # Directly above the spinner: a notice answers the keystroke that caused it
+        # without ever reaching scrollback, and vanishes on its own.
+        notice = self.panel_rows(self.notice_rows)
+        # This terminal's own wait on the session host, hidden while a turn row covers it.
+        waits = self.panel_rows(self.wait_rows)
+        # Below the spinner: side questions run beside the turn and outlive it, so
+        # they get their own spinner rows rather than a share of the prompt's.
+        asides = self.panel_rows(self.aside_rows)
+        # What is running that the spinner does not cover.
+        # Shown while idle too, which is when "is the suite still going?" is asked.
+        jobs = self.panel_rows(self.job_rows)
+        return HSplit(
+            [
+                status_spacer,
+                group,
+                commands,
+                notice,
+                current_status,
+                thought,
+                waits,
+                asides,
+                jobs,
+                plan,
+            ]
+        )
+
+    def queued(self) -> ConditionalContainer:
+        return ConditionalContainer(
+            _spinner_rows(
+                lambda: panel_fragments(self.queue_rows(), self.size().columns - 1),
+                lambda: len(self.queue_rows()),
+            ),
+            filter=Condition(lambda: bool(self.activity.queued_prompts)),
+        )
+
+    def typing(self) -> ConditionalContainer:
+        # Flush left like the scrollback row it becomes, and placed above the
+        # layout's justifying filler so it sits directly beneath scrollback rather
+        # than jumping up a row when it is written.
+        return ConditionalContainer(
+            Window(
+                FormattedTextControl(self.typing_row, show_cursor=False),
+                height=1,
+                wrap_lines=False,
+                dont_extend_height=True,
+            ),
+            filter=Condition(lambda: bool(self.typing_row())),
+        )
+
+    def editor_frame(self) -> Frame:
+        session = self.session
+        editor_frame = Frame(self.editor, height=self.frame_height)
+        # Replace only the bottom border: the badge must not add a row or alter CPR sizing.
+        editor_frame.container.children[-1] = VSplit(
+            [
+                Window(char="└", width=1, style="class:frame.border"),
+                Window(char="─", style="class:frame.border"),
+                ConditionalContainer(
+                    Label(
+                        lambda: editor_mode_label(session.app),
+                        style="class:editor.mode",
+                        dont_extend_width=True,
+                    ),
+                    filter=Condition(lambda: session.app.editing_mode == EditingMode.VI),
+                ),
+                Window(FormattedTextControl("─┘"), width=2, style="class:frame.border"),
+            ],
+            height=1,
+        )
+        # Attached tasks: the widget's heading becomes the editor's top border and
+        # a divider separates the tasks from the text. frame_height counts both.
+        side = partial(Window, char="│", width=1, style="class:frame.border")
+        editor_frame.container.children[0] = HSplit(
+            [
+                ConditionalContainer(
+                    HSplit(
+                        [
+                            self.plan_heading_border(),
+                            VSplit([side(), self.plan_body(), side()]),
+                            VSplit(
+                                [
+                                    Window(char="├", width=1, style="class:frame.border"),
+                                    Window(char="─", style="class:frame.border"),
+                                    Window(char="┤", width=1, style="class:frame.border"),
+                                ],
+                                height=1,
+                            ),
+                        ]
+                    ),
+                    filter=Condition(self.plan_attached),
+                ),
+                ConditionalContainer(
+                    editor_frame.container.children[0], filter=~Condition(self.plan_attached)
+                ),
+            ]
+        )
+        return editor_frame
+
+    def bottom_toolbar(self) -> Window:
+        return Window(
+            FormattedTextControl(
+                lambda: self.session.bottom_toolbar, style="class:bottom-toolbar.text"
+            ),
+            style="class:bottom-toolbar",
+            height=1,
+        )
+
+    def layout(self) -> Layout:
+        children = [self.menu, self.activity_panel(), self.queued(), self.editor_frame()]
+        if self.transcript is not None:
+            children[:0] = [self.typing(), Window()]
+        if self.session.bottom_toolbar is not None:
+            children.append(self.bottom_toolbar())
+        return Layout(
+            HSplit(
+                children,
+                align=VerticalAlign.JUSTIFY if self.transcript else VerticalAlign.BOTTOM,
+            ),
+            focused_element=self.editor,
+        )
+
+    # Redraw hooks: the per-render cache and the spinner's animation timer.
+
+    def needs_animation(self) -> bool:
+        activity = self.activity
+        return (
+            activity.busy
+            or activity.status_shown
+            # Keep redrawing while a notice is live: nothing else will ask for
+            # the frame that finally removes it.
+            or activity.notice_shown
+            or activity.asides_running
+            or bool(activity.waits)
+            or (activity.tasks_shown and activity.tools.animating)
+        )
+
+    async def animate(self, app) -> None:
+        await asyncio.sleep(self.refresh_interval())
+        self.animation_task = None
+        # Repaint unconditionally: this timer only exists because the previous
+        # render was animated, and the frame that removes an expired notice or
+        # a finished spinner is the one nothing else asks for.
+        app.invalidate()
+
+    def before_render(self, app) -> None:
+        self.render_cache = {}
+        transcript, activity = self.transcript, self.activity
+        if transcript is None or not (
+            (transcript.show_edits and activity.edit_previews)
+            or (transcript.command_scrollback and activity.command_outputs)
+            or any(key.startswith(WATCHED_PREFIX) for key in activity.command_outputs)
+        ):
+            self.preview_body.cache_clear()
+
+    def after_render(self, app) -> None:
+        self.render_cache = None
+        # A redraw caused by input or application events starts animation again.
+        # Idle prompts have no timer; toolkit owns cancellation at app shutdown.
+        if self.needs_animation() and app.is_running:
+            if self.animation_task is None or self.animation_task.done():
+                self.animation_task = app.create_background_task(self.animate(app))
+        elif self.animation_task is not None:
+            self.animation_task.cancel()
+            self.animation_task = None
+
+
 def create_prompt(
     registry: CommandRegistry,
     *,
@@ -1658,162 +2308,21 @@ def create_prompt(
     configure_newline_keys()
     install_fast_layout_division()
     activity = activity or Activity()
-    keys = KeyBindings()
-    # The prompt's own shortcuts: Ctrl chords by default, or a leader and a
-    # letter, whose hint takes the notice rows above the spinner.
-    shortcuts = PrefixKeys(key_prefix)
-
-    @shortcuts.add("s", "Send mode", filter=on_send_mode is not None)
-    def cycle_send_mode(event: KeyPressEvent) -> None:
-        on_send_mode()
-        event.app.invalidate()
-
-    @shortcuts.add("l", "Model", filter=on_model is not None)
-    def choose_model(event: KeyPressEvent) -> None:
-        on_model()
-
-    @shortcuts.add("n", "More effort", filter=on_effort is not None)
-    def increase_effort(event: KeyPressEvent) -> None:
-        on_effort(1)
-        event.app.invalidate()
-
-    @shortcuts.add("p", "Less effort", filter=on_effort is not None)
-    def decrease_effort(event: KeyPressEvent) -> None:
-        on_effort(-1)
-        event.app.invalidate()
-
-    @shortcuts.add("o", "Tasks")
-    def toggle_tasks(event: KeyPressEvent) -> None:
-        shown = activity.toggle_tasks()
-        if on_tasks is not None:
-            on_tasks(shown)
-        event.app.invalidate()
-
-    @shortcuts.add("t", "Thinking")
-    def cycle_thinking(event: KeyPressEvent) -> None:
-        if on_thinking is not None:
-            on_thinking("")  # Bare: the app cycles, persists and says which mode.
-        else:
-            modes = THINKING_MODES
-            index = modes.index(activity.thinking_mode) if activity.thinking_mode in modes else -1
-            activity.thinking_mode = modes[(index + 1) % len(modes)]
-        event.app.invalidate()
-
-    @shortcuts.add("g", "Command output", filter=on_commands is not None)
-    def toggle_command_scrollback(event: KeyPressEvent) -> None:
-        on_commands()
-        event.app.invalidate()
-
-    # Vim's alternate-buffer key; terminals send Ctrl+^ for Ctrl+6 as well.
-    @shortcuts.add("^", "Previous session", filter=on_previous_session is not None)
-    def previous_session(event: KeyPressEvent) -> None:
-        on_previous_session()
-
-    pasted = PastedText()
-
-    @keys.add(Keys.BracketedPaste)
-    def paste(event: KeyPressEvent) -> None:
-        # Same line-ending cleanup as prompt_toolkit's default paste binding,
-        # then large pastes collapse to a preview until the prompt is sent.
-        data = event.data.replace("\r\n", "\n").replace("\r", "\n")
-        event.current_buffer.insert_text(pasted.collapse(data))
-
-    @shortcuts.add("y", "Copy")
-    def copy_draft(event: KeyPressEvent) -> None:
-        # Collapsed pastes are a display device, so copy what sending would:
-        # the expanded text, not the `[pasted …]` marker standing in for it.
-        text = pasted.expand(event.current_buffer.text)
-        # With nothing typed, there is no draft to copy: copy the last response.
-        if not text and on_copy_response is not None:
-            on_copy_response()
-            return
-        if transcript is None:
-            return
-        if not text:
-            transcript.flash("Nothing to copy")
-            return
-        copied, truncated = copy_to_clipboard(text, event.app.output)
-        limit = " (truncated)" if truncated else ""
-        transcript.flash(f"Copied prompt{limit}" if copied else "Could not copy prompt")
-
-    @keys.add("enter")
-    def submit(event: KeyPressEvent) -> None:
-        buffer = event.current_buffer
-        if buffer.complete_state and buffer.complete_state.current_completion:
-            # First Enter accepts the selected completion; next Enter sends it.
-            buffer.complete_state = None
-        else:
-            expanded = pasted.expand(buffer.text)
-            if expanded != buffer.text:
-                buffer.document = Document(expanded, len(expanded))
-            pasted.clear()
-            buffer.validate_and_handle()
-
-    @keys.add("escape", filter=vi_mode, eager=True)
-    def normal_mode(event: KeyPressEvent) -> None:
-        # Match native vi Escape semantics, without waiting for Alt bindings.
-        buffer = event.current_buffer
-        state = event.app.vi_state
-        if state.input_mode in (InputMode.INSERT, InputMode.REPLACE):
-            buffer.cursor_position += buffer.document.get_cursor_left_position()
-        state.input_mode = InputMode.NAVIGATION
-        if buffer.selection_state:
-            buffer.exit_selection()
-
-    @keys.add("c-j")
-    @keys.add("escape", "enter", filter=~vi_mode)
-    def newline(event: KeyPressEvent) -> None:
-        event.current_buffer.insert_text("\n")
-
-    def down_would_idle() -> bool:
-        # prompt_toolkit's Down moves within the text, walks the completion
-        # menu, or steps forward through history; only when none of those
-        # apply does it do nothing. Claim just that case for a newline, so ↓
-        # never loses its existing meanings. Vi normal mode keeps `j`.
-        app = get_app()
-        buffer = app.current_buffer
-        document = buffer.document
-        if buffer.complete_state or document.cursor_position_row < document.line_count - 1:
-            return False
-        if buffer.working_index < len(buffer._working_lines) - 1:
-            return False
-        return not vi_mode() or app.vi_state.input_mode == InputMode.INSERT
-
-    @keys.add("down", filter=Condition(down_would_idle))
-    def newline_on_down(event: KeyPressEvent) -> None:
-        event.current_buffer.insert_text("\n")
-
-    @keys.add("c-d", filter=Condition(lambda: activity.busy))
-    def cancel(event: KeyPressEvent) -> None:
-        event.app.exit(exception=KeyboardInterrupt)
-
-    if transcript is not None:
-
-        @keys.add("c-d", filter=Condition(lambda: activity.busy))
-        def interrupt_turn(event):
-            on_cancel()
-
-        @keys.add("c-c")
-        def interrupt(event):
-            # Never discard a draft and interrupt the turn in one keypress: clear
-            # the editor first, so interrupting a busy turn needs an empty prompt.
-            if activity.busy and not session.default_buffer.text:
-                on_cancel()
-                return
-            session.default_buffer.reset()
-            pasted.clear()
-            transcript.note(
-                "Input discarded. Ctrl+C again interrupts."
-                if activity.busy
-                else "Input discarded. Ctrl+D on an empty prompt exits."
-            )
-
-        @keys.add("c-d", filter=Condition(lambda: not activity.busy))
-        def exit_or_delete(event):
-            if not event.current_buffer.text:
-                event.app.exit()
-            else:
-                event.current_buffer.delete()
+    callbacks = PromptCallbacks(
+        on_submit=on_submit,
+        on_cancel=on_cancel,
+        on_effort=on_effort,
+        on_model=on_model,
+        on_tasks=on_tasks,
+        on_thinking=on_thinking,
+        on_commands=on_commands,
+        on_send_mode=on_send_mode,
+        on_previous_session=on_previous_session,
+        on_copy_response=on_copy_response,
+    )
+    keys, shortcuts = prompt_key_bindings(
+        activity, transcript, callbacks, key_prefix, lambda: session.default_buffer
+    )
 
     output = kwargs.pop("output", None)
     if not isinstance(output, CursorSafeOutput):
@@ -1831,21 +2340,7 @@ def create_prompt(
         erase_when_done=True,
         completer=merge_completers([SlashCompleter(registry), FileReferenceCompleter(workspace)]),
         lexer=ReferenceLexer(extra=[(MARKER_PATTERN, "class:paste-marker")]),
-        complete_while_typing=Condition(
-            lambda: (
-                (
-                    get_app().current_buffer.text.startswith("/")
-                    and "\n" not in get_app().current_buffer.text
-                )
-                # A leading `$MODEL` or `+EFFORT` while it is still the only word.
-                or (
-                    get_app().current_buffer.text.startswith(("$", "+"))
-                    and not any(char.isspace() for char in get_app().current_buffer.text)
-                )
-                or reference_fragment(get_app().current_buffer.document.text_before_cursor)
-                is not None
-            )
-        ),
+        complete_while_typing=Condition(_completes_while_typing),
         reserve_space_for_menu=0,
         auto_suggest=AutoSuggestFromHistory(),
         key_bindings=shortcuts.key_bindings(keys),
@@ -1854,544 +2349,8 @@ def create_prompt(
     )
     session.shortcuts = shortcuts
 
-    # Retain PromptSession's editor/processors, but give its frame a content-sized
-    # height. The default frame expands into the CPR-reported space below the
-    # cursor, which can be almost the whole pane after a tmux split.
-    editor = session.layout.current_window
-    editor.height = None
-    editor.dont_extend_height = Always()
-    # No incremental search here: dropping the editor's search control makes
-    # prompt_toolkit's `control_is_searchable` false, so Ctrl+R, Ctrl+S, and vi's
-    # `/` and `?` never open an `I-search:` prompt this layout has no room for.
-    editor.content._search_buffer_control = None
-
-    # Layout callbacks are queried repeatedly during a single synchronous redraw.
-    # Never retain their results across redraws: editor/menu/CPR and mutable
-    # activity state can all change without going through one revision counter.
-    render_cache = None
-
-    def per_render(function):
-        @wraps(function)
-        def cached(*args):
-            if render_cache is None:
-                return function(*args)
-            key = (function, session.app.output.get_size(), args)
-            if key not in render_cache:
-                render_cache[key] = function(*args)
-            return render_cache[key]
-
-        return cached
-
-    @per_render
-    def frame_height() -> int:
-        """The editor box, including any tasks drawn inside it above a divider."""
-        tasks = attached_height()
-        live = preview_layout()
-        if live is not None:
-            return live[3] + tasks
-        size = session.app.output.get_size()
-        available = max(1, size.rows - 4 - activity_height() - tasks - len(queue_rows()))
-        cap = activity.height_cap(size.rows)
-        if cap is not None:
-            available = min(available, max(1, cap - 2 - tasks_height()))
-        text_height = editor.preferred_height(max(1, size.columns - 2), available).preferred
-        return min(text_height, available) + 2 + tasks
-
-    # One spinner for everything live: the status row, the active task, side
-    # questions and waits all show the same frame, so motion only ever means
-    # "the turn is waiting on this". Who owns the work is the badge and colour.
-    spinner = Spinner("dots")
-    # Every frame is a full layout pass (~2-3ms), so the animation loop alone
-    # costs a few percent of a core for the length of a turn. Rich's built-in
-    # interval is tuned for a dedicated terminal spinner, not for driving
-    # pcode's whole bottom block; slow it ~1.6x, which still reads as motion
-    # but noticeably cuts render frequency.
-    spinner.interval = round(spinner.interval * 1.6)
-
-    def refresh_interval() -> float:
-        """Seconds until the next frame."""
-        return spinner.interval / 1000
-
-    def spinner_frame() -> str:
-        return spinner.render(monotonic()).plain
-
-    @per_render
-    def base_plan_rows(budget: int | None = None):
-        if budget is None:
-            rows = session.app.output.get_size().rows
-            cap = activity.height_cap(rows)
-            budget = (
-                min(10, max(1, rows // 2 - 2))
-                if cap is None
-                # The editor box keeps one text row inside its two borders.
-                else max(1, cap - task_chrome() - 3)
-            )
-        return activity.plan_rows(budget, spinner_frame())
-
-    @lru_cache(maxsize=1)
-    def preview_body(diff: bool, body: str, width: int, theme: str):
-        # Only the most recent body is retained. Titles and height/tail allocation
-        # stay outside this cache; width, kind and syntax theme affect rendering.
-        if diff:
-            return edit_preview_rows(body, width, theme)
-        return [
-            ("class:bottom-toolbar.text", row.plain)
-            for row in Text(command_text(body)).wrap(
-                Console(width=width), width, overflow="fold", no_wrap=False
-            )
-        ]
-
-    @per_render
-    def preview_layout():
-        """Allocate actual chrome/editor height first, then give output the remainder.
-
-        Keep the normal task viewport unless it would leave no output at all.
-        Only in that case trim task rows to preserve a one-line output tail.
-        Calculate all three heights together so editor wrapping cannot create a
-        circular dependency between frame_height and command_rows.
-        """
-        if transcript is None:
-            return None
-        edits = transcript.show_edits and activity.edit_previews
-        # A `!command` the user typed is shown while it runs whatever the
-        # scrollback setting for the model's commands says, and so is a job
-        # the user asked to watch; the model's own commands follow the setting.
-        commands = activity.command_outputs
-        if not (transcript.command_scrollback or activity.user_command):
-            commands = {
-                key: event for key, event in commands.items() if key.startswith(WATCHED_PREFIX)
-            }
-        if not edits and not commands:
-            return None
-        size = session.app.output.get_size()
-        width = max(1, size.columns - 2)
-        # One terminal row stays free for the non-full-screen renderer/CPR.
-        fixed = (
-            1
-            + int(session.bottom_toolbar is not None)
-            + status_height()
-            + len(queue_rows())
-            + menu.preferred_height(size.columns, size.rows).preferred
-        )
-        room = max(0, size.rows - fixed)
-        # Parallel calls share the preview; show the most recently updated call.
-        event = next(reversed((activity.edit_previews if edits else commands).values()))
-        # A sandboxed snippet is pending arguments like an edit, but it is code
-        # rather than a diff: no +/- coloring, and nothing has run yet.
-        code = bool(edits) and event.kind == "code"
-        heading = (
-            block_heading(
-                RUNNING,
-                "Preparing code · not yet run"
-                if code
-                else f"Preparing edit · {event.path} · not applied",
-            )
-            if edits
-            else command_heading(activity, event)
-        )
-        plans = base_plan_rows()
-        # Editor: two borders and at least one text row. Preview: two rule
-        # lines, the command, and at least one output row. Keep one task when
-        # possible.
-        # Attached tasks share the editor's top border and add only a divider.
-        chrome_rows = 1 if activity.attach_tasks else 2
-        task_floor = 1 + chrome_rows if plans else 0
-        editor_room = max(1, room - 2 - 4 - task_floor)
-        cap = activity.height_cap(size.rows)
-        if cap is not None:
-            tasks = len(plans) + chrome_rows if plans else 0
-            editor_room = min(editor_room, max(1, cap - 2 - tasks))
-        editor_rows = min(editor_room, editor.preferred_height(width, editor_room).preferred)
-        editor_height = editor_rows + 2
-        plan_budget = max(0, room - editor_height - 4 - chrome_rows)
-        if len(plans) > plan_budget:
-            plans = base_plan_rows(plan_budget)
-        plan_height = len(plans) + chrome_rows if plans else 0
-        # Chrome: the two rule lines, plus the indented `$ command` a shell
-        # preview repeats below its heading, exactly as scrollback does.
-        chrome = 2 if edits else 3
-        budget = min(transcript.command_preview_lines, room - editor_height - plan_height - chrome)
-        if budget <= 0:
-            return plans, "", [], editor_height
-        body = event.text if edits else event.output
-        rows = preview_body(bool(edits) and not code, body, width, transcript.code_theme)
-        if edits:
-            # A diff keeps its +/- gutter flush left, as the settled block does.
-            return plans, heading, rows[-budget:], editor_height
-        block = [("class:plan", "$ " + command_preview(event.command)), *rows[-budget:]]
-        return plans, heading, [(style, INDENT + text) for style, text in block], editor_height
-
-    def plan_rows():
-        live = preview_layout()
-        return live[0] if live is not None else base_plan_rows()
-
-    def preview_heading():
-        live = preview_layout()
-        return live[1] if live is not None else ""
-
-    def command_rows():
-        live = preview_layout()
-        return live[2] if live is not None else []
-
-    @per_render
-    def notice_rows():
-        """Freeze the expiring notice for this render so height matches content.
-
-        A waiting leader's hint borrows the slot: it answers a keystroke and
-        goes with the next one, which is what a notice is for.
-        """
-        width = session.app.output.get_size().columns - 1
-        if shortcuts.pending:
-            return chrome_rows(shortcuts.hint_text(), width, "class:activity.system")
-        return activity.notice_rows(width)
-
-    @per_render
-    def job_rows():
-        return activity.job_rows(JOB_ROWS)
-
-    @per_render
-    def group_rows():
-        """The run's group line so far, when no status row carries its tally.
-
-        While a turn runs the count rides the status row instead, next to the
-        spinner that says it is still going; the full line reaches scrollback
-        when the run closes.
-        """
-        if transcript is None or activity.status_shown:
-            return []
-        row = transcript.pending_group_row(session.app.output.get_size().columns - 1)
-        return [("class:activity.group", row)] if row else []
-
-    @per_render
-    def thought_row():
-        return activity.thought_fragments(session.app.output.get_size().columns - 1)
-
-    @per_render
-    def aside_rows():
-        return activity.aside_rows(spinner_frame(), session.app.output.get_size().columns - 1)
-
-    @per_render
-    def wait_rows():
-        """The terminal's own wait (the host starting, a command running there)."""
-        return activity.wait_fragments(spinner_frame(), session.app.output.get_size().columns - 1)
-
-    @per_render
-    def typing_row():
-        """Prose still being typed out: the next scrollback row, drawn live."""
-        output = transcript.output if transcript is not None else None
-        return output.typing_fragments() if output is not None else []
-
-    def status_gap() -> bool:
-        """Whether the live panel needs its own blank row above it.
-
-        Scrollback separates blocks with a blank row, but the panel is not
-        scrollback: without this the spinner sits flush against the last tool
-        line. Depend only on state preview_layout already reads, so asking for
-        the gap cannot re-enter the layout calculation.
-        """
-        shown = (
-            activity.status_shown
-            or bool(group_rows())
-            or bool(notice_rows())
-            or bool(wait_rows())
-            or bool(aside_rows())
-            or bool(job_rows())
-        )
-        # A typed row is not written yet, so scrollback's own gap sits above it.
-        return (
-            shown and transcript is not None and (bool(typing_row()) or not transcript.ends_blank)
-        )
-
-    def status_height() -> int:
-        return (
-            bool(typing_row())
-            + activity.status_shown
-            + len(thought_row())
-            + len(group_rows())
-            + len(notice_rows())
-            + len(wait_rows())
-            + len(aside_rows())
-            + len(job_rows())
-            + status_gap()
-        )
-
-    def task_chrome() -> int:
-        """Rows the widget adds around its tasks: a divider attached, else a frame."""
-        return 1 if activity.attach_tasks else 2
-
-    def tasks_height() -> int:
-        """The widget's full height, wherever it is drawn."""
-        rows = plan_rows()
-        return len(rows) + task_chrome() if rows else 0
-
-    def plan_attached() -> bool:
-        return activity.attach_tasks and bool(plan_rows())
-
-    def attached_height() -> int:
-        """Rows attached tasks add to the editor box: the tasks plus a divider."""
-        return len(plan_rows()) + 1 if plan_attached() else 0
-
-    def activity_height() -> int:
-        rows = [] if activity.attach_tasks else plan_rows()
-        commands = command_rows()
-        return (
-            status_height()
-            + (len(rows) + 2 if rows else 0)
-            + (len(commands) + 2 if commands else 0)
-        )
-
-    def plan_text():
-        return panel_fragments(plan_rows(), session.app.output.get_size().columns - 2)
-
-    def spinner_rows(fragments, height) -> VSplit:
-        """Chrome rows outside a frame: spinners, notices and queued prompts.
-
-        One column of left padding so every row lines up with the task rows
-        inside the frame below instead of sitting against the terminal edge.
-        """
-        return VSplit(
-            [
-                Window(width=1),
-                Window(
-                    FormattedTextControl(fragments, show_cursor=False),
-                    height=height,
-                    wrap_lines=False,
-                    dont_extend_height=True,
-                ),
-            ],
-            height=height,
-        )
-
-    current_status = ConditionalContainer(
-        spinner_rows(
-            lambda: activity.status_fragments(
-                spinner_frame(),
-                session.app.output.get_size().columns - 1,
-                transcript.pending_tally() if transcript is not None else "",
-            ),
-            1,
-        ),
-        filter=Condition(lambda: activity.status_shown),
-    )
-    # Its own row, so a running tool taking the status row never hides it.
-    thought = ConditionalContainer(
-        spinner_rows(thought_row, 1), filter=Condition(lambda: bool(thought_row()))
-    )
-
-    def plan_body() -> Window:
-        return Window(
-            FormattedTextControl(plan_text),
-            height=lambda: len(plan_rows()),
-            dont_extend_height=True,
-            wrap_lines=False,
-        )
-
-    def plan_heading_border() -> VSplit:
-        """A top border with the heading at the left; Frame can only center it."""
-        return VSplit(
-            [
-                Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
-                Label(
-                    lambda: panel_fragments(
-                        [
-                            (
-                                "class:plan.heading" if activity.displayed_plan else "bold",
-                                activity.panel_heading(),
-                            )
-                        ],
-                        session.app.output.get_size().columns - 8,
-                    ),
-                    style="class:frame.label",
-                    dont_extend_width=True,
-                ),
-                Window(FormattedTextControl(" "), width=1, style="class:frame.border"),
-                Window(char="─", style="class:frame.border"),
-                Window(char="┐", width=1, style="class:frame.border"),
-            ],
-            height=1,
-        )
-
-    plan_frame = Frame(plan_body(), height=lambda: len(plan_rows()) + 2)
-    plan_frame.container.children[0] = plan_heading_border()
-    plan = ConditionalContainer(
-        plan_frame, filter=Condition(lambda: bool(plan_rows()) and not activity.attach_tasks)
-    )
-    # Keep the turn and its activity adjacent even when the root layout justifies
-    # the transcript and editor across the remaining terminal height.
-    # Framed the way scrollback frames the same run once it settles: the
-    # heading rides the opening rule, the body is indented, a rule closes it.
-    commands = ConditionalContainer(
-        HSplit(
-            [
-                VSplit(
-                    [
-                        Label(
-                            lambda: panel_fragments(
-                                [("class:block.heading", preview_heading())],
-                                session.app.output.get_size().columns - 4,
-                            ),
-                            style="class:block.heading",
-                            dont_extend_width=True,
-                        ),
-                        Window(FormattedTextControl(" "), width=1, style="class:block.rule"),
-                        Window(char=RULE, style="class:block.rule"),
-                    ],
-                    height=1,
-                ),
-                Window(
-                    FormattedTextControl(
-                        lambda: panel_fragments(
-                            command_rows(), session.app.output.get_size().columns
-                        ),
-                        show_cursor=False,
-                    ),
-                    height=lambda: len(command_rows()),
-                    dont_extend_height=True,
-                    wrap_lines=False,
-                ),
-                Window(char=RULE, height=1, style="class:block.rule"),
-            ],
-            height=lambda: len(command_rows()) + 2,
-        ),
-        filter=Condition(lambda: bool(command_rows())),
-    )
-    status_spacer = ConditionalContainer(Window(height=1), filter=Condition(status_gap))
-    # Flush left, where scrollback will draw the same line once the run closes.
-    group = ConditionalContainer(
-        Window(
-            FormattedTextControl(group_rows, show_cursor=False),
-            height=lambda: len(group_rows()),
-            wrap_lines=False,
-            dont_extend_height=True,
-        ),
-        filter=Condition(lambda: bool(group_rows())),
-    )
-    # Directly above the spinner: a notice answers the keystroke that caused it
-    # without ever reaching scrollback, and vanishes on its own.
-    notice = ConditionalContainer(
-        spinner_rows(
-            lambda: panel_fragments(notice_rows(), session.app.output.get_size().columns - 1),
-            lambda: len(notice_rows()),
-        ),
-        filter=Condition(lambda: bool(notice_rows())),
-    )
-    # This terminal's own wait on the session host, hidden while a turn row covers it.
-    waits = ConditionalContainer(
-        spinner_rows(
-            lambda: panel_fragments(wait_rows(), session.app.output.get_size().columns - 1),
-            lambda: len(wait_rows()),
-        ),
-        filter=Condition(lambda: bool(wait_rows())),
-    )
-    # Below the spinner: side questions run beside the turn and outlive it, so
-    # they get their own spinner rows rather than a share of the prompt's.
-    asides = ConditionalContainer(
-        spinner_rows(
-            lambda: panel_fragments(aside_rows(), session.app.output.get_size().columns - 1),
-            lambda: len(aside_rows()),
-        ),
-        filter=Condition(lambda: bool(aside_rows())),
-    )
-    # What is running that the spinner does not cover.
-    # Shown while idle too, which is when "is the suite still going?" is asked.
-    jobs = ConditionalContainer(
-        spinner_rows(
-            lambda: panel_fragments(job_rows(), session.app.output.get_size().columns - 1),
-            lambda: len(job_rows()),
-        ),
-        filter=Condition(lambda: bool(job_rows())),
-    )
-    # Flush left like the scrollback row it becomes, and placed above the
-    # layout's justifying filler so it sits directly beneath scrollback rather
-    # than jumping up a row when it is written.
-    typing = ConditionalContainer(
-        Window(
-            FormattedTextControl(typing_row, show_cursor=False),
-            height=1,
-            wrap_lines=False,
-            dont_extend_height=True,
-        ),
-        filter=Condition(lambda: bool(typing_row())),
-    )
-    activity_panel = HSplit(
-        [
-            status_spacer,
-            group,
-            commands,
-            notice,
-            current_status,
-            thought,
-            waits,
-            asides,
-            jobs,
-            plan,
-        ]
-    )
-
-    @per_render
-    def queue_rows():
-        budget = min(4, max(1, session.app.output.get_size().rows // 4))
-        return activity.queue_rows(budget)
-
-    queued = ConditionalContainer(
-        spinner_rows(
-            lambda: panel_fragments(queue_rows(), session.app.output.get_size().columns - 1),
-            lambda: len(queue_rows()),
-        ),
-        filter=Condition(lambda: bool(activity.queued_prompts)),
-    )
-    menu = CompletionsMenu(
-        max_height=20, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
-    )
-    menu.content.dont_extend_height = Always()
-    editor_frame = Frame(editor, height=frame_height)
-    # Replace only the bottom border: the badge must not add a row or alter CPR sizing.
-    editor_frame.container.children[-1] = VSplit(
-        [
-            Window(char="└", width=1, style="class:frame.border"),
-            Window(char="─", style="class:frame.border"),
-            ConditionalContainer(
-                Label(
-                    lambda: editor_mode_label(session.app),
-                    style="class:editor.mode",
-                    dont_extend_width=True,
-                ),
-                filter=Condition(lambda: session.app.editing_mode == EditingMode.VI),
-            ),
-            Window(FormattedTextControl("─┘"), width=2, style="class:frame.border"),
-        ],
-        height=1,
-    )
-    # Attached tasks: the widget's heading becomes the editor's top border and
-    # a divider separates the tasks from the text. frame_height counts both.
-    side = partial(Window, char="│", width=1, style="class:frame.border")
-    editor_frame.container.children[0] = HSplit(
-        [
-            ConditionalContainer(
-                HSplit(
-                    [
-                        plan_heading_border(),
-                        VSplit([side(), plan_body(), side()]),
-                        VSplit(
-                            [
-                                Window(char="├", width=1, style="class:frame.border"),
-                                Window(char="─", style="class:frame.border"),
-                                Window(char="┤", width=1, style="class:frame.border"),
-                            ],
-                            height=1,
-                        ),
-                    ]
-                ),
-                filter=Condition(plan_attached),
-            ),
-            ConditionalContainer(
-                editor_frame.container.children[0], filter=~Condition(plan_attached)
-            ),
-        ]
-    )
-    children = [menu, activity_panel, queued, editor_frame]
+    prompt_layout = PromptLayout(session, activity, transcript, shortcuts)
     if transcript is not None:
-        children[:0] = [typing, Window()]
 
         def accept(buffer):
             text = buffer.text
@@ -2400,20 +2359,7 @@ def create_prompt(
             return False
 
         session.default_buffer.accept_handler = accept
-    if session.bottom_toolbar is not None:
-        children.append(
-            Window(
-                FormattedTextControl(
-                    lambda: session.bottom_toolbar, style="class:bottom-toolbar.text"
-                ),
-                style="class:bottom-toolbar",
-                height=1,
-            )
-        )
-    session.layout = Layout(
-        HSplit(children, align=VerticalAlign.JUSTIFY if transcript else VerticalAlign.BOTTOM),
-        focused_element=editor,
-    )
+    session.layout = prompt_layout.layout()
     session.app.layout = session.layout
     if transcript is not None:
         editor_app = session.app
@@ -2429,53 +2375,8 @@ def create_prompt(
             output=editor_app.output,
             mouse_support=False,
         )
-    animation_task = None
-
-    def needs_animation():
-        return (
-            activity.busy
-            or activity.status_shown
-            # Keep redrawing while a notice is live: nothing else will ask for
-            # the frame that finally removes it.
-            or activity.notice_shown
-            or activity.asides_running
-            or bool(activity.waits)
-            or (activity.tasks_shown and activity.tools.animating)
-        )
-
-    async def animate(app):
-        nonlocal animation_task
-        await asyncio.sleep(refresh_interval())
-        animation_task = None
-        # Repaint unconditionally: this timer only exists because the previous
-        # render was animated, and the frame that removes an expired notice or
-        # a finished spinner is the one nothing else asks for.
-        app.invalidate()
-
-    def before_render(app):
-        nonlocal render_cache
-        render_cache = {}
-        if transcript is None or not (
-            (transcript.show_edits and activity.edit_previews)
-            or (transcript.command_scrollback and activity.command_outputs)
-            or any(key.startswith(WATCHED_PREFIX) for key in activity.command_outputs)
-        ):
-            preview_body.cache_clear()
-
-    def after_render(app):
-        nonlocal render_cache, animation_task
-        render_cache = None
-        # A redraw caused by input or application events starts animation again.
-        # Idle prompts have no timer; toolkit owns cancellation at app shutdown.
-        if needs_animation() and app.is_running:
-            if animation_task is None or animation_task.done():
-                animation_task = app.create_background_task(animate(app))
-        elif animation_task is not None:
-            animation_task.cancel()
-            animation_task = None
-
-    session.app.before_render += before_render
-    session.app.after_render += after_render
+    session.app.before_render += prompt_layout.before_render
+    session.app.after_render += prompt_layout.after_render
     if session.app.editing_mode == EditingMode.VI:
         # Allow terminal escape sequences to arrive, without a half-second pause.
         session.app.ttimeoutlen = 0.1
