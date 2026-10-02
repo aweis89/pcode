@@ -113,13 +113,27 @@ def _capability(pcode, toolset):
         needs them, such as a sign-in page, before asking them to act there.
         """
         await _start(pcode)
-        if STATE.session.page is None:
-            await toolset.navigate("about:blank")
-        page = STATE.session.page
-        if page is None:
-            return "The browser could not be opened."
-        await page.bring_to_front()
-        return f"The browser window is in front, showing {page.url}."
+        for _ in range(2):
+            if STATE.session.page is None:
+                await toolset.navigate("about:blank")
+            page = STATE.session.page
+            if page is None:
+                return "The browser could not be opened."
+            try:
+                await page.bring_to_front()
+            except (PlaywrightError, BrowserUnavailableError):
+                # The user closed the tab or the window. Harness keeps pointing at
+                # the last page it had, so forget it: the next pass reconnects and
+                # opens a fresh tab instead of failing the whole turn.
+                STATE.session.page = None
+                STATE.session.launch_error = None
+                continue
+            return f"The browser window is in front, showing {page.url}."
+        return (
+            "Could not bring the browser to the front: the window was closed or stopped "
+            "responding. Check /browser status; if needed, use /browser off then "
+            "/browser launch or /browser attach."
+        )
 
     class Browser(Capability):
         async def before_tool_execute(self, ctx, *, call, tool_def, args):
