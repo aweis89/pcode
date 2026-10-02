@@ -76,11 +76,13 @@ from pcode.turn import TurnContext
 if TYPE_CHECKING:
     from pcode.live import AgentRuntime
 
-_SHELL_EVENTS = (CommandStartedEvent, CommandOutputEvent, CommandFinishedEvent)
-
 
 class EventTranslator:
-    """Per-run state and one handler per upstream event kind."""
+    """Per-run state and one handler per upstream event kind.
+
+    Besides translating, `on_run_result` records the finished run: it settles
+    the turn's history and counts the turn on the runtime.
+    """
 
     def __init__(
         self,
@@ -124,31 +126,33 @@ class EventTranslator:
                 yield update
 
     def _dispatch(self, event: Any) -> Iterator[Event]:
-        if isinstance(event, CacheBustEvent):
-            return self.on_cache_bust(event)
-        if isinstance(event, FileChangeEvent):
-            return self.on_file_change(event)
-        if isinstance(event, DelegationStartEvent):
-            return self.on_delegation_start(event)
-        if isinstance(event, DelegationEndEvent):
-            return self.on_delegation_end(event)
-        if isinstance(event, ChildOutput):
-            return self.on_child_output(event)
-        if isinstance(event, ChildActivity):
-            return self.on_child_activity(event)
-        if isinstance(event, _SHELL_EVENTS):
-            return self.on_shell(event)
-        if isinstance(event, PartStartEvent):
-            return self.on_part_start(event)
-        if isinstance(event, PartDeltaEvent):
-            return self.on_part_delta(event)
-        if isinstance(event, PartEndEvent):
-            return self.on_part_end(event)
-        if isinstance(event, FunctionToolCallEvent):
-            return self.on_tool_call(event)
-        if isinstance(event, AgentRunResultEvent):
-            return self.on_run_result(event)
-        return iter(())
+        match event:
+            case CacheBustEvent():
+                return self.on_cache_bust(event)
+            case FileChangeEvent():
+                return self.on_file_change(event)
+            case DelegationStartEvent():
+                return self.on_delegation_start(event)
+            case DelegationEndEvent():
+                return self.on_delegation_end(event)
+            case ChildOutput():
+                return self.on_child_output(event)
+            case ChildActivity():
+                return self.on_child_activity(event)
+            case CommandStartedEvent() | CommandOutputEvent() | CommandFinishedEvent():
+                return self.on_shell(event)
+            case PartStartEvent():
+                return self.on_part_start(event)
+            case PartDeltaEvent():
+                return self.on_part_delta(event)
+            case PartEndEvent():
+                return self.on_part_end(event)
+            case FunctionToolCallEvent():
+                return self.on_tool_call(event)
+            case AgentRunResultEvent():
+                return self.on_run_result(event)
+            case _:
+                return iter(())
 
     def activity(self) -> RunStatus:
         tools = self.tools

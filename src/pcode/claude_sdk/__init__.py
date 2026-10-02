@@ -25,6 +25,11 @@ and keeps idle processes within limits. See dev/anthropic-providers.md.
 `ClaudeWorkspace` (in `workspace`) points each request's CLI at the agent's
 workspace, and `errors` holds the failures and what to tell the user about
 them. pcode holds no credentials here: the CLI signs in itself (`/login claude`).
+
+Tests patch the submodule that defines a name (`pcode.claude_sdk.session_pool`),
+never this package: a re-export is a copy, so patching it changes nothing the
+submodules read. Tuning knobs and pool state are left out of the re-exports for
+that reason.
 """
 
 from pcode.claude_sdk.cli import CLI_ENV, LOGIN_ENV, cli_path
@@ -48,11 +53,8 @@ from pcode.claude_sdk.session import (
     SessionConfig,
 )
 from pcode.claude_sdk.session_pool import (
-    IDLE_SECONDS,
-    MAX_IDLE_SESSIONS,
     Checkout,
     SessionPool,
-    memory_low,
     pool,
     shutdown,
 )
@@ -61,9 +63,7 @@ from pcode.claude_sdk.workspace import CWD_SETTING, ClaudeWorkspace
 __all__ = [
     "CLI_ENV",
     "CWD_SETTING",
-    "IDLE_SECONDS",
     "LOGIN_ENV",
-    "MAX_IDLE_SESSIONS",
     "MISSING_SDK",
     "PREFIX",
     "REPLAY_INTRO",
@@ -89,7 +89,6 @@ __all__ = [
     "failure_hint",
     "index_path",
     "lineage",
-    "memory_low",
     "normalize",
     "pool",
     "replay",

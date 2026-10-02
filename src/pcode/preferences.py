@@ -272,7 +272,7 @@ SETTINGS = {
         whole_number=True,
         description="Stop a background session idle this long with no terminal; 0 never stops",
     ),
-    # Defaults mirror claude_sdk.MAX_IDLE_SESSIONS and IDLE_SECONDS.
+    # Defaults mirror claude_sdk.session_pool.MAX_IDLE_SESSIONS and IDLE_SECONDS.
     "claude_idle_processes": Setting(
         "1",
         whole_number=True,
