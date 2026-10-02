@@ -7,7 +7,10 @@ dependencies = [
     "filelock>=3.16,<4",
     "genai-prices>=0.1.7,<0.2",
     "httpx2>=2.13,<3",
-    "prompt-toolkit>=3.0.52,<4",
+    # Exact: pcode relies on prompt_toolkit internals, and point releases
+    # change them. Bump on purpose after tests/test_prompt_toolkit_internals.py
+    # and make test-all pass on the new version.
+    "prompt-toolkit==3.0.53",
     "psutil>=6,<8",
     "yappi>=1.7.6,<2",
     # playwright backs the bundled browser extension (/browser on); Chromium

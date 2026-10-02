@@ -2063,7 +2063,7 @@ requires-dist = [
     { name = "filelock", specifier = ">=3.16,<4" },
     { name = "genai-prices", specifier = ">=0.1.7,<0.2" },
     { name = "httpx2", specifier = ">=2.13,<3" },
-    { name = "prompt-toolkit", specifier = ">=3.0.52,<4" },
+    { name = "prompt-toolkit", specifier = "==3.0.53" },
     { name = "psutil", specifier = ">=6,<8" },
     { name = "pydantic-ai-harness", extras = ["exa", "coder", "codemode", "playwright"], specifier = ">=0.52.0,<0.53" },
     { name = "pydantic-ai-slim", extras = ["anthropic", "bedrock", "duckduckgo", "google", "groq", "mcp", "openai", "web-fetch", "xai"], specifier = ">=2.52.0,<3" },
