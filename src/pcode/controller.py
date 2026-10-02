@@ -431,6 +431,21 @@ class SessionController:
     Everything it shows goes through `view`; `activity` holds the live panel's
     session state (busy, queue, prompt row), which the view paints. The view is
     the terminal in-process (`PreviewApp`), or `pcode.host.HostView` in a host.
+
+    Areas of responsibility, in roughly the order their methods appear:
+
+    - Slash commands: registering the commands the session handles.
+    - Turn lifecycle: busy state, prompt and command queues, dispatch, turns,
+      steering, and cancellation.
+    - Background work: MCP enabling and sign-out, compaction, history rewrites.
+    - Shell jobs: the live panel's job rows, a watched tail, and job wake-ups.
+    - MCP servers: `/mcp` and saving default servers.
+    - History: `/compact`, `/autocompact`, `/resend`.
+    - The session: skills, extensions and sub-agents, building the runtime,
+      switching models, effort, worktrees, startup, and resuming.
+    - Side questions (`/btw`) and conversation branches (`/tree`).
+
+    Provider sign-in and sign-out live in `pcode.logins.Logins`, held as `logins`.
     """
 
     def __init__(self, view: SessionView, activity, runtime=None) -> None:
@@ -528,15 +543,22 @@ class SessionController:
         self.registry = CommandRegistry()
         self.register_commands()
 
-    def register_commands(self) -> None:
-        from pcode.models import LEGACY_ANTHROPIC_AUTH, login_sources
+    # --- Slash commands ---
 
-        login_targets = (
-            "Anthropic, OpenAI Codex, or Claude Code (claude/meridian)"
-            if LEGACY_ANTHROPIC_AUTH
-            else "Claude Code or OpenAI Codex"
-        )
+    def register_commands(self) -> None:
+        # Registration order is /help's and completion's order, so the groups
+        # below run in the order the commands have always been listed.
         for command in (
+            *self._aside_commands(),
+            *self._model_commands(),
+            *self._session_commands(),
+            *self._resource_commands(),
+        ):
+            self.registry.register(command)
+
+    def _aside_commands(self) -> tuple[Command, ...]:
+        """The side question command."""
+        return (
             Command(
                 "/btw",
                 "Ask a side question beside the running turn ($MODEL ... picks models, "
@@ -548,6 +570,18 @@ class SessionController:
                 argument_completer=self.aside_completions,
                 group="Inspect",
             ),
+        )
+
+    def _model_commands(self) -> tuple[Command, ...]:
+        """Commands for the model, its sign-ins, and the extensions it runs with."""
+        from pcode.models import LEGACY_ANTHROPIC_AUTH, login_sources
+
+        login_targets = (
+            "Anthropic, OpenAI Codex, or Claude Code (claude/meridian)"
+            if LEGACY_ANTHROPIC_AUTH
+            else "Claude Code or OpenAI Codex"
+        )
+        return (
             Command(
                 "/model",
                 f"Choose a model; keeps the conversation ({shortcut_label('l')})",
@@ -600,6 +634,11 @@ class SessionController:
                 self.reload,
                 group="Model",
             ),
+        )
+
+    def _session_commands(self) -> tuple[Command, ...]:
+        """Commands for the conversation itself and its worktree."""
+        return (
             Command(
                 "/new", "Start a new conversation; clears the screen", self.new, group="Session"
             ),
@@ -632,6 +671,11 @@ class SessionController:
                 self.resend,
                 group="Session",
             ),
+        )
+
+    def _resource_commands(self) -> tuple[Command, ...]:
+        """Commands for what runs beside the model: MCP servers, shell jobs, plan usage."""
+        return (
             Command(
                 "/mcp",
                 "Manage MCP servers: list / enable NAME [--save] / enable-all / "
@@ -656,8 +700,9 @@ class SessionController:
                 self.usage,
                 group="Inspect",
             ),
-        ):
-            self.registry.register(command)
+        )
+
+    # --- What the footer, an attached terminal, and the host read ---
 
     def context_label(self) -> str:
         """The footer's context usage: tokens used of the model's window."""
@@ -744,6 +789,8 @@ class SessionController:
             result = await result
         return result
 
+    # --- Busy state ---
+
     def command_taken(self, name: str) -> bool:
         return name in TERMINAL_COMMANDS or self.registry.find(name) is not None
 
@@ -773,7 +820,7 @@ class SessionController:
             self.activity.queued_prompts or self.commands_pending or self.working()
         )
 
-    # Shell waits
+    # --- Shell waits ---
 
     def set_cancel_policy(self, policy: str) -> None:
         """Say what an abandoned shell wait should do to its command.
@@ -797,7 +844,7 @@ class SessionController:
         if registry is not None:
             registry.release_waits()
 
-    # Jobs
+    # --- Jobs ---
 
     def report_finished_jobs(self, job_id: str | None = None) -> list:
         """Announce job exits in scrollback, each one once. Returns those announced."""
@@ -878,7 +925,7 @@ class SessionController:
             job.announced.add("model")
         return "\n\n".join(notice_for(registry, job) for job in wakeable)
 
-    # Sending
+    # --- Sending ---
 
     def submit(self, text: str, mode: str, *, owner: MessageOwner | None = None) -> None:
         """Queue a message for the model, sent the way `mode` says.
@@ -942,7 +989,7 @@ class SessionController:
         if self.commands.empty() and not self.startup_commands:
             self.command_idle.set()
 
-    # Stopping
+    # --- Stopping ---
 
     def clear_queue(self) -> None:
         """Drop every queued message and pending command, saying what went."""
@@ -1114,7 +1161,7 @@ class SessionController:
         except ValueError as error:
             self.view.error(str(error))
 
-    # Turns
+    # --- Turns ---
 
     async def consume(self) -> None:
         """Run queued messages one at a time, each once nothing holds the queue."""
@@ -1388,7 +1435,7 @@ class SessionController:
         self.view.redraw()
         return True
 
-    # Work beside the turn loop that holds queued prompts back
+    # --- Work beside the turn loop that holds queued prompts back ---
 
     def start_mcp_task(self, name, coroutine, *, status: str, cancelled: str) -> None:
         """Run MCP work outside the model loop; queued prompts wait for it.
@@ -1614,7 +1661,7 @@ class SessionController:
         self.compact_task = asyncio.create_task(work)
         self.compact_task.add_done_callback(finished)
 
-    # Jobs: rows in the live panel, a watched tail, exits, and wake-ups
+    # --- Jobs: rows in the live panel, a watched tail, exits, and wake-ups ---
 
     async def watch_jobs(self) -> None:
         """Keep the jobs rows current, and report exits once the turn is over.
@@ -1774,7 +1821,7 @@ class SessionController:
         # Now, not at the watcher's next tick: the rows answer this command.
         self.refresh_jobs()
 
-    # MCP servers
+    # --- MCP servers ---
 
     def mcp_arguments(self) -> tuple[str, ...]:
         from pcode.mcp import configured_servers
@@ -1951,7 +1998,7 @@ class SessionController:
             "browser. This does not revoke the server-side grant."
         )
 
-    # Preferences the session saves (model, effort, autocompact)
+    # --- Preferences the session saves (model, effort, autocompact) ---
 
     def persist_defaults(self, **updates: str) -> None:
         try:
@@ -1967,7 +2014,7 @@ class SessionController:
         except (OSError, ValueError):
             self.view.warning("Could not update defaults; this change applies only here.")
 
-    # History: compaction and resending
+    # --- History: compaction and resending ---
 
     def compact(self, argument: str, *, before_queue: bool = False) -> None:
         if not self.model or not hasattr(self.runtime, "compact"):
@@ -2009,7 +2056,7 @@ class SessionController:
         self.activity.start_prompt(previous)
         self.activity.busy = True
 
-    # The session: its runtime, model, effort, extensions, skills, and sign-ins
+    # --- The session: its runtime, model, effort, extensions, and skills ---
 
     def register_skills(self) -> None:
         """Expose discovered SKILL.md assets as commands, skipping any collision."""
@@ -2038,6 +2085,8 @@ class SessionController:
         self.skill_requested = skill_prompt(skill, argument)
         if skill.mcp_servers:
             self.skill_mcp_requested = (skill.name, skill.mcp_servers)
+
+    # --- Extensions and sub-agents ---
 
     def register_extension_commands(self) -> None:
         """Expose extension commands, replacing the previous load's; built-ins win."""
@@ -2240,6 +2289,8 @@ class SessionController:
             session_dir=self.session_dir,
         )
 
+    # --- Runtime and model switching ---
+
     def _create_runtime(self):
         """Import and construct the backend off the terminal's event loop."""
         from pcode.agent import create_agent
@@ -2368,6 +2419,8 @@ class SessionController:
         self.warn_without_credentials()
         await self.warn_meridian_thinking()
 
+    # --- Effort ---
+
     def current_effort(self) -> str:
         if not self.model:
             return "n/a"
@@ -2417,6 +2470,8 @@ class SessionController:
         # The provider default is unspecified; use medium as the starting point.
         index = levels.index(current) if current in levels else 1
         self.effort(levels[max(0, min(len(levels) - 1, index + direction))])
+
+    # --- Session overviews ---
 
     def session_overview(self) -> list[tuple[str, str]]:
         """Label/value rows describing the live conversation.
@@ -2493,6 +2548,8 @@ class SessionController:
             window = None
         return overhead_rows(parameters, window=window)
 
+    # --- Slow command jobs ---
+
     def defer(self, label: str, detail: str, job: Callable[[], list[str]]) -> None:
         """Run a slow command's work under a system badge, or inline without a terminal.
 
@@ -2554,6 +2611,8 @@ class SessionController:
         from pcode.usage import usage_report
 
         self.defer("Checking usage", "", usage_report)
+
+    # --- Worktrees ---
 
     def worktree(self, argument: str) -> None:
         from pcode import worktree
@@ -2629,6 +2688,8 @@ class SessionController:
             session.save_info()
         except OSError:
             pass
+
+    # --- Startup and new conversations ---
 
     def show_startup_context(self) -> None:
         """Report repository instructions and skills, each line only once.
@@ -2744,7 +2805,7 @@ class SessionController:
         if self.resuming:
             await runtime.restore()
 
-    # Resuming another saved conversation in this process
+    # --- Resuming another saved conversation in this process ---
 
     async def resume_session(self, identity: str) -> None:
         from pcode.agent import create_agent
@@ -2842,7 +2903,7 @@ class SessionController:
         self.view.commands_changed()
         self.view.note(f"Workspace: {workspace}")
 
-    # Side questions (/btw) and conversation branches (/tree)
+    # --- Side questions (/btw) and conversation branches (/tree) ---
 
     def aside_settled(self, aside) -> None:
         if aside.status == "answered":
