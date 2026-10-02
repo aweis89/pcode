@@ -38,6 +38,7 @@ from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersis
 from pydantic_ai_harness.subagents import SubAgents
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
+from pcode import retries
 from pcode.agent import SideModel, worker_toolsets
 from pcode.aside import SideReply
 from pcode.compaction import AutoCompaction, ContextTracking, summarize
@@ -841,7 +842,7 @@ class AgentRuntime:
                     f"{error_message(error)} Retrying provider request "
                     f"{attempt}/{self.retry_attempts}…"
                 )
-                await asyncio.sleep(1)
+                await asyncio.sleep(retries.RETRY_DELAY)
             else:
                 return
 

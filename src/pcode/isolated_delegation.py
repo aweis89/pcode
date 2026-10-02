@@ -7,6 +7,7 @@ extension agents keep their own capabilities and shared-workspace semantics.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 from contextvars import ContextVar
@@ -17,13 +18,15 @@ from typing import Any, Literal
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 from pydantic_ai_harness.subagents import SubAgents
-from pydantic_ai_harness.subagents._toolset import SubAgentToolset
+from pydantic_ai_harness.subagents._toolset import SubAgentToolset, _Ended
 
 from pcode.delegation import ResumableAgent
+from pcode.error_report import error_message
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.task_worktrees import TaskWorktrees
 from pcode.worktree import WorktreeError, describe, setup_scripts
 
+logger = logging.getLogger(__name__)
 _outcome: ContextVar[str | None] = ContextVar("isolated_delegation_outcome", default=None)
 
 # Setup hooks run with no model watching and their output discarded, so a hang
@@ -277,8 +280,10 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             raise
         except Exception as error:
             # Preserve the artifact even when Harness reports a retry or setup fails.
+            # A contained crash arrives as Harness's retry, already described.
+            summary = str(error) if isinstance(error, ModelRetry) else None
             record = await _finish(
-                store, record.task_id, "failed", f"{type(error).__name__}: {error}"
+                store, record.task_id, "failed", summary or f"{type(error).__name__}: {error}"
             )
         finally:
             _outcome.reset(token)
@@ -291,6 +296,27 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
     async def _run_delegation(self, ctx, agent_name, sub_agent, *, task, key):
         resumable = replace(sub_agent, agent=ResumableAgent(sub_agent.agent))
         return await super()._run_delegation(ctx, agent_name, resumable, task=task, key=key)
+
+    def _crash_outcome(self, agent_name, sub_agent, exc):
+        """Harness's containment, minus the raw exception text and the traceback.
+
+        Harness puts `str(exc)` in the parent's retry message, which the model,
+        the transcript and the panel all see; SDK messages can carry provider
+        bodies, so describe it the way a failed turn is described instead. Its
+        warning prints a traceback over the terminal, which has no log handler.
+        """
+        contain = sub_agent.contain_errors
+        if not (self._contain_errors if contain is None else contain):
+            raise exc
+        logger.debug("Contained crash from sub-agent %r", agent_name, exc_info=exc)
+        return _Ended(
+            outcome="contained",
+            output=(
+                f"Sub-agent {agent_name!r} crashed: {error_message(exc)} "
+                "Treat this as a recoverable failure and decide from existing evidence."
+            ),
+            cause=exc,
+        )
 
     async def _settle(self, *args, **kwargs):
         ended = await super()._settle(*args, **kwargs)

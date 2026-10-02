@@ -28,6 +28,7 @@ from pydantic_ai.messages import (
     ThinkingPartDelta,
 )
 
+from pcode import retries
 from pcode.cache_warnings import CacheBustEvent
 from pcode.diagnostics import transient
 from pcode.error_report import error_message
@@ -53,8 +54,6 @@ from pcode.tool_display import (
 
 _parent: ContextVar[RunContext | None] = ContextVar("delegation_parent", default=None)
 logger = logging.getLogger(__name__)
-# Seconds before a dropped child request is resent, as a turn waits.
-RETRY_DELAY = 1.0
 
 
 @dataclass(kw_only=True)
@@ -125,7 +124,8 @@ class ResumableAgent(WrapperAgent):
                     raise
                 attempt += 1
                 user_prompt, message_history = None, checkpoint.messages
-                logger.warning(
+                # The panel shows the reconnect; a warning would print over it.
+                logger.debug(
                     "Sub-agent %r: %s Retrying %d/%d",
                     self.name,
                     error_message(error),
@@ -134,7 +134,7 @@ class ResumableAgent(WrapperAgent):
                 )
                 if (parent := _parent.get()) is not None:
                     await parent.emit(ChildActivity(activity=f"Reconnecting {attempt}/{attempts}"))
-                await asyncio.sleep(RETRY_DELAY)
+                await asyncio.sleep(retries.RETRY_DELAY)
 
 
 async def stream_child_activity(_ctx, events):

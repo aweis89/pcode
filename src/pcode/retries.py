@@ -5,6 +5,9 @@ from copy import deepcopy
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai_harness.step_persistence import is_provider_valid
 
+# Seconds before a request that got no answer is resent, by a turn or a worker.
+RETRY_DELAY = 1.0
+
 
 class RequestCheckpoint(AbstractCapability):
     def __init__(self):
