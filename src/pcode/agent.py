@@ -299,6 +299,10 @@ def _delegation(
         # Unavailable names are left out here and reported by /subagents.
         models=subagent_menu(subagent_models())[0],
         event_stream_handler=stream_child_activity,
+        # One child's crash (a dropped connection past its retries, a bug in a
+        # tool) comes back to the parent as a retryable failure. Propagating it
+        # fails the parent's turn, which cancels every sibling delegation.
+        contain_errors=True,
         shared_capabilities=[
             # Extension sub-agents have no coder of their own to set it.
             ClaudeWorkspace(workspace, fallback=True),
