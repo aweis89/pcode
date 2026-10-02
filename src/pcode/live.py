@@ -41,7 +41,7 @@ from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 from pcode import retries
 from pcode.agent import SideModel, worker_toolsets
 from pcode.aside import SideReply
-from pcode.compaction import AutoCompaction, ContextTracking, summarize
+from pcode.compaction import AutoCompaction, ContextTracking, effective_window, summarize
 from pcode.conversation_ids import model_conversation
 from pcode.conversation_tree import ConversationTree
 from pcode.diagnostics import (
@@ -638,10 +638,19 @@ class AgentRuntime:
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
         usage = RunUsage()
+        # Size the kept history and summary to the autocompact cap, as automatic
+        # compaction does, or the result can land just under it and recompact.
+        window = None
+        if self.auto_compact and (limit := self.auto_compact_limit):
+            window = min(effective_window(self.agent.model) or limit, limit)
         try:
             async with self.agent:
                 result = await summarize(
-                    self.history, model=self.agent.model, focus=focus or None, usage=usage
+                    self.history,
+                    model=self.agent.model,
+                    focus=focus or None,
+                    usage=usage,
+                    window=window,
                 )
         finally:
             # A cancelled/failed summary can still have incurred provider usage.
