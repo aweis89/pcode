@@ -5,10 +5,8 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from time import monotonic
 from uuid import uuid4
 
 from pydantic_ai import (
@@ -21,8 +19,6 @@ from pydantic_ai import (
     PartStartEvent,
     TextPart,
     TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
     ToolReturn,
 )
 from pydantic_ai.capabilities import LocalWorkspace
@@ -31,32 +27,22 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
-    NativeToolCallPart,
-    NativeToolReturnPart,
-    RetryPromptPart,
     UserPromptPart,
 )
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
-from pydantic_ai_harness.shell import (
-    CommandFinishedEvent,
-    CommandOutputEvent,
-    CommandStartedEvent,
-    Shell,
-)
+from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersistence
-from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent, SubAgents
+from pydantic_ai_harness.subagents import SubAgents
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode.agent import SideModel, worker_toolsets
 from pcode.aside import SideReply
-from pcode.cache_warnings import CacheBustEvent
 from pcode.compaction import AutoCompaction, ContextTracking, summarize
 from pcode.conversation_ids import model_conversation
 from pcode.conversation_tree import ConversationTree
-from pcode.delegation import ChildActivity, ChildOutput
 from pcode.diagnostics import (
     error_details,
     provider_context,
@@ -65,8 +51,7 @@ from pcode.diagnostics import (
     transport_types,
 )
 from pcode.edit_preview import StreamingEditPreview
-from pcode.filesystem import FileChangeEvent
-from pcode.inspection import ToolArchive, capture
+from pcode.inspection import ToolArchive
 from pcode.job_notices import JobNotices
 from pcode.jobs import registry as job_registry
 from pcode.mcp import (
@@ -83,7 +68,6 @@ from pcode.preferences import SETTINGS, load_preferences
 from pcode.profiling import activity as profiled_activity
 from pcode.retries import RequestCheckpoint
 from pcode.runtime import (
-    CacheBust,
     ChildPlan,
     ChildText,
     CommandOutput,
@@ -91,36 +75,16 @@ from pcode.runtime import (
     Event,
     Message,
     PlanPreview,
-    PlanUpdated,
-    RunStatus,
-    TextDelta,
-    Thinking,
-    ThinkingDelta,
     ToolStarted,
     ToolSummary,
 )
 from pcode.sessions import SavedSession, SessionError
-from pcode.shell import ShellPreview, result_projection
 from pcode.shell_mode import ShellRun, reduce_result, shell_exchange
 from pcode.shell_tools import JobShell
 from pcode.steering import Steering
+from pcode.stream_events import EventTranslator
 from pcode.token_accounting import TokenAccounting, TokenTotals
-from pcode.tool_display import (
-    COMMAND_TOOLS,
-    assignment,
-    command_error,
-    delegation_detail,
-    execution_mode,
-    invocation,
-    job_status,
-    label,
-    native_result_detail,
-    native_result_projection,
-    result_detail,
-    stated_purpose,
-    subject,
-    target,
-)
+from pcode.tool_display import target
 from pcode.turn import TurnContext
 
 
@@ -1037,49 +1001,53 @@ class AgentRuntime:
                 self.session.append("steering", run_id=run_id, prompt=text)
         return messages
 
+    def _run_capabilities(self, context: TurnContext, chosen: TurnModel) -> list:
+        """Per-run capabilities bind to this turn's context, not to the runtime:
+        what they publish and rewrite belongs to this turn."""
+        run_id = context.run_id
+        return (
+            ([StepPersistence(store=self.session.store)] if self.session else [])
+            + [
+                Steering(lambda: self._consume_steering(run_id)),
+                # Finished jobs reach the model here rather than by
+                # being polled for; see `pcode.job_notices`. Ahead of the
+                # checkpoint, so a saved request carries the notices it
+                # was really sent with, as steering and compaction do.
+                JobNotices(self.jobs),
+                context.checkpoint,
+                TokenAccounting(record=self.totals.add),
+                ContextTracking(self, context),
+            ]
+            # Compaction rewrites the conversation's history, so it is
+            # judged on the conversation's model, never on a model one
+            # `$MODEL` turn borrowed: its window and summarizer would
+            # decide what the conversation keeps from then on.
+            + (
+                [AutoCompaction(self, context)]
+                if self.auto_compact and chosen.model is None
+                else []
+            )
+        )
+
+    async def _translator(self, context: TurnContext) -> EventTranslator:
+        capabilities = self.agent.root_capability.capabilities
+        plan_items = [item.model_dump(mode="json") for item in await context.plan_store.get_items()]
+        plan_preview = (
+            StreamingPlanPreview() if any(isinstance(c, Planning) for c in capabilities) else None
+        )
+        # Relative edit paths resolve from the workspace, whatever `root_dir` bounds.
+        writable = any(isinstance(c, FileSystem) and not c.read_only for c in capabilities)
+        edit_preview = StreamingEditPreview(self._workspace_dir()) if writable else None
+        return EventTranslator(
+            self, context, plan_items, plan_preview=plan_preview, edit_preview=edit_preview
+        )
+
     async def _stream(
         self, prompt: str | None, context: TurnContext, chosen: TurnModel | None = None
     ) -> AsyncIterator[Event]:
-        run_id = context.run_id
         await self.refresh_context()
         self._persist_child_runs()
-        plan_items = [item.model_dump(mode="json") for item in await context.plan_store.get_items()]
-        preview = (
-            StreamingPlanPreview()
-            if any(isinstance(c, Planning) for c in self.agent.root_capability.capabilities)
-            else None
-        )
-        # Relative edit paths resolve from the workspace, whatever `root_dir` bounds.
-        filesystem_root = (
-            self._workspace_dir()
-            if any(
-                isinstance(c, FileSystem) and not c.read_only
-                for c in self.agent.root_capability.capabilities
-            )
-            else None
-        )
-        edit_preview = (
-            StreamingEditPreview(filesystem_root) if filesystem_root is not None else None
-        )
-        emitted_text = False
-        tools: dict[str, tuple[str, dict, float]] = {}
-        delegates: dict[str, ToolStarted] = {}
-        child_tools: dict[str, ToolStarted] = {}
-        delegation_ends: dict[str, DelegationEndEvent] = {}
-        shell_preview = ShellPreview()
-        shell_ends: dict[str, CommandFinishedEvent] = {}
-
-        def activity() -> RunStatus:
-            if not tools:
-                return RunStatus("Waiting for model…")
-            if len(tools) == 1:
-                name, args, _ = next(iter(tools.values()))
-                where = target(name, args)
-                title = label(name) if name == "delegate_task" else name
-                return RunStatus(f"Running {title}" + (f" · {where}" if where else "") + "…")
-            names = ", ".join(label(item[0]) for item in list(tools.values())[:3])
-            return RunStatus(f"Running {len(tools)} tools · {names}…")
-
+        translator = await self._translator(context)
         # Unlike run_stream(), this completes the tool loop even when the model
         # sends explanatory text alongside its tool calls.
         # Enter the agent too: a run alone does not own a statically supplied
@@ -1097,266 +1065,18 @@ class AgentRuntime:
                 workspace=self._run_workspace(self.agent),
                 toolsets=[self.mcp.live()],
                 conversation_id=chosen.conversation_id,
-                run_id=run_id,
+                run_id=context.run_id,
                 **({"model": chosen.model.model} if chosen.model is not None else {}),
-                # Per-run capabilities bind to this turn's context, not to the
-                # runtime: what they publish and rewrite belongs to this turn.
-                capabilities=(
-                    ([StepPersistence(store=self.session.store)] if self.session else [])
-                    + [
-                        Steering(lambda: self._consume_steering(run_id)),
-                        # Finished jobs reach the model here rather than by
-                        # being polled for; see `pcode.job_notices`. Ahead of the
-                        # checkpoint, so a saved request carries the notices it
-                        # was really sent with, as steering and compaction do.
-                        JobNotices(self.jobs),
-                        context.checkpoint,
-                        TokenAccounting(record=self.totals.add),
-                        ContextTracking(self, context),
-                    ]
-                    # Compaction rewrites the conversation's history, so it is
-                    # judged on the conversation's model, never on a model one
-                    # `$MODEL` turn borrowed: its window and summarizer would
-                    # decide what the conversation keeps from then on.
-                    + (
-                        [AutoCompaction(self, context)]
-                        if self.auto_compact and chosen.model is None
-                        else []
-                    )
-                ),
+                capabilities=self._run_capabilities(context, chosen),
                 # Explicitly disable the cap; omitting this restores the library default.
                 usage_limits=UsageLimits(request_limit=None),
             ) as events,
         ):
             async for event in events:
-                if edit_preview is not None:
-                    for edit_update in edit_preview.update(event):
-                        yield edit_update
-                if isinstance(event, CacheBustEvent):
-                    yield CacheBust(event.text)
-                elif isinstance(event, FileChangeEvent):
-                    yield event.change
-                elif isinstance(event, DelegationStartEvent):
-                    if start := delegates.get(event.tool_call_id):
-                        start = replace(start, activity="Waiting for model")
-                        delegates[event.tool_call_id] = start
-                        yield start
-                elif isinstance(event, DelegationEndEvent):
-                    delegation_ends[event.tool_call_id] = event
-                    # Deliberately not added to session totals: a child's *tokens*
-                    # already reach `result.usage` even under its own budget, so
-                    # adding `event.usage` here counts them twice. Only its
-                    # request count stays isolated, which is the point of the
-                    # budget. Tokens from an interrupted turn are a separate gap.
-                    # Timeouts/budget stops can leave a child's tool without a
-                    # result. Settle it before the parent resumes its tool loop.
-                    for call_id, child in list(child_tools.items()):
-                        if child.parent_call_id == event.tool_call_id:
-                            yield ToolSummary(
-                                child.name,
-                                child.detail + " → Interrupted",
-                                failed=True,
-                                call_id=call_id,
-                                run_id=run_id,
-                                outcome="interrupted",
-                                parent_call_id=child.parent_call_id,
-                            )
-                            del child_tools[call_id]
-                elif isinstance(event, ChildOutput):
-                    if event.tool_call_id in delegates:
-                        yield ChildText(
-                            event.tool_call_id,
-                            event.text,
-                            thinking=event.thinking,
-                            start=event.start,
-                        )
-                elif isinstance(event, ChildActivity):
-                    if start := delegates.get(event.tool_call_id):
-                        if event.activity != start.activity:
-                            start = replace(start, activity=event.activity)
-                            delegates[event.tool_call_id] = start
-                            yield start
-                        if event.plan is not None:
-                            yield ChildPlan(event.tool_call_id, event.plan)
-                        if event.child is not None:
-                            if isinstance(event.child, ToolStarted):
-                                child_tools[event.child.call_id] = event.child
-                            else:
-                                child_tools.pop(event.child.call_id, None)
-                            yield event.child
-                elif isinstance(
-                    event, (CommandStartedEvent, CommandOutputEvent, CommandFinishedEvent)
-                ):
-                    if isinstance(event, CommandFinishedEvent):
-                        shell_ends[event.tool_call_id] = event
-                    if (output := shell_preview.update(event)) is not None:
-                        yield output
-                elif isinstance(event, PartStartEvent):
-                    if isinstance(event.part, TextPart):
-                        yield TextDelta(event.part.content)
-                    elif isinstance(event.part, ThinkingPart):
-                        if event.part.content:
-                            yield ThinkingDelta(event.part.content)
-                        yield RunStatus("Thinking…")
-                    elif isinstance(event.part, NativeToolReturnPart):
-                        # Provider-executed tools (native web search/fetch) return
-                        # inside the response stream; there is no function event.
-                        name, args, started = tools.pop(
-                            event.part.tool_call_id, (event.part.tool_name, {}, monotonic())
-                        )
-                        detail, failed = native_result_detail(
-                            name, args, event.part.content, event.part.outcome
-                        )
-                        yield ToolSummary(
-                            name,
-                            detail,
-                            failed=failed,
-                            call_id=event.part.tool_call_id,
-                            result=capture(native_result_projection(event.part.content)),
-                            run_id=run_id,
-                            outcome=event.part.outcome if not failed else "error",
-                            elapsed_seconds=max(0, monotonic() - started),
-                        )
-                        yield activity()
-                elif isinstance(event, PartDeltaEvent):
-                    if isinstance(event.delta, TextPartDelta):
-                        yield TextDelta(event.delta.content_delta)
-                    elif isinstance(event.delta, ThinkingPartDelta):
-                        if event.delta.content_delta:
-                            yield ThinkingDelta(event.delta.content_delta)
-                        yield RunStatus("Thinking…")
-                elif isinstance(event, PartEndEvent):
-                    if isinstance(event.part, TextPart) and event.part.content:
-                        emitted_text = True
-                        yield Message(event.part.content)
-                    elif isinstance(event.part, ThinkingPart) and event.part.content:
-                        yield Thinking(event.part.content)
-                    elif isinstance(event.part, NativeToolCallPart):
-                        try:
-                            args = event.part.args_as_dict()
-                        except (ValueError, TypeError):
-                            args = {}
-                        tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
-                        agent, task = assignment(event.part.tool_name, args)
-                        yield ToolStarted(
-                            event.part.tool_name,
-                            target(event.part.tool_name, args),
-                            event.part.tool_call_id,
-                            arguments=capture(args if args else event.part.args),
-                            run_id=run_id,
-                            started_at=datetime.now(timezone.utc).isoformat(),
-                            agent=agent,
-                            task=task,
-                        )
-                        yield activity()
-                elif isinstance(event, FunctionToolCallEvent):
-                    try:
-                        args = event.part.args_as_dict()
-                    except (ValueError, TypeError):
-                        args = {}
-                    tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
-                    agent, task = assignment(event.part.tool_name, args)
-                    command, purpose = subject(event.part.tool_name, args, self.jobs)
-                    start = ToolStarted(
-                        event.part.tool_name,
-                        target(event.part.tool_name, args),
-                        event.part.tool_call_id,
-                        arguments=capture(args if args else event.part.args),
-                        run_id=run_id,
-                        started_at=datetime.now(timezone.utc).isoformat(),
-                        process_id=capture(args.get("command_id", "")),
-                        command=command,
-                        purpose=purpose,
-                        execution=execution_mode(event.part.tool_name, args),
-                        agent=agent,
-                        task=task,
-                    )
-                    if event.part.tool_name == "delegate_task":
-                        delegates[event.part.tool_call_id] = start
-                    yield start
-                    yield activity()
-                elif isinstance(event, FunctionToolResultEvent):
-                    name, args, started = tools.pop(
-                        event.tool_call_id,
-                        (event.part.tool_name or "tool", {}, monotonic()),
-                    )
-                    outcome = (
-                        "retry" if isinstance(event.part, RetryPromptPart) else event.part.outcome
-                    )
-                    detail, failed = result_detail(name, args, event.part.content, outcome)
-                    shell_end = shell_ends.pop(event.tool_call_id, None)
-                    if name == "shell" and shell_end is not None and outcome == "success":
-                        # The result's own job marker is authoritative: it is
-                        # written after the wait ends, while the event is a
-                        # snapshot the command can finish just after.
-                        status, failed = job_status(event.part.content)
-                        detail = target(name, args) + (f" → {status}" if status else "")
-                        if shell_end.truncated:
-                            detail += " · preview capped"
-                    delegates.pop(event.tool_call_id, None)
-                    end = delegation_ends.pop(event.tool_call_id, None)
-                    if end is not None:
-                        outcome = end.outcome
-                        detail, failed = delegation_detail(args, outcome)
-                    elif name == "delegate_task" and outcome == "success":
-                        # Harness returns max_calls refusals as normal strings,
-                        # with no lifecycle events because no child was launched.
-                        outcome = "not_started"
-                        detail = target(name, args) + " → Not started"
-                        failed = True
-                    # Read the store after every settled tool: covers granular,
-                    # batched, and future plan mutations without parsing results.
-                    items = [
-                        item.model_dump(mode="json")
-                        for item in await context.plan_store.get_items()
-                    ]
-                    if items != plan_items:
-                        plan_items = items
-                        yield PlanUpdated(items)
-                    display_content = (
-                        result_projection(event.part.content, shell_end)
-                        if name == "shell"
-                        else event.part.content
-                    )
-                    yield ToolSummary(
-                        name,
-                        detail,
-                        failed=failed,
-                        call_id=event.tool_call_id,
-                        result=capture(display_content),
-                        run_id=run_id,
-                        outcome=outcome,
-                        process_id=(
-                            str(shell_end.pid)
-                            if shell_end is not None
-                            else match[1]
-                            if name == "start_command"
-                            and isinstance(event.part.content, str)
-                            and (
-                                match := re.search(r"^ID: (\w+)$", event.part.content, re.MULTILINE)
-                            )
-                            else capture(args.get("command_id", ""))
-                        ),
-                        elapsed_seconds=max(0, monotonic() - started),
-                        command=invocation(name, args),
-                        purpose=stated_purpose(args),
-                        error=command_error(display_content)
-                        if failed and name in COMMAND_TOOLS
-                        else "",
-                    )
-                    yield activity()
-                elif isinstance(event, AgentRunResultEvent):
-                    result = event.result
-                    if result.output and not emitted_text:
-                        yield Message(str(result.output))
-                    # Full successful history. The outer persistence wrapper also
-                    # recovers settled tool-boundary snapshots after failures.
-                    context.history = result.all_messages()
-                    context.pending_shell = []
-                    self.turns += 1
-                if preview is not None:
-                    if (update := preview.update(event, plan_items)) is not None:
-                        yield update
+                # Closed here, not by GC, when the consumer stops mid-event.
+                async with aclosing(translator.translate(event)) as outputs:
+                    async for out in outputs:
+                        yield out
 
 
 RETRY_CEILING = re.compile(r"^Tool '(?P<tool>[^']+)' exceeded max retries count of (?P<limit>\d+)")
