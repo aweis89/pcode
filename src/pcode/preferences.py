@@ -300,6 +300,35 @@ SETTINGS = {
         whole_number=True,
         description="Stop a background session idle this long with no terminal; 0 never stops",
     ),
+    # `pcode --email-listen` (pcode.email_remote). All user-only: a repository
+    # must not choose who controls it by email or loosen the limits.
+    "email_owner": Setting(
+        None, description="The Gmail address that may control pcode by email (--email-setup)"
+    ),
+    "email_mcp": Setting(
+        "off", ("off", "on"), description="Start default MCP servers in email-started sessions"
+    ),
+    "email_turn_minutes": Setting(
+        "30", whole_number=True, description="Wall-clock limit per email turn; 0 is none"
+    ),
+    "email_turn_requests": Setting(
+        "100", whole_number=True, description="Model requests per email turn; 0 is no limit"
+    ),
+    "email_turn_tool_calls": Setting(
+        "100", whole_number=True, description="Tool calls per email turn; 0 is no limit"
+    ),
+    "email_concurrent_sessions": Setting(
+        "2", positive_integer=True, description="Email sessions working at once"
+    ),
+    "email_max_sessions": Setting(
+        "20", positive_integer=True, description="Sessions one --email-listen may start"
+    ),
+    "email_session_inputs": Setting(
+        "20", positive_integer=True, description="Emails waiting per session"
+    ),
+    "email_max_inputs": Setting(
+        "100", positive_integer=True, description="Emails waiting across every session"
+    ),
     # Defaults mirror claude_sdk.session_pool.MAX_IDLE_SESSIONS and IDLE_SECONDS.
     "claude_idle_processes": Setting(
         "1",
@@ -575,6 +604,7 @@ USER_ONLY = frozenset(
         "extensions_on",
         "meridian_managed",
         "anthropic_auth",
+        *(key for key in SETTINGS if key.startswith("email_")),
     }
 )
 

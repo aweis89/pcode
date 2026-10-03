@@ -199,6 +199,22 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `worker_isolation` | `off` | `on`, `off` (opt in to isolated built-in worker tasks; also requires effective `worktree=on`, not just the CLI launch override; checked at each delegation) |
 
+### Email remote control
+
+Settings for [`pcode --email-listen`](email.md). All of them are user-only: a repository's `.pcode/preferences.json` cannot set them.
+
+| Key | Built-in default | Values |
+| --- | --- | --- |
+| `email_owner` | unset | the Gmail address allowed to control pcode by email; set by `pcode --email-setup` |
+| `email_mcp` | `off` | `on`, `off` (start default MCP servers in email-started sessions; they run outside the sandbox) |
+| `email_turn_minutes` | `30` | wall-clock minutes per email-started turn; `0` is no limit |
+| `email_turn_requests` | `100` | model requests per email-started turn, sub-agents included; `0` is no limit |
+| `email_turn_tool_calls` | `100` | tool calls per email-started turn, sub-agents included; `0` is no limit |
+| `email_concurrent_sessions` | `2` | email sessions that may be working at once |
+| `email_max_sessions` | `20` | sessions one `--email-listen` may start |
+| `email_session_inputs` | `20` | emails that may wait in one session |
+| `email_max_inputs` | `100` | emails that may wait across every session |
+
 ### Repository instructions, skills and extensions
 
 | Key | Built-in default | Values |

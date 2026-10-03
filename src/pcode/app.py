@@ -2360,6 +2360,25 @@ def main() -> None:
         help="Stop every session host, or those running older pcode code, and exit",
     )
     parser.add_argument(
+        "--email-listen",
+        action="store_true",
+        help="Take tasks by email from the account set up with --email-setup; "
+        "each starts a sandboxed background session in its own worktree",
+    )
+    parser.add_argument(
+        "--email-ttl",
+        default="8h",
+        metavar="DURATION",
+        help="With --email-listen: stop listening after this long (default 8h)",
+    )
+    parser.add_argument(
+        "--email-setup",
+        nargs="?",
+        const="",
+        metavar="ADDRESS",
+        help="Store a Gmail app password in the keychain and enable --email-listen for it",
+    )
+    parser.add_argument(
         "--profile",
         type=Path,
         nargs="?",
@@ -2667,6 +2686,27 @@ def _print_hosted(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         parser.exit(1)
 
 
+def _email(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """`--email-setup` and `--email-listen` (`pcode.email_remote`)."""
+    from pcode.email_remote import cli
+    from pcode.email_remote.mailbox import SetupError
+
+    if args.email_setup is not None and args.email_listen:
+        parser.error("--email-setup and --email-listen are separate steps")
+    if args.prompt or args.print or args.attach is not None or args.resume:
+        parser.error("--email-listen and --email-setup take no prompt or session options")
+    try:
+        if args.email_setup is not None:
+            status = cli.setup(args.email_setup or None)
+        else:
+            status = cli.listen(args.workspace or Path.cwd(), ttl=args.email_ttl, model=args.model)
+    except (SetupError, ValueError, OSError) as error:
+        parser.exit(2, f"pcode: {error_message(error)}\n")
+    except KeyboardInterrupt:
+        parser.exit(130)
+    sys.exit(status)
+
+
 def _tidy_stopped_host(app) -> None:
     """After `/stop`: the host kept its worktree so this terminal can ask, as a local exit does."""
     from pcode.remote import wait_for_exit_sync
@@ -2695,6 +2735,9 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             print(configure(args.arguments))
         except (OSError, ValueError) as error:
             parser.exit(2, f"{error}\n")
+        return
+    if args.email_setup is not None or args.email_listen:
+        _email(args, parser)
         return
     if args.resume and (args.no_save or args.theme_preview):
         parser.error("--continue cannot be combined with --no-save or --theme-preview")

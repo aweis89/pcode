@@ -46,6 +46,8 @@ def test_project_file_overlays_user_except_user_only_keys(tmp_path):
         meridian_managed="on",
         anthropic_auth="oauth",
         trusted_projects="/",
+        # A repository must not choose who controls it by email, or loosen its limits.
+        **{key: "1" for key in USER_ONLY if key.startswith("email_")},
         bogus="x",
         autocompact="maybe",  # invalid value: ignored, user default stands
     )
@@ -61,6 +63,7 @@ def test_project_file_overlays_user_except_user_only_keys(tmp_path):
     assert "meridian_managed" not in prefs
     assert "anthropic_auth" not in prefs
     assert "trusted_projects" not in prefs
+    assert "email_owner" not in prefs and "email_turn_requests" not in prefs
     assert "autocompact" not in prefs
     assert rejected_project_keys() == sorted(USER_ONLY)
 

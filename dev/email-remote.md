@@ -6,6 +6,43 @@ a new email starts a session, a reply continues it. This revises the earlier
 persistence and sync layers are cut down to what one owner needs, and the
 execution side is pcode's existing session hosts rather than a new queue.
 
+## Status
+
+Phases 2–4 are implemented; phase 1's real-account checks have **not** been
+run yet. Until they pass, treat `--email-listen` as unverified: the mocked
+tests encode the assumptions below, they don't prove them.
+
+- Phase 1: `dev/email_probe.py OWNER [--forge]` sends a probe and reports
+  each reply's labels, `To` and ancestry. Record its output and the clients
+  used under "Phase 1 evidence" below.
+- Transport: IMAP + SMTP with an app password, chosen provisionally because
+  it needs no new dependency, no GCP project and no weekly re-login. The
+  Gmail API path was not probed. Revisit only if the probe shows `\Sent`
+  or the plus-address doesn't survive over IMAP.
+- Phase 2: `pcode.remote_profile` (profile, env allowlist, turn budget),
+  `agent.TurnLimits` (agent and delegation's shared capabilities), the host's
+  `--remote-profile` (fresh worktree even from a linked one, kept on stop, MCP
+  defaults skipped, wall-clock watchdog), and the sandbox additions (profile
+  deny-read paths, `~/Library/Keychains`, a Seatbelt `mach-lookup` deny for
+  the keychain services, `shell_sandbox: false` ignored). The bundled sandbox
+  is forced on and replaces any same-named extension; if it fails to load,
+  startup fails.
+- Phase 3: `pcode.gateway`. `status` is synchronous (it reads the host's
+  entry file), and `send` takes an optional `base` commit for the diff
+  summary. `remote_print.PrintView` is a `gateway.HeadlessView`.
+- Phase 4: `pcode.email_remote` and `pcode --email-setup` / `--email-listen`.
+  Inputs for one session run one at a time in the listener (rather than
+  queueing in the host), so `/stop` cancels the running turn through the
+  gateway and drops the listener's waiting inputs. The outbox stores a
+  reply's parts, not the composed message, because the message carries the
+  alias and only the token's hash may reach disk; a retry recomposes it
+  under the same Message-ID. Keychain storage is macOS only; elsewhere setup
+  fails.
+
+### Phase 1 evidence
+
+(Not yet collected.)
+
 Read first: `src/pcode/host.py`, `src/pcode/remote.py`, `src/pcode/remote_print.py`,
 `src/pcode/host_protocol.py`, `src/pcode/extensions/sandbox.py`, `src/pcode/sandbox.py`,
 and `AGENTS.md` (testing traps). Nothing below asks for a new agent runtime, queue,
