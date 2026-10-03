@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import signal
 import sys
@@ -97,7 +98,8 @@ def listen(workspace: Path, *, ttl: str, model: str | None) -> int:
         workspace=workspace,
         profile=profile,
         ttl=seconds,
-        state_path=state_dir() / "state.json",
+        # One file per run: two listeners (two repositories) never share one.
+        state_path=state_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.json",
         limits=Limits.from_preferences(preferences),
         model=model,
     )

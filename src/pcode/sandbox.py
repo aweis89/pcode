@@ -23,6 +23,7 @@ import os
 import posixpath
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from collections.abc import Iterable, Sequence
@@ -122,11 +123,21 @@ def within(path: Path, root: Path) -> bool:
 
 
 def base_roots(workspace: Path) -> list[Path]:
-    """The roots every session starts with. Computed once: it shells out to git."""
+    """The roots every session starts with. Computed once: it shells out to git.
+
+    Under a remote profile the main checkout is not one: its `.git/config`
+    would let the model choose code that git runs outside the sandbox (in the
+    host, the listener, and the owner's next git command). Only what a
+    commit in the session's own worktree needs is writable (`remote_git`).
+    """
+    from pcode import remote_profile
     from pcode.worktree import repo_scope
 
     workspace = real(workspace)
-    roots = [workspace, real(repo_scope(workspace))]
+    if remote_profile.active() is not None:
+        roots = [workspace, *remote_git(workspace)[0]]
+    else:
+        roots = [workspace, real(repo_scope(workspace))]
     temp = real(tempfile.gettempdir())
     roots += [temp, real("/tmp"), real("/var/tmp")]
     # macOS keeps a per-user cache dir (`.../C`) beside `$TMPDIR` (`.../T`).
@@ -135,6 +146,52 @@ def base_roots(workspace: Path) -> list[Path]:
     roots += [real(entry) for entry in CACHE_DIRS]
     roots += package_stores()
     return _unique(roots)
+
+
+def remote_git(workspace: Path) -> tuple[list[Path], list[Path]]:
+    """(writable, protected) git paths for a remote session's worktree.
+
+    Writable: the object store, the worktree's own admin directory, and its
+    branch's ref and reflog (with their lock files). Protected: what tells
+    git where the repository is (the worktree's `.git` file, `commondir`,
+    `gitdir`) and the per-worktree config, which could name commands to run.
+    """
+    from pcode.worktree import describe
+
+    tree = describe(workspace)
+    if tree is None:
+        return [], []
+
+    def git_path(*args: str) -> Path:
+        result = subprocess.run(
+            ["git", "-C", str(tree.path), "rev-parse", "--path-format=absolute", *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return real(result.stdout.strip())
+
+    common, admin = git_path("--git-common-dir"), git_path("--git-dir")
+    writable = [common / "objects", admin]
+    if tree.branch and not tree.branch.startswith("("):
+        for base in (common / "refs" / "heads", common / "logs" / "refs" / "heads"):
+            ref = base / tree.branch
+            writable += [ref, ref.with_name(ref.name + ".lock")]
+    protected = [
+        real(tree.path) / ".git",
+        admin / "commondir",
+        admin / "gitdir",
+        admin / "config.worktree",
+    ]
+    return writable, protected
+
+
+def profile_protected(base: Iterable[Path]) -> list[Path]:
+    """The git paths a remote session may not write, for the worktree among `base`."""
+    for root in base:
+        if (root / ".git").exists():
+            return remote_git(root)[1]
+    return []
 
 
 def package_stores() -> list[Path]:
@@ -202,6 +259,9 @@ class Policy:
     deny_read: list[str]
     # Mach services a sandboxed command may not look up (macOS only).
     deny_services: list[str] = field(default_factory=list)
+    # Directories whose Unix sockets a sandboxed command may not connect to:
+    # session hosts take commands (shell mode among them) over theirs.
+    deny_connect: list[Path] = field(default_factory=list)
 
     @classmethod
     def build(
@@ -222,15 +282,23 @@ class Policy:
                 str(home / "mcp-credentials.json"),
             ]
         services: list[str] = []
+        sockets: list[Path] = []
+        protected = [real(home)]
         # A remote host's additions apply whatever sandbox.json says.
         if (profile := remote_profile.active()) is not None:
-            deny = [*deny, *profile.deny_read, "~/Library/Keychains"]
+            from pcode.host_protocol import host_dir
+
+            hosts = str(host_dir())
+            deny = [*deny, *profile.deny_read, hosts, "~/Library/Keychains"]
             services = list(remote_profile.KEYCHAIN_SERVICES)
+            sockets = [real(path) for path in (*profile.deny_read, hosts)]
+            protected += profile_protected(base)
         return cls(
             write=_unique([*base, *(real(entry) for entry in config.get("write", [])), *grants]),
-            protected=[real(home)],
+            protected=_unique(protected),
             deny_read=[_expand_pattern(str(entry)) for entry in deny],
             deny_services=services,
+            deny_connect=sockets,
         )
 
     # -- decisions -----------------------------------------------------------
@@ -287,6 +355,16 @@ class Policy:
                     [f'(regex #"{glob_regex(pattern)}")' for pattern in self.deny_read],
                 )
             )
+        if self.deny_connect:
+            lines.append(
+                _rule(
+                    "deny network-outbound",
+                    [
+                        f"(remote unix-socket (subpath {_quote(path)}))"
+                        for path in self.deny_connect
+                    ],
+                )
+            )
         if self.deny_services:
             lines.append(
                 _rule(
@@ -311,6 +389,10 @@ class Policy:
         for root in roots:
             if self.guards(root):
                 args += ["--bind", str(root), str(root)]
+        # A tmpfs over a socket directory hides its sockets, so none can be reached.
+        for path in self.deny_connect:
+            if path.is_dir():
+                args += ["--tmpfs", str(path)]
         for pattern in self.deny_read:
             for match in sorted(glob.glob(pattern)):
                 if os.path.isdir(match):

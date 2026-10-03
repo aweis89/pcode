@@ -86,8 +86,11 @@ class FakeSessions:
         self.states[entry.id] = "idle"
         return entry
 
-    async def send(self, entry, text, *, base=None):
+    async def send(self, entry, text, *, base=None, on_queued=None):
+        await asyncio.sleep(0)  # Attaching takes a moment.
         self.sent.append((entry.id, text))
+        if on_queued is not None:
+            on_queued()
         # The first input arrives as "Subject\n\ntext": its last line decides.
         if text.splitlines()[-1].startswith("hang"):
             gate = self.gates.setdefault(entry.id, asyncio.Event())
@@ -298,7 +301,8 @@ def test_each_failed_check_alone_rejects_silently(rig, to, options, labels, reas
     assert listener.state.handled == {"gm1": reason}
     # No reply, no session, and the body was never fetched.
     assert mailbox.sent == [] and sessions.started == [] and mailbox.fetched == []
-    assert listener.logs == [f"email: ignored a message ({reason})"]
+    (log,) = listener.logs
+    assert log.startswith(f"email: ignored a message ({reason}")
 
 
 def test_a_delivery_report_is_ignored(rig):
@@ -513,6 +517,9 @@ def test_a_failed_send_retries_the_saved_reply_without_a_new_turn(rig):
         assert mailbox.sent == []
         (entry,) = listener.state.outbox
         assert entry.state == "pending" and "Echo: Task" in entry.body
+        await listener.retry_outbox()  # Too soon: it backs off.
+        assert mailbox.sent == []
+        clock.now += 60
         await listener.retry_outbox()
 
     run(go())
@@ -719,3 +726,110 @@ def test_email_settings_cannot_come_from_a_repository():
     from pcode.preferences import USER_ONLY
 
     assert {"email_owner", "email_mcp", "email_turn_requests"} <= USER_ONLY
+
+
+def test_the_alias_is_redacted_even_when_split_across_quoted_lines(rig):
+    listener, mailbox, sessions, clock = rig
+    token = listener._token
+    broken = f"see {token[:10]}=\n> {token[10:].upper()} please"
+    incoming = parse(mail(listener.alias))
+    incoming.text = broken
+    assert token[:10] not in listener.prompt(listener.sessions.get("x"), incoming, False)
+    assert "[pcode address]" in listener.prompt(None, incoming, False)
+
+
+def test_one_unreadable_message_does_not_hold_up_the_rest(rig, monkeypatch):
+    listener, mailbox, sessions, clock = rig
+    mailbox.add(mail(listener.alias, "broken"))
+    mailbox.add(mail(listener.alias, "fine"))
+    real = mailbox.meta
+
+    def meta(handle):
+        if handle == "1":
+            raise OSError("unexpected FETCH shape")
+        return real(handle)
+
+    monkeypatch.setattr(mailbox, "meta", meta)
+    run(poll_and_settle(listener))
+    assert [text for _, text in sessions.sent] == ["Task\n\nfine"]
+    for _ in range(listener_module.READ_ATTEMPTS):
+        run(listener.poll())
+    assert "1" in listener.seen  # Given up on, not retried forever.
+
+
+def test_a_body_that_cannot_be_fetched_gets_a_resend_request(rig, monkeypatch):
+    listener, mailbox, sessions, clock = rig
+    mailbox.add(mail(listener.alias, "work"))
+
+    def fetch(handle):
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(mailbox, "fetch", fetch)
+    run(poll_and_settle(listener))
+    assert sessions.sent == []
+    assert sent_texts(mailbox)[-1].startswith("Nothing was run")
+
+
+def test_stop_while_the_host_is_starting_means_the_input_never_runs(rig):
+    listener, mailbox, sessions, clock = rig
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+    real_start = sessions.start_session
+
+    async def slow_start(*args, **kwargs):
+        started.set()
+        await proceed.wait()
+        return await real_start(*args, **kwargs)
+
+    sessions.start_session = slow_start
+
+    async def go():
+        mailbox.add(mail(listener.alias, "work"))
+        await listener.poll()
+        await started.wait()
+        # The owner replies /stop to the launcher-less session's first email.
+        session = listener.sessions["s1"]
+        await listener.stop_session(session, listener.replier(parse(mailbox.messages["1"][1])))
+        proceed.set()
+        await settle(listener)
+
+    run(go())
+    assert sessions.sent == []
+    assert any(text.startswith("Not run: the session was stopped") for text in sent_texts(mailbox))
+
+
+def test_a_reply_being_sent_is_not_sent_again_by_a_retry(rig, monkeypatch):
+    listener, mailbox, sessions, clock = rig
+    release = asyncio.Event()
+    calls = []
+
+    async def go():
+        loop = asyncio.get_running_loop()
+
+        def slow_send(message):
+            calls.append(message)
+            asyncio.run_coroutine_threadsafe(release.wait(), loop).result()
+
+        monkeypatch.setattr(mailbox, "send", slow_send)
+        sending = asyncio.create_task(listener.send("hi", subject="s", route="control"))
+        while not calls:
+            await asyncio.sleep(0.01)
+        await listener.retry_outbox(force=True)
+        release.set()
+        await sending
+
+    run(go())
+    assert len(calls) == 1 and listener.state.outbox[0].state == "sent"
+
+
+def test_shutdown_says_so_by_email(rig):
+    listener, mailbox, sessions, clock = rig
+
+    async def go():
+        mailbox.add(mail(listener.alias, "work"))
+        await poll_and_settle(listener)
+        await listener.shutdown()
+
+    run(go())
+    assert "pcode stopped listening" in sent_texts(mailbox)[-1]
+    assert "s1 (worktree" in sent_texts(mailbox)[-1]

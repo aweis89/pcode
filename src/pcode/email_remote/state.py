@@ -39,8 +39,10 @@ class OutboxEntry:
     references: list[str] = field(default_factory=list)
     auto: str = "auto-replied"
     attempts: int = 0
-    # "pending", "sent", or "failed".
+    # "pending", "sending", "sent", or "failed".
     state: str = "pending"
+    # When a failed send may be tried again (the listener's clock).
+    retry_at: float = 0.0
 
 
 @dataclass

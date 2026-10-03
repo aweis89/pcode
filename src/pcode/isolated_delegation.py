@@ -35,7 +35,15 @@ SETUP_TIMEOUT_SECONDS = 900
 
 
 def isolation_enabled() -> bool:
-    """Require explicit worker opt-in as well as the active worktree preference."""
+    """Require explicit worker opt-in as well as the active worktree preference.
+
+    Never under a remote profile: a task worktree runs the project's
+    `worktree-setup` outside the sandbox, from a branch the model can commit to.
+    """
+    from pcode import remote_profile
+
+    if remote_profile.active() is not None:
+        return False
     preferences = load_preferences()
     return all(
         preferences.get(key, SETTINGS[key].default) == "on"

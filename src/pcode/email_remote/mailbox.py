@@ -91,6 +91,10 @@ def store_password(owner: str) -> None:
             owner,
             "-l",
             "pcode email remote",
+            # Trust no application: every read, the listener's included, asks
+            # macOS first, so nothing else running as you reads it silently.
+            "-T",
+            "",
             # Last, with no value: `security` prompts for it.
             "-w",
         ],

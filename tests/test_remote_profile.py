@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
+import tempfile
 from unittest.mock import patch
 
 import pytest
@@ -49,7 +51,7 @@ def test_the_environment_is_an_allowlist():
             "GROQ_API_KEY": "g",
             "GITHUB_TOKEN": "secret",
             "GH_TOKEN": "secret",
-            "AWS_SECRET_ACCESS_KEY": "secret",
+            "NPM_TOKEN": "secret",
             "SOME_DIRENV_VALUE": "secret",
         }
     )
@@ -262,3 +264,136 @@ def test_the_host_entry_point_activates_the_profile(tmp_path):
         ]
     )
     assert RemoteProfile.from_json(args.remote_profile).mcp
+
+
+# Ways out of the sandbox that the profile closes
+
+
+def git_worktree(tmp_path, monkeypatch=None):
+    """A repository and a session worktree on branch `pcode-s1`, as a remote host has.
+
+    With `monkeypatch`, temp is moved away from pytest's tmp_path, which sits
+    under $TMPDIR here and would otherwise be a write root of its own.
+    """
+    if monkeypatch is not None:
+        elsewhere = tempfile.mkdtemp(prefix="pct-", dir="/tmp")
+        monkeypatch.setattr(sandbox.tempfile, "gettempdir", lambda: elsewhere)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-c", "user.email=t@example.com", "-c", "user.name=t"]
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run([*git, "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+    tree = repo / ".worktrees" / "pcode-s1"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-q", "-b", "pcode-s1", str(tree)], check=True
+    )
+    return sandbox.real(repo), sandbox.real(tree)
+
+
+def test_a_remote_session_can_write_its_worktree_and_branch_but_not_git_config(
+    profile, tmp_path, monkeypatch
+):
+    repo, tree = git_worktree(tmp_path, monkeypatch)
+    rules = sandbox.Policy.build(sandbox.base_roots(tree), config={})
+    git = repo / ".git"
+    assert rules.can_write(tree / "src.py")
+    assert rules.can_write(git / "objects" / "ab" / "cdef")
+    assert rules.can_write(git / "refs" / "heads" / "pcode-s1")
+    assert rules.can_write(git / "worktrees" / "pcode-s1" / "index")
+    for path in (
+        repo / "README.md",  # The shared checkout.
+        git / "config",
+        git / "refs" / "heads" / "main",
+        tree / ".git",  # Where git finds the repository.
+        git / "worktrees" / "pcode-s1" / "commondir",
+        git / "worktrees" / "pcode-s1" / "config.worktree",
+    ):
+        assert not rules.can_write(path), path
+    remote_profile.activate(None)
+    assert sandbox.Policy.build(sandbox.base_roots(tree), config={}).can_write(git / "config")
+
+
+@pytest.mark.skipif(sandbox.backend() != "seatbelt", reason="needs macOS sandbox-exec")
+def test_a_sandboxed_command_can_commit_in_its_worktree_but_not_touch_the_config(
+    profile, tmp_path, monkeypatch
+):
+    repo, tree = git_worktree(tmp_path, monkeypatch)
+    rules = sandbox.Policy.build(sandbox.base_roots(tree), config={})
+    prefix = sandbox.command_prefix(rules, tmp_path / "job")
+    script = (
+        "echo x > f.txt && git add f.txt && "
+        "git -c user.email=t@example.com -c user.name=t commit -qm work && echo committed; "
+        "git config core.fsmonitor 'touch pwned' || echo refused"
+    )
+    result = subprocess.run(
+        [*prefix, "sh", "-c", script], cwd=tree, capture_output=True, text=True, timeout=60
+    )
+    assert "committed" in result.stdout, result.stderr
+    assert "refused" in result.stdout
+    assert "fsmonitor" not in (repo / ".git" / "config").read_text()
+
+
+@pytest.mark.skipif(sandbox.backend() != "seatbelt", reason="needs macOS sandbox-exec")
+def test_a_sandboxed_command_cannot_reach_a_session_host_socket(profile, host_dir):
+    import socket
+
+    path = host_dir / "aaaa1111.sock"
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(path))
+    server.listen()
+    try:
+        rules = sandbox.Policy.build([host_dir.parent], config={})
+        prefix = sandbox.command_prefix(rules, host_dir.parent)
+        code = f"import socket; socket.socket(socket.AF_UNIX).connect({str(path)!r})"
+        result = subprocess.run(
+            [*prefix, sys.executable, "-c", code], capture_output=True, text=True, timeout=30
+        )
+        assert result.returncode != 0 and "not permitted" in result.stderr
+    finally:
+        server.close()
+
+
+def test_the_listeners_git_calls_ignore_config_that_runs_commands(tmp_path):
+    from pcode.gateway import changes
+
+    repo, tree = git_worktree(tmp_path)
+    marker = tmp_path / "pwned"
+    (tree / "f.txt").write_text("x")
+    subprocess.run(["git", "-C", str(tree), "add", "f.txt"], check=True)
+    for key in ("core.fsmonitor", "diff.external"):
+        subprocess.run(["git", "-C", str(repo), "config", key, f"touch {marker}"], check=True)
+    summary = changes(tree)
+    assert "f.txt" in summary.diff_stat and summary.branch == "pcode-s1"
+    assert not marker.exists()
+
+
+def test_a_remote_host_refuses_shell_mode(tmp_path, host_dir):
+    remote_profile.activate(RemoteProfile())
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal, _, _ = await attach(host)
+            with pytest.raises(Exception, match="Shell mode is off"):
+                await terminal.peer.request("submit", "!echo hi", "shell")
+            terminal.close()
+        finally:
+            await stop_host(host)
+
+    try:
+        asyncio.run(run())
+    finally:
+        remote_profile.activate(None)
+
+
+def test_a_remote_session_whose_worktree_is_gone_resumes_in_a_new_one(tmp_path):
+    from types import SimpleNamespace
+
+    from pcode.host import remote_resume_workspace
+
+    repo, tree = git_worktree(tmp_path)
+    profile = RemoteProfile()
+    assert remote_resume_workspace(SimpleNamespace(workspace=str(tree)), repo, profile) == tree
+    gone = SimpleNamespace(workspace=str(repo / ".worktrees" / "removed"))
+    created = remote_resume_workspace(gone, repo, profile)
+    assert created != repo and created.parent == repo / ".worktrees" and created.is_dir()

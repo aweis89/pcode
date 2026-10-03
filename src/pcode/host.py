@@ -135,6 +135,10 @@ class _Client:
     # Intents: the controller's, with commands tagged by who sent them.
 
     def submit(self, text: str, mode: str) -> None:
+        if mode == "shell" and remote_profile.active() is not None:
+            # A `!command` runs outside the sandbox; an unattended host takes none,
+            # whoever connects (its own model's commands cannot connect at all).
+            raise PermissionError("Shell mode is off in a remote session.")
         self.host.touch(self)
         self.host.controller.submit(text, mode)
 
@@ -722,6 +726,22 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def remote_resume_workspace(info, workspace: Path, profile) -> Path:
+    """Where a remote session resumes: its own worktree, else a fresh one.
+
+    A local resume whose worktree was merged or cleaned away falls back to the
+    project checkout. An unattended one must never work in the shared
+    checkout, so it gets a new worktree instead.
+    """
+    from pcode.app import _enter_worktree
+
+    if Path(info.workspace).is_dir():
+        return Path(info.workspace).resolve()
+    print(f"workspace: {info.workspace} is gone; continuing in a new worktree", file=sys.stderr)
+    created, _ = _enter_worktree(workspace, True, always=True, base=profile.base)
+    return created.resolve()
+
+
 async def _serve(args: argparse.Namespace) -> None:
     from pcode.app import _enter_worktree, _resume_workspace
     from pcode.preferences import load_preferences, set_project_root, thinking_mode_preference
@@ -755,7 +775,10 @@ async def _serve(args: argparse.Namespace) -> None:
             args.resume, args.session_dir, workspace, fork_if_open=True, fork=args.fork
         )
         try:
-            workspace = Path(_resume_workspace(saved.info, workspace)).resolve()
+            if profile is not None:
+                workspace = remote_resume_workspace(saved.info, workspace, profile)
+            else:
+                workspace = Path(_resume_workspace(saved.info, workspace)).resolve()
         except BaseException:
             saved.abandon()  # A copy made for this resume is removed, not left listed.
             raise

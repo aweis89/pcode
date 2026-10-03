@@ -18,6 +18,7 @@ The rest is the surface a remote control needs:
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -147,7 +148,9 @@ class HeadlessView:
         self.failed = self.failed or self.command
 
     def show_events(self, events) -> None:
-        self._scrollback("events", tuple(events))
+        # Not `_scrollback`: tool events go beside a reply block, not after settling it.
+        if self.showing:
+            self.scrollback("events", (tuple(events),), {})
 
     # What the host hands back to the terminal that sent a command
 
@@ -200,9 +203,17 @@ async def host_call(controller: RemoteController, method: str, text: str, view: 
         return None
 
 
-async def submit(controller: RemoteController, text: str, view: HeadlessView) -> None:
-    """Queue `text` behind whatever the host is doing, and wait for its turn to end."""
+async def submit(
+    controller: RemoteController, text: str, view: HeadlessView, on_queued=None
+) -> None:
+    """Queue `text` behind whatever the host is doing, and wait for its turn to end.
+
+    `on_queued` is called once the host holds the message, so a caller that
+    wants to cancel it knows a cancel from then on reaches it.
+    """
     await host_call(controller, "send", text, view)
+    if on_queued is not None:
+        on_queued()
     await view.finished.wait()
 
 
@@ -371,30 +382,56 @@ async def start_session(
     return find_host(identity, directory)
 
 
+# Settings that would let a repository's config run a command, overridden for
+# every git call made on a worktree an unattended model has written to.
+_INERT_GIT = (
+    "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.pager=cat",
+    "-c", "diff.external=",
+    "-c", "core.sshCommand=false",
+)  # fmt: skip
+
+
+def inert_git(workspace: str | Path, *args: str) -> str:
+    """Run git on `workspace` with nothing in its config able to run code; stdout or ""."""
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/"),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    result = subprocess.run(
+        ["git", *_INERT_GIT, "-C", str(workspace), *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def changes(workspace: str | Path, base: str | None = None) -> ChangeSummary:
     """What the worktree changed since `base` (committed or not); since HEAD without one."""
-
-    def git(*args: str) -> str:
-        result = subprocess.run(
-            ["git", "-C", str(workspace), *args], capture_output=True, text=True, timeout=30
-        )
-        return result.stdout.strip() if result.returncode == 0 else ""
-
     return ChangeSummary(
         worktree=str(workspace),
-        branch=git("symbolic-ref", "--quiet", "--short", "HEAD"),
-        diff_stat=git("diff", "--stat", base or "HEAD"),
-        untracked=git("ls-files", "--others", "--exclude-standard").splitlines(),
+        branch=inert_git(workspace, "symbolic-ref", "--quiet", "--short", "HEAD"),
+        diff_stat=inert_git(
+            workspace, "diff", "--no-ext-diff", "--no-textconv", "--stat", base or "HEAD"
+        ),
+        untracked=inert_git(workspace, "ls-files", "--others", "--exclude-standard").splitlines(),
     )
 
 
-async def send(entry: HostEntry, text: str, *, base: str | None = None) -> TurnResult:
+async def send(
+    entry: HostEntry, text: str, *, base: str | None = None, on_queued=None
+) -> TurnResult:
     """Send `text` as its own turn (queued behind the host's work); wait for it to end."""
     view = CollectView()
     async with attached(entry, view) as controller:
         if controller.startup_error is not None:
             return TurnResult("", FAILED, [str(controller.startup_error)])
-        await submit(controller, text, view)
+        await submit(controller, text, view, on_queued)
         if view.dropped and controller.startup_error is not None:
             view.notes.append(str(controller.startup_error))
     view.settle()

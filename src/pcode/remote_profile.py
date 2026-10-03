@@ -55,6 +55,9 @@ _ENV_NAMES = frozenset(
         "AZURE_OPENAI_ENDPOINT",
         "AWS_REGION",
         "AWS_DEFAULT_REGION",
+        # Bedrock's key id is a provider variable; the rest of the credential with it.
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",

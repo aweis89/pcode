@@ -16,8 +16,8 @@ import asyncio
 import base64
 import hashlib
 import random
+import re
 import secrets
-import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -46,7 +46,10 @@ POLL_SECONDS = 5.0
 MAX_BACKOFF = 120.0
 # A turn that ends this soon after its session started gets one email, not two.
 COALESCE_SECONDS = 20.0
-SEND_ATTEMPTS = 5
+SEND_ATTEMPTS = 6
+# Seconds before the first resend of a failed reply; doubled each time after.
+SEND_BACKOFF = 15.0
+READ_ATTEMPTS = 3
 CONTROLS = ("/status", "/stop")
 REDACTED = "[pcode address]"
 
@@ -97,6 +100,11 @@ class Session:
     tasks: set[asyncio.Task] = field(default_factory=set)
     # The input whose turn is running (it holds `lock`).
     current: asyncio.Task | None = None
+    # Counts /stop; an input accepted before the latest one does not run.
+    stops: int = 0
+    # Set once the running input's message is in the host's queue, where a
+    # cancel reaches it; None while no message is on its way.
+    queued: asyncio.Event | None = None
 
     def finished(self, task: asyncio.Task) -> None:
         self.tasks.discard(task)
@@ -126,10 +134,7 @@ def alias_for(owner: str, token: str) -> str:
 
 
 def head_commit(workspace: Path) -> str | None:
-    result = subprocess.run(
-        ["git", "-C", str(workspace), "rev-parse", "HEAD"], capture_output=True, text=True
-    )
-    return result.stdout.strip() or None if result.returncode == 0 else None
+    return gateway.inert_git(workspace, "rev-parse", "HEAD") or None
 
 
 class Listener:
@@ -180,6 +185,8 @@ class Listener:
         # Message-IDs pcode sent, and IMAP handles already looked at.
         self.sent_ids: set[str] = set()
         self.seen: set[str] = set()
+        # Handles whose metadata could not be read, and how often.
+        self.failures: dict[str, int] = {}
         self.handled_ids: set[str] = set()
 
     # Lifetime
@@ -243,6 +250,7 @@ class Listener:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        stopped = []
         for session in self.sessions.values():
             entry = session.entry
             if entry is None or self.api.status(entry).state == "stopped":
@@ -250,8 +258,15 @@ class Listener:
             try:
                 await self.api.stop(entry)
                 await stop_entry(entry, keep_worktree=True)
+                stopped.append(f"{session.key} (worktree {entry.workspace})")
             except (OSError, ConnectionError) as error:
                 self.log(f"email: could not stop host {entry.id}: {error_message(error)}")
+        # Replies cut off above, then one saying the listener is gone.
+        await self.retry_outbox(force=True)
+        lines = ["pcode stopped listening; replies to its emails are no longer read."]
+        if stopped:
+            lines += ["Stopped sessions, their transcripts and worktrees kept:", *stopped]
+        await self.send("\n".join(lines), subject="pcode remote: stopped", route=CONTROL)
         self.state.save()
         self.log("email: listener stopped; sessions' transcripts and worktrees are kept.")
 
@@ -262,11 +277,24 @@ class Listener:
         for handle in handles:
             if handle in self.seen or not self.active():
                 continue
-            meta = await asyncio.to_thread(self.mailbox.meta, handle)
+            # One message that cannot be read must not hold up those after it.
+            try:
+                meta = await asyncio.to_thread(self.mailbox.meta, handle)
+            except Exception as error:  # noqa: BLE001 - counted, then given up on.
+                failures = self.failures[handle] = self.failures.get(handle, 0) + 1
+                self.log(f"email: could not read message {handle} ({error_message(error)})")
+                if failures >= READ_ATTEMPTS:
+                    self.seen.add(handle)
+                continue
             self.seen.add(handle)
             if meta.gmail_id in self.state.handled:
                 continue
-            await self.take(handle, meta)
+            try:
+                await self.take(handle, meta)
+            except Exception as error:  # noqa: BLE001 - recorded; the loop carries on.
+                self.state.handled.setdefault(meta.gmail_id, "error")
+                self.state.save()
+                self.log(f"email: could not read message {handle} ({error_message(error)})")
 
     async def take(self, handle: str, meta: Meta) -> None:
         headers = await asyncio.to_thread(self.mailbox.headers, handle)
@@ -276,17 +304,22 @@ class Listener:
         self.state.handled[meta.gmail_id] = reason or "accepted"
         self.state.save()
         if reason:
-            self.log(f"email: ignored a message ({reason})")
+            hint = f"; From must be exactly {self.owner}" if reason == "sender" else ""
+            self.log(f"email: ignored a message ({reason}{hint})")
             return
         self.handled_ids.add(incoming.message_id)
         if meta.size > MAX_MESSAGE_BYTES:
             incoming.problem = "too-large"
         else:
-            raw = await asyncio.to_thread(self.mailbox.fetch, handle)
-            if len(raw) > MAX_MESSAGE_BYTES:
-                incoming.problem = "too-large"
-            else:
-                read_body(raw, incoming)
+            try:
+                raw = await asyncio.to_thread(self.mailbox.fetch, handle)
+                if len(raw) > MAX_MESSAGE_BYTES:
+                    incoming.problem = "too-large"
+                else:
+                    read_body(raw, incoming)
+            except Exception as error:  # noqa: BLE001 - the owner is asked to resend.
+                self.log(f"email: could not fetch a message ({error_message(error)})")
+                incoming.problem = MALFORMED
         await self.dispatch(incoming)
 
     def reject_reason(self, incoming: Incoming, meta: Meta) -> str:
@@ -377,7 +410,7 @@ class Listener:
         self.state.routes[incoming.message_id] = session.key
         self.state.save()
         session.pending += 1
-        task = asyncio.create_task(self.run_input(session, incoming, reply))
+        task = asyncio.create_task(self.run_input(session, incoming, reply, session.stops))
         session.tasks.add(task)
         # Not a `finally` in run_input: a task cancelled before it starts never runs one.
         task.add_done_callback(session.finished)
@@ -423,17 +456,30 @@ class Listener:
         subject = incoming.subject
         if first and subject and not subject.lower().startswith("re:") and subject not in text:
             text = f"{subject}\n\n{text}"
-        # The model never sees the address that controls it.
-        return text.replace(self.alias, REDACTED).replace(self._token, REDACTED)
+        # The model never sees the address that controls it, even with the
+        # token broken across quoted, wrapped or encoded lines.
+        spread = r"[\s>=]*".join(re.escape(char) for char in self._token)
+        return re.sub(spread, REDACTED, text, flags=re.IGNORECASE)
 
-    async def run_input(self, session: Session, incoming: Incoming, reply) -> None:
+    async def run_input(self, session: Session, incoming: Incoming, reply, stops: int) -> None:
         try:
             async with session.lock:
                 session.current = asyncio.current_task()
                 fresh = await self.ensure_host(session)
                 entry = session.entry
+                # No await from this check to the send: a /stop either sees
+                # `queued` and waits for it, or this sees its count.
+                if session.stops != stops:
+                    await reply("Not run: the session was stopped first.", session.key)
+                    return
+                queued = session.queued = asyncio.Event()
                 sending = asyncio.ensure_future(
-                    self.api.send(entry, self.prompt(session, incoming, fresh), base=session.base)
+                    self.api.send(
+                        entry,
+                        self.prompt(session, incoming, fresh),
+                        base=session.base,
+                        on_queued=queued.set,
+                    )
                 )
                 acknowledged = False
                 if fresh:
@@ -445,6 +491,7 @@ class Listener:
                     result = await sending
                 finally:
                     sending.cancel()
+                    session.queued = None
                 status = self.api.status(entry)
                 session.session_id = status.session_id or session.session_id
                 self.state.sessions[session.key] = session.record()
@@ -467,9 +514,16 @@ class Listener:
             return
         # Inputs still waiting their turn here are dropped, as the host's queue
         # is; the running one ends when its turn is cancelled, and says so.
+        session.stops += 1
         for task in session.tasks:
             if task is not session.current:
                 task.cancel()
+        if session.queued is not None:
+            # Its message may still be on its way: cancel once the host holds it.
+            try:
+                await asyncio.wait_for(session.queued.wait(), timeout=30)
+            except TimeoutError:
+                pass
         if session.entry is not None and self.api.status(session.entry).state != "stopped":
             await self.api.stop(session.entry)
         await reply(f"Stopped session {session.key}'s work; the session stays open.", session.key)
@@ -568,6 +622,8 @@ class Listener:
             message_id=entry.planned_rfc_id,
         )
         entry.attempts += 1
+        # In flight: a retry pass must not send it a second time meanwhile.
+        entry.state = "sending"
         try:
             await asyncio.to_thread(self.mailbox.send, message)
         except Exception as error:  # noqa: BLE001 - retried, and shown here.
@@ -578,12 +634,15 @@ class Listener:
                     f"{error_message(error)}"
                 )
             else:
+                entry.state = "pending"
+                entry.retry_at = self.clock() + SEND_BACKOFF * 2 ** (entry.attempts - 1)
                 self.log(f"email: sending a reply failed ({error_message(error)}); will retry")
         else:
             entry.state = "sent"
         self.state.save()
 
-    async def retry_outbox(self) -> None:
+    async def retry_outbox(self, *, force: bool = False) -> None:
+        """Resend failed replies whose backoff has passed (all of them with `force`)."""
         for entry in self.state.outbox:
-            if entry.state == "pending":
+            if entry.state == "pending" and (force or entry.retry_at <= self.clock()):
                 await self.deliver(entry)

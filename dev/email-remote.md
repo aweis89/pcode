@@ -38,6 +38,20 @@ tests encode the assumptions below, they don't prove them.
   alias and only the token's hash may reach disk; a retry recomposes it
   under the same Message-ID. Keychain storage is macOS only; elsewhere setup
   fails.
+- Review fixes (same branch): under a profile the sandbox no longer has the
+  main checkout as a write root (only the worktree, `objects/`, its admin dir
+  and its branch ref/reflog; the `.git` file, `commondir`, `gitdir` and
+  `config.worktree` are protected), and Seatbelt denies `connect()` to Unix
+  sockets in the host and listener-state directories (bwrap: a tmpfs over
+  them). Without these a model could rewrite git config that the listener's
+  `git diff` executes, or drive its own host's unsandboxed shell mode. Hosts
+  under a profile also refuse shell-mode input, isolated workers are off, a
+  resume whose worktree is gone gets a fresh worktree, the listener's git
+  calls pin config that runs commands (`gateway.inert_git`), and the keychain
+  item is created with `-T ""`.
+- Not done: the ack email carries no session id (it exists only once the
+  first turn has been journalled; the result email has it). Per-run state
+  files are never pruned.
 
 ### Phase 1 evidence
 

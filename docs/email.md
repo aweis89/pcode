@@ -18,7 +18,13 @@ app password goes in the keychain; there is no plaintext fallback).
 1. Create an app password at <https://myaccount.google.com/apppasswords>.
 2. Run `pcode --email-setup you@gmail.com`. Paste the app password at the
    keychain prompt. pcode signs in once to check it, shows the profile below,
-   and asks you to confirm.
+   and asks you to confirm. Use the exact address Gmail shows as your sender:
+   mail whose `From` differs (a dotted variant, `googlemail.com`) is ignored.
+
+The keychain item trusts no application, so macOS asks before anything reads
+it, `pcode --email-listen` included. Click **Allow** each time you start
+listening rather than **Always Allow**: that keeps any other program from
+reading it silently.
 
 ## Using it
 
@@ -35,6 +41,9 @@ pcode emails you a launcher message. Then:
 | A new email to the address the launcher replies to | Another independent session (the "Start new task" link does this) |
 | `/status` as the whole text | That session's state (in a fresh email: every session's) |
 | `/stop` as the whole text, replying to a session | Its running turn and anything queued are cancelled; the session stays open |
+
+A task is sent to the model as you wrote it, so a leading `$provider:model` or
+`+effort` word picks the model or effort for that turn, as at the terminal.
 
 You get one email when a turn finishes, with the reply, how it ended, the
 worktree and branch, and a `git diff --stat`. A turn that runs longer than 20
@@ -57,7 +66,9 @@ without a reply and never reaches the model. Replies only ever go to you.
 
 | | |
 | --- | --- |
-| Sandbox | The bundled sandbox is on, whatever `/extensions` says: writes stay in the session's worktree and caches, credential files and the listener's own state are unreadable, and shell commands can't reach the keychain. |
+| Sandbox | The bundled sandbox is on, whatever `/extensions` says: writes stay in the session's worktree, its own branch and caches (never the main checkout or git's config), credential files and the listener's own state are unreadable, and shell commands can't reach the keychain or another session's host. |
+| Shell mode | `!command` input is refused, even from a terminal attached with `pcode --attach`, since it runs outside the sandbox. |
+| Sub-agents | Delegated work runs in the session's worktree; isolated worker worktrees are off. |
 | Worktree | Always a fresh one, branched from what you have checked out. It's kept afterwards and never merged automatically. |
 | Environment | Only allowlisted variables (provider API keys, `PATH`, `HOME`, locale), not your shell's full environment. |
 | MCP servers | Off, since they run outside the sandbox. `email_mcp` turns on your default servers. |
