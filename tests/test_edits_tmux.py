@@ -72,7 +72,9 @@ def test_completed_edits_toggle_and_resize_without_duplicates(pane, release):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "go", "Enter")
     screen = capture(pane, "LIVE_EDIT_LINE", running=True)
-    assert "not applied" in screen and "TURN_1_DONE" not in screen
+    assert "⟳ Editing · sample.py" in screen
+    assert "Preparing edit" not in screen and "not applied" not in screen
+    assert "TURN_1_DONE" not in screen
     assert input_rows(screen) == 1
     release()
     capture(pane, "TURN_1_DONE")
