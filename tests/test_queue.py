@@ -218,6 +218,39 @@ def test_finished_call_is_held_as_done_under_the_models_phase():
     assert "activity.detail" not in parts and parts["activity.meta"] == "0s"
 
 
+def test_status_row_waits_on_sub_agents_listed_in_the_panel(monkeypatch):
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    def row():
+        return "".join(text for _, text in activity.status_fragments("⠋", 120))
+
+    activity = Activity(prompt="Fix bug", prompt_state="running", status="Running delegate_task…")
+    for call_id in ("a", "b"):
+        activity.tools.record(
+            ToolStarted("delegate_task", "", call_id, agent="worker", task=f"task {call_id}")
+        )
+    parts = styled(activity.status_fragments("⠋", 80))
+    assert parts["activity.phase"] == "Waiting for 2 sub-agents"
+    assert "Worker" not in row()
+    # A sub-agent's tool call is still reported on the row while it runs.
+    activity.tools.record(ToolStarted("read_file", "x.py", "a:read", parent_call_id="a"))
+    assert styled(activity.status_fragments("⠋", 80))["activity.phase"] == "Read file"
+    # Held as done, it no longer reads as the model's turn.
+    monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 1e9)
+    activity.tools.record(ToolSummary("read_file", "x.py", call_id="a:read"))
+    parts = styled(activity.status_fragments("⠋", 80))
+    assert parts["activity.phase"] == "Waiting for 2 sub-agents"
+    assert "✓ Read file" in row()
+    monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 0.0)
+    activity.tools.record(ToolSummary("delegate_task", "done", call_id="b"))
+    parts = styled(activity.status_fragments("⠋", 80))
+    assert parts["activity.phase"] == "Waiting for 1 sub-agent"
+    # With the panel hidden, the row is the only place left to name one.
+    activity.show_tasks = False
+    assert "Worker" in row() and "task a" in row()
+
+
 def test_phase_clock_restarts_when_the_phase_changes(monkeypatch):
     from pcode import ui
 

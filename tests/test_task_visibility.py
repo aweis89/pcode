@@ -40,12 +40,12 @@ def test_visibility_preference_and_command(tmp_path, monkeypatch):
 
 def test_hidden_widget_preserves_data_and_reset_preserves_visibility():
     activity = Activity(plan=[{"content": "Retained task", "status": "pending"}])
-    assert activity.plan_rows(10, "*")
+    assert activity.plan_rows(10)
     activity.show_tasks = False
-    assert activity.plan_rows(10, "*") == []
+    assert activity.plan_rows(10) == []
     activity.plan.append({"content": "New task", "status": "pending"})
     activity.show_tasks = True
-    assert len(activity.plan_rows(10, "*")) >= 2
+    assert len(activity.plan_rows(10)) >= 2
     activity.show_tasks = False
     activity.reset()
     assert not activity.show_tasks
@@ -58,7 +58,7 @@ def test_shortcut_hides_rows_without_losing_state(tmp_path, monkeypatch, editing
     activity = app.activity
     activity.plan = [{"id": "1", "content": "Retained task", "status": "in_progress"}]
     activity.busy = True
-    rows = activity.plan_rows(10, "*")
+    rows = activity.plan_rows(10)
     assert rows
     with create_pipe_input() as pipe:
         session = create_prompt(
@@ -80,12 +80,12 @@ def test_shortcut_hides_rows_without_losing_state(tmp_path, monkeypatch, editing
         (binding,) = session.key_bindings.get_bindings_for_keys((Keys.ControlO,))
         event = SimpleNamespace(app=session.app)
         binding.handler(event)
-        assert activity.plan_rows(10, "*") == []
+        assert activity.plan_rows(10) == []
         assert activity.plan[0]["content"] == "Retained task"
         assert activity.busy
         assert load_preferences()["show_tasks"] == "off"
         binding.handler(event)
-        assert activity.plan_rows(10, "*") == rows
+        assert activity.plan_rows(10) == rows
         assert session.default_buffer.text == "retained draft"
         assert load_preferences()["show_tasks"] == "on"
         activity.reset()

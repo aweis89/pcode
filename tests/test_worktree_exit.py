@@ -213,7 +213,7 @@ def test_finish_command_merges_removes_and_quits(repo, tmp_path):
     app.transcript.note = lambda text, **_: notes.append(text)
     commit(created.path, "f.txt")
     app.controller.worktree("finish")
-    assert "merged pcode-abc into main; removed" in notes[-1]
+    assert notes[-1] == "✓ merged pcode-abc into main and removed its worktree"
     assert not created.path.exists()
     assert app.running is False
     assert session.info.workspace == str(repo)

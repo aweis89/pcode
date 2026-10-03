@@ -37,17 +37,16 @@ def task_tree(monkeypatch):
     return items, history
 
 
-def test_guides_continue_past_descendants_to_the_next_visible_sibling(task_tree):
+def test_only_delegates_and_their_plans_nest_under_the_active_task(task_tree):
     items, history = task_tree
     rows = task_panel_rows(items, history, 10, "*")
+    # Plain calls, the parent's and the sub-agent's, stay on the status row.
     assert rows == [
         ("class:plan", "✓ Inspect"),
         ("class:plan.active", "* Implement"),
-        ("class:plan.agent", "├── ✦ Worker · 0.0s · Working · Fix it"),
-        ("class:plan.active", "│   ├── * Read the code"),
-        ("class:plan.active", "│   │   └── ⟳ Read file · 0.0s · child.py"),
-        ("class:plan", "│   └── ○ Test the fix"),
-        ("class:plan.active", "└── ⟳ Run shell · 0.0s · make check"),
+        ("class:plan.agent", "└── ✦ Worker · 0.0s · Working · Fix it"),
+        ("class:plan.active", "    ├── * Read the code"),
+        ("class:plan", "    └── ○ Test the fix"),
         ("class:plan", "○ Validate"),
     ]
 
@@ -58,28 +57,19 @@ def test_clipped_tree_keeps_ancestors_and_ends_at_the_last_visible_sibling(task_
     rows = task_panel_rows(items, history, budget, "*")
     assert len(rows) <= budget
     text = [text for _, text in rows]
+    assert not any("make check" in line or "child.py" in line for line in text)
     if budget == 0:
         assert rows == []
     elif budget == 1:
         assert text == ["* Implement"]
     else:
         assert "* Implement" in text
-        delegate = next(line for line in text if "✦ Worker" in line)
-        if budget < 6:
-            assert delegate.startswith("└── ")
-            assert not any("make check" in line for line in text)
-        else:
-            assert delegate.startswith("├── ")
-            assert "└── ⟳ Run shell · 0.0s · make check" in text
+        assert "└── ✦ Worker · 0.0s · Working · Fix it" in text
         if budget == 3:
             assert text[-1] == "    └── * Read the code"
-        if budget == 4:
-            assert text[-2:] == ["    ├── * Read the code", "    └── ○ Test the fix"]
-        if budget == 5:
-            assert text[-3:] == [
-                "    ├── * Read the code",
-                "    │   └── ⟳ Read file · 0.0s · child.py",
-                "    └── ○ Test the fix",
+        if budget >= 4:
+            assert ["    ├── * Read the code", "    └── ○ Test the fix"] == [
+                line for line in text if line.startswith("    ")
             ]
 
 
@@ -88,19 +78,13 @@ def test_parallel_delegates_have_separate_branches(task_tree):
     history.record(ToolStarted("delegate_task", "", "reviewer", agent="reviewer", task="Review"))
     history.record_plan("reviewer", [{"content": "Check diff", "status": "pending"}])
     history.record(ToolStarted("read_file", "diff", "reviewer:read", parent_call_id="reviewer"))
-    # Keep the child visible instead of giving it the status row.
-    history.record(ToolStarted("grep", "new status row", "new-status"))
     text = [text for _, text in history.rows(10, nested=True)]
     assert text == [
         "├── ✦ Worker · 0.0s · Working · Fix it",
         "│   ├── ⟳ Read the code",
-        "│   │   └── ⟳ Read file · 0.0s · child.py",
         "│   └── ○ Test the fix",
-        "├── ✦ Reviewer · 0.0s · Starting · Review",
-        "│   ├── ○ Check diff",
-        "│   └── ⟳ Read file · 0.0s · diff",
-        "├── ⟳ Run shell · 0.0s · make check",
-        "└── ⟳ Search code · 0.0s · status row",
+        "└── ✦ Reviewer · 0.0s · Starting · Review",
+        "    └── ○ Check diff",
     ]
 
 
@@ -114,9 +98,7 @@ def test_without_an_active_task_only_the_delegate_children_have_guides(task_tree
         "○ Validate",
         "✦ Worker · 0.0s · Working · Fix it",
         "├── * Read the code",
-        "│   └── ⟳ Read file · 0.0s · child.py",
         "└── ○ Test the fix",
-        "⟳ Run shell · 0.0s · make check",
     ]
     assert task_panel_rows([], history, 10, "*") == rows[3:]
 

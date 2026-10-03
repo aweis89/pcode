@@ -398,9 +398,11 @@ def finish(worktree: Worktree) -> str:
         if conflicted_files(worktree.path) or is_dirty(worktree.path):
             _merge(worktree)  # raises with the precise reason
         merged = _merge(worktree) if unmerged_commits(worktree) else None
-        removed = _remove(worktree)
+        _remove(worktree)
         delete_branch(worktree)
-        return f"{merged}; {removed}" if merged else removed
+        if merged:
+            return f"{merged} and removed its worktree"
+        return f"removed worktree {worktree.branch} (nothing to merge)"
 
 
 def listing(repo: Path) -> str:

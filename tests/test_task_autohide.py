@@ -16,28 +16,28 @@ def test_autohide_defaults_off():
 
 def test_autohide_hides_and_restores_on_the_next_turn():
     activity = Activity(autohide_tasks=True, plan=[{"content": "Task", "status": "pending"}])
-    assert activity.plan_rows(10, "*")
+    assert activity.plan_rows(10)
     activity.finish_prompt("done")
     assert activity.prompt_state == "done"
     assert activity.show_tasks  # The preference itself is untouched.
-    assert activity.plan_rows(10, "*") == []
+    assert activity.plan_rows(10) == []
     activity.start_prompt("next")
-    assert activity.plan_rows(10, "*")
+    assert activity.plan_rows(10)
 
 
 def test_autohide_off_keeps_the_widget_after_a_turn():
     activity = Activity(autohide_tasks=False, plan=[{"content": "Task", "status": "pending"}])
     activity.finish_prompt("failed")
-    assert activity.plan_rows(10, "*")
+    assert activity.plan_rows(10)
 
 
 def test_toggle_after_autohide_shows_the_widget_again():
     activity = Activity(autohide_tasks=True, plan=[{"content": "Task", "status": "pending"}])
     activity.finish_prompt("done")
     assert activity.toggle_tasks() is True
-    assert activity.plan_rows(10, "*")
+    assert activity.plan_rows(10)
     assert activity.toggle_tasks() is False
-    assert activity.plan_rows(10, "*") == []
+    assert activity.plan_rows(10) == []
 
 
 def test_reset_clears_the_auto_hidden_state():

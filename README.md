@@ -18,6 +18,11 @@ subscription you already pay for.
 - A git worktree per session, so several agents can work on one repo at once.
 - `/btw` side questions, background sessions, recall of past sessions, a
   browser the agent can drive, and Python extensions.
+- Built on [Pydantic AI](https://ai.pydantic.dev/) and its Harness coder
+  capabilities, with the rest of a finished agent on top: MCP with OAuth and
+  tool search, searchable sessions, jobs, worktrees. Any model Pydantic AI
+  supports works (plus your Claude Code and ChatGPT subscriptions), and
+  extensions are plain Pydantic AI capabilities.
 
 See [PLAN.md](https://github.com/aweis89/pcode/blob/master/PLAN.md) for the longer-term direction.
 

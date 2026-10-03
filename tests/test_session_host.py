@@ -669,6 +669,52 @@ def test_quitting_stops_the_host_as_stop_does(tmp_path, host_dir, keys):
     asyncio.run(run())
 
 
+def test_a_command_that_ends_the_session_reads_as_done_not_as_a_crash(tmp_path, host_dir):
+    """`/worktree finish` stops its host on purpose: the terminal exits without a crash warning."""
+    from types import SimpleNamespace
+
+    linked = SimpleNamespace(path=tmp_path, main=tmp_path, branch="pcode-1234")
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        output = StringIO()
+        app = PreviewApp(
+            model="function:script",
+            workspace=tmp_path,
+            host=HostLaunch("aaaa1111"),
+            console=Console(file=output, color_system=None, width=140),
+        )
+        try:
+            with (
+                create_pipe_input() as pipe,
+                patch("pcode.worktree.describe", return_value=linked),
+                patch("pcode.worktree.finish", return_value="merged pcode-1234 into master"),
+            ):
+
+                def prompt(*args, **kwargs):
+                    return create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+
+                async def drive():
+                    await until(lambda: "Attached to session host" in output.getvalue())
+                    pipe.send_text("/worktree finish\r")
+                    # As `pcode.host` does once stopped: the terminal exits on its own.
+                    await host.stopped.wait()
+                    await host.close()
+
+                with patch("pcode.app.create_prompt", prompt):
+                    await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=30)
+            text = output.getvalue()
+            assert "✓ merged pcode-1234 into master" in text
+            for noise in ("Warning", "exited", "Run cancelled", "Stopped the session host"):
+                assert noise not in text, text
+            # The terminal left without stopping the host a second time or tidying.
+            assert app.session_over and not app.host_stopped
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
 def test_host_counts_turns_and_marks_ones_finished_unwatched_as_unseen(tmp_path, host_dir):
     async def run():
         script = Script()

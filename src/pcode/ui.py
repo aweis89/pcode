@@ -751,12 +751,12 @@ class Activity:
     def displayed_plan(self) -> list[dict]:
         return self.plan if self.plan_preview is None else self.plan_preview
 
-    def plan_rows(self, budget: int, spinner: str):
+    def plan_rows(self, budget: int):
         if not self.tasks_shown:
             return []
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
-        icon = spinner if self.status_shown else "○"
+        icon = "⟳" if self.status_shown else "○"
         # A configured height is room the user asked the tasks to fill.
         max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
         return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
@@ -811,10 +811,20 @@ class Activity:
             else:
                 phase, detail = f"Running {running} tools", line
             return StatusLine(phase, detail, tally=tally, elapsed=call.elapsed)
-        if phase.startswith("Running") and not running and not self.user_command:
+        clock = phase
+        if agents := self.tools.delegates:
+            # The panel lists the sub-agents themselves, so this row just says
+            # the turn is waiting on them, unless the panel is hidden. One
+            # clock for the whole wait, however the count changes.
+            count = len(agents)
+            phase = f"Waiting for {count} sub-agent{'s' * (count > 1)}"
+            detail = "" if self.tasks_shown else agents[-1].line(timed=False)
+            clock = "\0sub-agents"
+        elif phase.startswith("Running") and not running and not self.user_command:
             # Written for a call that has since finished; the model has the turn.
-            phase, detail = "Waiting for model", ""
-        line = StatusLine(phase, detail, tally=tally, elapsed=self._phase_seconds(phase))
+            phase = clock = "Waiting for model"
+            detail = ""
+        line = StatusLine(phase, detail, tally=tally, elapsed=self._phase_seconds(clock))
         if call is not None:
             # Just finished: held briefly and marked done, so a burst of fast
             # calls reads as progress rather than strobing.
@@ -1732,8 +1742,8 @@ class PromptLayout:
         self.render_cache = None
         self.animation_task = None
         self.preview_body = lru_cache(maxsize=1)(_preview_body)
-        # One spinner for everything live: the status row, the active task, side
-        # questions and waits all show the same frame, so motion only ever means
+        # The status row, side questions and waits share a spinner frame.
+        # Plan steps use a static marker, so motion only ever means
         # "the turn is waiting on this". Who owns the work is the badge and colour.
         self.spinner = Spinner("dots")
         # Every frame is a full layout pass (~2-3ms), so the animation loop alone
@@ -1787,7 +1797,7 @@ class PromptLayout:
                 # The editor box keeps one text row inside its two borders.
                 else max(1, cap - self.task_chrome() - 3)
             )
-        return self.activity.plan_rows(budget, self.spinner_frame())
+        return self.activity.plan_rows(budget)
 
     @_per_render
     def preview_layout(self):
@@ -1831,9 +1841,7 @@ class PromptLayout:
         heading = (
             block_heading(
                 RUNNING,
-                "Preparing code · not yet run"
-                if code
-                else f"Preparing edit · {event.path} · not applied",
+                "Preparing code · not yet run" if code else f"Editing · {event.path}",
             )
             if edits
             else command_heading(activity, event)
