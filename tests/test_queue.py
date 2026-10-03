@@ -274,6 +274,57 @@ def test_phase_clock_restarts_when_the_phase_changes(monkeypatch):
     assert clock() == "0s"
 
 
+def test_status_row_holds_each_line_before_changing(monkeypatch):
+    from pcode import ui
+    from pcode.runtime import ToolStarted, ToolSummary
+
+    now = [100.0]
+    monkeypatch.setattr(ui, "monotonic", lambda: now[0])
+    activity = ui.Activity(prompt_state="running", status="Thinking…")
+
+    def row():
+        return styled(activity.status_fragments("⠋", 80, hold=2.5))
+
+    assert row()["activity.phase"] == "Thinking"
+    # Changes inside the hold are skipped; the clock keeps moving meanwhile.
+    activity.status = "Responding…"
+    now[0] += 0.5
+    activity.status = "Compacting context…"
+    now[0] += 0.5
+    assert row()["activity.phase"] == "Thinking"
+    now[0] += 0.5
+    assert row()["activity.meta"] == "1s"
+    # Once it is up, the row jumps to what is current and holds that in turn.
+    now[0] += 1.0
+    assert row()["activity.phase"] == "Compacting context"
+    activity.status = "Thinking…"
+    now[0] += 0.5
+    assert row()["activity.phase"] == "Compacting context"
+    # A gap in drawing drops the hold.
+    now[0] += 30
+    assert row()["activity.phase"] == "Thinking"
+    # So does a retry: news, not churn.
+    activity.status = "Retrying · Overloaded…"
+    assert row()["activity.phase"] == "Retrying"
+    # And a new turn, even one queued right behind the last.
+    activity.finish_prompt("done")
+    activity.start_prompt("next")
+    activity.status = "Thinking…"
+    assert row()["activity.phase"] == "Thinking"
+    # A held tool call that finishes is not left reading as running.
+    activity.tools.record(ToolStarted("read_file", "x.py", "r"))
+    now[0] += 3
+    assert row()["activity.phase"] == "Read file"
+    activity.tools.record(ToolSummary("read_file", "x.py", call_id="r"))
+    activity.tools.record(ToolStarted("run_shell", "ls", "s"))
+    activity.tools.record(ToolSummary("run_shell", "ls", call_id="s"))
+    now[0] += 0.1
+    assert row()["activity.phase"] != "Read file"
+    # Without a hold, every change shows at once.
+    activity.status = "Responding…"
+    assert styled(activity.status_fragments("⠋", 80))["activity.phase"] == "Responding"
+
+
 def test_thinking_row_holds_the_newest_thought_under_the_status_row():
     from rich.cells import cell_len
 
