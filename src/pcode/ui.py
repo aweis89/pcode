@@ -1831,9 +1831,7 @@ class PromptLayout:
         heading = (
             block_heading(
                 RUNNING,
-                "Preparing code · not yet run"
-                if code
-                else f"Preparing edit · {event.path} · not applied",
+                "Preparing code · not yet run" if code else f"Editing · {event.path}",
             )
             if edits
             else command_heading(activity, event)
