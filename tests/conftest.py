@@ -168,6 +168,9 @@ def isolated_preferences(monkeypatch, tmp_path):
     # skill_dirs defaults to ~/.agents/skills, so a developer's own skills would
     # otherwise register as commands in every app the suite builds.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # Diffs render with Rich whether or not the machine has delta installed;
+    # tests of delta itself put it back.
+    monkeypatch.setattr("pcode.delta.find_delta", lambda: None)
     # The CLI fixes the project overlay root once per process; tests that run
     # main() would otherwise leak this checkout's .pcode/preferences.json into
     # every later test.

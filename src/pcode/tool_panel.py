@@ -318,10 +318,19 @@ def task_panel_rows(
     return _tree_rows(nodes)
 
 
-def panel_fragments(lines: list[tuple[str, str]], width: int):
-    """Clip by terminal cells before prompt_toolkit renders non-wrapping rows."""
+def panel_fragments(lines: list, width: int):
+    """Clip by terminal cells before prompt_toolkit renders non-wrapping rows.
+
+    A row is one `(style, text)` pair, or a list of fragments already styled
+    and fitted to the width (delta's edit preview), which passes through.
+    """
     fragments = []
-    for index, (style, line) in enumerate(lines):
+    for index, row in enumerate(lines):
+        if isinstance(row, list):
+            fragments.append(("", "\n" if index else ""))
+            fragments.extend(row)
+            continue
+        style, line = row
         text = Text(plain(line, limit=None))
         text.truncate(max(1, width), overflow="ellipsis")
         if index:
