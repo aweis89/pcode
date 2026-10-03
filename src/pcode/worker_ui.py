@@ -64,7 +64,8 @@ def details(worker: Worker | None, *, code_theme: str, show_thinking: bool) -> l
         blocks += [Text(""), Text(f"Tasks {done}/{len(worker.plan)}", style="bold")]
         for item in worker.plan:
             style, line = plan_row(item, "⟳")
-            blocks.append(Text(f"  {line}", style="bold" if style.endswith("active") else "dim"))
+            active = style == "class:plan.in_progress"
+            blocks.append(Text(f"  {line}", style="bold" if active else "dim"))
     for entry in worker.entries:
         if entry.kind == "tool":
             blocks.append(tool_line(entry.tool))

@@ -80,7 +80,14 @@ from pcode.tool_display import (
     split_outcome,
     tool_summary_lines,
 )
-from pcode.tool_panel import DELEGATE, TASK_ROWS, ToolHistory, panel_fragments, task_panel_rows
+from pcode.tool_panel import (
+    DELEGATE,
+    TASK_ROWS,
+    ToolCall,
+    ToolHistory,
+    panel_fragments,
+    task_panel_rows,
+)
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
 from pcode.transcript_notice import TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
@@ -95,6 +102,11 @@ class Palette:
     foreground: str
     selected: str
     task_heading: str
+    # A finished task's tick.
+    success: str
+    # The hue ring for running sub-agents: each takes the first free slot and
+    # keeps it, so its header and plan rows read as one block.
+    agents: tuple[str, str, str]
 
     @cache
     def rich_theme(self) -> Theme:
@@ -145,10 +157,31 @@ class Palette:
                 "plan": self.muted,
                 "plan.heading": f"nodim {self.task_heading} bold",
                 "plan.hint": f"nodim nobold {self.muted}",
-                "plan.active": f"nodim {self.accent} bold",
-                # A running sub-agent's row: its own shade, so it never reads
-                # as one of the tasks it sits among.
-                "plan.agent": f"nodim {self.task_heading}",
+                # Task rows by status, in three weights: the active one is
+                # loud, what is left is muted, and settled work recedes.
+                # `tool_panel.panel_fragments` gives the icon and tree guides
+                # classes of their own, so the colour that says how a task
+                # stands survives a delegate's hue on its text.
+                "plan.pending": self.muted,
+                "plan.in_progress": f"nodim {self.accent} bold",
+                "plan.completed": f"{self.muted} dim",
+                "plan.cancelled": f"{self.muted} dim strike",
+                "plan.blocked": "nodim ansiyellow",
+                # A running sub-agent's row. Its colour comes from its hue.
+                "plan.agent": "nodim",
+                # Colour only. A row's style string names its hue class after
+                # its status class (`tool_panel.plan_row`), so the hue wins on
+                # colour and leaves the status's weight (bold, dim, strike)
+                # alone. It lives outside `plan.`: a `plan.*` class would
+                # re-apply the base `plan` rule, which is `dim` in the
+                # terminal palette, over the status.
+                **{f"agent.hue.{index}": hue for index, hue in enumerate(self.agents)},
+                "plan.icon.pending": self.muted,
+                "plan.icon.in_progress": f"nodim {self.accent} bold",
+                "plan.icon.completed": f"nodim {self.success}",
+                "plan.icon.cancelled": f"{self.muted} dim",
+                "plan.icon.blocked": "nodim ansiyellow bold",
+                "plan.tree": self.muted,
                 "prompt": f"{self.accent} bold",
                 # The live area has three weights. Live: the spinner and the
                 # phase word, the one thing that says the turn is moving.
@@ -235,8 +268,26 @@ class Palette:
 
 
 PALETTES = {
-    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "#c4b5fd"),
-    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "#7c3aed"),
+    "dark": Palette(
+        "#88c0d0",
+        "#8994a6",
+        "#242933",
+        "#e5e9f0",
+        "#384457",
+        "#c4b5fd",
+        "#a3be8c",
+        ("#c4b5fd", "#f5a97f", "#f5bde6"),
+    ),
+    "light": Palette(
+        "#006b80",
+        "#586575",
+        "#edf0f4",
+        "#202630",
+        "#d0e7ef",
+        "#7c3aed",
+        "#2f7d32",
+        ("#7c3aed", "#c2410c", "#be185d"),
+    ),
 }
 
 # `/syntax terminal`: named ANSI colors, so the prompt, plan rows and popup
@@ -245,8 +296,17 @@ PALETTES = {
 # the selected row is reversed for the same reason. `fg:default` keeps the
 # toolkit's own RGB defaults (black popup metadata, grey suggestions) from
 # showing through.
+# Cyan, green and yellow already mean active, done and blocked, which leaves
+# magenta, blue and red for the sub-agents.
 TERMINAL_PALETTE = Palette(
-    "ansicyan", "fg:default dim", "default", "default", "reverse", "ansimagenta"
+    "ansicyan",
+    "fg:default dim",
+    "default",
+    "default",
+    "reverse",
+    "ansimagenta",
+    "ansigreen",
+    ("ansimagenta", "ansiblue", "ansired"),
 )
 
 
@@ -340,6 +400,11 @@ WAIT_GRACE_SECONDS = 0.25
 # The status row is redrawn several times a second while a turn runs, so a
 # longer gap means the row went away; its phase clock starts over.
 PHASE_GAP_SECONDS = 1.0
+# Least time the status row keeps what it says before saying something else.
+# A turn can change phase or tool several times a second, and a row that
+# rewrites itself that fast cannot be read. Once the hold is up the row jumps
+# to whatever is current, skipping anything that came and went meanwhile.
+STATUS_HOLD_SECONDS = 2.5
 # Status text the row leads with verbatim; anything longer is detail.
 PHASE_WORDS = 3
 # Cells of detail worth more than the status row's tally and clock.
@@ -420,6 +485,28 @@ class StatusLine:
 
     def _clock(self) -> str:
         return "" if self.elapsed is None else clock(self.elapsed)
+
+
+@dataclass
+class _HeldStatus:
+    """The status line on screen, and what decides how long it may stay."""
+
+    line: StatusLine
+    since: float  # When this text first showed.
+    taken: float  # When `line`, and so its clock, was computed.
+    seen: float  # Last drawn.
+    turn: tuple[str, str]  # The prompt it belongs to.
+    call: ToolCall | None  # The running tool call it reports, if any.
+
+
+def _status_text(line: StatusLine) -> tuple:
+    """What a status line says, apart from its ticking clock and tally."""
+    return (line.badge, line.phase, line.detail, line.settled)
+
+
+def _urgent(line: StatusLine) -> bool:
+    """News the status row shows at once, whatever it is holding."""
+    return line.phase.startswith("Retrying") or (line.settled and line.detail.startswith("✗"))
 
 
 def tail_cells(text: str, width: int) -> str:
@@ -583,6 +670,8 @@ class Activity:
     _phase: tuple[str, float, float] = field(
         default=("", 0.0, 0.0), init=False, repr=False, compare=False
     )
+    # The status line on screen while a hold keeps it. Drawing state like `_phase`.
+    _held: _HeldStatus | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def show_thinking(self) -> bool:
@@ -723,6 +812,7 @@ class Activity:
         self.prompt_kind = "user"
         self.prompt_detail = ""
         self.status = ""
+        self._held = None
         self.thought, self.thought_done = "", True
         self.tasks_autohidden = False
 
@@ -754,6 +844,7 @@ class Activity:
         """Show a running row, tagged so system work never looks like typed input."""
         self.tasks_autohidden = False
         self.thought, self.thought_done = "", True
+        self._held = None  # A new turn never opens on the last one's line.
         self.prompt = text
         self.prompt_kind = kind
         self.prompt_detail = detail
@@ -844,9 +935,41 @@ class Activity:
             line.settled = True
         return line
 
-    def status_fragments(self, spinner: str, width: int, tally: str = ""):
+    def held_status_line(self, tally: str = "", hold: float = 0.0) -> StatusLine:
+        """The status line, keeping what the row said for at least `hold` seconds.
+
+        Only a change of text counts: the clock and tally keep moving on a
+        held line. The hold gives way at once to a new turn, a gap in drawing,
+        a retry or failure, and a held tool call that has finished, so it only
+        ever skips churn, never news.
+        """
+        line = self.status_line(tally)
+        if hold <= 0:
+            return line
+        now = monotonic()
+        turn = (self.prompt_kind, self.prompt)
+        active = self.tools.active
+        call = active if active is not None and active.settled is None else None
+        shown = self._held
+        same = shown is not None and _status_text(line) == _status_text(shown.line)
+        fresh = (
+            shown is None
+            or shown.turn != turn
+            or now - shown.seen > PHASE_GAP_SECONDS
+            or (shown.call is not None and shown.call.settled is not None)
+        )
+        if fresh or same or now - shown.since >= hold or _urgent(line):
+            since = shown.since if same and not fresh else now
+            self._held = _HeldStatus(line, since, now, now, turn, call)
+            return line
+        shown.seen = now
+        held = shown.line
+        elapsed = None if held.elapsed is None else held.elapsed + now - shown.taken
+        return replace(held, tally=line.tally, elapsed=elapsed)
+
+    def status_fragments(self, spinner: str, width: int, tally: str = "", hold: float = 0.0):
         """The row above the tasks: `⠋ Phase · detail … ✓7 tools · 12s`."""
-        return self.status_line(tally).fragments(spinner, width)
+        return self.held_status_line(tally, hold).fragments(spinner, width)
 
     def queue_rows(self, budget: int):
         """Show the next queued prompts, leaving room for the editor on short panes."""
@@ -2129,6 +2252,7 @@ class PromptLayout:
                     self.spinner_frame(),
                     self.size().columns - 1,
                     transcript.pending_tally() if transcript is not None else "",
+                    hold=STATUS_HOLD_SECONDS,
                 ),
                 1,
             ),

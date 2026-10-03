@@ -18,7 +18,7 @@ def test_task_heading_color_is_scoped(theme, color):
     assert attrs.bgcolor == ""
     assert style.get_attrs_for_style_str("class:frame.border").color == palette.muted[1:]
     assert style.get_attrs_for_style_str("class:frame.label").color != color
-    assert style.get_attrs_for_style_str("class:plan.active").color == palette.accent[1:]
+    assert style.get_attrs_for_style_str("class:plan.in_progress").color == palette.accent[1:]
 
 
 def test_task_heading_tracks_theme_changes():

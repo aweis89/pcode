@@ -24,7 +24,23 @@ from pygments.token import Token
 from pygments.util import ClassNotFound
 
 # The fields a Palette is built from; every one of them is produced below.
-FIELDS = ("accent", "muted", "surface", "foreground", "selected", "task_heading")
+FIELDS = (
+    "accent",
+    "muted",
+    "surface",
+    "foreground",
+    "selected",
+    "task_heading",
+    "success",
+    "agents",
+)
+# Where each sub-agent hue comes from, in ring order. Kinds of token a style
+# tends to colour apart from functions (the accent) and strings (success).
+_AGENT_TOKENS = (
+    (Token.Keyword, Token.Name.Class),
+    (Token.Literal.Number, Token.Name.Builtin),
+    (Token.Name.Tag, Token.Name.Decorator),
+)
 
 _HEX = re.compile(r"^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 _WEIGHTS = (0.299, 0.587, 0.114)
@@ -85,9 +101,7 @@ def _token(style, token) -> str | None:
     return dict(style).get(token, {}).get("color")
 
 
-def derive_colors(
-    style_name: str, fallback: Mapping[str, str], backdrop: str | None = None
-) -> dict[str, str]:
+def derive_colors(style_name: str, fallback: Mapping, backdrop: str | None = None) -> dict:
     """Palette field values for `style_name`, backed by `fallback`'s values.
 
     Without a `backdrop` the colors are meant for the popup, which paints the
@@ -125,24 +139,49 @@ def derive_colors(
     if backdrop is None:
         on_surface = ((surface, _ACCENT_GAP),)
         on_selection = ((surface, _ACCENT_GAP), (selected, _ACCENT_GAP))
-        last_resort = {field: foreground for field in ("accent", "task_heading")}
+        last_resort = {field: foreground for field in ("accent", "task_heading", "success")}
         last_resort["muted"] = _mix(foreground, surface, 0.45)
+        last_resort["agents"] = (foreground,) * len(_AGENT_TOKENS)
     else:
         on_surface = on_selection = ((backdrop, _ACCENT_GAP),)
-        last_resort = {field: fallback[field] for field in ("accent", "muted", "task_heading")}
+        last_resort = {
+            field: fallback[field] for field in ("accent", "muted", "task_heading", "success")
+        }
+        last_resort["agents"] = fallback["agents"]
+    accent = _pick(
+        (
+            _token(style, Token.Name.Function),
+            _token(style, Token.Keyword),
+            fallback["accent"],
+        ),
+        on_selection,
+        last_resort["accent"],
+    )
+    # The tick and each hue must differ from the accent and from each other,
+    # or a sub-agent would merge with the active task (or another sub-agent).
+    # Monochrome styles (`algol`) colour everything alike, so the palette's
+    # own value is the usual answer there.
+    taken = {accent}
+
+    def distinct(candidates, resort):
+        color = _pick((c for c in candidates if _normalize(c) not in taken), on_surface, resort)
+        taken.add(color)
+        return color
+
+    success = distinct(
+        (_token(style, Token.Literal.String), fallback["success"]), last_resort["success"]
+    )
+    agents = [
+        distinct([*(_token(style, token) for token in tokens), default], resort)
+        for tokens, default, resort in zip(_AGENT_TOKENS, fallback["agents"], last_resort["agents"])
+    ]
     return {
         "surface": surface,
         "foreground": foreground,
         "selected": selected,
-        "accent": _pick(
-            (
-                _token(style, Token.Name.Function),
-                _token(style, Token.Keyword),
-                fallback["accent"],
-            ),
-            on_selection,
-            last_resort["accent"],
-        ),
+        "success": success,
+        "agents": tuple(agents),
+        "accent": accent,
         "muted": _pick(
             (_token(style, Token.Comment), fallback["muted"]),
             on_surface,
