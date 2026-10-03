@@ -63,13 +63,15 @@ pcode = "pcode.cli:main"
 pcode-benchmark = "pcode.profile_benchmark:main"
 
 [build-system]
-requires = ["hatchling"]
+# 1.27 is the first to accept an SPDX `license` string with `license-files`.
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
 # An explicit list: hatch otherwise ships every non-ignored file, including
-# local scratch under tmp/ and agent config.
-include = ["/src", "/tests", "/LICENSE", "/README.md", "/pyproject.toml"]
+# local scratch under tmp/ and agent config. Tests stay out: they read docs/,
+# dev/, scripts/ and .githooks/ and expect a git checkout.
+include = ["/src", "/LICENSE", "/README.md", "/pyproject.toml"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
