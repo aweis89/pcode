@@ -85,7 +85,7 @@ def test_task_tree_guides_survive_resize_at_each_depth(pane):
         assert "Main task" in screen
         assert "│└── ✦ Explorer" in screen
         assert "│    ├── ✓ Inspect" in screen
-        assert "│    ├── ⟳ Work" in screen
+        assert "│    ├── ↺ Work" in screen
         assert "│    └── ○ Validate" in screen
         assert "Search" not in screen
         assert "keep draft" in screen

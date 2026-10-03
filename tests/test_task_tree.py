@@ -81,7 +81,7 @@ def test_parallel_delegates_have_separate_branches(task_tree):
     text = [text for _, text in history.rows(10, nested=True)]
     assert text == [
         "├── ✦ Worker · 0.0s · Working · Fix it",
-        "│   ├── ⟳ Read the code",
+        "│   ├── ↺ Read the code",
         "│   └── ○ Test the fix",
         "└── ✦ Reviewer · 0.0s · Starting · Review",
         "    └── ○ Check diff",

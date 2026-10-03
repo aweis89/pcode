@@ -858,12 +858,12 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, release, split):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "Task 8", running=True)
-    assert "⟳ Task 8" in screen
+    assert "↺ Task 8" in screen
     first_frame = next(line[1] for line in screen.splitlines() if line.startswith(SPINNER_ROW))
     deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         animated = pane("capture-pane", "-p", "-t", "preview:0.0")
-        assert "⟳ Task 8" in animated
+        assert "↺ Task 8" in animated
         if any(
             line.startswith(SPINNER_ROW) and line[1] != first_frame
             for line in animated.splitlines()
@@ -995,7 +995,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     assert status.startswith(SPINNER_ROW) and "Run shell" in status
     assert not status.startswith("│")
     assert lines[task - 1].startswith("┌─ Tasks 0/1 ─")
-    assert lines[task].startswith("│⟳")
+    assert lines[task].startswith("│↺")
     assert lines[task + 1].startswith("└")
     assert lines[task + 2].startswith("┌")  # Editor, not another Tools widget.
     assert "Tools" not in screen and "Tasks ·" not in screen
@@ -1017,7 +1017,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
                 break
             assert time.monotonic() < deadline, screen
             time.sleep(0.05)
-        assert lines[task].startswith("│⟳")
+        assert lines[task].startswith("│↺")
         assert "keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")  # Clears the draft.
@@ -1070,7 +1070,7 @@ def test_tasks_share_the_editor_box_by_default_and_config_applies_live(pane):
             time.sleep(0.05)
         heading, tasks, text_rows = attached_box(screen)
         assert heading.startswith("┌─ Tasks 0/1")
-        assert len(tasks) == 1 and tasks[0].startswith("│⟳")
+        assert len(tasks) == 1 and tasks[0].startswith("│↺")
         assert text_rows == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
     pane("send-keys", "-t", "preview:0.0", "C-c")

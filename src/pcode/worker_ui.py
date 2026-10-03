@@ -27,7 +27,7 @@ from pcode.runtime import ToolSummary
 from pcode.session_ui import literal
 from pcode.task_prompt import TaskPrompt
 from pcode.tool_display import label, plain
-from pcode.tool_panel import AGENT_ICON, plan_row
+from pcode.tool_panel import ACTIVE_TASK_ICON, AGENT_ICON, plan_row
 from pcode.workers import Worker, Workers
 
 # Streaming should look live without repainting the pane every token.
@@ -63,7 +63,7 @@ def details(worker: Worker | None, *, code_theme: str, show_thinking: bool) -> l
         done = sum(item.get("status") == "completed" for item in worker.plan)
         blocks += [Text(""), Text(f"Tasks {done}/{len(worker.plan)}", style="bold")]
         for item in worker.plan:
-            style, line = plan_row(item, "⟳")
+            style, line = plan_row(item, ACTIVE_TASK_ICON)
             active = style == "class:plan.in_progress"
             blocks.append(Text(f"  {line}", style="bold" if active else "dim"))
     for entry in worker.entries:
