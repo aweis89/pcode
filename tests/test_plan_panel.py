@@ -164,6 +164,24 @@ def test_app_routes_plan_to_panel_not_transcript_and_preserves_errors():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "Use `write_plan` by default when working on a request.",
+        "Small tasks and investigations count, even if the plan has only one step.",
+        "Create it early and revise it as you learn;",
+        "you do not need to know the whole solution first.",
+    ],
+)
+def test_planning_guidance_requires_early_default_use(tmp_path, instruction):
+    from pcode.agent import create_coder
+
+    planning = next(c for c in create_coder(tmp_path).capabilities if isinstance(c, Planning))
+    # Guard the creation instruction, not just the checklist's purpose and upkeep.
+    # This checks the prompt contract, not a live model's willingness to follow it.
+    assert instruction in planning.get_instructions()
+
+
 def test_created_plan_exposes_ids_for_atomic_status_updates(tmp_path):
     import re
 

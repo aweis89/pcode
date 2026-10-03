@@ -93,7 +93,8 @@ def test_theme_and_terminal_color_mode_changes_recompute_preview_styles():
     assert "ansigreen" in terminal[1][0]
 
 
-def test_prompt_preview_uses_colors_and_updates_them_with_the_theme():
+@pytest.mark.parametrize("text", ["-old\n+new", "+new"])
+def test_prompt_preview_uses_colors_and_updates_them_with_the_theme(text):
     from prompt_toolkit.application.current import set_app
     from prompt_toolkit.data_structures import Size
     from prompt_toolkit.formatted_text import to_formatted_text
@@ -107,7 +108,7 @@ def test_prompt_preview_uses_colors_and_updates_them_with_the_theme():
 
     async def run():
         stream = StringIO()
-        activity = Activity(edit_previews={"one": EditPreview("one", "x.py", "-old\n+new")})
+        activity = Activity(edit_previews={"one": EditPreview("one", "x.py", text)})
         view = Transcript(Console(file=stream), activity=activity)
         with create_pipe_input() as pipe:
             session = create_prompt(
@@ -135,9 +136,10 @@ def test_prompt_preview_uses_colors_and_updates_them_with_the_theme():
                             and isinstance(window.content, FormattedTextControl)
                             for fragment in to_formatted_text(window.content.text)
                         ]
-                        expected = edit_preview_rows("-old\n+new", 38, view.code_theme)
-                        for style, text in expected:
-                            assert any(f[0] == style and f[1].strip() == text for f in fragments)
+                        assert any(f[1] == "⟳ Editing · x.py" for f in fragments)
+                        expected = edit_preview_rows(text, 38, view.code_theme)
+                        for style, line in expected:
+                            assert any(f[0] == style and f[1].strip() == line for f in fragments)
                         assert app.layout.current_window.render_info.window_height == 1
                 finally:
                     await app.cancel_and_wait_for_background_tasks()
