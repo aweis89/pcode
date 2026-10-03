@@ -1,5 +1,6 @@
 """Live tool activity: running calls only, since settled ones reach scrollback."""
 
+import re
 from dataclasses import dataclass, field
 from time import monotonic
 
@@ -36,6 +37,12 @@ PLAN_ICONS = {
     "cancelled": "–",
     "blocked": "!",
 }
+# Slots in the palette's sub-agent hue ring (`Palette.agents`).
+AGENT_HUES = 3
+# Leading tree guides, then the icon, of a row `panel_fragments` colours in
+# parts. Only task and sub-agent rows qualify: other rows pass through whole.
+_TREE_GUIDE = re.compile(r"[│├└─ ]*")
+_PART_STYLED = re.compile(rf"plan\.({'|'.join(['agent', 'in_progress', *PLAN_ICONS])})\b")
 
 
 @dataclass
@@ -63,6 +70,8 @@ class ToolCall:
     started: float = field(default_factory=monotonic)
     settled: float | None = None
     failed: bool = False
+    # A delegate's slot in the hue ring, kept for its whole run.
+    hue: int = 0
 
     @property
     def elapsed(self) -> float:
@@ -167,7 +176,14 @@ class ToolHistory:
             # A restated start carries fresh progress, not a new invocation.
             existing.event = event
         else:
-            self.calls.append(ToolCall(event))
+            call = ToolCall(event)
+            if event.name == DELEGATE:
+                # The first free slot, not the delegate's position: a slot that
+                # followed position would recolour a worker when one before it
+                # finished.
+                used = [c.hue for c in self.delegates]
+                call.hue = min(range(AGENT_HUES), key=lambda hue: (used.count(hue), hue))
+            self.calls.append(call)
 
     def clear(self) -> None:
         self.calls.clear()
@@ -244,15 +260,15 @@ class ToolHistory:
         remaining = count - len(delegates)
         nodes = []
         for parent in delegates:
-            # `✦` stands in for a task icon, in a colour of its own: with a
-            # task's icon in front, a sub-agent would read as one of the
-            # parent's tasks, and as a child of whichever task names it.
-            node = _PanelNode(("class:plan.agent", parent.line()))
+            # `✦` stands in for a task icon: with a task's icon in front, a
+            # sub-agent would read as one of the parent's tasks. Its hue,
+            # shared with its plan rows, tells parallel sub-agents apart.
+            node = _PanelNode((f"class:plan.agent,agent.hue.{parent.hue}", parent.line()))
             nodes.append(node)
             plan = self.plans.get(parent.event.call_id, [])
             steps, _ = plan_window(plan, min(CHILD_PLAN_ROWS, len(plan), remaining))
             remaining -= len(steps)
-            node.children = [_PanelNode(plan_row(plan[index], icon)) for index in steps]
+            node.children = [_PanelNode(plan_row(plan[index], icon, parent.hue)) for index in steps]
         return nodes
 
 
@@ -264,10 +280,11 @@ def plan_window(items: list[dict], count: int) -> tuple[range, int | None]:
     return range(start, start + count), active
 
 
-def plan_row(item: dict, active_icon: str) -> tuple[str, str]:
-    status = item["status"]
-    style = "class:plan.active" if status == "in_progress" else "class:plan"
-    icon = active_icon if status == "in_progress" else PLAN_ICONS.get(status, "○")
+def plan_row(item: dict, active_icon: str, hue: int | None = None) -> tuple[str, str]:
+    """A task row, styled by its status, and by its sub-agent's hue when `hue` is set."""
+    status = item["status"] if item["status"] in (*PLAN_ICONS, "in_progress") else "pending"
+    style = f"class:plan.{status}" + ("" if hue is None else f",agent.hue.{hue}")
+    icon = active_icon if status == "in_progress" else PLAN_ICONS[status]
     return style, f"{icon} {plain(item['content'], limit=None)}"
 
 
@@ -307,5 +324,33 @@ def panel_fragments(lines: list[tuple[str, str]], width: int):
     for index, (style, line) in enumerate(lines):
         text = Text(plain(line, limit=None))
         text.truncate(max(1, width), overflow="ellipsis")
-        fragments.append((style, ("\n" if index else "") + text.plain))
+        if index:
+            fragments.append(("", "\n"))
+        fragments.extend(_row_parts(style, text.plain))
     return fragments
+
+
+def _row_parts(style: str, line: str) -> list[tuple[str, str]]:
+    """Split a task or sub-agent row into guides, icon and text, each styled apart.
+
+    The guides stay muted whatever the row's status, so a dimmed row keeps
+    its place in the tree. A task's icon takes its status's colour even under
+    a sub-agent's hue; a sub-agent's `✦` and name go bold in that hue.
+    """
+    kind = _PART_STYLED.search(style)
+    if kind is None:
+        return [(style, line)]
+    guides = _TREE_GUIDE.match(line).end()
+    icon_end = line.find(" ", guides)
+    icon_end = len(line) if icon_end < 0 else icon_end
+    if kind[1] == "agent":
+        name_end = line.find(" · ", icon_end)
+        icon_end, icon_style = (len(line) if name_end < 0 else name_end), f"{style} bold"
+    else:
+        icon_style = f"class:plan.icon.{kind[1]}"
+    parts = [
+        ("class:plan.tree", line[:guides]),
+        (icon_style, line[guides:icon_end]),
+        (style, line[icon_end:]),
+    ]
+    return [part for part in parts if part[1]]

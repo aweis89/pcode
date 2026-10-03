@@ -91,7 +91,45 @@ def test_panel_rows_are_cell_bounded_and_controls_cannot_change_layout(width):
     assert len(lines) == 2
     assert all(cell_len(line) <= width for line in lines)
     assert "\x1b" not in "".join(lines)
-    assert all(style == "class:plan.agent" for style, _ in fragments)
+    agent_styles = [
+        style for style, text in fragments if text != "\n" and style != "class:plan.tree"
+    ]
+    assert all(style.startswith("class:plan.agent,agent.hue.") for style in agent_styles)
+    # Parallel sub-agents take different hues.
+    assert {style.split(",")[1].split()[0] for style in agent_styles} == {
+        "agent.hue.0",
+        "agent.hue.1",
+    }
+
+
+def test_a_sub_agent_keeps_its_hue_when_an_earlier_one_finishes():
+    history = ToolHistory()
+    for call_id in ("one", "two"):
+        history.record(ToolStarted("delegate_task", "", call_id, agent="worker", task=call_id))
+    history.record(ToolSummary("delegate_task", "done", call_id="one"))
+    assert [c.hue for c in history.delegates] == [1]
+    # The freed slot goes to the next sub-agent.
+    history.record(ToolStarted("delegate_task", "", "three", agent="worker", task="three"))
+    assert [c.hue for c in history.delegates] == [1, 0]
+
+
+def test_row_parts_color_guides_and_icons_apart_from_the_text():
+    rows = [
+        ("class:plan.completed,agent.hue.1", "    ├── ✓ Read it"),
+        ("class:plan.agent,agent.hue.1", "└── ✦ Worker · 1.0s · Working · Fix it"),
+        ("class:plan", "Queued: keep whole"),
+    ]
+    assert panel_fragments(rows, 80) == [
+        ("class:plan.tree", "    ├── "),
+        ("class:plan.icon.completed", "✓"),
+        ("class:plan.completed,agent.hue.1", " Read it"),
+        ("", "\n"),
+        ("class:plan.tree", "└── "),
+        ("class:plan.agent,agent.hue.1 bold", "✦ Worker"),
+        ("class:plan.agent,agent.hue.1", " · 1.0s · Working · Fix it"),
+        ("", "\n"),
+        ("class:plan", "Queued: keep whole"),
+    ]
 
 
 def test_planning_calls_never_reach_the_panel():

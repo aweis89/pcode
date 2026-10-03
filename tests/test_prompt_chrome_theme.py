@@ -12,7 +12,7 @@ from rich.console import Console
 
 from pcode.preferences import SYNTAX_THEMES
 from pcode.syntax_colors import _ACCENT_GAP, _brightness, derive_colors
-from pcode.ui import PALETTES, Transcript
+from pcode.ui import PALETTES, TERMINAL_PALETTE, Transcript
 
 CHROME = ("prompt", "plan.heading", "frame.border", "reference", "auto-suggestion")
 
@@ -59,7 +59,7 @@ def test_chrome_uses_ansi_names_for_terminal_syntax(theme):
     console = transcript(theme, "terminal")
     assert color_of(console, "prompt") == "ansicyan"
     assert color_of(console, "plan.heading") == "ansimagenta"
-    assert color_of(console, "plan.active") == "ansicyan"
+    assert color_of(console, "plan.in_progress") == "ansicyan"
     for class_name in ("plan", "frame.border", "auto-suggestion"):
         assert color_of(console, class_name) == "default", class_name
     # Switching to a Pygments style brings the derived colors back.
@@ -81,8 +81,45 @@ def test_every_syntax_style_yields_legible_chrome(style_name, theme):
     palette = PALETTES[theme]
     colors = derive_colors(style_name, palette.__dict__, palette.surface)
     backdrop = _brightness(palette.surface)
-    for field in ("accent", "muted", "task_heading"):
+    for field in ("accent", "muted", "task_heading", "success"):
         assert abs(_brightness(colors[field]) - backdrop) >= _ACCENT_GAP, field
+    for hue in colors["agents"]:
+        assert abs(_brightness(hue) - backdrop) >= _ACCENT_GAP, hue
+    # A sub-agent's hue never matches the active task's or a tick's colour,
+    # nor another sub-agent's.
+    marks = (colors["accent"], colors["success"], *colors["agents"])
+    assert len(set(marks)) == len(marks)
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_task_rows_are_styled_by_status(theme):
+    style = merge_styles([default_ui_style(), PALETTES[theme].prompt_style()])
+    palette = PALETTES[theme]
+
+    def attrs(style_str):
+        return style.get_attrs_for_style_str(style_str)
+
+    assert attrs("class:plan.in_progress").bold
+    assert attrs("class:plan.completed").dim
+    assert attrs("class:plan.cancelled").strike
+    assert attrs("class:plan.blocked").color == "ansiyellow"
+    assert attrs("class:plan.icon.completed").color == palette.success[1:]
+    # A sub-agent's hue takes the row's colour but keeps the status's weight.
+    hued = attrs("class:plan.completed,agent.hue.1")
+    assert hued.color == palette.agents[1][1:]
+    assert hued.dim
+    assert attrs("class:plan.in_progress,agent.hue.2").bold
+
+
+def test_terminal_hues_keep_sub_agent_rows_undimmed():
+    """The terminal palette's base `plan` rule is dim; a hue must not bring it back."""
+    style = merge_styles([default_ui_style(), TERMINAL_PALETTE.prompt_style()])
+    header = style.get_attrs_for_style_str("class:plan.agent,agent.hue.0")
+    assert header.color == "ansimagenta"
+    assert not header.dim
+    active = style.get_attrs_for_style_str("class:plan.in_progress,agent.hue.1")
+    assert active.bold and not active.dim
+    assert style.get_attrs_for_style_str("class:plan.completed,agent.hue.1").dim
 
 
 @pytest.mark.parametrize("class_name", CHROME)

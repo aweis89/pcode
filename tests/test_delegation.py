@@ -336,7 +336,8 @@ def test_active_delegations_are_pinned_and_their_calls_stay_off_the_panel():
         rows = task_panel_rows([], history, budget, "⟳")
         assert len(rows) <= min(3, budget)
         assert "Explorer" in rows[0][1]
-        assert len(panel_fragments(rows, 20)) == len(rows)
+        lines = "".join(text for _, text in panel_fragments(rows, 20)).split("\n")
+        assert len(lines) == len(rows)
     # The delegate's own calls stay on the status row, never under it.
     assert [text for _, text in history.rows(3)] == [history.calls[0].line()]
     # Finishing the plan must not hide a still-running child agent.
@@ -786,9 +787,9 @@ def test_a_short_panel_keeps_the_delegate_before_its_plan():
     history.record(delegate_started("worker", "fix it", "parent"))
     history.record_plan("parent", [{"content": f"step {i}", "status": "pending"} for i in range(5)])
     rows = task_panel_rows([{"content": "Parent task", "status": "in_progress"}], history, 3, "*")
-    assert rows[0] == ("class:plan.active", "* Parent task")
+    assert rows[0] == ("class:plan.in_progress", "* Parent task")
     assert rows[1][1].startswith("└── ✦ Worker")
-    assert rows[2] == ("class:plan", "    └── ○ step 0")
+    assert rows[2] == ("class:plan.pending,agent.hue.0", "    └── ○ step 0")
 
 
 def test_an_extension_delegate_opts_in_to_showing_its_plan():
