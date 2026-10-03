@@ -63,8 +63,12 @@ fi
 
 git for-each-ref --format='%(refname:short)' refs/heads | while read -r b; do
 	[ "$b" = "$branch" ] && continue
-	if [ "$(stale "$b")" -gt 0 ]; then
-		where=$(git worktree list --porcelain | awk -v ref="branch refs/heads/$b" '/^worktree /{w=substr($0,10)} $0==ref{print w}')
-		echo "$b: built on pre-rewrite history; run: git ${where:+-C $where }rebase $upstream" >&2
+	[ "$(stale "$b")" -gt 0 ] || continue
+	where=$(git worktree list --porcelain | awk -v ref="branch refs/heads/$b" '/^worktree /{w=substr($0,10)} $0==ref{print w}')
+	mine=$(own "$b")
+	if [ "$mine" -eq 0 ]; then
+		echo "$b: on old history, but $upstream already has all of it; safe to delete${where:+ (worktree $where)}" >&2
+	else
+		echo "$b: $mine commit(s) of its own on old history; run: git ${where:+-C $where }rebase $upstream" >&2
 	fi
 done
