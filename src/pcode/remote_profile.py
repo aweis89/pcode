@@ -69,6 +69,9 @@ _ENV_NAMES = frozenset(
         "PCODE_LLM_PROXY",
         "PCODE_MCP_CONFIG",
         "PYDANTIC_AI_NO_BANNER",
+        # Which pcode the host imports, as for the listener.
+        "PYTHONPATH",
+        "VIRTUAL_ENV",
     }
 )
 _ENV_PREFIXES = ("LC_",)

@@ -686,6 +686,12 @@ def wait_for_exit_sync(pid: int, timeout: float = 30.0) -> None:
 
 async def stop_entry(entry: HostEntry, *, keep_worktree: bool = False) -> None:
     """Stop another host without attaching to it."""
+    await notify_host(entry, "stop", keep_worktree)
+    await wait_for_exit(entry.pid)
+
+
+async def notify_host(entry: HostEntry, method: str, *args) -> None:
+    """Make one call on a host without attaching to it (`stop`, `cancel`)."""
     reader, writer = await asyncio.open_unix_connection(str(entry.socket), limit=LINE_LIMIT)
     writer.write(dumps({"type": "hello", "protocol": PROTOCOL}))
     await writer.drain()
@@ -695,7 +701,6 @@ async def stop_entry(entry: HostEntry, *, keep_worktree: bool = False) -> None:
         raise HostError((reply or {}).get("message") or "The session host refused.")
     peer = Peer(reader, writer, object(), allowed=frozenset())
     serving = asyncio.create_task(peer.serve())
-    peer.notify("stop", keep_worktree)
+    peer.notify(method, *args)
     peer.close()
     await asyncio.gather(serving, return_exceptions=True)
-    await wait_for_exit(entry.pid)
