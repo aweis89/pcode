@@ -43,7 +43,12 @@ from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.delta import Delta
 from pcode.delta import from_preferences as delta_from_preferences
-from pcode.edit_transcript import EditTranscript, edit_preview_rows, prefetch_edits
+from pcode.edit_transcript import (
+    EditTranscript,
+    LiveDeltaPreview,
+    edit_preview_rows,
+    prefetch_edits,
+)
 from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
 from pcode.input_keys import configure_newline_keys
 from pcode.jobs import WATCHED_PREFIX
@@ -1750,6 +1755,7 @@ class PromptLayout:
         self.render_cache = None
         self.animation_task = None
         self.preview_body = lru_cache(maxsize=1)(_preview_body)
+        self.live_delta = LiveDeltaPreview(lambda: self.session.app.invalidate())
         # The status row, side questions and waits share a spinner frame.
         # Plan steps use a static marker, so motion only ever means
         # "the turn is waiting on this". Who owns the work is the badge and colour.
@@ -1820,6 +1826,9 @@ class PromptLayout:
         if transcript is None:
             return None
         edits = transcript.show_edits and activity.edit_previews
+        if not edits:
+            # The preview ended, so the next edit never flashes this one's diff.
+            self.live_delta.forget()
         # A `!command` the user typed is shown while it runs whatever the
         # scrollback setting for the model's commands says, and so is a job
         # the user asked to watch; the model's own commands follow the setting.
@@ -1879,7 +1888,14 @@ class PromptLayout:
         if budget <= 0:
             return plans, "", [], editor_height
         body = event.text if edits else event.output
-        rows = self.preview_body(bool(edits) and not code, body, width, transcript.code_theme)
+        delta = transcript.delta if edits and not code else None
+        rows = (
+            self.live_delta.rows(
+                delta, event.call_id, event.path, body, width, transcript.code_theme
+            )
+            if delta is not None
+            else None
+        ) or self.preview_body(bool(edits) and not code, body, width, transcript.code_theme)
         if edits:
             # A diff keeps its +/- gutter flush left, as the settled block does.
             return plans, heading, rows[-budget:], editor_height

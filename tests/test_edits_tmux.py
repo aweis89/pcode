@@ -108,6 +108,35 @@ def test_completed_edits_toggle_and_resize_without_duplicates(pane, release):
         assert history(pane).count("+SAVED_EDIT_LINE") == 1
 
 
+DELTA_SCRIPT = SCRIPT.replace("pcode.delta.find_delta = lambda: None\n", "")
+
+
+@pytest.mark.skipif(shutil.which("delta") is None, reason="delta is optional")
+@pytest.mark.parametrize("pane", [DELTA_SCRIPT], indirect=True)
+def test_delta_draws_the_live_preview_and_the_settled_block(pane, release):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "go", "Enter")
+    # The line shows at once without its +/- gutter, as delta lays it out, and
+    # delta's own rendering (an added-line background) replaces it once its
+    # worker finishes.
+    screen = capture(pane, "LIVE_EDIT_LINE", running=True)
+    assert "+LIVE_EDIT_LINE" not in screen and input_rows(screen) == 1
+
+    def styled_row():
+        styled = pane("capture-pane", "-p", "-e", "-t", "preview:0.0")
+        return next(line for line in styled.splitlines() if "LIVE_EDIT_LINE" in line)
+
+    deadline = time.monotonic() + TIMEOUT
+    while "[48;" not in (row := styled_row()):
+        assert time.monotonic() < deadline, repr(row)
+        time.sleep(0.1)
+    release()
+    capture(pane, "TURN_1_DONE")
+    text = history(pane)
+    assert text.count("SAVED_EDIT_LINE") == 1 and "+SAVED_EDIT_LINE" not in text
+    assert "LIVE_EDIT_LINE" not in text
+
+
 @pytest.mark.parametrize("pane", [CODE_SCRIPT], indirect=True)
 def test_sandboxed_snippets_preview_as_code_without_growing_the_editor(pane, release):
     capture(pane, "❯")

@@ -1,12 +1,13 @@
 """Diffs rendered by delta (https://dandavison.github.io/delta/) when it is installed.
 
-delta reads the user's git config, so a `[delta]` section or a named feature
-(`delta_args = --features pcode`) customizes it here as it does in git. pcode
-adds only what it must decide itself (width, dark or light, no pager, and the
-layout) and leaves out any of those the user's own arguments already pass:
-delta rejects a flag given twice. Anything that goes wrong (delta missing,
-unknown arguments, a timeout) returns None, and the caller falls back to its
-own Rich rendering.
+delta never reads the user's git config (`--no-gitconfig`, which also ignores
+`--config`) or its own `DELTA_*`/`BAT_*` environment: `delta_args` is the one
+place to customize it, so pcode's diffs look the same whatever `git diff` is set
+up to do. pcode adds only what it must decide itself (width, dark or light, no
+pager, and the layout) and leaves out any of those the user's own arguments
+already pass: delta rejects a flag given twice. Anything that goes wrong (delta
+missing, unknown arguments, a timeout) returns None, and the caller falls back
+to its own Rich rendering.
 """
 
 import os
@@ -14,6 +15,7 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 
@@ -21,6 +23,7 @@ from rich.text import Text
 
 LAYOUTS = ("auto", "unified", "side-by-side")
 WIDTH_FLAGS = {"-w", "--width"}
+SIDE_BY_SIDE_FLAGS = {"-s", "--side-by-side"}
 # `auto` switches to side-by-side at this width: each half then keeps about 90
 # columns, enough for most code lines beside their line numbers.
 SIDE_BY_SIDE_WIDTH = 180
@@ -41,6 +44,8 @@ class Delta:
     light: bool = False
 
     def side_by_side(self, width: int) -> bool:
+        if self.given() & SIDE_BY_SIDE_FLAGS:
+            return True
         if self.layout == "auto":
             return width >= SIDE_BY_SIDE_WIDTH
         return self.layout == "side-by-side"
@@ -49,7 +54,7 @@ class Delta:
         """The flags the user's own arguments set."""
         return {arg.split("=", 1)[0] for arg in self.args if arg.startswith("-")}
 
-    def command(self, width: int) -> list[str]:
+    def command(self, width: int, *, hunk_headers: bool = True) -> list[str]:
         given = self.given()
         defaults = [
             ({"--paging"}, "--paging=never"),
@@ -58,20 +63,34 @@ class Delta:
             # The block heading already names the file.
             ({"--file-style"}, "--file-style=omit"),
         ]
+        if not hunk_headers:
+            defaults.append(({"--hunk-header-style"}, "--hunk-header-style=omit"))
         if self.side_by_side(width):
-            defaults.append(({"-s", "--side-by-side"}, "--side-by-side"))
+            defaults.append((SIDE_BY_SIDE_FLAGS, "--side-by-side"))
         added = [flag for names, flag in defaults if not names & given]
-        return [self.executable, *added, *self.args]
+        isolated = [] if "--no-gitconfig" in given else ["--no-gitconfig"]
+        return [self.executable, *isolated, *added, *self.args]
 
-    def render(self, patch: str, width: int) -> list[Text] | None:
-        """One styled Rich line per output line, or None if delta failed."""
-        command = tuple(self.command(max(1, width)))
+    def render(
+        self, patch: str, width: int, *, hunk_headers: bool = True, cache: bool = True
+    ) -> list[Text] | None:
+        """One styled Rich line per output line, or None if delta failed.
+
+        Safe to call off the event loop. Without `cache`, the output is not
+        kept, so the live preview's many short-lived bodies do not push the
+        settled blocks' renderings out.
+        """
+        command = tuple(self.command(max(1, width), hunk_headers=hunk_headers))
         key = (command, patch)
-        if key in _cache:
-            _cache.move_to_end(key)
-            output = _cache[key]
-        else:
-            output = _remember(key, _run(command, patch))
+        with _lock:
+            cached = key in _cache
+            if cached:
+                _cache.move_to_end(key)
+                output = _cache[key]
+        if not cached:
+            output = _run(command, patch)
+            if cache:
+                _remember(key, output)
         if output is None:
             return None
         lines = output.splitlines()
@@ -95,7 +114,8 @@ class Delta:
         each waiting on its own failing run.
         """
         command = tuple(self.command(max(1, width)))
-        missing = list(dict.fromkeys(p for p in patches if (command, p) not in _cache))
+        with _lock:
+            missing = list(dict.fromkeys(p for p in patches if (command, p) not in _cache))
         if len(missing) < 2:
             return
         marker = f"pcode-delta-{secrets.token_hex(8)}"
@@ -136,12 +156,31 @@ _cache: OrderedDict[tuple[tuple[str, ...], str], str | None] = OrderedDict()
 CACHE_SIZE = 256
 
 
+# The live edit preview renders from a worker thread.
+_lock = threading.Lock()
+
+
 def _remember(key: tuple[tuple[str, ...], str], output: str | None) -> str | None:
-    _cache[key] = output
-    _cache.move_to_end(key)
-    while len(_cache) > CACHE_SIZE:
-        _cache.popitem(last=False)
+    with _lock:
+        _cache[key] = output
+        _cache.move_to_end(key)
+        while len(_cache) > CACHE_SIZE:
+            _cache.popitem(last=False)
     return output
+
+
+def preview_patch(path: str, body: str) -> str:
+    """A unified diff of a streaming edit preview's `-`/`+` lines.
+
+    The preview has no line numbers, so the hunk is numbered from 1 and its
+    header is left out of the rendering. The path's extension picks the
+    syntax highlighting. A line the preview's tail clip cut short of its
+    prefix is dropped.
+    """
+    lines = [line for line in body.split("\n") if line[:1] in ("-", "+")]
+    removed = sum(line.startswith("-") for line in lines)
+    header = [f"--- a/{path}", f"+++ b/{path}", f"@@ -1,{removed} +1,{len(lines) - removed} @@"]
+    return "\n".join(header + lines)
 
 
 def _run(command: tuple[str, ...], patch: str, count: int = 1) -> str | None:
@@ -155,7 +194,7 @@ def _run(command: tuple[str, ...], patch: str, count: int = 1) -> str | None:
             errors="replace",
             timeout=min(TIMEOUT + 0.05 * count, MAX_TIMEOUT),
             # A user's --paging=always would start a pager holding the pipes.
-            env={**os.environ, "DELTA_PAGER": "cat"},
+            env=_environment(),
             # No controlling terminal: delta must never query or write the
             # terminal pcode is drawing on.
             start_new_session=True,
@@ -165,6 +204,15 @@ def _run(command: tuple[str, ...], patch: str, count: int = 1) -> str | None:
     if done.returncode != 0 or not done.stdout.strip():
         return None
     return done.stdout
+
+
+def _environment() -> dict[str, str]:
+    # DELTA_FEATURES, BAT_THEME and the like configure delta behind the
+    # user's arguments. A pager could hold the pipes open, so it is `cat`.
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith(("DELTA_", "BAT_"))
+    }
+    return {**env, "DELTA_PAGER": "cat"}
 
 
 def _line(raw: str, width: int) -> Text:

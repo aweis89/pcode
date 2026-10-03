@@ -422,8 +422,8 @@ SETTINGS = {
     "delta_args": Setting(
         "",
         arguments=True,
-        description="Extra delta arguments, e.g. '--features pcode' for a [delta \"pcode\"] "
-        "gitconfig profile; they win over pcode's own",
+        description="delta arguments, e.g. '--line-numbers'; git config is ignored, and these "
+        "win over pcode's own",
     ),
     "diff_layout": Setting(
         "auto",

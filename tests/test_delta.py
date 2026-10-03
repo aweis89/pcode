@@ -1,5 +1,6 @@
 """Diffs drawn by delta, and the Rich fallback whenever delta cannot draw them."""
 
+import asyncio
 import shutil
 import sys
 
@@ -12,10 +13,11 @@ from rich.console import Console
 from rich.text import Text
 
 from pcode import delta as delta_module
-from pcode.delta import ERASE_LINE, SIDE_BY_SIDE_WIDTH, Delta, from_preferences
-from pcode.edit_transcript import EditTranscript, prefetch_edits
+from pcode.delta import ERASE_LINE, SIDE_BY_SIDE_WIDTH, Delta, from_preferences, preview_patch
+from pcode.edit_transcript import EditTranscript, LiveDeltaPreview, prefetch_edits
 from pcode.edit_ui import EditBrowser
 from pcode.runtime import EditCompleted
+from pcode.tool_panel import panel_fragments
 from pcode.ui import Transcript
 
 PATCH = "--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n def f():\n-    return 1\n+    return 2"
@@ -45,6 +47,7 @@ def test_command_adds_only_what_the_user_did_not_choose():
     delta = Delta("delta")
     assert delta.command(100) == [
         "delta",
+        "--no-gitconfig",
         "--paging=never",
         "--width=100",
         "--dark",
@@ -55,6 +58,7 @@ def test_command_adds_only_what_the_user_did_not_choose():
     custom = Delta("delta", ("--width=variable", "--light", "--file-style", "blue", "-s"))
     assert custom.command(SIDE_BY_SIDE_WIDTH) == [
         "delta",
+        "--no-gitconfig",
         "--paging=never",
         "--width=variable",
         "--light",
@@ -62,6 +66,10 @@ def test_command_adds_only_what_the_user_did_not_choose():
         "blue",
         "-s",
     ]
+    assert Delta("d", ("--no-gitconfig",)).command(80).count("--no-gitconfig") == 1
+    # The live preview has no real line numbers, so no hunk headers either.
+    assert "--hunk-header-style=omit" in delta.command(80, hunk_headers=False)
+    assert "--hunk-header-style=omit" not in delta.command(80)
 
 
 @pytest.mark.parametrize(
@@ -76,6 +84,10 @@ def test_command_adds_only_what_the_user_did_not_choose():
 def test_layout_follows_the_width_only_in_auto(layout, width, side_by_side):
     command = Delta("delta", layout=layout).command(width)
     assert ("--side-by-side" in command) is side_by_side
+
+
+def test_a_side_by_side_flag_in_the_arguments_is_the_layout():
+    assert Delta("delta", ("-s",), layout="unified").side_by_side(40)
 
 
 def test_preferences_choose_delta_only_when_installed(monkeypatch):
@@ -230,12 +242,18 @@ def test_browser_falls_back_to_the_plain_patch():
 
 
 @pytest.mark.skipif(shutil.which("delta") is None, reason="delta is optional")
-def test_real_delta_renders_the_change():
-    delta = Delta(shutil.which("delta"), ("--no-gitconfig",))
+def test_real_delta_renders_the_change(monkeypatch, tmp_path):
+    # Neither the git config nor delta's environment reaches pcode's diffs.
+    (tmp_path / "home").mkdir(exist_ok=True)
+    (tmp_path / "home" / ".gitconfig").write_text("[delta]\n    side-by-side = true\n")
+    monkeypatch.setenv("DELTA_FEATURES", "+side-by-side")
+    delta = Delta(shutil.which("delta"))
     unified = delta.render(PATCH, 80)
     assert unified and any("return 2" in line.plain for line in unified)
     assert not unified[0].plain.strip() == ""
     assert all("\x1b" not in line.plain for line in unified)
+    # Unified, despite side-by-side in both the git config and DELTA_FEATURES.
+    assert not any("return 1" in line.plain and "return 2" in line.plain for line in unified)
     wide = delta.render(PATCH, SIDE_BY_SIDE_WIDTH)
     assert any("return 1" in line.plain and "return 2" in line.plain for line in wide)
     # One batched run gives each patch what its own run gives it.
@@ -246,3 +264,156 @@ def test_real_delta_renders_the_change():
     delta.prefetch(patches, 81)
     assert len(delta_module._cache) == len(patches)
     assert [delta.render(patch, 81) for patch in patches] == alone
+
+
+def test_environment_drops_deltas_own_settings(monkeypatch):
+    monkeypatch.setenv("DELTA_FEATURES", "+side-by-side")
+    monkeypatch.setenv("BAT_THEME", "Dracula")
+    monkeypatch.setenv("DELTA_PAGER", "less")
+    env = delta_module._environment()
+    assert "DELTA_FEATURES" not in env and "BAT_THEME" not in env
+    assert env["DELTA_PAGER"] == "cat" and env["PATH"]
+
+
+def test_preview_patch_numbers_one_hunk_from_the_preview_lines():
+    body = "rtial line\n-old one\n-old two\n+new"
+    assert preview_patch("src/x.py", body) == (
+        "--- a/src/x.py\n+++ b/src/x.py\n@@ -1,2 +1,1 @@\n-old one\n-old two\n+new"
+    )
+
+
+class PreviewDelta(Delta):
+    """Answers with each patch line on a green background, without its gutter."""
+
+    def render(self, patch, width, *, hunk_headers=True, cache=True):
+        assert not hunk_headers and not cache
+        if "+boom" in patch:
+            return None
+        return [Text(line[1:], style="on green") for line in patch.splitlines()[3:]]
+
+
+def plain_rows(rows):
+    return ["".join(text for _, text in row) if isinstance(row, list) else row[1] for row in rows]
+
+
+def settle(preview):
+    async def wait():
+        while preview.running:
+            await asyncio.sleep(0.01)
+
+    return wait()
+
+
+def test_live_preview_shows_new_lines_at_once_and_delta_colors_them_after():
+    async def run():
+        ready = []
+        preview = LiveDeltaPreview(lambda: ready.append(True))
+        delta = PreviewDelta("delta")
+        # Nothing rendered yet: the lines show at once, laid out as delta will.
+        first = preview.rows(delta, "c1", "x.py", "+one", 40, "monokai")
+        assert plain_rows(first) == ["one"] and isinstance(first[0], tuple)
+        await settle(preview)
+        assert ready
+        rows = preview.rows(delta, "c1", "x.py", "+one", 40, "monokai")
+        assert plain_rows(rows) == ["one"] and any("bg:" in style for style, _ in rows[0])
+        # A longer body: delta's rows, then the newest line straight away.
+        grown = preview.rows(delta, "c1", "x.py", "+one\n-two", 40, "monokai")
+        assert grown[0] == rows[0] and plain_rows(grown) == ["one", "two"]
+        assert isinstance(grown[1], tuple)
+        await settle(preview)
+        rows = preview.rows(delta, "c1", "x.py", "+one\n-two", 40, "monokai")
+        assert all(isinstance(row, list) for row in rows)
+
+    asyncio.run(run())
+
+
+def test_live_preview_never_shows_another_calls_rendering():
+    async def run():
+        preview = LiveDeltaPreview(lambda: None)
+        delta = PreviewDelta("delta")
+        preview.rows(delta, "c1", "x.py", "+one", 40, "monokai")
+        await settle(preview)
+        # Call ids repeat across responses; a new path is a new call.
+        assert plain_rows(preview.rows(delta, "c1", "y.py", "+two", 40, "monokai")) == ["two"]
+        await settle(preview)
+        preview.forget()
+        rows = preview.rows(delta, "c1", "y.py", "+three", 40, "monokai")
+        assert all(isinstance(row, tuple) for row in rows)
+        await settle(preview)
+
+    asyncio.run(run())
+
+
+def test_a_run_for_a_finished_preview_never_lands_in_the_next():
+    async def run():
+        preview = LiveDeltaPreview(lambda: None)
+        delta = PreviewDelta("delta")
+        preview.rows(delta, "c1", "x.py", "+old", 40, "monokai")
+        preview.forget()  # that preview ended while its run was going
+        rows = preview.rows(delta, "c1", "x.py", "+new", 40, "monokai")
+        await settle(preview)
+        assert preview.done is None or preview.done[0] == "+new"
+        await settle(preview)
+        assert plain_rows(preview.rows(delta, "c1", "x.py", "+new", 40, "monokai")) == ["new"]
+        assert plain_rows(rows) == ["new"]
+
+    asyncio.run(run())
+
+
+def test_live_preview_waits_for_delta_side_by_side():
+    async def run():
+        preview = LiveDeltaPreview(lambda: None)
+        delta = PreviewDelta("delta", layout="side-by-side")
+        assert preview.rows(delta, "c1", "x.py", "+one", 40, "monokai") is None
+        await settle(preview)
+        assert preview.rows(delta, "c1", "x.py", "+one\n+two", 40, "monokai")[0][0][1] == "one"
+        assert len(preview.rows(delta, "c1", "x.py", "+one\n+two", 40, "monokai")) == 1
+        await settle(preview)
+
+    asyncio.run(run())
+
+
+def test_live_preview_failure_lasts_only_for_its_call():
+    async def run():
+        preview = LiveDeltaPreview(lambda: None)
+        delta = PreviewDelta("delta")
+        # No complete line yet, the usual first update: nothing to run delta on.
+        assert preview.rows(delta, "c1", "x.py", "", 40, "monokai") is None
+        assert not preview.running
+        preview.rows(delta, "c1", "x.py", "+boom", 40, "monokai")
+        await settle(preview)
+        assert preview.rows(delta, "c1", "x.py", "+boom\n+more", 40, "monokai") is None
+        assert not preview.running
+        assert preview.rows(delta, "c2", "x.py", "+fine", 40, "monokai")
+        await settle(preview)
+        assert not preview.failed
+
+    asyncio.run(run())
+
+
+def test_live_preview_outside_an_event_loop_never_starts_delta():
+    preview = LiveDeltaPreview(lambda: None)
+    rows = preview.rows(PreviewDelta("delta"), "c1", "x.py", "+one", 40, "monokai")
+    assert plain_rows(rows) == ["one"] and not preview.running
+
+
+@pytest.mark.skipif(shutil.which("delta") is None, reason="delta is optional")
+def test_real_delta_draws_a_streaming_preview_at_the_panel_width():
+    async def run():
+        preview = LiveDeltaPreview(lambda: None)
+        delta = Delta(shutil.which("delta"))
+        body = "-x = 1\n+x = 2\n+" + "y" * 70
+        preview.rows(delta, "c1", "x.py", body, 50, "monokai")
+        await settle(preview)
+        rows = preview.rows(delta, "c1", "x.py", body, 50, "monokai")
+        assert all(isinstance(row, list) for row in rows)
+        texts = plain_rows(rows)
+        assert texts[0].rstrip() == "x = 1" and texts[1].rstrip() == "x = 2"
+        assert all(len(text) <= 50 for text in texts) and len(texts) == 4
+
+    asyncio.run(run())
+
+
+def test_panel_passes_styled_rows_through():
+    fragments = panel_fragments([("class:a", "plain"), [("bg:red", "x"), ("", "y")]], 20)
+    assert fragments == [("class:a", "plain"), ("", "\n"), ("bg:red", "x"), ("", "y")]
