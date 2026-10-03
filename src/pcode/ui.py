@@ -117,8 +117,9 @@ class Palette:
                 "pcode.accent": self.accent,
                 "pcode.brand": f"bold {self.accent}",
                 "pcode.muted": self.muted,
-                # Scrollback notes: italic like the live panel's own notices.
-                "pcode.note": f"italic {self.muted}",
+                # Scrollback notes: italic like the live panel's own notices,
+                # and dimmed so they recede behind the model's prose.
+                "pcode.note": f"italic dim {self.muted}",
                 "pcode.thinking": f"dim {self.muted}",
                 "pcode.error": "bold red",
                 "pcode.warning": "bold yellow",
@@ -353,7 +354,7 @@ TERMINAL_THEME = Theme(
         "pcode.accent": "cyan",
         "pcode.brand": "bold cyan",
         "pcode.muted": "default",
-        "pcode.note": "italic default",
+        "pcode.note": "italic dim default",
         "pcode.thinking": "dim default",
         "pcode.error": "bold red",
         "pcode.warning": "bold yellow",
