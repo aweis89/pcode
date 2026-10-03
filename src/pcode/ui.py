@@ -200,6 +200,9 @@ class Palette:
                 # (accent) or what it is doing (plain). No hue: the plan
                 # heading's shade would make a thought look like a label.
                 "activity.thinking": f"italic {self.muted}",
+                # Its bar stands upright: slanted, the rows' bars would not
+                # join into one line.
+                "activity.thinking.bar": f"noitalic {self.muted}",
                 # System work is pcode's own: the badge and accent mark it, and
                 # its queued rows keep an italic detail.
                 "activity.system": self.accent,
@@ -420,6 +423,10 @@ THINKING_KEEP = 2000
 # sentence or two, which one row rarely holds whole; more than a few rows and
 # it stops being a glance.
 THOUGHT_ROWS = 3
+# Runs down the thought's rows in the spinner's column, so a wrapped thought
+# reads as one quote. A line, not a dot or circle that the round spinner
+# under it would make look like a stalled frame.
+THOUGHT_BAR = "│"
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -703,7 +710,9 @@ class Activity:
         """Drop the thinking rows: the answer they led to is streaming now."""
         self.thought, self.thought_done = "", True
 
-    def thought_fragments(self, width: int, rows: int = THOUGHT_ROWS) -> list[tuple[str, str]]:
+    def thought_fragments(
+        self, width: int, rows: int = THOUGHT_ROWS
+    ) -> list[list[tuple[str, str]]]:
         """The thinking rows above the status row, in `status-line` mode.
 
         Held through the tool calls that follow a thought, which it usually
@@ -717,9 +726,14 @@ class Activity:
         thought = latest_thought(self.thought)
         if not thought.strip():
             return []
-        # Flush with the spinner under it: one block, read top to bottom. Cut
-        # at the end, the way a sentence is skimmed.
-        return [("class:activity.thinking", row) for row in head_rows(thought, width, rows)]
+        # The bar sits over the spinner and the text over its label: one
+        # block, read top to bottom. Cut at the end, the way a sentence is
+        # skimmed. Each row is pre-fitted fragments, so the bar can stay
+        # upright while the thought is italic.
+        return [
+            [("class:activity.thinking.bar", f"{THOUGHT_BAR} "), ("class:activity.thinking", row)]
+            for row in head_rows(thought, width - 2, rows)
+        ]
 
     def begin_wait(self, label: str) -> Wait:
         """Start a wait that shows a spinner row once it outlasts the grace period."""
