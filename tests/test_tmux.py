@@ -14,7 +14,7 @@ import uuid
 import pytest
 from conftest import tmux_socket_dir
 
-from pcode.ui import THOUGHT_BAR
+from pcode.ui import THOUGHT_ICON
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
 
@@ -254,7 +254,7 @@ SPINNER_ROW = BUSY_FRAMES
 
 
 def _thought_span(lines):
-    """Indices of the thinking rows: barred over the spinner, directly above it.
+    """Indices of the thinking rows: marked first row, directly above the spinner.
 
     A blank row always separates the panel from scrollback, and the cap is
     ui.THOUGHT_ROWS, so this never reaches a scrollback line.
@@ -262,17 +262,19 @@ def _thought_span(lines):
     status = next((i for i, line in enumerate(lines) if line.startswith(SPINNER_ROW)), None)
     if status is None:
         return range(0)
-    start = status
-    while start and status - start < 3 and lines[start - 1].startswith(f" {THOUGHT_BAR} "):
-        start -= 1
-    return range(start, status)
+    for start in range(status - 1, max(-1, status - 4), -1):
+        if not lines[start].strip():
+            break
+        if lines[start].startswith(f" {THOUGHT_ICON} "):
+            return range(start, status)
+    return range(0)
 
 
 def thought_row(screen):
-    """The thinking rows above the status row, without their bar, joined with newlines."""
+    """The thinking rows above the status row, without their icon, joined with newlines."""
     lines = screen.splitlines()
     return "\n".join(
-        lines[i].strip().removeprefix(THOUGHT_BAR).strip() for i in _thought_span(lines)
+        lines[i].strip().removeprefix(THOUGHT_ICON).strip() for i in _thought_span(lines)
     )
 
 

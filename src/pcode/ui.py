@@ -201,9 +201,8 @@ class Palette:
                 # (accent) or what it is doing (plain). No hue: the plan
                 # heading's shade would make a thought look like a label.
                 "activity.thinking": f"italic {self.muted}",
-                # Its bar stands upright: slanted, the rows' bars would not
-                # join into one line.
-                "activity.thinking.bar": f"noitalic {self.muted}",
+                # Keep the reasoning marker upright beside the italic text.
+                "activity.thinking.icon": f"noitalic {self.muted}",
                 # System work is pcode's own: the badge and accent mark it, and
                 # its queued rows keep an italic detail.
                 "activity.system": self.accent,
@@ -424,10 +423,9 @@ THINKING_KEEP = 2000
 # sentence or two, which one row rarely holds whole; more than a few rows and
 # it stops being a glance.
 THOUGHT_ROWS = 3
-# Runs down the thought's rows in the spinner's column, so a wrapped thought
-# reads as one quote. A line, not a dot or circle that the round spinner
-# under it would make look like a stalled frame.
-THOUGHT_BAR = "│"
+# Marks the first thought row in the spinner's column, without resembling
+# a stalled frame of the round spinner below it.
+THOUGHT_ICON = "∴"
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -727,13 +725,19 @@ class Activity:
         thought = latest_thought(self.thought)
         if not thought.strip():
             return []
-        # The bar sits over the spinner and the text over its label: one
-        # block, read top to bottom. Cut at the end, the way a sentence is
-        # skimmed. Each row is pre-fitted fragments, so the bar can stay
-        # upright while the thought is italic.
+        # Wrap the marker with the text so continuation rows use the full
+        # width, without a hanging indent. Only the first row has an upright
+        # marker; the thought itself stays italic.
+        wrapped = head_rows(f"{THOUGHT_ICON} {thought}", width, rows)
         return [
-            [("class:activity.thinking.bar", f"{THOUGHT_BAR} "), ("class:activity.thinking", row)]
-            for row in head_rows(thought, width - 2, rows)
+            [
+                ("class:activity.thinking.icon", f"{THOUGHT_ICON} " if index == 0 else ""),
+                (
+                    "class:activity.thinking",
+                    row.removeprefix(THOUGHT_ICON).lstrip() if index == 0 else row,
+                ),
+            ]
+            for index, row in enumerate(wrapped)
         ]
 
     def begin_wait(self, label: str) -> Wait:
