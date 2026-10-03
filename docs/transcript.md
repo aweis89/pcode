@@ -53,6 +53,40 @@ Limits:
 - These diffs aren't guaranteed to apply as patches. Changes made by shell
   commands, formatters, or other tools aren't captured.
 
+### Diffs with delta
+
+When [delta](https://dandavison.github.io/delta/) is on your `PATH`, edit blocks
+and the `/diffs` popup use it: syntax-highlighted code, word-level changes,
+and a side-by-side layout when the terminal is wide enough. The Homebrew
+formula installs it for you. Without it, or if delta exits with an error, pcode
+falls back to its built-in Rich diffs; `diff_renderer rich` always uses them.
+
+pcode only decides what it has to: the width, dark or light (from your pcode
+theme), no pager, no file header (the block heading already names the file),
+and the layout. With `diff_layout auto`, a diff 180 columns or wider gets side
+by side, and a narrower one gets the unified view; the `/diffs` pane is three
+columns narrower than the terminal. Everything else comes
+from delta itself, including the `[delta]` section of your git config.
+
+To set delta up differently for pcode than for git, give it a profile, which
+delta calls a feature, and turn it on with `delta_args`:
+
+```ini
+# ~/.gitconfig
+[delta "pcode"]
+    line-numbers = true
+    syntax-theme = Dracula
+```
+
+```text
+/config set delta_args "--features pcode"
+```
+
+Any flag in `delta_args` also overrides pcode's own choice of that flag, so
+`--side-by-side` always gives the side-by-side layout and `--width=variable`
+stops backgrounds at the end of the text. A `side-by-side = true` in your git
+config applies at every width. Settings apply on the next launch.
+
 ## Thinking: status line or scrollback
 
 `/show-thinking` picks where the thinking a provider exposes shows up. **Ctrl+T**

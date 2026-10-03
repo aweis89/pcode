@@ -1066,6 +1066,7 @@ class PreviewApp:
                 loaded=loaded,
                 view=index,
                 code_theme=self.transcript.code_theme,
+                delta=self.transcript.delta,
                 input=modal_input,
                 output=session.app.output,
                 style=session.app.style,

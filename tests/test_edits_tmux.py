@@ -13,6 +13,9 @@ pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is no
 SCRIPT = r"""
 import os, tempfile
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
+# Assertions read the +/- gutter, which delta drops; render diffs with Rich.
+import pcode.delta
+pcode.delta.find_delta = lambda: None
 from pcode.app import PreviewApp
 from pcode.edits import completed_change
 from pcode.runtime import EditPreview, Message
@@ -40,6 +43,9 @@ app.run()
 CODE_SCRIPT = r"""
 import os, tempfile
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
+# Assertions read the +/- gutter, which delta drops; render diffs with Rich.
+import pcode.delta
+pcode.delta.find_delta = lambda: None
 from pcode.app import PreviewApp
 from pcode.runtime import EditPreview, Message
 

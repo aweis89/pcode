@@ -12,7 +12,9 @@ brew install --HEAD aweis89/pcode/pcode
 The repository doubles as its own tap, which is why the URL is needed. There
 are no tagged releases yet, so `--HEAD` installs the latest `master`. Homebrew
 installs pcode and its dependencies into a private environment without touching
-your global Python, and adds `shfmt` for nicer command formatting in `/tools`.
+your global Python, and adds `shfmt` for nicer command formatting in `/tools`
+and [delta](https://dandavison.github.io/delta/) for
+[richer diffs](transcript.md#diffs-with-delta).
 
 To update or remove it:
 
@@ -128,4 +130,6 @@ The `claude` extra adds [`claude:` models](providers.md#claude-code-provider)
 and bundles the Claude Code CLI (about 215 MB). Leave it out with
 `uv tool install --editable .` or `make install EXTRAS=` if you don't need
 them. Install `shfmt` yourself for formatted commands in `/tools`; without it,
-pcode uses a simpler built-in formatter.
+pcode uses a simpler built-in formatter. Likewise, install
+[delta](https://dandavison.github.io/delta/) for
+[richer diffs](transcript.md#diffs-with-delta); without it, diffs use Rich.
