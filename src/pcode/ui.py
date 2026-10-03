@@ -41,7 +41,14 @@ from rich.theme import Theme
 from pcode.block import INDENT, RULE, RUNNING, block_heading
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
-from pcode.edit_transcript import EditTranscript, edit_preview_rows
+from pcode.delta import Delta
+from pcode.delta import from_preferences as delta_from_preferences
+from pcode.edit_transcript import (
+    EditTranscript,
+    LiveDeltaPreview,
+    edit_preview_rows,
+    prefetch_edits,
+)
 from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
 from pcode.input_keys import configure_newline_keys
 from pcode.jobs import WATCHED_PREFIX
@@ -1579,6 +1586,7 @@ class TerminalOutput:
         """
         transient = [] if replay else self.transient_pending
         self.transient_pending = []
+        prefetch_edits((obj for objects, _, _ in pending for obj in objects), width)
         pieces = []
         previous_file = self.console._file
         try:
@@ -1870,6 +1878,7 @@ class PromptLayout:
         self.render_cache = None
         self.animation_task = None
         self.preview_body = lru_cache(maxsize=1)(_preview_body)
+        self.live_delta = LiveDeltaPreview(lambda: self.session.app.invalidate())
         # The status row, side questions and waits share a spinner frame.
         # Plan steps use a static marker, so motion only ever means
         # "the turn is waiting on this". Who owns the work is the badge and colour.
@@ -1940,6 +1949,9 @@ class PromptLayout:
         if transcript is None:
             return None
         edits = transcript.show_edits and activity.edit_previews
+        if not edits:
+            # The preview ended, so the next edit never flashes this one's diff.
+            self.live_delta.forget()
         # A `!command` the user typed is shown while it runs whatever the
         # scrollback setting for the model's commands says, and so is a job
         # the user asked to watch; the model's own commands follow the setting.
@@ -1999,7 +2011,14 @@ class PromptLayout:
         if budget <= 0:
             return plans, "", [], editor_height
         body = event.text if edits else event.output
-        rows = self.preview_body(bool(edits) and not code, body, width, transcript.code_theme)
+        delta = transcript.delta if edits and not code else None
+        rows = (
+            self.live_delta.rows(
+                delta, event.call_id, event.path, body, width, transcript.code_theme
+            )
+            if delta is not None
+            else None
+        ) or self.preview_body(bool(edits) and not code, body, width, transcript.code_theme)
         if edits:
             # A diff keeps its +/- gutter flush left, as the settled block does.
             return plans, heading, rows[-budget:], editor_height
@@ -2580,6 +2599,7 @@ class Transcript:
         self.theme = theme
         self.detected_theme = detect_theme() if detected_theme is None else detected_theme
         self.syntax_themes = syntax_themes(preferences)
+        self._delta = delta_from_preferences(preferences)
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
         self.paced_scrollback = preferences.get(
@@ -2638,8 +2658,10 @@ class Transcript:
         objects = tuple(
             Markdown(obj.markup, code_theme=self.code_theme)
             if isinstance(obj, (Markdown, RetainedMarkdown))
+            else replace(obj, code_theme=self.code_theme, delta=self.delta)
+            if isinstance(obj, EditTranscript)
             else replace(obj, code_theme=self.code_theme)
-            if isinstance(obj, (TranscriptNotice, CommandTranscript, EditTranscript))
+            if isinstance(obj, (TranscriptNotice, CommandTranscript))
             else obj
             for obj in objects
         )
@@ -2791,7 +2813,7 @@ class Transcript:
     @recorded
     def edit(self, event) -> None:
         if self.show_edits:
-            self.print(EditTranscript(event, code_theme=self.code_theme))
+            self.print(EditTranscript(event))
 
     def replay(self) -> list:
         """Project the retained log with current settings, without recording again."""
@@ -2858,6 +2880,13 @@ class Transcript:
     @property
     def resolved_theme(self) -> str:
         return self.detected_theme if self.theme == "auto" else self.theme
+
+    @property
+    def delta(self) -> Delta | None:
+        """delta for diffs, told the current palette; None renders them with Rich."""
+        if self._delta is None:
+            return None
+        return replace(self._delta, light=self.resolved_theme == "light")
 
     @property
     def palette(self) -> Palette:
