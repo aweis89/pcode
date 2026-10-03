@@ -519,6 +519,8 @@ class SessionController:
         self.live_task: asyncio.Task | None = None
         self.mcp_task: asyncio.Task | None = None
         self.compact_task: asyncio.Task | None = None
+        # A browser sign-in: tracked like a turn so Ctrl+C cancels it.
+        self.login_task: asyncio.Task | None = None
         # Commands queued but not started that hold the session busy.
         self.pending_mcp = 0
         self.pending_model_command = 0
@@ -796,7 +798,8 @@ class SessionController:
         return name in TERMINAL_COMMANDS or self.registry.find(name) is not None
 
     def tasks(self) -> list[asyncio.Task]:
-        return [task for task in (self.live_task, self.mcp_task, self.compact_task) if task]
+        work = (self.live_task, self.mcp_task, self.compact_task, self.login_task)
+        return [task for task in work if task]
 
     def working(self) -> bool:
         """A turn, MCP work, or a history rewrite is running."""
@@ -1140,9 +1143,30 @@ class SessionController:
         if self.reload_requested:
             await self.reload_extensions()
         if self.login_requested:
-            await self.logins.perform_login()
+            await self.perform_login()
         if self.logout_requested:
             await self.logins.perform_logout()
+
+    async def perform_login(self) -> None:
+        """Run the requested sign-in as cancellable work, so Ctrl+C abandons it.
+
+        Waiting on a browser holds the session busy, which is what routes
+        Ctrl+C to `cancel` rather than to the draft. A cancelled sign-in ends
+        here; only the command loop's own cancellation propagates.
+        """
+        task = asyncio.create_task(self.logins.perform_login())
+        self.login_task = task
+        self.activity.busy = True
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        finally:
+            self.login_task = None
+            self.refresh_busy()
+        if not task.cancelled():
+            task.result()
 
     async def run_command(self, text: str, *, before_queue: bool = False) -> None:
         """Run one of the session's own commands; a handler may be sync or async."""

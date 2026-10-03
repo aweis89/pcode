@@ -65,6 +65,33 @@ def test_failed_login_reports_without_touching_the_model(monkeypatch):
     assert "`codex` command was not found" in buffer.getvalue()
 
 
+def test_ctrl_c_cancels_a_waiting_login_and_frees_the_session(monkeypatch):
+    app, runtime, buffer = make_app("openai-codex:test-model")
+    started = asyncio.Event()
+
+    async def wait_for_browser(**kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(codex_login, "login", wait_for_browser)
+    app.handle("/login openai-codex")
+    controller = app.controller
+
+    async def scenario():
+        login = asyncio.create_task(controller.perform_login())
+        await started.wait()
+        # Busy is what sends Ctrl+C to cancel rather than to the draft.
+        assert controller.activity.busy
+        controller.cancel()
+        await login  # The cancelled sign-in must not take the command loop with it.
+
+    asyncio.run(scenario())
+    assert controller.login_task is None
+    assert not controller.activity.busy
+    assert runtime.agent.model == "original"
+    assert "OpenAI Codex sign-in cancelled." in buffer.getvalue()
+
+
 def test_unknown_login_source_shows_usage():
     app, _, buffer = make_app("openai-codex:test-model")
     app.handle("/login gemini")
