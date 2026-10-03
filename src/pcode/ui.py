@@ -1873,7 +1873,7 @@ class PromptLayout:
         # The status row, side questions and waits share a spinner frame.
         # Plan steps use a static marker, so motion only ever means
         # "the turn is waiting on this". Who owns the work is the badge and colour.
-        self.spinner = Spinner("dots")
+        self.spinner = Spinner(load_preferences().get("spinner", SETTINGS["spinner"].default))
         # Every frame is a full layout pass (~2-3ms), so the animation loop alone
         # costs a few percent of a core for the length of a turn. Rich's built-in
         # interval is tuned for a dedicated terminal spinner, not for driving

@@ -179,8 +179,8 @@ def pane(request, tmp_path):
         reaper.wait(timeout=5)
 
 
-# The spinner row leads with a `dots` frame, or a `line` frame for system work.
-BUSY_FRAMES = tuple(" " + frame + " " for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+# The spinner row leads with a frame of the default `arc` spinner.
+BUSY_FRAMES = tuple(" " + frame + " " for frame in "◜◠◝◞◡◟")
 
 # The footer always names the mode the next Enter sends with.
 SEND_MODES = ("steering", "queue", "interrupt")
@@ -247,8 +247,7 @@ def scrollback(pane):
 
 
 # The status row is indented one column so the spinner lines up with the task
-# rows inside the frame below it instead of hugging the terminal edge. Running
-# tools and pcode's own work (compaction) draw the `line` frames, not `dots`.
+# rows inside the frame below it instead of hugging the terminal edge.
 SPINNER_ROW = BUSY_FRAMES
 
 
