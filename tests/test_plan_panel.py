@@ -175,6 +175,14 @@ def test_created_plan_exposes_ids_for_atomic_status_updates(tmp_path):
     planning = next(c for c in create_coder(tmp_path).capabilities if isinstance(c, Planning))
     assert isinstance(planning, IdentifiedPlanning)
     assert "not task IDs" in planning.get_instructions()
+    # pcode's guidance replaces Harness's "multi-step work" trigger everywhere the model sees it.
+    assert "live checklist" in planning.get_instructions()
+    assert "multi-step" not in planning.get_instructions()
+    toolset = planning.get_toolset()
+    assert all("multi-step" not in tool.description for tool in toolset.tools.values())
+    assert "update_task_statuses" in toolset.tools["write_plan"].description
+    custom = IdentifiedPlanning(descriptions={"write_plan": "mine"}).get_toolset()
+    assert custom.tools["write_plan"].description == "mine"
     requests = 0
 
     async def model(messages, info):

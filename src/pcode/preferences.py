@@ -286,7 +286,7 @@ SETTINGS = {
     "subagent_models": Setting(
         "",
         name_list=True,
-        description="Models delegate_task may run a sub-agent on, comma-separated (/subagents)",
+        description="Models delegate_task lists for sub-agents, comma-separated (/subagents)",
     ),
     # An untouched worktree is always removed; uncommitted changes are always kept.
     "session_host": Setting(

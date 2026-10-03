@@ -22,7 +22,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   compaction is skipped for its turn, since that model's window and summarizer would
   decide what the conversation keeps. Such a prompt never steers a running turn; it
   queues as its own. `/resend` of it asks the conversation's model.
-- `/subagents [MODEL ...|off]`: the models `delegate_task` may run a sub-agent on; each
+- `/subagents [MODEL ...|off]`: the models `delegate_task` suggests for running a sub-agent (any other `provider:model` also works); each
   word completes from the `/model` catalog. Bare lists them, `off` clears them
   ([details](tools.md#sub-agents-on-other-models)).
 - `/tools`: the [tool-call inspector](#tool-call-inspector) for the current conversation,

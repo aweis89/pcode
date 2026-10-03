@@ -620,7 +620,7 @@ class SessionController:
             ),
             Command(
                 "/subagents",
-                "Models delegate_task may run sub-agents on: MODEL ... sets them, off clears, "
+                "Models delegate_task lists for sub-agents: MODEL ... sets them, off clears, "
                 "bare lists",
                 self.subagents,
                 free_arguments=True,
@@ -2194,12 +2194,13 @@ class SessionController:
             if not configured:
                 self.view.note(
                     "No sub-agent models: sub-agents run on the session's model. "
-                    "/subagents MODEL [MODEL ...] lets delegate_task pick others."
+                    "/subagents MODEL [MODEL ...] lists others for delegate_task; it can also take "
+                    "any provider:model name per delegation."
                 )
                 return
             menu, problems = await asyncio.to_thread(subagent_menu, configured)
             lines = [
-                "Sub-agent models delegate_task may pick (without one, the session's model)"
+                "Sub-agent models listed for delegate_task (without one, the session's model)"
                 + (", set by this workspace's .pcode/preferences.json" if project else "")
                 + ":",
                 *(f"  {name}" for name in menu),

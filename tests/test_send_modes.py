@@ -98,9 +98,10 @@ def test_busy_send_modes(mode, editing_mode):
                     if mode != "interrupt":
                         assert calls == ["first"]
                         assert app.activity.prompt == "first"
-                        rows = app.activity.queue_rows(3)
                         label = "Steering (next model request)" if mode == "steering" else "Queued"
-                        assert rows == [("class:plan", f"{label}: second")]
+                        rows = [("class:plan", f"{label}: second")]
+                        # Hosted, the queue reaches the terminal a moment after the input.
+                        await wait(lambda: app.activity.queue_rows(3) == rows)
                         # Changing the selected mode must not relabel pending input.
                         app.send_mode = "interrupt"
                         assert app.activity.queue_rows(3) == rows

@@ -63,7 +63,7 @@ def test_a_delegation_runs_on_the_model_it_picks(tmp_path, monkeypatch):
 
     async def parent(messages, info):
         delegate = next(tool for tool in info.function_tools if tool.name == "delegate_task")
-        seen["enum"] = delegate.parameters_json_schema["properties"]["model"]["enum"]
+        seen["model"] = delegate.parameters_json_schema["properties"]["model"]
         if any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts):
             yield "done"
             return
@@ -86,7 +86,8 @@ def test_a_delegation_runs_on_the_model_it_picks(tmp_path, monkeypatch):
             pass
 
     asyncio.run(run())
-    assert seen["enum"] == ["other:big"]
+    # Any provider:model name is accepted; the menu only resolves some up front.
+    assert seen["model"]["type"] == "string" and "enum" not in seen["model"]
     assert "read_file" in seen["tools"] and "delegate_task" not in seen["tools"]
     # The option's own settings (its defaults and saved /effort) reach the child.
     assert seen["settings"]["temperature"] == 0.5
@@ -123,21 +124,53 @@ def test_a_terminal_completes_btw_models_from_a_host_that_predates_completer_nam
     assert unknown.argument_completer is None
 
 
-def test_without_models_delegate_task_offers_no_model_argument(tmp_path):
+def test_a_delegation_runs_on_a_model_off_the_menu(tmp_path, monkeypatch):
+    """Without /subagents, `model` still takes any name, resolved when used."""
+    seen = {}
+
+    async def child(messages, info):
+        yield "second opinion"
+
+    resolve = fake_side_model({"other:big": FunctionModel(stream_function=child)})
+    resolved = []
+
+    def counting(name, effort=""):
+        resolved.append(name)
+        return resolve(name, effort)
+
+    monkeypatch.setattr(agent_module, "side_model", counting)
+
     async def parent(messages, info):
-        delegate = next(tool for tool in info.function_tools if tool.name == "delegate_task")
-        assert "model" not in delegate.parameters_json_schema["properties"]
-        yield "fine"
+        returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        retries = [p for m in messages for p in m.parts if type(p).__name__ == "RetryPromptPart"]
+        if len(returns) == 2:
+            seen["returned"] = [r.content for r in returns]
+            yield "done"
+            return
+        name = "other:big" if retries else "nope:z"
+        if retries:
+            seen["retry"] = retries[0].content
+        yield {
+            0: DeltaToolCall(
+                name="delegate_task",
+                json_args=json.dumps({"agent_name": "worker", "task": "Review", "model": name}),
+                tool_call_id=f"call-{name}-{len(returns)}",
+            )
+        }
 
     runtime = AgentRuntime(
         Agent(FunctionModel(stream_function=parent), capabilities=[create_coder(tmp_path)])
     )
 
     async def run():
-        async for _ in runtime.stream("hi"):
+        async for _ in runtime.stream("Get a second opinion"):
             pass
 
     asyncio.run(run())
+    assert "Cannot use nope:z: no credentials" in seen["retry"]
+    assert seen["returned"] == ["second opinion", "second opinion"]
+    # A name is resolved once, then reused; a failed one is not remembered.
+    assert resolved == ["nope:z", "other:big"]
 
 
 def test_the_command_sets_lists_and_clears_the_models(tmp_path, monkeypatch):

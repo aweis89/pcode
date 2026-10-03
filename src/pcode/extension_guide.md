@@ -205,9 +205,10 @@ from pcode.planning import IdentifiedPlanning
 reviewer = Agent(name="reviewer", description="...", capabilities=[IdentifiedPlanning()])
 ```
 
-It is Harness `Planning` plus an announcement of the plan after each planning
-call; the plan itself stays private to the delegate's run. A plain Harness
-`Planning()` works for the delegate but never reaches the widget.
+It is Harness `Planning` with guidance that tells the model the user watches
+the plan, plus an announcement of the plan after each planning call; the plan
+itself stays private to the delegate's run. A plain Harness `Planning()` works
+for the delegate but never reaches the widget.
 
 ### Notices and lifecycle
 
