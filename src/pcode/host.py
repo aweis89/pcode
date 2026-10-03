@@ -265,9 +265,11 @@ class HostView:
         if run is not None and not run.done.done():
             run.done.set_result(None)
         if not self._host.controller.running:
-            if run is not None and (client := self._host.clients.get(tag[0])) is not None:
+            client, _ = self._host.sender(tag)
+            if client is not None:
                 # Ahead of `host_closed`, which can overtake the reply to `run`:
-                # ending the session was what this caller asked for.
+                # ending the session was what this caller asked for, so its
+                # terminal exits as an in-process one would, not as after a crash.
                 client.peer.notify("session_ended")
             self._host.stop()
 

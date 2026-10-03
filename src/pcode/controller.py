@@ -1032,7 +1032,9 @@ class SessionController:
             self.view.note(f"Stopped {stopped} side question(s).")
         else:
             self.activity.busy = False
-            self.view.cancelled()
+            # A command that ended the session cancels nothing the user ran.
+            if self.running:
+                self.view.cancelled()
 
     def take_steering(self) -> list[str]:
         """The runtime's hook: steering messages for the next model request."""
@@ -2735,7 +2737,7 @@ class SessionController:
                 result = worktree.finish(linked)
                 self._leave_worktree(linked)
                 self.running = False
-                return [result]
+                return [f"\u2713 {result}"]
 
             self.defer("Finishing worktree", linked.branch, finish)
 
