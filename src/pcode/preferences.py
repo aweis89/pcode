@@ -10,8 +10,8 @@ from pathlib import Path
 
 from filelock import FileLock
 from pygments.styles import get_all_styles
-from rich._spinners import SPINNERS as RICH_SPINNERS
 from rich.cells import cell_len
+from rich.spinner import SPINNERS as RICH_SPINNERS
 
 from pcode.profiling import PROFILE_MODES
 from pcode.transcript_log import CHAR_BUDGET

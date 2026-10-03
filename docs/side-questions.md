@@ -8,7 +8,7 @@ the conversation unless you choose to keep it.
 
 ```text
 ❯ refactor the parser and make the tests pass
-  ⠋ Running shell · uv run pytest
+  ◜ Running shell · uv run pytest
 ❯ /btw why did you pick a recursive descent parser?
   ◈ Side question asked beside the conversation…
   ◈ Side answer ready (why did you pick a recursive descent parser?). Opening it.

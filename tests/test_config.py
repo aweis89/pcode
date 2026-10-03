@@ -456,9 +456,9 @@ def test_spinner_setting_picks_the_status_row_animation():
             session = PromptSession(input=pipe, output=DummyOutput())
         return PromptLayout(session, None, None, None).spinner_frame()
 
-    assert frame() in "◜◠◝◞◡◟"
+    assert frame() in tuple("◜◠◝◞◡◟")
     configure(["set", "spinner", "line"])
-    assert frame() in "-\\|/"
+    assert frame() in tuple("-\\|/")
 
 
 @pytest.mark.parametrize("value", ["0", "1", "3"])

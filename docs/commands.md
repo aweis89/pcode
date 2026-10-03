@@ -269,11 +269,11 @@ what it is doing it to, and on the right the run's tool count and how long
 this phase has lasted.
 
 ```text
-⠋ Thinking                                                    8s
+◜ Thinking                                                    8s
   Tracing the resize path
-⠋ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
-⠋ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
-⠋ ◈ Compacting context ▸ keep tests                           4s
+◜ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
+◜ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
+◜ ◈ Compacting context ▸ keep tests                           4s
 ```
 
 A spinner means the turn is waiting on that row; background jobs get a static

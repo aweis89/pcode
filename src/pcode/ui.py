@@ -961,7 +961,7 @@ class Activity:
         return replace(held, tally=line.tally, elapsed=elapsed)
 
     def status_fragments(self, spinner: str, width: int, tally: str = "", hold: float = 0.0):
-        """The row above the tasks: `⠋ Phase · detail … ✓7 tools · 12s`."""
+        """The row above the tasks: `◜ Phase · detail … ✓7 tools · 12s`."""
         return self.held_status_line(tally, hold).fragments(spinner, width)
 
     def queue_rows(self, budget: int):
