@@ -59,6 +59,7 @@ def test_defaults_and_path_do_not_create_files():
         "debug": "off",
         "profile": "off",
         "stall_log": "on",
+        "spinner": "arc",
         "show_thinking": "status-line",
         "show_tasks": "on",
         "autohide_tasks": "off",
@@ -433,6 +434,31 @@ def test_error_scrollback_settings_round_trip():
     assert "error_scrollback" not in load_preferences()
     configure(["unset", "error_scrollback_lines"])
     assert configure(["get", "error_scrollback_lines"]) == "20"
+
+
+def test_spinner_setting_picks_the_status_row_animation():
+    from pcode.preferences import SPINNERS
+    from pcode.ui import PromptLayout
+
+    assert configure(["get", "spinner"]) == "arc"
+    # Every offered spinner keeps the row steady: no emoji, one width per frame.
+    assert {"dots", "line", "point"} <= set(SPINNERS)
+    assert not {"moon", "clock", "arrow2", "shark"} & set(SPINNERS)
+    with pytest.raises(ValueError, match="spinner must be one of"):
+        configure(["set", "spinner", "moon"])
+
+    def frame():
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        with create_pipe_input() as pipe:
+            session = PromptSession(input=pipe, output=DummyOutput())
+        return PromptLayout(session, None, None, None).spinner_frame()
+
+    assert frame() in "◜◠◝◞◡◟"
+    configure(["set", "spinner", "line"])
+    assert frame() in "-\\|/"
 
 
 @pytest.mark.parametrize("value", ["0", "1", "3"])

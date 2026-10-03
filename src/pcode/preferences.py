@@ -10,6 +10,8 @@ from pathlib import Path
 
 from filelock import FileLock
 from pygments.styles import get_all_styles
+from rich._spinners import SPINNERS as RICH_SPINNERS
+from rich.cells import cell_len
 
 from pcode.profiling import PROFILE_MODES
 from pcode.transcript_log import CHAR_BUDGET
@@ -20,6 +22,26 @@ from pcode.transcript_log import CHAR_BUDGET
 # the terminal's own ANSI palette, so pcode matches whatever scheme it runs in.
 TERMINAL_SYNTAX = "terminal"
 SYNTAX_THEMES = (TERMINAL_SYNTAX, *sorted(get_all_styles()))
+
+
+def _steady_width(frames: list[str]) -> bool:
+    """Whether every frame takes the same few cells, so the row never shifts.
+
+    Emoji spinners are out: terminals disagree on their width, and the
+    variation-selector ones (`arrow2`) measure one cell but draw two.
+    """
+    widths = {cell_len(frame) for frame in frames}
+    return (
+        len(widths) == 1
+        and widths <= {1, 2, 3}
+        and all(ord(char) < 0x1F000 and char != "\ufe0f" for frame in frames for char in frame)
+    )
+
+
+# Rich's named spinners that fit the status row: `pcode config set spinner NAME`.
+SPINNERS = tuple(
+    sorted(name for name, spec in RICH_SPINNERS.items() if _steady_width(spec["frames"]))
+)
 
 EFFORTS = ("low", "medium", "high", "xhigh", "default")
 # `/show-thinking` and Ctrl+T, in cycling order.
@@ -447,6 +469,12 @@ SETTINGS = {
         None,
         height=True,
         description="Max height of the task list plus editor: rows, or 0.5 for half the screen",
+    ),
+    # Read when the prompt is built, so it applies on the next launch.
+    "spinner": Setting(
+        "arc",
+        SPINNERS,
+        description="Animation on the status row while a turn runs (a Rich spinner name)",
     ),
     "show_thinking": Setting(
         "status-line",
