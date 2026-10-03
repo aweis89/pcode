@@ -53,7 +53,7 @@ from pcode.preferences import (
     TERMINAL_SYNTAX,
     load_preferences,
 )
-from pcode.prefix_keys import PrefixKeys, shortcut_label
+from pcode.prefix_keys import PrefixKeys, compact_label, shortcut_label
 from pcode.prompt_keys import PromptCallbacks, prompt_key_bindings
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.shell_mode import SHELL_PREFIX
@@ -137,6 +137,7 @@ class Palette:
             {
                 "plan": self.muted,
                 "plan.heading": f"nodim {self.task_heading} bold",
+                "plan.hint": f"nodim nobold {self.muted}",
                 "plan.active": f"nodim {self.accent} bold",
                 # A running sub-agent's row: its own shade, so it never reads
                 # as one of the tasks it sits among.
@@ -185,6 +186,7 @@ class Palette:
                 "bottom-toolbar.sep": self.muted,
                 "bottom-toolbar.location": f"{self.accent} bold",
                 "bottom-toolbar.mode": self.task_heading,
+                "bottom-toolbar.hint": self.muted,
                 "bottom-toolbar.model": self.accent,
                 "bottom-toolbar.context": self.muted,
                 "bottom-toolbar.context-value": self.accent,
@@ -522,6 +524,8 @@ class Activity:
     # screen below 1 (0.5 is half). None keeps the default layout.
     tasks_max_height: float | None = None
     tasks_autohidden: bool = False
+    # Inline shortcut hints, such as the key that hides the task list.
+    show_hints: bool = True
     # Where the model's thinking shows: `off`, `status-line` (its own row
     # under the status row), or `scrollback`. See THINKING_MODES.
     thinking_mode: str = "status-line"
@@ -2018,22 +2022,26 @@ class PromptLayout:
             wrap_lines=False,
         )
 
+    def plan_heading(self):
+        """`Tasks 1/3`, then the key that hides the widget when hints are on."""
+        activity = self.activity
+        width = self.size().columns - 8
+        style = "class:plan.heading" if activity.displayed_plan else "bold"
+        fragments = panel_fragments([(style, activity.panel_heading())], width)
+        if activity.show_hints:
+            hint = f" ({compact_label(self.shortcuts.label('o'))} hide)"
+            # The hint never squeezes the heading itself; a narrow pane drops it.
+            if cell_len(fragments[0][1]) + cell_len(hint) <= width:
+                fragments.append(("class:plan.hint", hint))
+        return fragments
+
     def plan_heading_border(self) -> VSplit:
         """A top border with the heading at the left; Frame can only center it."""
-        activity = self.activity
         return VSplit(
             [
                 Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
                 Label(
-                    lambda: panel_fragments(
-                        [
-                            (
-                                "class:plan.heading" if activity.displayed_plan else "bold",
-                                activity.panel_heading(),
-                            )
-                        ],
-                        self.size().columns - 8,
-                    ),
+                    self.plan_heading,
                     style="class:frame.label",
                     dont_extend_width=True,
                 ),

@@ -154,6 +154,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `error_scrollback_lines` | `20` | Positive integer, lines of an error notice kept in scrollback before it is clipped |
 | `show_tasks` | `on` | `on`, `off` (show the Tasks/Tools widget; Ctrl+O or `/show-tasks`) |
 | `autohide_tasks` | `off` | `on`, `off` (hide the Tasks/Tools widget when a turn ends; `/autohide-tasks`) |
+| `show_hints` | `on` | `on`, `off` (compact shortcut hints: `steering (^S)` in the footer, `(^O hide)` on the Tasks/Tools heading) |
 | `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
 | `tasks_max_height` | unset | Rows (`20`) or a share of the screen (`0.5`) for the Tasks/Tools widget and editor together; unset keeps the widget to 10 rows or half the screen |
 | `paced_scrollback` | `typed` | `typed`, `rows`, `off` (type settled prose out, or roll blocks in a row per frame; see [the transcript](transcript.md#paced-scrollback)) |

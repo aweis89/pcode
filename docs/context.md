@@ -179,7 +179,7 @@ built up, pcode adds a muted note to the end of the footer under the editor,
 kept until your next prompt:
 
 ```text
-~/p/pcode@main · steering · claude:claude-opus-5-5 (high) · 92k/1m · cache miss 0/166k
+~/p/pcode@main · steering (^S) · claude:claude-opus-5-5 (high) · 92k/1m · cache miss 0/166k
 ```
 
 That reads "reused 0 of about 166k cached tokens"; `cache drop 41k/166k` means

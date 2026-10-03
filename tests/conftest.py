@@ -202,6 +202,13 @@ def isolated_preferences(monkeypatch, tmp_path):
         "group_tools",
         replace_setting(preferences.SETTINGS["group_tools"], default="off"),
     )
+    # Hints are on by default, but most tests assert on the exact footer and
+    # task heading; tests/test_hints.py turns them on itself.
+    monkeypatch.setitem(
+        preferences.SETTINGS,
+        "show_hints",
+        replace_setting(preferences.SETTINGS["show_hints"], default="off"),
+    )
 
 
 @pytest.fixture
