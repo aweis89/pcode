@@ -61,6 +61,41 @@ Limits:
 - These diffs aren't guaranteed to apply as patches. Changes made by shell
   commands, formatters, or other tools aren't captured.
 
+### Diffs with delta
+
+When [delta](https://dandavison.github.io/delta/) is on your `PATH`, edit
+blocks, the live preview of an edit being written, and the `/diffs` popup use
+it: syntax-highlighted code, word-level changes, and a side-by-side layout when
+the terminal is wide enough. The Homebrew formula installs it for you. Without
+it, or if delta exits with an error, pcode falls back to its built-in Rich
+diffs; `diff_renderer rich` always uses them.
+
+pcode ignores your git config's `[delta]` section and delta's environment
+variables (`DELTA_FEATURES`, `BAT_THEME`), so these diffs look the same however
+`git diff` is set up. `delta_args` is the one place to change them:
+
+```text
+/config set delta_args "--line-numbers --syntax-theme Dracula"
+```
+
+pcode itself only sets the width, dark or light (from your pcode theme), no
+pager, no file header (the block heading already names the file), and the
+layout. A flag in `delta_args` replaces pcode's choice of that flag, so
+`--side-by-side` gives the side-by-side layout at every width and
+`--width=variable` stops backgrounds at the end of the text. With
+`diff_layout auto`, a diff 180 columns or wider is shown side by side, and a
+narrower one gets the unified view; the `/diffs` pane is three columns narrower
+than the terminal. Settings apply on the next launch.
+
+A `--features NAME` that names a `[delta "NAME"]` section of your git config
+finds nothing here; put that section's settings in `delta_args` as flags.
+
+The live preview has no line numbers to show, since the edit hasn't been
+applied yet, so it leaves out delta's hunk headers. New lines still appear as
+they're written, in delta's layout and colored as added or removed, and
+delta's syntax highlighting fills them in a moment later. Side by side, the
+preview waits for delta instead.
+
 ## Thinking: status line or scrollback
 
 `/show-thinking` picks where the thinking a provider exposes shows up. **Ctrl+T**

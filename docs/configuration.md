@@ -146,6 +146,9 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
 | `show_thinking` | `status-line` | `off`, `status-line`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`) |
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; `/show-edits`) |
+| `diff_renderer` | `delta` | `delta`, `rich` (draw diffs in scrollback and `/diffs` with [delta](https://dandavison.github.io/delta/) when it's installed, falling back to Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
+| `delta_args` | `` | delta's arguments, quoted as in a shell, such as `--line-numbers`; the only delta configuration pcode reads (git config is ignored), and they override pcode's own choices |
+| `diff_layout` | `auto` | `auto`, `unified`, `side-by-side` (delta's layout; `auto` goes side by side at 180 columns or wider) |
 | `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+G or `/show-commands`) |
 | `group_tools` | `on` | `on`, `off` (fold each run of tool calls into one line; `/group-tools`, see [grouping tool calls](transcript.md#grouping-tool-calls)) |
 | `command_scrollback_lines` | `20` | Positive integer, lines of each command's output mirrored into scrollback |

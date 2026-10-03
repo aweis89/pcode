@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from pathlib import Path
 from filelock import FileLock
 from pygments.styles import get_all_styles
 
+from pcode.delta import LAYOUTS as DIFF_LAYOUTS
 from pcode.profiling import PROFILE_MODES
 from pcode.transcript_log import CHAR_BUDGET
 
@@ -46,11 +48,18 @@ class Setting:
     key_prefix: bool = False
     # Tokens as `200000`, `200k`, or `1.5m`; see parse_token_count.
     token_count: bool = False
+    # Command-line arguments, split as a shell would; empty means none.
+    arguments: bool = False
     # One line shown beside the key in /config completions.
     description: str = ""
 
     def validate(self, key: str, value: str) -> None:
-        if self.path_list:
+        if self.arguments:
+            try:
+                shlex.split(value)
+            except ValueError as error:
+                raise ValueError(f"{key} must be shell-style arguments: {error}.") from None
+        elif self.path_list:
             if value and any(not entry.strip() for entry in value.split(os.pathsep)):
                 raise ValueError(f"{key} must be directories separated by '{os.pathsep}'.")
         elif self.name_list:
@@ -403,6 +412,23 @@ SETTINGS = {
         "on",
         ("on", "off"),
         description="Show a diff preview of each file edit in the transcript",
+    ),
+    # Read at launch, like show_edits.
+    "diff_renderer": Setting(
+        "delta",
+        ("delta", "rich"),
+        description="Diffs in scrollback and /diffs: delta when installed (else rich), or rich",
+    ),
+    "delta_args": Setting(
+        "",
+        arguments=True,
+        description="delta arguments, e.g. '--line-numbers'; git config is ignored, and these "
+        "win over pcode's own",
+    ),
+    "diff_layout": Setting(
+        "auto",
+        DIFF_LAYOUTS,
+        description="delta layout: auto is side-by-side at 180+ columns, else unified",
     ),
     "show_commands": Setting(
         "off",
