@@ -61,7 +61,7 @@ def test_prompt_has_blank_line_after_repository_instructions():
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
 @pytest.mark.parametrize("mode", ["palette", "terminal"])
-def test_note_is_marked_in_accent_and_set_in_italic_muted(theme, mode):
+def test_note_is_marked_in_accent_and_set_in_dim_italic_muted(theme, mode):
     """A note's mark shares the prompt rail's accent; its text is chrome, not prose."""
     console = Console(file=StringIO(), width=80)
     transcript = Transcript(console, theme=theme, preferences=syntax_preferences(mode))
@@ -72,7 +72,7 @@ def test_note_is_marked_in_accent_and_set_in_italic_muted(theme, mode):
         muted = console.get_style("pcode.muted")
     mark, text = segments
     assert mark.text.strip() == "·" and mark.style == accent
-    assert text.style == note and note.italic
+    assert text.style == note and note.italic and note.dim
     assert note.color == muted.color
 
 
