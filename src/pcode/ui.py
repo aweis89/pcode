@@ -815,10 +815,20 @@ class Activity:
             else:
                 phase, detail = f"Running {running} tools", line
             return StatusLine(phase, detail, tally=tally, elapsed=call.elapsed)
-        if phase.startswith("Running") and not running and not self.user_command:
+        clock = phase
+        if agents := self.tools.delegates:
+            # The panel lists the sub-agents themselves, so this row just says
+            # the turn is waiting on them, unless the panel is hidden. One
+            # clock for the whole wait, however the count changes.
+            count = len(agents)
+            phase = f"Waiting for {count} sub-agent{'s' * (count > 1)}"
+            detail = "" if self.tasks_shown else agents[-1].line(timed=False)
+            clock = "\0sub-agents"
+        elif phase.startswith("Running") and not running and not self.user_command:
             # Written for a call that has since finished; the model has the turn.
-            phase, detail = "Waiting for model", ""
-        line = StatusLine(phase, detail, tally=tally, elapsed=self._phase_seconds(phase))
+            phase = clock = "Waiting for model"
+            detail = ""
+        line = StatusLine(phase, detail, tally=tally, elapsed=self._phase_seconds(clock))
         if call is not None:
             # Just finished: held briefly and marked done, so a burst of fast
             # calls reads as progress rather than strobing.

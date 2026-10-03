@@ -24,7 +24,7 @@ subscription you already pay for.
   supports works (plus your Claude Code and ChatGPT subscriptions), and
   extensions are plain Pydantic AI capabilities.
 
-See [PLAN.md](PLAN.md) for the longer-term direction.
+See [PLAN.md](https://github.com/aweis89/pcode/blob/master/PLAN.md) for the longer-term direction.
 
 ## Install
 
@@ -55,29 +55,29 @@ pcode --theme-preview                        # offline sample output and the sty
 ```
 
 **Live mode edits files and runs shell commands with your permissions and no
-approval prompt.** Read [tool permissions](docs/tools.md#tool-permissions)
+approval prompt.** Read [tool permissions](https://aweis89.github.io/pcode/tools/#tool-permissions)
 before pointing it at anything you care about.
 
 ## Documentation
 
 | Page | What it covers |
 | --- | --- |
-| [Getting started](docs/getting-started.md) | Homebrew and source installs, `-C`, `--print`, shell completion |
-| [Scrollback and transparency](docs/guide/scrollback.md) | Guide: what goes into scrollback, `/tools`, `/diffs` |
-| [A shell for long-running work](docs/guide/shell.md) | Guide: background jobs, watching CI |
-| [Parallel agents](docs/guide/parallel.md) | Guide: worktrees, parallel sub-agents, `/workers` |
-| [Extending pcode](docs/guide/extending.md) | Guide: extensions, skills, settings |
-| [Providers and models](docs/providers.md) | Authentication, supported providers, the model picker, reasoning effort, Claude Code, Meridian, proxies |
-| [Configuration](docs/configuration.md) | `pcode config`, per-repository overrides, trusting repository code, the settings table, syntax styles |
-| [Commands and keys](docs/commands.md) | Slash commands, key bindings, vi mode, tmux newlines, status line, `!command`, the diff and tool inspectors |
-| [Tools](docs/tools.md) | Tool permissions, web search, the browser, code mode |
-| [MCP servers](docs/mcp.md) | Opt-in MCP configuration, OAuth sign-in, deferred tool search |
-| [Working in a repository](docs/workspace.md) | `AGENTS.md`/`CLAUDE.md`, skills as slash commands, one worktree per session |
-| [Sessions and recovery](docs/sessions.md) | Saving, resuming, recalling earlier sessions, checkpoints, retries |
-| [Context, limits and caching](docs/context.md) | Prompt overhead, compaction, output limits, prompt cache notices |
-| [The transcript](docs/transcript.md) | What lands in scrollback: diffs, thinking, errors, command output, `/redraw` |
-| [Conversation tree](docs/conversation-tree.md) | `/tree`: rewinding and forking a conversation |
-| [Side questions](docs/side-questions.md) | `/btw`: asking about the running turn without interrupting it |
+| [Getting started](https://aweis89.github.io/pcode/getting-started/) | Homebrew and source installs, `-C`, `--print`, shell completion |
+| [Scrollback and transparency](https://aweis89.github.io/pcode/guide/scrollback/) | Guide: what goes into scrollback, `/tools`, `/diffs` |
+| [A shell for long-running work](https://aweis89.github.io/pcode/guide/shell/) | Guide: background jobs, watching CI |
+| [Parallel agents](https://aweis89.github.io/pcode/guide/parallel/) | Guide: worktrees, parallel sub-agents, `/workers` |
+| [Extending pcode](https://aweis89.github.io/pcode/guide/extending/) | Guide: extensions, skills, settings |
+| [Providers and models](https://aweis89.github.io/pcode/providers/) | Authentication, supported providers, the model picker, reasoning effort, Claude Code, Meridian, proxies |
+| [Configuration](https://aweis89.github.io/pcode/configuration/) | `pcode config`, per-repository overrides, trusting repository code, the settings table, syntax styles |
+| [Commands and keys](https://aweis89.github.io/pcode/commands/) | Slash commands, key bindings, vi mode, tmux newlines, status line, `!command`, the diff and tool inspectors |
+| [Tools](https://aweis89.github.io/pcode/tools/) | Tool permissions, web search, the browser, code mode |
+| [MCP servers](https://aweis89.github.io/pcode/mcp/) | Opt-in MCP configuration, OAuth sign-in, deferred tool search |
+| [Working in a repository](https://aweis89.github.io/pcode/workspace/) | `AGENTS.md`/`CLAUDE.md`, skills as slash commands, one worktree per session |
+| [Sessions and recovery](https://aweis89.github.io/pcode/sessions/) | Saving, resuming, recalling earlier sessions, checkpoints, retries |
+| [Context, limits and caching](https://aweis89.github.io/pcode/context/) | Prompt overhead, compaction, output limits, prompt cache notices |
+| [The transcript](https://aweis89.github.io/pcode/transcript/) | What lands in scrollback: diffs, thinking, errors, command output, `/redraw` |
+| [Conversation tree](https://aweis89.github.io/pcode/conversation-tree/) | `/tree`: rewinding and forking a conversation |
+| [Side questions](https://aweis89.github.io/pcode/side-questions/) | `/btw`: asking about the running turn without interrupting it |
 
 The same pages build into a browsable site with `make docs-serve`; `make docs`
 checks every page and anchor link.
@@ -89,6 +89,6 @@ make test        # fast suite; real-tmux regressions skipped
 make test-all    # everything, before touching layout, streaming, the editor, or the prompt
 ```
 
-[AGENTS.md](AGENTS.md) has the worktree workflow and the traps worth knowing
+[AGENTS.md](https://github.com/aweis89/pcode/blob/master/AGENTS.md) has the worktree workflow and the traps worth knowing
 before editing. Contributor notes (architecture, dependencies, profiling, prompt
-caching, provider design) live in [`dev/`](dev/), outside the published docs.
+caching, provider design) live in [`dev/`](https://github.com/aweis89/pcode/tree/master/dev), outside the published docs.

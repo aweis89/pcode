@@ -181,6 +181,8 @@ class PreviewApp:
         self.switch_requested: str | None = None
         self.restart_requested = False
         self.host_stopped = False
+        # A command this terminal sent ended the host's session (`/worktree finish`).
+        self.session_over = False
         # `/detach`: leave the host running on exit, which otherwise stops it.
         self.detach_requested = False
         # The host this terminal showed before the current one, for `/switch -`.
@@ -1159,7 +1161,9 @@ class PreviewApp:
 
     def stop_host_on_exit(self) -> None:
         """Quitting (Ctrl+D, `/quit`) ends the host as `/stop` does, unless `/detach` asked."""
-        if self.hosted and not (self.host_stopped or self.detach_requested or self.runtime.lost):
+        if self.hosted and not (
+            self.host_stopped or self.detach_requested or self.session_over or self.runtime.lost
+        ):
             self.stop_host("")
 
     def background_finished(self, entry) -> None:
@@ -1264,8 +1268,17 @@ class PreviewApp:
         else:
             await self.attach_host(entry)
 
+    def session_ended(self) -> None:
+        """The host: a command from this terminal ended the session, so the host is stopping."""
+        self.session_over = True
+        self.running = False
+        if self.prompt_session is not None and self.prompt_session.app.is_running:
+            self.prompt_session.app.exit()
+
     def host_closed(self) -> None:
         """The host this terminal was showing went away (stopped elsewhere, or crashed)."""
+        if self.session_over:
+            return  # Expected: this terminal is already on its way out.
         runtime = self.runtime
         session = runtime.session_id and f" pcode --continue {runtime.session_id} resumes it."
         self.transcript.warning(
@@ -2112,6 +2125,10 @@ class PreviewApp:
                 line = "Stopped the session host."
                 if runtime.session_id:
                     line += f" Continue with: pcode --continue {runtime.session_id}"
+            elif self.session_over:
+                if not runtime.session_id:
+                    return
+                line = f"Continue with: pcode --continue {runtime.session_id}"
             elif runtime.lost:
                 line = f"The session host {runtime.id} had exited."
             else:

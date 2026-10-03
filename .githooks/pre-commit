@@ -1,0 +1,18 @@
+#!/bin/sh
+# Refuse to commit as anyone but this clone's user.email.
+#
+# GIT_AUTHOR_EMAIL and GIT_COMMITTER_EMAIL in the environment beat user.email,
+# so a session started under a directory whose .envrc exports another identity
+# (a work root, say) commits as that identity without a word. That has leaked
+# addresses into this public history before.
+#
+# Set the expected identity once per clone: git config user.email <address>
+want=$(git config --local user.email) || exit 0
+for who in AUTHOR COMMITTER; do
+	got=$(git var "GIT_${who}_IDENT" | sed -E 's/.*<(.*)>.*/\1/')
+	if [ "$got" != "$want" ]; then
+		echo "commit refused: $(echo "$who" | tr A-Z a-z) email is $got, but this repo's user.email is $want." >&2
+		echo "Unset GIT_${who}_EMAIL (probably exported by a .envrc) and retry." >&2
+		exit 1
+	fi
+done

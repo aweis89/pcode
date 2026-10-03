@@ -25,8 +25,8 @@ STATUS_DWELL = 0.6
 # A sub-agent's plan is a window around its active task, like the parent's, but
 # shorter: several delegates share the panel with the parent's own tasks.
 CHILD_PLAN_ROWS = 3
-# Rows for tool work beside the parent's tasks, before any child plans.
-TOOL_ROWS = 3
+# Rows for delegates beside the parent's tasks, before any child plans.
+DELEGATE_ROWS = 3
 # The parent's task window at the default height. With `tasks_max_height`
 # set, the tasks fill whatever budget the tools leave instead.
 TASK_ROWS = 5
@@ -123,12 +123,15 @@ class ToolCall:
 class ToolHistory:
     """Calls still in flight, oldest first. A result removes its call.
 
-    A delegate leaves the same way, taking its plan and its own calls with it:
-    the status row holds its outcome briefly and scrollback keeps it.
+    The two surfaces split the work: the status row reports tool calls, and
+    the task panel lists running delegates with their plans. A delegate
+    leaves when it settles, taking its plan and its own calls with it, and
+    scrollback keeps the record.
     """
 
     calls: list[ToolCall] = field(default_factory=list)
-    # The last call to leave, kept only so the status row can hold it.
+    # The last tool call (never a delegate) to leave, kept only so the status
+    # row can hold it.
     recent: ToolCall | None = None
     # Each running delegate's plan, keyed by its call id.
     plans: dict[str, list[dict]] = field(default_factory=dict)
@@ -150,7 +153,8 @@ class ToolHistory:
                 return
             existing.failed = event.failed
             existing.settled = monotonic()
-            self.recent = existing
+            if existing.event.name != DELEGATE:
+                self.recent = existing
             # A sub-agent's calls leave the way the parent's do: scrollback
             # keeps them under their delegate. A finished delegate takes any
             # still listed, and its plan, with it.
@@ -172,18 +176,22 @@ class ToolHistory:
 
     @property
     def animating(self) -> bool:
-        """Every call on the panel is live, so any of them keeps its clock ticking."""
+        """Every listed call is live, so a delegate's panel row or the status row ticks."""
         return bool(self.calls)
 
     @property
     def active(self) -> ToolCall | None:
         """What the status row above the tasks reports.
 
-        The newest running call, or else the one that just finished, for as
-        long as its dwell lasts. Anything that starts meanwhile wins the row:
-        holding a stale line over live work would be the worse lie.
+        The newest running tool call, or else the one that just finished, for
+        as long as its dwell lasts. Anything that starts meanwhile wins the
+        row: holding a stale line over live work would be the worse lie.
+        Delegates never take it; they have rows of their own on the panel.
         """
-        running = next((c for c in reversed(self.calls) if c.settled is None), None)
+        running = next(
+            (c for c in reversed(self.calls) if c.settled is None and c.event.name != DELEGATE),
+            None,
+        )
         if running is not None:
             return running
         held = self.recent
@@ -194,93 +202,58 @@ class ToolHistory:
 
     @property
     def running(self) -> int:
-        """This agent's calls still in flight, for the status row's `Running N tools`.
+        """This agent's tool calls in flight, for the status row's `Running N tools`.
 
-        A delegate counts once; the calls its sub-agent makes are its own.
+        Delegates are counted by `delegates` instead, and the calls a
+        sub-agent makes are its own.
         """
-        return sum(c.settled is None and not c.event.parent_call_id for c in self.calls)
+        return sum(
+            c.settled is None and not c.event.parent_call_id and c.event.name != DELEGATE
+            for c in self.calls
+        )
 
     @property
-    def background(self) -> list[ToolCall]:
-        """Everything the status row does not already show."""
-        active = self.active
-        return [c for c in self.calls if c is not active]
-
-    def _delegates(self) -> list[ToolCall]:
-        """Delegates that get a panel row.
-
-        Those beside the status row, plus any with a plan even while it holds
-        the status row: otherwise its tasks would vanish every time the
-        sub-agent went back to the model and the delegate took the row back.
-        """
-        active = self.active
-        return [
-            c
-            for c in self.calls
-            if c.event.name == DELEGATE and (c is not active or self.plans.get(c.event.call_id))
-        ]
+    def delegates(self) -> list[ToolCall]:
+        """Every running delegate, oldest first: each keeps its panel row for its whole run."""
+        return [c for c in self.calls if c.event.name == DELEGATE and c.settled is None]
 
     def plan_rows(self) -> int:
         """Rows the running delegates' plans would fill, before any budget."""
         return sum(
-            min(CHILD_PLAN_ROWS, len(self.plans.get(c.event.call_id, [])))
-            for c in self._delegates()
+            min(CHILD_PLAN_ROWS, len(self.plans.get(c.event.call_id, []))) for c in self.delegates
         )
 
     def wanted(self) -> int:
-        """Rows every call and child plan would fill, before any budget."""
-        others = [c for c in self.background if c.event.name != DELEGATE]
-        return len(self._delegates()) + len(others) + self.plan_rows()
+        """Rows the delegates and their plans would fill, before any budget."""
+        return len(self.delegates) + self.plan_rows()
 
     def rows(self, count: int, *, nested: bool = False, icon: str = "⟳"):
         return _tree_rows(self._nodes(count, icon), "" if nested else None)
 
     def _nodes(self, count: int, icon: str) -> list[_PanelNode]:
-        """Delegates first: a running sub-agent must stay addressable and visible.
+        """Running sub-agents, each with a window of its plan beneath it.
 
-        Beneath each goes its plan, then its own calls, nested under its active
-        task the way the parent's calls sit under the parent's. Both are bounded
-        so several delegates cannot crowd each other out.
+        Only delegates get rows here. Ordinary calls, the parent's or a
+        sub-agent's, mostly settle in milliseconds, so listing the ones running
+        beside the status row made rows strobe in and out under the tasks. The
+        status row and its `Running N tools` tally already cover them.
         """
         if count <= 0:
             return []
-        calls = self.background
-        delegates = self._delegates()[:count]
+        delegates = self.delegates[:count]
         remaining = count - len(delegates)
         nodes = []
         for parent in delegates:
-            node = _PanelNode(_call_row(parent))
+            # `✦` stands in for a task icon, in a colour of its own: with a
+            # task's icon in front, a sub-agent would read as one of the
+            # parent's tasks, and as a child of whichever task names it.
+            node = _PanelNode(("class:plan.agent", parent.line()))
             nodes.append(node)
             plan = self.plans.get(parent.event.call_id, [])
-            steps, active = plan_window(plan, min(CHILD_PLAN_ROWS, len(plan), remaining))
+            steps, _ = plan_window(plan, min(CHILD_PLAN_ROWS, len(plan), remaining))
             remaining -= len(steps)
-            children = [c for c in calls if c.event.parent_call_id == parent.event.call_id]
-            children = children[-min(2, remaining) :] if remaining else []
-            remaining -= len(children)
-            child_nodes = [_PanelNode(_call_row(c)) for c in children]
-            for index in steps:
-                step = _PanelNode(plan_row(plan[index], icon))
-                node.children.append(step)
-                if index == active:
-                    step.children = child_nodes
-            if active is None or active not in steps:
-                node.children.extend(child_nodes)
-        if remaining:
-            other = [c for c in calls if not c.event.parent_call_id and c.event.name != DELEGATE]
-            nodes.extend(_PanelNode(_call_row(c)) for c in other[:remaining])
+            node.children = [_PanelNode(plan_row(plan[index], icon)) for index in steps]
         return nodes
-
-
-def _call_row(call: ToolCall) -> tuple[str, str]:
-    """A running call's row.
-
-    A delegate's `✦` stands in for the status icon, and it has a colour of
-    its own: with a task's icon in front, a sub-agent would read as one of
-    the parent's tasks, and as a child of whichever task names it.
-    """
-    if call.event.name == DELEGATE:
-        return "class:plan.agent", call.line()
-    return "class:plan.active", f"⟳ {call.line()}"
 
 
 def plan_window(items: list[dict], count: int) -> tuple[range, int | None]:
@@ -305,26 +278,26 @@ def task_panel_rows(
     active_icon: str,
     max_tasks: int = TASK_ROWS,
 ):
-    """A bounded task viewport, with any concurrent tool work below the active task.
+    """A bounded task viewport, with running delegates below the active task.
 
-    The newest call lives on the status row instead, so this only shows work
-    running alongside it: delegates (with their own plans) and other parallel
-    calls. Keep at least one task visible, even on short panes, and never add
-    headers or empty rows.
+    Each delegate brings a window of its own plan. Tool calls stay on the
+    status row. Keep at least one task visible, even on short panes, and
+    never add headers or empty rows.
     """
     if budget <= 0:
         return []
-    tool_count = min(TOOL_ROWS + tools.plan_rows(), tools.wanted(), max(0, budget - bool(items)))
-    steps, active = plan_window(items, min(max_tasks, len(items), budget - tool_count))
+    room = max(0, budget - bool(items))
+    agent_rows = min(DELEGATE_ROWS + tools.plan_rows(), tools.wanted(), room)
+    steps, active = plan_window(items, min(max_tasks, len(items), budget - agent_rows))
     nodes = []
-    tool_nodes = tools._nodes(tool_count, active_icon)
+    agent_nodes = tools._nodes(agent_rows, active_icon)
     for index in steps:
         node = _PanelNode(plan_row(items[index], active_icon))
         nodes.append(node)
         if index == active:
-            node.children = tool_nodes
+            node.children = agent_nodes
     if active is None or active not in steps:
-        nodes.extend(tool_nodes)
+        nodes.extend(agent_nodes)
     return _tree_rows(nodes)
 
 
