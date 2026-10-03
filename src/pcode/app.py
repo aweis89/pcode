@@ -1419,6 +1419,7 @@ class PreviewApp:
                     self.asides,
                     ask=self.controller.follow_up_aside,
                     check_bridge=self.controller.check_bridge,
+                    stop=self.controller.cancel_asides,
                     selected=latest.id if latest else None,
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,

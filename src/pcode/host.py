@@ -199,6 +199,9 @@ class _Client:
     def stop_jobs(self, job_ids) -> None:
         self.host.controller.stop_jobs(job_ids)
 
+    def cancel_asides(self) -> None:
+        self.host.controller.cancel_asides()
+
     def watch_job(self, job_id) -> None:
         self.host.controller.watch_job(job_id)
 
