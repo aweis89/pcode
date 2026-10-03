@@ -153,8 +153,9 @@ class Palette:
                 "activity.detail": "nodim",
                 "activity.meta": self.muted,
                 # The thinking row under the status row: the model's newest
-                # thought, faded so it never competes with the live phase.
-                "activity.thinking": f"italic {self.muted}",
+                # thought, italic in its own shade so it reads apart from both
+                # the live phase (accent) and the chrome around it (muted).
+                "activity.thinking": f"nodim italic {self.task_heading}",
                 # System work is pcode's own: the badge and accent mark it, and
                 # its queued rows keep an italic detail.
                 "activity.system": self.accent,
