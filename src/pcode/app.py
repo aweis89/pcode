@@ -2446,7 +2446,9 @@ def _select_project_root(argv: list[str]) -> None:
     set_project_root(root if root.is_dir() else Path.cwd())
 
 
-def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
+def _enter_worktree(
+    workspace: Path, requested, *, always: bool = False, base: str | None = None
+) -> tuple[Path, str | None]:
     """Create the session's worktree when asked to, returning (workspace, session id).
 
     `requested` is None (use the `worktree` setting), True (unnamed), or a
@@ -2454,7 +2456,8 @@ def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
     and `git branch` show which ones pcode made; unnamed ones use the session
     ID's prefix, so `pcode -c <prefix>` finds the session. Already inside a
     linked worktree, or outside git, the workspace is left alone rather than
-    nested.
+    nested. `always` (a remote host) makes one regardless, and fails outside
+    git; `base` is the commit or branch it starts from, else the mainline.
     """
     from uuid import uuid4
 
@@ -2463,16 +2466,16 @@ def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
     if requested is None and load_preferences().get("worktree", "off") != "on":
         return workspace, None
     if worktree.main_checkout(workspace) is None:
-        if requested is None:
+        if requested is None and not always:
             return workspace, None
         raise worktree.WorktreeError(
             f"--worktree needs a git repository; {workspace} is not in one."
         )
-    if worktree.is_linked(workspace):
+    if worktree.is_linked(workspace) and not always:
         return workspace, None
     identity = str(uuid4())
     name = requested if isinstance(requested, str) else identity[:8]
-    created = worktree.create(workspace, SESSION_WORKTREE_PREFIX + name)
+    created = worktree.create(workspace, SESSION_WORKTREE_PREFIX + name, base)
     try:
         worktree.run_setup(created, stream=sys.stderr)
     except worktree.WorktreeError:

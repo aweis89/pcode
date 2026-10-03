@@ -26,6 +26,7 @@ import sys
 import time
 from pathlib import Path
 
+from pcode import remote_profile
 from pcode.controller import INTENTS, SESSION_FIELDS, SessionController
 from pcode.error_report import error_message
 from pcode.host_protocol import (
@@ -226,7 +227,8 @@ class _Client:
                 self.host.emit_aside(aside)
 
     def stop(self, keep_worktree: bool = False) -> None:
-        self.host.keep_worktree = bool(keep_worktree)
+        # A remote profile keeps its worktree however the host is stopped.
+        self.host.keep_worktree = bool(keep_worktree) or remote_profile.active() is not None
         self.host.stop()
 
 
@@ -370,6 +372,8 @@ class SessionHost:
         self.tasks: list[asyncio.Task] = []
         # When the host last had a terminal or work; the idle clock starts here.
         self.active_at = time.monotonic()
+        # A remote profile's per-turn wall clock, while a turn runs.
+        self._turn_clock: asyncio.TimerHandle | None = None
 
     @property
     def socket(self) -> Path:
@@ -417,7 +421,9 @@ class SessionHost:
             await controller.warn_meridian_thinking()
             # Optional, and it can hang; the session must not wait for it.
             self.tasks.append(asyncio.create_task(self._refresh_context()))
-            controller.start_mcp_defaults()
+            profile = remote_profile.active()
+            if profile is None or profile.mcp:
+                controller.start_mcp_defaults()
         self.push_state()
         self.start()
 
@@ -622,8 +628,30 @@ class SessionHost:
     def turn_began(self, prompt: str) -> None:
         self.reset_buffer()
         self.update(state="working", last_prompt=prompt, title=self.entry.title or prompt)
+        profile = remote_profile.active()
+        if profile is not None:
+            remote_profile.BUDGET.start()
+            if profile.turn_minutes:
+                self._turn_clock = asyncio.get_running_loop().call_later(
+                    profile.turn_minutes * 60, self.turn_expired
+                )
+
+    def turn_expired(self) -> None:
+        """The remote profile's wall clock ran out: stop the turn and say why."""
+        self._turn_clock = None
+        controller = self.controller
+        task = controller.live_task
+        if task is None or task.done():
+            return
+        self.view.warning(remote_profile.BUDGET.expire())
+        # As Ctrl+C does: commands the turn is waiting on stop with it.
+        controller.set_cancel_policy("stop")
+        task.cancel()
 
     def turn_finished(self) -> None:
+        if self._turn_clock is not None:
+            self._turn_clock.cancel()
+            self._turn_clock = None
         outcome = {"done": "done", "failed": "failed", "cancelled": "cancelled"}.get(
             self.activity.prompt_state, "done"
         )
@@ -689,6 +717,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-save", action="store_true")
     parser.add_argument("--worktree", nargs="?", const=True)
     parser.add_argument("--no-worktree", action="store_true")
+    # JSON from `RemoteProfile.to_json`: an unattended host's fixed limits.
+    parser.add_argument("--remote-profile")
     return parser
 
 
@@ -700,6 +730,11 @@ async def _serve(args: argparse.Namespace) -> None:
     from pcode.worktree import leave_worktree
 
     os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+    profile = (
+        remote_profile.RemoteProfile.from_json(args.remote_profile) if args.remote_profile else None
+    )
+    # Before anything reads it: extensions, the sandbox policy, the agent.
+    remote_profile.activate(profile)
     workspace = args.workspace.resolve()
     entry = HostEntry(
         id=args.id,
@@ -727,6 +762,12 @@ async def _serve(args: argparse.Namespace) -> None:
         entry.session_id = saved.info.id
         prompt = first_prompt(saved.info, saved.directory.parent)
         entry.title = "" if prompt.startswith("(") else prompt
+    elif profile is not None:
+        # Never the shared checkout, even from inside a linked worktree.
+        workspace, session_id = _enter_worktree(
+            workspace, args.worktree or True, always=True, base=profile.base
+        )
+        workspace = workspace.resolve()
     elif not args.no_worktree:
         workspace, session_id = _enter_worktree(workspace, args.worktree)
         workspace = workspace.resolve()
@@ -734,6 +775,8 @@ async def _serve(args: argparse.Namespace) -> None:
     write_entry(entry)
 
     host = SessionHost(entry)
+    # An unattended session's worktree is left for its owner to inspect.
+    host.keep_worktree = profile is not None
     controller = host.controller
     controller.model = args.model
     controller.workspace = workspace

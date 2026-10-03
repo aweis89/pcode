@@ -43,6 +43,7 @@ from pcode.host_protocol import (
     socket_path,
 )
 from pcode.jobs import Job, JobRegistry
+from pcode.remote_profile import RemoteProfile, scrubbed_env
 from pcode.rpc import Peer, decode
 
 
@@ -545,8 +546,13 @@ def spawn_host(
     no_worktree: bool = False,
     fork: bool = False,
     directory: Path | None = None,
+    profile: RemoteProfile | None = None,
 ) -> tuple[str, subprocess.Popen, Path]:
-    """Start a host from this process, so it inherits this terminal's environment."""
+    """Start a host from this process, so it inherits this terminal's environment.
+
+    With a remote `profile` it inherits only the allowlisted part of it, always
+    works in a fresh worktree, and runs under the profile's limits.
+    """
     directory = directory or host_dir()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     identity = uuid4().hex[:8]
@@ -571,13 +577,19 @@ def spawn_host(
         argv += ["--session-dir", str(session_dir)]
     if no_save:
         argv.append("--no-save")
-    if no_worktree:
+    if profile is not None:
+        # The profile always makes a worktree; only its name may be chosen.
+        argv += ["--remote-profile", profile.to_json()]
+        if isinstance(worktree, str):
+            argv += ["--worktree", worktree]
+    elif no_worktree:
         argv.append("--no-worktree")
     elif isinstance(worktree, str):
         argv += ["--worktree", worktree]
     elif worktree:
         argv.append("--worktree")
-    env = {**os.environ, "PCODE_HOST_LOG": str(log), "PCODE_HOST_DIR": str(directory)}
+    inherited = os.environ if profile is None else scrubbed_env(os.environ)
+    env = {**inherited, "PCODE_HOST_LOG": str(log), "PCODE_HOST_DIR": str(directory)}
     fd = os.open(log, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "ab") as output:
         process = subprocess.Popen(

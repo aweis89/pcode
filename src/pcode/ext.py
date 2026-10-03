@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
+from pcode import remote_profile
 from pcode.commands import Command
 from pcode.preferences import SETTINGS, load_preferences, preferences_path, update_preferences
 
@@ -41,6 +42,8 @@ PROJECT_DIR = Path(".pcode") / "extensions"
 # empty `setup` disables it). Keep this the only place they are special.
 BUNDLED_DIR = Path(__file__).with_name("extensions")
 ID_PREFIX = "ext."
+# Forced on, from BUNDLED_DIR, for a remote host (`pcode.remote_profile`).
+SANDBOX = "sandbox"
 # A module declaring `DEFAULT_ENABLED = False` is opt-in: discovered and listed,
 # but `setup` runs only once its name is in `extensions_on`.
 DEFAULT_FLAG = "DEFAULT_ENABLED"
@@ -115,6 +118,9 @@ def discover_extensions(workspace: Path) -> list["Extension"]:
                 continue
             if name not in found:
                 found[name] = Extension(name, path, scope)
+    if remote_profile.active() is not None:
+        # A remote host's guardrail is the bundled one, never a same-named file.
+        found[SANDBOX] = Extension(SANDBOX, BUNDLED_DIR / f"{SANDBOX}.py", "bundled")
     return list(found.values())
 
 
@@ -577,9 +583,18 @@ def load_extensions(
     workspace = workspace.resolve()
     ui = ui or ExtensionUI()
     off, on = name_list("extensions_off"), name_list("extensions_on")
-    return LoadedExtensions(
+    remote = remote_profile.active() is not None
+    if remote:
+        off, on = off - {SANDBOX}, on | {SANDBOX}
+    loaded = LoadedExtensions(
         [
             load_extension(extension, workspace, ui, off, on, session_dir=session_dir)
             for extension in discover_extensions(workspace)
         ]
     )
+    if remote:
+        guard = next(e for e in loaded.extensions if e.name == SANDBOX)
+        if guard.error is not None or guard.disabled is not None:
+            # Running unattended without it is not an option; fail startup.
+            raise RuntimeError(f"The sandbox extension did not load: {guard.state()}")
+    return loaded

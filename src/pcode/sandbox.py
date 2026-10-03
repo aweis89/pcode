@@ -26,7 +26,7 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pcode.preferences import config_dir
@@ -200,6 +200,8 @@ class Policy:
     write: list[Path]
     protected: list[Path]
     deny_read: list[str]
+    # Mach services a sandboxed command may not look up (macOS only).
+    deny_services: list[str] = field(default_factory=list)
 
     @classmethod
     def build(
@@ -208,6 +210,8 @@ class Policy:
         config: dict | None = None,
         grants: Iterable[Path] = (),
     ) -> Policy:
+        from pcode import remote_profile
+
         config = load_config() if config is None else config
         home = config_dir()
         deny = config.get("deny_read")
@@ -217,10 +221,16 @@ class Policy:
                 str(home / "credentials.json"),
                 str(home / "mcp-credentials.json"),
             ]
+        services: list[str] = []
+        # A remote host's additions apply whatever sandbox.json says.
+        if (profile := remote_profile.active()) is not None:
+            deny = [*deny, *profile.deny_read, "~/Library/Keychains"]
+            services = list(remote_profile.KEYCHAIN_SERVICES)
         return cls(
             write=_unique([*base, *(real(entry) for entry in config.get("write", [])), *grants]),
             protected=[real(home)],
             deny_read=[_expand_pattern(str(entry)) for entry in deny],
+            deny_services=services,
         )
 
     # -- decisions -----------------------------------------------------------
@@ -275,6 +285,13 @@ class Policy:
                 _rule(
                     "deny file-read*",
                     [f'(regex #"{glob_regex(pattern)}")' for pattern in self.deny_read],
+                )
+            )
+        if self.deny_services:
+            lines.append(
+                _rule(
+                    "deny mach-lookup",
+                    [f"(global-name {_quote(name)})" for name in self.deny_services],
                 )
             )
         return "\n".join(lines)
