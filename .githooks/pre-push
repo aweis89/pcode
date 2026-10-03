@@ -1,0 +1,20 @@
+#!/bin/sh
+# Refuse to push commits authored or committed under another address than this
+# clone's user.email. pre-commit can't see rebase, cherry-pick or
+# `commit --author`, which take their identity from the environment too.
+want=$(git config --local user.email) || exit 0
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r _ local_sha _ _; do
+	[ "$local_sha" = "$zero" ] && continue
+	# Only commits no remote has yet; others' merged work is already public.
+	bad=$(git log --format='%h %ae %ce' "$local_sha" --not --remotes \
+		| awk -v w="$want" '$2 != w || $3 != w')
+	if [ -n "$bad" ]; then
+		echo "push refused: these commits are not by $want (author, committer):" >&2
+		echo "$bad" >&2
+		echo "Fix with: git rebase -x 'git commit --amend --no-edit --reset-author' <base>" >&2
+		status=1
+	fi
+done
+exit $status
