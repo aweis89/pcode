@@ -133,6 +133,22 @@ def test_completion_replaces_the_trigger_with_a_relative_path(tmp_path):
     )
 
 
+def test_completion_follows_a_workspace_that_moves(tmp_path):
+    # A hosted session learns its worktree only after the prompt is built.
+    main, linked = tmp_path / "main", tmp_path / "linked"
+    main.mkdir()
+    linked.mkdir()
+    (main / "old.py").write_text("x")
+    (linked / "fresh.py").write_text("x")
+    workspace = main
+    completer = FileReferenceCompleter(lambda: workspace)
+    assert [c.display_text for c in completions(completer, "@old")] == ["old.py"]
+
+    workspace = linked
+
+    assert [c.display_text for c in completions(completer, "@fresh")] == ["fresh.py"]
+
+
 def test_a_path_with_spaces_is_quoted(tmp_path):
     build_tree(tmp_path)
     (tmp_path / "design notes.md").write_text("x")
