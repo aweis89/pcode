@@ -85,6 +85,12 @@ def test_note_hangs_wrapped_and_continuation_rows_under_the_text():
     assert stream.getvalue() == "· abcdef\n  ghijkl\n· Rows:\n    a:x\n"
 
 
+def test_empty_note_is_a_blank_row_not_a_lone_mark():
+    stream = StringIO()
+    Transcript(Console(file=stream, width=80, color_system=None)).note("")
+    assert stream.getvalue() == "\n"
+
+
 @pytest.mark.parametrize("width", [1, 2])
 def test_tiny_terminal_note_drops_its_mark(width):
     stream = StringIO()

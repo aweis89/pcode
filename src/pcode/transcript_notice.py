@@ -30,6 +30,9 @@ class Note:
     text: str
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        if not self.text:
+            yield Segment.line()
+            return
         mark = console.get_style("pcode.accent", default="none")
         style = console.get_style("pcode.note", default="none")
         prefix = f"{NOTE_MARK} " if options.max_width > 2 else ""
@@ -39,7 +42,7 @@ class Note:
             pad=False,
         )
         for index, line in enumerate(lines):
-            yield Segment(prefix if index == 0 else " " * len(prefix), mark)
+            yield Segment(prefix, mark) if index == 0 else Segment(" " * len(prefix))
             yield from line
             yield Segment.line()
 
