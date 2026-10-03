@@ -269,8 +269,8 @@ what it is doing it to, and on the right the run's tool count and how long
 this phase has lasted.
 
 ```text
-◜ Thinking                                                    8s
   Tracing the resize path
+◜ Thinking                                                    8s
 ◜ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
 ◜ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
 ◜ ◈ Compacting context ▸ keep tests                           4s
@@ -281,9 +281,10 @@ A spinner means the turn is waiting on that row; background jobs get a static
 clock climbing (`Thinking · 40s`). A call that just finished stays for a
 moment, marked `✓` or `✗`, so a burst of quick calls reads as progress rather
 than flicker. `◈` marks work pcode runs itself, such as compaction.
-The indented line is the model's newest thought, faded on its own row under
-the status row until the turn ends; that is the default `/show-thinking
-status-line` mode (see [thinking](transcript.md#thinking-status-line-or-scrollback)).
+The indented rows above a status row are the model's newest thought, faded, up
+to three of them, kept until the turn ends; that is the default
+`/show-thinking status-line` mode (see
+[thinking](transcript.md#thinking-status-line-or-scrollback)).
 
 Press **Ctrl+O** or use `/show-tasks [on|off]` to hide or show the widget without
 stopping work or clearing tasks. The prompt and queue stay visible. Visibility

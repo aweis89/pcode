@@ -1,4 +1,4 @@
-"""Literal diagnostics with fenced Markdown error logs for terminal scrollback."""
+"""Notices and diagnostics for terminal scrollback."""
 
 import re
 from dataclasses import dataclass
@@ -8,6 +8,43 @@ from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.text import Text
+
+# What marks a line as pcode's own rather than the model's. A different shade
+# alone is not enough: a three-line `/mcp` listing between two replies reads as
+# another paragraph of prose. The dot gives a note a left edge prose never
+# has, in the same vocabulary as the prompt rail and tool markers.
+NOTE_MARK = "\u00b7"
+
+
+@dataclass(frozen=True)
+class Note:
+    """An informational message from pcode: one mark, then a hanging indent.
+
+    Only the first row carries the mark. A note may wrap or span lines (a
+    listing with indented rows, a long URL), and marking each row would break
+    the listing's own indentation and put a dot in the middle of the URL. The
+    hanging indent keeps every row under the text, so the whole note reads as
+    one item.
+    """
+
+    text: str
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        if not self.text:
+            yield Segment.line()
+            return
+        mark = console.get_style("pcode.accent", default="none")
+        style = console.get_style("pcode.note", default="none")
+        prefix = f"{NOTE_MARK} " if options.max_width > 2 else ""
+        lines = console.render_lines(
+            Text(self.text, style=style),
+            options.update(width=max(1, options.max_width - len(prefix))),
+            pad=False,
+        )
+        for index, line in enumerate(lines):
+            yield Segment(prefix, mark) if index == 0 else Segment(" " * len(prefix))
+            yield from line
+            yield Segment.line()
 
 
 @dataclass(frozen=True)

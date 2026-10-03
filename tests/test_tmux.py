@@ -251,28 +251,37 @@ def scrollback(pane):
 SPINNER_ROW = BUSY_FRAMES
 
 
-def thought_row(screen):
-    """The thinking row: indented, directly under the status row."""
-    lines = screen.splitlines()
+def _thought_span(lines):
+    """Indices of the thinking rows: indented, directly above the status row."""
     status = next((i for i, line in enumerate(lines) if line.startswith(SPINNER_ROW)), None)
-    if status is None or status + 1 >= len(lines):
-        return ""
-    row = lines[status + 1]
-    return row.strip() if row.startswith("   ") and row.strip() else ""
+    if status is None:
+        return range(0)
+    start = status
+    while (
+        start
+        and status - start < 3  # ui.THOUGHT_ROWS: never a scrollback line above the panel.
+        and lines[start - 1].startswith("   ")
+        and lines[start - 1].strip()
+    ):
+        start -= 1
+    return range(start, status)
+
+
+def thought_row(screen):
+    """The thinking rows above the status row, joined with newlines."""
+    lines = screen.splitlines()
+    return "\n".join(lines[i].strip() for i in _thought_span(lines))
 
 
 def without_status_row(text):
-    """A capture minus the status row and the thinking row under it: scrollback only."""
+    """A capture minus the status row and the thinking rows above it: scrollback only."""
     lines = text.splitlines()
-    thought = thought_row(text)
-    kept = []
-    for index, line in enumerate(lines):
-        if line.startswith(SPINNER_ROW):
-            continue
-        if thought and index and lines[index - 1].startswith(SPINNER_ROW):
-            continue
-        kept.append(line)
-    return "\n".join(kept)
+    thought = set(_thought_span(lines))
+    return "\n".join(
+        line
+        for index, line in enumerate(lines)
+        if index not in thought and not line.startswith(SPINNER_ROW)
+    )
 
 
 def input_rows(screen):
@@ -1336,7 +1345,7 @@ def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "❯", running=True)
     assert "SAVED_REASONING_TEXT" not in screen  # Off: nowhere.
-    # Status line: its own row under the status row, and not in scrollback.
+    # Status line: its own rows above the status row, and not in scrollback.
     pane("send-keys", "-t", "preview:0.0", "C-t")
     screen = settle(
         pane, lambda screen: thought_row(screen) == "SAVED_REASONING_TEXT", running=True

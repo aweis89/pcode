@@ -89,7 +89,7 @@ from pcode.tool_panel import (
     task_panel_rows,
 )
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
-from pcode.transcript_notice import TranscriptNotice
+from pcode.transcript_notice import Note, TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
 from pcode.workers import Workers
 
@@ -117,6 +117,8 @@ class Palette:
                 "pcode.accent": self.accent,
                 "pcode.brand": f"bold {self.accent}",
                 "pcode.muted": self.muted,
+                # Scrollback notes: italic like the live panel's own notices.
+                "pcode.note": f"italic {self.muted}",
                 "pcode.thinking": f"dim {self.muted}",
                 "pcode.error": "bold red",
                 "pcode.warning": "bold yellow",
@@ -192,10 +194,12 @@ class Palette:
                 "activity.phase": f"nodim {self.accent} bold",
                 "activity.detail": "nodim",
                 "activity.meta": self.muted,
-                # The thinking row under the status row: the model's newest
-                # thought, italic in its own shade so it reads apart from both
-                # the live phase (accent) and the chrome around it (muted).
-                "activity.thinking": f"nodim italic {self.task_heading}",
+                # The thinking rows above the status row: the model's newest
+                # thought, faded like scrollback thinking (`pcode.thinking`) and
+                # italic so it reads as a quote rather than as the turn's phase
+                # (accent) or what it is doing (plain). No hue: the plan
+                # heading's shade would make a thought look like a label.
+                "activity.thinking": f"italic {self.muted}",
                 # System work is pcode's own: the badge and accent mark it, and
                 # its queued rows keep an italic detail.
                 "activity.system": self.accent,
@@ -346,6 +350,7 @@ TERMINAL_THEME = Theme(
         "pcode.accent": "cyan",
         "pcode.brand": "bold cyan",
         "pcode.muted": "default",
+        "pcode.note": "italic default",
         "pcode.thinking": "dim default",
         "pcode.error": "bold red",
         "pcode.warning": "bold yellow",
@@ -409,8 +414,12 @@ STATUS_HOLD_SECONDS = 2.5
 PHASE_WORDS = 3
 # Cells of detail worth more than the status row's tally and clock.
 DETAIL_MIN_CELLS = 16
-# Characters of streamed thinking kept for the status row: its latest line.
+# Characters of streamed thinking kept for the thinking rows: its latest line.
 THINKING_KEEP = 2000
+# Rows the newest thought may wrap to above the status row. A thought is a
+# sentence or two, which one row cut from the front rarely holds whole; more
+# than a few rows and the row stops being a glance.
+THOUGHT_ROWS = 3
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -525,6 +534,24 @@ def tail_cells(text: str, width: int) -> str:
     return "…" + "".join(reversed(kept)).lstrip()
 
 
+def tail_rows(text: str, width: int, rows: int) -> list[str]:
+    """`text` wrapped to `width`, keeping its last `rows`; a cut gets a leading ellipsis."""
+    text = plain(text, limit=None)
+    if width < 1 or rows < 1 or not text:
+        return []
+    console = Console(width=width)
+    wrapped = [
+        row.plain.rstrip()  # Rich keeps the space a row broke at.
+        for row in Text(text).wrap(console, width, overflow="fold", no_wrap=False)
+    ]
+    if len(wrapped) <= rows:
+        return wrapped
+    kept = wrapped[-rows:]
+    # Mark the cut on the first row kept; a full row gives up a cell for it.
+    kept[0] = tail_cells("…" + kept[0], width)
+    return kept
+
+
 # A summary section's title: `**Tracing the resize path**` or `## Tracing...`.
 # One bold run only: `**A** and **B**` is prose with emphasis, not a title.
 THOUGHT_HEADING = re.compile(r"\*\*(?P<bold>[^*]+)\*\*|#{1,6}\s+(?P<hash>.+)")
@@ -621,8 +648,8 @@ class Activity:
     tasks_autohidden: bool = False
     # Inline shortcut hints, such as the key that hides the task list.
     show_hints: bool = True
-    # Where the model's thinking shows: `off`, `status-line` (its own row
-    # under the status row), or `scrollback`. See THINKING_MODES.
+    # Where the model's thinking shows: `off`, `status-line` (its own rows
+    # above the status row), or `scrollback`. See THINKING_MODES.
     thinking_mode: str = "status-line"
     busy: bool = False
     status: str = ""
@@ -686,22 +713,23 @@ class Activity:
             self.thought, self.thought_done = "", False
         self.thought = (self.thought + text)[-THINKING_KEEP:]
 
-    def thought_fragments(self, width: int) -> list[tuple[str, str]]:
-        """The thinking row under the status row, in `status-line` mode.
+    def thought_fragments(self, width: int, rows: int = THOUGHT_ROWS) -> list[tuple[str, str]]:
+        """The thinking rows above the status row, in `status-line` mode.
 
         Kept for the rest of the turn once a thought arrives: the last one
-        usually explains the tool calls that follow it, and a row that came
-        and went with every block would make the editor jump.
+        usually explains the tool calls that follow it, and rows that came
+        and went with every block would make the editor jump. Above the
+        status row rather than under it, so the spinner holds its place as
+        the thought wraps to more or fewer rows.
         """
         if self.thinking_mode != "status-line" or not self.status_shown or width < 3:
             return []
         thought = latest_thought(self.thought)
-        if not thought:
+        if not thought.strip():
             return []
         # Indented past the spinner, so it reads as the phase's own detail.
-        return [
-            ("class:activity.thinking", "  " + tail_cells(plain(thought, limit=None), width - 2))
-        ]
+        kept = tail_rows(thought, width - 2, rows)
+        return [("class:activity.thinking", "  " + row) for row in kept]
 
     def begin_wait(self, label: str) -> Wait:
         """Start a wait that shows a spinner row once it outlasts the grace period."""
@@ -2067,8 +2095,10 @@ class PromptLayout:
         return [("class:activity.group", row)] if row else []
 
     @_per_render
-    def thought_row(self):
-        return self.activity.thought_fragments(self.size().columns - 1)
+    def thought_rows(self):
+        """The newest thought, on fewer rows in a short pane."""
+        rows = min(THOUGHT_ROWS, max(1, self.size().rows // 8))
+        return self.activity.thought_fragments(self.size().columns - 1, rows)
 
     @_per_render
     def aside_rows(self):
@@ -2118,7 +2148,7 @@ class PromptLayout:
         return (
             bool(self.typing_row())
             + self.activity.status_shown
-            + len(self.thought_row())
+            + len(self.thought_rows())
             + len(self.group_rows())
             + len(self.notice_rows())
             + len(self.wait_rows())
@@ -2258,10 +2288,9 @@ class PromptLayout:
             ),
             filter=Condition(lambda: activity.status_shown),
         )
-        # Its own row, so a running tool taking the status row never hides it.
-        thought = ConditionalContainer(
-            _spinner_rows(self.thought_row, 1), filter=Condition(lambda: bool(self.thought_row()))
-        )
+        # Its own rows, so a running tool taking the status row never hides it;
+        # above that row, where it reads as what led to the call under it.
+        thought = self.panel_rows(self.thought_rows)
         plan_frame = Frame(self.plan_body(), height=lambda: len(self.plan_rows()) + 2)
         plan_frame.container.children[0] = self.plan_heading_border()
         plan = ConditionalContainer(
@@ -2282,8 +2311,8 @@ class PromptLayout:
             ),
             filter=Condition(lambda: bool(self.group_rows())),
         )
-        # Directly above the spinner: a notice answers the keystroke that caused it
-        # without ever reaching scrollback, and vanishes on its own.
+        # Above the spinner and the thought: a notice answers the keystroke that
+        # caused it without ever reaching scrollback, and vanishes on its own.
         notice = self.panel_rows(self.notice_rows)
         # This terminal's own wait on the session host, hidden while a turn row covers it.
         waits = self.panel_rows(self.wait_rows)
@@ -2299,8 +2328,8 @@ class PromptLayout:
                 group,
                 commands,
                 notice,
-                current_status,
                 thought,
+                current_status,
                 waits,
                 asides,
                 jobs,
@@ -2976,7 +3005,7 @@ class Transcript:
         The opening banner and what it reports about this session are history,
         not an answer, so a resize must not wipe them.
         """
-        self.print(Text(text, style="pcode.muted"))
+        self.print(Note(text))
 
     def flash(self, text: str) -> None:
         """Answer a keystroke in the live panel instead of in scrollback.
@@ -2994,7 +3023,7 @@ class Transcript:
 
     def note(self, text: str) -> None:
         """Show an informational notice once, without retaining it for redraws."""
-        notice = Text(text, style="pcode.muted")
+        notice = Note(text)
         if self._replay_sink is not None:
             self._replay_sink.append(((notice,), "\n", False))
         elif self.output is not None:
