@@ -328,7 +328,7 @@ def test_status_row_holds_each_line_before_changing(monkeypatch):
 def test_thinking_rows_hold_the_newest_thought_above_the_status_row():
     from rich.cells import cell_len
 
-    from pcode.runtime import TextDelta, Thinking, ThinkingDelta, ToolStarted
+    from pcode.runtime import Message, TextDelta, Thinking, ThinkingDelta, ToolStarted
     from pcode.stream_display import present_stream_event
     from pcode.ui import Activity
 
@@ -352,36 +352,46 @@ def test_thinking_rows_hold_the_newest_thought_above_the_status_row():
         return "\n".join(rows(width))
 
     assert activity.thinking_mode == "status-line" and row() == ""
-    # Untitled text shows its newest line, faded and indented past the spinner.
+    # Untitled text shows its newest line, faded, flush with the spinner.
     feed(ThinkingDelta("The status row"))
     feed(ThinkingDelta(" is empty\n\n"))
     assert activity.thought_fragments(80) == [
-        ("class:activity.thinking", "  The status row is empty")
+        ("class:activity.thinking", "The status row is empty")
     ]
-    # A long line wraps to a few rows and keeps its newest words, cut from the front.
+    # A long line wraps to a few rows and is cut at the end, like skimmed prose.
     feed(ThinkingDelta("so " + "word " * 40 + "newest"))
     assert len(rows(50)) == 3 and all(cell_len(text) <= 50 for text in rows(50))
-    assert rows(50)[0].startswith("  …word") and rows(50)[-1].endswith("newest")
-    assert "…" not in "".join(rows(50)[1:])
+    assert rows(50)[0].startswith("so word") and rows(50)[-1].endswith("…")
+    assert "…" not in "".join(rows(50)[:-1]) and "newest" not in row(50)
     assert all(style == "class:activity.thinking" for style, _ in activity.thought_fragments(50))
     # A short pane gets fewer rows; a wide one needs no cut.
-    assert len(rows(50, 1)) == 1 and rows(50, 1)[0].endswith("newest")
-    assert rows(400) == ["  so " + "word " * 40 + "newest"]
+    assert len(rows(50, 1)) == 1 and rows(50, 1)[0].endswith("…")
+    assert rows(400) == ["so " + "word " * 40 + "newest"]
     # A titled section shows its title, not the prose under it.
     feed(ThinkingDelta("\n\n**Tracing the resize path**\n\nI need to check the replay"))
-    assert row() == "  Tracing the resize path"
-    # Its own row: a running tool takes the status row, not this one.
+    assert row() == "Tracing the resize path"
+    # Its own row: a running tool takes the status row, not this one. The
+    # thought explains the call, so the ended block is held through it.
+    feed(Thinking("done"))
     activity.tools.record(ToolStarted("read_file", "ui.py", "one"))
     assert "Read file" in "".join(t for _, t in activity.status_fragments("⠋", 80))
-    assert row() == "  Tracing the resize path"
-    # An ended block is held, through the answer, until the next replaces it.
-    feed(Thinking("done"))
+    assert row() == "Tracing the resize path"
+    # An empty text part says nothing yet; the answer streaming into
+    # scrollback takes over, and the thought goes at once.
+    feed(TextDelta(""))
+    feed(TextDelta(" \n"))
+    assert row() == "Tracing the resize path"
     feed(TextDelta("Answer"))
-    assert row() == "  Tracing the resize path"
+    assert row() == ""
     feed(Thinking("A whole block, with no deltas"))
-    assert row() == "  A whole block, with no deltas"
+    assert row() == "A whole block, with no deltas"
     feed(ThinkingDelta("Next idea"))
-    assert row() == "  Next idea"
+    assert row() == "Next idea"
+    # A whole message with no deltas clears it too.
+    feed(Message("Answer"))
+    assert row() == ""
+    feed(ThinkingDelta("Again"))
+    assert row() == "Again"
     # The other modes have no row; a new turn starts empty.
     activity.thinking_mode = "scrollback"
     assert row() == ""

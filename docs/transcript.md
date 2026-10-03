@@ -107,11 +107,12 @@ or a bare `/show-thinking` cycles through the modes:
 | `scrollback` | The full thinking, streamed into scrollback in a dim style |
 | `off` | Nothing, and pcode asks the provider for nothing extra |
 
-The thinking rows stay for the rest of the turn once a thought arrives, so a
+The thinking rows stay through the tool calls that follow a thought, so a
 running tool on the status row doesn't hide them, and the last thought usually
-explains the call under it. A long thought keeps its newest words, cut from the
-front; a short terminal gets fewer rows. Where a summary has section titles, as
-OpenAI's do, the rows show the newest title rather than the prose under it.
+explains the call under it. They go as soon as any reply text streams into
+scrollback, including a line written before a tool call. A long thought is cut at the end; a short terminal gets fewer rows.
+Where a summary has section titles, as OpenAI's do, the rows show the newest
+title rather than the prose under it.
 
 Each mode asks the provider for the text that suits it:
 

@@ -313,22 +313,20 @@ def test_thinking_row_prefers_the_newest_section_title(text, shown):
     assert latest_thought(text) == shown
 
 
-def test_tail_rows_keeps_the_newest_rows_and_marks_the_cut():
+def test_head_rows_keeps_the_first_rows_and_marks_the_cut():
     from rich.cells import cell_len
 
-    from pcode.ui import tail_rows
+    from pcode.ui import head_rows
 
-    assert tail_rows("short", 10, 3) == ["short"]
-    assert tail_rows("", 10, 3) == []
-    assert tail_rows("text", 0, 3) == [] and tail_rows("text", 10, 0) == []
+    assert head_rows("short", 10, 3) == ["short"]
+    assert head_rows("", 10, 3) == []
+    assert head_rows("text", 0, 3) == [] and head_rows("text", 10, 0) == []
     words = " ".join(f"w{i:02d}" for i in range(20))  # Wraps to 4 rows of 19 cells.
-    kept = tail_rows(words, 20, 3)
-    assert len(kept) == 3 and kept[-1].endswith("w19")
-    assert kept[0].startswith("…") and all(cell_len(row) <= 20 for row in kept)
-    assert kept == ["…w05 w06 w07 w08 w09", "w10 w11 w12 w13 w14", "w15 w16 w17 w18 w19"]
+    kept = head_rows(words, 20, 3)
+    assert kept == ["w00 w01 w02 w03 w04", "w05 w06 w07 w08 w09", "w10 w11 w12 w13 w14…"]
+    assert all(cell_len(row) <= 20 for row in kept)
     # A full row gives up a cell for the ellipsis rather than overflowing.
-    folded = tail_rows("x" * 50, 10, 2)
-    assert folded == ["…" + "x" * 9, "x" * 10]
+    assert head_rows("x" * 50, 10, 2) == ["x" * 10, "x" * 9 + "…"]
     # A wide character cannot be split: it is dropped whole to make room.
-    wide = tail_rows("漢" * 10, 6, 1)
-    assert cell_len(wide[0]) <= 6 and wide[0].startswith("…")
+    wide = head_rows("漢" * 10, 6, 1)
+    assert cell_len(wide[0]) <= 6 and wide[0].endswith("…")
