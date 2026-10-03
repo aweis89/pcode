@@ -417,8 +417,8 @@ DETAIL_MIN_CELLS = 16
 # Characters of streamed thinking kept for the thinking rows: its latest line.
 THINKING_KEEP = 2000
 # Rows the newest thought may wrap to above the status row. A thought is a
-# sentence or two, which one row cut from the front rarely holds whole; more
-# than a few rows and the row stops being a glance.
+# sentence or two, which one row rarely holds whole; more than a few rows and
+# it stops being a glance.
 THOUGHT_ROWS = 3
 
 
@@ -518,24 +518,8 @@ def _urgent(line: StatusLine) -> bool:
     return line.phase.startswith("Retrying") or (line.settled and line.detail.startswith("✗"))
 
 
-def tail_cells(text: str, width: int) -> str:
-    """The last `width` cells of `text`, marking a cut with a leading ellipsis."""
-    if cell_len(text) <= width:
-        return text
-    if width < 1:
-        return ""
-    kept: list[str] = []
-    cells = 1  # The ellipsis.
-    for char in reversed(text):
-        cells += cell_len(char)
-        if cells > width:
-            break
-        kept.append(char)
-    return "…" + "".join(reversed(kept)).lstrip()
-
-
-def tail_rows(text: str, width: int, rows: int) -> list[str]:
-    """`text` wrapped to `width`, keeping its last `rows`; a cut gets a leading ellipsis."""
+def head_rows(text: str, width: int, rows: int) -> list[str]:
+    """`text` wrapped to `width`, keeping its first `rows`; a cut gets a trailing ellipsis."""
     text = plain(text, limit=None)
     if width < 1 or rows < 1 or not text:
         return []
@@ -546,9 +530,11 @@ def tail_rows(text: str, width: int, rows: int) -> list[str]:
     ]
     if len(wrapped) <= rows:
         return wrapped
-    kept = wrapped[-rows:]
-    # Mark the cut on the first row kept; a full row gives up a cell for it.
-    kept[0] = tail_cells("…" + kept[0], width)
+    kept = wrapped[:rows]
+    # Mark the cut on the last row kept; a full row gives up a cell for it.
+    last = Text(kept[-1] + "…")
+    last.truncate(width, overflow="ellipsis")
+    kept[-1] = last.plain
     return kept
 
 
@@ -713,23 +699,27 @@ class Activity:
             self.thought, self.thought_done = "", False
         self.thought = (self.thought + text)[-THINKING_KEEP:]
 
+    def forget_thought(self) -> None:
+        """Drop the thinking rows: the answer they led to is streaming now."""
+        self.thought, self.thought_done = "", True
+
     def thought_fragments(self, width: int, rows: int = THOUGHT_ROWS) -> list[tuple[str, str]]:
         """The thinking rows above the status row, in `status-line` mode.
 
-        Kept for the rest of the turn once a thought arrives: the last one
-        usually explains the tool calls that follow it, and rows that came
-        and went with every block would make the editor jump. Above the
-        status row rather than under it, so the spinner holds its place as
-        the thought wraps to more or fewer rows.
+        Held through the tool calls that follow a thought, which it usually
+        explains, and gone once the answer streams into scrollback: thinking
+        is the lead-up, not a caption on the result. Above the status row
+        rather than under it, so the spinner holds its place as the thought
+        wraps to more or fewer rows.
         """
         if self.thinking_mode != "status-line" or not self.status_shown or width < 3:
             return []
         thought = latest_thought(self.thought)
         if not thought.strip():
             return []
-        # Indented past the spinner, so it reads as the phase's own detail.
-        kept = tail_rows(thought, width - 2, rows)
-        return [("class:activity.thinking", "  " + row) for row in kept]
+        # Flush with the spinner under it: one block, read top to bottom. Cut
+        # at the end, the way a sentence is skimmed.
+        return [("class:activity.thinking", row) for row in head_rows(thought, width, rows)]
 
     def begin_wait(self, label: str) -> Wait:
         """Start a wait that shows a spinner row once it outlasts the grace period."""

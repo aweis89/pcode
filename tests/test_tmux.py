@@ -252,15 +252,19 @@ SPINNER_ROW = BUSY_FRAMES
 
 
 def _thought_span(lines):
-    """Indices of the thinking rows: indented, directly above the status row."""
+    """Indices of the thinking rows: padded like the status row, directly above it.
+
+    A blank row always separates the panel from scrollback, and the cap is
+    ui.THOUGHT_ROWS, so this never reaches a scrollback line.
+    """
     status = next((i for i, line in enumerate(lines) if line.startswith(SPINNER_ROW)), None)
     if status is None:
         return range(0)
     start = status
     while (
         start
-        and status - start < 3  # ui.THOUGHT_ROWS: never a scrollback line above the panel.
-        and lines[start - 1].startswith("   ")
+        and status - start < 3
+        and lines[start - 1].startswith(" ")
         and lines[start - 1].strip()
     ):
         start -= 1
@@ -1324,7 +1328,7 @@ from pcode.live import AgentRuntime
 
 async def model(messages, info):
     yield {0: DeltaThinkingPart(content="SAVED_REASONING_TEXT\n")}
-    await asyncio.sleep(1)
+    await gate()
     yield "Public answer while thinking is visible\n\n"
     await asyncio.sleep(60)
 
@@ -1337,7 +1341,7 @@ app.run()
 
 
 @pytest.mark.parametrize("pane", [THINKING_SCRIPT], indirect=True)
-def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(pane):
+def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(pane, release):
     def in_scrollback(screen):
         return "SAVED_REASONING_TEXT" in without_status_row(screen)
 
@@ -1353,13 +1357,17 @@ def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(
     assert thought_row(screen) == "SAVED_REASONING_TEXT", screen
     assert not in_scrollback(screen)
     assert input_rows(screen) == 1
-    # Held through the answer: the row outlives its thinking block.
+    # Gone the moment the answer streams: thinking is the lead-up, not a caption.
+    release()
     screen = capture(pane, "Public answer while thinking is visible", running=True)
-    assert thought_row(screen) == "SAVED_REASONING_TEXT", screen
+    assert "SAVED_REASONING_TEXT" not in thought_row(screen), screen
+    assert not in_scrollback(screen)
     # Scrollback: written above, and the row goes.
     pane("send-keys", "-t", "preview:0.0", "C-t")
     screen = settle(pane, in_scrollback, running=True)
-    assert in_scrollback(screen) and not thought_row(screen)
+    # The mode's notice sits where a thought would, padded the same: look for
+    # the thought itself.
+    assert in_scrollback(screen) and "SAVED_REASONING_TEXT" not in thought_row(screen)
     assert input_rows(screen) == 1
     for width, height in ((80, 24), (120, 40)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
