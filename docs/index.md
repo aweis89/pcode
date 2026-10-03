@@ -187,6 +187,20 @@ my email" or "file this in the tracker" possible, and it's also the risky mode:
 the agent can act as every account that browser is signed in to. See
 [the browser](tools.md#browser-per-conversation).
 
+## Built on Pydantic AI
+
+The agent underneath is a [Pydantic AI](https://ai.pydantic.dev/)
+[Harness](https://pydantic.dev/docs/ai/harness/) coder: the same filesystem,
+shell, sub-agent, planning, compaction, MCP and browser capabilities you'd use
+in your own agent. pcode adds the terminal and the parts a library leaves to
+you: MCP servers with OAuth sign-in and deferred tool search, saved sessions you
+can search, fork and ask about, background jobs, a worktree per session,
+observable sub-agents, and subscription sign-in. Any model Pydantic AI supports
+works with `--model` (and so do your Claude Code and ChatGPT subscriptions,
+through their own sign-in flows), and an extension is a Pydantic AI capability,
+so there's nothing pcode does that your own code can't hook into. See
+[extending pcode](guide/extending.md).
+
 ## Make it yours
 
 An extension is one Python file that can add slash commands, tools, guardrails

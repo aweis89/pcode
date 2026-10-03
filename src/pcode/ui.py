@@ -751,12 +751,12 @@ class Activity:
     def displayed_plan(self) -> list[dict]:
         return self.plan if self.plan_preview is None else self.plan_preview
 
-    def plan_rows(self, budget: int, spinner: str):
+    def plan_rows(self, budget: int):
         if not self.tasks_shown:
             return []
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
-        icon = spinner if self.status_shown else "○"
+        icon = "⟳" if self.status_shown else "○"
         # A configured height is room the user asked the tasks to fill.
         max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
         return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
@@ -1732,8 +1732,8 @@ class PromptLayout:
         self.render_cache = None
         self.animation_task = None
         self.preview_body = lru_cache(maxsize=1)(_preview_body)
-        # One spinner for everything live: the status row, the active task, side
-        # questions and waits all show the same frame, so motion only ever means
+        # The status row, side questions and waits share a spinner frame.
+        # Plan steps use a static marker, so motion only ever means
         # "the turn is waiting on this". Who owns the work is the badge and colour.
         self.spinner = Spinner("dots")
         # Every frame is a full layout pass (~2-3ms), so the animation loop alone
@@ -1787,7 +1787,7 @@ class PromptLayout:
                 # The editor box keeps one text row inside its two borders.
                 else max(1, cap - self.task_chrome() - 3)
             )
-        return self.activity.plan_rows(budget, self.spinner_frame())
+        return self.activity.plan_rows(budget)
 
     @_per_render
     def preview_layout(self):
