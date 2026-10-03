@@ -95,6 +95,11 @@ class Palette:
     foreground: str
     selected: str
     task_heading: str
+    # A finished task's tick.
+    success: str
+    # The hue ring for running sub-agents: each takes the first free slot and
+    # keeps it, so its header and plan rows read as one block.
+    agents: tuple[str, str, str]
 
     @cache
     def rich_theme(self) -> Theme:
@@ -145,10 +150,31 @@ class Palette:
                 "plan": self.muted,
                 "plan.heading": f"nodim {self.task_heading} bold",
                 "plan.hint": f"nodim nobold {self.muted}",
-                "plan.active": f"nodim {self.accent} bold",
-                # A running sub-agent's row: its own shade, so it never reads
-                # as one of the tasks it sits among.
-                "plan.agent": f"nodim {self.task_heading}",
+                # Task rows by status, in three weights: the active one is
+                # loud, what is left is muted, and settled work recedes.
+                # `tool_panel.panel_fragments` gives the icon and tree guides
+                # classes of their own, so the colour that says how a task
+                # stands survives a delegate's hue on its text.
+                "plan.pending": self.muted,
+                "plan.in_progress": f"nodim {self.accent} bold",
+                "plan.completed": f"{self.muted} dim",
+                "plan.cancelled": f"{self.muted} dim strike",
+                "plan.blocked": "nodim ansiyellow",
+                # A running sub-agent's row. Its colour comes from its hue.
+                "plan.agent": "nodim",
+                # Colour only. A row's style string names its hue class after
+                # its status class (`tool_panel.plan_row`), so the hue wins on
+                # colour and leaves the status's weight (bold, dim, strike)
+                # alone. It lives outside `plan.`: a `plan.*` class would
+                # re-apply the base `plan` rule, which is `dim` in the
+                # terminal palette, over the status.
+                **{f"agent.hue.{index}": hue for index, hue in enumerate(self.agents)},
+                "plan.icon.pending": self.muted,
+                "plan.icon.in_progress": f"nodim {self.accent} bold",
+                "plan.icon.completed": f"nodim {self.success}",
+                "plan.icon.cancelled": f"{self.muted} dim",
+                "plan.icon.blocked": "nodim ansiyellow bold",
+                "plan.tree": self.muted,
                 "prompt": f"{self.accent} bold",
                 # The live area has three weights. Live: the spinner and the
                 # phase word, the one thing that says the turn is moving.
@@ -235,8 +261,26 @@ class Palette:
 
 
 PALETTES = {
-    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "#c4b5fd"),
-    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "#7c3aed"),
+    "dark": Palette(
+        "#88c0d0",
+        "#8994a6",
+        "#242933",
+        "#e5e9f0",
+        "#384457",
+        "#c4b5fd",
+        "#a3be8c",
+        ("#c4b5fd", "#f5a97f", "#f5bde6"),
+    ),
+    "light": Palette(
+        "#006b80",
+        "#586575",
+        "#edf0f4",
+        "#202630",
+        "#d0e7ef",
+        "#7c3aed",
+        "#2f7d32",
+        ("#7c3aed", "#c2410c", "#be185d"),
+    ),
 }
 
 # `/syntax terminal`: named ANSI colors, so the prompt, plan rows and popup
@@ -245,8 +289,17 @@ PALETTES = {
 # the selected row is reversed for the same reason. `fg:default` keeps the
 # toolkit's own RGB defaults (black popup metadata, grey suggestions) from
 # showing through.
+# Cyan, green and yellow already mean active, done and blocked, which leaves
+# magenta, blue and red for the sub-agents.
 TERMINAL_PALETTE = Palette(
-    "ansicyan", "fg:default dim", "default", "default", "reverse", "ansimagenta"
+    "ansicyan",
+    "fg:default dim",
+    "default",
+    "default",
+    "reverse",
+    "ansimagenta",
+    "ansigreen",
+    ("ansimagenta", "ansiblue", "ansired"),
 )
 
 

@@ -266,13 +266,13 @@ def test_unfinished_task_has_static_active_marker_only_during_live_turn(state, b
     # Resumed, finished, failed, and cancelled turns stay inactive, even if input
     # is queued. Do not rewrite the persisted task's status to change its marker.
     first = activity.plan_rows(10)
-    assert first == [("class:plan.active", "○ Unfinished task")]
+    assert first == [("class:plan.in_progress", "○ Unfinished task")]
     assert items[0]["status"] == "in_progress"
 
     activity.prompt_state = "running"
     for frame in ("⠋", "⠙"):
         assert activity.status_fragments(frame, 80)[0] == ("class:activity.spinner", f"{frame} ")
-        assert activity.plan_rows(10) == [("class:plan.active", "⟳ Unfinished task")]
+        assert activity.plan_rows(10) == [("class:plan.in_progress", "⟳ Unfinished task")]
 
     activity.prompt_state = "done"
     assert activity.plan_rows(10) == first
