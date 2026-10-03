@@ -1154,7 +1154,10 @@ class SessionController:
         Ctrl+C to `cancel` rather than to the draft. A cancelled sign-in ends
         here; only the command loop's own cancellation propagates.
         """
-        task = asyncio.create_task(self.logins.perform_login())
+        # Taken here, not in the task: a Ctrl+C landing before the task's first
+        # step must still consume the request, or the next command would rerun it.
+        source, self.login_requested = self.login_requested, None
+        task = asyncio.create_task(self.logins.perform_login(source))
         self.login_task = task
         self.activity.busy = True
         try:

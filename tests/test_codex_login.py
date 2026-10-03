@@ -30,7 +30,7 @@ def test_login_command_rebuilds_a_codex_conversation_model(monkeypatch):
     monkeypatch.setattr("pcode.agent.codex_model", lambda model: f"rebuilt {model}")
     app.handle("/login openai-codex")
     assert app.controller.login_requested == "openai-codex"
-    asyncio.run(app.controller.logins.perform_login())
+    asyncio.run(app.controller.perform_login())
 
     assert app.controller.login_requested is None
     assert calls == ["login"]
@@ -48,7 +48,7 @@ def test_login_keeps_a_non_codex_conversation_model(monkeypatch):
 
     monkeypatch.setattr(codex_login, "login", fake_login)
     app.handle("/login openai-codex")
-    asyncio.run(app.controller.logins.perform_login())
+    asyncio.run(app.controller.perform_login())
     assert runtime.agent.model == "original"
 
 
@@ -60,7 +60,7 @@ def test_failed_login_reports_without_touching_the_model(monkeypatch):
 
     monkeypatch.setattr(codex_login, "login", fail)
     app.handle("/login openai-codex")
-    asyncio.run(app.controller.logins.perform_login())
+    asyncio.run(app.controller.perform_login())
     assert runtime.agent.model == "original"
     assert "`codex` command was not found" in buffer.getvalue()
 
@@ -90,6 +90,26 @@ def test_ctrl_c_cancels_a_waiting_login_and_frees_the_session(monkeypatch):
     assert not controller.activity.busy
     assert runtime.agent.model == "original"
     assert "OpenAI Codex sign-in cancelled." in buffer.getvalue()
+
+
+def test_ctrl_c_before_the_login_starts_does_not_rerun_it_later(monkeypatch):
+    app, _, _ = make_app("openai-codex:test-model")
+    calls = []
+
+    async def fake_login(**kwargs):
+        calls.append("login")
+
+    monkeypatch.setattr(codex_login, "login", fake_login)
+    app.handle("/login openai-codex")
+    controller = app.controller
+
+    async def scenario():
+        asyncio.get_running_loop().call_soon(controller.cancel)
+        await controller.perform_login()
+
+    asyncio.run(scenario())
+    assert calls == []
+    assert controller.login_requested is None
 
 
 def test_unknown_login_source_shows_usage():
