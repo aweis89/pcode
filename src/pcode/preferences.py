@@ -505,7 +505,7 @@ SETTINGS = {
     "show_thinking": Setting(
         "status-line",
         THINKING_MODES,
-        description="Where the model's thinking shows: its own row under the status row, "
+        description="Where the model's thinking shows: its own rows above the status row, "
         "streamed into scrollback, or nowhere",
     ),
     "editing_mode": Setting(

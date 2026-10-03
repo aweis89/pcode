@@ -2718,6 +2718,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         records = list_sessions(args.session_dir)
         if not records:
             console.note("No saved sessions.")
+        # Rows are plain so the listing can be piped; only the summary is a note.
         root = args.session_dir or session_root()
         freed = 0
         for info in records:
@@ -2726,7 +2727,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 before, after = compact_snapshots(root / info.id)
                 freed += before - after
                 line += f"  {(before - after) / 1_000_000:.0f} MB freed"
-            console.note(line)
+            console.print(Text(line))
         if args.compact:
             console.note(f"Reclaimed {freed / 1_000_000_000:.2f} GB. Open sessions were skipped.")
         return

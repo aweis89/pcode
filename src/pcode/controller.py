@@ -2630,10 +2630,14 @@ class SessionController:
         turn's live row alone and says what it is doing in a notice instead.
         """
         if not self.interactive:
-            for line in job():
-                self.view.note(line)
+            self._report(job())
             return
         self.job_requested = (label, detail, job)
+
+    def _report(self, lines: list[str]) -> None:
+        """Show a job's lines as one note, so its own indentation sets the hierarchy."""
+        if lines:
+            self.view.note("\n".join(lines))
 
     async def perform_job(self) -> None:
         assert self.job_requested is not None
@@ -2652,8 +2656,7 @@ class SessionController:
         except ValueError as error:
             self.view.error(str(error))
         else:
-            for line in lines:
-                self.view.note(line)
+            self._report(lines)
         finally:
             self.activity.finish_prompt(state)
             self.activity.busy = bool(self.activity.queued_prompts)
@@ -2669,8 +2672,7 @@ class SessionController:
         except ValueError as error:
             self.view.error(str(error))
         else:
-            for line in lines:
-                self.view.note(line)
+            self._report(lines)
         finally:
             self.activity.notice = ""
             self.view.redraw()

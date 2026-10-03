@@ -325,7 +325,7 @@ def test_status_row_holds_each_line_before_changing(monkeypatch):
     assert styled(activity.status_fragments("⠋", 80))["activity.phase"] == "Responding"
 
 
-def test_thinking_row_holds_the_newest_thought_under_the_status_row():
+def test_thinking_rows_hold_the_newest_thought_above_the_status_row():
     from rich.cells import cell_len
 
     from pcode.runtime import TextDelta, Thinking, ThinkingDelta, ToolStarted
@@ -345,8 +345,11 @@ def test_thinking_row_holds_the_newest_thought_under_the_status_row():
             event, output=Output(), transcript=None, activity=activity, present=None
         )
 
+    def rows(width=80, limit=3):
+        return [text for _, text in activity.thought_fragments(width, limit)]
+
     def row(width=80):
-        return "".join(text for _, text in activity.thought_fragments(width))
+        return "\n".join(rows(width))
 
     assert activity.thinking_mode == "status-line" and row() == ""
     # Untitled text shows its newest line, faded and indented past the spinner.
@@ -355,10 +358,15 @@ def test_thinking_row_holds_the_newest_thought_under_the_status_row():
     assert activity.thought_fragments(80) == [
         ("class:activity.thinking", "  The status row is empty")
     ]
-    # A long line keeps its newest words, cut from the front.
+    # A long line wraps to a few rows and keeps its newest words, cut from the front.
     feed(ThinkingDelta("so " + "word " * 40 + "newest"))
-    assert cell_len(row(50)) <= 50
-    assert row(50).startswith("  …") and row(50).endswith("newest")
+    assert len(rows(50)) == 3 and all(cell_len(text) <= 50 for text in rows(50))
+    assert rows(50)[0].startswith("  …word") and rows(50)[-1].endswith("newest")
+    assert "…" not in "".join(rows(50)[1:])
+    assert all(style == "class:activity.thinking" for style, _ in activity.thought_fragments(50))
+    # A short pane gets fewer rows; a wide one needs no cut.
+    assert len(rows(50, 1)) == 1 and rows(50, 1)[0].endswith("newest")
+    assert rows(400) == ["  so " + "word " * 40 + "newest"]
     # A titled section shows its title, not the prose under it.
     feed(ThinkingDelta("\n\n**Tracing the resize path**\n\nI need to check the replay"))
     assert row() == "  Tracing the resize path"

@@ -4,6 +4,14 @@ The conversation lives in your terminal's normal scrollback, so you can scroll,
 select, and search it with the terminal or tmux. This page covers what gets
 written there and the settings that control it.
 
+Three kinds of text share the scrollback. Your prompts are quoted behind a `▌`
+rail in the accent color. The model's replies are plain prose in the terminal's
+own text color. pcode's own notes (a model switch, an MCP server coming up, the
+key hints under `/help`, where a session was saved) start with an accent `·` and are
+set in the muted italic shade, so a run of them between two replies reads as
+status rather than as something the model said. A note that wraps or spans
+several lines hangs under its text, with the mark on the first line only.
+
 ## Command previews
 
 Shell tool calls show a compact two-row preview with their result and duration.
@@ -95,14 +103,15 @@ or a bare `/show-thinking` cycles through the modes:
 
 | Mode | Shows |
 | --- | --- |
-| `status-line` (default) | The newest thought, faded, on its own row under the status row |
+| `status-line` (default) | The newest thought, faded, on up to three rows of its own above the status row |
 | `scrollback` | The full thinking, streamed into scrollback in a dim style |
 | `off` | Nothing, and pcode asks the provider for nothing extra |
 
-The thinking row stays for the rest of the turn once a thought arrives, so a
-running tool on the status row doesn't hide it, and the last thought usually
-explains the calls that follow. Where a summary has section titles, as OpenAI's
-do, the row shows the newest title rather than the prose under it.
+The thinking rows stay for the rest of the turn once a thought arrives, so a
+running tool on the status row doesn't hide them, and the last thought usually
+explains the call under it. A long thought keeps its newest words, cut from the
+front; a short terminal gets fewer rows. Where a summary has section titles, as
+OpenAI's do, the rows show the newest title rather than the prose under it.
 
 Each mode asks the provider for the text that suits it:
 
