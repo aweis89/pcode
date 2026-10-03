@@ -805,7 +805,7 @@ def test_aside_browser_enter_reads_a_thread_without_the_list():
             # A second thread does not pull the list in beside the answer being
             # read; Esc brings it, and Enter reads the selected thread full width.
             assert not browser.listing()
-            assert "Esc Back to the questions" in browser.shortcuts()
+            assert "Esc Questions" in browser.hints()
             await send("\x1b", wait=0.6)
             assert browser.listing() and not task.done()
             assert browser.app.layout.has_focus(browser.list)

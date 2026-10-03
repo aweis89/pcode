@@ -468,6 +468,10 @@ class RemoteController:
     def stop_jobs(self, job_ids) -> None:
         self.peer.notify("stop_jobs", job_ids)
 
+    def cancel_asides(self) -> None:
+        # The answers run in the host; this terminal's records only mirror them.
+        self.peer.notify("cancel_asides")
+
     def watch_job(self, job_id) -> None:
         self.peer.notify("watch_job", job_id)
 

@@ -34,6 +34,7 @@ from pcode.copy_ui import Snippet, SnippetPicker, snippets
 from pcode.links import Link, extract_links, open_link, remember_link
 from pcode.links_ui import LinkPicker
 from pcode.popup_ui import (
+    PopupCommand,
     PopupInput,
     RichPane,
     bind_list_paging,
@@ -108,6 +109,11 @@ class AsideBrowser:
 
     Prefix `y` copies the newest answer and prefix `o` opens a link from the
     thread, with the same pickers as `/copy` and `/links`, over the viewer.
+    The editor takes each action as a slash command too: see `commands`.
+
+    `stop` stops every running answer; Ctrl+C does that while one runs, and
+    closes the viewer otherwise. It defaults to cancelling `asides` here, which
+    only works where the questions run in this process.
 
     Enter on the list hides it to read the selected thread full width, and Esc
     brings it back; a viewer opened on a single thread starts that way.
@@ -119,6 +125,7 @@ class AsideBrowser:
         *,
         ask: Callable[[str, str], None] | None = None,
         check_bridge: Callable[[str], object] | None = None,
+        stop: Callable[[], object] | None = None,
         selected: str | None = None,
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
@@ -129,6 +136,7 @@ class AsideBrowser:
         self.asides = asides
         self.ask = ask
         self.check_bridge = check_bridge
+        self.stop_running = stop or asides.cancel
         self.code_theme = code_theme
         self.threads = asides.threads()
         # `selected` names a question; the list selects the thread it is in.
@@ -157,8 +165,9 @@ class AsideBrowser:
                 self.follow_up,
                 home=self.home,
                 title=self.input_title,
-                placeholder="Ask a follow-up about this answer…",
+                placeholder="Ask a follow-up, or / for commands…",
                 shortcuts=shortcuts,
+                commands=self.commands(),
             )
             if ask is not None or check_bridge is not None
             else None
@@ -182,8 +191,12 @@ class AsideBrowser:
                 event.app.exit(result=None)
 
         @keys.add("c-c")
-        def close(event):
-            event.app.exit(result=None)
+        def interrupt(event):
+            # As at the main prompt: stop what is running first, then leave.
+            if self.asides.running:
+                self.stop()
+            else:
+                event.app.exit(result=None)
 
         # Shortcuts are inert while a copy or link picker is over the viewer:
         # one would otherwise act, or move focus, behind it.
@@ -191,21 +204,21 @@ class AsideBrowser:
 
         if ask is not None:
 
-            @shortcuts.add("r", "Follow up", filter=idle)
+            @shortcuts.add("r", "Reply", filter=idle)
             def reply(event):
                 self.input.open(event.app)
 
-        @shortcuts.add("y", "Copy answer", filter=idle)
+        @shortcuts.add("y", "Copy", filter=idle)
         def copy_answer(event):
             self.copy(event.app.output)
 
-        @shortcuts.add("o", "Open a link", filter=idle)
+        @shortcuts.add("o", "Link", filter=idle)
         def open_links(event):
             self.choose_link()
 
         if self.check_bridge is not None:
 
-            @shortcuts.add("s", "Summarize into the conversation", filter=idle)
+            @shortcuts.add("s", "Summarize", filter=idle)
             def summarize(event):
                 if self.bridgeable():
                     thread = self.selected
@@ -216,15 +229,16 @@ class AsideBrowser:
                         submit=lambda text: self.finish(Bridge(thread, "summary", text)),
                     )
 
-            @shortcuts.add("t", "Merge into /tree", filter=idle)
+            @shortcuts.add("t", "Merge to /tree", filter=idle)
             def merge(event):
                 if self.bridgeable():
                     self.finish(Bridge(self.selected, "merge"))
 
-        @shortcuts.add("k", "Stop running", filter=idle)
-        def stop(event):
-            # Same key meaning as in /jobs: stop the work, keep the record.
-            self.asides.cancel()
+        # Same key meaning as in /jobs: stop the work, keep the record. Listed
+        # only while there is something to stop.
+        @shortcuts.add("k", "Stop", filter=idle & Condition(lambda: self.asides.running > 0))
+        def stop_running(event):
+            self.stop()
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
@@ -267,7 +281,6 @@ class AsideBrowser:
                 body,
                 *([self.input] if self.input else []),
                 Label(self.hints),
-                Label(self.shortcuts),
                 Label(shortcuts.summary),
             ]
         )
@@ -277,7 +290,10 @@ class AsideBrowser:
         )
         overlaid = FloatContainer(
             root_container,
-            floats=[Float(ConditionalContainer(picker, Condition(lambda: bool(self.picker))))],
+            floats=[
+                Float(ConditionalContainer(picker, Condition(lambda: bool(self.picker)))),
+                *([self.input.completion_menu()] if self.input else []),
+            ],
         )
         self.app = Application(
             # Opens on the list, never the editor: the viewer can open by itself
@@ -312,23 +328,52 @@ class AsideBrowser:
         return self.input is not None and self.app.layout.has_focus(self.input.area)
 
     def hints(self) -> str:
+        """The keys that matter where focus is, on one short line."""
         if self.editing() and self.input.prompting:
-            return "Enter Summarize (empty: as is) · Ctrl+J Newline · PgUp/PgDn Scroll answer"
+            return "Enter Summarize (empty: as is) · Ctrl+J Newline · Esc Cancel · PgUp/PgDn Scroll"
         if self.editing():
-            return "Enter Send · Ctrl+J Newline · PgUp/PgDn Scroll answer"
-        return "↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"
-
-    def shortcuts(self) -> str:
-        if self.editing() and self.input.prompting:
-            return "Esc Cancel (brings the follow-up draft back) · Tab Focus"
-        if self.editing():
-            where = "list" if self.listing() else "answer"
-            return f"Esc Back to the {where} (keeps the draft) · Tab Focus"
+            return "Enter Send · Ctrl+J Newline · Esc Back · Tab Focus · PgUp/PgDn Scroll"
         if self.listing():
-            return "Tab Focus · Enter Read · Esc Close"
+            return "↑↓ Select · Enter Read · Esc Close · Tab Focus · PgUp/PgDn Page"
         if self.reading and len(self.threads) > 1:
-            return "Tab Focus · Esc Back to the questions · Enter Close"
-        return "Tab Focus · Enter/Esc Close"
+            return "↑↓ Scroll · Esc Questions · Enter Close · Tab Focus · PgUp/PgDn Page"
+        return "↑↓ Scroll · Enter/Esc Close · Tab Focus · PgUp/PgDn Page"
+
+    def commands(self) -> list[PopupCommand]:
+        """What the editor runs instead of asking: the shortcuts' actions, by name."""
+
+        def bridge(kind: str, focus: str) -> None:
+            if not self.bridgeable():
+                # Said once, in the editor's title, beside the draft it keeps.
+                reason, self.notice = self.notice, ""
+                raise ValueError(reason)
+            self.finish(Bridge(self.selected, kind, focus))
+
+        commands = [
+            PopupCommand("/copy", "Copy the newest answer", lambda _: self.copy(self.app.output)),
+            PopupCommand("/links", "Open a link from this thread", lambda _: self.choose_link()),
+        ]
+        if self.check_bridge is not None:
+            commands += [
+                PopupCommand(
+                    "/summarize",
+                    "Summarize into the conversation",
+                    lambda focus: bridge("summary", focus),
+                    argument="[focus]",
+                ),
+                PopupCommand("/merge", "Merge to /tree", lambda _: bridge("merge", "")),
+            ]
+        commands.append(PopupCommand("/stop", "Stop running answers", lambda _: self.stop()))
+        return commands
+
+    def stop(self) -> None:
+        """Stop every running answer, keeping what each said so far."""
+        running = self.asides.running
+        if not running:
+            self.notice = "Nothing is running"
+            return
+        self.stop_running()
+        self.notice = f"Stopping {running} running answer{'s' if running > 1 else ''}"
 
     def bridgeable(self) -> bool:
         """Whether the selected thread can join the conversation now; says why not."""

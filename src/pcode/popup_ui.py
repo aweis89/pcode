@@ -1,9 +1,11 @@
 """Shared terminal-native styling for alternate-screen popups."""
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from io import StringIO
 
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, Filter, has_focus
@@ -14,6 +16,7 @@ from prompt_toolkit.layout import ConditionalContainer, Float, FloatContainer, H
 from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UIControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
+from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
 from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
@@ -37,6 +40,9 @@ _BORDERS = 2
 # Rows a docked editor grows to before it scrolls; the panes above keep the rest.
 INPUT_ROWS_MAX = 6
 _INPUT_PROMPT = "\u203a "
+# A draft whose first word reads as a command name. A path of more than one
+# part such as /etc/hosts does not, so a question opening with one is sent.
+_COMMAND_WORD = re.compile(r"/[a-z-]*")
 
 _NATIVE = "bg:default fg:default noreverse"
 POPUP_STYLE = Style.from_dict(
@@ -403,6 +409,42 @@ def list_pane_height(rows: int = LIST_ROWS_MAX) -> Dimension:
     )
 
 
+@dataclass(frozen=True)
+class PopupCommand:
+    """A slash command typed into a popup's editor instead of a message.
+
+    ``run`` gets whatever followed the name, stripped, and raises
+    ``ValueError`` to refuse, which keeps the draft and says why. ``argument``
+    names what may follow, e.g. ``[focus]``, for the completion menu.
+    """
+
+    name: str
+    help: str
+    run: Callable[[str], None]
+    argument: str = ""
+
+
+class _CommandCompleter(Completer):
+    """Complete the command name while it is the only thing typed."""
+
+    def __init__(self, editor: "PopupInput") -> None:
+        self.editor = editor
+
+    def get_completions(self, document, complete_event):
+        typed = document.text_before_cursor
+        if self.editor.prompting or not typed.startswith("/") or any(c.isspace() for c in typed):
+            return
+        for command in self.editor.commands:
+            if command.name.startswith(typed):
+                # A space after a name that takes text, so typing goes on.
+                yield Completion(
+                    command.name + (" " if command.argument else ""),
+                    start_position=-len(typed),
+                    display=f"{command.name} {command.argument}".strip(),
+                    display_meta=command.help,
+                )
+
+
 class PopupInput:
     """A message editor docked in a popup: type, Enter sends, Esc goes back.
 
@@ -425,6 +467,10 @@ class PopupInput:
 
     Pass the popup's ``shortcuts`` so a waiting leader can switch the editor's
     own Enter and Esc off; they sit on the editor and would outrank it.
+
+    ``commands`` lets the draft name an action instead, e.g. ``/copy``, with a
+    menu that completes the name. Put ``completion_menu()`` in the popup's
+    floats to show it. A ``prompt`` takes its value as typed: no commands.
     """
 
     def __init__(
@@ -435,6 +481,7 @@ class PopupInput:
         title: AnyFormattedText = "Message",
         placeholder: str = "",
         shortcuts: PrefixKeys | None = None,
+        commands: Sequence[PopupCommand] = (),
     ) -> None:
         # Ctrl+J and Shift+Enter arrive as terminal-specific sequences; the
         # main prompt registers them too, but a popup can open without it.
@@ -448,6 +495,7 @@ class PopupInput:
         # Whether Enter sends an empty draft; a prompt can treat it as a default.
         self.allow_empty = False
         self.notice = ""
+        self.commands = tuple(commands)
         # What `prompt` set aside: the draft, title, placeholder, submit and
         # whether empty was allowed.
         self._saved: tuple | None = None
@@ -455,6 +503,8 @@ class PopupInput:
             multiline=True,
             wrap_lines=True,
             focus_on_click=True,
+            completer=_CommandCompleter(self) if self.commands else None,
+            complete_while_typing=True,
             prompt=_INPUT_PROMPT,
             height=self.rows,
             input_processors=[
@@ -468,9 +518,24 @@ class PopupInput:
         self.editing = has_focus(self.area)
         keys = KeyBindings()
 
+        menu_open = Condition(lambda: self.area.buffer.complete_state is not None)
+
         @keys.add("enter")
         def send(event):
+            # The menu closes keeping what is in the draft: Tab or ↑↓ already
+            # wrote the highlighted name there, and a unique start of one is
+            # enough for `command` to run it.
+            self.area.buffer.complete_state = None
             self.send()
+
+        # Tab cycles the menu while it is open, and moves focus otherwise.
+        @keys.add("tab", filter=menu_open)
+        def next_completion(event):
+            self.area.buffer.complete_next()
+
+        @keys.add("s-tab", filter=menu_open)
+        def previous_completion(event):
+            self.area.buffer.complete_previous()
 
         @keys.add("c-j")
         def newline(event):
@@ -482,6 +547,12 @@ class PopupInput:
             # From a prompt it cancels that, bringing the draft back.
             self._restore()
             event.app.layout.focus(self.home() if callable(self.home) else self.home)
+
+        # Added after `leave`, so it wins while the menu is open: Esc closes
+        # the menu first, keeping the draft as it stands.
+        @keys.add("escape", eager=True, filter=menu_open)
+        def close_menu(event):
+            self.area.buffer.complete_state = None
 
         frame = Frame(self.area, title=self._title)
         self.container = HSplit(
@@ -520,13 +591,50 @@ class PopupInput:
         self.notice = ""
         self.open(app)
 
+    def completion_menu(self) -> Float:
+        """The float that shows command completions at the cursor."""
+        return Float(
+            xcursor=True,
+            ycursor=True,
+            content=CompletionsMenu(
+                max_height=len(self.commands) or 1,
+                scroll_offset=1,
+                extra_filter=has_focus(self.area),
+            ),
+        )
+
+    def command(self, text: str) -> Callable[[], None] | None:
+        """What running ``text`` as a command would do; None for a message.
+
+        Refuses, with ``ValueError``, a draft that names a command this
+        editor does not have.
+        """
+        if not self.commands or self.prompting or not text:
+            return None
+        name, *rest = text.split(maxsplit=1)
+        if not _COMMAND_WORD.fullmatch(name):
+            return None
+        # The full name, or any start of exactly one: Enter can beat the menu.
+        found = [command for command in self.commands if command.name == name] or [
+            command for command in self.commands if command.name.startswith(name)
+        ]
+        if len(found) == 1:
+            return lambda: found[0].run(rest[0].strip() if rest else "")
+        if found:
+            raise ValueError(f"{name} could be {' or '.join(c.name for c in found)}")
+        raise ValueError(f"Unknown command {name}; try {' '.join(c.name for c in self.commands)}")
+
     def send(self) -> bool:
-        """Hand the draft to ``submit``; whether it was accepted."""
+        """Hand the draft to ``submit``, or run the command it names; whether accepted."""
         text = self.area.text.strip()
         if not text and not self.allow_empty:
             return False
         try:
-            self.submit(text)
+            command = self.command(text)
+            if command is not None:
+                command()
+            else:
+                self.submit(text)
         except ValueError as error:
             self.notice = str(error)
             return False

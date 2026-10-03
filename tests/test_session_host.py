@@ -530,6 +530,30 @@ def test_an_answer_read_in_one_terminal_is_read_in_every_terminal(tmp_path, host
     asyncio.run(run())
 
 
+def test_a_terminal_stops_side_questions_and_sees_them_settle(tmp_path, host_dir):
+    """The questions run in the host; the terminal's records must follow them to the end."""
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+
+            async def forever(aside):
+                await asyncio.Event().wait()
+
+            host.controller.asides.start("still going?", forever)
+            terminal, _, _ = await attach(host)
+            await until(lambda: terminal.asides.running == 1)
+            terminal.cancel_asides()
+            await until(lambda: host.controller.asides.running == 0)
+            await until(lambda: terminal.asides.running == 0)
+            assert [aside.status for aside in terminal.asides.items] == ["cancelled"]
+            terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
 def test_stopping_an_idle_host_tells_terminals_it_closed_and_nothing_else(tmp_path, host_dir):
     async def run():
         host = await start_host("aaaa1111", tmp_path, Script())

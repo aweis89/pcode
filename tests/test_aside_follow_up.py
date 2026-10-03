@@ -376,3 +376,123 @@ def test_the_viewer_sends_a_follow_up_typed_in_its_editor():
 def test_follow_up_framing_is_only_in_the_question():
     assert framed_follow_up("why?").startswith(FOLLOW_UP_FRAMING)
     assert framed_follow_up("why?").endswith("Question: why?")
+
+
+def test_the_editor_runs_slash_commands_and_completes_their_names(monkeypatch):
+    """A typed /copy acts like Ctrl+Y; a path is still a question; a typo is refused."""
+    from pcode import aside_ui
+    from pcode.aside import Bridge
+
+    copies = []
+    monkeypatch.setattr(
+        aside_ui,
+        "copy_to_clipboard",
+        lambda text, output=None: (copies.append(text), (True, False))[1],
+    )
+
+    async def run():
+        asides = Asides()
+        root = answered("why this file?", "Because the task named it.")
+        asides.items.append(root)
+        asked = []
+
+        with create_pipe_input() as pipe:
+            browser = AsideBrowser(
+                asides,
+                ask=lambda thread, question: asked.append(question),
+                check_bridge=lambda thread: None,
+                input=pipe,
+                output=DummyOutput(),
+            )
+            editor = browser.input
+            task = asyncio.create_task(browser.run())
+
+            async def press(keys, wait=0.1):
+                pipe.send_text(keys)
+                await asyncio.sleep(wait)
+
+            await asyncio.sleep(0.05)
+            await press("\x12")  # Ctrl+R
+            # The menu offers names as soon as "/" starts one.
+            await press("/co")
+            assert [c.text for c in editor.area.buffer.complete_state.completions] == ["/copy"]
+            # Esc closes the menu, staying in the editor with the draft.
+            await press("\x1b", wait=0.6)
+            assert editor.area.buffer.complete_state is None
+            assert browser.editing() and editor.text == "/co"
+            # The start of one name is enough, menu or not.
+            await press("\r")
+            assert copies == ["Because the task named it."]
+            assert browser.notice == "Copied answer"
+            assert editor.text == "" and asked == []
+
+            # Tab walks the menu, writing the name in; Enter runs that one.
+            await press("/")
+            await press("\t")
+            await press("\t")
+            assert editor.text == "/links"
+            await press("\r")
+            assert browser.notice == "No links in this side thread"
+            assert editor.text == "" and asked == []
+
+            # A start shared by several names, or a bare "/", says which it could be.
+            await press("/s\r")
+            assert "/s could be /summarize or /stop" in editor._title()
+            editor.area.text = ""
+            await press("/\r")
+            assert editor.text == "/" and asked == []
+            editor.area.text = ""
+
+            # A path is not a command name, so it is asked as written.
+            await press("/etc/hosts: what is in it?\r")
+            assert asked == ["/etc/hosts: what is in it?"]
+
+            # A name it does not know is refused, and the draft is kept to fix.
+            await press("/bogus\r")
+            assert editor.text == "/bogus"
+            assert "Unknown command /bogus" in editor._title()
+            assert asked == ["/etc/hosts: what is in it?"]
+            editor.area.text = ""
+
+            # What follows /summarize is its focus, and it closes the viewer.
+            await press("/summarize keep the API notes\r")
+            assert await asyncio.wait_for(task, 2) == Bridge(
+                root.thread, "summary", "keep the API notes"
+            )
+
+    asyncio.run(run())
+
+
+def test_ctrl_c_stops_running_answers_before_it_closes_the_viewer():
+    async def run():
+        asides = Asides()
+        running = Aside(question="still going?", answer="So far")
+        asides.items.append(running)
+        stopped = []
+
+        def stop():
+            stopped.append(True)
+            running.settle("cancelled")
+
+        with create_pipe_input() as pipe:
+            browser = AsideBrowser(
+                asides,
+                ask=lambda thread, question: None,
+                stop=stop,
+                input=pipe,
+                output=DummyOutput(),
+            )
+            # Stop is listed only while something runs.
+            assert "Ctrl+K Stop" in browser.prefix_keys.summary()
+            task = asyncio.create_task(browser.run())
+            await asyncio.sleep(0.05)
+            pipe.send_text("\x03")
+            await asyncio.sleep(0.1)
+            assert stopped == [True] and not task.done()
+            assert browser.notice == "Stopping 1 running answer"
+            assert "Stop" not in browser.prefix_keys.summary()
+            pipe.send_text("\x03")
+            assert await asyncio.wait_for(task, 2) is None
+            assert stopped == [True]
+
+    asyncio.run(run())

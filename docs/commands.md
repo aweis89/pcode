@@ -552,7 +552,7 @@ With the default `ctrl` prefix they are:
 
 | Popup | Shortcuts |
 | --- | --- |
-| `/btw` | Ctrl+R follow up · Ctrl+Y copy answer · Ctrl+O open a link · Ctrl+S summarize into the conversation · Ctrl+T merge into `/tree` · Ctrl+K stop running |
+| `/btw` | Ctrl+R reply · Ctrl+Y copy · Ctrl+O link · Ctrl+S summarize · Ctrl+T merge to `/tree` · Ctrl+K stop (or type `/copy`, `/links`, `/summarize`, `/merge`, `/stop` in the follow-up editor) |
 | `/tools` | Ctrl+F search · Ctrl+X failures only · Ctrl+T tool filter · Ctrl+Y copy command · Ctrl+O copy output |
 | `/diffs` | Ctrl+F search the focused pane · Ctrl+S / Ctrl+R next / previous match · Ctrl+V next view |
 | `/resume` | Ctrl+F search · Ctrl+R responses too · Ctrl+G all workspaces · Ctrl+X delete (twice) |

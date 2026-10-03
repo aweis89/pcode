@@ -29,7 +29,8 @@ streams it.
   hidden; **Escape** brings the list back. A viewer that opens on a single
   thread starts full width, and Escape shows the list once a second arrives.
 - **Tab:** move between the question list, the answer pane and the follow-up
-  editor.
+  editor. While the [command menu](#commands) is open, Tab and Shift+Tab move
+  through it instead.
 - **Ctrl+R:** type a [follow-up](#following-up) to the selected answer.
 - **Ctrl+S / Ctrl+T:** [bring the thread into the conversation](#keeping-a-thread),
   as a summary or merged into the tree.
@@ -40,13 +41,33 @@ streams it.
 - **Ctrl+O:** pick a link from the selected thread's questions and answers and
   open it in the browser, as `/links` does for the conversation.
 - **Ctrl+K:** stop every running side question, keeping the records.
-- **Escape / Ctrl+C:** close the popup and restore the editor draft (Escape
-  from a full-width thread first brings the list back). Enter closes it too
-  when there is no list to pick from.
+- **Ctrl+C:** stop the running side questions, as Ctrl+K does; with nothing
+  running, close the popup.
+- **Escape:** close the popup and restore the editor draft (from a full-width
+  thread it first brings the list back). Enter closes it too when there is no
+  list to pick from.
 
-The Ctrl shortcuts work from the list, the answer and the follow-up editor
-alike, and follow the [shortcut prefix](commands.md#shortcut-prefix): with a
-leader such as Ctrl+P, Ctrl+Y becomes Ctrl+P then `y`.
+The Ctrl+R/Y/O/S/T/K shortcuts work from the list, the answer and the follow-up
+editor alike, and follow the [shortcut prefix](commands.md#shortcut-prefix):
+with a leader such as Ctrl+P, Ctrl+Y becomes Ctrl+P then `y`.
+
+### Commands
+
+The follow-up editor also takes those actions as commands, which a menu
+completes as you type `/`. Enter runs the highlighted one, and the start of a
+single name (`/co`) is enough on its own:
+
+| Command | Does |
+| --- | --- |
+| `/copy` | Copy the newest answer, as Ctrl+Y |
+| `/links` | Open a link from the thread, as Ctrl+O |
+| `/summarize [focus]` | Summarize into the conversation, keeping what *focus* says, as Ctrl+S |
+| `/merge` | Merge into `/tree`, as Ctrl+T |
+| `/stop` | Stop running side questions, as Ctrl+K |
+
+A follow-up that starts with a path of more than one part, such as
+`/etc/hosts`, is still sent as a question; one like `/tmp` reads as a command
+name, so put a word before it.
 
 To keep the answers out of the way until you ask for them, turn auto-open off:
 

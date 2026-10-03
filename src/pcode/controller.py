@@ -144,6 +144,7 @@ INTENTS = frozenset(
         "adjust_effort",
         "stop_jobs",
         "watch_job",
+        "cancel_asides",
     }
 )
 QUERIES = frozenset(
@@ -1028,13 +1029,17 @@ class SessionController:
             for task in active:
                 if not task.cancelling():
                     task.cancel()
-        elif stopped := self.asides.cancel():
-            self.view.note(f"Stopped {stopped} side question(s).")
-        else:
+        elif not self.cancel_asides():
             self.activity.busy = False
             # A command that ended the session cancels nothing the user ran.
             if self.running:
                 self.view.cancelled()
+
+    def cancel_asides(self) -> int:
+        """Stop the running side questions alone; a running turn carries on."""
+        if stopped := self.asides.cancel():
+            self.view.note(f"Stopped {stopped} side question(s).")
+        return stopped
 
     def take_steering(self) -> list[str]:
         """The runtime's hook: steering messages for the next model request."""
@@ -2980,7 +2985,9 @@ class SessionController:
             saved = getattr(self.runtime, "session", None)
             if saved is not None and (saved.directory / "errors.log").exists():
                 self.view.note(f"Diagnostics: {saved.directory / 'errors.log'}")
-        self.view.redraw()
+        # Not just a redraw: an attached terminal mirrors the status, and would
+        # otherwise count a stopped or failed question as running forever.
+        self.view.aside_changed(aside)
 
     async def aside(self, argument: str) -> None:
         """`/btw [$MODEL[+EFFORT] | +EFFORT ...] QUESTION` asks beside the turn.
