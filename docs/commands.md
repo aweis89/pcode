@@ -253,15 +253,14 @@ Editor history is kept in memory only.
 
 ## Tasks/Tools widget
 
-Tasks and running tool calls share one compact widget above the editor. Task
-rows show status icons and keep the active item in view. Running tool calls
-appear beneath the active task with tree guides (`├──`, `└──`, `│`); with no
-active task, they appear unparented. The newest running call is shown in the
-status row just above the widget instead of being repeated inside it. Each row
-shows a status icon, tool name, elapsed time, and a truncated path or command.
-A call leaves the widget when it finishes and gets its line in
-[scrollback](transcript.md) instead; calls still running when a turn ends are
-dropped from the widget.
+Tasks and running sub-agents share one compact widget above the editor. Task
+rows show status icons and keep the active item in view. Running
+[sub-agents](#delegated-sub-agents) appear beneath the active task with tree
+guides (`├──`, `└──`, `│`); with no active task, they appear unparented.
+Tool calls never get rows here: most finish in milliseconds, so rows for them
+would flicker in and out. The status row just above the widget names the
+newest running call and counts the rest (`Running 3 tools`). A finished call
+gets its line in [scrollback](transcript.md).
 
 ![A turn three steps into a five-step plan: done steps ticked, the test run in progress with its shell call in the status row, the last step still pending](assets/screenshots/tasks.svg)
 
@@ -307,7 +306,7 @@ get the room first and the editor keeps at least one text row, so a long plan
 shows more steps while a long draft scrolls inside the editor. Unset (the
 default), the widget takes at most 10 rows or half the screen, whichever is
 smaller, and the editor grows into what's left. In small panes the widget
-shrinks further, keeping the active task and newest calls; an empty widget is
+shrinks further, keeping the active task and its sub-agents; an empty widget is
 hidden.
 
 Task additions and status changes show up as soon as the model starts streaming
@@ -323,12 +322,14 @@ A running `delegate_task` has its own row, starting with `✦` instead of a stat
 icon and drawn in its own color, so it never reads as one of your tasks. It
 shows the agent, elapsed time, phase, and the purpose the model gave (or the
 start of its assignment). The phase is `Waiting for model`, `Thinking`,
-`Working` (one of its tools is running), or `Responding`. The status row reads
-`Done` or `Failed` for a moment once it finishes, unless another call takes the
-row.
+`Working` (one of its tools is running), or `Responding`. The row stays for the
+sub-agent's whole run and leaves when it finishes; scrollback records whether it
+was done or failed. While nothing else is running, the status row reads
+`Waiting for 2 sub-agents`, and names the newest one when the widget is hidden.
 
 A sub-agent that plans shows up to three of its tasks beneath it, centered on
-its active task, with its running tool calls nested the same way. Its plan is
+its active task, and they update as it works. Its own tool calls show on the
+status row, like yours, rather than in the tree. Its plan is
 separate from yours: never saved and never merged into your plan, and it leaves
 with the delegate. The built-in worker always plans; an extension's delegate can
 opt in (see "Sub-agents" in pcode's extension guide).
@@ -338,7 +339,6 @@ opt in (see "Sub-agents" in pcode's extension guide).
 └── ✦ Worker · 12.4s · Working · Investigate the retry path
     ├── ✓ Read the retry code
     ├── * Reproduce the failure
-    │   └── ⟳ Run shell · 1.2s · pytest -q tests/test_login.py
     └── ○ Report back
 ```
 

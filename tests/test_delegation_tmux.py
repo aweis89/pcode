@@ -42,13 +42,13 @@ PreviewApp(model="test:local", runtime=Runtime()).run()
 
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
-def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
+def test_delegate_stays_visible_without_its_calls_through_resize_and_cancel(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "src/auth.py", running=True)
     assert "Explorer" in screen
-    # The newest child owns the status row; the delegate and its other child stay boxed.
-    assert "│└── ⟳ Search" in screen
+    # The newest child call owns the status row; its other call gets no row.
+    assert "⟳ Search" not in screen
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width, height in ((40, 14), (100, 32), (60, 20)):
         resize(pane, "resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
@@ -56,8 +56,8 @@ def test_delegate_stays_visible_with_nested_children_resize_and_cancel(pane):
         lines = screen.splitlines()
         top = max(i for i, line in enumerate(lines) if line.startswith("┌─ Tools"))
         assert "✦ Explorer" in lines[top + 1]
-        assert lines[top + 2].startswith("│└── ⟳ Search")
-        assert lines[top + 3].startswith("├")
+        assert lines[top + 2].startswith("├")
+        assert "Search" not in screen
         assert input_rows(screen) == 1
         assert "keep draft" in screen
     # The draft absorbs the first Ctrl+C; the second one reaches the run.
@@ -85,7 +85,8 @@ def test_task_tree_guides_survive_resize_at_each_depth(pane):
         assert "Main task" in screen
         assert "│└── ✦ Explorer" in screen
         assert "│    ├── ✓ Inspect" in screen
-        assert "│    │   └── ⟳ Search" in screen
+        assert "│    ├── ⟳ Work" in screen
         assert "│    └── ○ Validate" in screen
+        assert "Search" not in screen
         assert "keep draft" in screen
         assert input_rows(screen) == 1

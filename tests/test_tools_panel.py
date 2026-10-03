@@ -31,7 +31,9 @@ def test_restated_start_updates_in_place_and_the_newest_call_owns_the_status_row
     assert "reading" in history.active.line()
     history.record(ToolStarted("grep", "pattern", "second"))
     assert history.active.event.call_id == "second"
-    assert [call.event.call_id for call in history.background] == ["first"]
+    # The older call still counts toward `Running N tools`, but gets no row.
+    assert history.running == 2
+    assert history.rows(5) == []
 
 
 def test_settled_calls_do_not_linger_in_the_panel():
@@ -79,16 +81,17 @@ def test_a_wait_row_names_its_job_and_the_command_that_job_runs():
 @pytest.mark.parametrize("width", [1, 8, 24, 80])
 def test_panel_rows_are_cell_bounded_and_controls_cannot_change_layout(width):
     history = ToolHistory()
-    history.record(ToolStarted("read_file", "界e\u0301🙂\n\x1b[2J" * 20, "one"))
-    history.record(ToolStarted("run_command", "running", "two", command="pytest -q"))
+    noisy = "界e\u0301🙂\n\x1b[2J" * 20
+    history.record(ToolStarted("delegate_task", "", "one", agent="worker", task=noisy))
+    history.record(ToolStarted("delegate_task", "", "two", agent="reviewer", task="Review"))
     history.record(ToolStarted("grep", "pattern", "three"))
     fragments = panel_fragments(history.rows(5, nested=True), width)
     lines = "".join(text for _, text in fragments).splitlines()
-    # The newest call belongs to the status row, leaving two background rows.
+    # Both sub-agents get rows; the plain call belongs to the status row.
     assert len(lines) == 2
     assert all(cell_len(line) <= width for line in lines)
     assert "\x1b" not in "".join(lines)
-    assert all(style == "class:plan.active" for style, _ in fragments)
+    assert all(style == "class:plan.agent" for style, _ in fragments)
 
 
 def test_planning_calls_never_reach_the_panel():
@@ -238,56 +241,31 @@ def test_resume_leaves_no_stale_running_tools(tmp_path):
         saved.close()
 
 
-def test_concurrent_tools_follow_active_task_without_headers_or_empty_rows():
+@pytest.mark.parametrize("status", ["pending", "in_progress", "blocked"])
+def test_parallel_tool_calls_never_get_task_panel_rows(status):
+    """Fast calls would strobe in and out; the status row and its tally cover them."""
     history = ToolHistory()
     history.record(ToolStarted("read_file", "example.py", "one"))
     history.record(ToolStarted("grep", "pattern", "status-row"))
+    history.record(ToolStarted("read_file", "child.py", "x:one", parent_call_id="x"))
     items = [
         {"id": "one", "content": "Inspect", "status": "completed"},
-        {"id": "two", "content": "Implement", "status": "in_progress"},
-        {"id": "three", "content": "Validate", "status": "pending"},
+        {"id": "two", "content": "Implement", "status": status},
     ]
+    icon = "⟳" if status == "in_progress" else {"pending": "○", "blocked": "!"}[status]
     text = [text for _, text in task_panel_rows(items, history, 10, "⟳")]
-    assert text[:2] == ["✓ Inspect", "⟳ Implement"]
-    assert text[2].startswith("└── ⟳ Read file") and text[2].endswith("example.py")
-    assert text[3] == "○ Validate"
-    items[1]["status"] = "completed"
-    items[2]["status"] = "in_progress"
-    assert [text for _, text in task_panel_rows(items, history, 10, "⟳")][-2] == "⟳ Validate"
-    history.clear()
-    assert len(task_panel_rows(items, history, 10, "⟳")) == 3
+    assert text == ["✓ Inspect", f"{icon} Implement"]
     assert task_panel_rows([], history, 10, "⟳") == []
 
 
-@pytest.mark.parametrize("status", ["pending", "blocked"])
-def test_without_active_task_tools_are_root_rows_not_children_of_inactive_task(status):
-    history = ToolHistory()
-    history.record(ToolStarted("read_file", "example.py", "one"))
-    history.record(ToolStarted("grep", "pattern", "status-row"))
-    items = [{"id": "one", "content": "A task", "status": status}]
-    style, text = task_panel_rows(items, history, 10, "⟳")[-1]
-    assert style == "class:plan.active"
-    assert text.startswith("⟳ Read file") and text.endswith("example.py")
-    assert task_panel_rows([], history, 10, "⟳")[0][1] == text
-
-
 @pytest.mark.parametrize("budget", [1, 2, 4, 6, 10])
-def test_shared_task_tool_budget_keeps_active_item_and_oldest_calls_visible(budget):
+def test_running_tool_calls_leave_the_whole_budget_to_the_tasks(budget):
     history = ToolHistory()
     for i in range(10):
         history.record(ToolStarted("read_file", f"file_{i}.py", str(i)))
     items = [{"id": str(i), "content": f"Task {i}", "status": "pending"} for i in range(12)]
     items[8]["status"] = "in_progress"
-    lines = task_panel_rows(items, history, budget, "⟳")
-    assert len(lines) <= budget
-    text = [text for _, text in lines]
-    active = text.index("⟳ Task 8")
-    count = min(3, budget - 1)
-    assert sum("Read file ·" in line for line in text) == count
-    children = text[active + 1 : active + 1 + count]
-    assert all(line.startswith("├── ⟳ Read file") for line in children[:-1])
-    if children:
-        assert children[-1].startswith("└── ⟳ Read file")
-    if count:
-        assert text[active + 1].endswith("file_0.py")
-    assert all("Tasks ·" not in line and "Tools" not in line for line in text)
+    text = [text for _, text in task_panel_rows(items, history, budget, "⟳")]
+    assert len(text) == min(budget, 5)
+    assert "⟳ Task 8" in text
+    assert not any("Read file" in line for line in text)
