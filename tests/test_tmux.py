@@ -117,7 +117,8 @@ def pane(request, tmp_path):
     # it up front or the launch prompt blocks the pane. Panes capture the screen
     # the moment a marker shows and expect scrollback to be complete at that
     # instant, so paced scrollback is off; its own test turns it on. Grouping
-    # is off as in conftest: these panes assert on per-call summary lines.
+    # and hints are off as in conftest: these panes assert on per-call summary
+    # lines and on the exact footer and task heading.
     config.joinpath("preferences.json").write_text(
         json.dumps(
             {
@@ -125,6 +126,7 @@ def pane(request, tmp_path):
                 "project_extensions": "on",
                 "paced_scrollback": "off",
                 "group_tools": "off",
+                "show_hints": "off",
             }
         )
     )

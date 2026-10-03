@@ -57,6 +57,11 @@ def key_label(key: str) -> str:
     return key.upper()
 
 
+def compact_label(label: str) -> str:
+    """A shortcut label short enough for an inline hint: Ctrl+S reads ^S."""
+    return label.replace("Ctrl+", "^")
+
+
 def configured_prefix() -> str:
     return load_preferences().get("key_prefix", SETTINGS["key_prefix"].default)
 
