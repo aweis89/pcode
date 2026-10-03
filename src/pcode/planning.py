@@ -8,15 +8,15 @@ from pydantic_ai_harness.planning import Planning, render_plan
 from pcode.meridian_reminders import PLAN_TAG, append_reminder, last_reminder
 from pcode.tool_display import PLAN_TOOLS
 
-# Replaces Harness's default guidance. That text keys the plan on "multi-step
-# work" and never says anyone sees it, so the model treats a plan as overhead
-# and argues most tasks out of it, leaving the plan panel empty. This names the
-# reader, sets a threshold the model can judge before it starts (lookups are
-# out however many reads they take), asks for outcome-level steps so progress
-# is cheap to report, and says what the plan should look like when a turn ends.
+# Replace Harness's "multi-step work" threshold with default use for visible
+# progress, including small tasks and investigations. Say to create the plan
+# early: maintenance rules alone leave creating one optional.
 GUIDANCE = (
-    "You have a planning tool, `write_plan`. The user sees the plan as a live checklist "
-    "of what you are doing, what is done, and what is left. "
+    "Use `write_plan` by default when working on a request. The plan is the user's "
+    "live checklist of what you are doing, what is done, and what is left—not just "
+    "a tool for organizing complex work. Small tasks and investigations count, even "
+    "if the plan has only one step. Create it early and revise it as you learn; "
+    "you do not need to know the whole solution first. "
     "Keep it truthful: one step `in_progress` while work is underway, "
     "and when a step finishes, one `update_task_statuses` call that completes it "
     "and starts the next. Use `add_task` for a step you discover midway; "
