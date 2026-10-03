@@ -3,9 +3,8 @@
 from dataclasses import dataclass
 
 from pydantic_ai import CapabilityEvent
-from pydantic_ai_harness.planning import Planning, render_plan
+from pydantic_ai_harness.planning import Planning
 
-from pcode.meridian_reminders import PLAN_TAG, append_reminder, last_reminder
 from pcode.tool_display import PLAN_TOOLS
 
 # Replace Harness's "multi-step work" threshold with default use for visible
@@ -63,29 +62,16 @@ class IdentifiedPlanning(Planning):
     subtasks should pass its own `guidance`, as upstream's `tools` docs already advise.
     """
 
+    # Tool results already report changes; read_plan retrieves state when needed.
+    inject: bool = False
+
     def __post_init__(self):
         # An explicit `descriptions` still wins per tool.
         self.descriptions = {"write_plan": WRITE_PLAN_DESCRIPTION, **(self.descriptions or {})}
 
-    async def before_model_request(self, ctx, request_context):
-        if self.inject:
-            items = await self._read_plan(ctx)
-            text = render_plan(items) if items else "No active plan."
-            # Don't inject an empty plan until there is an earlier reminder to clear.
-            if items or last_reminder(request_context.messages, PLAN_TAG):
-                append_reminder(
-                    request_context,
-                    PLAN_TAG,
-                    f"{PLAN_TAG}\nCurrent plan (supersedes earlier plan reminders):\n"
-                    f"{text}\n</plan-reminder>",
-                )
-        return request_context
-
-    async def wrap_model_request(self, ctx, *, request_context, handler):
-        # Upstream appends an ephemeral reminder here. Removing it on the next
-        # request invalidates the newly cached tail. Persist changes in the
-        # before hook instead, without moving explicit cache markers in history.
-        return await handler(request_context)
+    @classmethod
+    def from_spec(cls, *, inject: bool = False, **kwargs):
+        return super().from_spec(inject=inject, **kwargs)
 
     def get_instructions(self):
         # As upstream: None means the default, "" drops it. The ID note always stays.

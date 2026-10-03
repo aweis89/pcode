@@ -185,13 +185,14 @@ def test_planning_guidance_requires_early_default_use(tmp_path, instruction):
 def test_created_plan_exposes_ids_for_atomic_status_updates(tmp_path):
     import re
 
-    from pydantic_ai.messages import ToolReturnPart
+    from pydantic_ai.messages import ToolReturnPart, UserPromptPart
 
     from pcode.agent import create_coder
     from pcode.planning import IdentifiedPlanning
 
     planning = next(c for c in create_coder(tmp_path).capabilities if isinstance(c, Planning))
     assert isinstance(planning, IdentifiedPlanning)
+    assert planning.inject is False
     assert "not task IDs" in planning.get_instructions()
     # pcode's guidance replaces Harness's "multi-step work" trigger everywhere the model sees it.
     assert "live checklist" in planning.get_instructions()
@@ -206,6 +207,12 @@ def test_created_plan_exposes_ids_for_atomic_status_updates(tmp_path):
     async def model(messages, info):
         nonlocal requests
         requests += 1
+        assert [
+            part.content
+            for message in messages
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+        ] == ["Work"]
         if requests == 1:
             yield {
                 0: DeltaToolCall(

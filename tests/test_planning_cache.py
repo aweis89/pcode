@@ -1,8 +1,7 @@
-"""Plan updates are durable history, not a mutable request suffix."""
+"""Planning leaves message history alone; tools expose the stored state."""
 
 import asyncio
 import json
-from types import SimpleNamespace
 
 import httpx2
 import pytest
@@ -12,9 +11,10 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
@@ -109,7 +109,7 @@ def test_codex_wire_prefix_survives_plan_changes_and_resume():
                 @agent.tool_plain
                 async def probe() -> str:
                     # First tool leaves the plan unchanged; subsequent ones
-                    # update, then clear it. Old snapshots must remain intact.
+                    # update, then clear it. None should inject plan reminders.
                     if len(bodies) == 2:
                         await store.set_items([PlanItem(id="second", content="Changed task")])
                     elif len(bodies) == 3:
@@ -132,80 +132,105 @@ def test_codex_wire_prefix_survives_plan_changes_and_resume():
             assert after["instructions"] == before["instructions"]
             assert after["tools"] == before["tools"]
         text = json.dumps(bodies[-1]["input"])
-        assert text.count("<plan-reminder>") == 3
-        assert "No active plan." in text
+        assert "<plan-reminder>" not in text
+        assert "Changed task" not in text
         assert "prompt_cache_breakpoint" not in json.dumps(bodies)
 
     asyncio.run(run())
 
 
-def test_unchanged_plan_adds_no_reminder_across_runs():
-    """Pydantic AI merges resumed requests and drops application metadata, so
-    deduplication must read the sent text, not a marker stored on the message."""
-
+def test_plan_changes_add_no_reminders_across_runs():
     async def run():
         store = InMemoryPlanStore()
-        await store.set_items([PlanItem(id="first", content="First task")])
+        history = []
+        prompts = []
 
         async def model(messages, info):
-            return ModelResponse(parts=[TextPart("ok")])
-
-        agent = Agent(FunctionModel(model), capabilities=[IdentifiedPlanning(store=store)])
-
-        def reminders(messages):
-            return sum(
-                content.startswith("<plan-reminder>")
+            assert [
+                part.content
                 for message in messages
                 for part in message.parts
-                if isinstance(content := getattr(part, "content", None), str)
-            )
+                if isinstance(part, UserPromptPart)
+            ] == prompts
+            return ModelResponse(parts=[TextPart("ok")])
 
-        async with agent:
-            history = (await agent.run("one")).all_messages()
-        assert reminders(history) == 1
-        assert not any(message.metadata for message in history)
-        async with agent:
-            history = (await agent.run("two", message_history=history)).all_messages()
-        assert reminders(history) == 1
-        await store.set_items([PlanItem(id="second", content="Changed task")])
-        async with agent:
-            history = (await agent.run("three", message_history=history)).all_messages()
-        assert reminders(history) == 2
+        for items in (
+            [],
+            [PlanItem(id="first", content="First task")],
+            [PlanItem(id="second", content="Changed task")],
+            [],
+        ):
+            await store.set_items(items)
+            prompts.append(f"Turn {len(prompts)}")
+            # Recreate the capability and round-trip history as on saved resume.
+            agent = Agent(FunctionModel(model), capabilities=[IdentifiedPlanning(store=store)])
+            async with agent:
+                result = await agent.run(prompts[-1], message_history=history)
+            history = ModelMessagesTypeAdapter.validate_json(
+                ModelMessagesTypeAdapter.dump_json(result.all_messages())
+            )
 
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("inject", [True, False])
-def test_plan_deduplication_follows_branch_history(inject):
+@pytest.mark.parametrize("from_spec", [False, True])
+def test_read_plan_recovers_state_without_reminders_or_old_history(from_spec):
+    """After history loss, the existing read tool still exposes the store and IDs."""
+
     async def run():
         store = InMemoryPlanStore()
-        capability = IdentifiedPlanning(store=store, inject=inject)
-        context = ModelRequestContext(
-            model=SimpleNamespace(system="anthropic"),
-            messages=[ModelRequest(parts=[UserPromptPart(content="Start")])],
-            model_settings=None,
-            model_request_parameters=ModelRequestParameters(),
-        )
-        # Empty plans do not add a reminder to a new session.
-        await capability.before_model_request(None, context)
-        assert len(context.messages) == 1
-        await store.set_items([PlanItem(id="first", content="First task")])
-        await capability.before_model_request(None, context)
-        first_branch = ModelMessagesTypeAdapter.dump_json(context.messages)
-        await capability.before_model_request(None, context)
-        assert ModelMessagesTypeAdapter.dump_json(context.messages) == first_branch
-        await store.set_items([PlanItem(id="second", content="Changed task")])
-        await capability.before_model_request(None, context)
-        # Switching back to a branch without the latest snapshot must emit it,
-        # even though this capability already emitted it on another branch.
-        context.messages = ModelMessagesTypeAdapter.validate_json(first_branch)
-        await capability.before_model_request(None, context)
-        assert len(context.messages) == (3 if inject else 1)
-        if inject:
-            assert "Changed task" in context.messages[-1].parts[0].content
-        # Clearing all history must not leave a stale process-local dedup key.
-        context.messages = [ModelRequest(parts=[UserPromptPart(content="Fresh")])]
-        await capability.before_model_request(None, context)
-        assert len(context.messages) == (2 if inject else 1)
+        await store.set_items([PlanItem(id="first", content="Stored task", status="in_progress")])
+        calls = 0
+
+        async def model(messages, info):
+            nonlocal calls
+            calls += 1
+            assert [
+                part.content
+                for message in messages
+                for part in message.parts
+                if isinstance(part, UserPromptPart)
+            ] == ["Continue"]
+            if calls == 1:
+                return ModelResponse(parts=[ToolCallPart("read_plan", {}, tool_call_id="read")])
+            result = next(part for part in messages[-1].parts if isinstance(part, ToolReturnPart))
+            assert "first" in result.content
+            assert "Stored task" in result.content
+            return ModelResponse(parts=[TextPart("ok")])
+
+        planning = IdentifiedPlanning.from_spec() if from_spec else IdentifiedPlanning()
+        planning.store = store
+        agent = Agent(FunctionModel(model), capabilities=[planning])
+        async with agent:
+            await agent.run("Continue")
+        assert calls == 2
+        assert (await store.get_items())[0].status == "in_progress"
+
+    asyncio.run(run())
+
+
+def test_legacy_reminders_remain_unchanged_on_resume():
+    async def run():
+        store = InMemoryPlanStore()
+        await store.set_items([PlanItem(id="new", content="New task")])
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="<plan-reminder>Old task</plan-reminder>")]),
+            ModelResponse(parts=[TextPart("ok")]),
+        ]
+        original = ModelMessagesTypeAdapter.dump_json(history)
+
+        async def model(messages, info):
+            assert ModelMessagesTypeAdapter.dump_json(messages[:2]) == original
+            assert [
+                part.content
+                for message in messages[2:]
+                for part in message.parts
+                if isinstance(part, UserPromptPart)
+            ] == ["Continue"]
+            return ModelResponse(parts=[TextPart("ok")])
+
+        agent = Agent(FunctionModel(model), capabilities=[IdentifiedPlanning(store=store)])
+        async with agent:
+            await agent.run("Continue", message_history=history)
 
     asyncio.run(run())

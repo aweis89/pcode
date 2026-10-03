@@ -99,6 +99,7 @@ def test_wire_prefix_tools_plan_changes_and_saved_resume(plan, warning, provider
                 await resumed.run("Continue", message_history=history)
 
         assert len(bodies) == 5
+        assert "<plan-reminder>" not in json.dumps(bodies)
         if provider_name == "anthropic" and warning:
             # Limit-warning behavior is unchanged in this planning-only fix;
             # direct Anthropic still uses upstream ephemeral limit warnings.
@@ -111,9 +112,6 @@ def test_wire_prefix_tools_plan_changes_and_saved_resume(plan, warning, provider
         for before, after in zip(bodies, bodies[1:]):
             assert after["messages"][: len(before["messages"])] == before["messages"]
         text = json.dumps(bodies[-1]["messages"])
-        if plan:
-            assert text.count("<plan-reminder>") == 3
-            assert "No active plan." in text
         if warning:
             assert "[WarnNearLimits]" in text
 
