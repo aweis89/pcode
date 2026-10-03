@@ -265,7 +265,8 @@ class HostView:
         if run is not None and not run.done.done():
             run.done.set_result(None)
         if not self._host.controller.running:
-            client, _ = self._host.sender(tag)
+            # Only the terminal that sent it: `sender` would guess for an untagged one.
+            client = self._host.sender(tag)[0] if isinstance(tag, (list, tuple)) else None
             if client is not None:
                 # Ahead of `host_closed`, which can overtake the reply to `run`:
                 # ending the session was what this caller asked for, so its

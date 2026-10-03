@@ -670,7 +670,7 @@ def test_quitting_stops_the_host_as_stop_does(tmp_path, host_dir, keys):
 
 
 def test_a_command_that_ends_the_session_reads_as_done_not_as_a_crash(tmp_path, host_dir):
-    """`/worktree finish` stops its host on purpose: no warning, no cancel, no resume hint."""
+    """`/worktree finish` stops its host on purpose: the terminal exits without a crash warning."""
     from types import SimpleNamespace
 
     linked = SimpleNamespace(path=tmp_path, main=tmp_path, branch="pcode-1234")
