@@ -14,14 +14,11 @@ DELEGATE = "delegate_task"
 # Marks a row as a sub-agent rather than a tool. One terminal cell wide in
 # common fonts, unlike emoji, so the panel's width math still holds.
 AGENT_ICON = "✦"
-# Marks a wait on a job an earlier call started, so it never reads as a fresh
-# run of the command it names. One cell wide, for the same reason.
-WAIT_ICON = "⧗"
-# The status row has the same problem, worse: a command that finishes in
-# milliseconds appears and vanishes before it can be read, and a burst of them
-# strobes. A finished call keeps the row, marked done, for this long after it
-# settles, unless real work starts first. The tally on the same row is the
-# lasting record, so this only has to stop the flicker.
+# On the status row, a command that finishes in milliseconds appears and
+# vanishes before it can be read, and a burst of them strobes. A finished call
+# keeps the row, marked done, for this long after it settles, unless real work
+# starts first. The tally on the same row is the lasting record, so this only
+# has to stop the flicker.
 STATUS_DWELL = 0.6
 # A sub-agent's plan is a window around its active task, like the parent's, but
 # shorter: several delegates share the panel with the parent's own tasks.
@@ -104,12 +101,9 @@ class ToolCall:
             detail = " · ".join(part for part in (detail, command) if part)
         else:
             detail = command or detail
-        icon = f"{WAIT_ICON} " if event.name == "wait_for_job" else ""
         state = plain(event.activity) if event.activity else ""
         clock = "" if elapsed is None else f"{elapsed:.1f}s"
-        return " · ".join(
-            part for part in (f"{icon}{label(event.name)}", state, clock, detail) if part
-        )
+        return " · ".join(part for part in (label(event.name), state, clock, detail) if part)
 
     def _delegate_line(self, elapsed: float | None) -> str:
         """`✦ Worker · 5.5s · Thinking · <task>`: the agent is what tells delegates apart.
@@ -322,7 +316,8 @@ def panel_fragments(lines: list, width: int):
     """Clip by terminal cells before prompt_toolkit renders non-wrapping rows.
 
     A row is one `(style, text)` pair, or a list of fragments already styled
-    and fitted to the width (delta's edit preview), which passes through.
+    and fitted to the width (delta's edit preview, the barred thinking rows),
+    which passes through.
     """
     fragments = []
     for index, row in enumerate(lines):

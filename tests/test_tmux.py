@@ -14,6 +14,8 @@ import uuid
 import pytest
 from conftest import tmux_socket_dir
 
+from pcode.ui import THOUGHT_BAR
+
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
 
 # How long a pane gets to reach an expected state. Every wait polls and returns
@@ -252,7 +254,7 @@ SPINNER_ROW = BUSY_FRAMES
 
 
 def _thought_span(lines):
-    """Indices of the thinking rows: padded like the status row, directly above it.
+    """Indices of the thinking rows: barred over the spinner, directly above it.
 
     A blank row always separates the panel from scrollback, and the cap is
     ui.THOUGHT_ROWS, so this never reaches a scrollback line.
@@ -261,20 +263,17 @@ def _thought_span(lines):
     if status is None:
         return range(0)
     start = status
-    while (
-        start
-        and status - start < 3
-        and lines[start - 1].startswith(" ")
-        and lines[start - 1].strip()
-    ):
+    while start and status - start < 3 and lines[start - 1].startswith(f" {THOUGHT_BAR} "):
         start -= 1
     return range(start, status)
 
 
 def thought_row(screen):
-    """The thinking rows above the status row, joined with newlines."""
+    """The thinking rows above the status row, without their bar, joined with newlines."""
     lines = screen.splitlines()
-    return "\n".join(lines[i].strip() for i in _thought_span(lines))
+    return "\n".join(
+        lines[i].strip().removeprefix(THOUGHT_BAR).strip() for i in _thought_span(lines)
+    )
 
 
 def without_status_row(text):

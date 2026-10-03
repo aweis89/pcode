@@ -103,7 +103,7 @@ or a bare `/show-thinking` cycles through the modes:
 
 | Mode | Shows |
 | --- | --- |
-| `status-line` (default) | The newest thought, faded, on up to three rows of its own above the status row |
+| `status-line` (default) | The newest thought, faded and marked with a `│` bar, on up to three rows of its own above the status row |
 | `scrollback` | The full thinking, streamed into scrollback in a dim style |
 | `off` | Nothing, and pcode asks the provider for nothing extra |
 

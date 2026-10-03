@@ -346,24 +346,32 @@ def test_thinking_rows_hold_the_newest_thought_above_the_status_row():
         )
 
     def rows(width=80, limit=3):
-        return [text for _, text in activity.thought_fragments(width, limit)]
+        # Each row is the upright bar, then the thought.
+        return [text for (_, _bar), (_, text) in activity.thought_fragments(width, limit)]
 
     def row(width=80):
         return "\n".join(rows(width))
 
     assert activity.thinking_mode == "status-line" and row() == ""
-    # Untitled text shows its newest line, faded, flush with the spinner.
+    # Untitled text shows its newest line, faded, behind a bar over the spinner.
     feed(ThinkingDelta("The status row"))
     feed(ThinkingDelta(" is empty\n\n"))
     assert activity.thought_fragments(80) == [
-        ("class:activity.thinking", "The status row is empty")
+        [
+            ("class:activity.thinking.bar", "│ "),
+            ("class:activity.thinking", "The status row is empty"),
+        ]
     ]
     # A long line wraps to a few rows and is cut at the end, like skimmed prose.
     feed(ThinkingDelta("so " + "word " * 40 + "newest"))
-    assert len(rows(50)) == 3 and all(cell_len(text) <= 50 for text in rows(50))
+    assert len(rows(50)) == 3 and all(cell_len(text) <= 48 for text in rows(50))
     assert rows(50)[0].startswith("so word") and rows(50)[-1].endswith("…")
     assert "…" not in "".join(rows(50)[:-1]) and "newest" not in row(50)
-    assert all(style == "class:activity.thinking" for style, _ in activity.thought_fragments(50))
+    assert all(
+        [style for style, _ in fragments]
+        == ["class:activity.thinking.bar", "class:activity.thinking"]
+        for fragments in activity.thought_fragments(50)
+    )
     # A short pane gets fewer rows; a wide one needs no cut.
     assert len(rows(50, 1)) == 1 and rows(50, 1)[0].endswith("…")
     assert rows(400) == ["so " + "word " * 40 + "newest"]

@@ -286,7 +286,7 @@ message.
 While a job runs with nothing waiting on it, a row under the spinner (or under
 the editor, while idle) shows it: `⟳ j3 · running the e2e suite · 1m42s`. The
 row goes away when the job finishes. While the model waits on a job, the wait's
-row names it instead: `⧗ Wait for job · 45.2s · j3 · running the e2e suite · make e2e`.
+row names it instead: `Wait for job · 45.2s · j3 · running the e2e suite · make e2e`.
 The finished job goes to scrollback at the end of the turn (or at once while
 idle) as a normal `Run shell` block labeled `background`, with its id and
 elapsed time; `show_commands` and `tool_error_scrollback` apply as for other

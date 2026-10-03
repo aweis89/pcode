@@ -70,9 +70,9 @@ def test_a_wait_row_names_its_job_and_the_command_that_job_runs():
     known = ToolStarted(
         "wait_for_job", "j3", "one", command="make e2e", purpose="running the suite"
     )
-    assert line(known) == "⧗ Wait for job · 45.2s · j3 · running the suite · make e2e"
+    assert line(known) == "Wait for job · 45.2s · j3 · running the suite · make e2e"
     # A job the runtime could not name still says which one is being waited on.
-    assert line(ToolStarted("wait_for_job", "j9", "two")) == "⧗ Wait for job · 45.2s · j9"
+    assert line(ToolStarted("wait_for_job", "j9", "two")) == "Wait for job · 45.2s · j9"
     # Reading a job is not waiting on it, but names the job the same way.
     output = ToolStarted("job_output", "j3", "three", command="make e2e")
     assert line(output) == "Read job output · 45.2s · j3 · make e2e"
