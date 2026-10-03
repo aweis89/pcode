@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve screenshots cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall
+.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve screenshots cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall sync
 
 # Harness lives in the pydantic-ai repo (src/pydantic_ai_harness, docs/harness,
 # tests/harness) and ships with each Pydantic AI release.
@@ -82,6 +82,9 @@ worktrees: ## List worktrees
 
 worktree-clean: ## Delete every worktree with nothing uncommitted or unmerged, and its branch
 	@uv run python -m pcode.worktree clean
+
+sync: ## Set up hooks and identity, then align the mainline with origin (safe after a history rewrite; use instead of git pull there)
+	@sh scripts/sync.sh
 
 clean-merged: worktree-clean ## Also delete merged branches left behind, local and on origin (ARGS=--dry-run)
 	@sh scripts/clean-merged-branches.sh $(ARGS)
