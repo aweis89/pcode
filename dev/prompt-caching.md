@@ -1,8 +1,12 @@
 # Prompt caching and plan reminders
 
-Pcode keeps plan reminders append-only because a reusable cache prefix must stay
-in place as the conversation grows. An unchanged reminder string is not enough
-if it disappears from its old position on the next request.
+Pcode now disables automatic plan reminders by default. Planning tool results
+report changes, and `read_plan` retrieves the stored state. Existing reminders in
+saved history are not removed or rewritten.
+
+The historical design below kept plan reminders append-only because a reusable
+cache prefix must stay in place as the conversation grows. An unchanged reminder
+string is not enough if it disappears from its old position on the next request.
 
 This explains the planning fix in `e28791b`. It does not claim that all cache
 misses come from planning or that stable requests guarantee server-side hits.

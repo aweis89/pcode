@@ -9,7 +9,6 @@ from pydantic_ai_harness.compaction import WarnNearLimits
 
 from pcode.model_metadata import ContextWindowError, context_window, refresh_context
 
-PLAN_TAG = "<plan-reminder>"
 LIMITS_TAG = "[WarnNearLimits]"
 
 
