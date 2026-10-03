@@ -240,24 +240,24 @@ def test_created_plan_exposes_ids_for_atomic_status_updates(tmp_path):
 
 @pytest.mark.parametrize("state", ["", "done", "failed", "cancelled"])
 @pytest.mark.parametrize("busy", [False, True])
-def test_unfinished_task_only_spins_during_live_turn(state, busy):
+def test_unfinished_task_has_static_active_marker_only_during_live_turn(state, busy):
     from pcode.ui import Activity
 
     items = [{"id": "one", "content": "Unfinished task", "status": "in_progress"}]
     activity = Activity(plan=items, prompt_state=state, busy=busy)
-    # Resumed, finished, failed, and cancelled turns stay static, even if input
-    # is queued. Do not rewrite the persisted task's status to stop animation.
-    first = activity.plan_rows(10, "⠋")
-    assert first == activity.plan_rows(10, "⠙")
+    # Resumed, finished, failed, and cancelled turns stay inactive, even if input
+    # is queued. Do not rewrite the persisted task's status to change its marker.
+    first = activity.plan_rows(10)
     assert first == [("class:plan.active", "○ Unfinished task")]
     assert items[0]["status"] == "in_progress"
 
     activity.prompt_state = "running"
-    assert activity.plan_rows(10, "⠋") == [("class:plan.active", "⠋ Unfinished task")]
-    assert activity.plan_rows(10, "⠙") == [("class:plan.active", "⠙ Unfinished task")]
+    for frame in ("⠋", "⠙"):
+        assert activity.status_fragments(frame, 80)[0] == ("class:activity.spinner", f"{frame} ")
+        assert activity.plan_rows(10) == [("class:plan.active", "⟳ Unfinished task")]
 
     activity.prompt_state = "done"
-    assert activity.plan_rows(10, "⠙") == first
+    assert activity.plan_rows(10) == first
 
 
 @pytest.mark.parametrize(
