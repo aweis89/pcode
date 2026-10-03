@@ -28,6 +28,7 @@ DELEGATE_ROWS = 3
 # The parent's task window at the default height. With `tasks_max_height`
 # set, the tasks fill whatever budget the tools leave instead.
 TASK_ROWS = 5
+ACTIVE_TASK_ICON = "↺"
 PLAN_ICONS = {
     "pending": "○",
     "completed": "✓",
@@ -237,7 +238,7 @@ class ToolHistory:
         """Rows the delegates and their plans would fill, before any budget."""
         return len(self.delegates) + self.plan_rows()
 
-    def rows(self, count: int, *, nested: bool = False, icon: str = "⟳"):
+    def rows(self, count: int, *, nested: bool = False, icon: str = ACTIVE_TASK_ICON):
         return _tree_rows(self._nodes(count, icon), "" if nested else None)
 
     def _nodes(self, count: int, icon: str) -> list[_PanelNode]:

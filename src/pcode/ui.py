@@ -81,6 +81,7 @@ from pcode.tool_display import (
     tool_summary_lines,
 )
 from pcode.tool_panel import (
+    ACTIVE_TASK_ICON,
     DELEGATE,
     TASK_ROWS,
     ToolCall,
@@ -896,7 +897,7 @@ class Activity:
             return []
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
-        icon = "⟳" if self.status_shown else "○"
+        icon = ACTIVE_TASK_ICON if self.status_shown else "○"
         # A configured height is room the user asked the tasks to fill.
         max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
         return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
