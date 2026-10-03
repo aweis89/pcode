@@ -82,7 +82,7 @@ from pcode.tool_panel import (
     task_panel_rows,
 )
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
-from pcode.transcript_notice import TranscriptNotice
+from pcode.transcript_notice import Note, TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
 from pcode.workers import Workers
 
@@ -110,6 +110,8 @@ class Palette:
                 "pcode.accent": self.accent,
                 "pcode.brand": f"bold {self.accent}",
                 "pcode.muted": self.muted,
+                # Scrollback notes: italic like the live panel's own notices.
+                "pcode.note": f"italic {self.muted}",
                 "pcode.thinking": f"dim {self.muted}",
                 "pcode.error": "bold red",
                 "pcode.warning": "bold yellow",
@@ -339,6 +341,7 @@ TERMINAL_THEME = Theme(
         "pcode.accent": "cyan",
         "pcode.brand": "bold cyan",
         "pcode.muted": "default",
+        "pcode.note": "italic default",
         "pcode.thinking": "dim default",
         "pcode.error": "bold red",
         "pcode.warning": "bold yellow",
@@ -2947,7 +2950,7 @@ class Transcript:
         The opening banner and what it reports about this session are history,
         not an answer, so a resize must not wipe them.
         """
-        self.print(Text(text, style="pcode.muted"))
+        self.print(Note(text))
 
     def flash(self, text: str) -> None:
         """Answer a keystroke in the live panel instead of in scrollback.
@@ -2965,7 +2968,7 @@ class Transcript:
 
     def note(self, text: str) -> None:
         """Show an informational notice once, without retaining it for redraws."""
-        notice = Text(text, style="pcode.muted")
+        notice = Note(text)
         if self._replay_sink is not None:
             self._replay_sink.append(((notice,), "\n", False))
         elif self.output is not None:

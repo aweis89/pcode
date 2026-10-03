@@ -4,6 +4,14 @@ The conversation lives in your terminal's normal scrollback, so you can scroll,
 select, and search it with the terminal or tmux. This page covers what gets
 written there and the settings that control it.
 
+Three kinds of text share the scrollback. Your prompts are quoted behind a `▌`
+rail in the accent color. The model's replies are plain prose in the terminal's
+own text color. pcode's own notes (a model switch, an MCP server coming up, the
+`/help` cheatsheet, where a session was saved) start with an accent `·` and are
+set in the muted italic shade, so a run of them between two replies reads as
+status rather than as something the model said. A note that wraps or spans
+several lines hangs under its text, with the mark on the first line only.
+
 ## Command previews
 
 Shell tool calls show a compact two-row preview with their result and duration.

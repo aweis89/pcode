@@ -583,7 +583,8 @@ def test_login_command_switches_the_running_model_and_reports_storage(store, mon
     assert runtime.history == ["existing"]
     output = buffer.getvalue()
     assert "claude.ai/oauth/authorize" in output
-    assert str(credentials_path()) in output.replace("\n", "")
+    # The path may wrap; continuation rows hang under the note's text.
+    assert str(credentials_path()) in "".join(line.strip() for line in output.splitlines())
     assert "synthetic-access" not in output
 
 
