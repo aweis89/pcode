@@ -144,7 +144,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `theme` | `auto` | `dark`, `light`, `auto` |
 | `syntax_dark` | `terminal` | `terminal` or a Pygments style, for the dark palette |
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
-| `spinner` | `arc` | A [Rich spinner](https://github.com/Textualize/rich/blob/master/rich/_spinners.py) name for the status row while a turn runs, e.g. `dots`, `line`, `point`; `/config set spinner` completes the names that fit (applies on next launch) |
+| `spinner` | `arc` | A Rich spinner name, e.g. `dots`, `line`, `point` (`python -m rich.spinner` previews them; `/config set spinner` lists the ones that fit; applies on next launch) |
 | `show_thinking` | `status-line` | `off`, `status-line`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`) |
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; `/show-edits`) |
 | `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+G or `/show-commands`) |
