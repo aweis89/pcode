@@ -43,13 +43,14 @@ from pcode.preferences import (
     apply_effort,
     apply_thinking,
     effort_for,
+    hints_preference,
     load_preferences,
     parse_height,
     save_preferences,
     thinking_mode_preference,
     thinking_settings,
 )
-from pcode.prefix_keys import shortcut_label
+from pcode.prefix_keys import compact_label, shortcut_label
 from pcode.runtime import (
     EditCompleted,
     Message,
@@ -145,6 +146,7 @@ class PreviewApp:
             attach_tasks=load_preferences().get("attach_tasks", SETTINGS["attach_tasks"].default)
             == "on",
             tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
+            show_hints=hints_preference(),
             thinking_mode=thinking_mode_preference(),
         )
         self.preview = PreviewRuntime()
@@ -665,13 +667,14 @@ class PreviewApp:
             preferences.get("attach_tasks", SETTINGS["attach_tasks"].default) == "on"
         )
         self.activity.tasks_max_height = parse_height(preferences.get("tasks_max_height"))
+        self.activity.show_hints = hints_preference()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
         edits = args[1:] if args[:1] == ["project"] else args
         if (
             len(edits) >= 2
             and edits[0] in ("set", "unset")
-            and edits[1] in ("attach_tasks", "tasks_max_height")
+            and edits[1] in ("attach_tasks", "tasks_max_height", "show_hints")
         ):
             result = result.replace("Applies on next launch.", "Layout settings apply immediately.")
         self.transcript.note(result)
@@ -1688,6 +1691,11 @@ class PreviewApp:
             for part in parts
             if part
         )
+        # The send mode's key, only where it fits without cutting what follows.
+        if self.activity.show_hints:
+            hint = f" ({compact_label(self.shortcut('s'))})"
+            if cell_len("".join(value for _, value in segments) + hint) + 2 <= width:
+                segments.insert(1, ("hint", hint))
         # Only spend spare width on the path; preserve the send mode first.
         path_width = max(0, width - cell_len("".join(value for _, value in segments)) - 4)
         # Last and outside the path's budget: a narrow pane cuts it first.

@@ -435,6 +435,11 @@ SETTINGS = {
     "autohide_tasks": Setting(
         "off", ("on", "off"), description="Hide the task list when a turn ends"
     ),
+    "show_hints": Setting(
+        "on",
+        ("on", "off"),
+        description="Show shortcut hints beside the send mode and the task list heading",
+    ),
     "attach_tasks": Setting(
         "on", ("on", "off"), description="Draw the task list inside the editor box"
     ),
@@ -861,6 +866,11 @@ UPDATES_BETA = "thinking-display-updates-2026-08-18"
 def thinking_mode_preference() -> str:
     """The saved `/show-thinking` mode, or its default."""
     return load_preferences().get("show_thinking", SETTINGS["show_thinking"].default)
+
+
+def hints_preference() -> bool:
+    """Whether inline shortcut hints (`show_hints`) are on."""
+    return load_preferences().get("show_hints", SETTINGS["show_hints"].default) == "on"
 
 
 def openai_profile(model: str, resolved=None) -> dict:

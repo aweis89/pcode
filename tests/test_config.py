@@ -62,6 +62,7 @@ def test_defaults_and_path_do_not_create_files():
         "show_thinking": "status-line",
         "show_tasks": "on",
         "autohide_tasks": "off",
+        "show_hints": "off",  # conftest's test default; the shipped one is "on".
         "attach_tasks": "on",
         "tasks_max_height": None,
         "transcript_max_chars": "2000000",
