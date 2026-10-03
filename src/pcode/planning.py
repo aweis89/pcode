@@ -16,15 +16,11 @@ from pcode.tool_display import PLAN_TOOLS
 # is cheap to report, and says what the plan should look like when a turn ends.
 GUIDANCE = (
     "You have a planning tool, `write_plan`. The user sees the plan as a live checklist "
-    "of what you are doing, what is done, and what is left, so use it for any task that "
-    "changes files or has two or more steps worth reporting progress on, not only large "
-    "ones; skip it for questions and lookups, however many reads they take, and for a "
-    "single small edit. Orient briefly if you need to, then write the plan before your "
-    "first change: a few outcome-level steps, not one per tool call, revised as you "
-    "learn. Keep it truthful: one step `in_progress` while work is underway (parallel "
-    "work lives under that step), and when a step finishes, one `update_task_statuses` "
-    "call that completes it and starts the next. Use `add_task` for a step you discover "
-    "midway; use `write_plan` only to create or restructure the plan, and pass the full "
+    "of what you are doing, what is done, and what is left. "
+    "Keep it truthful: one step `in_progress` while work is underway, "
+    "and when a step finishes, one `update_task_statuses` call that completes it "
+    "and starts the next. Use `add_task` for a step you discover midway; "
+    "use `write_plan` only to create or restructure the plan, and pass the full "
     "plan when you do. Before your final reply, every step should be `completed` or "
     "`cancelled`, unless you are stopping to ask the user; then leave the rest as it is."
 )
