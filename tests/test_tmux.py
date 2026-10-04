@@ -14,7 +14,7 @@ import uuid
 import pytest
 from conftest import tmux_socket_dir
 
-from pcode.ui import THOUGHT_ICON
+from pcode.ui import THOUGHT_ICON, THOUGHT_ROWS
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
 
@@ -260,7 +260,7 @@ def _thought_span(lines):
     status = next((i for i, line in enumerate(lines) if line.startswith(SPINNER_ROW)), None)
     if status is None:
         return range(0)
-    for start in range(status - 1, max(-1, status - 4), -1):
+    for start in range(status - 1, max(-1, status - 1 - THOUGHT_ROWS), -1):
         if not lines[start].strip():
             break
         if lines[start].startswith(f" {THOUGHT_ICON} "):

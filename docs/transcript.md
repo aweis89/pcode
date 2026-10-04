@@ -105,14 +105,14 @@ the modes:
 
 | Mode | Shows |
 | --- | --- |
-| `status-line` (default) | The newest thought, faded and marked with a `│` bar, on up to three rows of its own above the status row |
+| `status-line` (default) | The newest thought, faded and marked with a `│` bar, on up to `thinking_max_lines` (default 10) rows of its own above the status row |
 | `scrollback` | The full thinking, streamed into scrollback in a dim style |
 | `off` | Nothing, and pcode asks the provider for nothing extra |
 
 The thinking rows stay through the tool calls that follow a thought, so a
 running tool on the status row doesn't hide them, and the last thought usually
 explains the call under it. They go as soon as any reply text streams into
-scrollback, including a line written before a tool call. A long thought is cut at the end; a short terminal gets fewer rows.
+scrollback, including a line written before a tool call. A long thought is cut at the end; a short terminal gets fewer rows (at most a quarter of its height).
 Where a summary has section titles, as OpenAI's do, the rows show the newest
 title rather than the prose under it.
 

@@ -61,6 +61,7 @@ def test_defaults_and_path_do_not_create_files():
         "stall_log": "on",
         "spinner": "arc",
         "show_thinking": "status-line",
+        "thinking_max_lines": "10",
         "show_tasks": "on",
         "autohide_tasks": "off",
         "show_hints": "off",  # conftest's test default; the shipped one is "on".

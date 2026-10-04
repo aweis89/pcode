@@ -444,10 +444,9 @@ PHASE_WORDS = 3
 DETAIL_MIN_CELLS = 16
 # Characters of streamed thinking kept for the thinking rows: its latest line.
 THINKING_KEEP = 2000
-# Rows the newest thought may wrap to above the status row. A thought is a
-# sentence or two, which one row rarely holds whole; more than a few rows and
-# it stops being a glance.
-THOUGHT_ROWS = 3
+# Default for `thinking_max_lines`: rows the newest thought may wrap to above
+# the status row. A thought is a sentence or two, which one row rarely holds.
+THOUGHT_ROWS = 10
 # Marks the first thought row in the spinner's column, without resembling
 # a stalled frame of the round spinner below it.
 THOUGHT_ICON = "∴"
@@ -1951,6 +1950,7 @@ class PromptLayout:
         # pcode's whole bottom block; slow it ~1.6x, which still reads as motion
         # but noticeably cuts render frequency.
         self.spinner.interval = round(self.spinner.interval * 1.6)
+        self.thought_max_rows = int(load_preferences().get("thinking_max_lines", str(THOUGHT_ROWS)))
         self.menu = CompletionsMenu(
             max_height=20, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
         )
@@ -2121,7 +2121,7 @@ class PromptLayout:
     @_per_render
     def thought_rows(self):
         """The newest thought, on fewer rows in a short pane."""
-        rows = min(THOUGHT_ROWS, max(1, self.size().rows // 8))
+        rows = min(self.thought_max_rows, max(1, self.size().rows // 4))
         return self.activity.thought_fragments(self.size().columns - 1, rows)
 
     @_per_render

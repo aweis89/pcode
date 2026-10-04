@@ -146,6 +146,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
 | `spinner` | `arc` | A Rich spinner name, e.g. `dots`, `line`, `point` (`python -m rich.spinner` previews them; `/config set spinner` lists the ones that fit; applies on next launch) |
 | `show_thinking` | `status-line` | `off`, `status-line`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`) |
+| `thinking_max_lines` | `10` | Max rows of thinking above the status row in `status-line` mode; a short pane gets fewer (at most a quarter of its height). Applies on next launch |
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; `/show-edits`) |
 | `diff_renderer` | `delta` | `delta`, `rich` (draw diffs in scrollback and `/diffs` with [delta](https://dandavison.github.io/delta/) when it's installed, falling back to Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
 | `delta_args` | `` | delta's arguments, quoted as in a shell, such as `--line-numbers`; the only delta configuration pcode reads (git config is ignored), and they override pcode's own choices |

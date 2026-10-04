@@ -513,6 +513,13 @@ SETTINGS = {
         description="Where the model's thinking shows: its own rows above the status row, "
         "streamed into scrollback, or nowhere",
     ),
+    # Read when the prompt is built, so it applies on the next launch.
+    "thinking_max_lines": Setting(
+        "10",
+        positive_integer=True,
+        description="Max rows of thinking above the status row (status-line mode); "
+        "a short pane shows fewer",
+    ),
     "editing_mode": Setting(
         "emacs", ("emacs", "vi"), description="Key bindings for the prompt editor"
     ),
