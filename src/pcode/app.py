@@ -145,6 +145,7 @@ class PreviewApp:
             autohide_tasks=load_preferences().get("autohide_tasks", "off") == "on",
             attach_tasks=load_preferences().get("attach_tasks", SETTINGS["attach_tasks"].default)
             == "on",
+            task_style=load_preferences().get("task_style", SETTINGS["task_style"].default),
             tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
             show_hints=hints_preference(),
             thinking_mode=thinking_mode_preference(),
@@ -667,6 +668,7 @@ class PreviewApp:
             preferences.get("attach_tasks", SETTINGS["attach_tasks"].default) == "on"
         )
         self.activity.tasks_max_height = parse_height(preferences.get("tasks_max_height"))
+        self.activity.task_style = preferences.get("task_style", SETTINGS["task_style"].default)
         self.activity.show_hints = hints_preference()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
@@ -674,7 +676,7 @@ class PreviewApp:
         if (
             len(edits) >= 2
             and edits[0] in ("set", "unset")
-            and edits[1] in ("attach_tasks", "tasks_max_height", "show_hints")
+            and edits[1] in ("attach_tasks", "tasks_max_height", "task_style", "show_hints")
         ):
             result = result.replace("Applies on next launch.", "Layout settings apply immediately.")
         self.transcript.note(result)
@@ -1666,7 +1668,7 @@ class PreviewApp:
         segments = [("mode", f"{self.next_send_mode}{once}")]
         if self._startup_pending:
             segments.extend([("sep", " · "), ("activity", "starting")])
-        # No "working" label: the spinner row above the editor already says so.
+        # No "working" label: the status on the editor's top border already says so.
         if self.activity.busy:
             if self.activity.queued:
                 steering = self.activity.queued_modes.count("steering")
@@ -2015,7 +2017,9 @@ class PreviewApp:
         self.transcript.output = output
         self.output = output
         self.prompt_session = session
-        session.app.style = DynamicStyle(lambda: self.transcript.prompt_style())
+        session.app.style = DynamicStyle(
+            lambda: self.transcript.prompt_style(self.activity.task_style)
+        )
         try:
             terminal = session.app.output.fileno()
         except (NotImplementedError, OSError, ValueError):

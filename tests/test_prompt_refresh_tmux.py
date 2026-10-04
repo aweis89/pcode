@@ -34,14 +34,13 @@ def test_animation_elapsed_resize_and_cancel_after_idle(pane):
     pane("send-keys", "-t", "preview:0.0", "ANIMATING_PROMPT", "Enter")
 
     def status_icon(screen):
-        # The status row is indented one column, so the spinner is the first
-        # non-blank character rather than column zero.
-        return next(line.lstrip()[0] for line in screen.splitlines() if "WAITING_TOOL" in line)
+        # The status rides the editor's top border: `┌─ ◜ …`.
+        return next(line[3] for line in screen.splitlines() if "WAITING_TOOL" in line)
 
     def elapsed(screen):
-        # The phase clock sits at the right end of the status row.
+        # The phase clock sits at the right end of the status, before the corner.
         line = next(line for line in screen.splitlines() if "WAITING_TOOL" in line)
-        return int(re.search(r" (\d+)s$", line.rstrip())[1])
+        return int(re.search(r" (\d+)s ─┐$", line.rstrip())[1])
 
     first = capture(pane, "WAITING_TOOL", running=True)
     first_time = elapsed(first)

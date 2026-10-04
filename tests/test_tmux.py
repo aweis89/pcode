@@ -183,22 +183,18 @@ def pane(request, tmp_path):
         reaper.wait(timeout=5)
 
 
-# The spinner row leads with a frame of the default `arc` spinner.
-BUSY_FRAMES = tuple(" " + frame + " " for frame in "◜◠◝◞◡◟")
+# The status rides the editor box's top border, led by a frame of the
+# default `arc` spinner.
+BUSY_FRAMES = tuple(f"┌─ {frame} " for frame in "◜◠◝◞◡◟")
 
 # The footer always names the mode the next Enter sends with.
 SEND_MODES = ("steering", "queue", "interrupt")
 
 
 def busy(lines):
-    """Whether the spinner row sits in the block directly above the editor."""
-    top = max((i for i, line in enumerate(lines) if line.startswith("┌")), default=0)
-    for line in reversed(lines[:top]):
-        if not line.strip():
-            return False
-        if line.startswith(BUSY_FRAMES):
-            return True
-    return False
+    """Whether the spinner rides the editor box's top border."""
+    top = max((i for i, line in enumerate(lines) if line.startswith("┌")), default=None)
+    return top is not None and lines[top].startswith(BUSY_FRAMES)
 
 
 def capture(pane, expected, *, running=False, columns=None):
@@ -861,13 +857,13 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, release, split):
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "Task 8", running=True)
     assert "↺ Task 8" in screen
-    first_frame = next(line[1] for line in screen.splitlines() if line.startswith(SPINNER_ROW))
+    first_frame = next(line[3] for line in screen.splitlines() if line.startswith(SPINNER_ROW))
     deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         animated = pane("capture-pane", "-p", "-t", "preview:0.0")
         assert "↺ Task 8" in animated
         if any(
-            line.startswith(SPINNER_ROW) and line[1] != first_frame
+            line.startswith(SPINNER_ROW) and line[3] != first_frame
             for line in animated.splitlines()
         ):
             break
@@ -877,10 +873,11 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, release, split):
     assert "Tasks ·" not in screen and "Tools" not in screen
     lines = screen.splitlines()
     first_task = next(i for i, line in enumerate(lines) if "Task 6" in line)
-    assert lines[first_task - 2].startswith(SPINNER_ROW)
-    assert not lines[first_task - 2].startswith("│")
-    assert lines[first_task - 1].startswith("┌")
-    assert lines[first_task - 1].startswith("┌─ Tasks 0/12 ─")
+    # The status rides the box's top border; the tasks hang straight under it.
+    assert lines[first_task - 1].startswith(SPINNER_ROW)
+    # The heading's count moves to the status's right-hand side.
+    assert "Tasks 0/12 · " in lines[first_task - 1]
+    assert screen.count("Tasks 0/12") == 1
     assert all(
         line.startswith("│") and line.endswith("│") for line in lines[first_task : first_task + 5]
     )
@@ -992,14 +989,13 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     screen = capture(pane, "Run shell · ", running=True)
     lines = screen.splitlines()
     task = next(i for i, line in enumerate(lines) if "A task" in line)
-    # The running command owns the status row; the widget holds tasks alone.
-    status = lines[task - 2]
-    assert status.startswith(SPINNER_ROW) and "Run shell" in status
-    assert not status.startswith("│")
+    # The widget keeps its own frame and holds tasks alone; the running
+    # command rides the editor's top border below it.
     assert lines[task - 1].startswith("┌─ Tasks 0/1 ─")
     assert lines[task].startswith("│↺")
     assert lines[task + 1].startswith("└")
-    assert lines[task + 2].startswith("┌")  # Editor, not another Tools widget.
+    status = lines[task + 2]
+    assert status.startswith(SPINNER_ROW) and "Run shell" in status
     assert "Tools" not in screen and "Tasks ·" not in screen
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert history.count("file_11.py") == 1
@@ -1071,7 +1067,8 @@ def test_tasks_share_the_editor_box_by_default_and_config_applies_live(pane):
             assert time.monotonic() < deadline, screen
             time.sleep(0.05)
         heading, tasks, text_rows = attached_box(screen)
-        assert heading.startswith("┌─ Tasks 0/1")
+        # While the turn runs its status takes the heading's place.
+        assert heading.startswith(SPINNER_ROW)
         assert len(tasks) == 1 and tasks[0].startswith("│↺")
         assert text_rows == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
@@ -1143,9 +1140,8 @@ def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
         screen = capture(pane, "❯", running=True, columns=columns)
         lines = screen.splitlines()
         editor_top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
-        header = lines[editor_top - 1]
+        header = lines[editor_top]
         # One status row, never the echoed prompt, and never wider than the pane.
-        assert not header.startswith("│")
         assert header.startswith(SPINNER_ROW)
         assert "LONG PROMPT" not in header
         assert len(header) <= columns
@@ -1176,8 +1172,8 @@ def test_queued_messages_stay_directly_above_editor(pane, mode):
         assert lines[editor_top - 2].startswith(f" {label}: first")
         assert lines[editor_top - 2].endswith("…")
         assert lines[editor_top - 1].startswith(f" {label}: second")
-        assert lines[editor_top - 3].startswith(SPINNER_ROW)
-        assert "active prompt" not in lines[editor_top - 3]
+        assert lines[editor_top].startswith(SPINNER_ROW)
+        assert "active prompt" not in lines[editor_top]
         assert "│❯ keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")  # Clears the draft.
@@ -1202,10 +1198,10 @@ def test_single_running_tool_needs_no_box_above_the_editor(pane):
     screen = capture(pane, "Run shell · ", running=True)
     lines = screen.splitlines()
     top = next(i for i, line in enumerate(lines) if line.startswith("┌"))
-    # Only the editor is boxed: the lone running call lives on the status row.
+    # Only the editor is boxed: the lone running call rides its top border.
     assert screen.count("┌") == screen.count("└") == 1
-    assert lines[top - 1].startswith(SPINNER_ROW)
-    assert "Run shell · " in lines[top - 1]
+    assert lines[top].startswith(SPINNER_ROW)
+    assert "Run shell · " in lines[top]
     assert "Tasks" not in screen and "Tools" not in screen
     assert "✓ Read file" in pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert input_rows(screen) == 1
@@ -1308,7 +1304,10 @@ def test_streamed_task_preview_has_real_prompt_height_and_cancels_cleanly(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "STREAMED_TASK", running=True)
-    assert "Tasks 0/1" in screen
+    lines = screen.splitlines()
+    top = next(i for i, line in enumerate(lines) if line.startswith("┌"))
+    # The preview hangs under the status, which takes the heading's place.
+    assert "STREAMED_TASK" in lines[top + 1]
     assert input_rows(screen) == 1
     assert screen.count("┌") == screen.count("└") == 1
     assert screen.count("├") == 1

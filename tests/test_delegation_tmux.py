@@ -3,7 +3,7 @@
 import shutil
 
 import pytest
-from test_tmux import capture, input_rows, resize
+from test_tmux import SPINNER_ROW, capture, input_rows, resize
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -54,7 +54,8 @@ def test_delegate_stays_visible_without_its_calls_through_resize_and_cancel(pane
         resize(pane, "resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
         screen = capture(pane, "src/auth.py", running=True, columns=width)
         lines = screen.splitlines()
-        top = max(i for i, line in enumerate(lines) if line.startswith("┌─ Tools"))
+        top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
+        assert lines[top].startswith(SPINNER_ROW)
         assert "✦ Explorer" in lines[top + 1]
         assert lines[top + 2].startswith("├")
         assert "Search" not in screen

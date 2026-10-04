@@ -102,6 +102,18 @@ from pcode.transcript_notice import Note, TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
 from pcode.workers import Workers
 
+# `task_style icons`: task text has one weight whatever its status, and the
+# coloured icon alone says how a task stands. Cancelled keeps its strike: a
+# mark, not a shade. A delegate's hue still colours its rows, since its class
+# is named after these in the row's style string.
+ICON_TASK_STYLES = {
+    "plan.pending": "nodim nobold fg:default",
+    "plan.in_progress": "nodim nobold fg:default",
+    "plan.completed": "nodim nobold fg:default",
+    "plan.cancelled": "nodim nobold fg:default strike",
+    "plan.blocked": "nodim nobold fg:default",
+}
+
 
 @dataclass(frozen=True)
 class Palette:
@@ -153,11 +165,12 @@ class Palette:
         )
 
     @cache
-    def prompt_style(self, menu: "Palette | None" = None) -> Style:
+    def prompt_style(self, menu: "Palette | None" = None, task_style: str = "status") -> Style:
         # Palette is immutable. Reuse the Style so DynamicStyle's identity-based
         # invalidation hash changes only with the palette, not on every redraw.
         # `menu` colors the completion popup, which follows the selected syntax
         # style rather than this palette; it is immutable and cached too.
+        # `task_style` is the `task_style` setting (see ICON_TASK_STYLES).
         menu = self if menu is None else menu
         highlight = (
             f"reverse bg:default {menu.accent}"
@@ -282,6 +295,7 @@ class Palette:
                 # mistake for something the user typed.
                 "paste-marker": "bold reverse",
                 "auto-suggestion": self.muted,
+                **(ICON_TASK_STYLES if task_style == "icons" else {}),
             }
         )
 
@@ -482,7 +496,8 @@ class StatusLine:
     # A just-finished call held on the row: its detail is muted, not live.
     settled: bool = False
 
-    def fragments(self, spinner: str, width: int) -> list[tuple[str, str]]:
+    def fragments(self, spinner: str, width: int, *, rule: bool = False) -> list[tuple[str, str]]:
+        """The row, `width` cells wide when it has meta; `rule` draws the gap as border."""
         if width < 1:
             return []
         head = [("class:activity.spinner", f"{spinner} ")]
@@ -506,7 +521,8 @@ class StatusLine:
         if not suffix:
             return fitted
         pad = room - sum(cell_len(text) for _, text in fitted) + 2
-        return [*fitted, ("", " " * pad), ("class:activity.meta", suffix)]
+        gap = ("class:frame.border", f" {'─' * (pad - 2)} ") if rule else ("", " " * pad)
+        return [*fitted, gap, ("class:activity.meta", suffix)]
 
     def _clock(self) -> str:
         return "" if self.elapsed is None else clock(self.elapsed)
@@ -644,6 +660,9 @@ class Activity:
     autohide_tasks: bool = False
     # Draw the widget as the top section of the editor box instead of its own box.
     attach_tasks: bool = True
+    # The `task_style` setting: `status` shades task text by status, `icons`
+    # gives it one weight, colours only the icon, and pads rows off the frame.
+    task_style: str = "status"
     # Cap on the task widget plus the editor box: whole rows, or a share of the
     # screen below 1 (0.5 is half). None keeps the default layout.
     tasks_max_height: float | None = None
@@ -725,9 +744,9 @@ class Activity:
 
         Held through the tool calls that follow a thought, which it usually
         explains, and gone once the answer streams into scrollback: thinking
-        is the lead-up, not a caption on the result. Above the status row
-        rather than under it, so the spinner holds its place as the thought
-        wraps to more or fewer rows.
+        is the lead-up, not a caption on the result. Above the editor box
+        whose border carries the status, so the status holds its place as
+        the thought wraps to more or fewer rows.
         """
         if self.thinking_mode != "status-line" or not self.status_shown or width < 3:
             return []
@@ -1003,9 +1022,11 @@ class Activity:
         elapsed = None if held.elapsed is None else held.elapsed + now - shown.taken
         return replace(held, tally=line.tally, elapsed=elapsed)
 
-    def status_fragments(self, spinner: str, width: int, tally: str = "", hold: float = 0.0):
-        """The row above the tasks: `◜ Phase · detail … ✓7 tools · 12s`."""
-        return self.held_status_line(tally, hold).fragments(spinner, width)
+    def status_fragments(
+        self, spinner: str, width: int, tally: str = "", hold: float = 0.0, *, rule: bool = False
+    ):
+        """The editor's top border: `◜ Phase · detail ── ✓7 tools · 12s`."""
+        return self.held_status_line(tally, hold).fragments(spinner, width, rule=rule)
 
     def queue_rows(self, budget: int):
         """Show the next queued prompts, leaving room for the editor on short panes."""
@@ -1875,8 +1896,8 @@ def _preview_body(diff: bool, body: str, width: int, theme: str):
 def _spinner_rows(fragments, height) -> VSplit:
     """Chrome rows outside a frame: spinners, notices and queued prompts.
 
-    One column of left padding so every row lines up with the task rows
-    inside the frame below instead of sitting against the terminal edge.
+    One column of left padding, so the rows sit off the terminal edge and
+    their text starts where the frames' contents do.
     """
     return VSplit(
         [
@@ -2122,9 +2143,10 @@ class PromptLayout:
         """Whether the live panel needs its own blank row above it.
 
         Scrollback separates blocks with a blank row, but the panel is not
-        scrollback: without this the spinner sits flush against the last tool
-        line. Depend only on state preview_layout already reads, so asking for
-        the gap cannot re-enter the layout calculation.
+        scrollback: without this the live rows, or the editor box carrying the
+        status, sit flush against the last tool line. Depend only on state
+        preview_layout already reads, so asking for the gap cannot re-enter
+        the layout calculation.
         """
         shown = (
             self.activity.status_shown
@@ -2142,9 +2164,9 @@ class PromptLayout:
         )
 
     def status_height(self) -> int:
+        """Live rows above the editor box. The status rides the box's own border."""
         return (
             bool(self.typing_row())
-            + self.activity.status_shown
             + len(self.thought_rows())
             + len(self.group_rows())
             + len(self.notice_rows())
@@ -2178,8 +2200,11 @@ class PromptLayout:
             + (len(commands) + 2 if commands else 0)
         )
 
+    def task_padding(self) -> int:
+        return int(self.activity.task_style == "icons")
+
     def plan_text(self):
-        return panel_fragments(self.plan_rows(), self.size().columns - 2)
+        return panel_fragments(self.plan_rows(), self.size().columns - 2 - self.task_padding())
 
     # Containers.
 
@@ -2193,13 +2218,54 @@ class PromptLayout:
             filter=Condition(lambda: bool(rows())),
         )
 
-    def plan_body(self) -> Window:
-        return Window(
-            FormattedTextControl(self.plan_text),
-            height=lambda: len(self.plan_rows()),
-            dont_extend_height=True,
-            wrap_lines=False,
+    def plan_body(self) -> VSplit:
+        # `task_style icons` sets rows one column off the frame's side.
+        return VSplit(
+            [
+                Window(width=self.task_padding),
+                Window(
+                    FormattedTextControl(self.plan_text),
+                    height=lambda: len(self.plan_rows()),
+                    dont_extend_height=True,
+                    wrap_lines=False,
+                ),
+            ]
         )
+
+    def status_border(self) -> Window:
+        """The editor's top border carrying the status: `┌─ ◜ Phase ── ✓1 tool · 4s ─┐`.
+
+        It takes the place of the task heading while a turn runs: the tasks
+        hang under what the turn is doing, and the status costs no row. The
+        heading's count moves to the right-hand meta, so a plan longer than
+        its window still says how much there is (`Tasks 2/14 · ✓1 tool`).
+        """
+
+        def fragments():
+            columns = self.size().columns
+            if columns < 2:
+                return []
+            transcript = self.transcript
+            meta = [transcript.pending_tally() if transcript is not None else ""]
+            if self.plan_attached() and self.activity.displayed_plan:
+                meta.insert(0, self.activity.panel_title())
+            status = self.activity.status_fragments(
+                self.spinner_frame(),
+                columns - 6,
+                " · ".join(part for part in meta if part),
+                hold=STATUS_HOLD_SECONDS,
+                rule=True,
+            )
+            if not status:
+                return [("class:frame.border", "┌" + "─" * max(0, columns - 2) + "┐")]
+            used = 3 + sum(cell_len(text) for _, text in status)
+            return [
+                ("class:frame.border", "┌─ "),
+                *status,
+                ("class:frame.border", f" {'─' * max(0, columns - used - 2)}┐"),
+            ]
+
+        return Window(FormattedTextControl(fragments, show_cursor=False), height=1)
 
     def plan_heading(self):
         """The task heading, without permanent shortcut instructions."""
@@ -2270,21 +2336,9 @@ class PromptLayout:
     def activity_panel(self) -> HSplit:
         """Everything live between scrollback and the editor, top to bottom."""
         activity = self.activity
-        transcript = self.transcript
-        current_status = ConditionalContainer(
-            _spinner_rows(
-                lambda: activity.status_fragments(
-                    self.spinner_frame(),
-                    self.size().columns - 1,
-                    transcript.pending_tally() if transcript is not None else "",
-                    hold=STATUS_HOLD_SECONDS,
-                ),
-                1,
-            ),
-            filter=Condition(lambda: activity.status_shown),
-        )
-        # Its own rows, so a running tool taking the status row never hides it;
-        # above that row, where it reads as what led to the call under it.
+        # Its own rows, so a running tool taking the status never hides it;
+        # above the editor box whose border carries the status, where it reads
+        # as what led to the call.
         thought = self.panel_rows(self.thought_rows)
         plan_frame = Frame(self.plan_body(), height=lambda: len(self.plan_rows()) + 2)
         plan_frame.container.children[0] = self.plan_heading_border()
@@ -2311,22 +2365,10 @@ class PromptLayout:
         notice = self.panel_rows(self.notice_rows)
         # This terminal's own wait on the session host, hidden while a turn row covers it.
         waits = self.panel_rows(self.wait_rows)
-        # Side questions outlive the turn. Keep their rows above its status so
-        # the main spinner always borders the tasks, tools, and editor below.
+        # Side questions outlive the turn. Their rows stay out here, so only
+        # the main status rides the editor box with its tasks.
         asides = self.panel_rows(self.aside_rows)
-        return HSplit(
-            [
-                status_spacer,
-                group,
-                notice,
-                thought,
-                waits,
-                asides,
-                current_status,
-                commands,
-                plan,
-            ]
-        )
+        return HSplit([status_spacer, group, notice, thought, waits, asides, commands, plan])
 
     def queued(self) -> ConditionalContainer:
         return ConditionalContainer(
@@ -2371,15 +2413,21 @@ class PromptLayout:
             ],
             height=1,
         )
-        # Attached tasks: the widget's heading becomes the editor's top border and
-        # a divider separates the tasks from the text. frame_height counts both.
+        # The top border carries the running status, else the attached tasks'
+        # heading. Attached tasks sit under it, and a divider separates them
+        # from the text; frame_height counts both.
         side = partial(Window, char="│", width=1, style="class:frame.border")
+        status = Condition(lambda: self.activity.status_shown)
+        attached = Condition(self.plan_attached)
+        plain_top = editor_frame.container.children[0]
         editor_frame.container.children[0] = HSplit(
             [
+                ConditionalContainer(self.status_border(), filter=status),
+                ConditionalContainer(self.plan_heading_border(), filter=attached & ~status),
+                ConditionalContainer(plain_top, filter=~attached & ~status),
                 ConditionalContainer(
                     HSplit(
                         [
-                            self.plan_heading_border(),
                             VSplit([side(), self.plan_body(), side()]),
                             VSplit(
                                 [
@@ -2391,10 +2439,7 @@ class PromptLayout:
                             ),
                         ]
                     ),
-                    filter=Condition(self.plan_attached),
-                ),
-                ConditionalContainer(
-                    editor_frame.container.children[0], filter=~Condition(self.plan_attached)
+                    filter=attached,
                 ),
             ]
         )
@@ -2945,9 +2990,9 @@ class Transcript:
         style = self.syntax_themes[self.resolved_theme]
         return syntax_palette(style, self.palette, self.palette.surface)
 
-    def prompt_style(self) -> Style:
-        """The prompt_toolkit style for the current theme and syntax style."""
-        return self.chrome_palette.prompt_style(self.menu_palette)
+    def prompt_style(self, task_style: str = "status") -> Style:
+        """The prompt_toolkit style for the current theme, syntax and task style."""
+        return self.chrome_palette.prompt_style(self.menu_palette, task_style)
 
     @property
     def rich_theme(self) -> Theme:

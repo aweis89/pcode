@@ -203,9 +203,12 @@ status row and stays in the transcript.
 as soon as the model finishes a turn, keeping the idle prompt compact; it
 returns on the next turn, and Ctrl+B `o` brings it back immediately. Default: off.
 
-The widget sits at the top of the editor box by default (`attach_tasks=on`):
-its heading becomes the editor's top border and a divider separates the tasks
-from your draft. Queued prompts sit above the combined box. Use
+The widget sits at the top of the editor box by default (`attach_tasks=on`),
+with a divider between the tasks and your draft. While a turn runs, the status
+row is the box's top border and the tasks hang straight under it; between turns
+the widget's heading (`Tasks 2/5`) takes that border instead. While the turn
+runs, that count sits at the right of the status. Queued prompts sit above the
+combined box. Use
 `/config set attach_tasks off` to draw it in a separate box above the editor,
 or `/config set attach_tasks on` to attach it again. Both apply immediately
 and save the preference; `pcode config set attach_tasks off` sets it from the shell.
@@ -254,13 +257,19 @@ Editor history is kept in memory only.
 
 ## Tasks/Tools widget
 
-Tasks and running sub-agents share one compact widget above the editor. Task
-rows show status icons and keep the active item in view. Running
+Tasks and running sub-agents share one compact widget at the top of the editor
+box (or above it, with `attach_tasks=off`). Task
+rows show status icons and keep the active item in view. By default the text is
+shaded by status too: the active task stands out and finished ones fade.
+`/config set task_style icons` gives every task's text the same weight instead,
+so only the coloured icon (`✓` done, `↺` in progress, `○` pending, `–`
+cancelled) says where it stands; `task_style status` brings the shading back.
+Both apply immediately. Running
 [sub-agents](#delegated-sub-agents) appear beneath the active task with tree
 guides (`├──`, `└──`, `│`); with no active task, they appear unparented.
 Tool calls never get rows here: most finish in milliseconds, so rows for them
-would flicker in and out. The status row follows thoughts, notices, and side
-questions, directly above command previews, tasks, and the editor. It names the
+would flicker in and out. The status row is the editor box's top border, below
+thoughts, notices, side questions, and command previews. It names the
 newest running call and counts the rest (`Running 3 tools`). A finished call
 gets its line in [scrollback](transcript.md).
 
@@ -271,11 +280,10 @@ what it is doing it to, and on the right the run's tool count and how long
 this phase has lasted.
 
 ```text
-  Tracing the resize path
-◜ Thinking                                                    8s
-◜ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
-◜ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
-◜ ◈ Compacting context ▸ keep tests                           4s
+┌─ ◜ Thinking ────────────────────────────────────────────────── 8s ─┐
+┌─ ◜ Edit file · src/app.py ────────────────────── ✓7 ✗1 tools · 2s ─┐
+┌─ ◜ Waiting for model · ✓ Read file · src/app.py ─── ✓8 tools · 0s ─┐
+┌─ ◜ ◈ Compacting context ▸ keep tests ───────────────────────── 4s ─┐
 ```
 
 A spinner means the turn is waiting on that row. Running jobs are counted in
@@ -299,8 +307,9 @@ when the model finishes a turn, keeping the idle prompt compact. It returns on
 the next turn, and Ctrl+B `o` brings it back immediately. Default off.
 
 By default the widget is attached to the top of the editor box
-(`attach_tasks=on`): its heading becomes the editor's top border, with a divider
-between tasks and your draft. Queued prompts sit above the combined box.
+(`attach_tasks=on`), with a divider between tasks and your draft. The running
+status rides the box's top border above the tasks; between turns the widget's
+heading takes it. Queued prompts sit above the combined box.
 `/config set attach_tasks off` draws it in a separate box above the editor, and
 `/config set attach_tasks on` attaches it again. Both apply immediately and save
 the preference; `pcode config set attach_tasks off` works from the shell.

@@ -48,7 +48,8 @@ def assert_compact(screen):
     assert "Reasoning summary" not in screen
     assert "Summary ·" not in screen
     lines = screen.splitlines()
-    top = max(i for i, line in enumerate(lines) if "Tasks 0/1" in line)
+    # The status rides the box's top border, where the heading sits when idle.
+    top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
     divider = next(i for i in range(top + 1, len(lines)) if lines[i].startswith("├"))
     assert divider - top == 2  # Only the active task, never thinking rows.
     assert "REASONING" not in lines[top]

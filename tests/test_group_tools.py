@@ -219,10 +219,12 @@ def render_panel(running: bool) -> list[str]:
 def test_a_running_turn_counts_the_run_on_its_status_row():
     lines = render_panel(running=True)
     (row,) = [line for line in lines if "tools" in line]
-    # The count sits beside the spinner that says the run is still going.
-    assert row.lstrip()[1:].startswith(" Working")
-    assert row.lstrip()[0] in "◜◠◝◞◡◟"
-    assert row.endswith("✓3 tools · 0s")
+    # The count sits beside the spinner that says the run is still going, on
+    # the editor box's top border.
+    assert row.startswith("┌─ ")
+    assert row[3] in "◜◠◝◞◡◟"
+    assert row[4:].startswith(" Working")
+    assert row.endswith("✓3 tools · 0s ─┐")
 
 
 def test_without_a_status_row_the_run_is_counted_flush_left():

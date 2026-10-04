@@ -65,6 +65,7 @@ def test_defaults_and_path_do_not_create_files():
         "autohide_tasks": "off",
         "show_hints": "off",  # conftest's test default; the shipped one is "on".
         "attach_tasks": "on",
+        "task_style": "status",
         "tasks_max_height": None,
         "transcript_max_chars": "2000000",
         "error_scrollback_lines": "20",
@@ -363,6 +364,35 @@ def test_slash_config_updates_task_attachment_immediately(tmp_path, scope):
         assert PreviewApp(console=Console(file=StringIO())).activity.attach_tasks is attached
     assert "Layout settings apply immediately." in output.getvalue()
     assert "attach_tasks" not in load_preferences()
+
+
+def test_slash_config_switches_task_style_immediately(tmp_path):
+    set_project_root(tmp_path)
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output, width=160))
+    assert app.activity.task_style == "status"
+
+    def text_style():
+        style = app.transcript.prompt_style(app.activity.task_style)
+        return style.get_attrs_for_style_str("class:plan.completed")
+
+    assert text_style().dim
+    app.handle("/config set task_style icons")
+    assert app.activity.task_style == "icons"
+    assert not text_style().dim
+    assert PreviewApp(console=Console(file=StringIO())).activity.task_style == "icons"
+    app.handle("/config unset task_style")
+    assert app.activity.task_style == "status"
+    assert text_style().dim
+    assert "Layout settings apply immediately." in output.getvalue()
+
+
+def test_an_unknown_saved_task_style_falls_back_to_status(tmp_path):
+    set_project_root(tmp_path)
+    path = preferences_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"task_style": "bogus"}))
+    assert PreviewApp(console=Console(file=StringIO())).activity.task_style == "status"
 
 
 def test_slash_config_task_attachment_respects_project_override(tmp_path):

@@ -111,6 +111,28 @@ def test_task_rows_are_styled_by_status(theme):
     assert attrs("class:plan.in_progress,agent.hue.2").bold
 
 
+@pytest.mark.parametrize("palette", [*PALETTES.values(), TERMINAL_PALETTE])
+def test_icon_task_style_gives_text_one_weight_and_leaves_status_to_the_icon(palette):
+    style = merge_styles([default_ui_style(), palette.prompt_style(None, "icons")])
+
+    def attrs(style_str):
+        return style.get_attrs_for_style_str(style_str)
+
+    for status in ("pending", "in_progress", "completed", "cancelled", "blocked"):
+        text = attrs(f"class:plan.{status}")
+        assert (text.color, text.bold, text.dim) == ("default", False, False), status
+    assert attrs("class:plan.cancelled").strike
+    # The icons keep their status colours, exactly as under the default style.
+    default = merge_styles([default_ui_style(), palette.prompt_style()])
+    for status in ("pending", "in_progress", "completed", "cancelled", "blocked"):
+        icon = f"class:plan.icon.{status}"
+        assert attrs(icon) == default.get_attrs_for_style_str(icon), status
+    # A sub-agent's hue still colours its rows, at the same weight.
+    hued = attrs("class:plan.completed,agent.hue.1")
+    assert hued.color == palette.agents[1].lstrip("#")
+    assert not hued.dim and not hued.bold
+
+
 def test_terminal_hues_keep_sub_agent_rows_undimmed():
     """The terminal palette's base `plan` rule is dim; a hue must not bring it back."""
     style = merge_styles([default_ui_style(), TERMINAL_PALETTE.prompt_style()])

@@ -42,7 +42,8 @@ def test_compaction_keeps_editor_height_and_cancels_after_clearing_draft(pane):
     assert "▸ keep test failures" in first
     assert first.startswith(SPINNER_ROW)
     lines = screen.splitlines()
-    assert lines[lines.index(first) + 1].startswith("┌─ Tasks")
+    # The badge rides the editor box's top border, over the tasks.
+    assert lines[lines.index(first) + 1].startswith("│↺ A task")
     deadline = time.monotonic() + TIMEOUT
     while prompt_row(screen) == first:
         assert time.monotonic() < deadline, "Compaction spinner did not animate"

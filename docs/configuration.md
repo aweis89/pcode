@@ -24,8 +24,8 @@ The same commands are available inside pcode as `/config`, with tab completion:
 `/config set theme light`, `/config get autocompact`, `/config unset effort`, etc.
 **Most config edits affect the next launch, not the running conversation.** To change
 an active setting and save its default immediately, use `/theme`, `/effort`,
-`/model`, or `/autocompact` instead. The layout settings `attach_tasks` and
-`tasks_max_height` apply immediately through `/config`. CLI overrides such as
+`/model`, or `/autocompact` instead. The layout settings `attach_tasks`,
+`tasks_max_height` and `task_style` apply immediately through `/config`. CLI overrides such as
 `--theme` and `--model` do not rewrite global defaults, and resumed sessions retain
 their own model.
 
@@ -160,6 +160,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `autohide_tasks` | `off` | `on`, `off` (hide the Tasks/Tools widget when a turn ends; `/autohide-tasks`) |
 | `show_hints` | `on` | `on`, `off` (show one compact help indicator at the prompt instead of shortcut hints beside individual controls) |
 | `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
+| `task_style` | `status` | `status` (shade task text by status), `icons` (one text weight, coloured icons only; `/config` applies immediately) |
 | `tasks_max_height` | unset | Rows (`20`) or a share of the screen (`0.5`) for the Tasks/Tools widget and editor together; unset keeps the widget to 10 rows or half the screen |
 | `paced_scrollback` | `typed` | `typed`, `rows`, `off` (type settled prose out, or roll blocks in a row per frame; see [the transcript](transcript.md#paced-scrollback)) |
 | `regenerate_on_resize` | `on` | `on`, `off` (rebuild scrollback at the new size after a resize; applies on next launch) |

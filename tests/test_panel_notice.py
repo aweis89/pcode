@@ -127,7 +127,7 @@ def test_toggle_renders_above_the_editor_instead_of_entering_scrollback():
     assert screen.index("Thinking: off") < screen.index("┌")
 
 
-def test_typed_row_sits_directly_under_scrollback_above_the_spinner():
+def test_typed_row_sits_directly_under_scrollback_above_the_status():
     async def run():
         stream = StringIO()
         app = PreviewApp(console=Console(file=stream, width=80, color_system=None))
@@ -163,17 +163,17 @@ def test_typed_row_sits_directly_under_scrollback_above_the_spinner():
     # The layout's first row is the one under the cursor, where scrollback
     # ends, so the typed text continues it flush left without a gap.
     assert lines[0] == "Half a sen"
-    spinner = next(i for i, line in enumerate(lines) if "Working" in line)
-    frame = next(i for i, line in enumerate(lines) if line.startswith("┌"))
-    # Scrollback's own gap sits between the typed row and the spinner.
-    assert lines[spinner - 1] == ""
-    assert 0 < spinner < frame
+    status = next(i for i, line in enumerate(lines) if "Working" in line)
+    # The status rides the editor box's top border.
+    assert lines[status].startswith("┌─ ")
+    # Scrollback's own gap sits between the typed row and the box.
+    assert lines[status - 1] == ""
 
 
 @pytest.mark.parametrize("commands", [False, True])
 @pytest.mark.parametrize("tasks", [False, True])
 @pytest.mark.parametrize("attached", [False, True])
-def test_main_status_borders_work_area_and_jobs_only_appear_in_footer(commands, tasks, attached):
+def test_main_status_rides_the_editor_box_and_jobs_only_appear_in_footer(commands, tasks, attached):
     from pcode.aside import Aside
     from pcode.runtime import CommandOutput
 
@@ -213,16 +213,100 @@ def test_main_status_borders_work_area_and_jobs_only_appear_in_footer(commands, 
     lines = [line for line in asyncio.run(run()) if line.strip()]
     status = next(line for line in lines if "Working" in line)
     aside = next(line for line in lines if " btw " in line)
-    columns = {len(line) - len(line.lstrip()) for line in (status, aside)}
-    assert columns == {1}, (status, aside)
+    assert status.startswith("┌─ ") and status.endswith("─┐"), status
+    assert len(status) == 80, status
+    assert len(aside) - len(aside.lstrip()) == 1, aside
     status_index = lines.index(status)
+    # Everything else live sits above the box: side questions, the thought,
+    # notices, a command's output, and tasks drawn in a frame of their own.
     assert lines.index(aside) < status_index
     assert next(i for i, line in enumerate(lines) if "Latest thought" in line) < status_index
     assert next(i for i, line in enumerate(lines) if "Notice above status" in line) < status_index
-    assert lines[status_index + 1].startswith("⟳ Shell" if commands else "┌")
     if commands:
-        assert next(i for i, line in enumerate(lines) if "Tool output" in line) > status_index
+        assert next(i for i, line in enumerate(lines) if "Tool output" in line) < status_index
     if tasks:
-        assert next(i for i, line in enumerate(lines) if "Example task" in line) > status_index
+        task = next(i for i, line in enumerate(lines) if "Example task" in line)
+        if attached:
+            # Under the status, with no heading row of their own: its count
+            # rides the status instead.
+            assert task == status_index + 1
+            assert "Tasks 0/1 · " in status
+            assert lines[task].startswith("│↺ Example task")
+        else:
+            assert task < status_index
+            assert "Tasks" not in status
+    else:
+        # Hidden tasks give the status no count either.
+        assert "Tasks" not in status
+        assert lines[status_index + 1].startswith("│❯")
     assert "2 jobs" in lines[-1]
     assert sum("jobs" in line for line in lines) == 1
+
+
+@pytest.mark.parametrize("columns", [4, 5, 8, 12, 20, 33, 80])
+def test_status_border_fills_the_pane_exactly_at_any_width(columns):
+    async def run():
+        stream = StringIO()
+        app = PreviewApp(console=Console(file=stream, width=columns, color_system=None))
+        activity = app.activity
+        activity.prompt_state = "running"
+        activity.plan = [{"content": "Example task", "status": "in_progress"}]
+        with create_pipe_input() as pipe:
+            output = Vt100_Output(stream, lambda: Size(rows=24, columns=columns), enable_cpr=False)
+            session = create_prompt(
+                CommandRegistry(),
+                activity=activity,
+                transcript=app.transcript,
+                on_submit=lambda text: None,
+                input=pipe,
+                output=output,
+            )
+            with set_app(session.app):
+                session.app.renderer.render(session.app, session.app.layout)
+            screen = session.app.renderer._last_screen
+            return [
+                "".join(screen.data_buffer[row][col].char for col in range(columns))
+                for row in range(screen.height)
+            ]
+
+    lines = asyncio.run(run())
+    cursor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
+    top = max(i for i, line in enumerate(lines[:cursor]) if line.startswith("┌"))
+    assert len(lines[top].rstrip()) == columns, lines[top]
+    assert lines[top].endswith("┐"), lines[top]
+    if columns >= 20:
+        assert "Working" in lines[top]
+
+
+@pytest.mark.parametrize(
+    "task_style, row", [("status", "│↺ Example task"), ("icons", "│ ↺ Example task")]
+)
+def test_icon_task_style_sets_task_rows_off_the_frame(task_style, row):
+    async def run():
+        stream = StringIO()
+        app = PreviewApp(console=Console(file=stream, width=40, color_system=None))
+        activity = app.activity
+        activity.task_style = task_style
+        activity.plan = [{"content": "Example task", "status": "in_progress"}]
+        activity.prompt_state = "running"
+        with create_pipe_input() as pipe:
+            output = Vt100_Output(stream, lambda: Size(rows=24, columns=40), enable_cpr=False)
+            session = create_prompt(
+                CommandRegistry(),
+                activity=activity,
+                transcript=app.transcript,
+                on_submit=lambda text: None,
+                input=pipe,
+                output=output,
+            )
+            with set_app(session.app):
+                session.app.renderer.render(session.app, session.app.layout)
+            screen = session.app.renderer._last_screen
+            return [
+                "".join(screen.data_buffer[r][c].char for c in range(40))
+                for r in range(screen.height)
+            ]
+
+    lines = asyncio.run(run())
+    task = next(line for line in lines if "Example task" in line)
+    assert task.startswith(row) and task.endswith("│"), task

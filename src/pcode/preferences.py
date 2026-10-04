@@ -491,6 +491,11 @@ SETTINGS = {
     "attach_tasks": Setting(
         "on", ("on", "off"), description="Draw the task list inside the editor box"
     ),
+    "task_style": Setting(
+        "status",
+        ("status", "icons"),
+        description="Task rows: shade text by status, or one weight with coloured icons",
+    ),
     "tasks_max_height": Setting(
         None,
         height=True,
