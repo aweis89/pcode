@@ -112,19 +112,16 @@ def test_summary_and_hint_list_what_applies_now():
         assert shortcuts.hint_rows() == [
             (shortcuts.label("y"), "Copy"),
             (shortcuts.label("k"), "Stop"),
-            ("Esc", "Cancel"),
-            ("F1", "All keys"),
         ]
+        assert shortcuts.hint_footer() == [("Esc", "cancel"), ("F1", "all keys")]
     shortcuts.pending = True
     assert shortcuts.summary() == "^P …"
     assert shortcuts.hint_rows() == [
         ("y", "Copy"),
         ("k", "Stop"),
-        ("Esc", "Cancel"),
-        ("F1", "All keys"),
     ]
     available[0] = False
-    assert shortcuts.hint_rows() == [("y", "Copy"), ("Esc", "Cancel"), ("F1", "All keys")]
+    assert shortcuts.hint_rows() == [("y", "Copy")]
     shortcuts.dismiss()
     assert shortcuts.summary() == "^P Keybindings"
 
@@ -253,7 +250,7 @@ def test_the_popup_hint_lists_the_shortcuts_while_the_leader_waits():
             assert "Copy" not in screen()
             await view.press("\x10")
             shown = screen()
-            assert "Keybindings" in shown and "Copy" in shown and "Cancel" in shown
+            assert "Keybindings" in shown and "Copy" in shown and "cancel" in shown
             # Unavailable shortcuts are left out.
             assert "Stop" not in shown
             await view.press("\x1b")
@@ -344,10 +341,10 @@ def test_the_prompt_renders_descriptive_actions_in_shared_help():
     screen = asyncio.run(run())
     assert "Keybindings" in screen
     assert "Cycle send mode" in screen
-    assert "Increase thinking effort" in screen
+    assert "n / p  Thinking effort up / down" in screen
     assert "Select thinking visibility" in screen
     assert "Copy draft / last response" in screen
-    assert "Cancel" in screen
+    assert "Esc cancel · F1 all keys" in screen
 
 
 def test_help_and_flashes_name_the_prompts_own_keys():

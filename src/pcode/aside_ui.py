@@ -23,7 +23,7 @@ from prompt_toolkit.layout import (
     VSplit,
 )
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Frame, Label, TextArea
+from prompt_toolkit.widgets import Label, TextArea
 from rich.markdown import Markdown
 from rich.text import Text
 from rich.theme import Theme
@@ -31,6 +31,7 @@ from rich.theme import Theme
 from pcode.aside import Aside, Asides, Bridge
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.copy_ui import Snippet, SnippetPicker, snippets
+from pcode.frame import Frame
 from pcode.links import Link, extract_links, open_link, remember_link
 from pcode.links_ui import LinkPicker
 from pcode.popup_ui import (

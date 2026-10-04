@@ -8,8 +8,9 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Dialog, Label, TextArea
+from prompt_toolkit.widgets import Label, TextArea
 
+from pcode.frame import Dialog
 from pcode.models import PROVIDERS
 from pcode.popup_ui import fuzzy_match, popup_container, popup_style
 from pcode.prefix_keys import PrefixKeys
@@ -108,7 +109,6 @@ class ModelPicker:
                 ],
                 padding=1,
             ),
-            with_background=True,
         )
         self.app = Application(
             layout=Layout(popup_container(dialog, shortcuts), focused_element=self.search),

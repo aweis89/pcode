@@ -17,6 +17,8 @@ from pcode.app import PreviewApp
 PreviewApp().run()
 """
 HINT = "Cycle send mode"
+# The overlay's last row: a short terminal shows it only after scrolling.
+LAST = "Copy draft / last response"
 
 
 def draft_line(screen: str) -> str:
@@ -36,7 +38,7 @@ def test_leader_hint_shows_above_the_editor_and_runs_the_shortcut(pane):
     hint = next(i for i, line in enumerate(lines) if HINT in line)
     editor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
     assert hint < editor, screen
-    assert "Increase thinking effort" in screen
+    assert "Thinking effort up / down" in screen
     assert "Select thinking visibility" in screen
     assert "steering" in lines[-1] and input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "s")
@@ -62,7 +64,7 @@ def test_leader_hint_shows_above_the_editor_and_runs_the_shortcut(pane):
 
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
-@pytest.mark.parametrize(("height", "scroll_key"), [(12, "Down"), (15, "NPage")])
+@pytest.mark.parametrize(("height", "scroll_key"), [(11, "Down"), (12, "NPage")])
 def test_short_terminal_help_scrolls_without_changing_draft(pane, height, scroll_key):
     capture(pane, "steering")
     pane("send-keys", "-t", "preview:0.0", "keep this draft")
@@ -72,29 +74,27 @@ def test_short_terminal_help_scrolls_without_changing_draft(pane, height, scroll
 
     pane("send-keys", "-t", "preview:0.0", "C-p")
     screen = capture(pane, HINT)
-    assert "All keys" not in screen, screen
+    assert LAST not in screen, screen
     assert "keep this draft" in draft_line(screen), screen
     # More keys than rows reaches the bottom and exercises the scroll bound.
     pane("send-keys", "-t", "preview:0.0", *([scroll_key] * 50))
-    screen = capture(pane, "All keys")
-    assert "Copy draft / last response" in screen, screen
+    screen = capture(pane, LAST)
     assert "keep this draft" in draft_line(screen) and input_rows(screen) == 1, screen
     pane("send-keys", "-t", "preview:0.0", "Escape")
-    screen = settle(pane, lambda screen: "All keys" not in screen)
-    assert "All keys" not in screen, screen
+    screen = settle(pane, lambda screen: LAST not in screen)
+    assert LAST not in screen, screen
     assert "keep this draft" in draft_line(screen) and input_rows(screen) == 1, screen
 
     # F1 is read-only, including letters that otherwise run shortcuts.
     pane("send-keys", "-t", "preview:0.0", "F1")
     screen = capture(pane, "Keybindings")
-    assert "Dismiss help" not in screen, screen
+    assert LAST not in screen, screen
     pane("send-keys", "-t", "preview:0.0", "s", *([scroll_key] * 50))
-    screen = capture(pane, "Dismiss help")
-    assert "Copy draft / last response" in screen, screen
+    screen = capture(pane, LAST)
     assert "steering" in screen.splitlines()[-1], screen
     pane("send-keys", "-t", "preview:0.0", "Escape")
-    screen = settle(pane, lambda screen: "Dismiss help" not in screen)
-    assert "Dismiss help" not in screen, screen
+    screen = settle(pane, lambda screen: LAST not in screen)
+    assert LAST not in screen, screen
     assert "keep this draft" in draft_line(screen) and "drafts" not in draft_line(screen), screen
     assert input_rows(screen) == 1, screen
 

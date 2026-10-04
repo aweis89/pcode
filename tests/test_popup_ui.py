@@ -55,7 +55,7 @@ def test_standalone_copy_help_gates_picker_keys(monkeypatch, prefix):
                 if prefix != "ctrl":
                     pipe.send_text("\x18")
                     await wait_for(lambda: shortcuts.pending)
-                    assert ("F1", "All keys") in shortcuts.hint_rows()
+                    assert ("F1", "all keys") in shortcuts.hint_footer()
                 pipe.send_text("\x1bOP")
                 await wait_for(lambda: shortcuts.browsing)
                 assert ("Enter", "Copy selected snippet") in shortcuts.hint_rows()

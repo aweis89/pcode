@@ -9,11 +9,12 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout
-from prompt_toolkit.widgets import Frame, Label, TextArea
+from prompt_toolkit.widgets import Label, TextArea
 
 from pcode.delta import Delta
 from pcode.edit_transcript import DiffLexer, text_fragments
 from pcode.edits import edit_text
+from pcode.frame import Frame
 from pcode.git_diff import DiffView
 from pcode.popup_ui import (
     bind_list_paging,
@@ -217,11 +218,11 @@ class EditBrowser:
                 self.search(self.scope)
 
         # Emacs's incremental search keys: s forward, r in reverse.
-        @shortcuts.add("s", "Next match")
+        @shortcuts.add("s", "Next match", group="Next / previous match")
         def next_match(event):
             self.jump(1)
 
-        @shortcuts.add("r", "Previous match")
+        @shortcuts.add("r", "Previous match", group="Next / previous match")
         def previous_match(event):
             self.jump(-1)
 

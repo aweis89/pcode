@@ -67,8 +67,8 @@ def test_thinking_chooses_explicit_mode(prefix, opening, selection, mode, callba
                 ("o", "Off"),
                 ("s", "Status line (current)"),
                 ("b", "Scrollback"),
-                ("Esc", "Cancel"),
             ]
+            assert shortcuts.hint_footer() == [("Esc", "cancel")]
             assert selected == [] and activity.thinking_mode == "status-line"
             press(app, selection)
             assert not shortcuts.visible
@@ -129,8 +129,8 @@ def test_f1_browses_without_executing_actions_or_submitting(prefix):
             assert shortcuts.hint_rows() == [
                 ("Enter", "Submit draft"),
                 (shortcuts.label("y"), "Copy draft"),
-                ("Esc / F1", "Dismiss help"),
             ]
+            assert shortcuts.hint_footer() == [("Esc / F1", "close")]
             press(app, "y", Keys.ControlY, Keys.Enter)
             assert shortcuts.browsing and not calls
             assert draft.buffer.document == before

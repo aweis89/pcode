@@ -5,11 +5,17 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from io import StringIO
 
+from prompt_toolkit.application import get_app
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, Filter, has_focus
-from prompt_toolkit.formatted_text import ANSI, AnyFormattedText, to_formatted_text
+from prompt_toolkit.formatted_text import (
+    ANSI,
+    AnyFormattedText,
+    StyleAndTextTuples,
+    to_formatted_text,
+)
 from prompt_toolkit.formatted_text.utils import fragment_list_to_text, split_lines
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
@@ -28,10 +34,11 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
 from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
-from prompt_toolkit.widgets import Frame, TextArea
+from prompt_toolkit.widgets import TextArea
 from rich.console import Console
 from rich.theme import Theme
 
+from pcode.frame import TITLE_CHROME, Frame, text_width
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.prefix_keys import PrefixKeys
@@ -75,6 +82,8 @@ POPUP_ACCENTS = Style.from_dict(
         "popup selected": f"{_NATIVE} reverse",
         "popup cursor-line": f"{_NATIVE} reverse nounderline",
         "popup placeholder": "dim italic",
+        "popup frame.footer": "dim",
+        "popup hint.message": "italic",
     }
 )
 
@@ -92,37 +101,49 @@ def popup_container(body, shortcuts: PrefixKeys | None = None):
 def shortcut_hint(shortcuts: PrefixKeys):
     """Shared contextual help for prefix actions and read-only F1 browsing."""
 
-    def rows() -> list[tuple[str, str]]:
-        listed = shortcuts.hint_rows()
+    def lines() -> list[StyleAndTextTuples]:
+        rows = shortcuts.hint_rows()
+        columns = [rows]
+        if len(rows) > HINT_COLUMN_ROWS:
+            half = -(-len(rows) // 2)
+            split = [rows[:half], rows[half:]]
+            # Room for the borders and a popup float's right margin, or it would wrap.
+            room = get_app().output.get_size().columns - _BORDERS - 2
+            if _hint_width(_hint_lines(split)) <= room:
+                columns = split
+        listed = _hint_lines(columns)
         if shortcuts.message:
-            listed.append(("", shortcuts.message))
+            listed.append([("class:hint.message", f" {shortcuts.message} ")])
         return listed
 
-    def key_width(rows) -> int:
-        return max((get_cwidth(key) for key, _ in rows), default=0)
-
-    def fragments():
-        listed = rows()
-        width = key_width(listed)
-        result = []
-        for index, (key, label) in enumerate(listed):
+    def fragments() -> StyleAndTextTuples:
+        listed = lines()
+        # Down/PgDn count rows, which two columns halve: clamp to what is drawn.
+        shortcuts.help_offset = min(shortcuts.help_offset, max(0, len(listed) - 1))
+        result: StyleAndTextTuples = []
+        for index, line in enumerate(listed):
             if index:
                 result.append(("", "\n"))
-            # Pad by display width, not ljust's character count, for wide keys.
-            padded = key + " " * (width - get_cwidth(key))
-            result += [("bold", f" {padded}"), ("", f"  {label} ")]
+            result += line
+        return result
+
+    def footer() -> StyleAndTextTuples:
+        result: StyleAndTextTuples = []
+        for index, (key, label) in enumerate(shortcuts.hint_footer()):
+            if index:
+                result.append(("", " · "))
+            result += [("bold", key), ("", f" {label}")]
         return result
 
     def frame_width() -> Dimension:
         # Frame's top and bottom borders stretch to whatever width they are
         # given, while the body hugs its text, so without an explicit width
         # the box spans the screen and the right border floats mid-row.
-        listed = rows()
-        width = key_width(listed)
-        content = max((width + get_cwidth(label) + 4 for _, label in listed), default=0)
-        # "┌| title |┐": the title plus a space, a bar, and a corner each side.
-        title = get_cwidth(shortcuts.help_title) + 6 if shortcuts.help_title else 0
-        fit = max(content + _BORDERS, title)
+        fit = max(
+            _hint_width(lines()) + _BORDERS,
+            text_width(shortcuts.help_title) + TITLE_CHROME,
+            text_width(footer()) + TITLE_CHROME,
+        )
         # A maximum, not an exact width, so a narrow terminal wraps the labels.
         return Dimension(preferred=fit, max=fit)
 
@@ -135,13 +156,53 @@ def shortcut_hint(shortcuts: PrefixKeys):
         wrap_lines=True,
         dont_extend_height=True,
     )
+    frame = Frame(body, title=lambda: shortcuts.help_title, width=frame_width, footer=footer)
     return ConditionalContainer(
-        VSplit(
-            [Frame(body, title=lambda: shortcuts.help_title, width=frame_width)],
-            align=HorizontalAlign.LEFT,
-        ),
+        VSplit([frame], align=HorizontalAlign.LEFT),
         filter=Condition(lambda: shortcuts.visible),
     )
+
+
+# More rows than this split into two columns, when the screen is wide enough.
+HINT_COLUMN_ROWS = 10
+_COLUMN_GAP = "   "
+
+
+def _hint_lines(columns: list[list[tuple[str, str]]]) -> list[StyleAndTextTuples]:
+    """Side-by-side columns of ``key  label`` rows, each column aligned on its own."""
+
+    def pad(text: str, width: int) -> str:
+        # By display width, not ljust's character count, for wide characters.
+        return text + " " * (width - get_cwidth(text))
+
+    widths = [
+        (
+            max((get_cwidth(key) for key, _ in rows), default=0),
+            max((get_cwidth(label) for _, label in rows), default=0),
+        )
+        for rows in columns
+    ]
+    lines = []
+    for index in range(max((len(rows) for rows in columns), default=0)):
+        line: StyleAndTextTuples = [("", " ")]
+        for number, (rows, (key_width, label_width)) in enumerate(zip(columns, widths)):
+            if index >= len(rows):
+                break
+            key, label = rows[index]
+            if number:
+                line.append(("", _COLUMN_GAP))
+            last = number == len(columns) - 1
+            line += [
+                ("class:hint.key bold", pad(key, key_width)),
+                ("class:hint.label", "  " + (label if last else pad(label, label_width))),
+            ]
+        line.append(("", " "))
+        lines.append(line)
+    return lines
+
+
+def _hint_width(lines: list[StyleAndTextTuples]) -> int:
+    return max((get_cwidth(fragment_list_to_text(line)) for line in lines), default=0)
 
 
 # The popup shortcut that hands the mouse to the terminal and back. Ctrl+M is

@@ -88,12 +88,14 @@ def _add_shortcuts(
     def choose_model(event: KeyPressEvent) -> None:
         on_model()
 
-    @shortcuts.add("n", "Increase thinking effort", filter=on_effort is not None)
+    effort = "Thinking effort up / down"
+
+    @shortcuts.add("n", "Increase thinking effort", filter=on_effort is not None, group=effort)
     def increase_effort(event: KeyPressEvent) -> None:
         on_effort(1)
         event.app.invalidate()
 
-    @shortcuts.add("p", "Decrease thinking effort", filter=on_effort is not None)
+    @shortcuts.add("p", "Decrease thinking effort", filter=on_effort is not None, group=effort)
     def decrease_effort(event: KeyPressEvent) -> None:
         on_effort(-1)
         event.app.invalidate()

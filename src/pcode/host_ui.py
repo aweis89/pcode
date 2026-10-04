@@ -9,8 +9,9 @@ from prompt_toolkit.filters import Always, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit
-from prompt_toolkit.widgets import Dialog, Label, TextArea
+from prompt_toolkit.widgets import Label, TextArea
 
+from pcode.frame import Dialog
 from pcode.host_protocol import HostEntry, code_fingerprint
 from pcode.popup_ui import (
     bind_list_paging,
@@ -194,7 +195,6 @@ def hosts_dialog(
             ],
             padding=1,
         ),
-        with_background=True,
     )
     refresh()
     return Application(
