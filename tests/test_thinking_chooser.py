@@ -65,7 +65,8 @@ def test_thinking_chooser_refreshes_current_selection(prefix, opening, callback)
                 assert shortcuts.hint_rows() == [
                     (letter, label + (" (current)" if value == before else ""))
                     for letter, value, label in choices
-                ] + [("Esc", "Cancel")]
+                ]
+                assert shortcuts.hint_footer() == [("Esc", "cancel")]
                 assert activity.thinking_mode == before
                 assert selected == expected_calls
                 press(app, key)

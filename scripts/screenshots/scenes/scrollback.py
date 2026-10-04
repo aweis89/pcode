@@ -39,7 +39,8 @@ STEPS = [
     ("key", "Enter"),
     ("wait", "matching test_total"),
     ("shot", "scrollback-summary"),
-    ("key", "C-g"),
+    ("key", "C-b"),  # The default key_prefix leader, then the shortcut.
+    ("key", "g"),
     ("wait", "Initial commit"),
     ("shot", "scrollback-commands"),
 ]
