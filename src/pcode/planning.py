@@ -55,7 +55,12 @@ SIZE_DESCRIPTION = (
 
 
 class SizedPlanItem(PlanItem):
-    """A plan step with an optional relative size, so progress can be weighted."""
+    """One step in the plan.
+
+    `id` is auto-generated when omitted, so the model can create a plan without
+    ids and reference existing steps by id when restructuring. `size` weights
+    the user's progress bar.
+    """
 
     size: Size | None = Field(default=None, description=SIZE_DESCRIPTION)
 
@@ -85,7 +90,9 @@ class SizedPlanningToolset(PlanningToolset):
             ctx: Framework-provided run context.
             content: The step description in imperative form.
             active_form: Optional present-continuous label, e.g. "Fix bug" -> "Fixing bug".
-            size: Relative effort, S, M or L; omit for M.
+            size: Relative effort: S (a quick check or one-line change), M (typical; the
+                default), L (the bulk of the work, e.g. the main implementation or a long
+                test run). Omit for M.
         """
         store = self._resolve(ctx)
         before = await store.get_items()
