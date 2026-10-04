@@ -21,7 +21,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from email.message import EmailMessage
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
 IMAP_HOST = "imap.gmail.com"
 SMTP_HOST = "smtp.gmail.com"
@@ -102,40 +102,109 @@ def store_password(owner: str) -> None:
     )
 
 
-def parse_labels(line: str) -> frozenset[str]:
-    """The `X-GM-LABELS (...)` list of a FETCH response: atoms and quoted strings."""
-    match = re.search(r"X-GM-LABELS \(", line)
-    if match is None:
-        return frozenset()
-    labels, index = [], match.end()
-    while index < len(line) and line[index] != ")":
-        char = line[index]
-        if char == " ":
-            index += 1
-        elif char == '"':
-            index += 1
-            value = []
-            while index < len(line) and line[index] != '"':
-                if line[index] == "\\":
-                    index += 1
-                value.append(line[index])
-                index += 1
-            labels.append("".join(value))
-            index += 1
+# Keep string values (quoted or literal bytes) distinct from protocol atoms
+# (str). In particular, label contents must never become FETCH field names.
+_TOKEN = re.compile(rb'\s+|[()]|"(?:[^"\\]|\\.)*"|[^\s()"{}]+')
+_Value: TypeAlias = str | bytes | list["_Value"]
+
+
+def _fetch_records(data: list) -> list[dict[str, _Value]]:
+    """Parse imaplib's tuple/literal fragments and continuations as records."""
+    records = []
+    root: list[_Value] = []
+    stack = [root]
+    for part in data:
+        if part is None:
+            continue
+        literal = None
+        if isinstance(part, tuple) and len(part) == 2:
+            fragment, literal = part
+            if not isinstance(fragment, bytes) or not isinstance(literal, bytes):
+                raise imaplib.IMAP4.error("Invalid FETCH literal")
+            marker = re.search(rb"\{([0-9]+)\}$", fragment)
+            if marker is None or int(marker[1]) != len(literal):
+                raise imaplib.IMAP4.error("Invalid FETCH literal length")
+            fragment = fragment[: marker.start()]
+        elif isinstance(part, bytes):
+            fragment = part
         else:
-            end = index
-            while end < len(line) and line[end] not in " )":
-                end += 1
-            labels.append(line[index:end])
-            index = end
+            raise imaplib.IMAP4.error("Invalid FETCH fragment")
+        index = 0
+        while index < len(fragment):
+            match = _TOKEN.match(fragment, index)
+            if match is None:
+                raise imaplib.IMAP4.error("Invalid FETCH syntax")
+            token = match[0]
+            index = match.end()
+            if token.isspace():
+                continue
+            if token == b"(":
+                child: list[_Value] = []
+                stack[-1].append(child)
+                stack.append(child)
+            elif token == b")":
+                if len(stack) == 1:
+                    raise imaplib.IMAP4.error("Unbalanced FETCH response")
+                stack.pop()
+                if len(stack) == 1:
+                    if (
+                        len(root) != 2
+                        or not isinstance(root[0], str)
+                        or not root[0].isascii()
+                        or not root[0].isdigit()
+                        or not isinstance(root[1], list)
+                    ):
+                        raise imaplib.IMAP4.error("Invalid FETCH record")
+                    values = root[1]
+                    if len(values) % 2:
+                        raise imaplib.IMAP4.error("Unpaired FETCH field")
+                    fields: dict[str, _Value] = {}
+                    for key, value in zip(values[::2], values[1::2]):
+                        if not isinstance(key, str) or key.upper() in fields:
+                            raise imaplib.IMAP4.error("Invalid or duplicate FETCH field")
+                        fields[key.upper()] = value
+                    records.append(fields)
+                    root.clear()
+            elif token.startswith(b'"'):
+                stack[-1].append(re.sub(rb"\\(.)", rb"\1", token[1:-1]))
+            else:
+                stack[-1].append(token.decode("ascii"))
+        if literal is not None:
+            if len(stack) == 1:
+                raise imaplib.IMAP4.error("FETCH literal outside a record")
+            stack[-1].append(literal)
+    if len(stack) != 1 or root:
+        raise imaplib.IMAP4.error("Incomplete FETCH response")
+    return records
+
+
+def _labels(fields: dict[str, _Value]) -> frozenset[str]:
+    values = fields.get("X-GM-LABELS", [])
+    if not isinstance(values, list):
+        raise imaplib.IMAP4.error("Invalid FETCH labels")
+    labels = []
+    for value in values:
+        if isinstance(value, list):
+            raise imaplib.IMAP4.error("Invalid FETCH label")
+        labels.append(value.decode() if isinstance(value, bytes) else value)
     return frozenset(labels)
 
 
-def _number(name: str, line: str) -> str:
-    match = re.search(rf"{name} (\d+)", line)
-    if match is None:
-        raise imaplib.IMAP4.error(f"FETCH response without {name}")
-    return match.group(1)
+def parse_labels(line: str) -> frozenset[str]:
+    """The `X-GM-LABELS (...)` list of a complete FETCH response."""
+    records = _fetch_records([line.encode()])
+    return _labels(records[0]) if records else frozenset()
+
+
+def _number(name: str, fields: dict[str, _Value]) -> str:
+    value = fields.get(name)
+    if not isinstance(value, str) or not value.isascii() or not value.isdigit():
+        raise imaplib.IMAP4.error(f"FETCH response without valid {name}")
+    return value
+
+
+def _message_records(data: list, handle: str) -> list[dict[str, _Value]]:
+    return [fields for fields in _fetch_records(data) if fields.get("UID") == handle]
 
 
 def _all_mail(imap: imaplib.IMAP4) -> str:
@@ -198,22 +267,25 @@ class GmailMailbox:
 
     def meta(self, handle: str) -> Meta:
         data = self._uid("FETCH", handle, "(X-GM-MSGID X-GM-LABELS RFC822.SIZE)")
-        line = next(
-            (item.decode() for item in data if isinstance(item, bytes) and b"X-GM-MSGID" in item),
-            None,
-        )
-        if line is None:
-            raise imaplib.IMAP4.error(f"No such message: {handle}")
-        return Meta(
-            gmail_id=_number("X-GM-MSGID", line),
-            labels=parse_labels(line),
-            size=int(_number("RFC822.SIZE", line)),
-        )
+        for fields in _message_records(data, handle):
+            # An unsolicited FLAGS update for this UID is not our result.
+            if not {"X-GM-MSGID", "X-GM-LABELS", "RFC822.SIZE"} <= fields.keys():
+                continue
+            return Meta(
+                gmail_id=_number("X-GM-MSGID", fields),
+                labels=_labels(fields),
+                size=int(_number("RFC822.SIZE", fields)),
+            )
+        raise imaplib.IMAP4.error(f"No metadata for message {handle}")
 
     def _literal(self, handle: str, item: str) -> bytes:
-        for part in self._uid("FETCH", handle, f"({item})"):
-            if isinstance(part, tuple) and len(part) == 2:
-                return part[1]
+        data = self._uid("FETCH", handle, f"({item})")
+        # PEEK is a request modifier, not part of the returned BODY field.
+        field = item.replace("BODY.PEEK[", "BODY[")
+        for fields in _message_records(data, handle):
+            value = fields.get(field)
+            if isinstance(value, bytes):
+                return value
         raise imaplib.IMAP4.error(f"No content for message {handle}")
 
     def headers(self, handle: str) -> bytes:

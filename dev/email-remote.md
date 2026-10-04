@@ -49,6 +49,11 @@ tests encode the assumptions below, they don't prove them.
   resume whose worktree is gone gets a fresh worktree, the listener's git
   calls pin config that runs commands (`gateway.inert_git`), and the keychain
   item is created with `-T ""`.
+- Follow-up review fixes: IMAP FETCH parsing preserves literal labels as data,
+  selects the requested UID and body section, and ignores unrelated responses.
+  Shutdown waits for in-flight SMTP outcomes, then drains replies and the final
+  notification within the remaining send-attempt budget; exhausted replies are
+  marked failed rather than left pending with no retry worker.
 - Not done: the ack email carries no session id (it exists only once the
   first turn has been journalled; the result email has it). Per-run state
   files are never pruned.

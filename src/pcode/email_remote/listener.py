@@ -188,6 +188,9 @@ class Listener:
         # Handles whose metadata could not be read, and how often.
         self.failures: dict[str, int] = {}
         self.handled_ids: set[str] = set()
+        # SMTP runs in a thread: cancelling its caller cannot stop the send.
+        # Keep the operation alive until its outcome has been saved.
+        self.deliveries: dict[str, asyncio.Task[None]] = {}
 
     # Lifetime
 
@@ -261,12 +264,22 @@ class Listener:
                 stopped.append(f"{session.key} (worktree {entry.workspace})")
             except (OSError, ConnectionError) as error:
                 self.log(f"email: could not stop host {entry.id}: {error_message(error)}")
-        # Replies cut off above, then one saying the listener is gone.
-        await self.retry_outbox(force=True)
+        # Cancelled session tasks may have left SMTP running. Settle those
+        # operations before retrying anything or sending the final notification.
+        if self.deliveries:
+            await asyncio.gather(*(asyncio.shield(task) for task in self.deliveries.values()))
         lines = ["pcode stopped listening; replies to its emails are no longer read."]
         if stopped:
             lines += ["Stopped sessions, their transcripts and worktrees kept:", *stopped]
         await self.send("\n".join(lines), subject="pcode remote: stopped", route=CONTROL)
+        # There is no retry loop after shutdown. Spend the remaining finite
+        # attempt budget now, including the final notification, without backoff.
+        # Each SMTP operation retains the mailbox's network timeout; abandoning
+        # its thread on an asyncio timeout would lose the actual send outcome.
+        for _ in range(SEND_ATTEMPTS):
+            if not any(entry.state == "pending" for entry in self.state.outbox):
+                break
+            await self.retry_outbox(force=True)
         self.state.save()
         self.log("email: listener stopped; sessions' transcripts and worktrees are kept.")
 
@@ -611,6 +624,21 @@ class Listener:
         await self.deliver(entry)
 
     async def deliver(self, entry: OutboxEntry) -> None:
+        message_id = entry.planned_rfc_id
+        task = self.deliveries.get(message_id)
+        if task is None:
+            if entry.state in {"sent", "failed"}:
+                return
+            task = asyncio.create_task(self._deliver(entry))
+            self.deliveries[message_id] = task
+            task.add_done_callback(lambda _: self.deliveries.pop(message_id, None))
+        await asyncio.shield(task)
+
+    async def _deliver(self, entry: OutboxEntry) -> None:
+        if entry.attempts >= SEND_ATTEMPTS:
+            entry.state = "failed"
+            self.state.save()
+            return
         message = outbound.compose(
             owner=self.owner,
             alias=self.alias,
