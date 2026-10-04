@@ -34,7 +34,7 @@ from prompt_toolkit.output import Output, create_output
 from prompt_toolkit.renderer import Renderer
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
-from prompt_toolkit.widgets import Frame, Label
+from prompt_toolkit.widgets import Label
 from rich.cells import cell_len
 from rich.console import Console
 from rich.markdown import Markdown
@@ -56,6 +56,7 @@ from pcode.edit_transcript import (
     prefetch_edits,
 )
 from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
+from pcode.frame import Frame
 from pcode.input_keys import configure_newline_keys
 from pcode.jobs import WATCHED_PREFIX
 from pcode.layout_speed import install_fast_layout_division
@@ -230,6 +231,11 @@ class Palette:
                 "block.rule": self.muted,
                 "block.heading": self.accent,
                 "frame.border": self.muted,
+                # The keybinding overlay: keys in the accent so the eye finds
+                # them first, its way out muted in the bottom border.
+                "hint.key": f"{self.accent} bold",
+                "frame.footer": self.muted,
+                "hint.message": "yellow",
                 "editor.mode": "noreverse nodim bg:#b8b8b8 fg:#ffffff",
                 # Keep foreground and background paired with the terminal theme:
                 # the app palette may still be dark on a light terminal.

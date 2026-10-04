@@ -16,8 +16,9 @@ from prompt_toolkit.filters import Always
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Dialog, Label, TextArea
+from prompt_toolkit.widgets import Label, TextArea
 
+from pcode.frame import Dialog
 from pcode.popup_ui import bind_list_paging, popup_container, popup_mouse, popup_style
 from pcode.prefix_keys import PrefixKeys
 
@@ -158,7 +159,6 @@ def snippet_dialog(choices: list[Snippet], *, input=None, output=None, style=Non
     dialog = Dialog(
         title="Copy",
         body=HSplit([picker.container, Label(shortcuts.summary)], padding=1),
-        with_background=True,
     )
     app = Application(
         layout=Layout(popup_container(dialog, shortcuts), focused_element=picker.list),

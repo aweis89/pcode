@@ -70,7 +70,7 @@ def test_picker_contextual_help_preserves_selection_and_filter(monkeypatch, pref
                 if prefix != "ctrl":
                     pipe.send_text("\x18")
                     await wait_for(lambda: picker.shortcuts.pending)
-                    assert ("F1", "All keys") in picker.shortcuts.hint_rows()
+                    assert ("F1", "all keys") in picker.shortcuts.hint_footer()
                 pipe.send_text("\x1bOP")
                 await wait_for(lambda: picker.shortcuts.browsing)
                 assert ("Enter", "Apply selected model") in picker.shortcuts.hint_rows()

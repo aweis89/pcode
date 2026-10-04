@@ -97,6 +97,8 @@ class Shortcut:
     handler: Callable[[KeyPressEvent], None]
     # Whether the shortcut applies right now; it is hidden and inert otherwise.
     filter: Filter
+    # Shortcuts registered back to back under one group share a help row.
+    group: str | None = None
 
     @property
     def label(self) -> str:
@@ -281,11 +283,20 @@ class PrefixKeys:
                 self.message = f"No binding for {event.data!r}"
                 event.app.invalidate()
 
-    def add(self, key: str, label: str | Callable[[], str], *, filter: FilterOrBool = True):
+    def add(
+        self,
+        key: str,
+        label: str | Callable[[], str],
+        *,
+        filter: FilterOrBool = True,
+        group: str | None = None,
+    ):
         """Register a shortcut: ``key`` after the leader, or Ctrl+``key``.
 
         ``label`` describes the action clearly in the help overlay;
         a callable is read each time, for a toggle that says what it does next.
+        Consecutive shortcuts with the same ``group`` list as one row under
+        that name, such as ``n / p  Thinking effort up / down``.
         """
         if key not in _CHORDABLE or f"c-{key}" in RESERVED_CHORDS:
             raise ValueError(f"{key!r} cannot be a shortcut: it has no free Ctrl chord")
@@ -294,7 +305,7 @@ class PrefixKeys:
         condition = to_filter(filter)
 
         def decorator(handler: Callable[[KeyPressEvent], None]):
-            self.shortcuts.append(Shortcut(key, label, handler, condition))
+            self.shortcuts.append(Shortcut(key, label, handler, condition, group))
             if not self.leader:
                 # Eager, so a chord that starts a longer default binding
                 # (Ctrl+X in Emacs mode) fires at once instead of after a pause.
@@ -342,18 +353,37 @@ class PrefixKeys:
         return f"{key} {'…' if self.pending else 'Keybindings'}"
 
     def hint_rows(self) -> list[tuple[str, str]]:
-        """The leader's which-key list: (key, what it does), then how to back out."""
+        """The which-key list: (key, what it does). ``hint_footer`` says how to leave."""
         if self.choices:
-            return [(choice.key, choice.label) for choice in self.choices] + [("Esc", "Cancel")]
+            return [(choice.key, choice.label) for choice in self.choices]
         actions = [
-            (shortcut.key if self.pending else self.label(shortcut.key), shortcut.label)
-            for shortcut in self.available()
+            (self._keys_label([shortcut.key for shortcut in run]), run[0].group or run[0].label)
+            for run in self._grouped(self.available())
         ]
-        if self.browsing:
-            return self.help_provider() + actions + [("Esc / F1", "Dismiss help")]
-        return actions + [("Esc", "Cancel"), ("F1", "All keys")]
+        return self.help_provider() + actions if self.browsing else actions
 
-    def hint_text(self) -> str:
-        """The which-key list as one line, for surfaces that wrap it themselves."""
-        listed = " · ".join(f"{key} {label}" for key, label in self.hint_rows())
-        return f"{self.leader_label} … {listed}"
+    def hint_footer(self) -> list[tuple[str, str]]:
+        """How to back out of the open overlay, for its bottom border."""
+        if self.browsing:
+            return [("Esc / F1", "close")]
+        if self.choices:
+            return [("Esc", "cancel")]
+        return [("Esc", "cancel"), ("F1", "all keys")]
+
+    @staticmethod
+    def _grouped(shortcuts: list[Shortcut]) -> list[list[Shortcut]]:
+        runs: list[list[Shortcut]] = []
+        for shortcut in shortcuts:
+            if runs and shortcut.group is not None and runs[-1][-1].group == shortcut.group:
+                runs[-1].append(shortcut)
+            else:
+                runs.append([shortcut])
+        return runs
+
+    def _keys_label(self, keys: list[str]) -> str:
+        """``n / p`` while the leader waits, else ``Ctrl+B n / p`` or ``Ctrl+N / Ctrl+P``."""
+        if self.pending:
+            return " / ".join(keys)
+        if self.leader:
+            return f"{self.leader_label} {' / '.join(keys)}"
+        return " / ".join(self.label(key) for key in keys)

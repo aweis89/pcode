@@ -9,8 +9,9 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit
-from prompt_toolkit.widgets import Dialog, Label, TextArea
+from prompt_toolkit.widgets import Label, TextArea
 
+from pcode.frame import Dialog
 from pcode.links import Link
 from pcode.popup_ui import (
     bind_list_paging,
@@ -178,7 +179,7 @@ def links_dialog(
     def toggle_tools(event):
         picker.toggle_tools()
 
-    dialog = Dialog(title="Links", body=picker.container, with_background=True)
+    dialog = Dialog(title="Links", body=picker.container)
     app = Application(
         # Open in the search line, so typing filters straight away.
         layout=Layout(popup_container(dialog, shortcuts), focused_element=picker.query),

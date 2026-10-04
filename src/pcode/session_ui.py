@@ -9,13 +9,14 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Dialog, Frame, Label, TextArea
+from prompt_toolkit.widgets import Label, TextArea
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.text import Text
 from rich.theme import Theme
 
 from pcode.diagnostics import redact
+from pcode.frame import Dialog, Frame
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,
@@ -405,7 +406,6 @@ def session_info_dialog(
             ],
             padding=1,
         ),
-        with_background=True,
     )
     return Application(
         layout=Layout(popup_container(dialog, shortcuts), focused_element=body),

@@ -15,7 +15,7 @@ from prompt_toolkit.layout import (
     VSplit,
 )
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Frame, Label, TextArea
+from prompt_toolkit.widgets import Label, TextArea
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.text import Text
@@ -24,6 +24,7 @@ from rich.theme import Theme
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.conversation_tree import ConversationTree, TurnNode
 from pcode.copy_ui import Snippet, SnippetPicker, snippets
+from pcode.frame import Frame
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,
