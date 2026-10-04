@@ -357,7 +357,11 @@ class PrefixKeys:
         if self.choices:
             return [(choice.key, choice.label) for choice in self.choices]
         actions = [
-            (self._keys_label([shortcut.key for shortcut in run]), run[0].group or run[0].label)
+            # A group with one member showing reads as that shortcut alone.
+            (
+                self._keys_label([shortcut.key for shortcut in run]),
+                run[0].group if len(run) > 1 else run[0].label,
+            )
             for run in self._grouped(self.available())
         ]
         return self.help_provider() + actions if self.browsing else actions

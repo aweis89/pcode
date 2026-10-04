@@ -39,7 +39,8 @@ STEPS = [
     ("key", "Down"),  # From the newest call to the passing check.
     ("wait", "ok: 30.0"),
     ("shot", "tools", "/tools"),
-    ("key", "C-x"),
+    ("key", "C-b"),  # The default key_prefix leader, then the shortcut.
+    ("key", "x"),
     ("wait", "Status: Failed"),
     ("shot", "tools-failed", "/tools · failures"),
 ]

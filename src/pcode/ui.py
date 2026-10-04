@@ -2210,7 +2210,11 @@ class PromptLayout:
         return fragments
 
     def plan_heading_border(self) -> VSplit:
-        """A top border with the heading at the left; Frame can only center it."""
+        """A top border with the heading at the left, cut to fit the row.
+
+        Drawn like pcode's ``Frame`` title, but truncated by ``plan_heading``
+        and swapped into the editor frame as well as the plan's own.
+        """
         return VSplit(
             [
                 Window(FormattedTextControl("┌─ "), width=3, style="class:frame.border"),
