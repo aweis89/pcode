@@ -901,6 +901,8 @@ class PreviewApp:
             archive = ToolArchive()
             for call in self.activity.tools.calls:
                 archive.event(call.event)
+            for change in self.edits:
+                archive.event(change)
             archive.settle("unknown")
         tree = getattr(self.runtime, "tree", None)
         if tree is not None:
@@ -912,6 +914,7 @@ class PreviewApp:
                 failed=failed,
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
+                delta=self.transcript.delta,
                 color_system=self.transcript.console.color_system,
                 input=modal_input,
                 output=session.app.output,

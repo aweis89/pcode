@@ -2,6 +2,8 @@
 
 import json
 import subprocess
+import sys
+import threading
 from functools import lru_cache
 
 from prompt_toolkit.application import Application, get_app
@@ -19,6 +21,9 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode.clipboard import copy as copy_to_clipboard
+from pcode.delta import Delta
+from pcode.edit_transcript import EditTranscript
+from pcode.edits import edit_text
 from pcode.frame import Frame
 from pcode.inspection import InspectedCall, ToolArchive
 from pcode.popup_ui import (
@@ -181,6 +186,7 @@ class ToolInspector:
         failed: bool = False,
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
+        delta: Delta | None = None,
         color_system: str | None = "truecolor",
         key_prefix: str | None = None,
         **app_options,
@@ -188,6 +194,7 @@ class ToolInspector:
         self.archive = archive
         self.failed = failed
         self.code_theme = code_theme
+        self.delta = delta
         self.tool = "All"
         self.names = ["All", *sorted({call.name for call in archive.calls})]
         self.visible = []
@@ -291,7 +298,34 @@ class ToolInspector:
             style=popup_style(app_options.pop("style", None)),
             **app_options,
         )
+        self.prefetched_width = 0
+        self.prefetching: threading.Thread | None = None
+        self.app.after_render += self.prefetch
         self.refresh()
+
+    def prefetch(self, _app=None) -> None:
+        """Render every patch through one background delta run, at the Details width.
+
+        delta lays a diff out for one width, which only a render knows, so this
+        waits for one and runs again when a resize or the wide/narrow switch
+        changes it. Selecting an edit then reads delta's cache instead of
+        starting delta on the event loop.
+        """
+        info = self.detail.window.render_info
+        if self.delta is None or info is None or info.window_width == self.prefetched_width:
+            return
+        self.prefetched_width = width = info.window_width
+        patches = [
+            edit_text(change.patch)
+            for call in self.archive.calls
+            for change in call.changes
+            if change.patch
+        ]
+        if patches:
+            self.prefetching = threading.Thread(
+                target=self.delta.prefetch, args=(patches, width), daemon=True
+            )
+            self.prefetching.start()
 
     def refresh(self) -> None:
         previous = self.selected
@@ -361,13 +395,32 @@ class ToolInspector:
         grid.add_column(overflow="fold")
         for label, value in call.metadata(self.archive.calls):
             grid.add_row(label, Text(value))
+        arguments = [
+            *heading("Arguments"),
+            *arguments_renderables(call.arguments.read(), self.code_theme),
+        ]
+        result = [
+            *heading("Returned result / error"),
+            *result_renderables(call.result.read(), self.code_theme),
+        ]
+        if call.changes:
+            # What the call did to the files leads; the raw arguments that
+            # asked for it stay below for debugging. The pane scrolls, so the
+            # scrollback's row cap does not apply.
+            changes = [
+                EditTranscript(
+                    change, code_theme=self.code_theme, max_rows=sys.maxsize, delta=self.delta
+                )
+                for change in call.changes
+            ]
+            # Each change heads itself with a rule naming the file.
+            payloads = [Text(""), *changes, *result, *arguments]
+        else:
+            payloads = [*arguments, *result]
         return [
             title,
             grid,
-            *heading("Arguments"),
-            *arguments_renderables(call.arguments.read(), self.code_theme),
-            *heading("Returned result / error"),
-            *result_renderables(call.result.read(), self.code_theme),
+            *payloads,
             Text(""),
             Text(
                 "Only captured tool output is shown; tool-side truncation cannot be recovered.",

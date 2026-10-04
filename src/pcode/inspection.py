@@ -2,6 +2,7 @@
 
 Saved payloads stay in the existing private UI journal and are loaded on selection.
 Unsaved payloads have a global memory budget; call metadata is retained on eviction.
+File changes are held in memory either way: each patch is already capped when made.
 """
 
 import json
@@ -11,7 +12,8 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from pcode.runtime import ToolStarted, ToolSummary
+from pcode.edits import change_from_record
+from pcode.runtime import EditCompleted, ToolStarted, ToolSummary
 from pcode.tool_display import command_text
 
 PAYLOAD_LIMIT = 128 * 1024  # characters per arguments/result field
@@ -91,6 +93,8 @@ class InspectedCall:
     execution: str = ""
     arguments: Payload = field(default_factory=Payload)
     result: Payload = field(default_factory=Payload)
+    # The file changes this call made: already sanitized and size-capped.
+    changes: list[EditCompleted] = field(default_factory=list)
 
     def title(self) -> str:
         # Only "background" is worth a row tag: waiting is the default, and the
@@ -191,6 +195,9 @@ class ToolArchive:
         if kind in {"turn_completed", "turn_failed", "turn_cancelled"}:
             self.settle("interrupted" if kind == "turn_cancelled" else "unknown")
             return
+        if kind == "EditCompleted":
+            self._change(record)
+            return
         if kind not in {"ToolStarted", "ToolSummary"}:
             return
         if not record.get("name"):
@@ -228,7 +235,27 @@ class ToolArchive:
             call.outcome = record.get("outcome", "")
             self._running.pop(key, None)
 
-    def event(self, event: ToolStarted | ToolSummary) -> None:
+    def _change(self, record: dict) -> None:
+        """Attach a change to the call in this turn that made it."""
+        call_id = record.get("call_id")
+        if not (
+            call_id
+            and isinstance(record.get("path"), str)
+            and isinstance(record.get("operation"), str)
+            and all(isinstance(record.get(key, ""), str) for key in ("patch", "omitted"))
+            and all(type(record.get(key, 0)) is int for key in ("added", "removed"))
+            and type(record.get("truncated", False)) is bool
+        ):
+            return
+        # Retries and resumed sessions can reuse a call id, so the turn must match too.
+        run_id = record.get("run_id") or self.run_id
+        call = next(
+            (c for c in reversed(self.calls) if (c.run_id, c.call_id) == (run_id, call_id)), None
+        )
+        if call is not None:
+            call.changes.append(change_from_record(record))
+
+    def event(self, event: ToolStarted | ToolSummary | EditCompleted) -> None:
         self.record({"kind": type(event).__name__, **asdict(event)})
 
     def update(self, path: Path) -> None:

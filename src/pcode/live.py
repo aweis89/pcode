@@ -73,6 +73,7 @@ from pcode.runtime import (
     ChildPlan,
     ChildText,
     CommandOutput,
+    EditCompleted,
     EditPreview,
     Event,
     Message,
@@ -916,7 +917,9 @@ class AgentRuntime:
                         record = {"kind": type(event).__name__, **asdict(event)}
                         record["run_id"] = record.get("run_id") or run_id
                         self.tree.consume(record)
-                    if saved is None and isinstance(event, (ToolStarted, ToolSummary)):
+                    if saved is None and isinstance(
+                        event, (ToolStarted, ToolSummary, EditCompleted)
+                    ):
                         self.inspections.event(event)
                     yield event
         except BaseException as error:

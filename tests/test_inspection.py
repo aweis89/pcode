@@ -1,4 +1,5 @@
 import asyncio
+import json
 import shutil
 import subprocess
 from io import StringIO
@@ -14,13 +15,15 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 from pydantic_ai import Agent
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from rich.console import Console
+from rich.text import Text
 
 from pcode.agent import create_coder
 from pcode.app import PreviewApp
+from pcode.delta import Delta
 from pcode.inspection import MISSING, PAYLOAD_LIMIT, ToolArchive, capture
 from pcode.inspector_ui import ToolInspector
 from pcode.live import AgentRuntime
-from pcode.runtime import ToolStarted, ToolSummary
+from pcode.runtime import EditCompleted, ToolStarted, ToolSummary
 from pcode.sessions import SavedSession
 
 
@@ -637,3 +640,146 @@ def test_background_command_failure_classification():
         assert failed
     _, failed = result_detail("check_command", {}, "(no output yet)\n[status: running]", "success")
     assert not failed
+
+
+PATCH = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old line\n+new line"
+
+
+def edit_records(call_id="edit", run_id="turn"):
+    """An edit call as the journal records it: the change lands before the summary."""
+    return [
+        {
+            "kind": "ToolStarted",
+            "name": "edit_file",
+            "detail": "app.py",
+            "call_id": call_id,
+            "run_id": run_id,
+            "arguments": '{"path": "app.py", "old_text": "old line", "new_text": "new line"}',
+        },
+        {
+            "kind": "EditCompleted",
+            "call_id": call_id,
+            "run_id": run_id,
+            "path": "app.py",
+            "operation": "edited",
+            "patch": PATCH,
+            "added": 1,
+            "removed": 1,
+        },
+        {"kind": "ToolSummary", "name": "edit_file", "call_id": call_id, "run_id": run_id},
+    ]
+
+
+def test_edits_join_the_call_in_the_same_turn_from_the_journal(tmp_path):
+    change = {"kind": "EditCompleted", "call_id": "edit", "run_id": "turn", "operation": "e"}
+    records = [
+        *edit_records(),
+        # Malformed changes are skipped, and one for an unknown call is dropped.
+        {**change, "path": 3},
+        {**change},
+        {**change, "path": "x", "added": "1"},
+        {**change, "path": "x", "truncated": "no"},
+        {**change, "call_id": "nobody", "path": "x"},
+        # A retry reusing the call id in a later turn keeps its own change.
+        *edit_records(run_id="retry"),
+        {**change, "run_id": "missing", "path": "x"},
+    ]
+    journal = tmp_path / "transcript.jsonl"
+    journal.write_text("".join(json.dumps(record) + "\n" for record in records))
+    first, retry = ToolArchive.load(journal).calls
+    assert [(c.path, c.operation, c.patch) for c in first.changes] == [("app.py", "edited", PATCH)]
+    assert len(retry.changes) == 1
+
+
+def test_unsaved_edits_join_their_call_through_events():
+    archive = ToolArchive()
+    archive.run_id = "turn"
+    call(archive, "other")
+    archive.event(ToolStarted("edit_file", "app.py", "edit"))
+    archive.event(EditCompleted("edit", "app.py", "edited", PATCH, 1, 1))
+    archive.event(ToolSummary("edit_file", "edited", call_id="edit"))
+    change = EditCompleted("edit", "app.py", "edited", PATCH, 1, 1)
+    assert [c.changes for c in archive.calls] == [[], [change]]
+
+
+class FakeDelta(Delta):
+    """Answers with a fixed row, or fails like a broken delta, and records its calls."""
+
+    def render(self, patch, width, *, cache=True):
+        self.calls.append(("render", patch, width))
+        return None if self.args == ("fail",) else [Text(f"DELTA {width}")]
+
+    def prefetch(self, patches, width):
+        self.calls.append(("prefetch", tuple(patches), width))
+
+
+def fake_delta(*args):
+    delta = FakeDelta("delta", args)
+    object.__setattr__(delta, "calls", [])
+    return delta
+
+
+def edit_archive():
+    archive = ToolArchive()
+    for record in edit_records():
+        archive.record(record)
+    return archive
+
+
+def rendered_details(archive, **options):
+    with create_pipe_input() as pipe:
+        ui = ToolInspector(archive, input=pipe, output=DummyOutput(), **options)
+        console = Console(width=100, record=True, theme=ui.detail.theme)
+        console.print(*ui.details(ui.archive.calls[-1]))
+    return console.export_text()
+
+
+def test_details_lead_with_the_diff_through_delta_then_result_then_arguments():
+    delta = fake_delta()
+    text = rendered_details(edit_archive(), delta=delta)
+    assert ("render", PATCH, 100) in delta.calls
+    parts = ("Edited app.py · +1 −1", "DELTA 100", "Returned result", "Arguments")
+    order = [text.index(part) for part in parts]
+    assert order == sorted(order)
+
+
+@pytest.mark.parametrize("delta", [None, fake_delta("fail")])
+def test_details_fall_back_to_a_rich_diff_without_delta(delta):
+    text = rendered_details(edit_archive(), delta=delta)
+    assert "-old line" in text and "+new line" in text
+    assert text.index("+new line") < text.index("Arguments")
+
+
+def test_calls_without_changes_keep_arguments_first():
+    archive = ToolArchive()
+    archive.record(edit_records()[0])
+    archive.record({**edit_records()[2], "failed": True})
+    text = rendered_details(archive)
+    assert "Edited app.py" not in text
+    assert text.index("Arguments") < text.index("Returned result")
+
+
+def test_delta_prefetches_every_patch_at_the_rendered_details_width():
+    delta = fake_delta()
+    archive = edit_archive()
+    call(archive, "plain")
+
+    async def run():
+        with create_pipe_input() as pipe:
+            ui = ToolInspector(
+                archive,
+                delta=delta,
+                input=pipe,
+                output=Vt100_Output(
+                    StringIO(), lambda: Size(rows=30, columns=120), enable_cpr=False
+                ),
+            )
+            with set_app(ui.app):
+                ui.app.renderer.render(ui.app, ui.app.layout)
+                ui.prefetch()
+                ui.prefetching.join(5)
+                ui.prefetch()  # Same width: nothing new to render.
+        return ui.detail.window.render_info.window_width
+
+    width = asyncio.run(run())
+    assert [c for c in delta.calls if c[0] == "prefetch"] == [("prefetch", (PATCH,), width)]
