@@ -514,6 +514,12 @@ SETTINGS = {
         ("status", "icons"),
         description="Task rows: shade text by status, or one weight with coloured icons",
     ),
+    "tool_glyphs": Setting(
+        "auto",
+        ("auto", "on", "off"),
+        description="Symbols on the tool row; off spells out verbs but shell's $ "
+        "(auto: off on the Linux console)",
+    ),
     "tasks_max_height": Setting(
         None,
         height=True,

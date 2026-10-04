@@ -253,6 +253,33 @@ def test_tool_row_spells_out_a_verb_with_no_glyph():
     assert tool_row(activity) == "✓ web_search · pcode docs"
 
 
+def test_tool_row_spells_out_verbs_with_glyphs_off(monkeypatch):
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running", tool_glyphs="off")
+    activity.tools.record(ToolStarted("read_file", "example.py", "one"))
+    # The status row names the verb while it runs; a plain hook under a thought.
+    assert tool_row(activity) == "› example.py"
+    activity.think("Checking the example")
+    assert tool_row(activity) == "  └ example.py"
+    activity.tools.record(ToolSummary("read_file", "example.py", call_id="one"))
+    assert tool_row(activity) == "  ✓ Read file · example.py"
+    # `auto` draws the symbols except on the Linux console, which has no
+    # fallback font for them.
+    activity.tool_glyphs = "auto"
+    monkeypatch.setenv("TERM", "linux")
+    assert tool_row(activity) == "  ✓ Read file · example.py"
+    monkeypatch.setenv("TERM", "xterm-256color")
+    assert tool_row(activity) == "  ✓ ⎘ example.py"
+    # `$` is ASCII, in every font: shell calls keep it with the symbols off.
+    activity.tool_glyphs = "off"
+    activity.tools.record(ToolStarted("shell", "make test", "two"))
+    assert tool_row(activity) == "  └ $ make test"
+    activity.tools.record(ToolSummary("shell", "make test", call_id="two"))
+    assert tool_row(activity) == "  ✓ $ make test"
+
+
 def test_tool_row_marks_a_failed_call_and_fits_the_width():
     from rich.cells import cell_len
 

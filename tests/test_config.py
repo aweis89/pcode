@@ -70,6 +70,7 @@ def test_defaults_and_path_do_not_create_files():
         "show_hints": "off",  # conftest's test default; the shipped one is "on".
         "attach_tasks": "on",
         "task_style": "status",
+        "tool_glyphs": "auto",
         "tasks_max_height": None,
         "transcript_max_chars": "2000000",
         "error_scrollback_lines": "20",
@@ -381,6 +382,8 @@ def test_slash_config_switches_task_style_immediately(tmp_path):
         return style.get_attrs_for_style_str("class:plan.completed")
 
     assert text_style().dim
+    app.handle("/config set tool_glyphs off")
+    assert app.activity.tool_glyphs == "off"
     app.handle("/config set task_style icons")
     assert app.activity.task_style == "icons"
     assert not text_style().dim

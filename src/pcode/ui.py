@@ -455,24 +455,41 @@ THOUGHT_ROWS = 10
 # Marks the first thought row in the spinner's column, without resembling
 # a stalled frame of the round spinner below it.
 THOUGHT_ICON = "∴"
-# Marks the tool row under the thought: the call the status row's verb is
-# about. It hangs from the thought's text, which is what the call is for.
-TOOL_ICON = "⎿"
 # Cells before the tool row's icon: it lines up with the spinner below it.
 TOOL_INDENT = "  "
 # With no thought to hang from, the row stands alone in the thought's column.
 LONE_TOOL_ICON = "›"
 # The tool row's stand-ins for common verbs (`tool_display.LABELS`), so it
-# says `$ make test` rather than `Run shell · make test`. Each is one cell
-# wide even where East Asian ambiguous characters are drawn two wide; a
-# tool not listed keeps its spelled-out verb.
+# says `$ make test` rather than `Run shell · make test`. A tool not listed
+# keeps its verb spelled out. Each is one cell wide, ambiguous-width or not.
+# ASCII, in every font, so `tool_glyphs off` keeps it.
+PLAIN_TOOL_GLYPHS = dict.fromkeys(("Run shell", "Run code", "Start command", "Check command"), "$")
 TOOL_GLYPHS = {
-    **dict.fromkeys(("Run shell", "Run code", "Start command", "Check command"), "$"),
+    **PLAIN_TOOL_GLYPHS,
     **dict.fromkeys(("Search code", "Find files", "List directory", "Find tools"), "⌕"),
     **dict.fromkeys(("Edit file", "Write file"), "✎"),
     **dict.fromkeys(("Read file", "Read results", "Read job output", "File info"), "⎘"),
     "Wait for job": "⧖",
 }
+# Hangs the row from the thought's text, which is what the call is for:
+# `⎿` with the glyphs, else the box drawing the frames already need.
+TOOL_HOOK = "⎿"
+PLAIN_TOOL_HOOK = "└"
+
+
+def tool_glyphs_on(setting: str) -> bool:
+    """Whether the `tool_glyphs` setting (`auto`, `on`, `off`) draws the symbols.
+
+    Almost no monospace font has `⎿`, `⌕`, `⎘` or `⧖`: the terminal draws
+    them from a fallback font, which on macOS and most desktops looks fine
+    and on the Linux console is a box, so `auto` leaves them off where
+    `TERM` says it is that console (tmux on it says otherwise). A terminal
+    cannot say which fonts it has, so anywhere else a missing symbol is the
+    user's to turn off.
+    """
+    if setting == "auto":
+        return os.environ.get("TERM") != "linux"
+    return setting == "on"
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -696,6 +713,8 @@ class Activity:
     # The `task_style` setting: `status` shades task text by status, `icons`
     # gives it one weight, colours only the icon, and pads rows off the frame.
     task_style: str = "status"
+    # The `tool_glyphs` setting: `auto`, `on` or `off` (see `tool_glyphs_on`).
+    tool_glyphs: str = "auto"
     # Cap on the task widget plus the editor box: whole rows, or a share of the
     # screen below 1 (0.5 is half). None keeps the default layout.
     tasks_max_height: float | None = None
@@ -1030,7 +1049,7 @@ class Activity:
         return line
 
     def tool_fragments(self, line: StatusLine, width: int) -> list[tuple[str, str]]:
-        """The tool row between the thought and the status row: `  ⎿ ls -la`.
+        """The tool row between the thought and the status row: `  ⎿ $ ls -la`.
 
         What the status row's verb acts on, with the full pane width to say it,
         led by the verb's glyph (`$ ls -la`, `TOOL_GLYPHS`). The hook hangs it
@@ -1045,7 +1064,8 @@ class Activity:
             return []
         label, detail = call_parts(call)
         hung = self.thought_shown
-        glyph = TOOL_GLYPHS.get(label)
+        symbols = tool_glyphs_on(self.tool_glyphs)
+        glyph = (TOOL_GLYPHS if symbols else PLAIN_TOOL_GLYPHS).get(label)
         if glyph:
             text = detail or label
         elif detail and line.phase == label:
@@ -1053,7 +1073,8 @@ class Activity:
         else:
             text = " · ".join(filter(None, (label, detail)))
         if call.settled is None:
-            icon = ("class:activity.tool", TOOL_ICON if hung else glyph or LONE_TOOL_ICON)
+            hook = TOOL_HOOK if symbols else PLAIN_TOOL_HOOK
+            icon = ("class:activity.tool", hook if hung else glyph or LONE_TOOL_ICON)
             if not hung:
                 glyph = None  # Alone, the glyph is the row's mark already.
         elif call.failed:

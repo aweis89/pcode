@@ -146,6 +146,7 @@ class PreviewApp:
             attach_tasks=load_preferences().get("attach_tasks", SETTINGS["attach_tasks"].default)
             == "on",
             task_style=load_preferences().get("task_style", SETTINGS["task_style"].default),
+            tool_glyphs=load_preferences().get("tool_glyphs", SETTINGS["tool_glyphs"].default),
             tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
             show_hints=hints_preference(),
             thinking_mode=thinking_mode_preference(),
@@ -673,6 +674,7 @@ class PreviewApp:
         )
         self.activity.tasks_max_height = parse_height(preferences.get("tasks_max_height"))
         self.activity.task_style = preferences.get("task_style", SETTINGS["task_style"].default)
+        self.activity.tool_glyphs = preferences.get("tool_glyphs", SETTINGS["tool_glyphs"].default)
         self.activity.show_hints = hints_preference()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
@@ -680,7 +682,8 @@ class PreviewApp:
         if (
             len(edits) >= 2
             and edits[0] in ("set", "unset")
-            and edits[1] in ("attach_tasks", "tasks_max_height", "task_style", "show_hints")
+            and edits[1]
+            in ("attach_tasks", "tasks_max_height", "task_style", "tool_glyphs", "show_hints")
         ):
             result = result.replace("Applies on next launch.", "Layout settings apply immediately.")
         self.transcript.note(result)

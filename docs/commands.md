@@ -295,9 +295,12 @@ Read top to bottom, that is why (the thought), what (the call), and how it is
 going (the status row). A glyph stands in for the call's verb: `$` runs a
 command, `⌕` searches, `✎` edits or writes a file, `⎘` reads one, and `⧖`
 waits on a job. A tool without one keeps its verb spelled out, and with no
-thought above, the row starts with the glyph, or `›` for those. Once a call
-finishes, its row is marked `✓` or `✗` and stays until the next call or the
-end of the turn:
+thought above, the row starts with the glyph, or `›` for those. Many fonts
+lack `⎿`, `⌕`, `⎘` and `⧖`, and the terminal borrows them from another font;
+if they look off in yours, `/config set tool_glyphs off` hangs the row with
+`└` and names the verb once the call settles. Shell calls keep `$`.
+Once a call finishes, its row is marked `✓` or `✗` and stays until the next
+call or the end of the turn:
 
 ```text
   ✓ ⎘ src/app.py
