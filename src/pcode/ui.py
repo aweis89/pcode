@@ -211,8 +211,6 @@ class Palette:
                 # Short-lived answers to a keystroke live above the spinner
                 # rather than in scrollback; italics mark them as chrome.
                 "activity.notice": f"italic {self.muted}",
-                # Running background jobs are chrome like the spinner row.
-                "activity.job": self.muted,
                 # A run's pending group line, shown only when no status row
                 # carries its tally. Still live, so muted rather than dimmed
                 # like the settled scrollback line it becomes.
@@ -397,8 +395,6 @@ NOTICE_SECONDS = 5.0
 # Scrollback columns a sub-agent's calls sit in from their delegate's row.
 CHILD_INDENT = 4
 NOTICE_ROWS = 6
-# Background jobs get a few rows, never the screen; `/jobs` has the full list.
-JOB_ROWS = 3
 # Running side questions likewise; `/btw` has the full list.
 ASIDE_ROWS = 3
 # A wait on the session host shorter than this never gets a row: most answer
@@ -668,10 +664,9 @@ class Activity:
     # The footer's note of this turn's latest prompt-cache drop, e.g.
     # `cache miss 0/166k`; the full notice is only in the session journal.
     cache_note: str = ""
-    # Shell jobs nothing on screen accounts for: running with no tool call
-    # waiting on them, or finished before the terminal could say so. Rows are
-    # rendered once a second by the app's job watcher, not per frame.
-    jobs: list[tuple[str, str]] = field(default_factory=list)
+    # All running shell jobs, including those a tool is waiting on. The footer
+    # shows the count; `/jobs` holds the details. Updated by the job watcher.
+    job_count: int = 0
     # A job whose output tail is pinned into the command preview by `/jobs watch`.
     watched_job: str = ""
     # The session's side-question records (`Asides.items`, shared, not copied):
@@ -804,16 +799,6 @@ class Activity:
         if len(shown) < len(running):
             rows.append(("class:activity.aside", f"\u2026 {len(running) - len(shown)} more (/btw)"))
         return rows
-
-    def job_rows(self, budget: int) -> list[tuple[str, str]]:
-        """The jobs row block, folded to the budget so it never crowds the editor."""
-        if budget <= 0 or not self.jobs:
-            return []
-        if len(self.jobs) <= budget:
-            return list(self.jobs)
-        shown = self.jobs[: max(0, budget - 1)]
-        remaining = len(self.jobs) - len(shown)
-        return shown + [("class:activity.job", f"\u2026 {remaining} more jobs (/jobs)")]
 
     def flash(self, text: str, seconds: float = NOTICE_SECONDS) -> None:
         """Replace the transient notice shown above the spinner.
@@ -2088,10 +2073,6 @@ class PromptLayout:
         return self.activity.notice_rows(width)
 
     @_per_render
-    def job_rows(self):
-        return self.activity.job_rows(JOB_ROWS)
-
-    @_per_render
     def group_rows(self):
         """The run's group line so far, when no status row carries its tally.
 
@@ -2144,7 +2125,6 @@ class PromptLayout:
             or bool(self.notice_rows())
             or bool(self.wait_rows())
             or bool(self.aside_rows())
-            or bool(self.job_rows())
         )
         # A typed row is not written yet, so scrollback's own gap sits above it.
         transcript = self.transcript
@@ -2163,7 +2143,6 @@ class PromptLayout:
             + len(self.notice_rows())
             + len(self.wait_rows())
             + len(self.aside_rows())
-            + len(self.job_rows())
             + self.status_gap()
         )
 
@@ -2326,23 +2305,19 @@ class PromptLayout:
         notice = self.panel_rows(self.notice_rows)
         # This terminal's own wait on the session host, hidden while a turn row covers it.
         waits = self.panel_rows(self.wait_rows)
-        # Below the spinner: side questions run beside the turn and outlive it, so
-        # they get their own spinner rows rather than a share of the prompt's.
+        # Side questions outlive the turn. Keep their rows above its status so
+        # the main spinner always borders the tasks, tools, and editor below.
         asides = self.panel_rows(self.aside_rows)
-        # What is running that the spinner does not cover.
-        # Shown while idle too, which is when "is the suite still going?" is asked.
-        jobs = self.panel_rows(self.job_rows)
         return HSplit(
             [
                 status_spacer,
                 group,
-                commands,
                 notice,
                 thought,
-                current_status,
                 waits,
                 asides,
-                jobs,
+                current_status,
+                commands,
                 plan,
             ]
         )

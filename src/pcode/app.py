@@ -1675,6 +1675,9 @@ class PreviewApp:
                     segments.extend([("sep", " · "), ("activity", f"{steering} steering pending")])
                 if queued:
                     segments.extend([("sep", " · "), ("activity", f"{queued} queued")])
+        if count := self.activity.job_count:
+            label = "job" if count == 1 else "jobs"
+            segments.extend([("sep", " · "), ("activity", f"{count} {label}")])
         # Side questions are not "working": they neither block input nor end the
         # turn, so they get their own counter rather than the activity label.
         if running := self.asides.running:
