@@ -8,9 +8,10 @@ execution side is pcode's existing session hosts rather than a new queue.
 
 ## Status
 
-Phases 2–4 are implemented; phase 1's real-account checks have **not** been
-run yet. Until they pass, treat `--email-listen` as unverified: the mocked
-tests encode the assumptions below, they don't prove them.
+Phases 2–4 are implemented. Phase 1's real-account checks pass for genuine
+replies (see "Phase 1 evidence"); the forged-sender check has **not** run
+yet, so the `SENT` gate is shown to accept real replies but not yet shown to
+reject forgeries.
 
 - Phase 1: `dev/email_probe.py OWNER [--forge]` sends a probe and reports
   each reply's labels, `To` and ancestry. Record its output and the clients
@@ -60,7 +61,29 @@ tests encode the assumptions below, they don't prove them.
 
 ### Phase 1 evidence
 
-(Not yet collected.)
+2026-10-03, IMAP + app password, one Gmail account, two replies to the
+probe (one from Gmail web, one from the Gmail app, in that order):
+
+```text
+Our Message-ID found in the account: yes
+gmail id 1878090018783839279: SENT=yes labels=['\\Inbox', '\\Sent'] alias-in-To=yes replies-to-probe=yes subject='Re: pcode probe: please reply' found-by=both searches
+gmail id 1878090049300476455: SENT=yes labels=['\\Inbox', '\\Sent'] alias-in-To=yes replies-to-probe=yes subject='Re: pcode probe: please reply' found-by=both searches
+```
+
+- A self-reply to the alias is one message carrying message-level `\Sent`
+  and `\Inbox`.
+- The plus-address survives in the parsed `To`; replying to a message whose
+  `Reply-To` is the alias addresses it, from both clients.
+- Our generated `Message-ID` is what Gmail stores, and both replies'
+  `In-Reply-To`/`References` point at it.
+- `X-GM-RAW to:` and a plain IMAP `TO` search agree.
+- Found on the way: a selected mailbox is a snapshot. Without `NOOP` before
+  each search, a long-lived connection never saw mail that arrived after
+  `SELECT`; `GmailMailbox.search` now polls first.
+- Not yet run: the forged `From` (port 25 is blocked on the test network).
+  Deliver a message with `From: owner` to the alias from a host that can
+  reach Gmail's MX, and confirm it arrives without `\Sent`.
+- The Gmail API transport was not probed; IMAP met every check above.
 
 Read first: `src/pcode/host.py`, `src/pcode/remote.py`, `src/pcode/remote_print.py`,
 `src/pcode/host_protocol.py`, `src/pcode/extensions/sandbox.py`, `src/pcode/sandbox.py`,
