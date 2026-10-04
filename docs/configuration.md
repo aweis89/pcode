@@ -230,7 +230,8 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 
 While a turn runs, pcode reports progress to the terminal itself (OSC 9;4),
 which draws it outside the screen: Ghostty and kitty as a thin bar along the
-top of the split, iTerm2 and Windows Terminal in the tab, WezTerm wherever its
+top of the split, iTerm2 in the pane's top margin, Windows Terminal in the
+tab, WezTerm wherever its
 Lua config puts it. A busy tab is visible from the others.
 
 | Bar | Means |
@@ -255,6 +256,15 @@ The protocol carries only a state and a percentage, so the colours are the
 terminal's: Ghostty uses the macOS accent colour for a running bar, kitty uses
 its `scrollbar_*` colours. Hide it on the terminal's side with Ghostty's
 `progress-style = false` or kitty's `progress_bar hidden`.
+
+iTerm2 3.7 or newer can restyle it per profile, under **Settings > Profiles >
+Session**: **Progress bar height** (in points, 2 by default) and **Progress
+bar color scheme** (Default, Rainbow, or a single colour). The height cannot
+exceed the pane's top margin, so to make the bar thicker, raise **Settings >
+Appearance > Panes > Top & Bottom Margins** first. In a Dynamic Profile the
+keys are `"Progress Bar Height"` and `"Progress Bar Color Scheme"`, and both
+need `"Enable Progress Bars"`. iTerm2 3.6.6 draws the bar but has neither
+setting.
 
 `auto` sends it only to terminals whose environment variables say they draw
 it: Ghostty, WezTerm, iTerm2 3.6.6 or newer, Windows Terminal, ConEmu, VS
