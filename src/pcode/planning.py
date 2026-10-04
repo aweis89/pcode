@@ -2,9 +2,11 @@
 
 from dataclasses import dataclass
 
-from pydantic_ai import CapabilityEvent
-from pydantic_ai_harness.planning import Planning
+from pydantic import Field
+from pydantic_ai import CapabilityEvent, RunContext
+from pydantic_ai_harness.planning import PlanItem, Planning, PlanningToolset
 
+from pcode.plan_sizes import Size
 from pcode.tool_display import PLAN_TOOLS
 
 # Replace Harness's "multi-step work" threshold with default use for visible
@@ -21,7 +23,9 @@ GUIDANCE = (
     "and starts the next. Use `add_task` for a step you discover midway; "
     "use `write_plan` only to create or restructure the plan, and pass the full "
     "plan when you do. Before your final reply, every step should be `completed` or "
-    "`cancelled`, unless you are stopping to ask the user; then leave the rest as it is."
+    "`cancelled`, unless you are stopping to ask the user; then leave the rest as it is. "
+    "Give a step `size` L when it holds most of the work and S when it is trivial; the "
+    "user's progress bar is weighted by it."
 )
 
 ID_GUIDANCE = (
@@ -41,6 +45,55 @@ WRITE_PLAN_DESCRIPTION = (
     "progress with `update_task_statuses` instead. Keep one step `in_progress` while "
     "work is underway."
 )
+
+
+SIZE_DESCRIPTION = (
+    "Relative effort: S (a quick check or one-line change), M (typical; the default), "
+    "L (the bulk of the work, e.g. the main implementation or a long test run). "
+    "Omit for M."
+)
+
+
+class SizedPlanItem(PlanItem):
+    """A plan step with an optional relative size, so progress can be weighted."""
+
+    size: Size | None = Field(default=None, description=SIZE_DESCRIPTION)
+
+
+class SizedPlanningToolset(PlanningToolset):
+    """Harness's plan tools, with `size` accepted wherever a step is created."""
+
+    async def write_plan(self, ctx: RunContext, items: list[SizedPlanItem]) -> str:  # type: ignore[override]
+        """Create or replace the whole plan.
+
+        Args:
+            ctx: Framework-provided run context.
+            items: The complete ordered list of plan steps.
+        """
+        return await super().write_plan(ctx, list(items))
+
+    async def add_task(  # type: ignore[override]
+        self,
+        ctx: RunContext,
+        content: str,
+        active_form: str = "",
+        size: Size | None = None,
+    ) -> str:
+        """Add one new pending step.
+
+        Args:
+            ctx: Framework-provided run context.
+            content: The step description in imperative form.
+            active_form: Optional present-continuous label, e.g. "Fix bug" -> "Fixing bug".
+            size: Relative effort, S, M or L; omit for M.
+        """
+        store = self._resolve(ctx)
+        before = await store.get_items()
+        item = await store.add_item(
+            SizedPlanItem(content=content, active_form=active_form, size=size)
+        )
+        await self._emit_changes(ctx, before, await store.get_items())
+        return f"Added step '{content}' with id: {item.id}"
 
 
 @dataclass(kw_only=True)
@@ -72,6 +125,9 @@ class IdentifiedPlanning(Planning):
     @classmethod
     def from_spec(cls, *, inject: bool = False, **kwargs):
         return super().from_spec(inject=inject, **kwargs)
+
+    def get_toolset(self):
+        return SizedPlanningToolset(self)
 
     def get_instructions(self):
         # As upstream: None means the default, "" drops it. The ID note always stays.

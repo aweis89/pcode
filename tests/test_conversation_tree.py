@@ -12,13 +12,13 @@ from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent
 from pydantic_ai.messages import ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
-from pydantic_ai_harness.planning import PlanItem
 from pydantic_ai_harness.step_persistence import RunRecord, ToolEffectRecord
 from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.conversation_tree import ConversationTree
 from pcode.live import AgentRuntime
+from pcode.planning import SizedPlanItem
 from pcode.runtime import Message, PlanUpdated
 from pcode.sessions import SavedSession, SessionError
 from pcode.tree_ui import tree_dialog
@@ -62,7 +62,7 @@ def test_branch_history_tools_plans_and_reopen(tmp_path, save):
             a = await turn(runtime, "A")
             history_a = deepcopy(runtime.history)
             b = await turn(runtime, "B")
-            plan = [PlanItem(id="b-plan", content="Only branch B", status="pending")]
+            plan = [SizedPlanItem(id="b-plan", content="Only branch B", status="pending")]
             await runtime.plan_store.set_items(plan)
             event = PlanUpdated([item.model_dump(mode="json") for item in plan])
             if saved:

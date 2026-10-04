@@ -235,9 +235,14 @@ Lua config puts it. A busy tab is visible from the others.
 | Bar | Means |
 | --- | --- |
 | Moving, no fill | A turn is running |
-| Filling | A turn is running with a plan; the fill is the share of steps completed |
+| Filling | A turn is running with a plan; the fill is how much of the plan is done |
 | Paused (orange in Ghostty) | A failed provider request is being retried |
 | Error (red in Ghostty) | The last turn failed; any key in that terminal, or the next turn, clears it |
+
+The fill is weighted by step size. The model can mark a step S, M or L, so
+one big implementation step counts for more than a quick check beside it.
+Unmarked steps count as M. The running step counts as half done, so the bar
+moves as soon as work starts, and cancelled steps drop out of the total.
 
 `--print` shows the bar too, from launch until it exits (with `--attach`, while
 the host works on the message or on the turns queued ahead of it), and takes

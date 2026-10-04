@@ -16,9 +16,9 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolCallPartDelta,
 )
-from pydantic_ai_harness.planning import PlanItem
 from pydantic_core import from_json
 
+from pcode.planning import SizedPlanItem
 from pcode.runtime import PlanPreview
 
 PLANNING_MUTATIONS = {
@@ -43,7 +43,7 @@ def project_plan(items: list[dict], part: ToolCallPart) -> list[dict]:
         if not isinstance(value, dict):
             return None
         try:
-            return PlanItem.model_validate(
+            return SizedPlanItem.model_validate(
                 {"id": f"preview:{part.tool_call_id}:{index}", **value}
             ).model_dump(mode="json")
         except ValidationError:

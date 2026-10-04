@@ -233,9 +233,9 @@ def test_print_shows_the_turn_in_the_terminal_tab(monkeypatch):
     shown = [r for i, r in enumerate(reports) if i == 0 or r != reports[i - 1]]
     assert shown == [
         progress(INDETERMINATE),
-        progress(NORMAL, 50),
+        progress(NORMAL, 75),
         progress(PAUSED),
-        progress(NORMAL, 50),
+        progress(NORMAL, 75),
         progress(CLEAR),
     ]
     assert stdout.getvalue() == "done\n\n"

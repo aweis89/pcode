@@ -32,7 +32,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness.filesystem import FileSystem
-from pydantic_ai_harness.planning import InMemoryPlanStore, PlanItem, Planning
+from pydantic_ai_harness.planning import InMemoryPlanStore, Planning
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersistence
 from pydantic_ai_harness.subagents import SubAgents
@@ -65,6 +65,7 @@ from pcode.mcp import (
 from pcode.mcp_notice import enabled_servers
 from pcode.native_results import drop_unreadable_results, unreadable_native_results
 from pcode.plan_preview import StreamingPlanPreview
+from pcode.planning import SizedPlanItem
 from pcode.preferences import SETTINGS, load_preferences, parse_token_count
 from pcode.profiling import activity as profiled_activity
 from pcode.retries import RequestCheckpoint
@@ -313,7 +314,7 @@ class AgentRuntime:
         if self.session:
             self.history = await self.session.recover()
             await self.plan_store.set_items(
-                [PlanItem.model_validate(item) for item in self.session.latest_plan()]
+                [SizedPlanItem.model_validate(item) for item in self.session.latest_plan()]
             )
 
     async def navigate(self, identity: str | None, *, edit: bool = False) -> str:
@@ -334,7 +335,7 @@ class AgentRuntime:
         plan = InMemoryPlanStore()
         await plan.set_items(
             [
-                PlanItem.model_validate(item)
+                SizedPlanItem.model_validate(item)
                 for item in (self.tree.nodes[target].plan if target else [])
             ]
         )

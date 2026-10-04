@@ -132,7 +132,7 @@ def test_bar_follows_the_turn_and_is_kept_alive(keeper):
     tab.tick(11 + KEEPALIVE_SECONDS)
     assert sent() == [progress(INDETERMINATE)]
 
-    # Plan steps fill it; none done yet still bounces.
+    # Plan steps fill it; none started yet still bounces.
     activity.plan = [{"status": "pending"}] * 4
     tab.tick(20)
     assert sent() == []

@@ -18,6 +18,8 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from time import monotonic
 
+from pcode.plan_sizes import plan_progress
+
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 # OSC 9;4 states (ConEmu's numbering, which every terminal kept).
@@ -180,11 +182,10 @@ class TabProgress:
         if activity.prompt_state == "running" or activity.user_command:
             if self.retrying:
                 return PAUSED, None
-            plan = activity.plan
-            done = sum(item.get("status") == "completed" for item in plan)
-            # An empty bar reads as nothing happening; bounce until a step lands.
-            if plan and done:
-                return NORMAL, round(100 * done / len(plan))
+            # An empty bar reads as nothing happening; bounce until a step starts.
+            done = plan_progress(activity.plan)
+            if done:
+                return NORMAL, max(1, round(100 * done))
             return INDETERMINATE, None
         if activity.prompt_state == "failed" and not self.dismissed:
             return ERROR, 100
