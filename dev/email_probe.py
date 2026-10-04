@@ -99,22 +99,44 @@ def main() -> int:
     print(f"Sent the probe ({probe_id}). Reply to it from Gmail web and the Gmail app.")
     if args.forge:
         forge(owner, alias)
-    stored = mailbox._uid("SEARCH", "X-GM-RAW", f'"rfc822msgid:{probe_id.strip("<>")}"')
-    print(f"Our Message-ID found in the account: {'yes' if stored and stored[0] else 'NO'}")
     seen: dict[str, str] = {}
+    stored = False
+    polls = 0
     deadline = time.monotonic() + args.minutes * 60
     try:
         while time.monotonic() < deadline:
-            for handle in mailbox.search(alias):
+            # mailbox.search refreshes the selected mailbox (NOOP) first.
+            gmail = set(mailbox.search(alias))
+            # Plain IMAP header search, independent of Gmail's search index.
+            plain = set((mailbox._uid("SEARCH", "TO", f'"{alias}"')[0] or b"").decode().split())
+            if not stored:
+                found = mailbox._uid("SEARCH", "X-GM-RAW", f'"rfc822msgid:{probe_id.strip("<>")}"')
+                if found and found[0]:
+                    stored = True
+                    print("Our Message-ID found in the account: yes", flush=True)
+            for handle in sorted(gmail | plain, key=int):
                 if handle not in seen:
-                    seen[handle] = describe(mailbox, handle, alias, probe_id)
+                    how = (
+                        "both searches"
+                        if handle in gmail and handle in plain
+                        else ("X-GM-RAW only" if handle in gmail else "IMAP TO only")
+                    )
+                    seen[handle] = f"{describe(mailbox, handle, alias, probe_id)} found-by={how}"
                     print(seen[handle], flush=True)
+            polls += 1
+            if polls % 6 == 0:
+                print(
+                    f"... still watching: {len(seen)} message(s) to the alias, "
+                    f"probe Message-ID {'found' if stored else 'not found yet'}",
+                    flush=True,
+                )
             time.sleep(5)
     except KeyboardInterrupt:
         pass
     finally:
         mailbox.close()
-    print("\nSummary for dev/email-remote.md (add which client sent each):")
+    print(f"\nOur Message-ID found in the account: {'yes' if stored else 'NO'}")
+    print("Summary for dev/email-remote.md (add which client sent each):")
     for line in seen.values():
         print(f"- {line}")
     return 0

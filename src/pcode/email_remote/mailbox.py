@@ -242,26 +242,33 @@ class GmailMailbox:
             self._imap = imap
         return self._imap
 
-    def _uid(self, *args) -> list:
-        """One UID command, reconnecting once if the connection dropped."""
+    def _command(self, name: str, *args) -> list:
+        """One IMAP command, reconnecting once if the connection dropped."""
         for attempt in (1, 2):
             try:
-                status, data = self._connection().uid(*args)
+                status, data = getattr(self._connection(), name)(*args)
             except (imaplib.IMAP4.abort, OSError):
                 self.close()
                 if attempt == 2:
                     raise
                 continue
             if status != "OK":
-                raise imaplib.IMAP4.error(f"UID {args[0]} failed")
+                raise imaplib.IMAP4.error(f"{name.upper()} {args[0] if args else ''} failed")
             return data
         raise AssertionError("unreachable")
+
+    def _uid(self, *args) -> list:
+        return self._command("uid", *args)
 
     def verify(self) -> None:
         """Log in and open All Mail, so setup fails now rather than at the first poll."""
         self._connection()
 
     def search(self, alias: str) -> list[str]:
+        # A selected mailbox is a snapshot: Gmail only adds mail that arrived
+        # since SELECT once the client polls, so without NOOP a long-lived
+        # connection searches the mailbox as it was at login.
+        self._command("noop")
         data = self._uid("SEARCH", "X-GM-RAW", f'"to:{alias} newer_than:1d"')
         return [uid.decode() for uid in (data[0] or b"").split()]
 

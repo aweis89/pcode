@@ -188,3 +188,24 @@ def test_empty_body_literal_and_other_body_section(monkeypatch):
     )
     assert client.fetch("42") == b""
     assert client.headers("42") == b"headers"
+
+
+def test_search_polls_before_searching_so_new_mail_is_visible():
+    """A selected mailbox stays the snapshot taken at SELECT until the client polls."""
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        def noop(self):
+            self.calls.append("NOOP")
+            return "OK", [b""]
+
+        def uid(self, *args):
+            self.calls.append(args[0])
+            return "OK", [b"5 9"]
+
+    client = GmailMailbox("owner@example.test", "unused")
+    client._imap = connection = Connection()
+    assert client.search("owner+pcode-x@example.test") == ["5", "9"]
+    assert connection.calls == ["NOOP", "SEARCH"]
