@@ -211,7 +211,8 @@ class Palette:
                 # The live area has three weights. Live: the spinner and the
                 # phase word, the one thing that says the turn is moving.
                 # Content: what it is doing, in the terminal's own text colour.
-                # Chrome: counts, clocks, notices, jobs and queues, muted.
+                # Chrome: counts, clocks, notices, jobs and queues, muted, and
+                # so is a tool call's command or path (`StatusLine.quiet`).
                 "activity.spinner": self.accent,
                 "activity.badge": self.accent,
                 "activity.phase": f"nodim {self.accent} bold",
@@ -482,9 +483,9 @@ class StatusLine:
     """The status row's parts, in the one order every state uses.
 
     Left: spinner, optional badge, the phase (the live word, accented), then
-    the detail as ordinary text. Right, in a fixed column: the run's tool tally
-    and the phase clock, muted. Narrow panes drop the tally, then the clock,
-    then cut the detail, and only then the phase.
+    the detail as ordinary text, or muted when it is a tool call's. Right, in a
+    fixed column: the run's tool tally and the phase clock, muted. Narrow panes
+    drop the tally, then the clock, then cut the detail, and only then the phase.
     """
 
     phase: str
@@ -495,6 +496,9 @@ class StatusLine:
     separator: str = "·"
     # A just-finished call held on the row: its detail is muted, not live.
     settled: bool = False
+    # A tool call's detail (a command, a path) is muted whether it runs or has
+    # settled, so the row never flips shade when the same call finishes.
+    quiet: bool = False
 
     def fragments(self, spinner: str, width: int, *, rule: bool = False) -> list[tuple[str, str]]:
         """The row, `width` cells wide when it has meta; `rule` draws the gap as border."""
@@ -515,7 +519,8 @@ class StatusLine:
         room = width - (cell_len(suffix) + 2 if suffix else 0)
         # A detail with no room to say anything is dropped, not left as `·…`.
         if detail and room - needed >= DETAIL_MIN_CELLS // 2:
-            style = "class:activity.meta" if self.settled else "class:activity.detail"
+            muted = self.settled or self.quiet
+            style = "class:activity.meta" if muted else "class:activity.detail"
             head.append((style, detail))
         fitted = fit_fragments(head, room)
         if not suffix:
@@ -968,7 +973,7 @@ class Activity:
                 phase, _, detail = line.partition(" · ")
             else:
                 phase, detail = f"Running {running} tools", line
-            return StatusLine(phase, detail, tally=tally, elapsed=call.elapsed)
+            return StatusLine(phase, detail, tally=tally, elapsed=call.elapsed, quiet=True)
         clock = phase
         if agents := self.tools.delegates:
             # The panel lists the sub-agents themselves, so this row just says

@@ -189,15 +189,17 @@ def test_status_row_reports_the_newest_running_tool_call():
     activity = Activity(prompt="Fix bug", prompt_state="running", status="Responding…")
     activity.tools.record(ToolStarted("read_file", "example.py", "one"))
     activity.tools.record(ToolStarted("grep", "pattern", "two"))
-    parts = styled(activity.status_fragments("⠋", 80))
-    assert parts["activity.phase"] == "Running 2 tools"
-    assert parts["activity.detail"].endswith("pattern")
+    fragments = activity.status_fragments("⠋", 80)
+    assert styled(fragments)["activity.phase"] == "Running 2 tools"
+    # A call's line is muted while it runs, as it is once it settles.
+    assert ("class:activity.meta", " · Search code · pattern") in fragments
     # A result hands the row back to the call still running.
     activity.tools.record(ToolSummary("grep", "pattern", call_id="two"))
     parts = styled(activity.status_fragments("⠋", 80))
     # One call is its own phase: its label is already the verb.
     assert parts["activity.phase"] == "Read file"
-    assert parts["activity.detail"] == " · example.py"
+    fragments = activity.status_fragments("⠋", 80)
+    assert ("class:activity.meta", " · example.py") in fragments
 
 
 def test_finished_call_is_held_as_done_under_the_models_phase():
