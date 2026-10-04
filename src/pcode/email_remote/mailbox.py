@@ -33,6 +33,20 @@ class SetupError(RuntimeError):
     """Something `pcode --email-setup` fixes; the message says what."""
 
 
+BAD_LOGIN = (
+    "Gmail rejected the app password for {owner}. Check that it was created while "
+    "signed in as {owner} (the app-passwords page opens in the browser's current "
+    "Google account), that 2-Step Verification is on, and that it was copied whole; "
+    "then run pcode --email-setup again."
+)
+
+
+def app_password(text: str) -> str:
+    """Google shows app passwords as `abcd efgh ijkl mnop`; pastes also bring
+    bracketed-paste markers. Neither belongs in the password."""
+    return re.sub(r"\x1b\[20[01]~|\s", "", text)
+
+
 @dataclass(frozen=True)
 class Meta:
     """What the mailbox says about a message before its content is read."""
@@ -225,14 +239,19 @@ class GmailMailbox:
 
     def __init__(self, owner: str, password: str) -> None:
         self.owner = owner
-        self._password = password
+        self._password = app_password(password)
         self._imap: imaplib.IMAP4 | None = None
 
     def _connection(self) -> imaplib.IMAP4:
         if self._imap is None:
             imap = imaplib.IMAP4_SSL(IMAP_HOST, timeout=TIMEOUT)
             try:
-                imap.login(self.owner, self._password)
+                try:
+                    imap.login(self.owner, self._password)
+                except imaplib.IMAP4.error as error:
+                    if "AUTHENTICATIONFAILED" in str(error):
+                        raise SetupError(BAD_LOGIN.format(owner=self.owner)) from None
+                    raise
                 status, _ = imap.select(_all_mail(imap), readonly=True)
                 if status != "OK":
                     raise imaplib.IMAP4.error("Could not open All Mail")

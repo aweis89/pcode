@@ -26,6 +26,7 @@ dev/email-remote.md, with the clients you used.
 
 import argparse
 import getpass
+import re
 import smtplib
 import sys
 import time
@@ -35,7 +36,7 @@ from email.utils import getaddresses
 
 from pcode.email_remote import outbound
 from pcode.email_remote.listener import alias_for, new_token
-from pcode.email_remote.mailbox import GmailMailbox, SetupError, read_password
+from pcode.email_remote.mailbox import GmailMailbox, SetupError, app_password, read_password
 
 GMAIL_MX = "gmail-smtp-in.l.google.com"
 
@@ -83,8 +84,15 @@ def main() -> int:
     parser.add_argument("--forge", action="store_true")
     args = parser.parse_args()
     owner = args.owner.lower()
-    mailbox = GmailMailbox(owner, password_for(owner))
-    mailbox.verify()
+    password = app_password(password_for(owner))
+    if not re.fullmatch(r"[a-z]{16}", password):
+        print(f"Note: got {len(password)} characters; an app password is 16 letters.")
+    mailbox = GmailMailbox(owner, password)
+    try:
+        mailbox.verify()
+    except SetupError as error:
+        print(error)
+        return 1
     alias = alias_for(owner, new_token())
     probe = outbound.compose(
         owner=owner,

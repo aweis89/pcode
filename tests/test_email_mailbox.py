@@ -209,3 +209,29 @@ def test_search_polls_before_searching_so_new_mail_is_visible():
     client._imap = connection = Connection()
     assert client.search("owner+pcode-x@example.test") == ["5", "9"]
     assert connection.calls == ["NOOP", "SEARCH"]
+
+
+def test_app_password_drops_display_spaces_and_paste_markers():
+    from pcode.email_remote.mailbox import app_password
+
+    assert app_password("\x1b[200~abcd efgh ijkl mnop\x1b[201~\n") == "abcdefghijklmnop"
+
+
+def test_rejected_login_is_a_setup_error_naming_the_likely_causes(monkeypatch):
+    from pcode.email_remote import mailbox as module
+
+    class Imap:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def login(self, user, password):
+            assert password == "abcdefghijklmnop"
+            raise imaplib.IMAP4.error("[AUTHENTICATIONFAILED] Invalid credentials (Failure)")
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(module.imaplib, "IMAP4_SSL", Imap)
+    client = GmailMailbox("owner@example.test", "abcd efgh ijkl mnop")
+    with pytest.raises(module.SetupError, match="signed in as owner@example.test"):
+        client.verify()
