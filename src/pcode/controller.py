@@ -127,7 +127,7 @@ SESSION_FIELDS = (
     "prompt_kind",
     "prompt_detail",
     "user_command",
-    "jobs",
+    "job_count",
     "watched_job",
     "notice",
     "notice_expires",
@@ -437,7 +437,7 @@ class SessionController:
     - Turn lifecycle: busy state, prompt and command queues, dispatch, turns,
       steering, and cancellation.
     - Background work: MCP enabling and sign-out, compaction, history rewrites.
-    - Shell jobs: the live panel's job rows, a watched tail, and job wake-ups.
+    - Shell jobs: the footer's active count, a watched tail, and job wake-ups.
     - MCP servers: `/mcp` and saving default servers.
     - History: `/compact`, `/autocompact`, `/resend`.
     - The session: skills, extensions and sub-agents, building the runtime,
@@ -1696,12 +1696,12 @@ class SessionController:
         self.compact_task = asyncio.create_task(work)
         self.compact_task.add_done_callback(finished)
 
-    # --- Jobs: rows in the live panel, a watched tail, exits, and wake-ups ---
+    # --- Jobs: a footer count, a watched tail, exits, and wake-ups ---
 
     async def watch_jobs(self) -> None:
-        """Keep the jobs rows current, and report exits once the turn is over.
+        """Keep the job count current, and report exits once the turn is over.
 
-        Running rows update busy or idle and disappear on completion.
+        The count updates busy or idle and excludes completed jobs.
         Scrollback waits for idle, because a completion written mid-turn
         would land inside the model's streaming text.
         The model is told separately, at its next request, unless nothing
@@ -1718,30 +1718,24 @@ class SessionController:
                 prompt = self.wake_prompt() if self.live_task is None else None
                 if prompt is not None:
                     self.submit(prompt, "wake")
-            # Refresh even while busy so completed jobs leave the live panel.
+            # Refresh even while busy so the footer count stays current.
             if self.refresh_jobs() or changed:
                 self.view.redraw()
             await asyncio.sleep(1)
 
     def refresh_jobs(self) -> bool:
-        """Recompute the jobs rows and the watched tail. Returns whether they changed.
+        """Recompute the job count and watched tail. Returns whether they changed.
 
-        Only running jobs belong here. Completion notices stay pending until
-        the turn ends (or the idle watcher reports them) without keeping a row.
+        Count every running job, even while a tool waits on it. Completion
+        notices stay pending until the turn ends or the idle watcher reports them.
         """
         registry = getattr(self.runtime, "jobs", None)
         if registry is None:
             return False
         registry.refresh()
-        rows = []
-        for job in sorted(registry.jobs.values(), key=lambda job: job.started_at):
-            elapsed = format_duration(job.elapsed)
-            if job.running and not job.waiting:
-                rows.append(
-                    ("class:activity.job", f"\u27f3 {job.id} \u00b7 {job.label()} \u00b7 {elapsed}")
-                )
-        changed = rows != self.activity.jobs
-        self.activity.jobs = rows
+        count = sum(job.running for job in registry.jobs.values())
+        changed = count != self.activity.job_count
+        self.activity.job_count = count
         return self._refresh_watched(registry) or changed
 
     def _refresh_watched(self, registry) -> bool:

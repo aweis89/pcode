@@ -108,44 +108,44 @@ def until_finished(jobs, *watched):
     raise AssertionError("jobs did not finish")
 
 
-def test_jobs_rows_show_only_running_background_work(tmp_path):
+def test_job_count_includes_waited_jobs_but_not_completed_work(tmp_path):
     app, jobs = app_with_jobs()
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path, purpose="serving")
     assert app.controller.refresh_jobs() is True
-    assert [text[:17] for _, text in app.activity.jobs] == ["\u27f3 j1 \u00b7 serving \u00b7 "]
-    # A tool call blocking on it is already the spinner row's business.
+    assert app.activity.job_count == 1
+    # Waiting changes the main status, but not how many jobs are running.
     live.waiting = True
-    app.controller.refresh_jobs()
-    assert app.activity.jobs == []
+    assert app.controller.refresh_jobs() is False
+    assert app.activity.job_count == 1
     live.waiting = False
     failed = jobs.launch(command("import sys; sys.exit(2)"), cwd=tmp_path, background=True)
     until_finished(jobs, failed)
     app.controller.refresh_jobs()
-    assert [text[:17] for _, text in app.activity.jobs] == ["\u27f3 j1 \u00b7 serving \u00b7 "]
+    assert app.activity.job_count == 1
     # Hiding the completed job must not consume its deferred completion notice.
     assert "ui" not in failed.announced
     assert [job.id for job in app.controller.report_finished_jobs()] == ["j2"]
     app.controller.refresh_jobs()
-    assert [text[:17] for _, text in app.activity.jobs] == ["\u27f3 j1 \u00b7 serving \u00b7 "]
+    assert app.activity.job_count == 1
     jobs.stop(live)
+    app.controller.refresh_jobs()
+    assert app.activity.job_count == 0
 
 
-def test_jobs_rows_exclude_older_exits(tmp_path):
+def test_job_count_excludes_older_exits(tmp_path):
     app, jobs = app_with_jobs()
     done = jobs.launch(command("import sys; sys.exit(3)"), cwd=tmp_path, background=True)
     until_finished(jobs, done)
     live = jobs.launch(command("import time; time.sleep(60)"), cwd=tmp_path, purpose="serving")
     app.controller.refresh_jobs()
-    # Finished jobs must not occupy even an overflow row.
-    assert [text.split(" \u00b7 ")[0] for _, text in app.activity.jobs] == [f"\u27f3 {live.id}"]
-    assert app.activity.job_rows(1) == app.activity.jobs
+    assert app.activity.job_count == 1
     jobs.stop(live)
 
 
 @pytest.mark.parametrize("busy", [False, True])
 @pytest.mark.parametrize("show_commands", ["off", "on"])
 @pytest.mark.parametrize("outcome", ["success", "failure", "stopped"])
-def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
+def test_finished_jobs_leave_footer_count_and_report_once_like_run_commands(
     tmp_path, busy, show_commands, outcome
 ):
     save_preferences(show_commands=show_commands, tool_error_scrollback="on")
@@ -169,19 +169,18 @@ def test_finished_jobs_leave_live_rows_and_report_once_like_run_commands(
     jobs.jobs[job.id] = job
     job.output_path.write_text("test output\n")
     assert app.controller.refresh_jobs() is True
-    assert len(app.activity.jobs) == 1
+    assert app.activity.job_count == 1
 
     job.ended_at = job.started_at + 8.8
     job.stopped = outcome == "stopped"
     job.exit_code = None if job.stopped else 0 if outcome == "success" else 2
     assert app.controller.refresh_jobs() is True
-    assert app.activity.jobs == []
-    assert app.activity.job_rows(3) == []
+    assert app.activity.job_count == 0
     assert job.announced == set()
     assert stream.getvalue() == ""
     assert app.controller.refresh_jobs() is False
 
-    # The turn-end/idle reporter, not the live-row refresh, owns the completion.
+    # The turn-end/idle reporter, not the count refresh, owns the completion.
     app.activity.busy = False
     assert app.controller.report_finished_jobs() == [job]
     printed = stream.getvalue()

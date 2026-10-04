@@ -87,7 +87,7 @@ slow suite while editing something else. `/jobs` lists what's running and shows
 each log; jobs even survive pcode restarting and are picked up by the next
 session. See [a shell for long-running work](guide/shell.md).
 
-![A background job watching CI as a row above the editor while the conversation carries on](assets/screenshots/jobs.svg)
+![The footer below the editor shows 1 job while CI runs and the conversation carries on](assets/screenshots/jobs.svg)
 
 ## Your Claude subscription, the supported way
 

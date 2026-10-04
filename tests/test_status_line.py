@@ -33,6 +33,26 @@ def make_app(workspace, monkeypatch, *, model=None, width=100):
     return app, stream
 
 
+@pytest.mark.parametrize("busy", [False, True])
+@pytest.mark.parametrize("count,label", [(0, ""), (1, "1 job"), (12, "12 jobs")])
+@pytest.mark.parametrize("width", [32, 100])
+def test_footer_counts_running_jobs_before_model_metadata(
+    tmp_path, monkeypatch, busy, count, label, width
+):
+    app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=width)
+    app.activity.busy = busy
+    app.activity.job_count = count
+    text = fragment_list_to_text(app.toolbar())
+    assert cell_len(text) <= width
+    if label:
+        assert ("class:bottom-toolbar.activity", label) in app.toolbar()
+        assert f"steering · {label}" in text
+    else:
+        assert "job" not in text
+    app.activity.job_count = 0
+    assert "job" not in fragment_list_to_text(app.toolbar())
+
+
 def test_footer_home_branch_model_and_effort(tmp_path, monkeypatch):
     monkeypatch.setattr("pcode.context_usage.context_window", lambda model: 400_000)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

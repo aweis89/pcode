@@ -258,7 +258,8 @@ rows show status icons and keep the active item in view. Running
 [sub-agents](#delegated-sub-agents) appear beneath the active task with tree
 guides (`├──`, `└──`, `│`); with no active task, they appear unparented.
 Tool calls never get rows here: most finish in milliseconds, so rows for them
-would flicker in and out. The status row just above the widget names the
+would flicker in and out. The status row follows thoughts, notices, and side
+questions, directly above command previews, tasks, and the editor. It names the
 newest running call and counts the rest (`Running 3 tools`). A finished call
 gets its line in [scrollback](transcript.md).
 
@@ -276,12 +277,14 @@ this phase has lasted.
 ◜ ◈ Compacting context ▸ keep tests                           4s
 ```
 
-A spinner means the turn is waiting on that row; background jobs get a static
-`⟳` instead. The phase is the one highlighted word, and a stall shows as its
-clock climbing (`Thinking · 40s`). A call that just finished stays for a
+A spinner means the turn is waiting on that row. Running jobs are counted in
+the footer below the editor as `1 job` or `N jobs`, including jobs being waited
+on; the count is hidden at zero. Use `/jobs` for individual job details.
+The phase is the one highlighted word, and a stall shows as its clock climbing
+(`Thinking · 40s`). A call that just finished stays for a
 moment, marked `✓` or `✗`, so a burst of quick calls reads as progress rather
 than flicker. `◈` marks work pcode runs itself, such as compaction.
-The indented rows above a status row are the model's newest thought, faded, up
+Faded, indented rows above the status row show the model's newest thoughts, up
 to three of them, kept until the turn ends; that is the default
 `/show-thinking status-line` mode (see
 [thinking](transcript.md#thinking-status-line-or-scrollback)).
