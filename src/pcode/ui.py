@@ -211,8 +211,7 @@ class Palette:
                 # The live area has three weights. Live: the spinner and the
                 # phase word, the one thing that says the turn is moving.
                 # Content: what it is doing, in the terminal's own text colour.
-                # Chrome: counts, clocks, notices, jobs and queues, muted, and
-                # so is a tool call's command or path (`StatusLine.quiet`).
+                # Chrome: counts, clocks, notices, jobs and queues, muted.
                 "activity.spinner": self.accent,
                 "activity.badge": self.accent,
                 "activity.phase": f"nodim {self.accent} bold",
@@ -226,6 +225,12 @@ class Palette:
                 "activity.thinking": f"italic {self.muted}",
                 # Keep the reasoning marker upright beside the italic text.
                 "activity.thinking.icon": f"noitalic {self.muted}",
+                # The tool row under the thought: upright where the thought is
+                # italic, and muted whether its call runs or has settled, so it
+                # never flips shade. Only a settled call's mark takes a colour.
+                "activity.tool": self.muted,
+                "activity.tool.done": f"nodim {self.success}",
+                "activity.tool.failed": "nodim ansired",
                 # System work is pcode's own: the badge and accent mark it, and
                 # its queued rows keep an italic detail.
                 "activity.system": self.accent,
@@ -450,6 +455,13 @@ THOUGHT_ROWS = 10
 # Marks the first thought row in the spinner's column, without resembling
 # a stalled frame of the round spinner below it.
 THOUGHT_ICON = "∴"
+# Marks the tool row under the thought: the call the status row's verb is
+# about. It hangs from the thought's text, which is what the call is for.
+TOOL_ICON = "⎿"
+# Cells before the tool row's icon: it lines up with the spinner below it.
+TOOL_INDENT = "  "
+# With no thought to hang from, the row stands alone in the thought's column.
+LONE_TOOL_ICON = "›"
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -482,9 +494,10 @@ class StatusLine:
     """The status row's parts, in the one order every state uses.
 
     Left: spinner, optional badge, the phase (the live word, accented), then
-    the detail as ordinary text, or muted when it is a tool call's. Right, in a
-    fixed column: the run's tool tally and the phase clock, muted. Narrow panes
-    drop the tally, then the clock, then cut the detail, and only then the phase.
+    the detail. Right, in a fixed column: the run's tool tally and the phase
+    clock, muted. Narrow panes drop the tally, then the clock, then cut the
+    detail, and only then the phase. A tool call's command or path never
+    rides this row: it gets the tool row above (`Activity.tool_fragments`).
     """
 
     phase: str
@@ -493,11 +506,11 @@ class StatusLine:
     elapsed: float | None = None
     badge: str = ""
     separator: str = "·"
-    # A just-finished call held on the row: its detail is muted, not live.
+    # The tool call the line reports, running or just finished; the tool row
+    # shows what it acts on.
+    call: ToolCall | None = None
+    # Whether `call` had finished when the line was taken.
     settled: bool = False
-    # A tool call's detail (a command, a path) is muted whether it runs or has
-    # settled, so the row never flips shade when the same call finishes.
-    quiet: bool = False
 
     def fragments(self, spinner: str, width: int, *, rule: bool = False) -> list[tuple[str, str]]:
         """The row, `width` cells wide when it has meta; `rule` draws the gap as border."""
@@ -518,9 +531,7 @@ class StatusLine:
         room = width - (cell_len(suffix) + 2 if suffix else 0)
         # A detail with no room to say anything is dropped, not left as `·…`.
         if detail and room - needed >= DETAIL_MIN_CELLS // 2:
-            muted = self.settled or self.quiet
-            style = "class:activity.meta" if muted else "class:activity.detail"
-            head.append((style, detail))
+            head.append(("class:activity.detail", detail))
         fitted = fit_fragments(head, room)
         if not suffix:
             return fitted
@@ -546,12 +557,19 @@ class _HeldStatus:
 
 def _status_text(line: StatusLine) -> tuple:
     """What a status line says, apart from its ticking clock and tally."""
-    return (line.badge, line.phase, line.detail, line.settled)
+    return (line.badge, line.phase, line.detail, line.call, line.settled)
 
 
 def _urgent(line: StatusLine) -> bool:
     """News the status row shows at once, whatever it is holding."""
-    return line.phase.startswith("Retrying") or (line.settled and line.detail.startswith("✗"))
+    failed = line.settled and line.call is not None and line.call.failed
+    return line.phase.startswith("Retrying") or failed
+
+
+def call_parts(call: ToolCall) -> tuple[str, str]:
+    """A call's verb (`Run shell`) and what it acts on (`ls -la`), if anything."""
+    label, _, detail = call.line(timed=False).partition(" · ")
+    return label, detail
 
 
 def head_rows(text: str, width: int, rows: int) -> list[str]:
@@ -723,6 +741,8 @@ class Activity:
     )
     # The status line on screen while a hold keeps it. Drawing state like `_phase`.
     _held: _HeldStatus | None = field(default=None, init=False, repr=False, compare=False)
+    # The turn's latest call on the tool row, kept there once it finishes.
+    _last_call: ToolCall | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def show_thinking(self) -> bool:
@@ -741,6 +761,15 @@ class Activity:
         """Drop the thinking rows: the answer they led to is streaming now."""
         self.thought, self.thought_done = "", True
 
+    @property
+    def thought_shown(self) -> bool:
+        """Whether the thinking rows have a thought to show above the status row."""
+        return (
+            self.thinking_mode == "status-line"
+            and self.status_shown
+            and bool(latest_thought(self.thought).strip())
+        )
+
     def thought_fragments(
         self, width: int, rows: int = THOUGHT_ROWS
     ) -> list[list[tuple[str, str]]]:
@@ -752,11 +781,9 @@ class Activity:
         whose border carries the status, so the status holds its place as
         the thought wraps to more or fewer rows.
         """
-        if self.thinking_mode != "status-line" or not self.status_shown or width < 3:
+        if not self.thought_shown or width < 3:
             return []
         thought = latest_thought(self.thought)
-        if not thought.strip():
-            return []
         # Wrap the marker with the text so continuation rows use the full
         # width, without a hanging indent. Only the first row has an upright
         # marker; the thought itself stays italic.
@@ -872,6 +899,7 @@ class Activity:
         self.prompt_detail = ""
         self.status = ""
         self._held = None
+        self._last_call = None
         self.thought, self.thought_done = "", True
         self.tasks_autohidden = False
 
@@ -904,6 +932,7 @@ class Activity:
         self.tasks_autohidden = False
         self.thought, self.thought_done = "", True
         self._held = None  # A new turn never opens on the last one's line.
+        self._last_call = None
         self.prompt = text
         self.prompt_kind = kind
         self.prompt_detail = detail
@@ -967,12 +996,8 @@ class Activity:
             # one call is its own phase; parallel calls are counted instead.
             # The clock is the call's own, whatever the model said last.
             self._phase_seconds("")
-            line = call.line(timed=False)
-            if running < 2:
-                phase, _, detail = line.partition(" · ")
-            else:
-                phase, detail = f"Running {running} tools", line
-            return StatusLine(phase, detail, tally=tally, elapsed=call.elapsed, quiet=True)
+            phase = call_parts(call)[0] if running < 2 else f"Running {running} tools"
+            return StatusLine(phase, tally=tally, elapsed=call.elapsed, call=call)
         clock = phase
         if agents := self.tools.delegates:
             # The panel lists the sub-agents themselves, so this row just says
@@ -990,9 +1015,34 @@ class Activity:
         if call is not None:
             # Just finished: held briefly and marked done, so a burst of fast
             # calls reads as progress rather than strobing.
-            line.detail = f"{'✗' if call.failed else '✓'} {call.line(timed=False)}"
-            line.settled = True
+            line.call, line.settled = call, True
         return line
+
+    def tool_fragments(self, line: StatusLine, width: int) -> list[tuple[str, str]]:
+        """The tool row between the thought and the status row: `  ⎿ ls -la`.
+
+        What the status row's verb acts on, with the full pane width to say it.
+        The hook hangs it from the thought above; with none, it is `› ls -la`
+        in the thought's column instead, so it never hangs from nothing.
+        Once a call has run it stays for the rest of the turn, marked `✓` or
+        `✗`, so the editor box does not jump a row with every call. It names
+        the call's verb too whenever the status row no longer does.
+        """
+        call = line.call or self._last_call
+        if call is None or not self.status_shown or width < 1:
+            return []
+        label, detail = call_parts(call)
+        hung = self.thought_shown
+        if call.settled is None:
+            icon = ("class:activity.tool", TOOL_ICON if hung else LONE_TOOL_ICON)
+        elif call.failed:
+            icon = ("class:activity.tool.failed", "✗")
+        else:
+            icon = ("class:activity.tool.done", "✓")
+        if not detail or line.phase != label:
+            detail = " · ".join(filter(None, (label, detail)))
+        row = [icon, ("class:activity.tool", f" {detail}")]
+        return fit_fragments([("", TOOL_INDENT), *row] if hung else row, width)
 
     def held_status_line(self, tally: str = "", hold: float = 0.0) -> StatusLine:
         """The status line, keeping what the row said for at least `hold` seconds.
@@ -1002,6 +1052,13 @@ class Activity:
         a retry or failure, and a held tool call that has finished, so it only
         ever skips churn, never news.
         """
+        line = self._held_line(tally, hold)
+        # The tool row keeps the last call this row showed, so the two agree.
+        if line.call is not None:
+            self._last_call = line.call
+        return line
+
+    def _held_line(self, tally: str, hold: float) -> StatusLine:
         line = self.status_line(tally)
         if hold <= 0:
             return line
@@ -2120,9 +2177,30 @@ class PromptLayout:
 
     @_per_render
     def thought_rows(self):
-        """The newest thought, on fewer rows in a short pane."""
-        rows = min(self.thought_max_rows, max(1, self.size().rows // 4))
+        """The newest thought, on fewer rows in a short pane.
+
+        The tool row counts against the same cap, keeping at least one row
+        for the thought.
+        """
+        rows = min(self.thought_max_rows, max(1, self.size().rows // 4 - len(self.tool_rows())))
         return self.activity.thought_fragments(self.size().columns - 1, rows)
+
+    @_per_render
+    def status_line(self) -> StatusLine:
+        """The held status line, read once per redraw by the status row and the tool row.
+
+        Without its tally, which the hold ignores anyway: the tally reads the
+        task widget, whose height depends on `preview_layout`, which in turn
+        sizes the live rows this line feeds. Like `status_gap`, it must read
+        only activity state.
+        """
+        return self.activity.held_status_line("", STATUS_HOLD_SECONDS)
+
+    @_per_render
+    def tool_rows(self):
+        """What the running or latest tool call acts on, under the thought."""
+        row = self.activity.tool_fragments(self.status_line(), self.size().columns - 1)
+        return [row] if row else []
 
     @_per_render
     def aside_rows(self):
@@ -2173,6 +2251,7 @@ class PromptLayout:
         return (
             bool(self.typing_row())
             + len(self.thought_rows())
+            + len(self.tool_rows())
             + len(self.group_rows())
             + len(self.notice_rows())
             + len(self.wait_rows())
@@ -2254,13 +2333,8 @@ class PromptLayout:
             meta = [transcript.pending_tally() if transcript is not None else ""]
             if self.plan_attached() and self.activity.displayed_plan:
                 meta.insert(0, self.activity.panel_title())
-            status = self.activity.status_fragments(
-                self.spinner_frame(),
-                columns - 6,
-                " · ".join(part for part in meta if part),
-                hold=STATUS_HOLD_SECONDS,
-                rule=True,
-            )
+            line = replace(self.status_line(), tally=" · ".join(part for part in meta if part))
+            status = line.fragments(self.spinner_frame(), columns - 6, rule=True)
             if not status:
                 return [("class:frame.border", "┌" + "─" * max(0, columns - 2) + "┐")]
             used = 3 + sum(cell_len(text) for _, text in status)
@@ -2345,6 +2419,8 @@ class PromptLayout:
         # above the editor box whose border carries the status, where it reads
         # as what led to the call.
         thought = self.panel_rows(self.thought_rows)
+        # Between the thought and the status row: why, what, then how it is going.
+        tool = self.panel_rows(self.tool_rows)
         plan_frame = Frame(self.plan_body(), height=lambda: len(self.plan_rows()) + 2)
         plan_frame.container.children[0] = self.plan_heading_border()
         plan = ConditionalContainer(
@@ -2373,7 +2449,7 @@ class PromptLayout:
         # Side questions outlive the turn. Their rows stay out here, so only
         # the main status rides the editor box with its tasks.
         asides = self.panel_rows(self.aside_rows)
-        return HSplit([status_spacer, group, notice, thought, waits, asides, commands, plan])
+        return HSplit([status_spacer, group, notice, thought, tool, waits, asides, commands, plan])
 
     def queued(self) -> ConditionalContainer:
         return ConditionalContainer(

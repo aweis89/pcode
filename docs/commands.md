@@ -273,29 +273,45 @@ guides (`├──`, `└──`, `│`); with no active task, they appear unpar
 Tool calls never get rows here: most finish in milliseconds, so rows for them
 would flicker in and out. The status row is the editor box's top border, below
 thoughts, notices, side questions, and command previews. It names the
-newest running call and counts the rest (`Running 3 tools`). A finished call
-gets its line in [scrollback](transcript.md).
+newest running call's verb and counts the rest (`Running 3 tools`). A finished
+call gets its line in [scrollback](transcript.md).
 
-![A turn three steps into a five-step plan: done steps ticked, the test run in progress with its shell call in the status row, the last step still pending](assets/screenshots/tasks.svg)
+![A turn three steps into a five-step plan: done steps ticked, the test run in progress with its shell call above the status row, the last step still pending](assets/screenshots/tasks.svg)
 
 The status row always reads the same way: a spinner, what the turn is doing,
-what it is doing it to, and on the right the run's tool count and how long
-this phase has lasted.
+and on the right the run's tool count and how long this phase has lasted.
+The command, path, or pattern a tool call works on gets its own row above,
+with the full width of the pane, so the status row stays short:
 
 ```text
-┌─ ◜ Thinking ────────────────────────────────────────────────── 8s ─┐
-┌─ ◜ Edit file · src/app.py ────────────────────── ✓7 ✗1 tools · 2s ─┐
-┌─ ◜ Waiting for model · ✓ Read file · src/app.py ─── ✓8 tools · 0s ─┐
-┌─ ◜ ◈ Compacting context ▸ keep tests ───────────────────────── 4s ─┐
+∴ Checking where the config is loaded
+  ⎿ src/app.py
+┌─ ◜ Edit file ────────────────────────────────────── ✓7 ✗1 tools · 2s ─┐
+```
+
+Read top to bottom, that is why (the thought), what (the call), and how it is
+going (the status row). Once a call finishes, its row is marked `✓` or `✗`
+and stays until the next call or the end of the turn, naming the call's verb
+once the status row has moved on:
+
+```text
+  ✓ Read file · src/app.py
+┌─ ◜ Waiting for model ───────────────────────────────── ✓8 tools · 0s ─┐
+```
+
+Work pcode runs itself has no tool row, just its detail on the status row:
+
+```text
+┌─ ◜ ◈ Compacting context ▸ keep tests ──────────────────────────── 4s ─┐
 ```
 
 A spinner means the turn is waiting on that row. Running jobs are counted in
 the footer below the editor as `1 job` or `N jobs`, including jobs being waited
 on; the count is hidden at zero. Use `/jobs` for individual job details.
 The phase is the one highlighted word, and a stall shows as its clock climbing
-(`Thinking · 40s`). A call that just finished stays for a
-moment, marked `✓` or `✗`, so a burst of quick calls reads as progress rather
-than flicker. `◈` marks work pcode runs itself, such as compaction.
+(`Thinking · 40s`). Each row holds what it says for a moment, so a burst of
+quick calls reads as progress rather than flicker. `◈` marks work pcode runs
+itself, such as compaction.
 Faded, indented rows above the status row show the model's newest thoughts, up
 to three of them, kept until the turn ends; that is the default
 `/show-thinking status-line` mode (see

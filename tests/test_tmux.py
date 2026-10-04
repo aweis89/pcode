@@ -942,6 +942,10 @@ def test_paused_stream_stays_hidden_on_resize_without_more_tokens(pane):
         assert input_rows(screen) == 1
 
 
+# The running command's tool row, above the status row that names its verb.
+TOOL_ROW = "› printf FIRST_DETAIL"
+
+
 TOOLS_SCRIPT = """
 import asyncio
 from pcode.app import PreviewApp
@@ -986,11 +990,13 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     assert "Tools" not in initial and "┌─ Tasks 0/1 ─" in initial
     assert initial.count("┌") == initial.count("└") == 2
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    screen = capture(pane, "Run shell · ", running=True)
+    screen = capture(pane, TOOL_ROW, running=True)
     lines = screen.splitlines()
     task = next(i for i, line in enumerate(lines) if "A task" in line)
     # The widget keeps its own frame and holds tasks alone; the running
-    # command rides the editor's top border below it.
+    # command's verb rides the editor's top border below it, and what it
+    # runs sits on the tool row above, with the thoughts.
+    assert TOOL_ROW in lines[task - 2]
     assert lines[task - 1].startswith("┌─ Tasks 0/1 ─")
     assert lines[task].startswith("│↺")
     assert lines[task + 1].startswith("└")
@@ -1022,7 +1028,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     assert "keep draft" not in capture(pane, "Input discarded", running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "! Run cancelled")
-    assert "Run shell · " not in screen
+    assert TOOL_ROW not in screen
 
 
 def attached_box(screen):
@@ -1089,11 +1095,11 @@ def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
     pane("resize-window", "-t", "preview:0", "-x", "240", "-y", "40")
     capture(pane, "A task", columns=240)
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    capture(pane, "Run shell · ", running=True, columns=240)
+    capture(pane, TOOL_ROW, running=True, columns=240)
 
     for width, height in ((120, 24), (240, 40), (80, 24), (240, 40)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
-        screen = capture(pane, "Run shell · ", running=True, columns=width)
+        screen = capture(pane, TOOL_ROW, running=True, columns=width)
         assert input_rows(screen) == 1
         editor = next(line for line in screen.splitlines() if line.startswith("│❯"))
         assert editor[2:-1].strip() == ""  # No multiline draft needed to trigger this.
@@ -1195,13 +1201,15 @@ def test_queued_messages_stay_directly_above_editor(pane, mode):
 def test_single_running_tool_needs_no_box_above_the_editor(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
-    screen = capture(pane, "Run shell · ", running=True)
+    screen = capture(pane, TOOL_ROW, running=True)
     lines = screen.splitlines()
     top = next(i for i, line in enumerate(lines) if line.startswith("┌"))
-    # Only the editor is boxed: the lone running call rides its top border.
+    # Only the editor is boxed: the lone running call's verb rides its top
+    # border, with what it runs on the tool row just above.
     assert screen.count("┌") == screen.count("└") == 1
     assert lines[top].startswith(SPINNER_ROW)
-    assert "Run shell · " in lines[top]
+    assert "Run shell" in lines[top] and "FIRST_DETAIL" not in lines[top]
+    assert lines[top - 1].strip().startswith(TOOL_ROW)
     assert "Tasks" not in screen and "Tools" not in screen
     assert "✓ Read file" in pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert input_rows(screen) == 1
@@ -1233,10 +1241,11 @@ def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
     capture(pane, "SLOW_FILE", running=True)
     screen = settle(pane, lambda screen: "file_30.py" in screen, running=True)
     lines = screen.splitlines()
-    status = next(i for i, line in enumerate(lines) if "SLOW_FILE" in line)
-    assert lines[status].startswith(SPINNER_ROW)
-    assert lines[status - 1].strip() == ""
-    assert "✓ Read file  file_30.py" in lines[status - 2]
+    tool = next(i for i, line in enumerate(lines) if "SLOW_FILE" in line)
+    assert lines[tool].strip() == "› SLOW_FILE"
+    assert lines[tool + 1].startswith(SPINNER_ROW)
+    assert lines[tool - 1].strip() == ""
+    assert "✓ Read file  file_30.py" in lines[tool - 2]
 
 
 IMMEDIATE_PROMPT_SCRIPT = """

@@ -129,6 +129,11 @@ def test_edit_and_queue_during_generation(outcome):
     asyncio.run(run())
 
 
+def tool_row(activity, width=80):
+    """The tool row's text, for the line the status row would show."""
+    return "".join(text for _, text in activity.tool_fragments(activity.status_line(), width))
+
+
 def styled(fragments):
     """`{style: text}` for one status row, minus the unstyled padding."""
     return {style.removeprefix("class:"): text for style, text in fragments if style}
@@ -191,15 +196,24 @@ def test_status_row_reports_the_newest_running_tool_call():
     activity.tools.record(ToolStarted("grep", "pattern", "two"))
     fragments = activity.status_fragments("⠋", 80)
     assert styled(fragments)["activity.phase"] == "Running 2 tools"
-    # A call's line is muted while it runs, as it is once it settles.
-    assert ("class:activity.meta", " · Search code · pattern") in fragments
+    # The call's detail is never on the status row: the tool row has it, and
+    # names the newest call's verb, which the row's count does not.
+    assert "pattern" not in "".join(text for _, text in fragments)
+    assert tool_row(activity) == "› Search code · pattern"
     # A result hands the row back to the call still running.
     activity.tools.record(ToolSummary("grep", "pattern", call_id="two"))
     parts = styled(activity.status_fragments("⠋", 80))
     # One call is its own phase: its label is already the verb.
-    assert parts["activity.phase"] == "Read file"
-    fragments = activity.status_fragments("⠋", 80)
-    assert ("class:activity.meta", " · example.py") in fragments
+    assert parts["activity.phase"] == "Read file" and "activity.detail" not in parts
+    # The status row says the verb, so the tool row only says what it acts on.
+    assert tool_row(activity) == "› example.py"
+    # Under a thought it hangs from the thought's text, in the spinner's column.
+    activity.think("Checking the example")
+    assert activity.tool_fragments(activity.status_line(), 80) == [
+        ("", "  "),
+        ("class:activity.tool", "⎿"),
+        ("class:activity.tool", " example.py"),
+    ]
 
 
 def test_finished_call_is_held_as_done_under_the_models_phase():
@@ -212,12 +226,37 @@ def test_finished_call_is_held_as_done_under_the_models_phase():
     parts = styled(activity.status_fragments("⠋", 80))
     # Nothing runs, so a stale `Running` status gives the model the turn,
     # and the held call is muted chrome with its result mark, not live work.
-    assert parts["activity.phase"] == "Waiting for model"
-    fragments = activity.status_fragments("⠋", 80)
-    assert ("class:activity.meta", " · ✓ Read file · example.py") in fragments
+    assert parts["activity.phase"] == "Waiting for model" and "activity.detail" not in parts
+    assert activity.tool_fragments(activity.status_line(), 80) == [
+        ("class:activity.tool.done", "✓"),
+        ("class:activity.tool", " Read file · example.py"),
+    ]
     activity.tools.clear()
     parts = styled(activity.status_fragments("⠋", 80))
     assert "activity.detail" not in parts and parts["activity.meta"] == "0s"
+    # The tool row keeps the turn's last call, so the editor box does not
+    # jump a row with every call; a new turn starts without one.
+    assert tool_row(activity) == "✓ Read file · example.py"
+    activity.start_prompt("Next")
+    assert tool_row(activity) == ""
+
+
+def test_tool_row_marks_a_failed_call_and_fits_the_width():
+    from rich.cells import cell_len
+
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running")
+    activity.tools.record(ToolStarted("run_shell", "make test\n" * 30, "one"))
+    activity.tools.record(ToolSummary("run_shell", "make test", call_id="one", failed=True))
+    fragments = activity.tool_fragments(activity.status_line(), 30)
+    assert fragments[0] == ("class:activity.tool.failed", "✗")
+    rendered = "".join(text for _, text in fragments)
+    assert "\n" not in rendered and cell_len(rendered) <= 30 and rendered.endswith("…")
+    # Nothing to show once the turn is over.
+    activity.finish_prompt("done")
+    assert activity.tool_fragments(activity.status_line(), 30) == []
 
 
 def test_status_row_waits_on_sub_agents_listed_in_the_panel(monkeypatch):
@@ -243,7 +282,7 @@ def test_status_row_waits_on_sub_agents_listed_in_the_panel(monkeypatch):
     activity.tools.record(ToolSummary("read_file", "x.py", call_id="a:read"))
     parts = styled(activity.status_fragments("⠋", 80))
     assert parts["activity.phase"] == "Waiting for 2 sub-agents"
-    assert "✓ Read file" in row()
+    assert tool_row(activity) == "✓ Read file · x.py"
     monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 0.0)
     activity.tools.record(ToolSummary("delegate_task", "done", call_id="b"))
     parts = styled(activity.status_fragments("⠋", 80))
@@ -444,11 +483,12 @@ def test_status_row_truncates_to_terminal_width(width):
     rendered = "".join(text for _, text in activity.status_fragments("⠋", width, "✓3 tools"))
     assert "\n" not in rendered
     assert cell_len(rendered) <= width
-    if width >= 40:
-        assert "…" in rendered
-    elif width > 2:
-        # Too narrow for the detail to say anything: the phase alone, cut if it must be.
-        assert "界面" not in rendered
+    # The path is the tool row's, never the status row's.
+    assert "界面" not in rendered
+    row = "".join(text for _, text in activity.tool_fragments(activity.status_line(), width))
+    assert "\n" not in row and cell_len(row) <= width
+    if width >= 12:
+        assert "界面" in row and row.endswith("…")
 
 
 def test_narrow_status_row_drops_the_tally_before_the_detail():
