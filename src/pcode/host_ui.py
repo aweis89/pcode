@@ -1,4 +1,4 @@
-"""The `/switch` chooser over running session hosts."""
+"""The `/switch` chooser over running session hosts, and stopped ones nobody has seen."""
 
 import time
 from pathlib import Path
@@ -63,7 +63,10 @@ def host_row(
     marker = "▸" if entry.id == current else " "
     state = NEW if unseen(entry) else STATES.get(entry.state, entry.state)
     where = Path(entry.workspace).name
-    old = " · old code" if code is not None and entry.stale(code) else ""
+    if entry.state == "stopped":
+        old = " · stopped"  # Enter starts it again on the code installed now.
+    else:
+        old = " · old code" if code is not None and entry.stale(code) else ""
     return f"{marker} {state}  {title:<{_TITLE_WIDTH}}  {where} · {age(now - entry.updated)}{old}"
 
 
@@ -89,7 +92,10 @@ def hosts_dialog(
     style=None,
     key_prefix: str | None = None,
 ):
-    """Returns ("attach", id), ("stop", id), ("new", None), or None when cancelled."""
+    """Returns ("attach", id), ("stop", id), ("new", None), or None when cancelled.
+
+    For a stopped entry "attach" means resume it, and "stop" forget it.
+    """
     entries = ordered(entries)
     code = code_fingerprint()
     visible: list[HostEntry] = []
@@ -138,7 +144,7 @@ def hosts_dialog(
             ("Ctrl+U/D", "Half page"),
             ("Enter", "Switch session"),
             ("Tab/Shift+Tab", "Switch search / list"),
-            ("Delete", "Stop selected session (twice; list focused)"),
+            ("Delete", "Stop (or forget a stopped) session (twice; list focused)"),
             ("Esc", "Clear search when focused, otherwise cancel"),
             ("Ctrl+C", "Cancel"),
         ]
@@ -163,7 +169,10 @@ def hosts_dialog(
             return
         armed[0] = entry.id
         status[0] = (
-            f"Press {shortcuts.label('x')} again to stop {entry.id} ({entry.label()[:40]}). "
+            f"Press {shortcuts.label('x')} again to remove {entry.label()[:40]} from this list. "
+            "/resume still opens it."
+            if entry.state == "stopped"
+            else f"Press {shortcuts.label('x')} again to stop {entry.id} ({entry.label()[:40]}). "
             "Its turn is cancelled."
         )
 
@@ -178,6 +187,7 @@ def hosts_dialog(
     def cancel(event):
         event.app.exit(result=None)
 
+    running = sum(entry.state != "stopped" for entry in entries)
     working = sum(entry.state == "working" for entry in entries)
     fresh = sum(unseen(entry) for entry in entries)
     dialog = Dialog(
@@ -185,7 +195,7 @@ def hosts_dialog(
         body=HSplit(
             [
                 Label(
-                    f"{len(entries)} running · {working} working · {fresh} new · ▸ this terminal",
+                    f"{running} running · {working} working · {fresh} new · ▸ this terminal",
                     dont_extend_height=True,
                 ),
                 query,

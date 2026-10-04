@@ -41,6 +41,8 @@ class SessionInfo(BaseModel):
     created: str
     updated: str
     status: str = "new"
+    # Set with /rename; /resume lists and searches it.
+    name: str | None = None
     turns: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -257,8 +259,8 @@ def session_turns(info: SessionInfo, root: Path | None = None) -> list[Turn] | N
                 elapsed = record.get("elapsed_seconds")
                 turns[-1].blocks.append(
                     ToolCall(
-                        str(record.get("name", "")),
-                        str(record.get("detail", "")),
+                        str(record.get("name") or ""),
+                        str(record.get("detail") or ""),
                         bool(record.get("failed")),
                         elapsed if isinstance(elapsed, (int, float)) else None,
                         str(record.get("command") or ""),
@@ -740,8 +742,10 @@ class SavedSession(SessionJournal):
         finally:
             self.close()
 
-    def save_info(self) -> None:
-        self.info.updated = now()
+    def save_info(self, *, touch: bool = True) -> None:
+        """Write the manifest; `touch=False` keeps `updated`, the /resume sort and date."""
+        if touch:
+            self.info.updated = now()
         # Atomic replacement: interruption cannot leave half a manifest.
         temporary = None
         try:

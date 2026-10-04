@@ -1,5 +1,6 @@
 """Temporary session popups; the editor is suspended while one owns the terminal."""
 
+import re
 from pathlib import Path
 
 from prompt_toolkit.application import Application, get_app
@@ -38,7 +39,7 @@ from pcode.sessions import (
 )
 from pcode.task_prompt import TaskPrompt
 from pcode.tool_display import plain, tool_summary_lines
-from pcode.worktree import repo_scope
+from pcode.worktree import SESSION_WORKTREE_PREFIX, repo_scope
 
 
 def literal(text: str) -> str:
@@ -56,12 +57,41 @@ def literal(text: str) -> str:
     return "\n".join(lines)
 
 
+def names_session(word: str, info: SessionInfo) -> bool:
+    """Whether a casefolded query word names this session itself, not its content.
+
+    An ID prefix of four characters at least, so an ordinary short word ("add",
+    "fix") does not pull in every session whose random ID starts with it; or the
+    exact name of the ``pcode-*`` worktree it ran in, which `--worktree NAME`
+    and later sessions in the same worktree do not share with the ID.
+    """
+    if len(word) >= 4 and info.id.casefold().startswith(word):
+        return True
+    worktree = Path(info.workspace).name.casefold()
+    return worktree.startswith(SESSION_WORKTREE_PREFIX) and word == worktree
+
+
+def in_name(word: str, info: SessionInfo) -> bool:
+    """Whether a casefolded query word is a word of the session's /rename name.
+
+    Or the start of one, from three characters, so typing "bil" already finds
+    "Billing outage" but a lone "a" or "in" does not name every named session.
+    """
+    return any(
+        part == word or (len(word) >= 3 and part.startswith(word))
+        for part in re.findall(r"\w+", (info.name or "").casefold())
+    )
+
+
 class SessionBrowser:
     """Full-screen browser over saved sessions: list, per-turn detail, and search.
 
     Turns are read lazily from each transcript and cached. Typing a query reads
     every session in scope once; a session stays listed only if a turn matches
-    every query word (prompts by default, responses too with the ``r`` shortcut).
+    every query word somewhere in it, not necessarily in one turn, searching
+    prompts, responses, and tool details (prompts alone with the ``r``
+    shortcut). A word naming the session itself (see `names_session` and
+    `in_name`) matches every turn of it.
     """
 
     def __init__(
@@ -84,19 +114,23 @@ class SessionBrowser:
         self.active_id = active_id
         self.code_theme = code_theme
         self.everywhere = False
-        self.responses = False
+        self.responses = True
         self.visible: list[SessionInfo] = []
         self.selected: SessionInfo | None = None
         self._turns: dict[str, list[Turn] | None] = {}
+        # Each turn's casefolded search text, per session and search mode, so a
+        # keystroke does not rebuild it from every transcript in scope.
+        self._haystacks: dict[tuple[str, bool], list[str]] = {}
+        self.first_match: int | None = None
         self._titles: dict[str, str] = {}
         self._refreshing = False
         self.pending_delete: str | None = None
         self.status = ""
-        self.query = TextArea(height=1, prompt="Search prompts: ", multiline=False)
+        self.query = TextArea(height=1, prompt="Search: ", multiline=False)
         self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
         self.list.window.cursorline = Always()
         self.detail = RichPane(theme=rich_theme, color_system=color_system)
-        self.query.buffer.on_text_changed += lambda _: self.refresh()
+        self.query.buffer.on_text_changed += lambda _: self.refresh(keep_selection=False)
         self.list.buffer.on_cursor_position_changed += lambda _: self.select()
         keys = KeyBindings()
         self.detail.bind_scrolling(keys)
@@ -135,7 +169,7 @@ class SessionBrowser:
         def search(event):
             event.app.layout.focus(self.query)
 
-        @shortcuts.add("r", "Responses too")
+        @shortcuts.add("r", "Prompts only/all")
         def responses(event):
             self.responses = not self.responses
             self.refresh()
@@ -154,7 +188,7 @@ class SessionBrowser:
             lambda: (
                 f"Sessions · {len(self.visible)}/{len(self.in_scope())} · "
                 f"Workspace: {'all' if self.everywhere else self.workspace.name} · "
-                f"Search: {'prompts + responses' if self.responses else 'prompts'}"
+                f"Search: {'prompts + responses + tools' if self.responses else 'prompts'}"
                 + (f" · {self.status}" if self.status else "")
             )
         )
@@ -217,6 +251,8 @@ class SessionBrowser:
         self.records = [record for record in self.records if record.id != info.id]
         self._turns.pop(info.id, None)
         self._titles.pop(info.id, None)
+        for responses in (True, False):
+            self._haystacks.pop((info.id, responses), None)
         self.status = f"Deleted {info.id[:8]}"
         # Keep the cursor on the same row so repeated deletes walk down the list.
         row = self.list.document.cursor_position_row
@@ -248,45 +284,108 @@ class SessionBrowser:
             if self.workspace_scope(Path(info.workspace)) == self.workspace
         ]
 
-    def matches(self, turn: Turn, words: list[str]) -> bool:
-        haystack = turn.prompt.casefold()
-        if self.responses:
-            # Every text block, not just the final one: a turn's answer is often
-            # split by tool calls, and the searched-for sentence can be in any part.
-            haystack += "\n" + "\n".join(
-                block.casefold() for block in turn.blocks if isinstance(block, str)
-            )
-        return all(word in haystack for word in words)
+    def search_text(self, turn: Turn) -> str:
+        if not self.responses:
+            return turn.prompt.casefold()
+        # Every block, not just the final text: a turn's answer is often split
+        # by tool calls, and a remembered file or command lives in a call.
+        parts = [turn.prompt] + [
+            block if isinstance(block, str) else f"{block.name} {block.detail} {block.command}"
+            for block in turn.blocks
+        ]
+        return "\n".join(parts).casefold()
+
+    def haystacks(self, info: SessionInfo) -> list[str]:
+        key = (info.id, self.responses)
+        if key not in self._haystacks:
+            self._haystacks[key] = [self.search_text(turn) for turn in self.turns(info)]
+        return self._haystacks[key]
+
+    def words(self) -> list[str]:
+        return self.query.text.casefold().split()
+
+    def content_words(self, info: SessionInfo) -> list[str]:
+        """The query words left to find in turns once those naming the session go."""
+        return [
+            word
+            for word in self.words()
+            if not names_session(word, info) and not in_name(word, info)
+        ]
 
     def matching_turns(self, info: SessionInfo) -> list[Turn]:
-        words = self.query.text.casefold().split()
+        """Turns holding any query word: the words of a match can span turns."""
+        words = self.content_words(info)
         turns = self.turns(info)
         if not words:
             return turns
-        return [turn for turn in turns if self.matches(turn, words)]
+        return [
+            turn
+            for turn, haystack in zip(turns, self.haystacks(info), strict=True)
+            if any(word in haystack for word in words)
+        ]
+
+    def listed(self, info: SessionInfo) -> bool:
+        """Every content word is somewhere in the session, not necessarily one turn.
+
+        Named outright, by ID, worktree, or name, a session is listed even with
+        no turns to match.
+        """
+        words = self.content_words(info)
+        if not words:
+            return True
+        haystacks = self.haystacks(info)
+        return all(any(word in haystack for haystack in haystacks) for word in words)
+
+    def rank(self, info: SessionInfo) -> tuple[int, bool, int]:
+        """Higher is better: words naming the session, all words in one turn, matching turns.
+
+        Ties keep the newest-first order.
+        """
+        words = self.content_words(info)
+        haystacks = self.haystacks(info) if words else []
+        together = any(all(word in haystack for word in words) for haystack in haystacks)
+        hits = sum(any(word in haystack for word in words) for haystack in haystacks)
+        return len(self.words()) - len(words), together or not words, hits
+
+    def highlights(self, info: SessionInfo) -> list[str]:
+        """Words to mark and scroll to: those that listed the session's turns.
+
+        Name words only when nothing else is left, and never a single character,
+        which would mark half the pane while the first letter is typed.
+        """
+        words = self.content_words(info) or [
+            word for word in self.words() if not names_session(word, info)
+        ]
+        return [word for word in words if len(word) >= 2]
 
     def title(self, info: SessionInfo) -> str:
         # Listing reads only the first prompt; the full transcript loads on select/search.
         if info.id not in self._titles:
             marker = "* " if info.id == self.active_id else "  "
-            first = plain(redact(first_prompt(info, self.root)), 80)
-            self._titles[info.id] = f"{marker}{info.updated[5:16].replace('T', ' ')}  {first}"
+            first = redact(first_prompt(info, self.root))
+            if info.name:
+                first = f"{info.name} · {first}"
+            when = info.updated[5:16].replace("T", " ")
+            self._titles[info.id] = f"{marker}{when}  {info.id[:8]}  {plain(first, 80)}"
         return self._titles[info.id]
 
     def heading(self, info: SessionInfo, shown: int, total: int) -> str:
         parts = [info.id[:8], plain(info.model, 40), info.updated[:16].replace("T", " ")]
+        if info.name:
+            parts.insert(0, plain(info.name, 60))
         if info.id == self.active_id:
             parts.append("active")
         noun = "turn" if total == 1 else "turns"
         parts.append(f"{shown} of {total} {noun}" if shown < total else f"{total} {noun}")
         return " · ".join(parts)
 
-    def refresh(self) -> None:
-        previous = self.selected
-        searching = bool(self.query.text.strip())
-        self.visible = [
-            info for info in self.in_scope() if not searching or self.matching_turns(info)
-        ]
+    def refresh(self, *, keep_selection: bool = True) -> None:
+        """Re-filter the list; a new query selects its best match instead of the old row."""
+        previous = self.selected if keep_selection else None
+        self.visible = [info for info in self.in_scope() if self.listed(info)]
+        if self.words():
+            # sorted() is stable, so equally good matches stay newest first.
+            self.visible.sort(key=self.rank, reverse=True)
         selected = next((i for i, info in enumerate(self.visible) if info is previous), 0)
         lines = [self.title(info) for info in self.visible]
         text = "\n".join(lines) or "No matching sessions."
@@ -308,10 +407,25 @@ class SessionBrowser:
             self.pending_delete = None
             self.status = ""
         self.selected = info
-        self.detail.set(self.details(info))
+        blocks = self.details(info)
+        self.detail.set(
+            blocks,
+            anchor=self.first_match,
+            highlight=self.highlights(info) if info is not None else (),
+        )
 
     def details(self, info: SessionInfo | None) -> list:
-        """Rich renderables for the Turns pane: prompts verbatim, responses as Markdown."""
+        """Rich renderables for the Turns pane: prompts verbatim, responses as Markdown.
+
+        Sets `first_match` to the renderable holding the first query word, or
+        None when that is already at the top, for the pane to scroll to.
+        """
+        self.first_match = None
+        words = self.highlights(info) if info is not None else []
+
+        def found(text: str) -> bool:
+            return bool(words) and any(word in text.casefold() for word in words)
+
         if info is None:
             return [Text("No matching sessions.")]
         total = len(self.turns(info))
@@ -323,6 +437,8 @@ class SessionBrowser:
             blocks.append(Text("(No prompt yet)"))
         for turn in turns:
             blocks.append(Text(""))
+            if self.first_match is None and found(turn.prompt):
+                self.first_match = len(blocks)
             # The same quote rail scrollback draws, so a remembered turn looks
             # here the way it looked when it was live, blank line included.
             blocks.append(TaskPrompt(literal(turn.prompt)))
@@ -352,6 +468,13 @@ class SessionBrowser:
                     continue
                 if previous not in ("blank", kind):
                     blocks.append(Text(""))
+                source = (
+                    f"{block.name} {block.detail} {block.command}"
+                    if isinstance(block, ToolCall)
+                    else block
+                )
+                if self.first_match is None and self.responses and found(source):
+                    self.first_match = len(blocks)
                 blocks.extend(rendered)
                 previous = kind
             if not turn.blocks:
@@ -359,6 +482,9 @@ class SessionBrowser:
                 blocks.append(Text(f"  ({state})", style="dim"))
             elif turn.status not in ("complete", "running"):
                 blocks.append(Text(f"  ({turn.status})", style="dim"))
+        if self.first_match == 2:
+            # The first turn's own prompt: the top already shows it, heading too.
+            self.first_match = None
         return blocks
 
     async def run(self) -> str | None:

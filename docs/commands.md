@@ -74,7 +74,10 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   the cap. Works mid-turn, from the next model request.
 - `/new`: start a new saved conversation; clears the screen and retained scrollback,
   keeps input history.
-- `/resume`: browse and search saved conversations by their prompts; resume one in place.
+- `/resume`: browse and search saved conversations (prompts, responses, tool calls,
+  name, or session ID); resume one in place.
+- `/rename [NAME | -]`: name this conversation so `/resume` lists and finds it by that
+  name; `-` clears it, bare shows it. Available after the first prompt.
 - `/switch [HOST | - | new [PROMPT]]`: pick another running
   [background session](sessions.md#background-sessions) and show it here, or start a new
   one; the session you leave keeps working.
@@ -82,8 +85,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   the conversation.
 - `/stop`: end this background session's host and quit. Quitting any other way (Ctrl+D,
   `/quit`) does the same.
-- `/detach`: quit but leave this background session's host running; `pcode --attach`
-  returns to it.
+- `/detach`: quit but leave this background session's host running until it
+  [goes idle](sessions.md#idle-hosts-stop); `pcode --attach` returns to it.
 - `/tree`: [browse and fork the conversation](conversation-tree.md); select a user prompt
   to edit it, or an assistant response to continue from there. Existing branches are kept.
   Browsable at any time; forking waits for the running turn.
@@ -580,7 +583,7 @@ these actions alongside the current popup's navigation and editing keys:
 | `/btw` | `r` reply · `y` copy · `o` link · `s` summarize · `t` merge to `/tree` · `k` stop (or type `/copy`, `/links`, `/summarize`, `/merge`, `/stop` in the follow-up editor) |
 | `/tools` | `f` search · `x` failures only · `t` tool filter · `y` copy command · `o` copy output |
 | `/diffs` | `f` search the focused pane · `s` / `r` next / previous match · `v` next view |
-| `/resume` | `f` search · `r` responses too · `g` all workspaces · `x` delete (twice) |
+| `/resume` | `f` search · `r` prompts only · `g` all workspaces · `x` delete (twice) |
 | `/switch` | `f` search · `n` new session · `x` stop (twice) |
 | `/jobs` | `w` watch in the preview · `k` stop |
 | `/links` | `f` search · `t` show/hide tool links |

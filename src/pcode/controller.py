@@ -645,6 +645,13 @@ class SessionController:
                 "/new", "Start a new conversation; clears the screen", self.new, group="Session"
             ),
             Command(
+                "/rename",
+                "Name this conversation for /resume: NAME sets, - clears, bare shows",
+                self.rename,
+                free_arguments=True,
+                group="Session",
+            ),
+            Command(
                 "/worktree",
                 "This session's git worktree: status / merge / resolve / finish / remove"
                 " / list / clean",
@@ -2569,6 +2576,7 @@ class SessionController:
         if saved:
             rows += [
                 ("Session", saved.info.id),
+                *([("Name", saved.info.name)] if saved.info.name else []),
                 ("Saved in", str(saved.directory)),
                 ("Started", saved.info.created[:16]),
                 ("Updated", saved.info.updated[:16]),
@@ -2807,6 +2815,31 @@ class SessionController:
             + anthropic_credential_hint()
         )
 
+    def rename(self, argument: str) -> None:
+        """Name the saved session, so /resume can list and find it by that name."""
+        session = getattr(self.runtime, "session", None)
+        if session is None:
+            raise ValueError("Nothing is saved yet; /rename works after the first prompt.")
+        from pcode.tool_display import plain
+
+        # One line, no control characters, and short enough for a list row.
+        name = plain(" ".join(plain(argument, None).split()), 80)
+        if not name:
+            current = session.info.name
+            self.view.flash(
+                f"Session name: {current}. /rename - clears it."
+                if current
+                else "This session has no name. Usage: /rename NAME"
+            )
+            return
+        session.info.name = None if name == "-" else name
+        try:
+            # A name is not activity: the session keeps its place and date in /resume.
+            session.save_info(touch=False)
+        except OSError as error:
+            raise ValueError(f"Could not save the name: {error}") from error
+        self.view.flash(f"Session named: {name}" if name != "-" else "Session name cleared.")
+
     def new(self, argument: str) -> None:
         self.runtime.reset()
         self.view.conversation_reset("New conversation")
@@ -2868,6 +2901,15 @@ class SessionController:
         self.register_extension_commands()
         if self.resuming:
             await runtime.restore()
+            self._seen_stopped_host()
+
+    def _seen_stopped_host(self) -> None:
+        """A resumed session is open here, so /switch stops listing its stopped host."""
+        from pcode.host_protocol import forget_stopped
+
+        session = getattr(self.runtime, "session", None)
+        if session is not None:
+            forget_stopped(session.info.id)
 
     # --- Resuming another saved conversation in this process ---
 
@@ -2911,6 +2953,7 @@ class SessionController:
         if target != self.workspace:
             self._switch_workspace(target, extensions)
         self.runtime = runtime
+        self._seen_stopped_host()
         self.model = saved.info.model
         self.session_dir = saved.directory.parent
         self.activity.prompt = ""

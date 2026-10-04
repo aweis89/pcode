@@ -37,6 +37,7 @@ from pcode.host_protocol import (
     encode_event,
     find_host,
     list_hosts,
+    list_stopped,
     socket_path,
     write_entry,
 )
@@ -612,6 +613,17 @@ def test_switch_says_what_it_cannot_switch_to(host_dir):
     app.switch("-")
     asyncio.run(app.switch_session(None, None))
     assert "The previous session (gone1234) is no longer running" in output.getvalue()
+    # Knowing its conversation, the terminal carries that on instead.
+    opened = []
+
+    async def open_saved(identity, active_id):
+        opened.append(identity)
+
+    app.open_saved_session = open_saved
+    app.previous_session = "sess-1"
+    app.switch("-")
+    asyncio.run(app.switch_session(None, None))
+    assert opened == ["sess-1"]
 
 
 def test_switch_leaves_a_running_turn_in_its_host_and_comes_back_to_it(tmp_path, host_dir):
@@ -804,6 +816,141 @@ def test_idle_host_stops_itself_and_a_busy_one_does_not(tmp_path, host_dir):
     asyncio.run(run())
 
 
+def test_zero_minutes_stops_a_host_a_grace_period_after_its_last_terminal(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal, _, _ = await attach(host)
+            watcher = asyncio.create_task(host.stop_when_idle(0, every=0.01, grace=0.1))
+            await asyncio.sleep(0.3)
+            assert not host.stopped.is_set(), "an attached terminal keeps it"
+            terminal.close()
+            await asyncio.wait_for(host.stopped.wait(), 5)
+            await watcher
+            assert host.idle_stopped
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_handshake_or_a_running_command_keeps_a_host_from_idling(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            assert host.idle()
+            reader, writer = await asyncio.open_unix_connection(str(host.socket))
+            await until(lambda: host.connections == 1)
+            assert not host.idle(), "a terminal saying hello is about to attach"
+            writer.close()
+            await until(lambda: host.connections == 0)
+            assert host.idle()
+            host.controller.command_idle.clear()
+            assert not host.idle(), "a slash command is still running"
+            host.controller.command_idle.set()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "stored,minutes", [(None, 0), ("0", 0), ("5", 5), ("off", None), ("soon", 0)]
+)
+def test_idle_minutes_setting(stored, minutes):
+    from pcode.host import _idle_minutes
+    from pcode.preferences import SETTINGS
+
+    preferences = {} if stored is None else {"session_host_idle_minutes": stored}
+    assert _idle_minutes(preferences, SETTINGS) == minutes
+
+
+def test_attach_to_a_stopped_host_finds_its_session(host_dir, tmp_path, monkeypatch):
+    from pcode.app import _stopped_session
+    from pcode.host_protocol import remember_stopped
+
+    monkeypatch.setenv("PCODE_SESSION_DIR", str(tmp_path / "sessions"))
+    remember_stopped(HostEntry("stop0000", 1, "m", "/w", session_id="sess-1", unseen=True))
+    assert _stopped_session("stop") == "sess-1"
+    assert _stopped_session("zzzz") is None
+    write_entry(HostEntry("live0000", os.getpid(), "m", "/w", session_id="sess-2"))
+    assert _stopped_session("live") is None, "a running host is attached to, not resumed"
+    write_entry(HostEntry("sto10000", os.getpid(), "m", "/w"))
+    assert _stopped_session("sto") is None, "ambiguous with a running host: find_host says so"
+    saved = SavedSession.create("function:script", tmp_path, tmp_path / "sessions")
+    try:
+        assert _stopped_session(saved.info.id[:8]) == saved.info.id
+    finally:
+        saved.close()
+
+
+def test_connecting_to_a_listed_host_waits_for_its_socket_but_not_for_a_gone_one(host_dir):
+    from pcode.remote import wait_for_host
+
+    async def run():
+        with pytest.raises(HostError, match="no longer running"):
+            await wait_for_host("gone0000", View(), Activity(), timeout=5)
+        # Starting up: listed, but not listening yet.
+        write_entry(HostEntry("boot0000", os.getpid(), "m", "/w"))
+        with pytest.raises(HostError, match="did not start"):
+            await wait_for_host("boot0000", View(), Activity(), timeout=0.2)
+
+    asyncio.run(run())
+
+
+async def finish_unwatched(host: SessionHost, script: Script) -> str:
+    """Run a turn that finishes after its terminal left; the session's ID."""
+    terminal, _, _ = await attach(host)
+    terminal.submit("hang unwatched", "queue")
+    await until(lambda: host.buffer)
+    terminal.close()
+    await until(lambda: list_hosts()[0].attached == 0)
+    script.release("hang unwatched")
+    await until(lambda: list_hosts()[0].turns == 1 and list_hosts()[0].session_id)
+    return list_hosts()[0].session_id
+
+
+def test_a_host_stopped_idle_keeps_its_unseen_turn_listed_until_it_runs_again(tmp_path, host_dir):
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        try:
+            session_id = await finish_unwatched(host, script)
+            await host.stop_when_idle(0, every=0.01, grace=0.05)
+            await host.close()
+            assert list_hosts() == []
+            (entry,) = list_stopped()
+            assert (entry.session_id, entry.state, entry.unseen) == (session_id, "stopped", True)
+            # A host running the session again takes its place.
+            again = HostEntry(
+                id="bbbb2222",
+                pid=os.getpid(),
+                model="m",
+                workspace=str(tmp_path),
+                session_id=session_id,
+            )
+            write_entry(again)
+            assert list_stopped() == []
+        finally:
+            host.idle_stopped = False
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_host_stopped_on_request_forgets_its_unseen_turn(tmp_path, host_dir):
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        try:
+            await finish_unwatched(host, script)
+        finally:
+            await stop_host(host)
+        assert list_stopped() == []
+
+    asyncio.run(run())
+
+
 def test_stop_can_leave_the_worktree_for_the_terminal(tmp_path, host_dir):
     async def run():
         host = await start_host("aaaa1111", tmp_path, Script())
@@ -905,6 +1052,52 @@ def test_picker_puts_unseen_sessions_first_and_flags_old_code():
     assert host_row(fresh, None, now=1, code="2").endswith("old code")
     current = HostEntry("cur00000", 1, "m", "/w/e", title="current", code="2")
     assert not host_row(current, None, now=1, code="2").endswith("old code")
+    # A stopped one starts again on today's code: never "old", but stopped.
+    stopped = HostEntry("stop0000", 1, "m", "/w/f", state="stopped", unseen=True, code="1")
+    row = host_row(stopped, None, now=1, code="2")
+    assert "✓ new" in row and row.endswith("· stopped")
+
+
+@pytest.mark.parametrize("action", ["attach", "stop"])
+def test_switch_resumes_or_forgets_a_stopped_session(host_dir, monkeypatch, action):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from pcode.host_protocol import remember_stopped
+
+    remember_stopped(
+        HostEntry("stop0000", 1, "m", "/w", session_id="sess-1", title="done", unseen=True)
+    )
+    output = StringIO()
+    app = PreviewApp(model="function:script", console=Console(file=output, width=140))
+    shown: list[dict] = []
+
+    class Dialog:
+        async def run_async(self):
+            return (action, "stop0000")
+
+    def dialog(entries, **kwargs):
+        shown.extend({"id": entry.id, "state": entry.state} for entry in entries)
+        return Dialog()
+
+    @asynccontextmanager
+    async def popup(output, session):
+        yield None
+
+    opened: list = []
+
+    async def open_saved(identity, active_id):
+        opened.append(identity)
+
+    monkeypatch.setattr("pcode.host_ui.hosts_dialog", dialog)
+    monkeypatch.setattr(app, "popup", popup)
+    monkeypatch.setattr(app, "open_saved_session", open_saved)
+    asyncio.run(
+        app.switch_session(None, SimpleNamespace(app=SimpleNamespace(output=None, style=None)))
+    )
+    assert shown == [{"id": "stop0000", "state": "stopped"}]
+    assert opened == (["sess-1"] if action == "attach" else [])
+    assert list_stopped() == []
 
 
 def test_status_describes_the_host_process():

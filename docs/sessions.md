@@ -22,10 +22,12 @@ pcode --stop-hosts stale         # stop hosts still running older pcode code (or
 
 Inside a hosted session:
 
-- `/switch` opens a picker over every running host, with what each one is doing.
-  Enter shows that session in this terminal; Ctrl+B `n` starts a new one;
-  Ctrl+B `x` (or Delete in the list), pressed twice, stops one. A turn you switch
-  away from keeps running. Both are [shortcuts](commands.md#shortcut-prefix).
+- `/switch` opens a picker over every running host, with what each one is doing,
+  plus [stopped sessions](#idle-hosts-stop) with a reply you haven't read.
+  Enter shows that session in this terminal (resuming a stopped one); Ctrl+B `n`
+  starts a new one; Ctrl+B `x` (or Delete in the list), pressed twice, stops one
+  or drops a stopped one from the list. A turn you switch away from keeps
+  running. Both are [shortcuts](commands.md#shortcut-prefix).
 - `/switch HOST` goes straight to one by host or session ID prefix, and
   `/switch -` (or Ctrl+B `^`) back to the
   one this terminal showed before. Pressed again, it flips back.
@@ -40,13 +42,16 @@ Inside a hosted session:
   picker and `--hosts` mark hosts that are on older code.
 - Quitting (Ctrl+D, `/quit`, or `/stop`) ends this session's host, asking about
   the worktree the way a local exit does. `/detach` quits but leaves the host
-  running for `pcode --attach`, as closing the terminal window does.
+  running for `pcode --attach`, as closing the terminal window does, until it
+  [goes idle](#idle-hosts-stop).
 
 ### Scripting a running host
 
 `--attach` with `--print` sends one message or command to a running host
-without opening the editor, then detaches. The host keeps running, and any
-terminal attached to it sees the turn as usual.
+without opening the editor, then detaches. The host keeps running until it
+[goes idle](#idle-hosts-stop), and any terminal attached to it sees the turn as
+usual. Once it has stopped, `--attach` with the session's ID (or a prefix)
+carries the conversation on instead.
 
 ```sh
 pcode --attach 3f9c -p "Run the tests and summarize failures"   # reply on stdout
@@ -99,9 +104,24 @@ terminals are open; `pcode config set desktop_notifications off` turns it off.
 While a turn runs, the tab also shows a
 [progress bar](configuration.md#tab-progress-bar).
 
-A host with no terminal attached, no turn running, and no running command
-stops itself after an hour (`session_host_idle_minutes`; `0` never stops).
-Nothing is lost: `/resume` or `pcode --continue` brings the conversation back.
+### Idle hosts stop
+
+A host only runs while it has something to do: a terminal attached, a turn
+running or queued, a slash command, compaction or MCP work, a running command,
+or a side question. Fifteen seconds after the last of those ends it stops
+itself, so a session you sent off in the background closes soon after its turn
+finishes. The fifteen seconds cover switching away and straight back, and
+`/switch -` to a session stopped since resumes it. A session stopped this way
+keeps unmerged commits in its worktree, even under `worktree_exit merge`, ready
+to be resumed.
+
+Nothing is lost. If that last turn finished with no terminal watching, `/switch`
+keeps listing the session, marked `stopped`, until you open it: Enter resumes it
+in a new host on the pcode installed now. `/resume` or `pcode --continue` brings
+any conversation back.
+
+`session_host_idle_minutes` makes hosts wait longer: a number of idle minutes,
+or `off` to never stop on their own.
 
 ### Host processes
 
@@ -164,15 +184,24 @@ process already has open
 
 `/resume` opens a full-screen browser of saved conversations in the current
 repository and its linked worktrees (or the exact workspace outside Git), newest
-first and labeled by their first prompt, with the selected session's prompts and
-truncated responses alongside.
+first and labeled by date, short session ID, name, and first prompt, with the
+selected session's prompts, responses, and tool calls alongside.
 
-- It opens in the search line: typing searches prompts across sessions (every
-  space-separated word must match), and ↑/↓ move the selection while you type
-  (Ctrl+U/Ctrl+D by half a page).
+- It opens in the search line: typing searches prompts, responses, and tool calls
+  (file paths, shell commands) across sessions. A session is listed when every
+  space-separated word appears somewhere in it, not necessarily in one turn; the
+  pane shows the turns holding any of the words, marks each match, and scrolls to
+  the first. The best matches come first: a session whose name or ID the query
+  names, then one with every word in a single turn, then the one with more
+  matching turns, and otherwise the newest.
+- A session ID prefix of at least four characters, the full name of the `pcode-*`
+  worktree it ran in, or a word of its name (or the start of one, from three
+  letters) finds that session with every turn.
+  `/rename NAME` names the current session (`/rename -` clears it).
+- ↑/↓ move the selection while you type (Ctrl+U/Ctrl+D by half a page).
 - Tab moves to the session list, and Tab again to the content pane, where arrows
   scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page.
-- From anywhere, Ctrl+B `f` returns to the search, Ctrl+B `r` includes responses in it,
+- From anywhere, Ctrl+B `f` returns to the search, Ctrl+B `r` narrows it to prompts only,
   and Ctrl+B `g` includes every workspace (these are
   [shortcuts](commands.md#shortcut-prefix)).
 - Enter resumes the selected session in place, restoring its model, history, and

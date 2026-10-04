@@ -1,3 +1,5 @@
+<img width="1512" height="929" alt="Screenshot 2026-10-04 at 2 16 28 PM" src="https://github.com/user-attachments/assets/691eaf44-d136-4d65-b8ec-0cadd22724f5" />
+
 # pcode
 
 A coding agent for people who live in the terminal. It streams into your

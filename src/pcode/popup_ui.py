@@ -84,8 +84,47 @@ POPUP_ACCENTS = Style.from_dict(
         "popup placeholder": "dim italic",
         "popup frame.footer": "dim",
         "popup hint.message": "italic",
+        "popup search-match": "reverse",
     }
 )
+SEARCH_MATCH = "class:search-match"
+
+
+def mark_matches(line: StyleAndTextTuples, words: Sequence[str]) -> StyleAndTextTuples:
+    """Add SEARCH_MATCH to every case-insensitive occurrence of `words` in one line.
+
+    A match that a wrap split across two lines is not marked.
+    """
+    text = "".join(fragment[1] for fragment in line)
+    # Fold one character at a time: casefolding can lengthen one (ß → ss),
+    # so `owner` maps each folded position back to the character it came from.
+    folded, owner = [], []
+    for index, character in enumerate(text):
+        piece = character.casefold()
+        folded.append(piece)
+        owner.extend([index] * len(piece))
+    folded = "".join(folded)
+    marked = [False] * len(text)
+    for word in words:
+        start = folded.find(word) if word else -1
+        while start != -1:
+            for position in range(start, start + len(word)):
+                marked[owner[position]] = True
+            start = folded.find(word, start + len(word))
+    if not any(marked):
+        return line
+    result: StyleAndTextTuples = []
+    position = 0
+    for style, fragment, *rest in line:
+        run_start = 0
+        for index in range(1, len(fragment) + 1):
+            if index == len(fragment) or marked[position + index] != marked[position + run_start]:
+                hit = marked[position + run_start]
+                piece = fragment[run_start:index]
+                result.append((f"{style} {SEARCH_MATCH}" if hit else style, piece, *rest))
+                run_start = index
+        position += len(fragment)
+    return result
 
 
 def popup_container(body, shortcuts: PrefixKeys | None = None):
@@ -344,6 +383,8 @@ class RichPane:
         self._version = 0
         self._cache: tuple[int, int, list, list[int]] | None = None
         self._line_cache: tuple[int, int, list] | None = None
+        # Casefolded words marked wherever they appear, e.g. a search query.
+        self.highlight: tuple[str, ...] = ()
         # Renderable index to scroll to on the next render, once the width is known.
         self._anchor: int | None = None
         pane = self
@@ -394,14 +435,17 @@ class RichPane:
         info = self.window.render_info
         offset = self.window.vertical_scroll
         tailing = info is not None and offset >= max(0, info.content_height - info.window_height)
-        self.set(renderables)
+        self.set(renderables, highlight=self.highlight)
         if info is not None:
             rows = len(self.lines(info.window_width))
             self.window.vertical_scroll = max(0, rows - info.window_height) if tailing else offset
 
-    def set(self, renderables: list, *, anchor: int | None = None) -> None:
+    def set(
+        self, renderables: list, *, anchor: int | None = None, highlight: Sequence[str] = ()
+    ) -> None:
         """Replace the content, scrolled to the top or to ``renderables[anchor]``."""
         self.renderables = renderables
+        self.highlight = tuple(highlight)
         self._version += 1
         self.window.vertical_scroll = 0
         self.scroll_to(anchor)
@@ -443,7 +487,10 @@ class RichPane:
     def lines(self, width: int) -> list:
         key = (self._version, width)
         if self._line_cache is None or self._line_cache[:2] != key:
-            self._line_cache = (*key, list(split_lines(self.fragments(width))))
+            lines = list(split_lines(self.fragments(width)))
+            if self.highlight:
+                lines = [mark_matches(line, self.highlight) for line in lines]
+            self._line_cache = (*key, lines)
         return self._line_cache[2]
 
     def text(self, width: int = 80) -> str:

@@ -46,7 +46,7 @@ def test_defaults_and_path_do_not_create_files():
         "worker_concurrency": "0",
         "subagent_models": "",
         "session_host": "off",
-        "session_host_idle_minutes": "60",
+        "session_host_idle_minutes": "0",
         "claude_idle_processes": "1",
         "claude_idle_minutes": "10",
         "desktop_notifications": "on",
@@ -505,8 +505,17 @@ def test_whole_number_settings_round_trip(value, key, default):
     assert configure(["get", key]) == default
 
 
+@pytest.mark.parametrize("value", ["0", "5", "off"])
+def test_session_host_idle_minutes_takes_minutes_or_off(value):
+    configure(["set", "session_host_idle_minutes", value])
+    assert load_preferences()["session_host_idle_minutes"] == value
+
+
 @pytest.mark.parametrize("value", ["-1", "1.5", "many", "", " 1", "１"])
-@pytest.mark.parametrize("key,default", [("retry_attempts", "3"), ("worker_concurrency", "0")])
+@pytest.mark.parametrize(
+    "key,default",
+    [("retry_attempts", "3"), ("worker_concurrency", "0"), ("session_host_idle_minutes", "0")],
+)
 def test_whole_number_settings_reject_invalid_values(value, key, default):
     with pytest.raises(ValueError, match="whole number"):
         configure(["set", key, value])

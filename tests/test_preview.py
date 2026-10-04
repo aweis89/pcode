@@ -48,6 +48,7 @@ def make_app(width=80, workspace=None):
                 "/reload",
                 "/new",
                 "/resume",
+                "/rename",
                 "/switch",
                 "/restart",
                 "/stop",

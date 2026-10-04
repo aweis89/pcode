@@ -200,7 +200,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `session_host` | `on` | `on`, `off` (run sessions in a [background host](sessions.md#background-sessions) that outlives the terminal; `--host`/`--no-host` override it once) |
-| `session_host_idle_minutes` | `60` | whole minutes a [background session](sessions.md#background-sessions) may sit idle with no terminal before its host stops; `0` never stops |
+| `session_host_idle_minutes` | `0` | whole minutes a [background session](sessions.md#idle-hosts-stop) may sit idle with no terminal before its host stops; `0` stops it 15 seconds after it goes idle, `off` never |
 | `worktree` | `off` | `on`, `off` (start new sessions in `.worktrees/` git worktrees; does not enable worker isolation on its own) |
 | `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `worker_isolation` | `off` | `on`, `off` (opt in to isolated built-in worker tasks; also requires effective `worktree=on`, not just the CLI launch override; checked at each delegation) |

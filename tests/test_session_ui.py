@@ -146,13 +146,24 @@ def test_browser_scopes_searches_and_shows_turns(tmp_path):
         assert app.detail.text().endswith(
             "1 of 2 turns\n\n▌ Now tests\n\n  Wrote tests for the theme"
         )
-        # Responses are searched only when asked.
+        # Responses are searched by default; `r` narrows to prompts.
         app.query.text = "patched"
+        assert [info.id for info in app.visible] == [ids["older"]]
+        app.responses = False
+        app.refresh()
         assert app.visible == []
         assert app.detail.text() == "No matching sessions."
         app.responses = True
-        app.refresh()
-        assert [info.id for info in app.visible] == [ids["older"]]
+        # A session ID prefix, or its worktree name, finds every turn of it.
+        app.query.text = ids["newest"][:6].upper()
+        assert [info.id for info in app.visible] == [ids["newest"]]
+        assert app.detail.text().endswith("Wrote tests for the theme")
+        assert "2 turns" in app.detail.text()
+        app.query.text = f"{ids['newest'][:8]} tests"
+        assert [info.id for info in app.visible] == [ids["newest"]]
+        assert "1 of 2 turns" in app.detail.text()
+        # The list shows the short ID, so there is something to type.
+        assert ids["newest"][:8] in app.list.text
         # Widening to every workspace brings the other repo in.
         app.query.text = "cache"
         assert [info.id for info in app.visible] == [ids["older"]]
@@ -245,6 +256,59 @@ def test_tool_calls_appear_between_the_text_they_ran_between(tmp_path):
         "",
         "  All done.",
     ]
+
+
+def test_names_session_needs_four_characters():
+    from pcode.session_ui import names_session
+
+    info = Mock(id="add12345-0000-0000-0000-000000000000", workspace="/repo")
+    # Too short to be an ID: an ordinary word never matches one by accident.
+    assert not names_session("add", info)
+    assert names_session("add1", info)
+    assert names_session(info.id, info)
+    assert not names_session("add2", info) and not names_session("repo", info)
+    # A session worktree's whole name, even one that is not the session's ID.
+    info.workspace = "/repo/.worktrees/pcode-feature"
+    assert names_session("pcode-feature", info)
+    assert not names_session("pcode", info) and not names_session("pcode-feat", info)
+
+
+def test_session_id_finds_a_session_with_no_turns(tmp_path):
+    with create_pipe_input() as pipe:
+        app, ids = browser(tmp_path, input=pipe)
+        empty = SavedSession.create("test:local", tmp_path, app.root)
+        empty.close()
+        app.records.append(empty.info)
+        app.query.text = empty.info.id[:8]
+        assert app.visible == [empty.info]
+        app.query.text = f"{empty.info.id[:8]} anything"
+        assert app.visible == []
+
+
+def test_search_finds_tool_calls_unless_prompts_only(tmp_path):
+    from pcode.runtime import Message, ToolSummary
+
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", tmp_path, root)
+    saved.append("turn_started", prompt="Do the thing")
+    saved.event(ToolSummary("shell", "ok", command="kubectl rollout restart"))
+    saved.event(ToolSummary("edit_file", "src/pcode/frobnicate.py"))
+    saved.event(Message("Done."))
+    saved.append("turn_completed")
+    saved.close()
+    with create_pipe_input() as pipe:
+        app = SessionBrowser(
+            [saved.info], root=root, workspace=tmp_path, input=pipe, output=DummyOutput()
+        )
+        for query in ("rollout", "frobnicate.py", "edit_file", "done."):
+            app.responses = True
+            app.query.text = query
+            assert app.visible == [saved.info], query
+            app.responses = False
+            app.refresh()
+            assert app.visible == [], query
+        app.query.text = "thing"
+        assert app.visible == [saved.info]
 
 
 def test_long_turns_are_shown_whole(tmp_path):
@@ -520,3 +584,136 @@ def test_failed_recovery_keeps_current_conversation(tmp_path):
         reopened.close()
 
     asyncio.run(run())
+
+
+def test_rename_names_the_session_for_resume(tmp_path):
+    from pcode.sessions import list_sessions
+
+    root = tmp_path / "sessions"
+    app = PreviewApp(workspace=tmp_path, session_dir=root, console=Console(file=StringIO()))
+    app.model = "test:local"
+    app.runtime = AgentRuntime(Agent("test"), None)
+    with pytest.raises(ValueError, match="first prompt"):
+        app.controller.rename("Cache work")
+    saved = SavedSession.create("test:local", tmp_path, root)
+    app.runtime.session = saved
+    try:
+        updated = saved.info.updated
+        app.controller.rename("  Cache \x1b[31m  work ")
+        # One clean line, and naming is not activity: the date and order stay.
+        assert [info.name for info in list_sessions(root)] == ["Cache [31m work"]
+        assert saved.info.updated == updated
+        app.controller.rename("Cache work")
+        assert dict(app.controller.session_overview())["Name"] == "Cache work"
+        app.controller.rename("")
+        assert saved.info.name == "Cache work"
+        app.controller.rename("-")
+        assert [info.name for info in list_sessions(root)] == [None]
+    finally:
+        saved.close()
+
+
+def sessions_browser(tmp_path, sessions):
+    """A browser over sessions given as lists of (prompt, response), oldest first."""
+    from pcode.runtime import Message
+    from pcode.sessions import list_sessions
+
+    root = tmp_path / "sessions"
+    ids = []
+    for turns in sessions:
+        saved = SavedSession.create("test:local", tmp_path, root)
+        for prompt, response in turns:
+            saved.append("turn_started", prompt=prompt)
+            saved.event(Message(response))
+            saved.append("turn_completed")
+        saved.save_info()
+        saved.close()
+        ids.append(saved.info.id)
+    app = SessionBrowser(list_sessions(root), root=root, workspace=tmp_path, output=DummyOutput())
+    return app, ids
+
+
+def test_search_words_can_span_turns_and_rank_matches(tmp_path):
+    app, (spread, together, unrelated) = sessions_browser(
+        tmp_path,
+        [
+            [("Set up the redis cache", "Done"), ("Lint it", "ok"), ("Now the queue", "Done")],
+            [("Redis queue retries", "Added")],
+            [("Theme work", "Done")],
+        ],
+    )
+    # Newest first with no query.
+    assert [info.id for info in app.visible] == [unrelated, together, spread]
+    app.query.text = "redis queue"
+    # Both list, the one with every word in a single turn first; only turns with
+    # a word in them are shown, and the words are marked.
+    assert [info.id for info in app.visible] == [together, spread]
+    app.list.buffer.cursor_down()
+    assert app.selected.id == spread
+    shown = app.detail.text()
+    assert "2 of 3 turns" in shown and "Lint it" not in shown
+    marked = "".join(
+        text if "search-match" in style else " "
+        for line in app.detail.lines(80)
+        for style, text, *_ in line
+    ).split()
+    assert marked == ["redis", "queue"]
+    # The first turn's own prompt is the top already; nothing to scroll to.
+    assert app.first_match is None
+    # More matching turns rank above fewer when neither has every word together.
+    app.query.text = "done"
+    assert [info.id for info in app.visible] == [spread, unrelated]
+
+
+def test_browser_scrolls_to_a_match_below_the_top(tmp_path):
+    app, _ = sessions_browser(
+        tmp_path, [[("First", "Nothing here"), ("Second", "The needle is here")]]
+    )
+    app.query.text = "needle"
+    assert "1 of 2 turns" in app.detail.text()
+    # Heading, blank, prompt, blank, then the response holding the match.
+    assert app.first_match == 4
+    app.query.text = "second"
+    assert app.first_match is None
+
+
+def test_session_name_is_listed_and_searched(tmp_path):
+    app, (named, other) = sessions_browser(
+        tmp_path, [[("Fix it", "Done"), ("More", "ok")], [("Unrelated", "Done")]]
+    )
+    app.records[1].name = "Billing outage"
+    app._titles.clear()
+    app.refresh()
+    assert app.records[1].id == named
+    assert "Billing outage · Fix it" in app.list.text
+    # A name word lists the session with every turn, and ranks it first.
+    app.query.text = "billing"
+    assert [info.id for info in app.visible] == [named]
+    assert "2 turns" in app.detail.text()
+    assert app.detail.text().startswith("Billing outage · ")
+    app.query.text = "done"
+    assert [info.id for info in app.visible] == [other, named]
+    app.query.text = "outage done"
+    assert [info.id for info in app.visible] == [named]
+    # Typing a name word finds it from three letters; shorter stays content.
+    app.query.text = "bil"
+    assert [info.id for info in app.visible] == [named]
+    app.query.text = "it"
+    assert [info.id for info in app.visible] == [named]
+    assert "1 of 2 turns" in app.detail.text()
+
+
+def test_mark_matches_splits_fragments_case_insensitively():
+    from pcode.popup_ui import SEARCH_MATCH, mark_matches
+
+    line = [("bold", "Find the Ne"), ("", "edle here")]
+    assert mark_matches(line, ["needle"]) == [
+        ("bold", "Find the "),
+        (f"bold {SEARCH_MATCH}", "Ne"),
+        (f" {SEARCH_MATCH}", "edle"),
+        ("", " here"),
+    ]
+    assert mark_matches(line, ["absent"]) is line
+    # Folding that changes length keeps marks on the right characters.
+    marked = mark_matches([("", "\u0130stanbul Stra\u00dfe needle")], ["strasse", "needle"])
+    assert [text for style, text in marked if SEARCH_MATCH in style] == ["Stra\u00dfe", "needle"]

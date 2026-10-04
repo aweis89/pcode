@@ -7,7 +7,9 @@ Closing a terminal only detaches it; the host keeps working.
 
 Messages are one JSON object per line. Every running host leaves
 `<id>.sock` and `<id>.json` in `host_dir()`; the JSON is what `/switch` lists
-without connecting to anything.
+without connecting to anything. A host that stopped itself for being idle with
+a turn nobody has seen leaves its entry in `stopped/<session id>.json`, so
+`/switch` still lists the session and resumes it.
 """
 
 import asyncio
@@ -131,7 +133,7 @@ class HostEntry:
     workspace: str
     protocol: int = PROTOCOL
     session_id: str = ""
-    # "starting", "idle", or "working".
+    # "starting", "idle", or "working"; "stopped" for one `list_stopped` remembers.
     state: str = "starting"
     # The first prompt names the conversation; the last one says what it is doing.
     title: str = ""
@@ -183,16 +185,26 @@ def claim(name: str, directory: Path | None = None) -> bool:
     return True
 
 
-def write_entry(entry: HostEntry, directory: Path | None = None) -> None:
-    directory = directory or host_dir()
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    entry.updated = time.time()
-    target = directory / f"{entry.id}.json"
+def _write(entry: HostEntry, target: Path) -> None:
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = target.with_suffix(".json.tmp")
     fd = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "w") as file:
         json.dump(asdict(entry), file)
     os.replace(temporary, target)
+
+
+def _read(path: Path) -> HostEntry | None:
+    try:
+        data = json.loads(path.read_text())
+        return HostEntry(**{f.name: data[f.name] for f in fields(HostEntry) if f.name in data})
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def write_entry(entry: HostEntry, directory: Path | None = None) -> None:
+    entry.updated = time.time()
+    _write(entry, (directory or host_dir()) / f"{entry.id}.json")
 
 
 def remove_entry(identity: str, directory: Path | None = None) -> None:
@@ -222,15 +234,43 @@ def list_hosts(directory: Path | None = None) -> list[HostEntry]:
     if not directory.is_dir():
         return entries
     for path in directory.glob("*.json"):
-        try:
-            data = json.loads(path.read_text())
-            entry = HostEntry(**{f.name: data[f.name] for f in fields(HostEntry) if f.name in data})
-        except (OSError, ValueError, TypeError):
+        if (entry := _read(path)) is None:
             continue
         if not _alive(entry.pid):
             remove_entry(entry.id, directory)
             continue
         entries.append(entry)
+    return sorted(entries, key=lambda entry: entry.updated, reverse=True)
+
+
+def _stopped_path(session_id: str, directory: Path | None) -> Path:
+    return (directory or host_dir()) / "stopped" / f"{session_id}.json"
+
+
+def remember_stopped(entry: HostEntry, directory: Path | None = None) -> None:
+    """Keep a stopped host's unseen result listed until the session is opened again."""
+    if not entry.session_id:
+        return
+    stopped = HostEntry(**{**asdict(entry), "state": "stopped", "attached": 0})
+    stopped.updated = entry.updated  # When it finished, not when it stopped.
+    _write(stopped, _stopped_path(entry.session_id, directory))
+
+
+def forget_stopped(session_id: str, directory: Path | None = None) -> None:
+    _stopped_path(session_id, directory).unlink(missing_ok=True)
+
+
+def list_stopped(directory: Path | None = None) -> list[HostEntry]:
+    """Sessions whose host stopped before anyone saw their last turn, newest first.
+
+    One whose session runs in a host again is left out; that host forgets it.
+    """
+    directory = directory or host_dir()
+    running = {entry.session_id for entry in list_hosts(directory)}
+    entries = []
+    for path in (directory / "stopped").glob("*.json"):
+        if (entry := _read(path)) is not None and entry.session_id not in running:
+            entries.append(entry)
     return sorted(entries, key=lambda entry: entry.updated, reverse=True)
 
 

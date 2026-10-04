@@ -58,7 +58,7 @@ class Setting:
     default: str | None
     choices: tuple[str, ...] = ()
     positive_integer: bool = False
-    # A count whose zero means "off", so it cannot reuse positive_integer's floor.
+    # A count that may be zero, so it cannot reuse positive_integer's floor.
     whole_number: bool = False
     # An os.pathsep-separated list of directories; empty means "none".
     path_list: bool = False
@@ -108,11 +108,14 @@ class Setting:
                     f"{key} must be a whole number of rows or a fraction of the screen "
                     "between 0 and 1 (0.5 is half)."
                 )
-        elif self.positive_integer or self.whole_number:
+        elif (self.positive_integer or self.whole_number) and value not in self.choices:
+            # `choices` beside a number are its named values, such as "off".
             floor = 0 if self.whole_number else 1
             if not value.isascii() or not value.isdecimal() or int(value) < floor:
                 raise ValueError(
-                    f"{key} must be a whole number (0 or more)."
+                    f"{key} must be a whole number (0 or more)"
+                    + "".join(f" or {choice}" for choice in self.choices)
+                    + "."
                     if self.whole_number
                     else f"{key} must be a positive integer."
                 )
@@ -326,10 +329,14 @@ SETTINGS = {
         description="Run each session in a background host that outlives the terminal (/switch); "
         "off runs it inside the terminal",
     ),
+    # 0 by default: a stopped host costs nothing, since /switch still lists one
+    # with an unseen result and resumes it.
     "session_host_idle_minutes": Setting(
-        "60",
+        "0",
+        ("off",),
         whole_number=True,
-        description="Stop a background session idle this long with no terminal; 0 never stops",
+        description="Stop a background session idle this long with no terminal; "
+        "0 stops it as soon as it is idle, off never",
     ),
     # Defaults mirror claude_sdk.session_pool.MAX_IDLE_SESSIONS and IDLE_SECONDS.
     "claude_idle_processes": Setting(

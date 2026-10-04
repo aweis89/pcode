@@ -188,6 +188,8 @@ class PreviewApp:
         self.detach_requested = False
         # The host this terminal showed before the current one, for `/switch -`.
         self.previous_host: str | None = None
+        # Its conversation, to resume should that host have stopped meanwhile.
+        self.previous_session: str | None = None
         # How this terminal came to show its host ("Switched to session …").
         self._attach_note: str | None = None
         # Writes an escape to the terminal emulator (desktop notifications).
@@ -301,6 +303,7 @@ class PreviewApp:
                 self.select_session,
                 group="Session",
             ),
+            self.controller.registry.find("/rename"),
             Command(
                 "/switch",
                 "Switch to another running session; 'new [PROMPT]' starts one in the background",
@@ -1214,7 +1217,7 @@ class PreviewApp:
 
     async def switch_session(self, output: TerminalOutput, session) -> None:
         """`/switch`: pick a running host (or start one) and show it in this terminal."""
-        from pcode.host_protocol import find_host, list_hosts
+        from pcode.host_protocol import find_host, forget_stopped, list_hosts, list_stopped
 
         argument, self.switch_requested = self.switch_requested or "", None
         previous = argument == "-"
@@ -1228,6 +1231,16 @@ class PreviewApp:
             try:
                 entry = await asyncio.to_thread(find_host, argument)
             except LookupError as error:
+                # Its host stopped once idle: carry the conversation on instead.
+                stopped = (
+                    self.previous_session
+                    if previous
+                    else await asyncio.to_thread(_stopped_session, argument, self.session_dir)
+                )
+                if stopped:
+                    forget_stopped(stopped)
+                    await self.open_saved_session(stopped, self.active_session_id())
+                    return
                 self.transcript.warning(
                     f"The previous session ({argument}) is no longer running; /switch lists "
                     "the ones that are."
@@ -1240,7 +1253,7 @@ class PreviewApp:
                 return
             await self.attach_host(entry)
             return
-        entries = await asyncio.to_thread(list_hosts)
+        entries = await asyncio.to_thread(lambda: list_hosts() + list_stopped())
         if not entries:
             self.transcript.note(
                 "No sessions are running in the background. /switch new [PROMPT] starts one."
@@ -1264,7 +1277,14 @@ class PreviewApp:
             await self.start_host_session("")
             return
         entry = next(entry for entry in entries if entry.id == identity)
-        if action == "stop":
+        if entry.state == "stopped":
+            # Seen once chosen either way; a resumed host forgets it too.
+            forget_stopped(entry.session_id)
+            if action == "stop":
+                self.transcript.note(f"Removed {entry.label()[:60]} from /switch.")
+                return
+            await self.open_saved_session(entry.session_id, self.active_session_id())
+        elif action == "stop":
             await self.stop_other_host(entry)
         elif entry.id == current:
             self.transcript.note("This terminal is already showing that session.")
@@ -1301,10 +1321,19 @@ class PreviewApp:
         self.transcript.note(f"Stopped session {entry.id} ({entry.label()[:60]}).")
 
     async def attach_host(self, entry) -> None:
-        from pcode.remote import HostLaunch
+        from pcode.host_protocol import list_hosts
+        from pcode.remote import HostError, HostLaunch
 
-        with self.activity.waiting(f"Connecting to session {entry.id}"):
-            controller, welcome = await HostLaunch.running(entry).connect(self, self.activity)
+        try:
+            with self.activity.waiting(f"Connecting to session {entry.id}"):
+                controller, welcome = await HostLaunch.running(entry).connect(self, self.activity)
+        except HostError:
+            # Picked from a list read a moment ago, and stopped since for being idle.
+            gone = all(other.id != entry.id for other in list_hosts())
+            if not (gone and entry.session_id):
+                raise
+            await self.open_saved_session(entry.session_id, self.active_session_id())
+            return
         await self.adopt_controller(controller, welcome, f"Switched to session {entry.id}")
 
     async def start_host_session(
@@ -1375,6 +1404,7 @@ class PreviewApp:
         else:
             if not previous.runtime.lost:
                 self.previous_host = previous.id
+                self.previous_session = previous.runtime.session_id or None
             previous.close()
         self.controller = controller
         controller.on_closed = self.host_closed
@@ -1516,10 +1546,7 @@ class PreviewApp:
         if not any_here:
             self.transcript.note("No saved sessions for this workspace.")
             return
-        current = getattr(self.runtime, "session", None)
-        active_id = current.info.id if current else None
-        if self.hosted:
-            active_id = self.runtime.session_id or None
+        active_id = self.active_session_id()
         async with self.popup(output, session) as modal_input:
             browser = SessionBrowser(
                 records,
@@ -1536,6 +1563,16 @@ class PreviewApp:
             identity = await browser.run()
         if identity is None:
             return
+        await self.open_saved_session(identity, active_id)
+
+    def active_session_id(self) -> str | None:
+        if self.hosted:
+            return self.runtime.session_id or None
+        current = getattr(self.runtime, "session", None)
+        return current.info.id if current else None
+
+    async def open_saved_session(self, identity: str, active_id: str | None) -> None:
+        """Show a saved session here: where it runs, else resumed in a host or this process."""
         from pcode.host_protocol import list_hosts
 
         running = [entry for entry in list_hosts() if entry.session_id == identity]
@@ -2552,6 +2589,31 @@ def _resume_workspace(info, requested: Path | None) -> Path:
     )
 
 
+def _stopped_session(selector: str, root: Path | None = None) -> str | None:
+    """The saved session `--attach SELECTOR` means when no running host matches it.
+
+    A stopped host's ID still finds its session while /switch lists it; any
+    session ID prefix finds a saved session.
+    """
+    from pcode.host_protocol import list_hosts, list_stopped
+    from pcode.sessions import SessionError, resolve_session
+
+    if any(
+        entry.id.startswith(selector) or entry.session_id.startswith(selector)
+        for entry in list_hosts()
+    ):
+        return None  # One host, or an ambiguous prefix find_host reports.
+    stopped = {entry.session_id for entry in list_stopped() if entry.id.startswith(selector)}
+    if len(stopped) == 1:
+        return stopped.pop()
+    if selector == "latest":
+        return None  # A word to resolve_session, not an ID.
+    try:
+        return resolve_session(selector, root).name
+    except SessionError:
+        return None
+
+
 def _pick_host(selector: str, workspace: Path):
     """`--attach [HOST]`: by prefix, else the latest in this repository, else the latest."""
     from pcode.host_protocol import find_host, list_hosts
@@ -2767,6 +2829,13 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         if not entries:
             print("No session hosts are running.")
         return
+    if (
+        args.attach
+        and not args.resume
+        and (stopped := _stopped_session(args.attach, args.session_dir))
+    ):
+        # Its host stopped once idle; the conversation carries on as --continue would.
+        args.attach, args.resume = None, stopped
     if args.print and args.attach is not None:
         _print_hosted(args, parser)
         return

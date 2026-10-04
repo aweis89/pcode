@@ -607,6 +607,10 @@ async def wait_for_host(
     while True:
         if process is not None and process.poll() is not None:
             raise HostError(_exit_message(process.returncode, log))
+        if process is None and not path.exists() and not path.with_suffix(".json").exists():
+            # Neither socket nor entry: it stopped (both go together), as
+            # opposed to starting up, which writes the entry long before the socket.
+            raise HostError(f"Session host {identity} is no longer running.")
         if path.exists():
             try:
                 return await RemoteController.connect(path, view, activity)

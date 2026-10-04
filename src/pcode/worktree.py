@@ -555,7 +555,7 @@ def session_scope(info) -> Path:
     return Path(info.project) if info.project else workspace
 
 
-def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
+def leave_worktree(workspace: Path, session, *, ask, notify, merge: bool = True) -> bool:
     """Tidy a session worktree on the way out of it, never losing work.
 
     Untouched (clean, nothing unmerged): removed with its branch, no question;
@@ -563,7 +563,8 @@ def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
     Unmerged commits: per `worktree_exit`, ask (default yes), merge silently,
     or keep. Uncommitted changes, refusals, and hand-made worktrees (no
     `pcode-` prefix): kept, with a note on how to resume. `ask=None` means
-    nobody is there to answer. Used at process exit and when a live session
+    nobody is there to answer, and `merge=False` keeps unmerged commits even
+    under `worktree_exit=merge`. Used at process exit and when a live session
     switches to another worktree of the same repository.
     """
     import shutil
@@ -627,7 +628,7 @@ def leave_worktree(workspace: Path, session, *, ask, notify) -> bool:
             if answer not in ("", "y", "yes"):
                 notify(f"worktree: kept; {resume}")
                 return False
-        elif mode != "merge":
+        elif mode != "merge" or not merge:
             notify(
                 f"worktree: {linked.path} ({linked.branch}) has {unmerged} unmerged commit(s); "
                 f"{resume}"

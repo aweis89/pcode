@@ -34,8 +34,10 @@ from pcode.host_protocol import (
     HostEntry,
     code_fingerprint,
     dumps,
+    forget_stopped,
     host_dir,
     read_message,
+    remember_stopped,
     remove_entry,
     socket_path,
     write_entry,
@@ -47,6 +49,10 @@ from pcode.ui import Activity
 # Consecutive events of these kinds merge in the catch-up buffer: deltas join,
 # and a newer snapshot of the same call replaces the older one.
 DELTA_EVENTS = (TextDelta, ThinkingDelta)
+
+# How long a host with nothing to do waits for a terminal before stopping, when
+# `session_host_idle_minutes` is 0: long enough to /switch away and back.
+IDLE_GRACE_SECONDS = 15.0
 SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 
 # View calls that change what the conversation is, so a terminal attaching
@@ -370,6 +376,11 @@ class SessionHost:
         self.tasks: list[asyncio.Task] = []
         # When the host last had a terminal or work; the idle clock starts here.
         self.active_at = time.monotonic()
+        # Stopped for being idle, not asked to: an unseen result is remembered.
+        self.idle_stopped = False
+        # Open connections, counted from hello on: a terminal mid-handshake is not
+        # a client yet, and must not find the host gone.
+        self.connections = 0
 
     @property
     def socket(self) -> Path:
@@ -388,6 +399,9 @@ class SessionHost:
         self.server = await asyncio.start_unix_server(self._accept, path=path, limit=LINE_LIMIT)
         os.chmod(path, 0o600)
         self.update(state="idle")
+        if self.entry.session_id:
+            # Running again, so /switch lists the host instead of the stopped one.
+            forget_stopped(self.entry.session_id, self.directory)
 
     async def boot(self) -> None:
         """Build the runtime, say what a new session says, then start the loops.
@@ -439,6 +453,14 @@ class SessionHost:
         controller.ready.set()
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.connections += 1
+        self.active_at = time.monotonic()
+        try:
+            await self._handshake(reader, writer)
+        finally:
+            self.connections -= 1
+
+    async def _handshake(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             hello = await read_message(reader)
         except ValueError:
@@ -611,6 +633,7 @@ class SessionHost:
         session = getattr(self.controller.runtime, "session", None)
         if session is not None and session.info.id != self.entry.session_id:
             self.update(session_id=session.info.id)
+            forget_stopped(session.info.id, self.directory)
 
     # The entry other terminals read
 
@@ -633,7 +656,8 @@ class SessionHost:
             state="idle",
             outcome=outcome,
             turns=self.entry.turns + 1,
-            unseen=not self.terminals(),
+            # A headless `--attach -p` caller printed the reply, so it was seen.
+            unseen=not self.clients,
         )
 
     # Stopping
@@ -642,17 +666,36 @@ class SessionHost:
         """Nothing would be lost by stopping: no terminal, no work, no running job."""
         jobs = getattr(self.controller.runtime, "jobs", None)
         running = jobs.running() if jobs is not None else []
-        return not self.clients and not self.busy and not running
+        return (
+            not self.clients
+            and not self.connections
+            and not self.busy
+            and self.controller.command_idle.is_set()
+            and not running
+            and not self.controller.startup_pending
+            and not self.controller.asides.running
+        )
 
-    async def stop_when_idle(self, minutes: float, *, every: float = 30.0) -> None:
-        """Stop after `minutes` idle. The journal keeps the conversation for /resume."""
+    async def stop_when_idle(
+        self, minutes: float, *, every: float = 2.0, grace: float = IDLE_GRACE_SECONDS
+    ) -> None:
+        """Stop once idle for `minutes`, or for `grace` seconds when `minutes` is 0.
+
+        Polled rather than told: jobs and side questions end without a hook,
+        and reading this state every couple of seconds costs nothing. The
+        journal keeps the conversation, and a result nobody saw stays listed
+        in /switch (`remember_stopped`).
+        """
+        limit = minutes * 60 if minutes else grace
         while not self.stopped.is_set():
             await asyncio.sleep(every)
             if not self.idle():
                 self.active_at = time.monotonic()
-            elif time.monotonic() - self.active_at >= minutes * 60:
-                print(f"idle for {minutes:g} min; stopping", file=sys.stderr, flush=True)
+            elif time.monotonic() - self.active_at >= limit:
+                print(f"idle for {limit:g} s; stopping", file=sys.stderr, flush=True)
+                self.idle_stopped = True
                 self.stop()
+                return
 
     def stop(self) -> None:
         self.stopped.set()
@@ -676,6 +719,10 @@ class SessionHost:
         if controller.extensions is not None:
             await controller.extensions.close()
         remove_entry(self.entry.id, self.directory)
+        if self.idle_stopped and self.entry.unseen:
+            # After the entry goes, so /switch never sees both. Only a saved
+            # session has an ID, so only one /resume could reopen.
+            remember_stopped(self.entry, self.directory)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -694,7 +741,12 @@ def _parser() -> argparse.ArgumentParser:
 
 async def _serve(args: argparse.Namespace) -> None:
     from pcode.app import _enter_worktree, _resume_workspace
-    from pcode.preferences import load_preferences, set_project_root, thinking_mode_preference
+    from pcode.preferences import (
+        SETTINGS,
+        load_preferences,
+        set_project_root,
+        thinking_mode_preference,
+    )
     from pcode.project_trust import prompt_trust
     from pcode.sessions import SavedSession, first_prompt
     from pcode.worktree import leave_worktree
@@ -752,9 +804,12 @@ async def _serve(args: argparse.Namespace) -> None:
         loop.add_signal_handler(signum, host.stop)
     print(f"serving {host.socket}", file=sys.stderr, flush=True)
     await host.boot()
-    idle_minutes = int(load_preferences().get("session_host_idle_minutes", "60") or 0)
-    watcher = asyncio.create_task(host.stop_when_idle(idle_minutes)) if idle_minutes else None
+    watcher = None
     try:
+        idle_minutes = _idle_minutes(load_preferences(), SETTINGS)
+        host.active_at = time.monotonic()  # A slow boot is not idle time.
+        if idle_minutes is not None:
+            watcher = asyncio.create_task(host.stop_when_idle(idle_minutes))
         await host.stopped.wait()
     finally:
         if watcher is not None:
@@ -775,7 +830,21 @@ async def _serve(args: argparse.Namespace) -> None:
                 getattr(runtime, "session", None),
                 ask=None,
                 notify=lambda text: print(text, file=sys.stderr, flush=True),
+                # Nobody chose to leave a session that stopped for being idle,
+                # so its branch waits to be resumed rather than merged.
+                merge=not host.idle_stopped,
             )
+
+
+def _idle_minutes(preferences: dict, settings: dict) -> int | None:
+    """`session_host_idle_minutes` as minutes; None for off. A bad value is the default."""
+    key = "session_host_idle_minutes"
+    for value in (preferences.get(key), settings[key].default):
+        if value == "off":
+            return None
+        if isinstance(value, str) and value.isascii() and value.isdecimal():
+            return int(value)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> None:

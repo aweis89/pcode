@@ -190,6 +190,10 @@ def test_worktree_exit_setting(repo, tmp_path):
     out = leave(app, answer="y")
     assert "unmerged" in out and created.path.exists()
     save_preferences(worktree_exit="merge")
+    notes = []
+    # A host stopped for being idle: nobody chose to leave, so nothing merges.
+    worktree.leave_worktree(created.path, session, ask=None, notify=notes.append, merge=False)
+    assert "unmerged" in notes[-1] and created.path.exists()
     out = leave(app)  # no prompt needed
     assert "merged pcode-abc into main" in out and not created.path.exists()
     session.close()
