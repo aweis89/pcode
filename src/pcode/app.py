@@ -50,7 +50,7 @@ from pcode.preferences import (
     thinking_mode_preference,
     thinking_settings,
 )
-from pcode.prefix_keys import compact_label, shortcut_label
+from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.runtime import (
     EditCompleted,
     Message,
@@ -748,7 +748,7 @@ class PreviewApp:
             self.transcript.output.app.invalidate()
 
     def show_thinking(self, argument: str) -> None:
-        """`/show-thinking [off|status-line|scrollback]`; bare (and Ctrl+T) cycles."""
+        """`/show-thinking [off|status-line|scrollback]`; the bare command cycles."""
         if argument and argument not in THINKING_MODES:
             raise ValueError(f"Usage: /show-thinking [{'|'.join(THINKING_MODES)}]")
         if not argument:
@@ -1681,6 +1681,13 @@ class PreviewApp:
             segments.extend([("sep", " · "), ("activity", f"{running} btw running")])
         if unread := self.asides.unread:
             segments.extend([("sep", " · "), ("activity", f"{unread} btw ready")])
+        # Keep live status ahead of help when the terminal is narrow. Help is
+        # discoverable before model/path metadata, but never at a queue's expense.
+        if self.activity.show_hints:
+            shortcuts = getattr(self.prompt_session, "shortcuts", None)
+            if shortcuts is None:
+                shortcuts = PrefixKeys()
+            segments.extend([("sep", " · "), ("hint", shortcuts.summary())])
         segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
         context = self.controller.context_label()
         # Colorize the token counts distinctly from the " · " and "/" around them.
@@ -1692,11 +1699,6 @@ class PreviewApp:
             for part in parts
             if part
         )
-        # The send mode's key, only where it fits without cutting what follows.
-        if self.activity.show_hints:
-            hint = f" ({compact_label(self.shortcut('s'))})"
-            if cell_len("".join(value for _, value in segments) + hint) + 2 <= width:
-                segments.insert(1, ("hint", hint))
         # Only spend spare width on the path; preserve the send mode first.
         path_width = max(0, width - cell_len("".join(value for _, value in segments)) - 4)
         # Last and outside the path's budget: a narrow pane cuts it first.

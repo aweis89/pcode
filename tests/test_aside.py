@@ -747,29 +747,59 @@ def test_aside_browser_pickers_by_keyboard(monkeypatch, prefix, copy_key, link_k
             )
             task = asyncio.create_task(browser.run())
 
-            async def send(keys):
-                pipe.send_text(keys)
-                await asyncio.sleep(0.1)
+            async def wait_until(condition):
+                async with asyncio.timeout(5):
+                    while not condition():
+                        if task.done():
+                            task.result()
+                            pytest.fail("Aside browser exited before the expected state")
+                        await asyncio.sleep(0.01)
 
-            await asyncio.sleep(0.1)
+            processed = 0
+
+            def after_key_press(sender):
+                nonlocal processed
+                processed += 1
+
+            browser.app.key_processor.after_key_press += after_key_press
+
+            async def send(keys):
+                # All inputs here are single-character keys, not escape sequences.
+                # Wait for consumption even when an unavailable shortcut is inert.
+                expected = processed + len(keys)
+                pipe.send_text(keys)
+                await wait_until(lambda: processed >= expected)
+
+            await wait_until(lambda: browser.app.is_running)
             await send(link_key)
+            await wait_until(lambda: browser.picker is not None)
             # Other shortcuts are inert under the picker: no follow-up editor opens.
             await send(follow_up_key)
             assert not browser.editing()
+            if prefix != "ctrl":
+                # An unavailable shortcut leaves the action menu pending.
+                # Cancel it before typing into the nested link picker.
+                await wait_until(lambda: browser.prefix_keys.pending)
+                await send("\x03")
+                await wait_until(lambda: not browser.prefix_keys.pending)
+                assert browser.picker is not None
             await send("q.test\r")
+            await wait_until(lambda: bool(opened) and browser.picker is None)
             assert opened == ["https://q.test"]
-            assert browser.picker is None
             await send(copy_key)
+            await wait_until(lambda: browser.picker is not None)
             await send("\r")
+            await wait_until(lambda: bool(copies) and browser.picker is None)
             assert copies == ["make test"]
             assert browser.notice == "Copied code"
             # Esc backs out of a picker, leaving the viewer open.
             await send(link_key)
+            await wait_until(lambda: browser.picker is not None)
             await send("\x1b")
-            await asyncio.sleep(0.6)
-            assert browser.picker is None and not task.done()
+            await wait_until(lambda: browser.picker is None)
+            assert not task.done()
             pipe.send_text("\x1b")
-            assert await asyncio.wait_for(task, 2) is None
+            assert await asyncio.wait_for(task, 5) is None
 
     asyncio.run(run())
 
@@ -805,7 +835,7 @@ def test_aside_browser_enter_reads_a_thread_without_the_list():
             # A second thread does not pull the list in beside the answer being
             # read; Esc brings it, and Enter reads the selected thread full width.
             assert not browser.listing()
-            assert "Esc Questions" in browser.hints()
+            assert ("Esc", "Questions") in browser.help()
             await send("\x1b", wait=0.6)
             assert browser.listing() and not task.done()
             assert browser.app.layout.has_focus(browser.list)

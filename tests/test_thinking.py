@@ -254,46 +254,74 @@ def test_streamed_thinking_renders_split_markdown_and_buffers_code_and_lists():
         assert rendered(transcript).endswith("Fallback\n\n")
 
 
-def test_ctrl_t_cycles_modes_and_redraws_only_when_scrollback_flips(tmp_path, monkeypatch):
-    from types import SimpleNamespace
+def press(session, key):
+    from prompt_toolkit.key_binding.key_processor import KeyPress
 
+    session.app.key_processor.feed(KeyPress(key))
+    session.app.key_processor.process_keys()
+
+
+def test_ctrl_t_selects_modes_and_redraws_only_when_scrollback_flips(tmp_path, monkeypatch):
+    from prompt_toolkit.application.current import set_app
     from prompt_toolkit.keys import Keys
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     app = PreviewApp(console=Console(file=StringIO()))
     redraws = []
     monkeypatch.setattr(app.transcript, "regenerate", lambda: redraws.append(1))
-    with create_pipe_input() as pipe:
-        session = create_prompt(
-            app.registry,
-            activity=app.activity,
-            on_thinking=app.show_thinking,
-            input=pipe,
-            output=DummyOutput(),
-        )
-        (binding,) = session.key_bindings.get_bindings_for_keys((Keys.ControlT,))
-        event = SimpleNamespace(app=session.app)
-        seen = []
-        for _ in range(4):
-            binding.handler(event)
-            seen.append((app.activity.thinking_mode, len(redraws)))
-    # status-line -> scrollback redraws, scrollback -> off redraws, the rest do not.
-    assert seen == [("scrollback", 1), ("off", 2), ("status-line", 2), ("scrollback", 3)]
-    assert load_preferences()["show_thinking"] == "scrollback"
+
+    async def run():
+        with create_pipe_input() as pipe:
+            session = create_prompt(
+                app.registry,
+                activity=app.activity,
+                on_thinking=app.show_thinking,
+                input=pipe,
+                output=DummyOutput(),
+            )
+            with set_app(session.app):
+                session.default_buffer.text = "retained draft"
+                for key, mode, redraw_count in [
+                    ("b", "scrollback", 1),
+                    ("b", "scrollback", 1),
+                    ("o", "off", 2),
+                    ("s", "status-line", 2),
+                    ("b", "scrollback", 3),
+                ]:
+                    before = (app.activity.thinking_mode, len(redraws))
+                    press(session, Keys.ControlT)
+                    assert (app.activity.thinking_mode, len(redraws)) == before
+                    assert session.shortcuts.help_title == "Thinking visibility"
+                    press(session, key)
+                    assert app.activity.thinking_mode == mode
+                    assert len(redraws) == redraw_count
+                    assert load_preferences()["show_thinking"] == mode
+                    assert not session.shortcuts.visible
+                    assert session.default_buffer.text == "retained draft"
+
+    asyncio.run(run())
 
 
-def test_ctrl_t_without_an_app_still_cycles_the_activity():
-    from types import SimpleNamespace
-
+def test_ctrl_t_without_an_app_still_selects_the_activity_mode():
+    from prompt_toolkit.application.current import set_app
     from prompt_toolkit.keys import Keys
 
     activity = Activity()
-    with create_pipe_input() as pipe:
-        registry = PreviewApp(console=Console(file=StringIO())).registry
-        session = create_prompt(registry, activity=activity, input=pipe, output=DummyOutput())
-        (binding,) = session.key_bindings.get_bindings_for_keys((Keys.ControlT,))
-        binding.handler(SimpleNamespace(app=session.app))
-    assert activity.thinking_mode == "scrollback"
+
+    async def run():
+        with create_pipe_input() as pipe:
+            registry = PreviewApp(console=Console(file=StringIO())).registry
+            session = create_prompt(registry, activity=activity, input=pipe, output=DummyOutput())
+            with set_app(session.app):
+                for key, mode in [("o", "off"), ("b", "scrollback"), ("s", "status-line")]:
+                    before = activity.thinking_mode
+                    press(session, Keys.ControlT)
+                    assert activity.thinking_mode == before
+                    press(session, key)
+                    assert activity.thinking_mode == mode
+                    assert not session.shortcuts.visible
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize(

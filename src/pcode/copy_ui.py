@@ -19,6 +19,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Dialog, Label, TextArea
 
 from pcode.popup_ui import bind_list_paging, popup_container, popup_mouse, popup_style
+from pcode.prefix_keys import PrefixKeys
 
 _QUOTE_MARKER = re.compile(r"^[ \t]*> ?")
 _ROW_WIDTH = 80
@@ -122,11 +123,20 @@ class SnippetPicker:
             on_cancel()
 
         self.container = HSplit(
-            [self.list, Label("↑↓ Select · Enter copy · Esc cancel")],
+            [self.list],
             # Gated by the host's `PrefixKeys`, so a waiting leader owns Enter and Esc.
             key_bindings=shortcuts.gate(keys) if shortcuts else keys,
             modal=True,
         )
+
+    def help(self) -> list[tuple[str, str]]:
+        return [
+            ("↑/↓", "Select snippet"),
+            ("PgUp/PgDn", "Page"),
+            ("Ctrl+U/D", "Half page"),
+            ("Enter", "Copy selected snippet"),
+            ("Esc / Ctrl+C", "Cancel"),
+        ]
 
     def selected(self) -> Snippet:
         row = self.list.document.cursor_position_row
@@ -136,17 +146,25 @@ class SnippetPicker:
 def snippet_dialog(choices: list[Snippet], *, input=None, output=None, style=None):
     """A popup application whose result is the picked snippet, or None."""
     app: Application
+    shortcuts = PrefixKeys()
 
     picker = SnippetPicker(
         choices,
         on_pick=lambda snippet: app.exit(result=snippet),
         on_cancel=lambda: app.exit(result=None),
+        shortcuts=shortcuts,
     )
-    dialog = Dialog(title="Copy", body=picker.container, with_background=True)
+    shortcuts.set_help(picker.help)
+    dialog = Dialog(
+        title="Copy",
+        body=HSplit([picker.container, Label(shortcuts.summary)], padding=1),
+        with_background=True,
+    )
     app = Application(
-        layout=Layout(popup_container(dialog), focused_element=picker.list),
+        layout=Layout(popup_container(dialog, shortcuts), focused_element=picker.list),
+        key_bindings=shortcuts.key_bindings(KeyBindings()),
         full_screen=True,
-        mouse_support=popup_mouse(),
+        mouse_support=popup_mouse(shortcuts),
         input=input,
         output=output,
         style=popup_style(style),

@@ -147,7 +147,7 @@ def reap_leaked_tmux_servers():
 
 
 @pytest.fixture(autouse=True)
-def isolated_preferences(monkeypatch, tmp_path):
+def isolated_preferences(monkeypatch, tmp_path, request):
     """Tests must neither consume nor overwrite the user's saved defaults."""
     monkeypatch.delenv("PCODE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("PCODE_CODEX_CREDENTIALS_FILE", raising=False)
@@ -205,6 +205,15 @@ def isolated_preferences(monkeypatch, tmp_path):
         "group_tools",
         replace_setting(preferences.SETTINGS["group_tools"], default="off"),
     )
+    # Existing UI tests exercise Ctrl chords. Keep the real default available
+    # to regressions requesting shipped_key_prefix, without adding a saved
+    # preference to tests that assert on the exact persistence payload.
+    if "shipped_key_prefix" not in request.fixturenames:
+        monkeypatch.setitem(
+            preferences.SETTINGS,
+            "key_prefix",
+            replace_setting(preferences.SETTINGS["key_prefix"], default="ctrl"),
+        )
     # Hints are on by default, but most tests assert on the exact footer and
     # task heading; tests/test_hints.py turns them on itself.
     monkeypatch.setitem(
@@ -212,6 +221,11 @@ def isolated_preferences(monkeypatch, tmp_path):
         "show_hints",
         replace_setting(preferences.SETTINGS["show_hints"], default="off"),
     )
+
+
+@pytest.fixture
+def shipped_key_prefix():
+    """Opt out of the suite's legacy chord default without replacing the real one."""
 
 
 @pytest.fixture

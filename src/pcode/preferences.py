@@ -486,7 +486,7 @@ SETTINGS = {
     "show_hints": Setting(
         "on",
         ("on", "off"),
-        description="Show shortcut hints beside the send mode and the task list heading",
+        description="Show the contextual keybindings indicator in the prompt status line",
     ),
     "attach_tasks": Setting(
         "on", ("on", "off"), description="Draw the task list inside the editor box"
@@ -543,7 +543,7 @@ SETTINGS = {
     # a modifier. Read when a popup opens, so no restart is needed.
     # Read as each popup opens; the main prompt picks it up on the next launch.
     "key_prefix": Setting(
-        "ctrl",
+        "ctrl+b",
         key_prefix=True,
         description=(
             "Shortcut prefix: ctrl for Ctrl+key chords, or a leader such as ctrl+p "
@@ -923,7 +923,7 @@ def thinking_mode_preference() -> str:
 
 
 def hints_preference() -> bool:
-    """Whether inline shortcut hints (`show_hints`) are on."""
+    """Whether the prompt's keybinding help indicator (`show_hints`) is on."""
     return load_preferences().get("show_hints", SETTINGS["show_hints"].default) == "on"
 
 

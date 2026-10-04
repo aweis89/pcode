@@ -101,19 +101,32 @@ def test_a_key_is_one_shortcut():
 def test_summary_and_hint_list_what_applies_now():
     available = [True]
     for prefix, summary in [
-        ("ctrl", "Ctrl+Y Copy · Ctrl+K Stop"),
-        ("ctrl+p", "Ctrl+P, then: y Copy · k Stop"),
+        ("ctrl", "F1 Keybindings"),
+        ("ctrl+p", "^P Keybindings"),
     ]:
         shortcuts = PrefixKeys(prefix)
         shortcuts.add("y", "Copy")(lambda event: None)
         shortcuts.add("k", "Stop", filter=Condition(lambda: available[0]))(lambda event: None)
         assert shortcuts.summary() == summary
         assert shortcuts.label("k") == ("Ctrl+K" if prefix == "ctrl" else "Ctrl+P k")
-    assert shortcuts.hint_rows() == [("y", "Copy"), ("k", "Stop"), ("Esc", "Cancel")]
-    assert shortcuts.hint_text() == "Ctrl+P … y Copy · k Stop · Esc Cancel"
+        assert shortcuts.hint_rows() == [
+            (shortcuts.label("y"), "Copy"),
+            (shortcuts.label("k"), "Stop"),
+            ("Esc", "Cancel"),
+            ("F1", "All keys"),
+        ]
+    shortcuts.pending = True
+    assert shortcuts.summary() == "^P …"
+    assert shortcuts.hint_rows() == [
+        ("y", "Copy"),
+        ("k", "Stop"),
+        ("Esc", "Cancel"),
+        ("F1", "All keys"),
+    ]
     available[0] = False
-    assert shortcuts.summary() == "Ctrl+P, then: y Copy"
-    assert shortcuts.hint_rows() == [("y", "Copy"), ("Esc", "Cancel")]
+    assert shortcuts.hint_rows() == [("y", "Copy"), ("Esc", "Cancel"), ("F1", "All keys")]
+    shortcuts.dismiss()
+    assert shortcuts.summary() == "^P Keybindings"
 
 
 class Surface:
@@ -182,15 +195,22 @@ def test_a_leader_owns_the_next_key_whatever_has_focus():
             await view.press("y")
             assert not view.shortcuts.pending
             assert view.fired == ["y"] and view.query.text == "a"
-            # Unknown keys, Esc, and the leader again all cancel without acting:
-            # nothing is typed, and Enter does not reach the popup's own binding.
-            for cancel in ("z", "\x1b", "\x10", "\r", "k"):
-                await view.press("\x10")
+            # Unknown/unavailable keys and Enter are consumed, with feedback;
+            # they neither type nor reach the popup's own Enter binding.
+            await view.press("\x10")
+            for unknown in ("z", "\r", "k"):
+                await view.press(unknown)
                 assert view.shortcuts.pending
+                assert view.shortcuts.message == f"No binding for {unknown!r}"
+                assert view.query.text == "a" and not task.done()
+            for cancel in ("\x1b", "\x10"):
                 await view.press(cancel)
                 await asyncio.sleep(0.6 if cancel == "\x1b" else 0)
                 assert not view.shortcuts.pending, repr(cancel)
+                assert not view.shortcuts.message
                 assert view.query.text == "a" and not task.done()
+                if cancel == "\x1b":
+                    await view.press("\x10")
             assert view.fired == ["y"]
             # A paste is not an answer: it reaches its handler, the leader waits on.
             await view.press("\x10\x1b[200~text\x1b[201~")
@@ -233,7 +253,7 @@ def test_the_popup_hint_lists_the_shortcuts_while_the_leader_waits():
             assert "Copy" not in screen()
             await view.press("\x10")
             shown = screen()
-            assert "Ctrl+P" in shown and "Copy" in shown and "Cancel" in shown
+            assert "Keybindings" in shown and "Copy" in shown and "Cancel" in shown
             # Unavailable shortcuts are left out.
             assert "Stop" not in shown
             await view.press("\x1b")
@@ -293,7 +313,7 @@ def test_the_prompt_takes_its_shortcuts_after_a_leader():
     asyncio.run(run())
 
 
-def test_the_prompt_hint_takes_the_notice_rows_above_the_editor():
+def test_the_prompt_renders_descriptive_actions_in_shared_help():
     async def run():
         stream = StringIO()
         app = PreviewApp(console=Console(file=stream, width=80, color_system=None))
@@ -314,12 +334,20 @@ def test_the_prompt_hint_takes_the_notice_rows_above_the_editor():
             stream.truncate()
             with set_app(session.app):
                 session.app.renderer.render(session.app, session.app.layout)
-            return stream.getvalue()
+            screen = session.app.renderer._last_screen
+            assert screen is not None
+            return "\n".join(
+                "".join(row[x].char for x in range(80))
+                for _, row in sorted(screen.data_buffer.items())
+            )
 
     screen = asyncio.run(run())
-    assert "Ctrl+P … s Send mode" in screen
+    assert "Keybindings" in screen
+    assert "Cycle send mode" in screen
+    assert "Increase thinking effort" in screen
+    assert "Select thinking visibility" in screen
+    assert "Copy draft / last response" in screen
     assert "Cancel" in screen
-    assert screen.index("Ctrl+P …") < screen.index("┌")
 
 
 def test_help_and_flashes_name_the_prompts_own_keys():

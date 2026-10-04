@@ -29,10 +29,6 @@ from pcode.runtime import EditCompleted
 
 EMPTY = "No file edits in this conversation."
 NO_MATCH = "No matching edits."
-KEYS = (
-    "↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page · Ctrl+Home/End First/last · "
-    "Type to search paths, Enter to leave · Tab Focus · Esc Close"
-)
 PROMPTS = {"paths": "Search paths: ", "diffs": "Search diff lines: "}
 LOADING = DiffView("Loading…", [], "Loading…")
 
@@ -197,6 +193,18 @@ class EditBrowser:
             event.app.layout.focus(self.files if self.scope == "paths" else self.diff)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+        shortcuts.set_help(
+            lambda: [
+                ("↑/↓", "Select file / scroll diff"),
+                ("PgUp/PgDn", "Page"),
+                ("Ctrl+U/D", "Half page"),
+                ("Ctrl+Home/End", "First / last row"),
+                ("Type", "Search in the search field"),
+                ("Enter", "Leave the search field"),
+                ("Tab/Shift+Tab", "Switch files / diff"),
+                ("Esc/Ctrl+C", "Close"),
+            ]
+        )
 
         @shortcuts.add("f", "Search the focused pane")
         def search(event):
@@ -231,8 +239,6 @@ class EditBrowser:
             [
                 Label(self.heading),
                 header,
-                Label(KEYS),
-                Label(shortcuts.summary),
                 self.query,
                 Frame(self.diff, title="Diff"),
                 Frame(
@@ -240,6 +246,7 @@ class EditBrowser:
                     title="Files",
                     height=lambda: list_pane_height(len(self.changes)),
                 ),
+                Label(shortcuts.summary),
             ]
         )
         self.app = Application(

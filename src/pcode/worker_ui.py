@@ -116,6 +116,15 @@ class WorkerBrowser:
             event.app.exit(result=None)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+        shortcuts.set_help(
+            lambda: [
+                ("↑/↓", "Select worker / scroll output"),
+                ("PgUp/PgDn", "Page"),
+                ("Ctrl+U/D", "Half page"),
+                ("Tab/Shift+Tab", "Change focus"),
+                ("Enter/Esc/Ctrl+C", "Close"),
+            ]
+        )
 
         @shortcuts.add("t", "Thinking")
         def toggle_thinking(event):
@@ -128,7 +137,7 @@ class WorkerBrowser:
         header = Label(
             lambda: (
                 f"Workers · {len(self.items)} this session · {self.workers.running()} running"
-                " · read-only"
+                f" · read-only · thinking {'on' if self.show_thinking else 'off'}"
             )
         )
         wide = VSplit(
@@ -150,13 +159,7 @@ class WorkerBrowser:
             [
                 header,
                 body,
-                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label(
-                    lambda: (
-                        f"Tab Focus · Enter/Esc Close · {shortcuts.summary()}"
-                        f" ({'on' if self.show_thinking else 'off'})"
-                    )
-                ),
+                Label(shortcuts.summary),
             ]
         )
         self.app = Application(
