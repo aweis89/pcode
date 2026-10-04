@@ -201,7 +201,7 @@ def test_the_command_sets_lists_and_clears_the_models(tmp_path, monkeypatch):
         # One saved earlier that no longer resolves is listed as left out.
         save_preferences(subagent_models="a:x,gone:q")
         await controller.run_command("/subagents")
-        assert "  a:x\nUnavailable, left out: Cannot use gone:q" in output.getvalue()
+        assert "    a:x\n  Unavailable, left out: Cannot use gone:q" in output.getvalue()
 
         await controller.run_command("/subagents off")
         assert subagent_models() == []
@@ -274,7 +274,7 @@ def test_a_workspace_setting_is_named_and_not_shadowed_by_a_user_choice(tmp_path
 
     asyncio.run(scenario())
     text = output.getvalue()
-    assert "set by this workspace's .pcode/preferences.json:\n  a:x" in text
+    assert "set by this workspace's .pcode/preferences.json:\n    a:x" in text
     assert "change it with pcode config project set|unset subagent_models" in text
     assert "subagent_models" not in preferences.read_preferences()
 

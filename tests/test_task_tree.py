@@ -42,12 +42,12 @@ def test_only_delegates_and_their_plans_nest_under_the_active_task(task_tree):
     rows = task_panel_rows(items, history, 10, "*")
     # Plain calls, the parent's and the sub-agent's, stay on the status row.
     assert rows == [
-        ("class:plan", "✓ Inspect"),
-        ("class:plan.active", "* Implement"),
-        ("class:plan.agent", "└── ✦ Worker · 0.0s · Working · Fix it"),
-        ("class:plan.active", "    ├── * Read the code"),
-        ("class:plan", "    └── ○ Test the fix"),
-        ("class:plan", "○ Validate"),
+        ("class:plan.completed", "✓ Inspect"),
+        ("class:plan.in_progress", "* Implement"),
+        ("class:plan.agent,agent.hue.0", "└── ✦ Worker · 0.0s · Working · Fix it"),
+        ("class:plan.in_progress,agent.hue.0", "    ├── * Read the code"),
+        ("class:plan.pending,agent.hue.0", "    └── ○ Test the fix"),
+        ("class:plan.pending", "○ Validate"),
     ]
 
 
@@ -81,7 +81,7 @@ def test_parallel_delegates_have_separate_branches(task_tree):
     text = [text for _, text in history.rows(10, nested=True)]
     assert text == [
         "├── ✦ Worker · 0.0s · Working · Fix it",
-        "│   ├── ⟳ Read the code",
+        "│   ├── ↺ Read the code",
         "│   └── ○ Test the fix",
         "└── ✦ Reviewer · 0.0s · Starting · Review",
         "    └── ○ Check diff",

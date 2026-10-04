@@ -547,7 +547,8 @@ See [Anthropic effort](https://platform.claude.com/docs/en/build-with-claude/eff
 
 See [prompt caching and plan reminders](prompt-caching.md) for the upstream design
 history, why the durable-user-prompt anchor was insufficient for long tool loops,
-and the tradeoffs of pcode's append-on-change fix. `make cache-report` reads the
+and the former append-on-change fix. Plan reminders are now disabled by default.
+`make cache-report` reads the
 provider's own per-request verdict out of saved sessions; run it after changing
 anything that touches message history.
 
@@ -574,12 +575,14 @@ reuse from its own lineage hash over the full semantic message prefix; only
 Sending cache settings there changes nothing, and a mutable tail that moves each
 request diverges the lineage regardless.
 
-For every provider, pcode's `IdentifiedPlanning` appends durable plan snapshots only
-when the rendered plan changes (including clearing it), without moving explicit
-cache markers. `MeridianLimitWarnings` retains old warnings and appends updates at
-percentage deciles or severity changes only on Meridian; other providers' limit
-warnings keep Harness's replace-in-place behavior. Both use `before_model_request`, whose messages Pydantic AI
-persists, not the ephemeral `wrap_model_request` boundary. Deduplication compares
+For every provider, pcode's `IdentifiedPlanning` disables reminder injection by
+default. Planning tool results report changes, and `read_plan` retrieves the stored
+state; UI snapshots are independent of model reminders. Existing reminders in
+saved history are left untouched. `MeridianLimitWarnings` retains old warnings and
+appends updates at percentage deciles or severity changes on Meridian and Claude;
+other providers' limit warnings keep Harness's replace-in-place behavior. Warnings
+use `before_model_request`, whose messages Pydantic AI persists, not the ephemeral
+`wrap_model_request` boundary. Warning deduplication compares
 the text of the last reminder in the current history, so saved resume, retry, and
 branch selection do not depend on process-local state. Do not store the dedup key
 in `ModelRequest.metadata`: Pydantic AI's history normalization merges consecutive
@@ -737,7 +740,8 @@ was verified live against the bundled CLI, and most of them are traps:
   user sent it mid-turn. Writing it before releasing the handlers makes this
   deterministic, because both travel over stdin in order. A model can distrust an
   odd-looking instruction delivered this way (Haiku ignored one as a possible
-  injection), but pcode's plan reminders went through without comment.
+  injection). This path is for user input; pcode no longer injects plan reminders
+  by default.
 - `--thinking-display summarized` works without `--thinking`. Without it, thinking
   blocks arrive empty, carrying only a signature.
 - `resume` + `fork_session` + `resume_session_at=<assistant uuid>` truncates the

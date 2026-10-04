@@ -50,7 +50,7 @@ from pcode.preferences import (
     thinking_mode_preference,
     thinking_settings,
 )
-from pcode.prefix_keys import compact_label, shortcut_label
+from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.runtime import (
     EditCompleted,
     Message,
@@ -748,7 +748,7 @@ class PreviewApp:
             self.transcript.output.app.invalidate()
 
     def show_thinking(self, argument: str) -> None:
-        """`/show-thinking [off|status-line|scrollback]`; bare (and Ctrl+T) cycles."""
+        """`/show-thinking [off|status-line|scrollback]`; the bare command cycles."""
         if argument and argument not in THINKING_MODES:
             raise ValueError(f"Usage: /show-thinking [{'|'.join(THINKING_MODES)}]")
         if not argument:
@@ -1066,6 +1066,7 @@ class PreviewApp:
                 loaded=loaded,
                 view=index,
                 code_theme=self.transcript.code_theme,
+                delta=self.transcript.delta,
                 input=modal_input,
                 output=session.app.output,
                 style=session.app.style,
@@ -1674,12 +1675,22 @@ class PreviewApp:
                     segments.extend([("sep", " · "), ("activity", f"{steering} steering pending")])
                 if queued:
                     segments.extend([("sep", " · "), ("activity", f"{queued} queued")])
+        if count := self.activity.job_count:
+            label = "job" if count == 1 else "jobs"
+            segments.extend([("sep", " · "), ("activity", f"{count} {label}")])
         # Side questions are not "working": they neither block input nor end the
         # turn, so they get their own counter rather than the activity label.
         if running := self.asides.running:
             segments.extend([("sep", " · "), ("activity", f"{running} btw running")])
         if unread := self.asides.unread:
             segments.extend([("sep", " · "), ("activity", f"{unread} btw ready")])
+        # Keep live status ahead of help when the terminal is narrow. Help is
+        # discoverable before model/path metadata, but never at a queue's expense.
+        if self.activity.show_hints:
+            shortcuts = getattr(self.prompt_session, "shortcuts", None)
+            if shortcuts is None:
+                shortcuts = PrefixKeys()
+            segments.extend([("sep", " · "), ("hint", shortcuts.summary())])
         segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
         context = self.controller.context_label()
         # Colorize the token counts distinctly from the " · " and "/" around them.
@@ -1691,11 +1702,6 @@ class PreviewApp:
             for part in parts
             if part
         )
-        # The send mode's key, only where it fits without cutting what follows.
-        if self.activity.show_hints:
-            hint = f" ({compact_label(self.shortcut('s'))})"
-            if cell_len("".join(value for _, value in segments) + hint) + 2 <= width:
-                segments.insert(1, ("hint", hint))
         # Only spend spare width on the path; preserve the send mode first.
         path_width = max(0, width - cell_len("".join(value for _, value in segments)) - 4)
         # Last and outside the path's budget: a narrow pane cuts it first.
@@ -1986,7 +1992,7 @@ class PreviewApp:
             self.registry,
             activity=self.activity,
             transcript=self.transcript,
-            workspace=self.workspace,
+            workspace=lambda: self.workspace,
             on_submit=submit,
             on_cancel=cancel,
             on_tasks=self.set_show_tasks,
@@ -2763,6 +2769,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         records = list_sessions(args.session_dir)
         if not records:
             console.note("No saved sessions.")
+        # Rows are plain so the listing can be piped; only the summary is a note.
         root = args.session_dir or session_root()
         freed = 0
         for info in records:
@@ -2771,7 +2778,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 before, after = compact_snapshots(root / info.id)
                 freed += before - after
                 line += f"  {(before - after) / 1_000_000:.0f} MB freed"
-            console.note(line)
+            console.print(Text(line))
         if args.compact:
             console.note(f"Reclaimed {freed / 1_000_000_000:.2f} GB. Open sessions were skipped.")
         return

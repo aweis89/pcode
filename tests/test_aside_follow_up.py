@@ -332,7 +332,7 @@ def test_the_viewer_sends_a_follow_up_typed_in_its_editor():
                 assert app.layout.has_focus(browser.detail)
                 await press("\x12")  # Ctrl+R
                 assert app.layout.has_focus(browser.input.area)
-                assert "Enter Send" in browser.hints()
+                assert ("Enter", "Send") in browser.help()
                 # Shortcuts are chords, so every letter here is text.
                 await press("can you recheck it?")
                 await press("\n")  # Ctrl+J.
@@ -483,14 +483,14 @@ def test_ctrl_c_stops_running_answers_before_it_closes_the_viewer():
                 output=DummyOutput(),
             )
             # Stop is listed only while something runs.
-            assert "Ctrl+K Stop" in browser.prefix_keys.summary()
+            assert ("Ctrl+K", "Stop") in browser.prefix_keys.hint_rows()
             task = asyncio.create_task(browser.run())
             await asyncio.sleep(0.05)
             pipe.send_text("\x03")
             await asyncio.sleep(0.1)
             assert stopped == [True] and not task.done()
             assert browser.notice == "Stopping 1 running answer"
-            assert "Stop" not in browser.prefix_keys.summary()
+            assert not any(label == "Stop" for _, label in browser.prefix_keys.hint_rows())
             pipe.send_text("\x03")
             assert await asyncio.wait_for(task, 2) is None
             assert stopped == [True]

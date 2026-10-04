@@ -185,13 +185,14 @@ def test_planning_guidance_requires_early_default_use(tmp_path, instruction):
 def test_created_plan_exposes_ids_for_atomic_status_updates(tmp_path):
     import re
 
-    from pydantic_ai.messages import ToolReturnPart
+    from pydantic_ai.messages import ToolReturnPart, UserPromptPart
 
     from pcode.agent import create_coder
     from pcode.planning import IdentifiedPlanning
 
     planning = next(c for c in create_coder(tmp_path).capabilities if isinstance(c, Planning))
     assert isinstance(planning, IdentifiedPlanning)
+    assert planning.inject is False
     assert "not task IDs" in planning.get_instructions()
     # pcode's guidance replaces Harness's "multi-step work" trigger everywhere the model sees it.
     assert "live checklist" in planning.get_instructions()
@@ -206,6 +207,12 @@ def test_created_plan_exposes_ids_for_atomic_status_updates(tmp_path):
     async def model(messages, info):
         nonlocal requests
         requests += 1
+        assert [
+            part.content
+            for message in messages
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+        ] == ["Work"]
         if requests == 1:
             yield {
                 0: DeltaToolCall(
@@ -266,13 +273,13 @@ def test_unfinished_task_has_static_active_marker_only_during_live_turn(state, b
     # Resumed, finished, failed, and cancelled turns stay inactive, even if input
     # is queued. Do not rewrite the persisted task's status to change its marker.
     first = activity.plan_rows(10)
-    assert first == [("class:plan.active", "○ Unfinished task")]
+    assert first == [("class:plan.in_progress", "○ Unfinished task")]
     assert items[0]["status"] == "in_progress"
 
     activity.prompt_state = "running"
     for frame in ("⠋", "⠙"):
         assert activity.status_fragments(frame, 80)[0] == ("class:activity.spinner", f"{frame} ")
-        assert activity.plan_rows(10) == [("class:plan.active", "⟳ Unfinished task")]
+        assert activity.plan_rows(10) == [("class:plan.in_progress", "↺ Unfinished task")]
 
     activity.prompt_state = "done"
     assert activity.plan_rows(10) == first

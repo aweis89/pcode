@@ -136,12 +136,15 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         if activity.thought_done and event.text:
             # A block that arrived whole, with no deltas before it.
             activity.think(event.text)
-        # Held on the thinking row; the next block replaces it.
+        # Held on the thinking rows through the tool calls it explains; the
+        # next block, or the answer, replaces it.
         activity.thought_done = True
     elif isinstance(event, TextDelta):
         output.finish_thinking()
         output.delta(event.text)
         activity.status = "Responding…"
+        if event.text.strip():  # An empty part start says nothing yet.
+            activity.forget_thought()
     elif isinstance(event, CacheBust):
         # A footer note, not a scrollback line: the session journal keeps the
         # full notice (and its cause) for anyone diagnosing it later.
@@ -176,6 +179,8 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         present((event,))
     elif isinstance(event, Message):
         output.finish(event.markdown)
+        if event.markdown.strip():  # An answer that arrived whole, with no deltas before it.
+            activity.forget_thought()
     else:
         output.finish()
         transcript.events((event,))

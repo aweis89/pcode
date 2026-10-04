@@ -4,6 +4,14 @@ The conversation lives in your terminal's normal scrollback, so you can scroll,
 select, and search it with the terminal or tmux. This page covers what gets
 written there and the settings that control it.
 
+Three kinds of text share the scrollback. Your prompts are quoted behind a `▌`
+rail in the accent color. The model's replies are plain prose in the terminal's
+own text color. pcode's own notes (a model switch, an MCP server coming up, the
+key hints under `/help`, where a session was saved) start with an accent `·` and are
+set in the muted italic shade, so a run of them between two replies reads as
+status rather than as something the model said. A note that wraps or spans
+several lines hangs under its text, with the mark on the first line only.
+
 ## Command previews
 
 Shell tool calls show a compact two-row preview with their result and duration.
@@ -53,21 +61,60 @@ Limits:
 - These diffs aren't guaranteed to apply as patches. Changes made by shell
   commands, formatters, or other tools aren't captured.
 
+### Diffs with delta
+
+When [delta](https://dandavison.github.io/delta/) is on your `PATH`, edit
+blocks, the live preview of an edit being written, and the `/diffs` popup use
+it: syntax-highlighted code, word-level changes, and a side-by-side layout when
+the terminal is wide enough. The Homebrew formula installs it for you. Without
+it, or if delta exits with an error, pcode falls back to its built-in Rich
+diffs; `diff_renderer rich` always uses them.
+
+pcode ignores your git config's `[delta]` section and delta's environment
+variables (`DELTA_FEATURES`, `BAT_THEME`), so these diffs look the same however
+`git diff` is set up. `delta_args` is the one place to change them:
+
+```text
+/config set delta_args "--line-numbers --syntax-theme Dracula"
+```
+
+pcode itself only sets the width, dark or light (from your pcode theme), no
+pager, no file header (the block heading already names the file), and the
+layout. A flag in `delta_args` replaces pcode's choice of that flag, so
+`--side-by-side` gives the side-by-side layout at every width and
+`--width=variable` stops backgrounds at the end of the text. With
+`diff_layout auto`, a diff 180 columns or wider is shown side by side, and a
+narrower one gets the unified view; the `/diffs` pane is three columns narrower
+than the terminal. Settings apply on the next launch.
+
+A `--features NAME` that names a `[delta "NAME"]` section of your git config
+finds nothing here; put that section's settings in `delta_args` as flags.
+
+The live preview has no line numbers to show, since the edit hasn't been
+applied yet, so it leaves out delta's hunk headers. New lines still appear as
+they're written, in delta's layout and colored as added or removed, and
+delta's syntax highlighting fills them in a moment later. Side by side, the
+preview waits for delta instead.
+
 ## Thinking: status line or scrollback
 
-`/show-thinking` picks where the thinking a provider exposes shows up. **Ctrl+T**
-or a bare `/show-thinking` cycles through the modes:
+`/show-thinking` picks where the thinking a provider exposes shows up. **Ctrl+B `t`**
+opens a chooser: `o` for off, `s` for status line, or `b` for scrollback; Esc
+cancels without changing the mode. A bare `/show-thinking` still cycles through
+the modes:
 
 | Mode | Shows |
 | --- | --- |
-| `status-line` (default) | The newest thought, faded, on its own row under the status row |
+| `status-line` (default) | The newest thought, faded and marked with a `│` bar, on up to three rows of its own above the status row |
 | `scrollback` | The full thinking, streamed into scrollback in a dim style |
 | `off` | Nothing, and pcode asks the provider for nothing extra |
 
-The thinking row stays for the rest of the turn once a thought arrives, so a
-running tool on the status row doesn't hide it, and the last thought usually
-explains the calls that follow. Where a summary has section titles, as OpenAI's
-do, the row shows the newest title rather than the prose under it.
+The thinking rows stay through the tool calls that follow a thought, so a
+running tool on the status row doesn't hide them, and the last thought usually
+explains the call under it. They go as soon as any reply text streams into
+scrollback, including a line written before a tool call. A long thought is cut at the end; a short terminal gets fewer rows.
+Where a summary has section titles, as OpenAI's do, the rows show the newest
+title rather than the prose under it.
 
 Each mode asks the provider for the text that suits it:
 
@@ -268,7 +315,7 @@ Details:
 - Verbose commands can push earlier conversation out of terminal history. Raise
   your terminal or tmux scrollback limit before turning this on.
 
-Press **Ctrl+G** to toggle mirroring; it saves the default, so the next launch
+Press **Ctrl+B `g`** to toggle mirroring; it saves the default, so the next launch
 starts the way you left it. `/show-commands on`, `/show-commands off`, and bare
 `/show-commands` do the same. Toggling rebuilds retained scrollback right away:
 on reveals earlier commands and their output, off removes every command block,
@@ -306,7 +353,7 @@ falls back to the default.
 ## Regenerating the terminal transcript
 
 `/redraw` rebuilds the retained transcript at the current terminal width with
-the current display settings. Ctrl+G, `/show-commands`, `/show-edits`,
+the current display settings. Ctrl+B `g`, `/show-commands`, `/show-edits`,
 `/show-thinking`, `/group-tools`, `/theme`, and `/syntax` rebuild it the same
 way. Your draft, the live tool panel, and unfinished model text are kept; a
 rebuild never calls tools or changes model history.

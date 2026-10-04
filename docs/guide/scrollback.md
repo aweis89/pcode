@@ -14,9 +14,9 @@ history already on screen is rebuilt to match.
 
 A typical rhythm:
 
-1. While a tricky turn runs, press **Ctrl+G** to mirror every shell command and
+1. While a tricky turn runs, press **Ctrl+B `g`** to mirror every shell command and
    its output into scrollback, so you can watch the tests fail and pass.
-2. Once it's done, press Ctrl+G again. The same history comes back with the
+2. Once it's done, press Ctrl+B `g` again. The same history comes back with the
    command output gone and each run of tool calls folded into one line, so the
    reply is easy to find:
 
@@ -27,24 +27,28 @@ A typical rhythm:
 3. Want a line per call instead? `/group-tools off` unfolds them, again for the
    whole history.
 
+The screenshots on this page show an earlier UI with direct Ctrl shortcuts and
+static key hints. The text describes the current defaults: Ctrl+B then a letter
+for actions, and F1 for contextual help.
+
 Here is one turn both ways. First with commands hidden and the tool calls folded
 into a line:
 
 ![A bug fix turn with tool calls folded into one summary line](../assets/screenshots/scrollback-summary.svg)
 
-Then the same history after Ctrl+G, rebuilt with each command and its output:
+Then the same history after Ctrl+B `g`, rebuilt with each command and its output:
 
-![The same turn after Ctrl+G, with every shell command and its output](../assets/screenshots/scrollback-commands.svg)
+![The same turn after Ctrl+B `g`, with every shell command and its output](../assets/screenshots/scrollback-commands.svg)
 
 The toggles, each saved as your default:
 
 | Toggle | Shows or hides |
 | --- | --- |
-| Ctrl+G, `/show-commands` | Each shell command and its output |
+| Ctrl+B `g`, `/show-commands` | Each shell command and its output |
 | `/show-edits` | The diff of each file edit |
 | `/show-thinking scrollback` | The model's readable reasoning |
 | `/group-tools` | One line per run of tool calls (the default) or one per call |
-| Ctrl+O, `/show-tasks` | The live task and tool panel above the editor |
+| Ctrl+B `o`, `/show-tasks` | The live task and tool panel above the editor |
 
 Hidden isn't deleted. Thinking, diffs and command results are kept even while
 hidden, including in resumed sessions, so turning a toggle on later shows them
@@ -69,11 +73,11 @@ while a turn is still running:
 
 ![The /tools inspector with a passing check selected](../assets/screenshots/tools.svg)
 
-Type to search, press Ctrl+X to show only failures, and Ctrl+T to filter by
+Type to search, press Ctrl+B `x` to show only failures, and Ctrl+B `t` to filter by
 tool.
 
-![/tools filtered to failures with Ctrl+X, showing the traceback the model saw](../assets/screenshots/tools-failed.svg)
- Ctrl+Y copies the command so you can run it yourself, and Ctrl+O copies
+![/tools filtered to failures with Ctrl+B `x`, showing the traceback the model saw](../assets/screenshots/tools-failed.svg)
+ Ctrl+B `y` copies the command so you can run it yourself, and Ctrl+B `o` copies
 the output. It works on resumed sessions too, so you can audit what an agent
 did last week. Opening it never reruns anything. See the
 [tool-call inspector](../commands.md#tool-call-inspector).

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -10,7 +11,10 @@ from pathlib import Path
 
 from filelock import FileLock
 from pygments.styles import get_all_styles
+from rich.cells import cell_len
+from rich.spinner import SPINNERS as RICH_SPINNERS
 
+from pcode.delta import LAYOUTS as DIFF_LAYOUTS
 from pcode.profiling import PROFILE_MODES
 from pcode.transcript_log import CHAR_BUDGET
 
@@ -20,6 +24,26 @@ from pcode.transcript_log import CHAR_BUDGET
 # the terminal's own ANSI palette, so pcode matches whatever scheme it runs in.
 TERMINAL_SYNTAX = "terminal"
 SYNTAX_THEMES = (TERMINAL_SYNTAX, *sorted(get_all_styles()))
+
+
+def _steady_width(frames: list[str]) -> bool:
+    """Whether every frame takes the same few cells, so the row never shifts.
+
+    Emoji spinners are out: terminals disagree on their width, and the
+    variation-selector ones (`arrow2`) measure one cell but draw two.
+    """
+    widths = {cell_len(frame) for frame in frames}
+    return (
+        len(widths) == 1
+        and widths <= {1, 2, 3}
+        and all(ord(char) < 0x1F000 and char != "\ufe0f" for frame in frames for char in frame)
+    )
+
+
+# Rich's named spinners that fit the status row: `pcode config set spinner NAME`.
+SPINNERS = tuple(
+    sorted(name for name, spec in RICH_SPINNERS.items() if _steady_width(spec["frames"]))
+)
 
 EFFORTS = ("low", "medium", "high", "xhigh", "default")
 # `/show-thinking` and Ctrl+T, in cycling order.
@@ -46,11 +70,18 @@ class Setting:
     key_prefix: bool = False
     # Tokens as `200000`, `200k`, or `1.5m`; see parse_token_count.
     token_count: bool = False
+    # Command-line arguments, split as a shell would; empty means none.
+    arguments: bool = False
     # One line shown beside the key in /config completions.
     description: str = ""
 
     def validate(self, key: str, value: str) -> None:
-        if self.path_list:
+        if self.arguments:
+            try:
+                shlex.split(value)
+            except ValueError as error:
+                raise ValueError(f"{key} must be shell-style arguments: {error}.") from None
+        elif self.path_list:
             if value and any(not entry.strip() for entry in value.split(os.pathsep)):
                 raise ValueError(f"{key} must be directories separated by '{os.pathsep}'.")
         elif self.name_list:
@@ -433,6 +464,23 @@ SETTINGS = {
         ("on", "off"),
         description="Show a diff preview of each file edit in the transcript",
     ),
+    # Read at launch, like show_edits.
+    "diff_renderer": Setting(
+        "delta",
+        ("delta", "rich"),
+        description="Diffs in scrollback and /diffs: delta when installed (else rich), or rich",
+    ),
+    "delta_args": Setting(
+        "",
+        arguments=True,
+        description="delta arguments, e.g. '--line-numbers'; git config is ignored, and these "
+        "win over pcode's own",
+    ),
+    "diff_layout": Setting(
+        "auto",
+        DIFF_LAYOUTS,
+        description="delta layout: auto is side-by-side at 180+ columns, else unified",
+    ),
     "show_commands": Setting(
         "off",
         ("on", "off"),
@@ -467,7 +515,7 @@ SETTINGS = {
     "show_hints": Setting(
         "on",
         ("on", "off"),
-        description="Show shortcut hints beside the send mode and the task list heading",
+        description="Show the contextual keybindings indicator in the prompt status line",
     ),
     "attach_tasks": Setting(
         "on", ("on", "off"), description="Draw the task list inside the editor box"
@@ -477,10 +525,16 @@ SETTINGS = {
         height=True,
         description="Max height of the task list plus editor: rows, or 0.5 for half the screen",
     ),
+    # Read when the prompt is built, so it applies on the next launch.
+    "spinner": Setting(
+        "arc",
+        SPINNERS,
+        description="Animation on the status row while a turn runs (a Rich spinner name)",
+    ),
     "show_thinking": Setting(
         "status-line",
         THINKING_MODES,
-        description="Where the model's thinking shows: its own row under the status row, "
+        description="Where the model's thinking shows: its own rows above the status row, "
         "streamed into scrollback, or nowhere",
     ),
     "editing_mode": Setting(
@@ -518,7 +572,7 @@ SETTINGS = {
     # a modifier. Read when a popup opens, so no restart is needed.
     # Read as each popup opens; the main prompt picks it up on the next launch.
     "key_prefix": Setting(
-        "ctrl",
+        "ctrl+b",
         key_prefix=True,
         description=(
             "Shortcut prefix: ctrl for Ctrl+key chords, or a leader such as ctrl+p "
@@ -899,7 +953,7 @@ def thinking_mode_preference() -> str:
 
 
 def hints_preference() -> bool:
-    """Whether inline shortcut hints (`show_hints`) are on."""
+    """Whether the prompt's keybinding help indicator (`show_hints`) is on."""
     return load_preferences().get("show_hints", SETTINGS["show_hints"].default) == "on"
 
 

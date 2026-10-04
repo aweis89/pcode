@@ -283,14 +283,15 @@ never one you stopped or one adopted from an earlier pcode.
 `pcode config set job_wake off` turns it off; the model then hears at your next
 message.
 
-While a job runs with nothing waiting on it, a row under the spinner (or under
-the editor, while idle) shows it: `⟳ j3 · running the e2e suite · 1m42s`. The
-row goes away when the job finishes. While the model waits on a job, the wait's
-row names it instead: `⧗ Wait for job · 45.2s · j3 · running the e2e suite · make e2e`.
+The footer below the editor shows the active total as `1 job` or `N jobs`,
+including jobs the model is waiting on, and hides the count when none remain.
+There are no persistent per-job rows; use `/jobs` for details. While the model
+waits on a job, the status row names it:
+`Wait for job · 45.2s · j3 · running the e2e suite · make e2e`.
 The finished job goes to scrollback at the end of the turn (or at once while
 idle) as a normal `Run shell` block labeled `background`, with its id and
 elapsed time; `show_commands` and `tool_error_scrollback` apply as for other
-commands. Three job rows fit; more fold into `… N more jobs (/jobs)`.
+commands.
 `/jobs watch j3` pins a job's output tail into the command preview whatever
 `show_commands` says; `/jobs unwatch` releases it, and it clears when the job
 ends.
@@ -309,7 +310,7 @@ steer the same turn into other work while a build continues.
 
 Jobs outlive the turn, the conversation, and pcode itself. Use
 [`/jobs`](commands.md#slash-commands) to browse them and read each
-one's log (the last 128 KiB, redacted like the preview), and **Ctrl+K** there,
+one's log (the last 128 KiB, redacted like the preview), and **Ctrl+B `k`** there,
 `/jobs stop ID`, or `/jobs stop all` to stop one. A stop sends `SIGTERM` to the
 job's whole process group, so a server can release its port, then `SIGKILL` to
 whatever is left two seconds later. Logs of finished jobs are deleted on exit and

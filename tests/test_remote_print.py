@@ -199,8 +199,8 @@ def test_compact_is_waited_for_not_just_started(tmp_path, host_dir):
             # The note saying how it ended arrives before pcode exits, not just
             # the one saying it started.
             started, ended = printed.err.getvalue().strip().splitlines()
-            assert started.startswith("Compacting context")
-            assert ended.startswith("Nothing to compact")
+            assert started.startswith("· Compacting context")
+            assert ended.startswith("· Nothing to compact")
             assert host.controller.compact_task is None
         finally:
             await stop_host(host)

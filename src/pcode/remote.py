@@ -369,8 +369,6 @@ class RemoteController:
     def apply_field(self, name: str, value) -> None:
         if name not in SESSION_FIELDS:
             return
-        if name == "jobs":
-            value = [tuple(row) for row in value]
         if name == "prompt_state" and value != getattr(self.activity, name):
             # Autohiding the task list is this terminal's preference, applied here.
             if value == "running":

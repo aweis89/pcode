@@ -14,6 +14,8 @@ import uuid
 import pytest
 from conftest import tmux_socket_dir
 
+from pcode.ui import THOUGHT_ICON
+
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
 
 # How long a pane gets to reach an expected state. Every wait polls and returns
@@ -118,7 +120,8 @@ def pane(request, tmp_path):
     # the moment a marker shows and expect scrollback to be complete at that
     # instant, so paced scrollback is off; its own test turns it on. Grouping
     # and hints are off as in conftest: these panes assert on per-call summary
-    # lines and on the exact footer and task heading.
+    # lines and on the exact footer and task heading. Preserve their explicit
+    # Ctrl chords too: subprocesses do not inherit conftest's default override.
     config.joinpath("preferences.json").write_text(
         json.dumps(
             {
@@ -127,6 +130,7 @@ def pane(request, tmp_path):
                 "paced_scrollback": "off",
                 "group_tools": "off",
                 "show_hints": "off",
+                "key_prefix": "ctrl",
             }
         )
     )
@@ -179,8 +183,8 @@ def pane(request, tmp_path):
         reaper.wait(timeout=5)
 
 
-# The spinner row leads with a `dots` frame, or a `line` frame for system work.
-BUSY_FRAMES = tuple(" " + frame + " " for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+# The spinner row leads with a frame of the default `arc` spinner.
+BUSY_FRAMES = tuple(" " + frame + " " for frame in "◜◠◝◞◡◟")
 
 # The footer always names the mode the next Enter sends with.
 SEND_MODES = ("steering", "queue", "interrupt")
@@ -247,33 +251,44 @@ def scrollback(pane):
 
 
 # The status row is indented one column so the spinner lines up with the task
-# rows inside the frame below it instead of hugging the terminal edge. Running
-# tools and pcode's own work (compaction) draw the `line` frames, not `dots`.
+# rows inside the frame below it instead of hugging the terminal edge.
 SPINNER_ROW = BUSY_FRAMES
 
 
-def thought_row(screen):
-    """The thinking row: indented, directly under the status row."""
-    lines = screen.splitlines()
+def _thought_span(lines):
+    """Indices of the thinking rows: marked first row, directly above the spinner.
+
+    A blank row always separates the panel from scrollback, and the cap is
+    ui.THOUGHT_ROWS, so this never reaches a scrollback line.
+    """
     status = next((i for i, line in enumerate(lines) if line.startswith(SPINNER_ROW)), None)
-    if status is None or status + 1 >= len(lines):
-        return ""
-    row = lines[status + 1]
-    return row.strip() if row.startswith("   ") and row.strip() else ""
+    if status is None:
+        return range(0)
+    for start in range(status - 1, max(-1, status - 4), -1):
+        if not lines[start].strip():
+            break
+        if lines[start].startswith(f" {THOUGHT_ICON} "):
+            return range(start, status)
+    return range(0)
+
+
+def thought_row(screen):
+    """The thinking rows above the status row, without their icon, joined with newlines."""
+    lines = screen.splitlines()
+    return "\n".join(
+        lines[i].strip().removeprefix(THOUGHT_ICON).strip() for i in _thought_span(lines)
+    )
 
 
 def without_status_row(text):
-    """A capture minus the status row and the thinking row under it: scrollback only."""
+    """A capture minus the status row and the thinking rows above it: scrollback only."""
     lines = text.splitlines()
-    thought = thought_row(text)
-    kept = []
-    for index, line in enumerate(lines):
-        if line.startswith(SPINNER_ROW):
-            continue
-        if thought and index and lines[index - 1].startswith(SPINNER_ROW):
-            continue
-        kept.append(line)
-    return "\n".join(kept)
+    thought = set(_thought_span(lines))
+    return "\n".join(
+        line
+        for index, line in enumerate(lines)
+        if index not in thought and not line.startswith(SPINNER_ROW)
+    )
 
 
 def input_rows(screen):
@@ -845,12 +860,12 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, release, split):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "Task 8", running=True)
-    assert "⟳ Task 8" in screen
+    assert "↺ Task 8" in screen
     first_frame = next(line[1] for line in screen.splitlines() if line.startswith(SPINNER_ROW))
     deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         animated = pane("capture-pane", "-p", "-t", "preview:0.0")
-        assert "⟳ Task 8" in animated
+        assert "↺ Task 8" in animated
         if any(
             line.startswith(SPINNER_ROW) and line[1] != first_frame
             for line in animated.splitlines()
@@ -982,7 +997,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     assert status.startswith(SPINNER_ROW) and "Run shell" in status
     assert not status.startswith("│")
     assert lines[task - 1].startswith("┌─ Tasks 0/1 ─")
-    assert lines[task].startswith("│⟳")
+    assert lines[task].startswith("│↺")
     assert lines[task + 1].startswith("└")
     assert lines[task + 2].startswith("┌")  # Editor, not another Tools widget.
     assert "Tools" not in screen and "Tasks ·" not in screen
@@ -1004,7 +1019,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
                 break
             assert time.monotonic() < deadline, screen
             time.sleep(0.05)
-        assert lines[task].startswith("│⟳")
+        assert lines[task].startswith("│↺")
         assert "keep draft" in screen
         assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")  # Clears the draft.
@@ -1057,7 +1072,7 @@ def test_tasks_share_the_editor_box_by_default_and_config_applies_live(pane):
             time.sleep(0.05)
         heading, tasks, text_rows = attached_box(screen)
         assert heading.startswith("┌─ Tasks 0/1")
-        assert len(tasks) == 1 and tasks[0].startswith("│⟳")
+        assert len(tasks) == 1 and tasks[0].startswith("│↺")
         assert text_rows == 1
     pane("send-keys", "-t", "preview:0.0", "C-c")
     pane("send-keys", "-t", "preview:0.0", "C-c")
@@ -1316,7 +1331,7 @@ from pcode.live import AgentRuntime
 
 async def model(messages, info):
     yield {0: DeltaThinkingPart(content="SAVED_REASONING_TEXT\n")}
-    await asyncio.sleep(1)
+    await gate()
     yield "Public answer while thinking is visible\n\n"
     await asyncio.sleep(60)
 
@@ -1329,7 +1344,7 @@ app.run()
 
 
 @pytest.mark.parametrize("pane", [THINKING_SCRIPT], indirect=True)
-def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(pane):
+def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(pane, release):
     def in_scrollback(screen):
         return "SAVED_REASONING_TEXT" in without_status_row(screen)
 
@@ -1337,31 +1352,35 @@ def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     screen = capture(pane, "❯", running=True)
     assert "SAVED_REASONING_TEXT" not in screen  # Off: nowhere.
-    # Status line: its own row under the status row, and not in scrollback.
-    pane("send-keys", "-t", "preview:0.0", "C-t")
+    # Status line: its own rows above the status row, and not in scrollback.
+    pane("send-keys", "-t", "preview:0.0", "C-t", "s")
     screen = settle(
         pane, lambda screen: thought_row(screen) == "SAVED_REASONING_TEXT", running=True
     )
     assert thought_row(screen) == "SAVED_REASONING_TEXT", screen
     assert not in_scrollback(screen)
     assert input_rows(screen) == 1
-    # Held through the answer: the row outlives its thinking block.
+    # Gone the moment the answer streams: thinking is the lead-up, not a caption.
+    release()
     screen = capture(pane, "Public answer while thinking is visible", running=True)
-    assert thought_row(screen) == "SAVED_REASONING_TEXT", screen
+    assert "SAVED_REASONING_TEXT" not in thought_row(screen), screen
+    assert not in_scrollback(screen)
     # Scrollback: written above, and the row goes.
-    pane("send-keys", "-t", "preview:0.0", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "b")
     screen = settle(pane, in_scrollback, running=True)
-    assert in_scrollback(screen) and not thought_row(screen)
+    # The mode's notice sits where a thought would, padded the same: look for
+    # the thought itself.
+    assert in_scrollback(screen) and "SAVED_REASONING_TEXT" not in thought_row(screen)
     assert input_rows(screen) == 1
     for width, height in ((80, 24), (120, 40)):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
         screen = capture(pane, "SAVED_REASONING_TEXT", running=True, columns=width)
         assert input_rows(screen) == 1
     # Off again: gone from both.
-    pane("send-keys", "-t", "preview:0.0", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "o")
     screen = settle(pane, lambda screen: "SAVED_REASONING_TEXT" not in screen, running=True)
     assert "SAVED_REASONING_TEXT" not in screen
-    pane("send-keys", "-t", "preview:0.0", "C-t", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "b")
     settle(pane, in_scrollback, running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "Run cancelled")

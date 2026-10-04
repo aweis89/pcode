@@ -12,6 +12,7 @@ from prompt_toolkit.widgets import Dialog, Label, TextArea
 
 from pcode.models import PROVIDERS
 from pcode.popup_ui import fuzzy_match, popup_container, popup_style
+from pcode.prefix_keys import PrefixKeys
 
 
 def matches_model(term: str, model: str) -> bool:
@@ -43,6 +44,17 @@ class ModelPicker:
             always_hide_cursor=True,
         )
         keys = KeyBindings()
+        shortcuts = self.shortcuts = PrefixKeys()
+        shortcuts.set_help(
+            lambda: [
+                ("Type", "Filter models or enter provider:model-id"),
+                ("↑/↓ / Ctrl+P/N", "Select model"),
+                ("PgUp/PgDn", "Page"),
+                ("Ctrl+U/D", "Half page"),
+                ("Enter", "Apply selected model"),
+                ("Esc / Ctrl+C / Ctrl+L", "Cancel"),
+            ]
+        )
 
         @keys.add("up", eager=True)
         @keys.add("c-p", eager=True)
@@ -86,27 +98,21 @@ class ModelPicker:
             title="Choose model",
             body=HSplit(
                 [
-                    Label(
-                        "↑↓ Select · PgUp/PgDn Page · Ctrl+U/D Half page · "
-                        "Enter apply · Esc cancel",
-                        dont_extend_height=True,
-                    ),
                     self.search,
                     self.rows,
                     Label(
-                        "Local suggestions; access depends on your account.\n"
-                        "Type provider:model-id for a custom model.\n"
-                        "Changing model continues the current conversation.",
+                        "Type provider:model-id for a custom model.",
                         dont_extend_height=True,
                     ),
+                    Label(shortcuts.summary, dont_extend_height=True),
                 ],
                 padding=1,
             ),
             with_background=True,
         )
         self.app = Application(
-            layout=Layout(popup_container(dialog), focused_element=self.search),
-            key_bindings=keys,
+            layout=Layout(popup_container(dialog, shortcuts), focused_element=self.search),
+            key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             input=input,
             output=output,

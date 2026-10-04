@@ -137,6 +137,15 @@ class JobBrowser:
             event.app.exit(result=None)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+        shortcuts.set_help(
+            lambda: [
+                ("↑/↓", "Select job / scroll output"),
+                ("PgUp/PgDn", "Page"),
+                ("Ctrl+U/D", "Half page"),
+                ("Tab/Shift+Tab", "Change focus"),
+                ("Enter/Esc/Ctrl+C", "Close"),
+            ]
+        )
 
         @shortcuts.add("w", "Watch in preview")
         def toggle_watch(event):
@@ -190,8 +199,6 @@ class JobBrowser:
             [
                 Label(header),
                 body,
-                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label("Tab Focus · Enter/Esc Close"),
                 Label(shortcuts.summary),
             ]
         )

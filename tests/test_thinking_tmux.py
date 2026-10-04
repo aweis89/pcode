@@ -70,16 +70,19 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     assert all(not lines[first + 2 * i + 1].strip() for i in range(29))
     assert "**REASONING" not in history(pane)
     pane("send-keys", "-t", "preview:0.0", "draft preserved")
-    pane("send-keys", "-t", "preview:0.0", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "o")
     until(lambda: "REASONING_" not in history(pane), lambda: history(pane))
     screen = capture(pane, "draft preserved", running=True)
     assert_compact(screen)
-    # Ctrl+T cycles: status line next, where the newest thought gets its row.
-    pane("send-keys", "-t", "preview:0.0", "C-t")
-    screen = settle(pane, lambda screen: bool(thought_row(screen)), running=True)
+    # Choose status line, where the newest thought gets its row.
+    pane("send-keys", "-t", "preview:0.0", "C-t", "s")
+    # Wait out the mode's notice, which sits where the thought goes.
+    screen = settle(
+        pane, lambda screen: thought_row(screen) == "REASONING_29 live text", running=True
+    )
     assert thought_row(screen) == "REASONING_29 live text", screen
     assert "REASONING_" not in history(pane)
-    pane("send-keys", "-t", "preview:0.0", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "b")
     written(pane, "REASONING_29", running=True)
     assert history(pane).count("REASONING_00") == 1
     assert history(pane).count("REASONING_29") == 1
@@ -90,9 +93,9 @@ def test_streaming_thinking_enters_history_toggle_redraws_and_cancel_retains(pan
     assert "REASONING_29" in history(pane)
     assert input_rows(screen) == 1
     # The same toggle works after the turn, rather than clearing thinking forever.
-    pane("send-keys", "-t", "preview:0.0", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "o")
     until(lambda: "REASONING_" not in history(pane), lambda: history(pane))
-    pane("send-keys", "-t", "preview:0.0", "C-t", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "b")
     written(pane, "REASONING_29")
     assert history(pane).count("REASONING_00") == 1
 

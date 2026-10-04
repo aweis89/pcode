@@ -27,7 +27,7 @@ from pcode.runtime import ToolSummary
 from pcode.session_ui import literal
 from pcode.task_prompt import TaskPrompt
 from pcode.tool_display import label, plain
-from pcode.tool_panel import AGENT_ICON, plan_row
+from pcode.tool_panel import ACTIVE_TASK_ICON, AGENT_ICON, plan_row
 from pcode.workers import Worker, Workers
 
 # Streaming should look live without repainting the pane every token.
@@ -63,8 +63,9 @@ def details(worker: Worker | None, *, code_theme: str, show_thinking: bool) -> l
         done = sum(item.get("status") == "completed" for item in worker.plan)
         blocks += [Text(""), Text(f"Tasks {done}/{len(worker.plan)}", style="bold")]
         for item in worker.plan:
-            style, line = plan_row(item, "⟳")
-            blocks.append(Text(f"  {line}", style="bold" if style.endswith("active") else "dim"))
+            style, line = plan_row(item, ACTIVE_TASK_ICON)
+            active = style == "class:plan.in_progress"
+            blocks.append(Text(f"  {line}", style="bold" if active else "dim"))
     for entry in worker.entries:
         if entry.kind == "tool":
             blocks.append(tool_line(entry.tool))
@@ -115,6 +116,15 @@ class WorkerBrowser:
             event.app.exit(result=None)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+        shortcuts.set_help(
+            lambda: [
+                ("↑/↓", "Select worker / scroll output"),
+                ("PgUp/PgDn", "Page"),
+                ("Ctrl+U/D", "Half page"),
+                ("Tab/Shift+Tab", "Change focus"),
+                ("Enter/Esc/Ctrl+C", "Close"),
+            ]
+        )
 
         @shortcuts.add("t", "Thinking")
         def toggle_thinking(event):
@@ -127,7 +137,7 @@ class WorkerBrowser:
         header = Label(
             lambda: (
                 f"Workers · {len(self.items)} this session · {self.workers.running()} running"
-                " · read-only"
+                f" · read-only · thinking {'on' if self.show_thinking else 'off'}"
             )
         )
         wide = VSplit(
@@ -149,13 +159,7 @@ class WorkerBrowser:
             [
                 header,
                 body,
-                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label(
-                    lambda: (
-                        f"Tab Focus · Enter/Esc Close · {shortcuts.summary()}"
-                        f" ({'on' if self.show_thinking else 'off'})"
-                    )
-                ),
+                Label(shortcuts.summary),
             ]
         )
         self.app = Application(

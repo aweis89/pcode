@@ -11,7 +11,8 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.widgets import Frame, Label, TextArea
 
-from pcode.edit_transcript import DiffLexer
+from pcode.delta import Delta
+from pcode.edit_transcript import DiffLexer, text_fragments
 from pcode.edits import edit_text
 from pcode.git_diff import DiffView
 from pcode.popup_ui import (
@@ -28,10 +29,6 @@ from pcode.runtime import EditCompleted
 
 EMPTY = "No file edits in this conversation."
 NO_MATCH = "No matching edits."
-KEYS = (
-    "↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page · Ctrl+Home/End First/last · "
-    "Type to search paths, Enter to leave · Tab Focus · Esc Close"
-)
 PROMPTS = {"paths": "Search paths: ", "diffs": "Search diff lines: "}
 LOADING = DiffView("Loading…", [], "Loading…")
 
@@ -61,20 +58,46 @@ def change_title(change: EditCompleted) -> str:
     ).replace("\n", " ↵ ")
 
 
-def change_diff(change: EditCompleted) -> str:
-    """Render one completed change exactly as the scrollback block describes it."""
-    lines = [
+def change_heading(change: EditCompleted) -> str:
+    return (
         f"{change.operation.capitalize()} {edit_text(change.path)}"
-        f" · +{change.added} −{change.removed}",
-        "",
-    ]
+        f" · +{change.added} −{change.removed}"
+    )
+
+
+def change_diff(change: EditCompleted, patch: str | None = None) -> str:
+    """Render one completed change exactly as the scrollback block describes it.
+
+    `patch` replaces the change's own patch text, as delta's rendering of it.
+    """
+    lines = [change_heading(change), ""]
     if change.patch:
-        lines.append(edit_text(change.patch))
+        lines.append(edit_text(change.patch) if patch is None else patch)
         if change.truncated:
             lines.append("… additional diff rows omitted")
     if change.omitted:
         lines.append(f"Diff unavailable: {edit_text(change.omitted)}")
     return "\n".join(lines)
+
+
+def delta_diff(
+    change: EditCompleted, delta: Delta | None, width: int
+) -> tuple[str, dict[int, list[tuple[str, str]]]] | None:
+    """The change as delta renders it: plain text, and the styled rows by number.
+
+    None when there is no delta or no patch, or delta failed.
+    """
+    if delta is None or not change.patch:
+        return None
+    lines = delta.render(edit_text(change.patch), width)
+    if lines is None:
+        return None
+    # The patch starts after the heading and its blank row.
+    styled = [text_fragments(line) for line in lines]
+    patch = "\n".join("".join(text for _, text in row) for row in styled)
+    # The patch follows the heading, however many rows it takes, and a blank row.
+    start = change_heading(change).count("\n") + 2
+    return change_diff(change, patch), {start + n: row for n, row in enumerate(styled)}
 
 
 def matching_rows(text: str, terms: list[str]) -> list[int]:
@@ -113,9 +136,13 @@ class EditBrowser:
         loaded: dict[int, DiffView] | None = None,
         view: int = 0,
         code_theme: str = "monokai",
+        delta: Delta | None = None,
         key_prefix: str | None = None,
         **app_options,
     ) -> None:
+        self.delta = delta
+        self.delta_width = 0
+        self.prefetched: tuple[int, int] | None = None
         if not views:
             opening = DiffView(title, list(changes), empty)
             views, loaded, view = [lambda: opening], {0: opening}, 0
@@ -137,12 +164,8 @@ class EditBrowser:
         self.query = TextArea(height=1, prompt=lambda: PROMPTS[self.scope], multiline=False)
         self.files = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
         self.files.window.cursorline = Always()
-        self.diff = TextArea(
-            read_only=True,
-            wrap_lines=True,
-            scrollbar=True,
-            lexer=DiffLexer(code_theme),
-        )
+        self.lexer = DiffLexer(code_theme)
+        self.diff = TextArea(read_only=True, wrap_lines=True, scrollbar=True, lexer=self.lexer)
         self.query.buffer.on_text_changed += lambda _: self.refresh()
         self.files.buffer.on_cursor_position_changed += lambda _: self.select()
         keys = KeyBindings()
@@ -170,6 +193,18 @@ class EditBrowser:
             event.app.layout.focus(self.files if self.scope == "paths" else self.diff)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+        shortcuts.set_help(
+            lambda: [
+                ("↑/↓", "Select file / scroll diff"),
+                ("PgUp/PgDn", "Page"),
+                ("Ctrl+U/D", "Half page"),
+                ("Ctrl+Home/End", "First / last row"),
+                ("Type", "Search in the search field"),
+                ("Enter", "Leave the search field"),
+                ("Tab/Shift+Tab", "Switch files / diff"),
+                ("Esc/Ctrl+C", "Close"),
+            ]
+        )
 
         @shortcuts.add("f", "Search the focused pane")
         def search(event):
@@ -204,8 +239,6 @@ class EditBrowser:
             [
                 Label(self.heading),
                 header,
-                Label(KEYS),
-                Label(shortcuts.summary),
                 self.query,
                 Frame(self.diff, title="Diff"),
                 Frame(
@@ -213,6 +246,7 @@ class EditBrowser:
                     title="Files",
                     height=lambda: list_pane_height(len(self.changes)),
                 ),
+                Label(shortcuts.summary),
             ]
         )
         self.app = Application(
@@ -224,6 +258,7 @@ class EditBrowser:
             style=popup_style(app_options.pop("style", None)),
             **app_options,
         )
+        self.app.before_render += self.rewidth
         self.refresh()
 
     def heading(self) -> str:
@@ -321,15 +356,43 @@ class EditBrowser:
         if change is self.selected and change is not None and not force:
             return
         self.selected = change
-        if change:
-            text = change_diff(change)
-        else:
-            text = NO_MATCH if self.changes else self.empty
-        self.diff.buffer.set_document(Document(text, 0), bypass_readonly=True)
+        self.show_diff()
         self.diff.window.vertical_scroll = 0
         rows = self.diff_rows()
         if rows:
             self.go_to(rows[0])
+
+    def pane_width(self) -> int:
+        # The frame's two borders and the scrollbar.
+        return max(1, self.app.output.get_size().columns - 3)
+
+    def show_diff(self) -> None:
+        """Put the selected change in the diff pane, through delta where it is on."""
+        change = self.selected
+        width = self.pane_width()
+        if self.delta is not None and self.prefetched != (width, id(self.changes)):
+            # One delta run for the whole view, rather than one per file selected.
+            self.prefetched = (width, id(self.changes))
+            patches = [edit_text(c.patch) for c in self.changes if c.patch]
+            self.delta.prefetch(patches, width)
+        self.delta_width = width
+        rendered = delta_diff(change, self.delta, self.delta_width) if change else None
+        if rendered is not None:
+            text, self.lexer.rows = rendered
+        else:
+            text = change_diff(change) if change else NO_MATCH if self.changes else self.empty
+            self.lexer.rows = {}
+        self.diff.buffer.set_document(Document(text, 0), bypass_readonly=True)
+
+    def rewidth(self, _app) -> None:
+        """delta lays a diff out for one width, so a resize renders it again."""
+        if self.delta is None or self.selected is None:
+            return
+        if self.pane_width() == self.delta_width:
+            return
+        row = self.diff.document.cursor_position_row
+        self.show_diff()
+        self.go_to(min(row, self.diff.document.line_count - 1))
 
     async def run(self) -> None:
         await self.app.run_async()

@@ -442,7 +442,19 @@ def test_the_viewer_asks_for_optional_summary_instructions_and_merges(prefix):
 
         def prompting(browser):
             assert browser.input.prompting
-            assert "Enter Summarize" in browser.hints()
+            assert browser.prefix_keys.summary() == (
+                "F1 Keybindings" if prefix == "ctrl" else "^P Keybindings"
+            )
+            assert browser.prefix_keys.browsing
+            assert ("Enter", "Summarize (empty: as is)") in browser.prefix_keys.hint_rows()
+            assert [shortcut.key for shortcut in browser.prefix_keys.available()] == [
+                "r",
+                "y",
+                "o",
+                "s",
+                "t",
+                "q",
+            ]
 
         def restored(browser):
             assert not browser.input.prompting
@@ -456,7 +468,9 @@ def test_the_viewer_asks_for_optional_summary_instructions_and_merges(prefix):
             shortcut("r"),
             "half a follow-up",
             shortcut("s"),
+            "\x1bOP",  # F1 opens contextual help for the summary prompt.
             prompting,
+            "\x1bOP",  # Dismiss help without cancelling the prompt.
             "x",
             "\x1b",
             restored,
@@ -479,5 +493,10 @@ def test_the_viewer_without_bridging_has_no_bridge_keys():
     browser = AsideBrowser(asides, output=None, input=None)
     assert browser.input is None
     assert [shortcut.key for shortcut in browser.prefix_keys.shortcuts] == ["y", "o", "k", "q"]
-    keys = {binding.keys for binding in browser.app.key_bindings.bindings}
+    assert [shortcut.key for shortcut in browser.prefix_keys.available()] == ["y", "o", "q"]
+    assert browser.prefix_keys.summary() == "F1 Keybindings"
+    assert not any(
+        label in {"Summarize", "Merge to /tree"} for _, label in browser.prefix_keys.hint_rows()
+    )
+    keys = {binding.keys for binding in browser.app.key_bindings.bindings if binding.filter()}
     assert ("c-s",) not in keys and ("c-t",) not in keys

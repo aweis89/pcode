@@ -15,6 +15,12 @@ from pcode.commands import CommandRegistry
 from pcode.runtime import CommandOutput, EditPreview, ToolStarted
 from pcode.ui import Activity, Transcript, create_prompt
 
+# Long enough for one animation frame of the default spinner (arc: 160ms after
+# pcode slows it), with margin for a loaded machine. With `invalidate` mocked
+# nothing repaints, so a tick schedules no next one: waiting longer still sees
+# exactly one call.
+TICK = 0.4
+
 
 def test_idle_refresh_stops_and_activity_restarts_it():
     async def run():
@@ -35,35 +41,35 @@ def test_idle_refresh_stops_and_activity_restarts_it():
             try:
                 assert not app.refresh_interval
                 app._redraw()
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(TICK)
                 app.invalidate.assert_not_called()
                 # Backend startup has no prompt yet; busy must animate too.
                 activity.busy = True
                 app._redraw()
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(TICK)
                 app.invalidate.assert_called_once()
                 activity.busy = False
                 activity.start_prompt("working")
                 app.invalidate.reset_mock()
                 app._redraw()
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(TICK)
                 app.invalidate.assert_called_once()
                 # Cancellation cancels an outstanding tick immediately.
                 app._redraw()
                 activity.finish_prompt("cancelled")
                 app._redraw()
                 app.invalidate.reset_mock()
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(TICK)
                 app.invalidate.assert_not_called()
                 activity.tasks_autohidden = False
                 activity.tools.record(ToolStarted("shell", "waiting", call_id="one"))
                 app._redraw()
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(TICK)
                 app.invalidate.assert_called_once()
                 activity.tools.clear()
                 app._redraw()
                 app.invalidate.reset_mock()
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(TICK)
                 app.invalidate.assert_not_called()
             finally:
                 app._is_running = False

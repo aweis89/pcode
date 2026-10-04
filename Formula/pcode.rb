@@ -4,6 +4,7 @@ class Pcode < Formula
   head "https://github.com/aweis89/pcode.git", branch: "master"
 
   depends_on "uv" => :build
+  depends_on "git-delta"
   depends_on "python@3.13"
   depends_on "shfmt"
 

@@ -36,8 +36,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   (case-insensitive) while `↑`/`↓` move the selection, and Tab moves to the list.
   `Enter` opens the URL in the default browser (`open` on macOS, `xdg-open` on
   Linux, the shell association on Windows). `Esc` clears the search, or closes the
-  picker when the search is empty. **Ctrl+T** shows/hides tool links (shown by
-  default; URLs also in prompts or replies stay) and **Ctrl+F** returns to the
+  picker when the search is empty. **Ctrl+B `t`** shows/hides tool links (shown by
+  default; URLs also in prompts or replies stay) and **Ctrl+B `f`** returns to the
   search. Filters reset when you reopen it. Output dropped by truncation or stored
   only in a spill file isn't searched. Handy when your terminal or tmux doesn't
   make links clickable.
@@ -46,7 +46,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   when the response holds quotes or fenced code blocks a picker lists each one
   (without its `>` markers) beside the whole response. Enter copies the selection.
   pcode asks the model to put text meant for pasting elsewhere, such as a message
-  to send, in a quote. **Ctrl+Y** with an empty editor does the same.
+  to send, in a quote. **Ctrl+B `y`** with an empty editor does the same.
 - `/status`: current model, workspace, session storage path, completed turns, token usage,
   and a breakdown of the prompt overhead re-sent with every request (see
   [Where the fixed prompt goes](context.md#where-the-fixed-prompt-goes)). Opens a popup in
@@ -64,7 +64,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   prompt and spinner.
 - `/jobs [stop ID|stop all|watch ID|unwatch]`: bare `/jobs` opens a popup listing this
   session's shell jobs, running first, beside the selected job's command and live output.
-  **Ctrl+W** pins or unpins its output tail in the command preview, **Ctrl+K** stops it,
+  **Ctrl+B `w`** pins or unpins its output tail in the command preview, **Ctrl+B `k`** stops it,
   and Enter/Esc closes. The subcommands do the same without the popup. Jobs outlive the
   turn that started them; see [Shell jobs](tools.md#shell-jobs).
 - `/compact [focus]`: summarize older context with the current model; keep recent history.
@@ -90,16 +90,16 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/btw QUESTION` (alias `/side`): [ask a side question](side-questions.md) against the context the model
   is working with right now, without interrupting or queueing it. The answer opens in a
   popup when ready (`btw_auto_open`); bare `/btw` opens the answers at any time. There,
-  **Ctrl+R** [asks a follow-up](side-questions.md#following-up), **Ctrl+Y** and **Ctrl+O**
-  copy and open links as `/copy` and `/links` do, and **Ctrl+S** and
-  **Ctrl+T** [keep a thread](side-questions.md#keeping-a-thread) as a summary or a merged
+  **Ctrl+B `r`** [asks a follow-up](side-questions.md#following-up), **Ctrl+B `y`** and **Ctrl+B `o`**
+  copy and open links as `/copy` and `/links` do, and **Ctrl+B `s`** and
+  **Ctrl+B `t`** [keep a thread](side-questions.md#keeping-a-thread) as a summary or a merged
   `/tree` branch. `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks other models
   instead, one side question each ([choosing the model](side-questions.md#choosing-the-model)).
   A `+EFFORT` suffix (`$openai:gpt-5+high`), or a bare `+EFFORT` word for the
   conversation's model, sets that question's reasoning effort from the `/effort` levels.
 - `/workers`: follow delegated workers live in a read-only popup: each worker's
   assignment, plan, prose, and tool calls, which the transcript only summarizes. Works
-  while the turn runs. **Ctrl+T** shows or hides reasoning. Workers are kept in memory
+  while the turn runs. **Ctrl+B `t`** shows or hides reasoning. Workers are kept in memory
   only, so a resumed session starts with none.
 - `/skill:NAME [text]`: run a discovered skill; see
   [Skills as slash commands](workspace.md#skills-as-slash-commands).
@@ -133,7 +133,7 @@ on this page and in [the transcript](transcript.md).
 
 Popups (sessions, conversation tree, models, tools) use the terminal's default
 background and text with reverse-video selection, whatever `/theme` and `/syntax`
-say. Opening a popup cancels popup requests already waiting, so pressing Ctrl+L
+say. Opening a popup cancels popup requests already waiting, so pressing Ctrl+B `l`
 twice quickly opens one picker, not a second after you close the first. Queued
 messages and other commands are unaffected, and asking again after closing opens
 the popup normally.
@@ -157,40 +157,42 @@ seconds, so a brand-new file can take a moment to appear.
 
 ## Keys and layout
 
-The Ctrl+*letter* keys below that pick a mode, open a picker, or toggle a widget
-are shortcuts: they follow the [shortcut prefix](#shortcut-prefix), so with a
-leader such as Ctrl+P, Ctrl+S becomes Ctrl+P then `s`. Enter, the arrows,
-Ctrl+J, Ctrl+C, and Ctrl+D never change.
+Actions that pick a mode, open a picker, or toggle a widget follow the
+[shortcut prefix](#shortcut-prefix): by default, press Ctrl+B and then the
+letter. F1 browses contextual help without running an action. Enter, the
+arrows, Ctrl+J, Ctrl+C, and Ctrl+D never change.
 
 | Key | Action |
 | --- | --- |
 | Enter | Send using the active send mode, or accept a selected completion |
-| Ctrl+S | Cycle steering → queue → interrupt for the next send only |
+| F1 | Browse contextual help |
+| Ctrl+B | Open the contextual action menu |
+| Ctrl+B `s` | Cycle steering → queue → interrupt for the next send only |
 | ↓ | Newline when on the last line with nothing to complete or recall (works in vi insert mode) |
 | Ctrl+J / Shift+Enter | Newline; see [Newlines in tmux](#newlines-in-tmux) if neither reaches pcode |
 | Alt+Enter | Newline in Emacs mode only (Esc followed by Enter also works) |
 | Tab / arrows | Browse completion; arrows also navigate input/history |
-| Ctrl+L | Choose a model (keeps the conversation; applies from the next request) |
-| Ctrl+N / Ctrl+P | Raise / lower reasoning effort for the next turn |
-| Ctrl+^ (Ctrl+6) | Back to the session this terminal showed before (`/switch -`) |
-| Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
-| Ctrl+T | Cycle where thinking shows: off, status line, scrollback (saves the default) |
-| Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first); with an empty editor, `/copy` the last response |
-| Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
+| Ctrl+B `l` | Choose a model (keeps the conversation; applies from the next request) |
+| Ctrl+B `n` / Ctrl+B `p` | Raise / lower reasoning effort for the next turn |
+| Ctrl+B `^` | Back to the session this terminal showed before (`/switch -`) |
+| Ctrl+B `o` | Show/hide the Tasks/Tools widget (saves the default) |
+| Ctrl+B `t` | Choose where thinking shows: `o` off, `s` status line, `b` scrollback (saves the default) |
+| Ctrl+B `y` | Copy the current draft to the system clipboard (collapsed pastes are expanded first); with an empty editor, `/copy` the last response |
+| Ctrl+B `g` | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
 | Ctrl+D | Exit on empty idle input (stopping a background session's host); cancel during generation |
 
-Ctrl+S reaches pcode rather than pausing terminal output, because terminal flow
-control is off while the prompt is active. There is no incremental history
-search, so Ctrl+R does nothing at the prompt. Ctrl+O replaces the editor's
-insert-newline binding; Ctrl+J still inserts a newline.
+Terminal flow control is off while the prompt is active. There is no
+incremental history search at the prompt. With `key_prefix ctrl`, Ctrl+S
+cycles send mode and Ctrl+O replaces the editor's insert-newline binding;
+Ctrl+J still inserts a newline.
 
-**Ctrl+Y** copies whatever is in the editor, so you can move a draft elsewhere
+**Ctrl+B `y`** copies whatever is in the editor, so you can move a draft elsewhere
 without sending it. A collapsed paste marker is expanded first, so the clipboard
-gets exactly what Enter would send. It replaces `yank` in Emacs mode
-(`Ctrl+X r y` still pastes from the kill ring) and copy-character-from-above in
-vi insert mode. With nothing typed it runs `/copy` instead, to copy the last
-response or a quote from it. Copying uses a local helper (`pbcopy`, `wl-copy`,
+gets exactly what Enter would send. In direct chord mode only, this replaces
+`yank` in Emacs mode and copy-character-from-above in vi insert mode. With
+nothing typed it runs `/copy` instead, to copy the last response or a quote
+from it. Copying uses a local helper (`pbcopy`, `wl-copy`,
 `xclip`) or OSC 52 over ssh, like the popups, and truncates at 64 KiB.
 
 Delegated sub-agents are listed in the widget beneath your active task while
@@ -199,7 +201,7 @@ status row and stays in the transcript.
 
 `/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
 as soon as the model finishes a turn, keeping the idle prompt compact; it
-returns on the next turn, and Ctrl+O brings it back immediately. Default: off.
+returns on the next turn, and Ctrl+B `o` brings it back immediately. Default: off.
 
 The widget sits at the top of the editor box by default (`attach_tasks=on`):
 its heading becomes the editor's top border and a divider separates the tasks
@@ -207,7 +209,6 @@ from your draft. Queued prompts sit above the combined box. Use
 `/config set attach_tasks off` to draw it in a separate box above the editor,
 or `/config set attach_tasks on` to attach it again. Both apply immediately
 and save the preference; `pcode config set attach_tasks off` sets it from the shell.
-Ctrl+O replaces the editor’s insert-newline binding; Ctrl+J still inserts a newline.
 
 `pcode config set tasks_max_height 0.5` caps the widget and the editor box
 together at half the screen; a whole number such as `20` caps them at that many
@@ -216,11 +217,11 @@ text row, so a long plan lists more of its steps while a long draft scrolls
 inside the editor. Unset (the default), the widget stays at no more than 10 rows
 or half the screen, whichever is smaller, and the editor grows into whatever is left.
 
-**Ctrl+Y** copies whatever is in the editor right now, so a draft can be moved
+**Ctrl+B `y`** copies whatever is in the editor right now, so a draft can be moved
 somewhere else without sending it. A collapsed paste marker is expanded first:
-what lands on the clipboard is what Enter would send. It replaces `yank` in
-Emacs editing mode (`Ctrl+X r y` still pastes from the kill ring) and
-copy-character-from-above in vi insert mode. With nothing typed it runs
+what lands on the clipboard is what Enter would send. In direct chord mode
+only, this replaces `yank` in Emacs editing mode and copy-character-from-above
+in vi insert mode. With nothing typed it runs
 `/copy` instead, to copy the last response or a quote from it. Copying uses a
 local helper (`pbcopy`, `wl-copy`, `xclip`) or OSC 52 over ssh, the same as the
 popups, and truncates at 64 KiB.
@@ -258,7 +259,8 @@ rows show status icons and keep the active item in view. Running
 [sub-agents](#delegated-sub-agents) appear beneath the active task with tree
 guides (`├──`, `└──`, `│`); with no active task, they appear unparented.
 Tool calls never get rows here: most finish in milliseconds, so rows for them
-would flicker in and out. The status row just above the widget names the
+would flicker in and out. The status row follows thoughts, notices, and side
+questions, directly above command previews, tasks, and the editor. It names the
 newest running call and counts the rest (`Running 3 tools`). A finished call
 gets its line in [scrollback](transcript.md).
 
@@ -269,29 +271,32 @@ what it is doing it to, and on the right the run's tool count and how long
 this phase has lasted.
 
 ```text
-⠋ Thinking                                                    8s
   Tracing the resize path
-⠋ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
-⠋ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
-⠋ ◈ Compacting context ▸ keep tests                           4s
+◜ Thinking                                                    8s
+◜ Edit file · src/app.py                        ✓7 ✗1 tools · 2s
+◜ Waiting for model · ✓ Read file · src/app.py     ✓8 tools · 0s
+◜ ◈ Compacting context ▸ keep tests                           4s
 ```
 
-A spinner means the turn is waiting on that row; background jobs get a static
-`⟳` instead. The phase is the one highlighted word, and a stall shows as its
-clock climbing (`Thinking · 40s`). A call that just finished stays for a
+A spinner means the turn is waiting on that row. Running jobs are counted in
+the footer below the editor as `1 job` or `N jobs`, including jobs being waited
+on; the count is hidden at zero. Use `/jobs` for individual job details.
+The phase is the one highlighted word, and a stall shows as its clock climbing
+(`Thinking · 40s`). A call that just finished stays for a
 moment, marked `✓` or `✗`, so a burst of quick calls reads as progress rather
 than flicker. `◈` marks work pcode runs itself, such as compaction.
-The indented line is the model's newest thought, faded on its own row under
-the status row until the turn ends; that is the default `/show-thinking
-status-line` mode (see [thinking](transcript.md#thinking-status-line-or-scrollback)).
+Faded, indented rows above the status row show the model's newest thoughts, up
+to three of them, kept until the turn ends; that is the default
+`/show-thinking status-line` mode (see
+[thinking](transcript.md#thinking-status-line-or-scrollback)).
 
-Press **Ctrl+O** or use `/show-tasks [on|off]` to hide or show the widget without
+Press **Ctrl+B `o`** or use `/show-tasks [on|off]` to hide or show the widget without
 stopping work or clearing tasks. The prompt and queue stay visible. Visibility
 is saved (default on); `pcode config set show_tasks off` sets it from the shell.
 
 `/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
 when the model finishes a turn, keeping the idle prompt compact. It returns on
-the next turn, and Ctrl+O brings it back immediately. Default off.
+the next turn, and Ctrl+B `o` brings it back immediately. Default off.
 
 By default the widget is attached to the top of the editor box
 (`attach_tasks=on`): its heading becomes the editor's top border, with a divider
@@ -345,34 +350,44 @@ opt in (see "Sub-agents" in pcode's extension guide).
 ## Shortcut prefix
 
 Every pcode shortcut is a letter behind one prefix, the `key_prefix` setting.
-By default it is `ctrl`: the letter is pressed with Ctrl held, as in Ctrl+S or
-Ctrl+L. Set a leader instead and each shortcut becomes two keystrokes, the
-leader and then the plain letter, the way tmux's prefix works:
+The default is **Ctrl+B**, followed by the plain action letter: Ctrl+B `s`
+cycles the send mode, and Ctrl+B `l` opens the model picker. Release Ctrl
+before pressing the letter, the way tmux's prefix works. Choose another
+leader or restore direct Ctrl chords:
 
 ```sh
 pcode config set key_prefix ctrl+p           # Ctrl+P, then s cycles the send mode
 pcode config set key_prefix "ctrl+x ctrl+p"  # a leader of several keys, pressed in turn
-pcode config set key_prefix ctrl             # back to Ctrl chords
+pcode config set key_prefix ctrl             # direct Ctrl+S, Ctrl+L, etc.
+pcode config unset key_prefix                # restore the default Ctrl+B leader
 ```
 
-While a leader waits, it lists the shortcuts it can reach: above the editor at
-the prompt, and in a small frame in a popup's corner. The next key decides. A
-listed letter runs that shortcut; anything else (Esc, the leader again, a stray
-letter) cancels without being typed. The leader works whatever has focus,
-including a popup's search line or the `/btw` editor.
+Press **F1** to browse contextual help for the prompt or the popup you are
+using, including navigation, editing, and actions. The prompt and popups show
+one compact help indicator rather than separate hints beside every control.
+
+Press the leader to open the same help surface in action mode. A listed
+letter runs its action; Esc dismisses the menu without changing your draft.
+The leader works whatever has focus, including a popup's search line or the
+`/btw` editor. In direct `ctrl` mode, F1 still lets you browse help without
+running an action.
 
 At the prompt the letters are `s` send mode, `l` model, `n`/`p` more/less
 effort, `o` tasks widget, `t` thinking, `g` command output, `^` previous
-session, and `y` copy the draft. Each popup lists its own in its footer; see
+session, and `y` copy the draft. Each popup lists its own in contextual help; see
 [Popup keys](#popup-keys).
 
 A leader takes over whatever its key did before: with `ctrl+p`, Ctrl+P no
-longer moves up a line or lowers effort (that is now Ctrl+P `p`). Keys nothing
+longer moves up a line or lowers effort (that is now Ctrl+P `p`). The default
+Ctrl+B likewise takes over Emacs's backward-character chord; use ← instead.
+If tmux also uses Ctrl+B, send its prefix through to pcode or choose a different
+pcode leader. Keys nothing
 else uses make the least surprising leaders: `ctrl+space`, `ctrl+]`, `ctrl+\`,
 or a function key such as `f2`. A leader is built from Ctrl+*key* (a letter,
 space, `]`, `\`, `^`, or `_`) and F1–F24. Ctrl+C, Ctrl+D, Ctrl+H, Ctrl+I,
 Ctrl+J, Ctrl+M, and Ctrl+[ are refused because terminals send them as
-Backspace, Tab, Enter, and Esc, or pcode needs them everywhere.
+Backspace, Tab, Enter, and Esc, or pcode needs them everywhere. If you choose
+F1 as the leader, it opens the action menu instead of browse-only help.
 
 The prompt reads `key_prefix` at launch; popups read it as each one opens.
 
@@ -464,7 +479,7 @@ such as `cache miss 0/166k` follows the context until your next prompt; see
 
 ## Sending while the agent is working
 
-Enter uses the saved `send_mode` (default `steering`). **Ctrl+S** cycles
+Enter uses the saved `send_mode` (default `steering`). **Ctrl+B `s`** cycles
 `steering` → `queue` → `interrupt` for the *next* send only: the status bar
 shows the picked mode with `(once)`, and the saved default returns as soon as a
 prompt is sent. Messages already queued keep the mode they were sent with. Each
@@ -530,7 +545,7 @@ the send mode, and nothing reaches the model until you send a message, so
 ## Popup keys
 
 Every full-screen popup (`/diffs`, `/tools`, `/links`, `/tree`, `/resume`,
-`/btw`, `/status`, and the Ctrl+L model picker) scrolls with the same keys,
+`/btw`, `/status`, and the Ctrl+B `l` model picker) scrolls with the same keys,
 acting on whichever pane has focus:
 
 | Key | Action |
@@ -548,21 +563,22 @@ Popups with a search line (`/tools`, `/resume`, `/diffs`, `/links`) open with
 the cursor in it, so you can type to filter straight away. Each popup's
 shortcuts follow the [shortcut prefix](#shortcut-prefix) and act from any pane,
 the search line and the `/btw` editor included, so typing never triggers one.
-With the default `ctrl` prefix they are:
+With the default prefix, press **Ctrl+B**, then the letter below. F1 shows
+these actions alongside the current popup's navigation and editing keys:
 
 | Popup | Shortcuts |
 | --- | --- |
-| `/btw` | Ctrl+R reply · Ctrl+Y copy · Ctrl+O link · Ctrl+S summarize · Ctrl+T merge to `/tree` · Ctrl+K stop (or type `/copy`, `/links`, `/summarize`, `/merge`, `/stop` in the follow-up editor) |
-| `/tools` | Ctrl+F search · Ctrl+X failures only · Ctrl+T tool filter · Ctrl+Y copy command · Ctrl+O copy output |
-| `/diffs` | Ctrl+F search the focused pane · Ctrl+S / Ctrl+R next / previous match · Ctrl+V next view |
-| `/resume` | Ctrl+F search · Ctrl+R responses too · Ctrl+G all workspaces · Ctrl+X delete (twice) |
-| `/switch` | Ctrl+F search · Ctrl+N new session · Ctrl+X stop (twice) |
-| `/jobs` | Ctrl+W watch in the preview · Ctrl+K stop |
-| `/links` | Ctrl+F search · Ctrl+T show/hide tool links |
-| `/tree` | Ctrl+Y copy the selection, or pick a quote or code block from a response |
-| `/workers` | Ctrl+T thinking |
+| `/btw` | `r` reply · `y` copy · `o` link · `s` summarize · `t` merge to `/tree` · `k` stop (or type `/copy`, `/links`, `/summarize`, `/merge`, `/stop` in the follow-up editor) |
+| `/tools` | `f` search · `x` failures only · `t` tool filter · `y` copy command · `o` copy output |
+| `/diffs` | `f` search the focused pane · `s` / `r` next / previous match · `v` next view |
+| `/resume` | `f` search · `r` responses too · `g` all workspaces · `x` delete (twice) |
+| `/switch` | `f` search · `n` new session · `x` stop (twice) |
+| `/jobs` | `w` watch in the preview · `k` stop |
+| `/links` | `f` search · `t` show/hide tool links |
+| `/tree` | `y` copy the selection, or pick a quote or code block from a response |
+| `/workers` | `t` thinking |
 
-With a leader, each is the leader then the letter: Ctrl+P `y` copies.
+With `key_prefix ctrl`, use Ctrl+letter instead: Ctrl+Y copies.
 
 Selected rows and scrollbars follow the active theme and syntax colors, like
 completion menus; popup bodies keep the terminal's default background. With
@@ -575,10 +591,10 @@ Most terminals still select while you hold a modifier and drag (usually Shift;
 Option in iTerm2). In tmux, mouse events reach pcode only with
 `tmux set -g mouse on`.
 
-**Ctrl+Q** (the [shortcut prefix](#shortcut-prefix) then `q` with a leader)
+**Ctrl+B `q`** (the [shortcut prefix](#shortcut-prefix) then `q`)
 hands the mouse to the terminal while a popup stays open: a plain drag selects
-text again, and Ctrl+Q once more takes clicks and the wheel back. The footer
-says which it will do next ("Release mouse" or "Capture mouse"). It lasts until
+text again, and the same shortcut once more takes clicks and the wheel back.
+Contextual help says which it will do next ("Release mouse" or "Capture mouse"). It lasts until
 the popup closes and works in every popup with shortcuts, from any pane, the
 search line and the `/btw` editor included. In tmux with `mouse on`, a released
 drag goes to tmux's copy mode instead; hold the modifier above for the
@@ -618,7 +634,7 @@ what is being compared. It opens on the session's net work:
   rebase or branch switch), or the session predates this, it falls back to
   uncommitted changes in edited files, and the title says so.
 
-Ctrl+V (the `v` shortcut) cycles to two more views:
+Ctrl+B `v` (the `v` shortcut) cycles to two more views:
 
 - **Uncommitted**: what the next commit would take in, against `HEAD`. In a
   checkout other than a linked worktree, it's limited to the same session
@@ -643,20 +659,20 @@ shows only its counts.
 The diff fills most of the screen, with a small file selector at the bottom.
 Keys are listed in the header:
 
-- The browser opens in the search line, searching paths (see Ctrl+F below).
+- The browser opens in the search line, searching paths (see Ctrl+B `f` below).
   Enter moves to the file list.
 - Up/Down in the file list selects a file.
 - Tab/Shift+Tab switch between the file list and the diff. The
   [popup keys](#popup-keys) act on whichever has focus; Ctrl+Home/Ctrl+End jump
   to the first or last line of the diff.
-- **Ctrl+F** searches whichever pane has focus. In the file list it filters
+- **Ctrl+B `f`** searches whichever pane has focus. In the file list it filters
   files by path; in the diff it filters to changes with a matching line and
   jumps to the first one. Matching is fuzzy: a plain substring, or joined word
   prefixes such as `ed_ui` for `edit_ui.py` or `sel_row` for `selected_row`.
   Every word of the query must match. Up/Down still move the file selection
-  while typing; Enter returns to the pane. Switching panes and pressing Ctrl+F
+  while typing; Enter returns to the pane. Switching panes and pressing Ctrl+B `f`
   again starts a fresh query for that pane.
-- **Ctrl+S**/**Ctrl+R** jump to the next/previous matching diff line (Emacs's
+- **Ctrl+B `s`**/**Ctrl+B `r`** jump to the next/previous matching diff line (Emacs's
   search keys), from either pane or the search line.
 - Escape or Ctrl+C closes the popup and restores the editor draft.
 
@@ -670,14 +686,14 @@ and scrollback catches up when you close it. Inspecting never reruns a tool.
 - Calls are newest first. The inspector opens in the search field, so typing
   filters straight away while arrows move the selection; Enter moves to the call
   list. Tab/Shift+Tab move between the search field, call list, and details.
-- **Ctrl+Y** copies the selected call's command (or its whole arguments when it
-  has no command) and **Ctrl+O** copies its output. Copying uses
+- **Ctrl+B `y`** copies the selected call's command (or its whole arguments when it
+  has no command) and **Ctrl+B `o`** copies its output. Copying uses
   `pbcopy`/`wl-copy`/`xclip` when installed and OSC 52 otherwise; over ssh it
   tries OSC 52 first. tmux passes OSC 52 through only with
   `tmux set -g set-clipboard on`. Copies are truncated at 64 KiB, and the header
   says what was copied or that copying failed.
-- **Ctrl+X** toggles failures only, **Ctrl+T** cycles tool-name filters, and
-  **Ctrl+F** focuses search. Search matches tool names, statuses, and
+- **Ctrl+B `x`** toggles failures only, **Ctrl+B `t`** cycles tool-name filters, and
+  **Ctrl+B `f`** focuses search. Search matches tool names, statuses, and
   command/summary previews, not the full output. These work from any pane,
   including the search field.
 - In details, arrows scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D
@@ -694,7 +710,7 @@ results are shown as blocks, highlighted when they're code or JSON and verbatim
 otherwise. Shell commands are formatted as Bash with `shfmt` when it's on your
 `PATH` (the command is never executed); otherwise pcode breaks one-line commands
 at top-level `;`, `&&`, and `||` and keeps existing multiline layout. Each
-command line starts with a display-only `$ `. **Ctrl+Y** still copies the
+command line starts with a display-only `$ `. **Ctrl+B `y`** still copies the
 command exactly as run.
 
 Nonzero exits, timeouts, and tool retries count as failures; interrupted calls

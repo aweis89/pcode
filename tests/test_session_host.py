@@ -28,7 +28,7 @@ from rich.console import Console
 
 from pcode.agent import create_coder
 from pcode.app import PreviewApp
-from pcode.host import SessionHost
+from pcode.host import MirroredActivity, SessionHost
 from pcode.host_protocol import (
     EVENT_TYPES,
     PROTOCOL,
@@ -88,6 +88,25 @@ def test_every_event_type_round_trips_through_json():
     assert {type(event).__name__ for event in SAMPLES} == set(EVENT_TYPES)
     for event in SAMPLES:
         assert decode_event(json.loads(json.dumps(encode_event(event)))) == event
+
+
+def test_job_count_round_trips_in_host_snapshot_and_updates():
+    updates = []
+    activity = MirroredActivity(updates.append)
+    activity.job_count = 2
+    terminal = RemoteController(View(), Activity())
+    snapshot = json.loads(json.dumps(activity.session_fields()))
+    for name, value in snapshot.items():
+        terminal.apply_field(name, value)
+    assert terminal.activity.job_count == 2
+
+    for count in (1, 0):
+        updates.clear()
+        activity.job_count = count
+        assert updates == [{"job_count": count}]
+        for name, value in json.loads(json.dumps(updates[0])).items():
+            terminal.apply_field(name, value)
+        assert terminal.activity.job_count == count
 
 
 def test_records_can_stop_where_a_running_turn_began(tmp_path):

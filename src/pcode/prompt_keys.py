@@ -18,8 +18,7 @@ from prompt_toolkit.keys import Keys
 
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.paste import PastedText
-from pcode.preferences import THINKING_MODES
-from pcode.prefix_keys import PrefixKeys
+from pcode.prefix_keys import Choice, PrefixKeys
 
 
 @dataclass(frozen=True)
@@ -50,10 +49,20 @@ def prompt_key_bindings(
     owns the buffer is built from these bindings.
     """
     pasted = PastedText()
-    # The prompt's own shortcuts: Ctrl chords by default, or a leader and a
-    # letter, whose hint takes the notice rows above the spinner.
+    # The prompt and popups share one contextual keybinding overlay.
     shortcuts = PrefixKeys(key_prefix)
     _add_shortcuts(shortcuts, activity, transcript, callbacks, pasted)
+    shortcuts.set_help(
+        lambda: [
+            ("Enter", "Send"),
+            ("Ctrl+J", "Newline"),
+            ("Tab", "Complete"),
+            ("↑ / ↓", "Move / history"),
+            ("Ctrl+C", "Interrupt" if activity.busy else "Clear input"),
+            *([] if activity.busy else [("Ctrl+D", "Exit (empty prompt)")]),
+        ],
+        title="Keybindings · Prompt",
+    )
     keys = _editing_keys(activity, transcript, callbacks, pasted, default_buffer)
     return keys, shortcuts
 
@@ -70,43 +79,66 @@ def _add_shortcuts(
     on_previous_session = callbacks.on_previous_session
     on_copy_response = callbacks.on_copy_response
 
-    @shortcuts.add("s", "Send mode", filter=on_send_mode is not None)
+    @shortcuts.add("s", "Cycle send mode", filter=on_send_mode is not None)
     def cycle_send_mode(event: KeyPressEvent) -> None:
         on_send_mode()
         event.app.invalidate()
 
-    @shortcuts.add("l", "Model", filter=on_model is not None)
+    @shortcuts.add("l", "Select model", filter=on_model is not None)
     def choose_model(event: KeyPressEvent) -> None:
         on_model()
 
-    @shortcuts.add("n", "More effort", filter=on_effort is not None)
+    @shortcuts.add("n", "Increase thinking effort", filter=on_effort is not None)
     def increase_effort(event: KeyPressEvent) -> None:
         on_effort(1)
         event.app.invalidate()
 
-    @shortcuts.add("p", "Less effort", filter=on_effort is not None)
+    @shortcuts.add("p", "Decrease thinking effort", filter=on_effort is not None)
     def decrease_effort(event: KeyPressEvent) -> None:
         on_effort(-1)
         event.app.invalidate()
 
-    @shortcuts.add("o", "Tasks")
+    @shortcuts.add("o", lambda: "Hide task panel" if activity.tasks_shown else "Show task panel")
     def toggle_tasks(event: KeyPressEvent) -> None:
         shown = activity.toggle_tasks()
         if on_tasks is not None:
             on_tasks(shown)
         event.app.invalidate()
 
-    @shortcuts.add("t", "Thinking")
-    def cycle_thinking(event: KeyPressEvent) -> None:
-        if on_thinking is not None:
-            on_thinking("")  # Bare: the app cycles, persists and says which mode.
-        else:
-            modes = THINKING_MODES
-            index = modes.index(activity.thinking_mode) if activity.thinking_mode in modes else -1
-            activity.thinking_mode = modes[(index + 1) % len(modes)]
-        event.app.invalidate()
+    @shortcuts.add("t", "Select thinking visibility")
+    def choose_thinking(event: KeyPressEvent) -> None:
+        def select(mode: str):
+            def apply(event: KeyPressEvent) -> None:
+                if on_thinking is not None:
+                    on_thinking(mode)
+                else:
+                    activity.thinking_mode = mode
 
-    @shortcuts.add("g", "Command output", filter=on_commands is not None)
+            return apply
+
+        shortcuts.choose(
+            "Thinking visibility",
+            [
+                Choice(
+                    key,
+                    label + (" (current)" if activity.thinking_mode == mode else ""),
+                    select(mode),
+                )
+                for key, mode, label in (
+                    ("o", "off", "Off"),
+                    ("s", "status-line", "Status line"),
+                    ("b", "scrollback", "Scrollback"),
+                )
+            ],
+        )
+
+    def command_output_label() -> str:
+        shown = getattr(transcript, "command_scrollback", None)
+        if shown is None:
+            return "Toggle command output"
+        return "Hide command output" if shown else "Show command output"
+
+    @shortcuts.add("g", command_output_label, filter=on_commands is not None)
     def toggle_command_scrollback(event: KeyPressEvent) -> None:
         on_commands()
         event.app.invalidate()
@@ -116,7 +148,7 @@ def _add_shortcuts(
     def previous_session(event: KeyPressEvent) -> None:
         on_previous_session()
 
-    @shortcuts.add("y", "Copy")
+    @shortcuts.add("y", "Copy draft / last response")
     def copy_draft(event: KeyPressEvent) -> None:
         # Collapsed pastes are a display device, so copy what sending would:
         # the expanded text, not the `[pasted …]` marker standing in for it.

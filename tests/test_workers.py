@@ -132,7 +132,7 @@ def test_viewer_shows_plan_prose_and_calls_and_hides_thinking_by_default():
         str(getattr(b, "markup", b))
         for b in details(worker, code_theme="ansi_dark", show_thinking=False)
     )
-    assert "Tasks 0/1" in rendered and "Patch parser" in rendered
+    assert "Tasks 0/1" in rendered and "↺ Patch parser" in rendered
     assert "Found **it**" in rendered and "src/parser.py" in rendered
     assert "secret reasoning" not in rendered
     shown = " ".join(str(b) for b in details(worker, code_theme="ansi_dark", show_thinking=True))

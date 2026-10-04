@@ -38,23 +38,27 @@ next.
 
 | Toggle | What it does |
 | --- | --- |
-| Ctrl+G, `/show-commands` | Mirror each command and its output into scrollback, or hide them |
+| Ctrl+B `g`, `/show-commands` | Mirror each command and its output into scrollback, or hide them |
 | `/show-edits` | Show or hide the diff of every file edit |
 | `/show-thinking` | Show the model's reasoning on the status line, in scrollback, or not at all |
 | `/group-tools` | Fold each run of tool calls into one line (on by default): `✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1` |
-| Ctrl+O, `/show-tasks` | Show or hide the live task and tool panel |
+| Ctrl+B `o`, `/show-tasks` | Show or hide the live task and tool panel |
 
 Resizing the terminal re-renders at the new width too, so a narrowed pane
 doesn't leave half-wrapped wreckage behind. Replay never reruns a tool. See
 [scrollback and transparency](guide/scrollback.md).
+
+The screenshots below show an earlier UI with direct Ctrl shortcuts and static
+key hints. The text describes the current defaults: Ctrl+B then a letter for
+actions, and F1 for contextual help.
 
 ## Nothing hidden: `/tools`
 
 `/tools` opens every tool call the agent has made in this conversation, newest
 first, including while a turn is still running: the exact command, its
 arguments, how long it took, and the full output it returned. Filter to
-failures with Ctrl+X, search by name or command, and copy a command (Ctrl+Y) or
-its output (Ctrl+O) to run or paste yourself. It survives resume, so you can
+failures with Ctrl+B `x`, search by name or command, and copy a command (Ctrl+B `y`) or
+its output (Ctrl+B `o`) to run or paste yourself. It survives resume, so you can
 audit what happened in a session from last week. See
 [scrollback and transparency](guide/scrollback.md#every-command-nothing-hidden-tools).
 
@@ -87,7 +91,7 @@ slow suite while editing something else. `/jobs` lists what's running and shows
 each log; jobs even survive pcode restarting and are picked up by the next
 session. See [a shell for long-running work](guide/shell.md).
 
-![A background job watching CI as a row above the editor while the conversation carries on](assets/screenshots/jobs.svg)
+![The footer below the editor shows 1 job while CI runs and the conversation carries on](assets/screenshots/jobs.svg)
 
 ## Your Claude subscription, the supported way
 
@@ -106,7 +110,7 @@ pcode -m claude:claude-sonnet-5   # /login claude if Claude Code isn't signed in
 
 ChatGPT subscriptions work the same way with `/login openai-codex`, and any
 provider with an API key works too. Switch models mid-conversation with
-Ctrl+L. See [providers and models](providers.md).
+Ctrl+B `l`. See [providers and models](providers.md).
 
 ## Ask while it works: `/btw`
 
@@ -120,7 +124,7 @@ the main conversation unless you choose to pull it in. See
 
 Each session runs in a background host. Close the terminal and the turn keeps
 going; `pcode --attach` picks it back up. `/switch` moves between running
-sessions and Ctrl+^ flips back to the last one. Everything is saved, so
+sessions and Ctrl+B `^` flips back to the last one. Everything is saved, so
 `pcode --continue` resumes the latest conversation in a directory and `/resume`
 searches all of them. See [sessions and recovery](sessions.md).
 

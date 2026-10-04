@@ -100,6 +100,26 @@ class TreeBrowser:
         keys.add("s-tab")(focus_previous)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+        shortcuts.set_help(
+            lambda: (
+                [
+                    ("↑/↓", "Select snippet"),
+                    ("PgUp/PgDn", "Page"),
+                    ("Ctrl+U/D", "Half page"),
+                    ("Enter", "Copy selected snippet"),
+                    ("Esc/Ctrl+C", "Cancel"),
+                ]
+                if self.picker is not None
+                else [
+                    ("↑/↓", "Select turn / scroll conversation"),
+                    ("PgUp/PgDn", "Page"),
+                    ("Ctrl+U/D", "Half page"),
+                    *([("Enter", "Navigate to selected turn")] if navigable else []),
+                    ("Tab/Shift+Tab", "Change focus"),
+                    ("Esc/Ctrl+C", "Cancel" if navigable else "Close"),
+                ]
+            )
+        )
 
         @shortcuts.add("y", "Copy selection", filter=Condition(lambda: self.picker is None))
         def copy_selection(event):
@@ -135,16 +155,7 @@ class TreeBrowser:
             [
                 header,
                 body,
-                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label(
-                    (
-                        "Enter Navigate · Tab Focus · Esc Cancel"
-                        if navigable
-                        else "Tab Focus · Esc Close"
-                    )
-                    + " · "
-                    + shortcuts.summary()
-                ),
+                Label(shortcuts.summary),
                 Label(
                     "Switching context does not undo file changes or tool effects."
                     if navigable

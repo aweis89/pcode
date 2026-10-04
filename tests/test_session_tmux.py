@@ -53,7 +53,7 @@ def test_resume_popup_survives_resize(pane):
         pane("resize-window", "-t", "preview", "-x", width, "-y", "24")
         time.sleep(0.6 + step * 0.05)  # Past both polls; a bad erase has happened by now.
         screen = modal(pane, "First popup question")
-        assert "Esc Cancel" in screen, screen  # The footer, below the cursor row.
+        assert "F1 Keybindings" in screen, screen  # The footer, below the cursor row.
     pane("send-keys", "-t", "preview:0.0", "Escape")
     after = capture(pane, "❯")
     assert input_rows(after) == 1

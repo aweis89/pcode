@@ -20,7 +20,13 @@ from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
 from prompt_toolkit.key_binding.vi_state import InputMode
-from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout import (
+    ConditionalContainer,
+    HSplit,
+    Layout,
+    VSplit,
+    Window,
+)
 from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
@@ -41,19 +47,27 @@ from rich.theme import Theme
 from pcode.block import INDENT, RULE, RUNNING, block_heading
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
-from pcode.edit_transcript import EditTranscript, edit_preview_rows
+from pcode.delta import Delta
+from pcode.delta import from_preferences as delta_from_preferences
+from pcode.edit_transcript import (
+    EditTranscript,
+    LiveDeltaPreview,
+    edit_preview_rows,
+    prefetch_edits,
+)
 from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
 from pcode.input_keys import configure_newline_keys
 from pcode.jobs import WATCHED_PREFIX
 from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN
+from pcode.popup_ui import shortcut_hint
 from pcode.preferences import (
     SETTINGS,
     SYNTAX_THEMES,
     TERMINAL_SYNTAX,
     load_preferences,
 )
-from pcode.prefix_keys import PrefixKeys, compact_label, shortcut_label
+from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.prompt_keys import PromptCallbacks, prompt_key_bindings
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.shell_mode import SHELL_PREFIX
@@ -73,9 +87,17 @@ from pcode.tool_display import (
     split_outcome,
     tool_summary_lines,
 )
-from pcode.tool_panel import DELEGATE, TASK_ROWS, ToolHistory, panel_fragments, task_panel_rows
+from pcode.tool_panel import (
+    ACTIVE_TASK_ICON,
+    DELEGATE,
+    TASK_ROWS,
+    ToolCall,
+    ToolHistory,
+    panel_fragments,
+    task_panel_rows,
+)
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
-from pcode.transcript_notice import TranscriptNotice
+from pcode.transcript_notice import Note, TranscriptNotice
 from pcode.word_wrap import WordWrapProcessor
 from pcode.workers import Workers
 
@@ -88,6 +110,11 @@ class Palette:
     foreground: str
     selected: str
     task_heading: str
+    # A finished task's tick.
+    success: str
+    # The hue ring for running sub-agents: each takes the first free slot and
+    # keeps it, so its header and plan rows read as one block.
+    agents: tuple[str, str, str]
 
     @cache
     def rich_theme(self) -> Theme:
@@ -98,6 +125,9 @@ class Palette:
                 "pcode.accent": self.accent,
                 "pcode.brand": f"bold {self.accent}",
                 "pcode.muted": self.muted,
+                # Scrollback notes: italic like the live panel's own notices,
+                # and dimmed so they recede behind the model's prose.
+                "pcode.note": f"italic dim {self.muted}",
                 "pcode.thinking": f"dim {self.muted}",
                 "pcode.error": "bold red",
                 "pcode.warning": "bold yellow",
@@ -138,10 +168,31 @@ class Palette:
                 "plan": self.muted,
                 "plan.heading": f"nodim {self.task_heading} bold",
                 "plan.hint": f"nodim nobold {self.muted}",
-                "plan.active": f"nodim {self.accent} bold",
-                # A running sub-agent's row: its own shade, so it never reads
-                # as one of the tasks it sits among.
-                "plan.agent": f"nodim {self.task_heading}",
+                # Task rows by status, in three weights: the active one is
+                # loud, what is left is muted, and settled work recedes.
+                # `tool_panel.panel_fragments` gives the icon and tree guides
+                # classes of their own, so the colour that says how a task
+                # stands survives a delegate's hue on its text.
+                "plan.pending": self.muted,
+                "plan.in_progress": f"nodim {self.accent} bold",
+                "plan.completed": f"{self.muted} dim",
+                "plan.cancelled": f"{self.muted} dim strike",
+                "plan.blocked": "nodim ansiyellow",
+                # A running sub-agent's row. Its colour comes from its hue.
+                "plan.agent": "nodim",
+                # Colour only. A row's style string names its hue class after
+                # its status class (`tool_panel.plan_row`), so the hue wins on
+                # colour and leaves the status's weight (bold, dim, strike)
+                # alone. It lives outside `plan.`: a `plan.*` class would
+                # re-apply the base `plan` rule, which is `dim` in the
+                # terminal palette, over the status.
+                **{f"agent.hue.{index}": hue for index, hue in enumerate(self.agents)},
+                "plan.icon.pending": self.muted,
+                "plan.icon.in_progress": f"nodim {self.accent} bold",
+                "plan.icon.completed": f"nodim {self.success}",
+                "plan.icon.cancelled": f"{self.muted} dim",
+                "plan.icon.blocked": "nodim ansiyellow bold",
+                "plan.tree": self.muted,
                 "prompt": f"{self.accent} bold",
                 # The live area has three weights. Live: the spinner and the
                 # phase word, the one thing that says the turn is moving.
@@ -152,10 +203,14 @@ class Palette:
                 "activity.phase": f"nodim {self.accent} bold",
                 "activity.detail": "nodim",
                 "activity.meta": self.muted,
-                # The thinking row under the status row: the model's newest
-                # thought, italic in its own shade so it reads apart from both
-                # the live phase (accent) and the chrome around it (muted).
-                "activity.thinking": f"nodim italic {self.task_heading}",
+                # The thinking rows above the status row: the model's newest
+                # thought, faded like scrollback thinking (`pcode.thinking`) and
+                # italic so it reads as a quote rather than as the turn's phase
+                # (accent) or what it is doing (plain). No hue: the plan
+                # heading's shade would make a thought look like a label.
+                "activity.thinking": f"italic {self.muted}",
+                # Keep the reasoning marker upright beside the italic text.
+                "activity.thinking.icon": f"noitalic {self.muted}",
                 # System work is pcode's own: the badge and accent mark it, and
                 # its queued rows keep an italic detail.
                 "activity.system": self.accent,
@@ -163,8 +218,6 @@ class Palette:
                 # Short-lived answers to a keystroke live above the spinner
                 # rather than in scrollback; italics mark them as chrome.
                 "activity.notice": f"italic {self.muted}",
-                # Running background jobs are chrome like the spinner row.
-                "activity.job": self.muted,
                 # A run's pending group line, shown only when no status row
                 # carries its tally. Still live, so muted rather than dimmed
                 # like the settled scrollback line it becomes.
@@ -228,8 +281,26 @@ class Palette:
 
 
 PALETTES = {
-    "dark": Palette("#88c0d0", "#8994a6", "#242933", "#e5e9f0", "#384457", "#c4b5fd"),
-    "light": Palette("#006b80", "#586575", "#edf0f4", "#202630", "#d0e7ef", "#7c3aed"),
+    "dark": Palette(
+        "#88c0d0",
+        "#8994a6",
+        "#242933",
+        "#e5e9f0",
+        "#384457",
+        "#c4b5fd",
+        "#a3be8c",
+        ("#c4b5fd", "#f5a97f", "#f5bde6"),
+    ),
+    "light": Palette(
+        "#006b80",
+        "#586575",
+        "#edf0f4",
+        "#202630",
+        "#d0e7ef",
+        "#7c3aed",
+        "#2f7d32",
+        ("#7c3aed", "#c2410c", "#be185d"),
+    ),
 }
 
 # `/syntax terminal`: named ANSI colors, so the prompt, plan rows and popup
@@ -238,8 +309,17 @@ PALETTES = {
 # the selected row is reversed for the same reason. `fg:default` keeps the
 # toolkit's own RGB defaults (black popup metadata, grey suggestions) from
 # showing through.
+# Cyan, green and yellow already mean active, done and blocked, which leaves
+# magenta, blue and red for the sub-agents.
 TERMINAL_PALETTE = Palette(
-    "ansicyan", "fg:default dim", "default", "default", "reverse", "ansimagenta"
+    "ansicyan",
+    "fg:default dim",
+    "default",
+    "default",
+    "reverse",
+    "ansimagenta",
+    "ansigreen",
+    ("ansimagenta", "ansiblue", "ansired"),
 )
 
 
@@ -279,6 +359,7 @@ TERMINAL_THEME = Theme(
         "pcode.accent": "cyan",
         "pcode.brand": "bold cyan",
         "pcode.muted": "default",
+        "pcode.note": "italic dim default",
         "pcode.thinking": "dim default",
         "pcode.error": "bold red",
         "pcode.warning": "bold yellow",
@@ -321,8 +402,6 @@ NOTICE_SECONDS = 5.0
 # Scrollback columns a sub-agent's calls sit in from their delegate's row.
 CHILD_INDENT = 4
 NOTICE_ROWS = 6
-# Background jobs get a few rows, never the screen; `/jobs` has the full list.
-JOB_ROWS = 3
 # Running side questions likewise; `/btw` has the full list.
 ASIDE_ROWS = 3
 # A wait on the session host shorter than this never gets a row: most answer
@@ -333,12 +412,24 @@ WAIT_GRACE_SECONDS = 0.25
 # The status row is redrawn several times a second while a turn runs, so a
 # longer gap means the row went away; its phase clock starts over.
 PHASE_GAP_SECONDS = 1.0
+# Least time the status row keeps what it says before saying something else.
+# A turn can change phase or tool several times a second, and a row that
+# rewrites itself that fast cannot be read. Once the hold is up the row jumps
+# to whatever is current, skipping anything that came and went meanwhile.
+STATUS_HOLD_SECONDS = 2.5
 # Status text the row leads with verbatim; anything longer is detail.
 PHASE_WORDS = 3
 # Cells of detail worth more than the status row's tally and clock.
 DETAIL_MIN_CELLS = 16
-# Characters of streamed thinking kept for the status row: its latest line.
+# Characters of streamed thinking kept for the thinking rows: its latest line.
 THINKING_KEEP = 2000
+# Rows the newest thought may wrap to above the status row. A thought is a
+# sentence or two, which one row rarely holds whole; more than a few rows and
+# it stops being a glance.
+THOUGHT_ROWS = 3
+# Marks the first thought row in the spinner's column, without resembling
+# a stalled frame of the round spinner below it.
+THOUGHT_ICON = "∴"
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -415,20 +506,46 @@ class StatusLine:
         return "" if self.elapsed is None else clock(self.elapsed)
 
 
-def tail_cells(text: str, width: int) -> str:
-    """The last `width` cells of `text`, marking a cut with a leading ellipsis."""
-    if cell_len(text) <= width:
-        return text
-    if width < 1:
-        return ""
-    kept: list[str] = []
-    cells = 1  # The ellipsis.
-    for char in reversed(text):
-        cells += cell_len(char)
-        if cells > width:
-            break
-        kept.append(char)
-    return "…" + "".join(reversed(kept)).lstrip()
+@dataclass
+class _HeldStatus:
+    """The status line on screen, and what decides how long it may stay."""
+
+    line: StatusLine
+    since: float  # When this text first showed.
+    taken: float  # When `line`, and so its clock, was computed.
+    seen: float  # Last drawn.
+    turn: tuple[str, str]  # The prompt it belongs to.
+    call: ToolCall | None  # The running tool call it reports, if any.
+
+
+def _status_text(line: StatusLine) -> tuple:
+    """What a status line says, apart from its ticking clock and tally."""
+    return (line.badge, line.phase, line.detail, line.settled)
+
+
+def _urgent(line: StatusLine) -> bool:
+    """News the status row shows at once, whatever it is holding."""
+    return line.phase.startswith("Retrying") or (line.settled and line.detail.startswith("✗"))
+
+
+def head_rows(text: str, width: int, rows: int) -> list[str]:
+    """`text` wrapped to `width`, keeping its first `rows`; a cut gets a trailing ellipsis."""
+    text = plain(text, limit=None)
+    if width < 1 or rows < 1 or not text:
+        return []
+    console = Console(width=width)
+    wrapped = [
+        row.plain.rstrip()  # Rich keeps the space a row broke at.
+        for row in Text(text).wrap(console, width, overflow="fold", no_wrap=False)
+    ]
+    if len(wrapped) <= rows:
+        return wrapped
+    kept = wrapped[:rows]
+    # Mark the cut on the last row kept; a full row gives up a cell for it.
+    last = Text(kept[-1] + "…")
+    last.truncate(width, overflow="ellipsis")
+    kept[-1] = last.plain
+    return kept
 
 
 # A summary section's title: `**Tracing the resize path**` or `## Tracing...`.
@@ -527,8 +644,8 @@ class Activity:
     tasks_autohidden: bool = False
     # Inline shortcut hints, such as the key that hides the task list.
     show_hints: bool = True
-    # Where the model's thinking shows: `off`, `status-line` (its own row
-    # under the status row), or `scrollback`. See THINKING_MODES.
+    # Where the model's thinking shows: `off`, `status-line` (its own rows
+    # above the status row), or `scrollback`. See THINKING_MODES.
     thinking_mode: str = "status-line"
     busy: bool = False
     status: str = ""
@@ -554,10 +671,9 @@ class Activity:
     # The footer's note of this turn's latest prompt-cache drop, e.g.
     # `cache miss 0/166k`; the full notice is only in the session journal.
     cache_note: str = ""
-    # Shell jobs nothing on screen accounts for: running with no tool call
-    # waiting on them, or finished before the terminal could say so. Rows are
-    # rendered once a second by the app's job watcher, not per frame.
-    jobs: list[tuple[str, str]] = field(default_factory=list)
+    # All running shell jobs, including those a tool is waiting on. The footer
+    # shows the count; `/jobs` holds the details. Updated by the job watcher.
+    job_count: int = 0
     # A job whose output tail is pinned into the command preview by `/jobs watch`.
     watched_job: str = ""
     # The session's side-question records (`Asides.items`, shared, not copied):
@@ -576,6 +692,8 @@ class Activity:
     _phase: tuple[str, float, float] = field(
         default=("", 0.0, 0.0), init=False, repr=False, compare=False
     )
+    # The status line on screen while a hold keeps it. Drawing state like `_phase`.
+    _held: _HeldStatus | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def show_thinking(self) -> bool:
@@ -590,21 +708,39 @@ class Activity:
             self.thought, self.thought_done = "", False
         self.thought = (self.thought + text)[-THINKING_KEEP:]
 
-    def thought_fragments(self, width: int) -> list[tuple[str, str]]:
-        """The thinking row under the status row, in `status-line` mode.
+    def forget_thought(self) -> None:
+        """Drop the thinking rows: the answer they led to is streaming now."""
+        self.thought, self.thought_done = "", True
 
-        Kept for the rest of the turn once a thought arrives: the last one
-        usually explains the tool calls that follow it, and a row that came
-        and went with every block would make the editor jump.
+    def thought_fragments(
+        self, width: int, rows: int = THOUGHT_ROWS
+    ) -> list[list[tuple[str, str]]]:
+        """The thinking rows above the status row, in `status-line` mode.
+
+        Held through the tool calls that follow a thought, which it usually
+        explains, and gone once the answer streams into scrollback: thinking
+        is the lead-up, not a caption on the result. Above the status row
+        rather than under it, so the spinner holds its place as the thought
+        wraps to more or fewer rows.
         """
         if self.thinking_mode != "status-line" or not self.status_shown or width < 3:
             return []
         thought = latest_thought(self.thought)
-        if not thought:
+        if not thought.strip():
             return []
-        # Indented past the spinner, so it reads as the phase's own detail.
+        # Wrap the marker with the text so continuation rows use the full
+        # width, without a hanging indent. Only the first row has an upright
+        # marker; the thought itself stays italic.
+        wrapped = head_rows(f"{THOUGHT_ICON} {thought}", width, rows)
         return [
-            ("class:activity.thinking", "  " + tail_cells(plain(thought, limit=None), width - 2))
+            [
+                ("class:activity.thinking.icon", f"{THOUGHT_ICON} " if index == 0 else ""),
+                (
+                    "class:activity.thinking",
+                    row.removeprefix(THOUGHT_ICON).lstrip() if index == 0 else row,
+                ),
+            ]
+            for index, row in enumerate(wrapped)
         ]
 
     def begin_wait(self, label: str) -> Wait:
@@ -671,16 +807,6 @@ class Activity:
             rows.append(("class:activity.aside", f"\u2026 {len(running) - len(shown)} more (/btw)"))
         return rows
 
-    def job_rows(self, budget: int) -> list[tuple[str, str]]:
-        """The jobs row block, folded to the budget so it never crowds the editor."""
-        if budget <= 0 or not self.jobs:
-            return []
-        if len(self.jobs) <= budget:
-            return list(self.jobs)
-        shown = self.jobs[: max(0, budget - 1)]
-        remaining = len(self.jobs) - len(shown)
-        return shown + [("class:activity.job", f"\u2026 {remaining} more jobs (/jobs)")]
-
     def flash(self, text: str, seconds: float = NOTICE_SECONDS) -> None:
         """Replace the transient notice shown above the spinner.
 
@@ -716,6 +842,7 @@ class Activity:
         self.prompt_kind = "user"
         self.prompt_detail = ""
         self.status = ""
+        self._held = None
         self.thought, self.thought_done = "", True
         self.tasks_autohidden = False
 
@@ -747,6 +874,7 @@ class Activity:
         """Show a running row, tagged so system work never looks like typed input."""
         self.tasks_autohidden = False
         self.thought, self.thought_done = "", True
+        self._held = None  # A new turn never opens on the last one's line.
         self.prompt = text
         self.prompt_kind = kind
         self.prompt_detail = detail
@@ -761,7 +889,7 @@ class Activity:
             return []
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
-        icon = "⟳" if self.status_shown else "○"
+        icon = ACTIVE_TASK_ICON if self.status_shown else "○"
         # A configured height is room the user asked the tasks to fill.
         max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
         return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
@@ -837,9 +965,41 @@ class Activity:
             line.settled = True
         return line
 
-    def status_fragments(self, spinner: str, width: int, tally: str = ""):
-        """The row above the tasks: `⠋ Phase · detail … ✓7 tools · 12s`."""
-        return self.status_line(tally).fragments(spinner, width)
+    def held_status_line(self, tally: str = "", hold: float = 0.0) -> StatusLine:
+        """The status line, keeping what the row said for at least `hold` seconds.
+
+        Only a change of text counts: the clock and tally keep moving on a
+        held line. The hold gives way at once to a new turn, a gap in drawing,
+        a retry or failure, and a held tool call that has finished, so it only
+        ever skips churn, never news.
+        """
+        line = self.status_line(tally)
+        if hold <= 0:
+            return line
+        now = monotonic()
+        turn = (self.prompt_kind, self.prompt)
+        active = self.tools.active
+        call = active if active is not None and active.settled is None else None
+        shown = self._held
+        same = shown is not None and _status_text(line) == _status_text(shown.line)
+        fresh = (
+            shown is None
+            or shown.turn != turn
+            or now - shown.seen > PHASE_GAP_SECONDS
+            or (shown.call is not None and shown.call.settled is not None)
+        )
+        if fresh or same or now - shown.since >= hold or _urgent(line):
+            since = shown.since if same and not fresh else now
+            self._held = _HeldStatus(line, since, now, now, turn, call)
+            return line
+        shown.seen = now
+        held = shown.line
+        elapsed = None if held.elapsed is None else held.elapsed + now - shown.taken
+        return replace(held, tally=line.tally, elapsed=elapsed)
+
+    def status_fragments(self, spinner: str, width: int, tally: str = "", hold: float = 0.0):
+        """The row above the tasks: `◜ Phase · detail … ✓7 tools · 12s`."""
+        return self.held_status_line(tally, hold).fragments(spinner, width)
 
     def queue_rows(self, budget: int):
         """Show the next queued prompts, leaving room for the editor on short panes."""
@@ -1456,6 +1616,7 @@ class TerminalOutput:
         """
         transient = [] if replay else self.transient_pending
         self.transient_pending = []
+        prefetch_edits((obj for objects, _, _ in pending for obj in objects), width)
         pieces = []
         previous_file = self.console._file
         try:
@@ -1747,10 +1908,11 @@ class PromptLayout:
         self.render_cache = None
         self.animation_task = None
         self.preview_body = lru_cache(maxsize=1)(_preview_body)
+        self.live_delta = LiveDeltaPreview(lambda: self.session.app.invalidate())
         # The status row, side questions and waits share a spinner frame.
         # Plan steps use a static marker, so motion only ever means
         # "the turn is waiting on this". Who owns the work is the badge and colour.
-        self.spinner = Spinner("dots")
+        self.spinner = Spinner(load_preferences().get("spinner", SETTINGS["spinner"].default))
         # Every frame is a full layout pass (~2-3ms), so the animation loop alone
         # costs a few percent of a core for the length of a turn. Rich's built-in
         # interval is tuned for a dedicated terminal spinner, not for driving
@@ -1817,6 +1979,9 @@ class PromptLayout:
         if transcript is None:
             return None
         edits = transcript.show_edits and activity.edit_previews
+        if not edits:
+            # The preview ended, so the next edit never flashes this one's diff.
+            self.live_delta.forget()
         # A `!command` the user typed is shown while it runs whatever the
         # scrollback setting for the model's commands says, and so is a job
         # the user asked to watch; the model's own commands follow the setting.
@@ -1876,7 +2041,14 @@ class PromptLayout:
         if budget <= 0:
             return plans, "", [], editor_height
         body = event.text if edits else event.output
-        rows = self.preview_body(bool(edits) and not code, body, width, transcript.code_theme)
+        delta = transcript.delta if edits and not code else None
+        rows = (
+            self.live_delta.rows(
+                delta, event.call_id, event.path, body, width, transcript.code_theme
+            )
+            if delta is not None
+            else None
+        ) or self.preview_body(bool(edits) and not code, body, width, transcript.code_theme)
         if edits:
             # A diff keeps its +/- gutter flush left, as the settled block does.
             return plans, heading, rows[-budget:], editor_height
@@ -1897,19 +2069,9 @@ class PromptLayout:
 
     @_per_render
     def notice_rows(self):
-        """Freeze the expiring notice for this render so height matches content.
-
-        A waiting leader's hint borrows the slot: it answers a keystroke and
-        goes with the next one, which is what a notice is for.
-        """
+        """Freeze the expiring notice for this render so height matches content."""
         width = self.size().columns - 1
-        if self.shortcuts.pending:
-            return chrome_rows(self.shortcuts.hint_text(), width, "class:activity.system")
         return self.activity.notice_rows(width)
-
-    @_per_render
-    def job_rows(self):
-        return self.activity.job_rows(JOB_ROWS)
 
     @_per_render
     def group_rows(self):
@@ -1925,8 +2087,10 @@ class PromptLayout:
         return [("class:activity.group", row)] if row else []
 
     @_per_render
-    def thought_row(self):
-        return self.activity.thought_fragments(self.size().columns - 1)
+    def thought_rows(self):
+        """The newest thought, on fewer rows in a short pane."""
+        rows = min(THOUGHT_ROWS, max(1, self.size().rows // 8))
+        return self.activity.thought_fragments(self.size().columns - 1, rows)
 
     @_per_render
     def aside_rows(self):
@@ -1962,7 +2126,6 @@ class PromptLayout:
             or bool(self.notice_rows())
             or bool(self.wait_rows())
             or bool(self.aside_rows())
-            or bool(self.job_rows())
         )
         # A typed row is not written yet, so scrollback's own gap sits above it.
         transcript = self.transcript
@@ -1976,12 +2139,11 @@ class PromptLayout:
         return (
             bool(self.typing_row())
             + self.activity.status_shown
-            + len(self.thought_row())
+            + len(self.thought_rows())
             + len(self.group_rows())
             + len(self.notice_rows())
             + len(self.wait_rows())
             + len(self.aside_rows())
-            + len(self.job_rows())
             + self.status_gap()
         )
 
@@ -2034,16 +2196,11 @@ class PromptLayout:
         )
 
     def plan_heading(self):
-        """`Tasks 1/3`, then the key that hides the widget when hints are on."""
+        """The task heading, without permanent shortcut instructions."""
         activity = self.activity
         width = self.size().columns - 8
         style = "class:plan.heading" if activity.displayed_plan else "bold"
         fragments = panel_fragments([(style, activity.panel_heading())], width)
-        if activity.show_hints:
-            hint = f" ({compact_label(self.shortcuts.label('o'))} hide)"
-            # The hint never squeezes the heading itself; a narrow pane drops it.
-            if cell_len(fragments[0][1]) + cell_len(hint) <= width:
-                fragments.append(("class:plan.hint", hint))
         return fragments
 
     def plan_heading_border(self) -> VSplit:
@@ -2110,15 +2267,15 @@ class PromptLayout:
                     self.spinner_frame(),
                     self.size().columns - 1,
                     transcript.pending_tally() if transcript is not None else "",
+                    hold=STATUS_HOLD_SECONDS,
                 ),
                 1,
             ),
             filter=Condition(lambda: activity.status_shown),
         )
-        # Its own row, so a running tool taking the status row never hides it.
-        thought = ConditionalContainer(
-            _spinner_rows(self.thought_row, 1), filter=Condition(lambda: bool(self.thought_row()))
-        )
+        # Its own rows, so a running tool taking the status row never hides it;
+        # above that row, where it reads as what led to the call under it.
+        thought = self.panel_rows(self.thought_rows)
         plan_frame = Frame(self.plan_body(), height=lambda: len(self.plan_rows()) + 2)
         plan_frame.container.children[0] = self.plan_heading_border()
         plan = ConditionalContainer(
@@ -2139,28 +2296,24 @@ class PromptLayout:
             ),
             filter=Condition(lambda: bool(self.group_rows())),
         )
-        # Directly above the spinner: a notice answers the keystroke that caused it
-        # without ever reaching scrollback, and vanishes on its own.
+        # Above the spinner and the thought: a notice answers the keystroke that
+        # caused it without ever reaching scrollback, and vanishes on its own.
         notice = self.panel_rows(self.notice_rows)
         # This terminal's own wait on the session host, hidden while a turn row covers it.
         waits = self.panel_rows(self.wait_rows)
-        # Below the spinner: side questions run beside the turn and outlive it, so
-        # they get their own spinner rows rather than a share of the prompt's.
+        # Side questions outlive the turn. Keep their rows above its status so
+        # the main spinner always borders the tasks, tools, and editor below.
         asides = self.panel_rows(self.aside_rows)
-        # What is running that the spinner does not cover.
-        # Shown while idle too, which is when "is the suite still going?" is asked.
-        jobs = self.panel_rows(self.job_rows)
         return HSplit(
             [
                 status_spacer,
                 group,
-                commands,
                 notice,
-                current_status,
                 thought,
                 waits,
                 asides,
-                jobs,
+                current_status,
+                commands,
                 plan,
             ]
         )
@@ -2247,7 +2400,15 @@ class PromptLayout:
         )
 
     def layout(self) -> Layout:
-        children = [self.menu, self.activity_panel(), self.queued(), self.editor_frame()]
+        children = [
+            self.menu,
+            self.activity_panel(),
+            self.queued(),
+            # This prompt can be only three rows tall. A float would inherit
+            # that height and clip the menu, so reserve space only while open.
+            shortcut_hint(self.shortcuts),
+            self.editor_frame(),
+        ]
         if self.transcript is not None:
             children[:0] = [self.typing(), Window()]
         if self.session.bottom_toolbar is not None:
@@ -2456,6 +2617,7 @@ class Transcript:
         self.theme = theme
         self.detected_theme = detect_theme() if detected_theme is None else detected_theme
         self.syntax_themes = syntax_themes(preferences)
+        self._delta = delta_from_preferences(preferences)
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
         self.paced_scrollback = preferences.get(
@@ -2514,8 +2676,10 @@ class Transcript:
         objects = tuple(
             Markdown(obj.markup, code_theme=self.code_theme)
             if isinstance(obj, (Markdown, RetainedMarkdown))
+            else replace(obj, code_theme=self.code_theme, delta=self.delta)
+            if isinstance(obj, EditTranscript)
             else replace(obj, code_theme=self.code_theme)
-            if isinstance(obj, (TranscriptNotice, CommandTranscript, EditTranscript))
+            if isinstance(obj, (TranscriptNotice, CommandTranscript))
             else obj
             for obj in objects
         )
@@ -2667,7 +2831,7 @@ class Transcript:
     @recorded
     def edit(self, event) -> None:
         if self.show_edits:
-            self.print(EditTranscript(event, code_theme=self.code_theme))
+            self.print(EditTranscript(event))
 
     def replay(self) -> list:
         """Project the retained log with current settings, without recording again."""
@@ -2734,6 +2898,13 @@ class Transcript:
     @property
     def resolved_theme(self) -> str:
         return self.detected_theme if self.theme == "auto" else self.theme
+
+    @property
+    def delta(self) -> Delta | None:
+        """delta for diffs, told the current palette; None renders them with Rich."""
+        if self._delta is None:
+            return None
+        return replace(self._delta, light=self.resolved_theme == "light")
 
     @property
     def palette(self) -> Palette:
@@ -2823,7 +2994,7 @@ class Transcript:
         The opening banner and what it reports about this session are history,
         not an answer, so a resize must not wipe them.
         """
-        self.print(Text(text, style="pcode.muted"))
+        self.print(Note(text))
 
     def flash(self, text: str) -> None:
         """Answer a keystroke in the live panel instead of in scrollback.
@@ -2841,7 +3012,7 @@ class Transcript:
 
     def note(self, text: str) -> None:
         """Show an informational notice once, without retaining it for redraws."""
-        notice = Text(text, style="pcode.muted")
+        notice = Note(text)
         if self._replay_sink is not None:
             self._replay_sink.append(((notice,), "\n", False))
         elif self.output is not None:

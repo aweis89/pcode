@@ -9,6 +9,7 @@ reading is the model's call.
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -230,15 +231,26 @@ class ReferenceLexer(Lexer):
 
 
 class FileReferenceCompleter(Completer):
-    """Replace a trailing `@fragment` with a `./` workspace-relative path."""
+    """Replace a trailing `@fragment` with a `./` workspace-relative path.
 
-    def __init__(self, workspace: Path | None = None) -> None:
-        self.files = WorkspaceFiles((workspace or Path.cwd()).resolve())
+    ``workspace`` may be a callable, read on every completion: a hosted session
+    learns its worktree from the host only after the prompt exists, and /switch
+    can move the terminal to a session in another checkout.
+    """
+
+    def __init__(self, workspace: Path | Callable[[], Path] | None = None) -> None:
+        self._workspace = workspace if callable(workspace) else (lambda: workspace)
+        self.files = WorkspaceFiles(self._root())
+
+    def _root(self) -> Path:
+        return (self._workspace() or Path.cwd()).resolve()
 
     def get_completions(self, document: Document, complete_event: CompleteEvent):
         fragment = reference_fragment(document.text_before_cursor)
         if fragment is None:
             return
+        if (root := self._root()) != self.files.root:
+            self.files = WorkspaceFiles(root)
         for path in self.files.matches(fragment):
             # The `@` is a trigger, not part of the reference: it is replaced so
             # the model receives a path its file tools accept verbatim. The

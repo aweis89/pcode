@@ -1,4 +1,4 @@
-"""Inline shortcut hints: the send mode's key in the footer, the task list's hide key."""
+"""One contextual help indicator replaces hints beside individual controls."""
 
 from dataclasses import replace
 from types import SimpleNamespace
@@ -37,18 +37,37 @@ def test_hints_default_on(shipped_default):
     assert PreviewApp().activity.show_hints
 
 
-def test_footer_shows_the_send_mode_key(tmp_path, monkeypatch, shipped_default):
+@pytest.mark.parametrize(
+    "prefix, indicator", [("ctrl", "F1 Keybindings"), ("ctrl+p", "^P Keybindings")]
+)
+def test_footer_shows_one_help_indicator(tmp_path, monkeypatch, shipped_default, prefix, indicator):
     app, _ = make_app(tmp_path, monkeypatch)
+    app.prompt_session = SimpleNamespace(shortcuts=PrefixKeys(prefix))
     text = fragment_list_to_text(app.toolbar())
-    assert " · steering (^S) · preview" in text
+    assert f" · steering · {indicator} · preview" in text
+    assert text.count("Keybindings") == 1
+    assert "(^S)" not in text
     save_preferences(show_hints="off")
     app.handle("/config get show_hints")  # Any /config re-reads the layout settings.
-    assert " · steering · preview" in fragment_list_to_text(app.toolbar())
+    text = fragment_list_to_text(app.toolbar())
+    assert " · steering · preview" in text
+    assert "Keybindings" not in text
 
 
-def test_narrow_footer_drops_the_hint_before_the_model(tmp_path, monkeypatch, shipped_default):
-    app, _ = make_app(tmp_path, monkeypatch, width=len(" steering · preview") + 2)
-    assert fragment_list_to_text(app.toolbar()) == " steering · preview"
+def test_narrow_footer_keeps_help_before_model_metadata(tmp_path, monkeypatch, shipped_default):
+    app, _ = make_app(tmp_path, monkeypatch, width=len(" steering · F1 Keybindings"))
+    assert fragment_list_to_text(app.toolbar()) == " steering · F1 Keybinding…"
+
+
+def test_narrow_footer_keeps_live_queue_status_before_help(tmp_path, monkeypatch, shipped_default):
+    app, _ = make_app(tmp_path, monkeypatch, width=30)
+    app.prompt_session = SimpleNamespace(shortcuts=PrefixKeys("ctrl+b"))
+    app.activity.busy = True
+    app.activity.queued = 2
+    app.activity.queued_modes = ["queue", "queue"]
+    text = fragment_list_to_text(app.toolbar())
+    assert text.startswith(" steering · 2 queued · ")
+    assert "Keybindings" not in text
 
 
 def test_config_applies_hints_at_once(tmp_path, monkeypatch, shipped_default):
@@ -61,13 +80,13 @@ def test_config_applies_hints_at_once(tmp_path, monkeypatch, shipped_default):
     assert app.activity.show_hints
 
 
-def test_task_heading_names_the_hide_key():
-    assert heading(Activity(plan=PLAN)) == "Tasks 0/1 (^O hide)"
-    assert heading(Activity()) == "Tools (^O hide)"
-    assert heading(Activity(plan=PLAN), prefix="ctrl+p") == "Tasks 0/1 (^P o hide)"
+def test_task_heading_has_no_inline_hide_hint():
+    assert heading(Activity(plan=PLAN)) == "Tasks 0/1"
+    assert heading(Activity()) == "Tools"
+    assert heading(Activity(plan=PLAN), prefix="ctrl+p") == "Tasks 0/1"
     assert heading(Activity(plan=PLAN, show_hints=False)) == "Tasks 0/1"
 
 
-def test_narrow_pane_drops_the_hint_before_the_heading():
+def test_narrow_pane_preserves_the_task_heading():
     # 8 columns of border chrome, then exactly "Tasks 0/1" fits.
     assert heading(Activity(plan=PLAN), columns=8 + len("Tasks 0/1")) == "Tasks 0/1"

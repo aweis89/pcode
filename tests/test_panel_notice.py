@@ -3,6 +3,7 @@
 import asyncio
 from io import StringIO
 
+import pytest
 from prompt_toolkit.application.current import set_app
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import create_pipe_input
@@ -169,8 +170,12 @@ def test_typed_row_sits_directly_under_scrollback_above_the_spinner():
     assert 0 < spinner < frame
 
 
-def test_side_question_and_job_icons_line_up_with_the_turn_spinner():
+@pytest.mark.parametrize("commands", [False, True])
+@pytest.mark.parametrize("tasks", [False, True])
+@pytest.mark.parametrize("attached", [False, True])
+def test_main_status_borders_work_area_and_jobs_only_appear_in_footer(commands, tasks, attached):
     from pcode.aside import Aside
+    from pcode.runtime import CommandOutput
 
     async def run():
         stream = StringIO()
@@ -178,7 +183,14 @@ def test_side_question_and_job_icons_line_up_with_the_turn_spinner():
         activity = app.activity
         activity.prompt_state = "running"
         activity.asides = [Aside(question="why?")]
-        activity.jobs = [("class:activity.job", "\u27f3 j1 \u00b7 serving \u00b7 3s")]
+        activity.job_count = 2
+        activity.thought = "Latest thought"
+        activity.flash("Notice above status")
+        activity.show_tasks = tasks
+        activity.attach_tasks = attached
+        activity.plan = [{"content": "Example task", "status": "in_progress"}]
+        app.transcript.command_scrollback = commands
+        activity.command_outputs["one"] = CommandOutput("one", "example", "Tool output")
         with create_pipe_input() as pipe:
             output = Vt100_Output(stream, lambda: Size(rows=24, columns=80), enable_cpr=False)
             session = create_prompt(
@@ -188,6 +200,7 @@ def test_side_question_and_job_icons_line_up_with_the_turn_spinner():
                 on_submit=lambda text: None,
                 input=pipe,
                 output=output,
+                bottom_toolbar=app.toolbar,
             )
             with set_app(session.app):
                 session.app.renderer.render(session.app, session.app.layout)
@@ -200,6 +213,16 @@ def test_side_question_and_job_icons_line_up_with_the_turn_spinner():
     lines = [line for line in asyncio.run(run()) if line.strip()]
     status = next(line for line in lines if "Working" in line)
     aside = next(line for line in lines if " btw " in line)
-    job = next(line for line in lines if "j1" in line)
-    columns = {len(line) - len(line.lstrip()) for line in (status, aside, job)}
-    assert columns == {1}, (status, aside, job)
+    columns = {len(line) - len(line.lstrip()) for line in (status, aside)}
+    assert columns == {1}, (status, aside)
+    status_index = lines.index(status)
+    assert lines.index(aside) < status_index
+    assert next(i for i, line in enumerate(lines) if "Latest thought" in line) < status_index
+    assert next(i for i, line in enumerate(lines) if "Notice above status" in line) < status_index
+    assert lines[status_index + 1].startswith("⟳ Shell" if commands else "┌")
+    if commands:
+        assert next(i for i, line in enumerate(lines) if "Tool output" in line) > status_index
+    if tasks:
+        assert next(i for i, line in enumerate(lines) if "Example task" in line) > status_index
+    assert "2 jobs" in lines[-1]
+    assert sum("jobs" in line for line in lines) == 1

@@ -12,7 +12,9 @@ brew install --HEAD aweis89/pcode/pcode
 The repository doubles as its own tap, which is why the URL is needed. There
 are no tagged releases yet, so `--HEAD` installs the latest `master`. Homebrew
 installs pcode and its dependencies into a private environment without touching
-your global Python, and adds `shfmt` for nicer command formatting in `/tools`.
+your global Python, and adds `shfmt` for nicer command formatting in `/tools`
+and [delta](https://dandavison.github.io/delta/) for
+[richer diffs](transcript.md#diffs-with-delta).
 
 To update or remove it:
 
@@ -35,7 +37,7 @@ pcode -m anthropic:claude-sonnet-5       # with ANTHROPIC_API_KEY set; other pro
 
 If you're not signed in yet, run `/login claude` or `/login openai-codex`
 inside pcode; both sign in through the provider's own flow in your browser.
-Ctrl+L (or `/model`) opens a model picker at any time, and the model you pick
+Ctrl+B `l` (or `/model`) opens a model picker at any time, and the model you pick
 is saved, so later a bare `pcode` is enough. See
 [providers and models](providers.md) for every provider.
 
@@ -63,7 +65,7 @@ A few things worth knowing on day one:
 
 - **Enter while the agent is working** steers the running turn with your
   message. Ctrl+C cancels it.
-- **Ctrl+G** shows every command and its output in scrollback; press it again
+- **Ctrl+B `g`** shows every command and its output in scrollback; press it again
   to fold them back to summaries. See
   [scrollback and transparency](guide/scrollback.md).
 - **`/tools`** shows every call the agent made, with its full output.
@@ -128,4 +130,6 @@ The `claude` extra adds [`claude:` models](providers.md#claude-code-provider)
 and bundles the Claude Code CLI (about 215 MB). Leave it out with
 `uv tool install --editable .` or `make install EXTRAS=` if you don't need
 them. Install `shfmt` yourself for formatted commands in `/tools`; without it,
-pcode uses a simpler built-in formatter.
+pcode uses a simpler built-in formatter. Likewise, install
+[delta](https://dandavison.github.io/delta/) for
+[richer diffs](transcript.md#diffs-with-delta); without it, diffs use Rich.

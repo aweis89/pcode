@@ -220,7 +220,8 @@ def test_a_running_turn_counts_the_run_on_its_status_row():
     lines = render_panel(running=True)
     (row,) = [line for line in lines if "tools" in line]
     # The count sits beside the spinner that says the run is still going.
-    assert row.lstrip().startswith("⠋ Working")
+    assert row.lstrip()[1:].startswith(" Working")
+    assert row.lstrip()[0] in "◜◠◝◞◡◟"
     assert row.endswith("✓3 tools · 0s")
 
 

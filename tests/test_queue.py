@@ -274,10 +274,78 @@ def test_phase_clock_restarts_when_the_phase_changes(monkeypatch):
     assert clock() == "0s"
 
 
-def test_thinking_row_holds_the_newest_thought_under_the_status_row():
+def test_status_row_holds_each_line_before_changing(monkeypatch):
+    from pcode import ui
+    from pcode.runtime import ToolStarted, ToolSummary
+
+    now = [100.0]
+    monkeypatch.setattr(ui, "monotonic", lambda: now[0])
+    activity = ui.Activity(prompt_state="running", status="Thinking…")
+
+    def row():
+        return styled(activity.status_fragments("⠋", 80, hold=2.5))
+
+    assert row()["activity.phase"] == "Thinking"
+    # Changes inside the hold are skipped; the clock keeps moving meanwhile.
+    activity.status = "Responding…"
+    now[0] += 0.5
+    activity.status = "Compacting context…"
+    now[0] += 0.5
+    assert row()["activity.phase"] == "Thinking"
+    now[0] += 0.5
+    assert row()["activity.meta"] == "1s"
+    # Once it is up, the row jumps to what is current and holds that in turn.
+    now[0] += 1.0
+    assert row()["activity.phase"] == "Compacting context"
+    activity.status = "Thinking…"
+    now[0] += 0.5
+    assert row()["activity.phase"] == "Compacting context"
+    # A gap in drawing drops the hold.
+    now[0] += 30
+    assert row()["activity.phase"] == "Thinking"
+    # So does a retry: news, not churn.
+    activity.status = "Retrying · Overloaded…"
+    assert row()["activity.phase"] == "Retrying"
+    # And a new turn, even one queued right behind the last.
+    activity.finish_prompt("done")
+    activity.start_prompt("next")
+    activity.status = "Thinking…"
+    assert row()["activity.phase"] == "Thinking"
+    # A held tool call that finishes is not left reading as running.
+    activity.tools.record(ToolStarted("read_file", "x.py", "r"))
+    now[0] += 3
+    assert row()["activity.phase"] == "Read file"
+    activity.tools.record(ToolSummary("read_file", "x.py", call_id="r"))
+    activity.tools.record(ToolStarted("run_shell", "ls", "s"))
+    activity.tools.record(ToolSummary("run_shell", "ls", call_id="s"))
+    now[0] += 0.1
+    assert row()["activity.phase"] != "Read file"
+    # Without a hold, every change shows at once.
+    activity.status = "Responding…"
+    assert styled(activity.status_fragments("⠋", 80))["activity.phase"] == "Responding"
+
+
+@pytest.mark.parametrize("limit", [1, 3])
+@pytest.mark.parametrize("width", [3, 4, 5, 8, 20])
+@pytest.mark.parametrize("thought", ["word " * 20, "漢字" * 20, "x" * 80])
+def test_thinking_marker_wraps_without_continuation_indent(width, thought, limit):
     from rich.cells import cell_len
 
-    from pcode.runtime import TextDelta, Thinking, ThinkingDelta, ToolStarted
+    from pcode.ui import Activity
+
+    activity = Activity(prompt_state="running", status="Thinking…", thought=thought)
+    rows = activity.thought_fragments(width, limit)
+    assert rows[0][0] == ("class:activity.thinking.icon", "∴ ")
+    assert len(rows) <= limit
+    assert all(cell_len("".join(text for _, text in row)) <= width for row in rows)
+    assert all(row[0][1] == "" and not row[1][1].startswith(" ") for row in rows[1:])
+    assert rows[-1][1][1].endswith("…")
+
+
+def test_thinking_rows_hold_the_newest_thought_above_the_status_row():
+    from rich.cells import cell_len
+
+    from pcode.runtime import Message, TextDelta, Thinking, ThinkingDelta, ToolStarted
     from pcode.stream_display import present_stream_event
     from pcode.ui import Activity
 
@@ -294,35 +362,66 @@ def test_thinking_row_holds_the_newest_thought_under_the_status_row():
             event, output=Output(), transcript=None, activity=activity, present=None
         )
 
+    def rows(width=80, limit=3):
+        # Each row has a marker fragment (empty on continuations), then text.
+        return [text for (_, _bar), (_, text) in activity.thought_fragments(width, limit)]
+
     def row(width=80):
-        return "".join(text for _, text in activity.thought_fragments(width))
+        return "\n".join(rows(width))
 
     assert activity.thinking_mode == "status-line" and row() == ""
-    # Untitled text shows its newest line, faded and indented past the spinner.
+    # Untitled text shows its newest line, with a marker over the spinner.
     feed(ThinkingDelta("The status row"))
     feed(ThinkingDelta(" is empty\n\n"))
     assert activity.thought_fragments(80) == [
-        ("class:activity.thinking", "  The status row is empty")
+        [
+            ("class:activity.thinking.icon", "∴ "),
+            ("class:activity.thinking", "The status row is empty"),
+        ]
     ]
-    # A long line keeps its newest words, cut from the front.
+    # A long line wraps to a few rows and is cut at the end, like skimmed prose.
     feed(ThinkingDelta("so " + "word " * 40 + "newest"))
-    assert cell_len(row(50)) <= 50
-    assert row(50).startswith("  …") and row(50).endswith("newest")
+    assert len(rows(50)) == 3 and all(cell_len(text) <= 50 for text in rows(50))
+    assert rows(50)[0].startswith("so word") and rows(50)[-1].endswith("…")
+    assert "…" not in "".join(rows(50)[:-1]) and "newest" not in row(50)
+    assert all(
+        [style for style, _ in fragments]
+        == ["class:activity.thinking.icon", "class:activity.thinking"]
+        for fragments in activity.thought_fragments(50)
+    )
+    fragments = activity.thought_fragments(50)
+    assert fragments[0][0][1] == "∴ "
+    assert all(parts[0][1] == "" for parts in fragments[1:])
+    assert all(not parts[1][1].startswith(" ") for parts in fragments[1:])
+    assert all(cell_len("".join(text for _, text in parts)) <= 50 for parts in fragments)
+    # A short pane gets fewer rows; a wide one needs no cut.
+    assert len(rows(50, 1)) == 1 and rows(50, 1)[0].endswith("…")
+    assert rows(400) == ["so " + "word " * 40 + "newest"]
     # A titled section shows its title, not the prose under it.
     feed(ThinkingDelta("\n\n**Tracing the resize path**\n\nI need to check the replay"))
-    assert row() == "  Tracing the resize path"
-    # Its own row: a running tool takes the status row, not this one.
+    assert row() == "Tracing the resize path"
+    # Its own row: a running tool takes the status row, not this one. The
+    # thought explains the call, so the ended block is held through it.
+    feed(Thinking("done"))
     activity.tools.record(ToolStarted("read_file", "ui.py", "one"))
     assert "Read file" in "".join(t for _, t in activity.status_fragments("⠋", 80))
-    assert row() == "  Tracing the resize path"
-    # An ended block is held, through the answer, until the next replaces it.
-    feed(Thinking("done"))
+    assert row() == "Tracing the resize path"
+    # An empty text part says nothing yet; the answer streaming into
+    # scrollback takes over, and the thought goes at once.
+    feed(TextDelta(""))
+    feed(TextDelta(" \n"))
+    assert row() == "Tracing the resize path"
     feed(TextDelta("Answer"))
-    assert row() == "  Tracing the resize path"
+    assert row() == ""
     feed(Thinking("A whole block, with no deltas"))
-    assert row() == "  A whole block, with no deltas"
+    assert row() == "A whole block, with no deltas"
     feed(ThinkingDelta("Next idea"))
-    assert row() == "  Next idea"
+    assert row() == "Next idea"
+    # A whole message with no deltas clears it too.
+    feed(Message("Answer"))
+    assert row() == ""
+    feed(ThinkingDelta("Again"))
+    assert row() == "Again"
     # The other modes have no row; a new turn starts empty.
     activity.thinking_mode = "scrollback"
     assert row() == ""
