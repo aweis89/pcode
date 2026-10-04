@@ -462,6 +462,17 @@ TOOL_ICON = "⎿"
 TOOL_INDENT = "  "
 # With no thought to hang from, the row stands alone in the thought's column.
 LONE_TOOL_ICON = "›"
+# The tool row's stand-ins for common verbs (`tool_display.LABELS`), so it
+# says `$ make test` rather than `Run shell · make test`. Each is one cell
+# wide even where East Asian ambiguous characters are drawn two wide; a
+# tool not listed keeps its spelled-out verb.
+TOOL_GLYPHS = {
+    **dict.fromkeys(("Run shell", "Run code", "Start command", "Check command"), "$"),
+    **dict.fromkeys(("Search code", "Find files", "List directory", "Find tools"), "⌕"),
+    **dict.fromkeys(("Edit file", "Write file"), "✎"),
+    **dict.fromkeys(("Read file", "Read results", "Read job output", "File info"), "⎘"),
+    "Wait for job": "⧖",
+}
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -1021,27 +1032,35 @@ class Activity:
     def tool_fragments(self, line: StatusLine, width: int) -> list[tuple[str, str]]:
         """The tool row between the thought and the status row: `  ⎿ ls -la`.
 
-        What the status row's verb acts on, with the full pane width to say it.
-        The hook hangs it from the thought above; with none, it is `› ls -la`
-        in the thought's column instead, so it never hangs from nothing.
-        Once a call has run it stays for the rest of the turn, marked `✓` or
-        `✗`, so the editor box does not jump a row with every call. It names
-        the call's verb too whenever the status row no longer does.
+        What the status row's verb acts on, with the full pane width to say it,
+        led by the verb's glyph (`$ ls -la`, `TOOL_GLYPHS`). The hook hangs it
+        from the thought above; with none, the glyph alone leads it in the
+        thought's column, so it never hangs from nothing. Once a call has run
+        it stays for the rest of the turn, marked `✓` or `✗`, so the editor
+        box does not jump a row with every call. A verb with no glyph is
+        spelled out whenever the status row no longer says it.
         """
         call = line.call or self._last_call
         if call is None or not self.status_shown or width < 1:
             return []
         label, detail = call_parts(call)
         hung = self.thought_shown
+        glyph = TOOL_GLYPHS.get(label)
+        if glyph:
+            text = detail or label
+        elif detail and line.phase == label:
+            text = detail
+        else:
+            text = " · ".join(filter(None, (label, detail)))
         if call.settled is None:
-            icon = ("class:activity.tool", TOOL_ICON if hung else LONE_TOOL_ICON)
+            icon = ("class:activity.tool", TOOL_ICON if hung else glyph or LONE_TOOL_ICON)
+            if not hung:
+                glyph = None  # Alone, the glyph is the row's mark already.
         elif call.failed:
             icon = ("class:activity.tool.failed", "✗")
         else:
             icon = ("class:activity.tool.done", "✓")
-        if not detail or line.phase != label:
-            detail = " · ".join(filter(None, (label, detail)))
-        row = [icon, ("class:activity.tool", f" {detail}")]
+        row = [icon, ("class:activity.tool", " " + " ".join(filter(None, (glyph, text))))]
         return fit_fragments([("", TOOL_INDENT), *row] if hung else row, width)
 
     def held_status_line(self, tally: str = "", hold: float = 0.0) -> StatusLine:

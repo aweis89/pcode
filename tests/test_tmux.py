@@ -943,7 +943,7 @@ def test_paused_stream_stays_hidden_on_resize_without_more_tokens(pane):
 
 
 # The running command's tool row, above the status row that names its verb.
-TOOL_ROW = "› printf FIRST_DETAIL"
+TOOL_ROW = "$ printf FIRST_DETAIL"
 
 
 TOOLS_SCRIPT = """
@@ -1242,7 +1242,7 @@ def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
     screen = settle(pane, lambda screen: "file_30.py" in screen, running=True)
     lines = screen.splitlines()
     tool = next(i for i, line in enumerate(lines) if "SLOW_FILE" in line)
-    assert lines[tool].strip() == "› SLOW_FILE"
+    assert lines[tool].strip() == "⎘ SLOW_FILE"
     assert lines[tool + 1].startswith(SPINNER_ROW)
     assert lines[tool - 1].strip() == ""
     assert "✓ Read file  file_30.py" in lines[tool - 2]

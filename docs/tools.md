@@ -287,7 +287,7 @@ The footer below the editor shows the active total as `1 job` or `N jobs`,
 including jobs the model is waiting on, and hides the count when none remain.
 There are no persistent per-job rows; use `/jobs` for details. While the model
 waits on a job, the status row says `Wait for job` and the tool row above it
-names the job: `45.2s · j3 · running the e2e suite · make e2e`.
+names the job: `⧖ 45.2s · j3 · running the e2e suite · make e2e`.
 The finished job goes to scrollback at the end of the turn (or at once while
 idle) as a normal `Run shell` block labeled `background`, with its id and
 elapsed time; `show_commands` and `tool_error_scrollback` apply as for other

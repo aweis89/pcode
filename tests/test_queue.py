@@ -196,23 +196,23 @@ def test_status_row_reports_the_newest_running_tool_call():
     activity.tools.record(ToolStarted("grep", "pattern", "two"))
     fragments = activity.status_fragments("⠋", 80)
     assert styled(fragments)["activity.phase"] == "Running 2 tools"
-    # The call's detail is never on the status row: the tool row has it, and
-    # names the newest call's verb, which the row's count does not.
+    # The call's detail is never on the status row: the tool row has it, led
+    # by the newest call's glyph in place of its verb.
     assert "pattern" not in "".join(text for _, text in fragments)
-    assert tool_row(activity) == "› Search code · pattern"
+    assert tool_row(activity) == "⌕ pattern"
     # A result hands the row back to the call still running.
     activity.tools.record(ToolSummary("grep", "pattern", call_id="two"))
     parts = styled(activity.status_fragments("⠋", 80))
     # One call is its own phase: its label is already the verb.
     assert parts["activity.phase"] == "Read file" and "activity.detail" not in parts
-    # The status row says the verb, so the tool row only says what it acts on.
-    assert tool_row(activity) == "› example.py"
+    # The status row says the verb; the tool row's glyph stands in for it.
+    assert tool_row(activity) == "⎘ example.py"
     # Under a thought it hangs from the thought's text, in the spinner's column.
     activity.think("Checking the example")
     assert activity.tool_fragments(activity.status_line(), 80) == [
         ("", "  "),
         ("class:activity.tool", "⎿"),
-        ("class:activity.tool", " example.py"),
+        ("class:activity.tool", " ⎘ example.py"),
     ]
 
 
@@ -229,16 +229,28 @@ def test_finished_call_is_held_as_done_under_the_models_phase():
     assert parts["activity.phase"] == "Waiting for model" and "activity.detail" not in parts
     assert activity.tool_fragments(activity.status_line(), 80) == [
         ("class:activity.tool.done", "✓"),
-        ("class:activity.tool", " Read file · example.py"),
+        ("class:activity.tool", " ⎘ example.py"),
     ]
     activity.tools.clear()
     parts = styled(activity.status_fragments("⠋", 80))
     assert "activity.detail" not in parts and parts["activity.meta"] == "0s"
     # The tool row keeps the turn's last call, so the editor box does not
     # jump a row with every call; a new turn starts without one.
-    assert tool_row(activity) == "✓ Read file · example.py"
+    assert tool_row(activity) == "✓ ⎘ example.py"
     activity.start_prompt("Next")
     assert tool_row(activity) == ""
+
+
+def test_tool_row_spells_out_a_verb_with_no_glyph():
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running")
+    activity.tools.record(ToolStarted("web_search", "pcode docs", "one"))
+    # The status row names the verb while it runs, so the row need not.
+    assert tool_row(activity) == "› pcode docs"
+    activity.tools.record(ToolSummary("web_search", "pcode docs", call_id="one"))
+    assert tool_row(activity) == "✓ web_search · pcode docs"
 
 
 def test_tool_row_marks_a_failed_call_and_fits_the_width():
@@ -282,7 +294,7 @@ def test_status_row_waits_on_sub_agents_listed_in_the_panel(monkeypatch):
     activity.tools.record(ToolSummary("read_file", "x.py", call_id="a:read"))
     parts = styled(activity.status_fragments("⠋", 80))
     assert parts["activity.phase"] == "Waiting for 2 sub-agents"
-    assert tool_row(activity) == "✓ Read file · x.py"
+    assert tool_row(activity) == "✓ ⎘ x.py"
     monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 0.0)
     activity.tools.record(ToolSummary("delegate_task", "done", call_id="b"))
     parts = styled(activity.status_fragments("⠋", 80))

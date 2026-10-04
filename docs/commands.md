@@ -281,21 +281,25 @@ call gets its line in [scrollback](transcript.md).
 The status row always reads the same way: a spinner, what the turn is doing,
 and on the right the run's tool count and how long this phase has lasted.
 The command, path, or pattern a tool call works on gets its own row above,
-with the full width of the pane, so the status row stays short:
+with the full width of the pane, so the status row stays short. Under a
+thought it hangs from it with `⎿`:
 
 ```text
 ∴ Checking where the config is loaded
-  ⎿ src/app.py
+  ⎿ ✎ src/app.py
 ┌─ ◜ Edit file ────────────────────────────────────── ✓7 ✗1 tools · 2s ─┐
 ```
 
 Read top to bottom, that is why (the thought), what (the call), and how it is
-going (the status row). Once a call finishes, its row is marked `✓` or `✗`
-and stays until the next call or the end of the turn, naming the call's verb
-once the status row has moved on:
+going (the status row). A glyph stands in for the call's verb: `$` runs a
+command, `⌕` searches, `✎` edits or writes a file, `⎘` reads one, and `⧖`
+waits on a job. A tool without one keeps its verb spelled out, and with no
+thought above, the row starts with the glyph, or `›` for those. Once a call
+finishes, its row is marked `✓` or `✗` and stays until the next call or the
+end of the turn:
 
 ```text
-  ✓ Read file · src/app.py
+  ✓ ⎘ src/app.py
 ┌─ ◜ Waiting for model ───────────────────────────────── ✓8 tools · 0s ─┐
 ```
 
