@@ -260,9 +260,7 @@ its `scrollbar_*` colours. Hide it on the terminal's side with Ghostty's
 
 iTerm2 3.7 or newer can restyle it per profile, under **Settings > Profiles >
 Session**: **Progress bar height** (in points, 2 by default) and **Progress
-bar color scheme** (Default, Rainbow, or a single colour). The height cannot
-exceed the pane's top margin, so to make the bar thicker, raise **Settings >
-Appearance > Panes > Top & Bottom Margins** first. In a Dynamic Profile the
+bar color scheme** (Default, Rainbow, or a single colour). In a Dynamic Profile the
 keys are `"Progress Bar Height"` and `"Progress Bar Color Scheme"`, and both
 need `"Enable Progress Bars"`. iTerm2 3.6.6 draws the bar but has neither
 setting.
