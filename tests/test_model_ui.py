@@ -57,6 +57,41 @@ def test_picker_keyboard(keys, expected):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("prefix", ["ctrl", "ctrl+x"])
+def test_picker_contextual_help_preserves_selection_and_filter(monkeypatch, prefix):
+    monkeypatch.setattr("pcode.prefix_keys.configured_prefix", lambda: prefix)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            picker = ModelPicker(MODELS, PROVIDERS, input=pipe, output=DummyOutput())
+            task = asyncio.create_task(picker.run())
+            try:
+                await wait_for(lambda: picker.app.is_running)
+                if prefix != "ctrl":
+                    pipe.send_text("\x18")
+                    await wait_for(lambda: picker.shortcuts.pending)
+                    assert ("F1", "All keys") in picker.shortcuts.hint_rows()
+                pipe.send_text("\x1bOP")
+                await wait_for(lambda: picker.shortcuts.browsing)
+                assert ("Enter", "Apply selected model") in picker.shortcuts.hint_rows()
+                assert any(
+                    "provider:model-id" in label for _, label in picker.shortcuts.hint_rows()
+                )
+                pipe.send_text("ignored\r\x1b[B\x1bOP")
+                await wait_for(lambda: not picker.shortcuts.visible)
+                assert picker.search.text == ""
+                assert picker.selected == 0
+                assert not task.done()
+                pipe.send_text("\x1b[B\r")
+                assert await asyncio.wait_for(task, 3) == MODELS[1]
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
 def test_filter_empty_matches_custom_validation_and_current_marker():
     with create_pipe_input() as pipe:
         picker = ModelPicker(MODELS, PROVIDERS, current=MODELS[0], input=pipe, output=DummyOutput())

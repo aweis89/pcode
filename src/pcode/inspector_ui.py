@@ -217,6 +217,17 @@ class ToolInspector:
             event.app.layout.focus(self.list)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+        shortcuts.set_help(
+            lambda: [
+                ("Type", "Search in the search field"),
+                ("↑/↓", "Select call / scroll details"),
+                ("PgUp/PgDn", "Page"),
+                ("Ctrl+U/D", "Half page"),
+                ("Enter", "Focus calls (from search field)"),
+                ("Tab/Shift+Tab", "Change focus"),
+                ("Esc/Ctrl+C", "Close"),
+            ]
+        )
 
         @shortcuts.add("f", "Search")
         def search(event):
@@ -267,10 +278,6 @@ class ToolInspector:
                 header,
                 self.query,
                 body,
-                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label(
-                    "Type to search (↑↓ select while typing) · Enter Calls · Tab Focus · Esc Close"
-                ),
                 Label(shortcuts.summary),
             ]
         )

@@ -74,20 +74,21 @@ POPUP_ACCENTS = Style.from_dict(
 def popup_container(body, shortcuts: PrefixKeys | None = None):
     """Scope every modal surface under the same style class.
 
-    With ``shortcuts`` on a leader, a waiting leader lists them in a small
-    frame over the popup's bottom corner, the way which-key does.
+    Shortcut help floats over the content without changing its focus or size.
     """
-    if shortcuts is not None and shortcuts.leader:
+    if shortcuts is not None:
         body = FloatContainer(body, floats=[Float(shortcut_hint(shortcuts), bottom=1, right=2)])
     return HSplit([body], style="class:popup")
 
 
 def shortcut_hint(shortcuts: PrefixKeys):
-    """A framed key/action list, shown only while the leader waits."""
+    """Shared contextual help for prefix actions and read-only F1 browsing."""
 
     def fragments():
         rows = shortcuts.hint_rows()
-        width = max(get_cwidth(key) for key, _ in rows)
+        if shortcuts.message:
+            rows.append(("", shortcuts.message))
+        width = max((get_cwidth(key) for key, _ in rows), default=0)
         lines = []
         for key, label in rows:
             lines.append([("bold", f" {key.ljust(width)}"), ("", f"  {label} ")])
@@ -99,13 +100,18 @@ def shortcut_hint(shortcuts: PrefixKeys):
         return result
 
     body = Window(
-        FormattedTextControl(fragments, show_cursor=False),
+        FormattedTextControl(
+            fragments,
+            show_cursor=False,
+            get_cursor_position=lambda: Point(0, shortcuts.help_offset),
+        ),
+        wrap_lines=True,
         dont_extend_width=True,
         dont_extend_height=True,
     )
     return ConditionalContainer(
-        Frame(body, title=lambda: shortcuts.leader_label),
-        filter=Condition(lambda: shortcuts.pending),
+        Frame(body, title=lambda: shortcuts.help_title),
+        filter=Condition(lambda: shortcuts.visible),
     )
 
 

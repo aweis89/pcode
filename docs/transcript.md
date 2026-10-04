@@ -98,8 +98,10 @@ preview waits for delta instead.
 
 ## Thinking: status line or scrollback
 
-`/show-thinking` picks where the thinking a provider exposes shows up. **Ctrl+T**
-or a bare `/show-thinking` cycles through the modes:
+`/show-thinking` picks where the thinking a provider exposes shows up. **Ctrl+B `t`**
+opens a chooser: `o` for off, `s` for status line, or `b` for scrollback; Esc
+cancels without changing the mode. A bare `/show-thinking` still cycles through
+the modes:
 
 | Mode | Shows |
 | --- | --- |
@@ -313,7 +315,7 @@ Details:
 - Verbose commands can push earlier conversation out of terminal history. Raise
   your terminal or tmux scrollback limit before turning this on.
 
-Press **Ctrl+G** to toggle mirroring; it saves the default, so the next launch
+Press **Ctrl+B `g`** to toggle mirroring; it saves the default, so the next launch
 starts the way you left it. `/show-commands on`, `/show-commands off`, and bare
 `/show-commands` do the same. Toggling rebuilds retained scrollback right away:
 on reveals earlier commands and their output, off removes every command block,
@@ -351,7 +353,7 @@ falls back to the default.
 ## Regenerating the terminal transcript
 
 `/redraw` rebuilds the retained transcript at the current terminal width with
-the current display settings. Ctrl+G, `/show-commands`, `/show-edits`,
+the current display settings. Ctrl+B `g`, `/show-commands`, `/show-edits`,
 `/show-thinking`, `/group-tools`, `/theme`, and `/syntax` rebuild it the same
 way. Your draft, the live tool panel, and unfinished model text are kept; a
 rebuild never calls tools or changes model history.

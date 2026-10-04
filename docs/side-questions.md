@@ -31,25 +31,25 @@ streams it.
 - **Tab:** move between the question list, the answer pane and the follow-up
   editor. While the [command menu](#commands) is open, Tab and Shift+Tab move
   through it instead.
-- **Ctrl+R:** type a [follow-up](#following-up) to the selected answer.
-- **Ctrl+S / Ctrl+T:** [bring the thread into the conversation](#keeping-a-thread),
+- **Ctrl+B `r`:** type a [follow-up](#following-up) to the selected answer.
+- **Ctrl+B `s` / Ctrl+B `t`:** [bring the thread into the conversation](#keeping-a-thread),
   as a summary or merged into the tree.
-- **Ctrl+Y:** copy the selected thread's newest answer to the clipboard as
+- **Ctrl+B `y`:** copy the selected thread's newest answer to the clipboard as
   markdown, secrets redacted (also works mid-stream, taking what has arrived so far). As with
   `/copy`, an answer holding quotes or code blocks opens a picker to copy just
   one of them.
-- **Ctrl+O:** pick a link from the selected thread's questions and answers and
+- **Ctrl+B `o`:** pick a link from the selected thread's questions and answers and
   open it in the browser, as `/links` does for the conversation.
-- **Ctrl+K:** stop every running side question, keeping the records.
-- **Ctrl+C:** stop the running side questions, as Ctrl+K does; with nothing
+- **Ctrl+B `k`:** stop every running side question, keeping the records.
+- **Ctrl+C:** stop the running side questions, as Ctrl+B `k` does; with nothing
   running, close the popup.
 - **Escape:** close the popup and restore the editor draft (from a full-width
   thread it first brings the list back). Enter closes it too when there is no
   list to pick from.
 
-The Ctrl+R/Y/O/S/T/K shortcuts work from the list, the answer and the follow-up
-editor alike, and follow the [shortcut prefix](commands.md#shortcut-prefix):
-with a leader such as Ctrl+P, Ctrl+Y becomes Ctrl+P then `y`.
+The `r`/`y`/`o`/`s`/`t`/`k` actions work from the list, the answer and the
+follow-up editor alike. Press the [shortcut prefix](commands.md#shortcut-prefix)
+(Ctrl+B by default), then the letter. F1 browses the current popup's help.
 
 ### Commands
 
@@ -59,11 +59,11 @@ single name (`/co`) is enough on its own:
 
 | Command | Does |
 | --- | --- |
-| `/copy` | Copy the newest answer, as Ctrl+Y |
-| `/links` | Open a link from the thread, as Ctrl+O |
-| `/summarize [focus]` | Summarize into the conversation, keeping what *focus* says, as Ctrl+S |
-| `/merge` | Merge into `/tree`, as Ctrl+T |
-| `/stop` | Stop running side questions, as Ctrl+K |
+| `/copy` | Copy the newest answer, as Ctrl+B `y` |
+| `/links` | Open a link from the thread, as Ctrl+B `o` |
+| `/summarize [focus]` | Summarize into the conversation, keeping what *focus* says, as Ctrl+B `s` |
+| `/merge` | Merge into `/tree`, as Ctrl+B `t` |
+| `/stop` | Stop running side questions, as Ctrl+B `k` |
 
 A follow-up that starts with a path of more than one part, such as
 `/etc/hosts`, is still sent as a question; one like `/tmp` reads as a command
@@ -89,7 +89,7 @@ never throws away the side question as well.
 
 The viewer has an editor under the answer for asking a follow-up, so a side
 question can become a short back-and-forth without leaving the popup. Press
-**Ctrl+R** (or Tab to it), type, and press **Enter** to send; **Ctrl+J** (or
+**Ctrl+B `r`** (or Tab to it), type, and press **Enter** to send; **Ctrl+J** (or
 Shift+Enter, where the terminal reports it) adds a line. The draft grows to six
 rows before it scrolls, and **PgUp / PgDn** scroll the answer while you type.
 **Escape** leaves the editor and keeps the draft, returning to the list, or to
@@ -132,7 +132,7 @@ for the running turn the way forking in `/tree` does: the conversation's history
 cannot change under a turn that is about to write it back. Pressing either key
 mid-turn says so in the header and does nothing else.
 
-**Ctrl+S: Summarize into the conversation.** The editor asks for optional
+**Ctrl+B `s`: Summarize into the conversation.** The editor asks for optional
 instructions ("keep only the decisions", "what should change in the plan?");
 press **Enter** with nothing typed to summarize as is, or **Escape** to cancel
 and get your follow-up draft back. The summary is asked *in the thread*, on its
@@ -144,7 +144,7 @@ so the conversation's cache still covers everything before it. While the summary
 runs, the footer shows it like `/compact`, prompts you send wait behind it, and
 Ctrl+C cancels it with the conversation unchanged.
 
-**Ctrl+T: Merge into `/tree`.** Every answered question in the thread becomes a node
+**Ctrl+B `t`: Merge into `/tree`.** Every answered question in the thread becomes a node
 in the [conversation tree](conversation-tree.md), marked `btw:`, forked from the
 point where the thread was asked. Each one is a checkpoint like a turn's:
 selecting it in `/tree` continues from that answer, and it survives resuming the

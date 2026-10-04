@@ -15,7 +15,8 @@ import asyncio, os, tempfile
 # Never touch the developer's saved defaults: Ctrl+G persists its choice.
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
 from pcode.preferences import save_preferences
-save_preferences(autohide_tasks="off")  # This pane asserts on the idle widget.
+# Preserve the fixture's Ctrl shortcuts in this isolated config.
+save_preferences(key_prefix="ctrl", autohide_tasks="off")  # Assert on the idle widget.
 from pcode.app import PreviewApp
 from pcode.runtime import Message, ToolStarted, ToolSummary
 

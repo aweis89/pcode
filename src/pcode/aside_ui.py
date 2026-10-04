@@ -160,6 +160,7 @@ class AsideBrowser:
         self.detail = RichPane(theme=rich_theme, color_system=color_system)
         self.list.buffer.on_cursor_position_changed += lambda _: self.select()
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+        shortcuts.set_help(self.help)
         self.input = (
             PopupInput(
                 self.follow_up,
@@ -280,7 +281,6 @@ class AsideBrowser:
                 header,
                 body,
                 *([self.input] if self.input else []),
-                Label(self.hints),
                 Label(shortcuts.summary),
             ]
         )
@@ -327,17 +327,47 @@ class AsideBrowser:
     def editing(self) -> bool:
         return self.input is not None and self.app.layout.has_focus(self.input.area)
 
-    def hints(self) -> str:
-        """The keys that matter where focus is, on one short line."""
-        if self.editing() and self.input.prompting:
-            return "Enter Summarize (empty: as is) · Ctrl+J Newline · Esc Cancel · PgUp/PgDn Scroll"
+    def help(self) -> list[tuple[str, str]]:
+        """Describe the active picker, editor, or reader, including its current focus."""
+        if isinstance(self.picker, LinkPicker):
+            return self.picker.help()
+        if self.picker is not None:
+            return [
+                ("↑/↓", "Select snippet"),
+                ("PgUp/PgDn", "Page"),
+                ("Ctrl+U/D", "Half page"),
+                ("Enter", "Copy selected snippet"),
+                ("Esc/Ctrl+C", "Cancel"),
+            ]
+        interrupt = ("Ctrl+C", "Stop running answers" if self.asides.running else "Close")
         if self.editing():
-            return "Enter Send · Ctrl+J Newline · Esc Back · Tab Focus · PgUp/PgDn Scroll"
-        if self.listing():
-            return "↑↓ Select · Enter Read · Esc Close · Tab Focus · PgUp/PgDn Page"
-        if self.reading and len(self.threads) > 1:
-            return "↑↓ Scroll · Esc Questions · Enter Close · Tab Focus · PgUp/PgDn Page"
-        return "↑↓ Scroll · Enter/Esc Close · Tab Focus · PgUp/PgDn Page"
+            prompting = self.input.prompting
+            return [
+                ("Enter", "Summarize (empty: as is)" if prompting else "Send"),
+                ("Ctrl+J", "Newline"),
+                ("Tab/Shift+Tab", "Cycle completions, otherwise change focus"),
+                (
+                    "Esc",
+                    "Close completions, otherwise cancel"
+                    if prompting
+                    else (
+                        "Close completions, otherwise return to questions"
+                        if self.listing()
+                        else "Close completions, otherwise return to reader"
+                    ),
+                ),
+                ("PgUp/PgDn", "Scroll answer"),
+                interrupt,
+            ]
+        return [
+            ("↑/↓", "Select question" if self.app.layout.has_focus(self.list) else "Scroll answer"),
+            ("PgUp/PgDn", "Page"),
+            ("Ctrl+U/D", "Half page"),
+            ("Enter", "Read selected thread" if self.listing() else "Close"),
+            ("Esc", "Questions" if self.reading and len(self.threads) > 1 else "Close"),
+            ("Tab/Shift+Tab", "Change focus"),
+            interrupt,
+        ]
 
     def commands(self) -> list[PopupCommand]:
         """What the editor runs instead of asking: the shortcuts' actions, by name."""

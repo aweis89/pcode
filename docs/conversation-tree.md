@@ -7,6 +7,9 @@ forking works while the agent is idle. This follows the user/assistant selection
 
 ![/tree after editing an earlier prompt: two branches from the same answer](assets/screenshots/tree.svg)
 
+This screenshot shows an earlier UI with direct Ctrl shortcuts and static key
+hints; the bindings below describe the current defaults. F1 opens contextual help.
+
 The picker is laid out like `/resume`: the tree on the left, and on the right a
 Conversation pane showing the full branch through the selected row, root to
 leaf. Moving the selection scrolls that pane so the selected prompt or response
@@ -22,9 +25,8 @@ selected row the pane follows the active branch where the tree forks.
 - **Enter on an assistant response:** restore the context **after** that turn.
   Send a new message to continue from there.
 - **Enter on Conversation start:** select empty context within the same session.
-- **Ctrl+Y:** copy the selected prompt or response to the system clipboard, from
-  either pane (a [shortcut](commands.md#shortcut-prefix): with a leader it is the
-  leader, then `y`). It copies the text as the Conversation pane shows it (redacted,
+- **Ctrl+B `y`:** copy the selected prompt or response to the system clipboard, from
+  either pane (the [shortcut prefix](commands.md#shortcut-prefix), then `y`). It copies the text as the Conversation pane shows it (redacted,
   truncated at 64 KiB), and the header says what was copied. On a response holding
   quotes or fenced code blocks, it opens a picker like
   [`/copy`](commands.md#offline-preview)'s to copy one of those, or the whole response.

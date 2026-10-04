@@ -32,6 +32,64 @@ def test_fuzzy_match_uses_substrings_or_joined_word_prefixes(term, text, expecte
     assert fuzzy_match(term, text) is expected
 
 
+@pytest.mark.parametrize("prefix", ["ctrl", "ctrl+x"])
+def test_standalone_copy_help_gates_picker_keys(monkeypatch, prefix):
+    from pcode.copy_ui import Snippet, snippet_dialog
+    from pcode.prefix_keys import PrefixKeys
+
+    shortcuts = PrefixKeys(prefix)
+    monkeypatch.setattr("pcode.copy_ui.PrefixKeys", lambda: shortcuts)
+    choices = [Snippet("response", "response"), Snippet("quote", "quote")]
+
+    async def wait_for(predicate):
+        async with asyncio.timeout(3):
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            app = snippet_dialog(choices, input=pipe, output=DummyOutput())
+            task = asyncio.create_task(app.run_async())
+            try:
+                await wait_for(lambda: app.is_running)
+                if prefix != "ctrl":
+                    pipe.send_text("\x18")
+                    await wait_for(lambda: shortcuts.pending)
+                    assert ("F1", "All keys") in shortcuts.hint_rows()
+                pipe.send_text("\x1bOP")
+                await wait_for(lambda: shortcuts.browsing)
+                assert ("Enter", "Copy selected snippet") in shortcuts.hint_rows()
+                pipe.send_text("\x1b[A\r\x1bOP")
+                await wait_for(lambda: not shortcuts.visible)
+                assert not task.done()
+                pipe.send_text("\r")
+                assert await asyncio.wait_for(task, 3) == choices[1]
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_nested_copy_picker_keeps_host_help_provider():
+    from pcode.copy_ui import Snippet, SnippetPicker
+    from pcode.prefix_keys import PrefixKeys
+
+    shortcuts = PrefixKeys("ctrl")
+
+    def provider():
+        return [("Enter", "Host context")]
+
+    shortcuts.set_help(provider)
+    picker = SnippetPicker(
+        [Snippet("response", "text")], lambda _: None, lambda: None, shortcuts=shortcuts
+    )
+    assert shortcuts.help_provider is provider
+    assert ("Enter", "Copy selected snippet") in picker.help()
+    assert len(picker.container.children) == 1
+
+
 def test_rich_pane_scroll_reuses_prepared_lines():
     pane = RichPane()
     pane.set([Text("\n".join(f"Line {i}" for i in range(1000)))])
@@ -247,12 +305,14 @@ def test_popup_mouse_toggle_starts_from_the_setting(monkeypatch):
     shortcuts = PrefixKeys("ctrl+p")
     captured = popup_ui.popup_mouse(shortcuts)
     assert not captured()
-    # The footer names what the key does next, so it also tells the state.
-    assert "q Capture mouse" in shortcuts.summary()
+    # Action labels stay in contextual help, not the summary footer.
+    assert "Keybindings" in shortcuts.summary()
+    assert ("Ctrl+P q", "Capture mouse") in shortcuts.hint_rows()
     toggle = next(s for s in shortcuts.shortcuts if s.key == popup_ui.MOUSE_TOGGLE_KEY)
     toggle.handler(SimpleNamespace(app=Application()))
     assert captured()
-    assert "q Release mouse" in shortcuts.summary()
+    assert "Keybindings" in shortcuts.summary()
+    assert ("Ctrl+P q", "Release mouse") in shortcuts.hint_rows()
     # Without shortcuts there is nothing to toggle, only the setting.
     assert not popup_ui.popup_mouse()()
 

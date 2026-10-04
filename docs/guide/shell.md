@@ -21,14 +21,18 @@ keeps running whether or not anyone is waiting on it.
 - If the agent has already finished its turn, a job it started finishing
   **wakes it up**: a new turn starts on its own so it can act on the result.
 
+The screenshots below show an earlier UI with direct Ctrl shortcuts and static
+key hints. The text describes the current defaults: Ctrl+B then a letter for
+actions, and F1 for contextual help.
+
 The footer below the editor shows `1 job` or `N jobs` for all active jobs,
 including those the agent is waiting on. The count disappears when none remain;
 individual jobs no longer take up persistent rows.
 
 ![The footer shows 1 job while CI runs and the agent answers something else](../assets/screenshots/jobs.svg)
 
-`/jobs` lists them beside each one's live output. Ctrl+W pins a job's output
-into the preview and Ctrl+K stops it. Jobs outlive the turn and even pcode: if
+`/jobs` lists them beside each one's live output. Ctrl+B `w` pins a job's output
+into the preview and Ctrl+B `k` stops it. Jobs outlive the turn and even pcode: if
 you quit with a job running, the next pcode adopts it.
 
 ![The /jobs popup: the job list on the left, the command and its live output on the right](../assets/screenshots/jobs-popup.svg)

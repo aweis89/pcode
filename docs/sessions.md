@@ -23,11 +23,11 @@ pcode --stop-hosts stale         # stop hosts still running older pcode code (or
 Inside a hosted session:
 
 - `/switch` opens a picker over every running host, with what each one is doing.
-  Enter shows that session in this terminal; Ctrl+N starts a new one;
-  Ctrl+X (or Delete in the list), pressed twice, stops one. A turn you switch
+  Enter shows that session in this terminal; Ctrl+B `n` starts a new one;
+  Ctrl+B `x` (or Delete in the list), pressed twice, stops one. A turn you switch
   away from keeps running. Both are [shortcuts](commands.md#shortcut-prefix).
 - `/switch HOST` goes straight to one by host or session ID prefix, and
-  `/switch -` (or Ctrl+^, which most terminals also send for Ctrl+6) back to the
+  `/switch -` (or Ctrl+B `^`) back to the
   one this terminal showed before. Pressed again, it flips back.
 - `/switch new` starts a new session and switches to it. `/switch new PROMPT`
   starts one working on PROMPT and leaves it in the background; this terminal
@@ -172,12 +172,12 @@ truncated responses alongside.
   (Ctrl+U/Ctrl+D by half a page).
 - Tab moves to the session list, and Tab again to the content pane, where arrows
   scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page.
-- From anywhere, Ctrl+F returns to the search, Ctrl+R includes responses in it,
-  and Ctrl+G includes every workspace (these are
+- From anywhere, Ctrl+B `f` returns to the search, Ctrl+B `r` includes responses in it,
+  and Ctrl+B `g` includes every workspace (these are
   [shortcuts](commands.md#shortcut-prefix)).
 - Enter resumes the selected session in place, restoring its model, history, and
   plan. Esc cancels.
-- Ctrl+X (or Delete in the session list), pressed twice, permanently deletes the
+- Ctrl+B `x` (or Delete in the session list), pressed twice, permanently deletes the
   selected session. The active session and one open in another process are
   refused.
 
