@@ -12,7 +12,15 @@ from prompt_toolkit.filters import Condition, Filter, has_focus
 from prompt_toolkit.formatted_text import ANSI, AnyFormattedText, to_formatted_text
 from prompt_toolkit.formatted_text.utils import fragment_list_to_text, split_lines
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import ConditionalContainer, Float, FloatContainer, HSplit, Window
+from prompt_toolkit.layout import (
+    ConditionalContainer,
+    Float,
+    FloatContainer,
+    HorizontalAlign,
+    HSplit,
+    VSplit,
+    Window,
+)
 from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UIControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
@@ -84,20 +92,39 @@ def popup_container(body, shortcuts: PrefixKeys | None = None):
 def shortcut_hint(shortcuts: PrefixKeys):
     """Shared contextual help for prefix actions and read-only F1 browsing."""
 
-    def fragments():
-        rows = shortcuts.hint_rows()
+    def rows() -> list[tuple[str, str]]:
+        listed = shortcuts.hint_rows()
         if shortcuts.message:
-            rows.append(("", shortcuts.message))
-        width = max((get_cwidth(key) for key, _ in rows), default=0)
-        lines = []
-        for key, label in rows:
-            lines.append([("bold", f" {key.ljust(width)}"), ("", f"  {label} ")])
+            listed.append(("", shortcuts.message))
+        return listed
+
+    def key_width(rows) -> int:
+        return max((get_cwidth(key) for key, _ in rows), default=0)
+
+    def fragments():
+        listed = rows()
+        width = key_width(listed)
         result = []
-        for index, line in enumerate(lines):
-            result.extend(line)
-            if index < len(lines) - 1:
+        for index, (key, label) in enumerate(listed):
+            if index:
                 result.append(("", "\n"))
+            # Pad by display width, not ljust's character count, for wide keys.
+            padded = key + " " * (width - get_cwidth(key))
+            result += [("bold", f" {padded}"), ("", f"  {label} ")]
         return result
+
+    def frame_width() -> Dimension:
+        # Frame's top and bottom borders stretch to whatever width they are
+        # given, while the body hugs its text, so without an explicit width
+        # the box spans the screen and the right border floats mid-row.
+        listed = rows()
+        width = key_width(listed)
+        content = max((width + get_cwidth(label) + 4 for _, label in listed), default=0)
+        # "┌| title |┐": the title plus a space, a bar, and a corner each side.
+        title = get_cwidth(shortcuts.help_title) + 6 if shortcuts.help_title else 0
+        fit = max(content + _BORDERS, title)
+        # A maximum, not an exact width, so a narrow terminal wraps the labels.
+        return Dimension(preferred=fit, max=fit)
 
     body = Window(
         FormattedTextControl(
@@ -106,11 +133,13 @@ def shortcut_hint(shortcuts: PrefixKeys):
             get_cursor_position=lambda: Point(0, shortcuts.help_offset),
         ),
         wrap_lines=True,
-        dont_extend_width=True,
         dont_extend_height=True,
     )
     return ConditionalContainer(
-        Frame(body, title=lambda: shortcuts.help_title),
+        VSplit(
+            [Frame(body, title=lambda: shortcuts.help_title, width=frame_width)],
+            align=HorizontalAlign.LEFT,
+        ),
         filter=Condition(lambda: shortcuts.visible),
     )
 
