@@ -703,6 +703,33 @@ def test_session_name_is_listed_and_searched(tmp_path):
     assert "1 of 2 turns" in app.detail.text()
 
 
+def test_session_title_is_listed_searched_and_ranked_like_a_name(tmp_path):
+    app, (titled, renamed, other) = sessions_browser(
+        tmp_path,
+        [
+            [("Fix it", "Done")],
+            [("Something", "Done")],
+            [("Parser cleanup notes", "The parser is fine")],
+        ],
+    )
+    by_id = {info.id: info for info in app.records}
+    by_id[titled].title = "Parser crash fix"
+    by_id[renamed].title = "Old title"
+    by_id[renamed].name = "Chosen name"
+    app._titles.clear()
+    app.refresh()
+    # The /rename name is shown over a title; a title shows where there is none.
+    assert "Parser crash fix · Fix it" in app.list.text
+    assert "Chosen name · Something" in app.list.text and "Old title" not in app.list.text
+    # A title word ranks its session above one that only mentions the word.
+    app.query.text = "parser"
+    assert [info.id for info in app.visible] == [titled, other]
+    assert app.detail.text().startswith("Parser crash fix · ")
+    # A title replaced by /rename is still found.
+    app.query.text = "old title"
+    assert [info.id for info in app.visible] == [renamed]
+
+
 def test_mark_matches_splits_fragments_case_insensitively():
     from pcode.popup_ui import SEARCH_MATCH, mark_matches
 

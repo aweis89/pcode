@@ -291,6 +291,47 @@ def test_terminal_sees_a_turn_the_host_runs(tmp_path, host_dir):
     asyncio.run(run())
 
 
+def test_a_session_is_titled_after_its_first_turn(tmp_path, host_dir, monkeypatch):
+    from pcode.preferences import save_preferences
+    from pcode.sessions import list_sessions
+
+    save_preferences(session_naming="on")
+    asked = []
+
+    async def suggest(model, prompt, reply="", *, workspace=None):
+        asked.append((model, prompt, reply))
+        return "Greeting the host"
+
+    monkeypatch.setattr("pcode.session_naming.suggest_title", suggest)
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal, view, _ = await attach(host)
+            terminal.submit("hello", "queue")
+            await until(lambda: view.count("after_turn"))
+            # The title reaches the attached terminal (its tab), /switch, and /resume.
+            await until(lambda: terminal.session_title() == "Greeting the host")
+            assert asked == [("function:script", "hello", "Echo: hello")]
+            (entry,) = list_hosts()
+            assert entry.title == "Greeting the host"
+            (info,) = list_sessions(tmp_path / "sessions")
+            assert (info.title, info.name) == ("Greeting the host", None)
+            # Asked once per session, not per turn.
+            terminal.submit("again", "queue")
+            await until(lambda: view.count("after_turn") == 2)
+            assert len(asked) == 1
+            # A /rename name wins over the title everywhere it shows.
+            host.controller.rename("Custom name")
+            await until(lambda: terminal.session_title() == "Custom name")
+            assert list_hosts()[0].title == "Custom name"
+            terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
 def test_a_resumed_conversation_is_drawn_once_the_host_has_loaded_it(tmp_path, host_dir):
     """`pcode --continue` and /restart attach while the host is still reading the journal."""
 

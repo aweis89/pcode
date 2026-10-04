@@ -634,6 +634,9 @@ class SessionHost:
         if session is not None and session.info.id != self.entry.session_id:
             self.update(session_id=session.info.id)
             forget_stopped(session.info.id, self.directory)
+        # /switch lists the session by its name once it has one, not its first prompt.
+        if (title := state.get("session_title")) and title != self.entry.title:
+            self.update(title=title)
 
     # The entry other terminals read
 
@@ -674,6 +677,8 @@ class SessionHost:
             and not running
             and not self.controller.startup_pending
             and not self.controller.asides.running
+            # A title asked for after the first turn would be lost.
+            and (self.controller.naming_task is None or self.controller.naming_task.done())
         )
 
     async def stop_when_idle(
@@ -714,6 +719,7 @@ class SessionHost:
             task.cancel()
         await asyncio.gather(*self.tasks, *controller.tasks(), return_exceptions=True)
         await controller.asides.close()
+        await controller.stop_naming()
         if self.server is not None:
             self.server.close()
         if controller.extensions is not None:
@@ -778,7 +784,8 @@ async def _serve(args: argparse.Namespace) -> None:
             raise
         entry.session_id = saved.info.id
         prompt = first_prompt(saved.info, saved.directory.parent)
-        entry.title = "" if prompt.startswith("(") else prompt
+        first = "" if prompt.startswith("(") else prompt
+        entry.title = saved.info.name or saved.info.title or first
     elif not args.no_worktree:
         workspace, session_id = _enter_worktree(workspace, args.worktree)
         workspace = workspace.resolve()

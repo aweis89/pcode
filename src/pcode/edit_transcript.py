@@ -242,7 +242,7 @@ class LiveDeltaPreview:
 
 def _live_rows(delta: Delta, path: str, body: str, width: int):
     """The preview's delta rendering, wrapped to `width` rows of fragments."""
-    lines = delta.render(preview_patch(path, body), width, hunk_headers=False, cache=False)
+    lines = delta.render(preview_patch(path, body), width, cache=False)
     if lines is None:
         return None
     # A console of its own: this runs on a worker thread.

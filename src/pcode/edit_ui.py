@@ -364,8 +364,10 @@ class EditBrowser:
             self.go_to(rows[0])
 
     def pane_width(self) -> int:
-        # The frame's two borders and the scrollbar.
-        return max(1, self.app.output.get_size().columns - 3)
+        # The frame's two borders, the scrollbar, and a spare column: a wrapping
+        # window pushes a row as wide as itself onto a blank one, and every
+        # padded delta row is exactly the width it was rendered for.
+        return max(1, self.app.output.get_size().columns - 4)
 
     def show_diff(self) -> None:
         """Put the selected change in the diff pane, through delta where it is on."""

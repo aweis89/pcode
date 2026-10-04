@@ -52,6 +52,7 @@ def test_command_adds_only_what_the_user_did_not_choose():
         "--width=100",
         "--dark",
         "--file-style=omit",
+        "--hunk-header-style=omit",
     ]
     assert "--light" in Delta("delta", light=True).command(100)
     # delta rejects a flag given twice, so the user's own replaces pcode's.
@@ -60,6 +61,7 @@ def test_command_adds_only_what_the_user_did_not_choose():
         "delta",
         "--no-gitconfig",
         "--paging=never",
+        "--hunk-header-style=omit",
         "--width=variable",
         "--light",
         "--file-style",
@@ -67,9 +69,8 @@ def test_command_adds_only_what_the_user_did_not_choose():
         "-s",
     ]
     assert Delta("d", ("--no-gitconfig",)).command(80).count("--no-gitconfig") == 1
-    # The live preview has no real line numbers, so no hunk headers either.
-    assert "--hunk-header-style=omit" in delta.command(80, hunk_headers=False)
-    assert "--hunk-header-style=omit" not in delta.command(80)
+    headers = Delta("d", ("--hunk-header-style=syntax",)).command(80)
+    assert "--hunk-header-style=omit" not in headers
 
 
 @pytest.mark.parametrize(
@@ -103,11 +104,32 @@ def test_preferences_choose_delta_only_when_installed(monkeypatch):
 
 
 def test_erase_to_end_of_line_becomes_padding_in_its_background():
-    line = delta_module._line(f"\x1b[41mgone\x1b[0m\x1b[42m{ERASE_LINE}\x1b[0m", 10)
+    [line] = delta_module._rows(f"\x1b[41mgone\x1b[0m\x1b[42m{ERASE_LINE}\x1b[0m", 10, False)
     assert line.plain == "gone      "
     console = Console(width=10, color_system="truecolor", force_terminal=True)
     tail = list(console.render(line[4:]))[0]
     assert tail.style.bgcolor.name == "color(2)"
+
+
+def test_long_rows_fold_under_the_line_number_gutter():
+    # Unified delta never wraps; left to the terminal, a row restarts under the numbers.
+    raw = f"\x1b[42m  1 ⋮  2 │abcdefghijklmnopqrstuvwxy{ERASE_LINE}\x1b[0m"
+    rows = delta_module._rows(raw, 20, True)
+    assert [row.plain for row in rows] == [
+        "  1 ⋮  2 │abcdefghij",
+        "         │klmnopqrst",
+        "         │uvwxy     ",
+    ]
+    console = Console(width=20, color_system="truecolor", force_terminal=True)
+    tail = list(console.render(rows[2][-1:]))[0]
+    assert tail.style.bgcolor.name == "color(2)"
+    # Without line numbers a bar is just code, and wide characters never split.
+    assert [row.plain for row in delta_module._rows("a│b界界", 4, False)] == ["a│b", "界界"]
+    assert [row.plain for row in delta_module._rows("ab❤️❤️❤️c", 4, False)] == ["ab❤️", "❤️❤️", "c"]
+    # A user's own --width is never folded or padded.
+    assert [row.plain for row in delta_module._rows(raw, 0, True)] == [
+        "  1 ⋮  2 │abcdefghijklmnopqrstuvwxy"
+    ]
 
 
 def test_failing_delta_renders_nothing(tmp_path):
@@ -210,7 +232,7 @@ def test_transcript_tells_delta_the_palette(monkeypatch):
 
 
 class SizedOutput(DummyOutput):
-    columns = 83
+    columns = 84
 
     def get_size(self):
         return Size(rows=40, columns=self.columns)
@@ -230,7 +252,7 @@ def test_browser_shows_delta_rows_styled_and_searchable():
         # The heading is still classified as a plain diff line.
         assert ui.lexer.lex_document(Document(ui.diff.text))(0)[0][1] == rows[0]
 
-        output.columns = 103
+        output.columns = 104
         ui.rewidth(ui.app)
         assert ui.diff.text.splitlines()[2] == "DELTA 100"
 
@@ -285,8 +307,8 @@ def test_preview_patch_numbers_one_hunk_from_the_preview_lines():
 class PreviewDelta(Delta):
     """Answers with each patch line on a green background, without its gutter."""
 
-    def render(self, patch, width, *, hunk_headers=True, cache=True):
-        assert not hunk_headers and not cache
+    def render(self, patch, width, *, cache=True):
+        assert not cache
         if "+boom" in patch:
             return None
         return [Text(line[1:], style="on green") for line in patch.splitlines()[3:]]

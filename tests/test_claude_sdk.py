@@ -588,6 +588,41 @@ def test_settings_change_moves_to_a_resumed_process(world):
     assert world.clients[1].options.resume == world.clients[0].session_id
 
 
+def test_a_one_off_request_leaves_the_conversations_process_warm(world):
+    """A session title asked on the side must not evict the turn's process (idle cap 1)."""
+    from pydantic_ai.direct import model_request_stream
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from pcode.claude_sdk.model import KEEP_WARM_SETTING
+
+    agent, _ = make_agent()
+    world.replies = [[("text", "one")], [("text", "A title")], [("text", "two")]]
+    one_off = [ModelRequest(parts=[UserPromptPart("name it")], instructions="Title only.")]
+
+    async def main():
+        first = await agent.run("hi")
+        async with model_request_stream(
+            claude.claude_model(f"claude:{MODEL}"),
+            one_off,
+            model_settings={KEEP_WARM_SETTING: False},
+        ) as stream:
+            async for _ in stream:
+                pass
+        title = stream.get()
+        await asyncio.sleep(0.05)  # The dropped process closes in a task of its own.
+        kept = list(claude.pool().sessions)
+        second = await agent.run("again", message_history=first.all_messages())
+        return title, kept, second
+
+    title, kept, second = run(main)
+    assert title.parts[0].content == "A title" and second.output == "two"
+    conversation, side = world.clients
+    assert side.disconnected
+    assert [session.cli_session_id for session in kept] == [conversation.session_id]
+    # The next turn continued the live process: no third process was started.
+    assert texts(conversation.requests[-1]) == ["again"]
+
+
 def test_cancelled_stream_interrupts_before_closing(world):
     model = claude.claude_model(f"claude:{MODEL}")
     world.replies = [[("tool", "lookup", {"key": "a"})]]

@@ -483,6 +483,9 @@ class RemoteController:
     def context_label(self) -> str:
         return self.state.get("context", "")
 
+    def session_title(self) -> str:
+        return self.state.get("session_title") or ""
+
     def model_suggestions(self) -> list[str]:
         return self.state.get("models") or []
 

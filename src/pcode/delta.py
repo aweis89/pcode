@@ -19,11 +19,13 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from rich.cells import chop_cells
 from rich.text import Text
 
 LAYOUTS = ("auto", "unified", "side-by-side")
 WIDTH_FLAGS = {"-w", "--width"}
 SIDE_BY_SIDE_FLAGS = {"-s", "--side-by-side"}
+LINE_NUMBER_FLAGS = {"-n", "--line-numbers"}
 # `auto` switches to side-by-side at this width: each half then keeps about 90
 # columns, enough for most code lines beside their line numbers.
 SIDE_BY_SIDE_WIDTH = 180
@@ -54,7 +56,7 @@ class Delta:
         """The flags the user's own arguments set."""
         return {arg.split("=", 1)[0] for arg in self.args if arg.startswith("-")}
 
-    def command(self, width: int, *, hunk_headers: bool = True) -> list[str]:
+    def command(self, width: int) -> list[str]:
         given = self.given()
         defaults = [
             ({"--paging"}, "--paging=never"),
@@ -62,25 +64,23 @@ class Delta:
             ({"--dark", "--light"}, "--light" if self.light else "--dark"),
             # The block heading already names the file.
             ({"--file-style"}, "--file-style=omit"),
+            # A boxed `line: function` heading that often holds only a number.
+            ({"--hunk-header-style"}, "--hunk-header-style=omit"),
         ]
-        if not hunk_headers:
-            defaults.append(({"--hunk-header-style"}, "--hunk-header-style=omit"))
         if self.side_by_side(width):
             defaults.append((SIDE_BY_SIDE_FLAGS, "--side-by-side"))
         added = [flag for names, flag in defaults if not names & given]
         isolated = [] if "--no-gitconfig" in given else ["--no-gitconfig"]
         return [self.executable, *isolated, *added, *self.args]
 
-    def render(
-        self, patch: str, width: int, *, hunk_headers: bool = True, cache: bool = True
-    ) -> list[Text] | None:
-        """One styled Rich line per output line, or None if delta failed.
+    def render(self, patch: str, width: int, *, cache: bool = True) -> list[Text] | None:
+        """One styled Rich row per output row, or None if delta failed.
 
         Safe to call off the event loop. Without `cache`, the output is not
         kept, so the live preview's many short-lived bodies do not push the
         settled blocks' renderings out.
         """
-        command = tuple(self.command(max(1, width), hunk_headers=hunk_headers))
+        command = tuple(self.command(max(1, width)))
         key = (command, patch)
         with _lock:
             cached = key in _cache
@@ -99,7 +99,8 @@ class Delta:
             lines.pop(0)
         # Padding to pcode's width would wrap every row of a wider user width.
         pad = 0 if self.given() & WIDTH_FLAGS else width
-        return [_line(line, pad) for line in lines]
+        gutter = bool(set(command) & LINE_NUMBER_FLAGS)
+        return [row for line in lines for row in _rows(line, pad, gutter)]
 
     def prefetch(self, patches: list[str], width: int) -> None:
         """Render many patches through one delta process, ready for `render`.
@@ -172,8 +173,8 @@ def _remember(key: tuple[tuple[str, ...], str], output: str | None) -> str | Non
 def preview_patch(path: str, body: str) -> str:
     """A unified diff of a streaming edit preview's `-`/`+` lines.
 
-    The preview has no line numbers, so the hunk is numbered from 1 and its
-    header is left out of the rendering. The path's extension picks the
+    The preview has no line numbers, so the hunk is numbered from 1; its
+    header is never drawn. The path's extension picks the
     syntax highlighting. A line the preview's tail clip cut short of its
     prefix is dropped.
     """
@@ -215,18 +216,43 @@ def _environment() -> dict[str, str]:
     return {**env, "DELTA_PAGER": "cat"}
 
 
-def _line(raw: str, width: int) -> Text:
-    """Parse one ANSI line, padding where delta erased to the end of the line."""
+def _rows(raw: str, width: int, gutter: bool) -> list[Text]:
+    """Parse one ANSI line into rows of at most `width` cells (0 for any width).
+
+    The unified layout never wraps, and a long row left to the terminal would
+    restart under the line numbers, so it is folded here, each continuation
+    indented past the `gutter` when `--line-numbers` draws one. Where delta erased to the
+    end of the line, every row is padded in that background.
+    """
     if ERASE_LINE not in raw:
-        return Text.from_ansi(raw)
-    head = raw.split(ERASE_LINE, 1)[0]
-    text = Text.from_ansi(head + _MARK)
-    style = next(
-        (span.style for span in reversed(text.spans) if span.start <= len(text) - 1 < span.end),
-        "",
-    )
-    text.right_crop(1)
-    pad = width - text.cell_len
-    if pad > 0:
-        text.append(" " * pad, style)
-    return text
+        text, style = Text.from_ansi(raw), None
+    else:
+        text = Text.from_ansi(raw.split(ERASE_LINE, 1)[0] + _MARK)
+        style = next(
+            (span.style for span in reversed(text.spans) if span.start <= len(text) - 1 < span.end),
+            "",
+        )
+        text.right_crop(1)
+    rows = _fold(text, width, gutter) if width else [text]
+    if style is not None:
+        for row in rows:
+            if (pad := width - row.cell_len) > 0:
+                row.append(" " * pad, style)
+    return rows
+
+
+def _fold(text: Text, width: int, gutter: bool) -> list[Text]:
+    if text.cell_len <= width:
+        return [text]
+    # The line-number gutter ends at its first bar, like ` 24 ⋮ 25 │`.
+    bar = text.plain.find("│") if gutter else -1
+    indent = bar + 1 if 0 < bar < width // 2 else 0
+    prefix = Text(" " * (indent - 1)) + text[bar:indent] if indent else Text()
+    # chop_cells measures whole grapheme clusters, so an emoji never splits.
+    first = chop_cells(text.plain, width)[0]
+    start = len(first)
+    rows = [text[:start]]
+    for piece in chop_cells(text.plain[start:], width - indent):
+        rows.append(prefix + text[start : start + len(piece)])
+        start += len(piece)
+    return rows

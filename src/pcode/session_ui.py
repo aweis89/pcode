@@ -71,15 +71,23 @@ def names_session(word: str, info: SessionInfo) -> bool:
     return worktree.startswith(SESSION_WORKTREE_PREFIX) and word == worktree
 
 
+def display_name(info: SessionInfo) -> str:
+    """The session's /rename name, else the title its model gave it."""
+    return info.name or info.title or ""
+
+
 def in_name(word: str, info: SessionInfo) -> bool:
-    """Whether a casefolded query word is a word of the session's /rename name.
+    """Whether a casefolded query word is a word of the session's name or title.
 
     Or the start of one, from three characters, so typing "bil" already finds
     "Billing outage" but a lone "a" or "in" does not name every named session.
+    Both count: an asked-for title is still what the list shows when there is
+    no /rename name, and a name replaced by /rename is still worth finding.
     """
+    text = f"{info.name or ''} {info.title or ''}".casefold()
     return any(
         part == word or (len(word) >= 3 and part.startswith(word))
-        for part in re.findall(r"\w+", (info.name or "").casefold())
+        for part in re.findall(r"\w+", text)
     )
 
 
@@ -363,16 +371,16 @@ class SessionBrowser:
         if info.id not in self._titles:
             marker = "* " if info.id == self.active_id else "  "
             first = redact(first_prompt(info, self.root))
-            if info.name:
-                first = f"{info.name} · {first}"
+            if name := display_name(info):
+                first = f"{name} · {first}"
             when = info.updated[5:16].replace("T", " ")
             self._titles[info.id] = f"{marker}{when}  {info.id[:8]}  {plain(first, 80)}"
         return self._titles[info.id]
 
     def heading(self, info: SessionInfo, shown: int, total: int) -> str:
         parts = [info.id[:8], plain(info.model, 40), info.updated[:16].replace("T", " ")]
-        if info.name:
-            parts.insert(0, plain(info.name, 60))
+        if name := display_name(info):
+            parts.insert(0, plain(name, 60))
         if info.id == self.active_id:
             parts.append("active")
         noun = "turn" if total == 1 else "turns"

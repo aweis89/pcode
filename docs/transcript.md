@@ -79,12 +79,13 @@ variables (`DELTA_FEATURES`, `BAT_THEME`), so these diffs look the same however
 ```
 
 pcode itself only sets the width, dark or light (from your pcode theme), no
-pager, no file header (the block heading already names the file), and the
-layout. A flag in `delta_args` replaces pcode's choice of that flag, so
+pager, no file or hunk headers (the block heading already names the file), and
+the layout. A flag in `delta_args` replaces pcode's choice of that flag, so
 `--side-by-side` gives the side-by-side layout at every width and
-`--width=variable` stops backgrounds at the end of the text. With
+`--width=variable` stops backgrounds at the end of the text. Any
+`--hunk-header-style` brings the hunk headers back. With
 `diff_layout auto`, a diff 180 columns or wider is shown side by side, and a
-narrower one gets the unified view; the `/diffs` pane is three columns narrower
+narrower one gets the unified view; the `/diffs` pane is four columns narrower
 than the terminal. Settings apply on the next launch.
 
 A `--features NAME` that names a `[delta "NAME"]` section of your git config

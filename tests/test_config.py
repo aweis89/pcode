@@ -50,6 +50,9 @@ def test_defaults_and_path_do_not_create_files():
         "claude_idle_processes": "1",
         "claude_idle_minutes": "10",
         "desktop_notifications": "on",
+        # conftest's test defaults; both ship "on".
+        "session_naming": "off",
+        "terminal_title": "off",
         "terminal_progress": "auto",
         "worktree_exit": "ask",
         "retry_attempts": "3",

@@ -191,12 +191,12 @@ selected session's prompts, responses, and tool calls alongside.
   (file paths, shell commands) across sessions. A session is listed when every
   space-separated word appears somewhere in it, not necessarily in one turn; the
   pane shows the turns holding any of the words, marks each match, and scrolls to
-  the first. The best matches come first: a session whose name or ID the query
-  names, then one with every word in a single turn, then the one with more
+  the first. The best matches come first: a session whose name, title or ID the
+  query names, then one with every word in a single turn, then the one with more
   matching turns, and otherwise the newest.
 - A session ID prefix of at least four characters, the full name of the `pcode-*`
-  worktree it ran in, or a word of its name (or the start of one, from three
-  letters) finds that session with every turn.
+  worktree it ran in, or a word of its name or [title](#session-titles) (or the
+  start of one, from three letters) finds that session with every turn.
   `/rename NAME` names the current session (`/rename -` clears it).
 - ↑/↓ move the selection while you type (Ctrl+U/Ctrl+D by half a page).
 - Tab moves to the session list, and Tab again to the content pane, where arrows
@@ -215,6 +215,21 @@ that worktree: file tools, the shell, extensions, and skill commands move there,
 and the worktree being left is tidied as on exit (an untouched `pcode-` worktree
 is removed; unmerged work is kept with a note). Sessions from another repository
 are refused.
+
+### Session titles
+
+After a new session's first turn, pcode asks the session's own model for a
+short title, in the background and at low effort. `/resume` lists it before the
+first prompt and finds the session by its words, `/switch` lists it in place of
+the first prompt, and the terminal [tab](configuration.md#tab-title) shows it.
+`/rename NAME` replaces it everywhere, and `/rename -` goes back to the title.
+
+The request carries only your first message and the start of the reply, not the
+conversation, so it costs a fraction of a turn. If the request fails, nothing
+is shown and the session lists by its first prompt as before; pcode asks again
+the next time the session is opened, not on every turn. Sessions from before
+titles existed get one after their next turn.
+`pcode config set session_naming off` turns titles off.
 
 ### Continuing a session that is open elsewhere
 

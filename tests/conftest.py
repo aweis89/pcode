@@ -221,6 +221,15 @@ def isolated_preferences(monkeypatch, tmp_path, request):
         "show_hints",
         replace_setting(preferences.SETTINGS["show_hints"], default="off"),
     )
+    # Both are on by default. Off here, so a test's first turn makes no extra
+    # model request and no terminal title escape lands in captured output;
+    # tests/test_session_naming.py turns them on itself.
+    for name in ("session_naming", "terminal_title"):
+        monkeypatch.setitem(
+            preferences.SETTINGS,
+            name,
+            replace_setting(preferences.SETTINGS[name], default="off"),
+        )
 
 
 @pytest.fixture

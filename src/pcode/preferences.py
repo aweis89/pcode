@@ -355,6 +355,17 @@ SETTINGS = {
         ("on", "off"),
         description="Desktop notification when a background session finishes (OSC 9)",
     ),
+    "session_naming": Setting(
+        "on",
+        ("on", "off"),
+        description="Title each new session after its first turn, asking its own model "
+        "at low effort; /rename overrides",
+    ),
+    "terminal_title": Setting(
+        "on",
+        ("on", "off"),
+        description="Set the terminal tab title to the session's name (OSC 0)",
+    ),
     "terminal_progress": Setting(
         "auto",
         ("auto", "on", "off"),

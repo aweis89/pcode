@@ -169,6 +169,8 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `cache_notices` | `on` | `on`, `off` (footer note, saved with the session, when a request reuses less of the prompt cache; see [prompt cache notices](context.md#prompt-cache-notices)) |
 | `terminal_progress` | `auto` | `auto`, `on`, `off` (the terminal's [tab progress bar](#tab-progress-bar) while a turn runs; OSC 9;4) |
 | `desktop_notifications` | `on` | `on`, `off` (desktop notification when a background session finishes; OSC 9) |
+| `terminal_title` | `on` | `on`, `off` (set the terminal [tab title](#tab-title) to the session's name; OSC 0) |
+| `session_naming` | `on` | `on`, `off` (ask the session's own model for a [title](sessions.md#session-titles) after the first turn) |
 
 ### Tools and sub-agents
 
@@ -226,6 +228,21 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `debug` | `off` | `on`, `off` (also write request fingerprints to disk with each cache notice) |
 | `profile` | `off` | `off`, `resources`, `cpu`, `memory` (capture each session's resource use; see [profiling](https://github.com/aweis89/pcode/blob/master/dev/profiling.md)) |
 | `stall_log` | `on` | `on`, `off` (when the editor stops responding for roughly 150 ms or more, append what was running to `~/.local/state/pcode/stalls.jsonl`) |
+
+## Tab title
+
+Once a session has a name, from `/rename` or the
+[title its model gave it](sessions.md#session-titles), pcode puts it in the
+terminal's tab title, so a row of tabs reads as a list of tasks. It follows
+`/rename`, `/new` and `/switch`. A session with no name yet leaves the title to
+your shell, and on exit pcode puts back the title it found, in terminals that
+keep a title stack (xterm, iTerm2, kitty, Ghostty and VTE terminals such as
+GNOME Terminal, among others). Elsewhere the title stays until your shell's
+prompt sets its own.
+
+Inside tmux the name goes to the pane title. tmux shows it in the outer tab
+only with `set -g set-titles on`, whose default `set-titles-string` includes the
+pane title. `pcode config set terminal_title off` leaves the title alone.
 
 ## Tab progress bar
 

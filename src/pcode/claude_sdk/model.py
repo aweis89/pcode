@@ -62,6 +62,12 @@ class _Events:
         await self._events.aclose()
 
 
+# Model setting: False for a one-off request (a session title), whose process
+# is stopped once it answers. Kept, it would be the newest idle process and
+# evict the conversation's warm one under `claude_idle_processes`.
+KEEP_WARM_SETTING = "pcode_claude_keep_warm"
+
+
 class ClaudeModel(AnthropicModel):
     @cached_property
     def profile(self):
@@ -152,7 +158,7 @@ class ClaudeModel(AnthropicModel):
                 # Resuming any of this history would show the model its own
                 # refused calls again: the next request replays it instead.
                 sessions.index.drop(chain)
-            elif session.complete:
+            elif session.complete and settings.get(KEEP_WARM_SETTING, True):
                 _, answer = await self._map_message([stream.get()], parameters, settings)
                 answer = normalize(answer)
                 if len(answer) == 1 and answer[0]["role"] == "assistant":

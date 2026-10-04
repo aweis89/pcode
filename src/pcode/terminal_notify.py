@@ -1,5 +1,5 @@
 """Escape sequences for the terminal emulator itself, not the screen: desktop
-notifications (OSC 9) and tab progress (OSC 9;4).
+notifications (OSC 9), tab progress (OSC 9;4), and the tab title (OSC 0).
 
 Ghostty shows both by default (`desktop-notifications`, `progress-style`);
 iTerm2 and WezTerm take OSC 9 too, and terminals that know neither ignore an
@@ -255,22 +255,99 @@ class TabProgress:
     def _write(self, sequence: str, now: float) -> None:
         if self.wrap is None:
             return
-        data = self.wrap(sequence).encode()
+        # On failure the terminal is gone; the next tick tries again.
+        if _write_all(self.fd, self.wrap(sequence).encode()):
+            self.sent, self.sent_at = sequence, now
+
+
+# The tab title
+
+# xterm's title stack (XTWINOPS 22/23): save the title the shell left, put it
+# back on the way out. xterm, iTerm2, kitty, Ghostty and VTE keep one;
+# elsewhere the title stays until the shell's prompt next sets its own.
+SAVE_TITLE = "\x1b[22;0t"
+RESTORE_TITLE = "\x1b[23;0t"
+
+
+def title(text: str) -> str:
+    """OSC 0, which sets the tab (icon) title and the window title alike.
+
+    OSC 2 alone leaves iTerm2's tab as it was, and OSC 1 alone is not read
+    by most other terminals. Inside tmux it names the pane, unwrapped: the
+    outer tab belongs to tmux, which shows it with `set-titles on`.
+    """
+    return f"\x1b]0;{' '.join(_CONTROL.sub(' ', text).split())[:120]}\x07"
+
+
+class TabTitle:
+    """Keep the terminal's title on the session's name, sampled once a second.
+
+    `source` is read on each tick, so a name given by /rename, by the model
+    after the first turn, or by the host a hosted terminal follows needs no
+    hook of its own. Nothing is sent until there is a name, so a session
+    without one leaves the title to the shell.
+    """
+
+    def __init__(self, source: Callable[[], str], fd: int | None, mode: str = "on") -> None:
+        self.source = source
+        self.fd = fd
+        self.mode = mode
+        self.sent = ""
+        self.saved = False
+
+    def tick(self) -> None:
         try:
-            # All of it or nothing: a truncated OSC leaves the terminal inside
-            # a string that swallows the next frame. The fd may have been made
-            # non-blocking under us; prompt_toolkit flushes frames the same way.
-            blocking = os.get_blocking(self.fd)
-            os.set_blocking(self.fd, True)
-            try:
-                while data:
-                    data = data[os.write(self.fd, data) :]
-            finally:
-                os.set_blocking(self.fd, blocking)
-        except OSError:
-            # The terminal is gone; the next tick tries again.
+            text = " ".join((self.source() or "").split())
+        except Exception:  # noqa: BLE001 - a title is never worth an error.
             return
-        self.sent, self.sent_at = sequence, now
+        if text == self.sent:
+            return
+        if text:
+            data = ("" if self.saved else SAVE_TITLE) + title(text)
+        else:
+            # The name went (/new): hand the shell's title back, and keep it
+            # saved for the next name.
+            data = RESTORE_TITLE + SAVE_TITLE
+        if _write_all(self.fd, data.encode()):
+            self.sent, self.saved = text, True
+
+    def close(self) -> None:
+        if self.saved and _write_all(self.fd, RESTORE_TITLE.encode()):
+            self.saved, self.sent = False, ""
+
+    async def run(self) -> None:
+        if self.mode != "on" or self.fd is None or not _isatty(self.fd):
+            return
+        if os.environ.get("TERM") == "dumb":
+            return
+        try:
+            while True:
+                self.tick()
+                await asyncio.sleep(TICK_SECONDS)
+        finally:
+            self.close()
+
+
+def _write_all(fd: int | None, data: bytes) -> bool:
+    """Write all of `data` or report failure; False when the terminal is gone.
+
+    All of it or nothing: a truncated OSC leaves the terminal inside a string
+    that swallows the next frame. The fd may have been made non-blocking under
+    us; prompt_toolkit flushes frames the same way.
+    """
+    if fd is None:
+        return False
+    try:
+        blocking = os.get_blocking(fd)
+        os.set_blocking(fd, True)
+        try:
+            while data:
+                data = data[os.write(fd, data) :]
+        finally:
+            os.set_blocking(fd, blocking)
+    except OSError:
+        return False
+    return True
 
 
 def _isatty(fd: int) -> bool:

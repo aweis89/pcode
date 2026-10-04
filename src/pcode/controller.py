@@ -502,6 +502,11 @@ class SessionController:
         self.asides.on_failure = self.record_aside_failure
         self.asides.on_update = lambda aside: self.view.aside_changed(aside)
         self.asides.on_settle = self.aside_settled
+        # Titling a session after its first turn (`session_naming`): the running
+        # request, and the sessions asked already while open, so a failure is
+        # not retried on every turn. Opening a session (/new, /resume) clears it.
+        self.naming_task: asyncio.Task | None = None
+        self._naming_tried: set[str] = set()
         self._model_suggestions: tuple[str | None, float, list[str]] | None = None
         # Whether the owner is shutting down, so a cancelled turn is not a Ctrl+C.
         self.closing: Callable[[], bool] = lambda: False
@@ -763,6 +768,7 @@ class SessionController:
             "context": self.context_label(),
             "workspace": str(self.workspace),
             "session_id": saved.info.id if saved is not None else "",
+            "session_title": self.session_title(),
             "session_directory": str(saved.directory) if saved is not None else "",
             "saving": saved is not None
             or getattr(self.runtime, "session_factory", None) is not None,
@@ -1404,6 +1410,8 @@ class SessionController:
             self.view.error(error_message(failure), title="Agent failed")
             if hint := stale_install():
                 self.view.warning(hint)
+        if not (cancelled or failure):
+            self.start_naming()
         if (cancelled or failure) and runtime.session:
             # A cancel is something the user asked for, so it has nothing worth
             # pointing at. Name the traceback file rather than the directory it
@@ -2577,6 +2585,7 @@ class SessionController:
             rows += [
                 ("Session", saved.info.id),
                 *([("Name", saved.info.name)] if saved.info.name else []),
+                *([("Title", saved.info.title)] if saved.info.title else []),
                 ("Saved in", str(saved.directory)),
                 ("Started", saved.info.created[:16]),
                 ("Updated", saved.info.updated[:16]),
@@ -2826,9 +2835,12 @@ class SessionController:
         name = plain(" ".join(plain(argument, None).split()), 80)
         if not name:
             current = session.info.name
+            title = session.info.title
             self.view.flash(
                 f"Session name: {current}. /rename - clears it."
                 if current
+                else f"Session title: {title}. /rename NAME replaces it."
+                if title
                 else "This session has no name. Usage: /rename NAME"
             )
             return
@@ -2838,9 +2850,75 @@ class SessionController:
             session.save_info(touch=False)
         except OSError as error:
             raise ValueError(f"Could not save the name: {error}") from error
+        self.view.session_changed()
         self.view.flash(f"Session named: {name}" if name != "-" else "Session name cleared.")
 
+    def session_title(self) -> str:
+        """What the session is called: its /rename name, else its asked-for title."""
+        session = getattr(self.runtime, "session", None)
+        if session is None:
+            return ""
+        return session.info.name or session.info.title or ""
+
+    def start_naming(self) -> None:
+        """Ask for a title in the background, once, for a saved session that has none."""
+        session = getattr(self.runtime, "session", None)
+        if session is None or not self.model:
+            return
+        info = session.info
+        if info.name or info.title or info.id in self._naming_tried:
+            return
+        if self.naming_task is not None and not self.naming_task.done():
+            return
+        setting = SETTINGS["session_naming"]
+        if load_preferences().get("session_naming", setting.default) != "on":
+            return
+        self._naming_tried.add(info.id)
+        self.naming_task = asyncio.create_task(self._name_session(session, self.model))
+
+    async def _name_session(self, session, model: str) -> None:
+        import logging
+
+        from pcode.session_naming import suggest_title
+        from pcode.sessions import session_turns
+
+        try:
+            turns = await asyncio.to_thread(session_turns, session.info, session.directory.parent)
+            first = next((turn for turn in turns or () if turn.prompt.strip()), None)
+            if first is None:
+                return
+            title = await suggest_title(
+                model, first.prompt, first.response, workspace=self.workspace
+            )
+        except Exception as error:  # noqa: BLE001 - a title is never worth an error.
+            logging.getLogger(__name__).debug("session title failed: %s", error)
+            return
+        # Renamed meanwhile. /new and /resume cancel this, so the session is still open.
+        if not title or session.info.name or getattr(self.runtime, "session", None) is not session:
+            return
+        session.info.title = title
+        try:
+            session.save_info(touch=False)
+        except OSError:
+            return
+        self.view.session_changed()
+        self.view.redraw()
+
+    def cancel_naming(self) -> None:
+        """Another conversation is opening: its title request goes, and may be asked again."""
+        if self.naming_task is not None and not self.naming_task.done():
+            self.naming_task.cancel()
+        self._naming_tried.clear()
+
+    async def stop_naming(self) -> None:
+        """Cancel a title request and wait it out, before provider processes are stopped."""
+        task = self.naming_task
+        self.cancel_naming()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+
     def new(self, argument: str) -> None:
+        self.cancel_naming()
         self.runtime.reset()
         self.view.conversation_reset("New conversation")
         self.view.note(
@@ -2850,6 +2928,8 @@ class SessionController:
         if self.model and self.runtime.session:
             self.view.note(f"Saving session: {self.runtime.session.info.id}")
         self.mcp_defaults_requested = True
+        # The old conversation's name leaves the tab with it.
+        self.view.session_changed()
 
     async def select_model(self, argument: str) -> None:
         """Pick a model in the terminal from the providers this session can reach."""
@@ -2943,6 +3023,8 @@ class SessionController:
             saved.abandon()
             raise
         # Keep the current conversation intact until recovery has succeeded.
+        # Its title request ends first: the session it would save to is closing.
+        await self.stop_naming()
         if target != self.workspace:
             # The worktree being left is tidied like at exit, but nobody is
             # asked: unmerged work stays put with a note on how to get back.

@@ -60,7 +60,7 @@ from pcode.runtime import (
 )
 from pcode.shell_mode import shell_command
 from pcode.stream_display import PrintedReply, present_events, present_stream_event
-from pcode.terminal_notify import TabProgress
+from pcode.terminal_notify import TabProgress, TabTitle
 from pcode.theme import THEMES, replay_pending_input
 from pcode.tool_display import plain
 from pcode.ui import (
@@ -196,6 +196,7 @@ class PreviewApp:
         self._emulator: Callable[[str], None] | None = None
         # The tab's progress bar, while this terminal runs its prompt.
         self._progress: TabProgress | None = None
+        self._title: TabTitle | None = None
         # The in-process controller's loops, while this terminal runs them.
         self._loops: list = []
         agent = getattr(self.runtime, "agent", None)
@@ -2066,6 +2067,11 @@ class PreviewApp:
             self._progress = TabProgress(self.activity, terminal, mode)
             # Any key here means the failed turn's red bar has been seen.
             session.app.key_processor.before_key_press += self._progress.key_pressed
+            title_mode = load_preferences().get(
+                "terminal_title", SETTINGS["terminal_title"].default
+            )
+            # Whichever controller is on screen: /switch replaces it.
+            self._title = TabTitle(lambda: self.controller.session_title(), terminal, title_mode)
 
         async def watch_branch():
             """Keep the footer's branch current without a Git process every 2 s.
@@ -2100,6 +2106,8 @@ class PreviewApp:
             session.app.create_background_task(run_local_commands())
             if self._progress is not None:
                 session.app.create_background_task(self._progress.run())
+            if self._title is not None:
+                session.app.create_background_task(self._title.run())
             if early is not None:
                 session.app.create_background_task(initialize_host())
             else:
@@ -2120,6 +2128,9 @@ class PreviewApp:
             if self._progress is not None:
                 self._progress.close()
                 self._progress = None
+            if self._title is not None:
+                self._title.close()
+                self._title = None
             await self.leave_controller(self.controller)
             await output.flush(drain=True)
             self.transcript.output = None
@@ -2156,8 +2167,9 @@ class PreviewApp:
         loops, self._loops = self._loops, []
         for task in loops:
             task.cancel()
-        # Side questions outlive turns, not the terminal.
+        # Side questions outlive turns, not the terminal; nor does a title request.
         await controller.asides.close()
+        await controller.stop_naming()
         for task in controller.tasks():
             if not task.done() and not task.cancelling():
                 task.cancel()
