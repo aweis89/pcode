@@ -3,7 +3,7 @@
 import shutil
 
 import pytest
-from test_tmux import capture, input_rows, settle
+from test_tmux import capture, input_rows, resize, settle
 from test_tmux import pane as pane
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
@@ -16,7 +16,7 @@ pathlib.Path(config, "pcode", "preferences.json").write_text(json.dumps({"key_pr
 from pcode.app import PreviewApp
 PreviewApp().run()
 """
-HINT = "Ctrl+P … s Send mode"
+HINT = "Cycle send mode"
 
 
 def draft_line(screen: str) -> str:
@@ -34,8 +34,10 @@ def test_leader_hint_shows_above_the_editor_and_runs_the_shortcut(pane):
     screen = capture(pane, HINT)
     lines = screen.splitlines()
     hint = next(i for i, line in enumerate(lines) if HINT in line)
-    editor = next(i for i, line in enumerate(lines) if line.startswith("┌"))
+    editor = next(i for i, line in enumerate(lines) if line.startswith("│❯"))
     assert hint < editor, screen
+    assert "Increase thinking effort" in screen
+    assert "Select thinking visibility" in screen
     assert "steering" in lines[-1] and input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "s")
     screen = capture(pane, "queue")
@@ -50,3 +52,58 @@ def test_leader_hint_shows_above_the_editor_and_runs_the_shortcut(pane):
     screen = settle(pane, lambda screen: HINT not in screen)
     assert HINT not in screen and "queue" in screen.splitlines()[-1], screen
     assert "draft" in draft_line(screen) and input_rows(screen) == 1
+    # The same panel offers explicit thinking choices without changing the draft.
+    pane("send-keys", "-t", "preview:0.0", "C-p", "t")
+    screen = capture(pane, "Thinking visibility")
+    assert "Off" in screen and "Status line" in screen and "Scrollback" in screen
+    pane("send-keys", "-t", "preview:0.0", "b")
+    screen = settle(pane, lambda screen: "Thinking visibility" not in screen)
+    assert "draft" in draft_line(screen) and input_rows(screen) == 1
+
+
+@pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
+@pytest.mark.parametrize(("height", "scroll_key"), [(12, "Down"), (15, "NPage")])
+def test_short_terminal_help_scrolls_without_changing_draft(pane, height, scroll_key):
+    capture(pane, "steering")
+    pane("send-keys", "-t", "preview:0.0", "keep this draft")
+    capture(pane, "keep this draft")
+    resize(pane, "resize-window", "-t", "preview:0", "-y", str(height))
+    capture(pane, "keep this draft")
+
+    pane("send-keys", "-t", "preview:0.0", "C-p")
+    screen = capture(pane, HINT)
+    assert "All keys" not in screen, screen
+    assert "keep this draft" in draft_line(screen), screen
+    # More keys than rows reaches the bottom and exercises the scroll bound.
+    pane("send-keys", "-t", "preview:0.0", *([scroll_key] * 50))
+    screen = capture(pane, "All keys")
+    assert "Copy draft / last response" in screen, screen
+    assert "keep this draft" in draft_line(screen) and input_rows(screen) == 1, screen
+    pane("send-keys", "-t", "preview:0.0", "Escape")
+    screen = settle(pane, lambda screen: "All keys" not in screen)
+    assert "All keys" not in screen, screen
+    assert "keep this draft" in draft_line(screen) and input_rows(screen) == 1, screen
+
+    # F1 is read-only, including letters that otherwise run shortcuts.
+    pane("send-keys", "-t", "preview:0.0", "F1")
+    screen = capture(pane, "Keybindings")
+    assert "Dismiss help" not in screen, screen
+    pane("send-keys", "-t", "preview:0.0", "s", *([scroll_key] * 50))
+    screen = capture(pane, "Dismiss help")
+    assert "Copy draft / last response" in screen, screen
+    assert "steering" in screen.splitlines()[-1], screen
+    pane("send-keys", "-t", "preview:0.0", "Escape")
+    screen = settle(pane, lambda screen: "Dismiss help" not in screen)
+    assert "Dismiss help" not in screen, screen
+    assert "keep this draft" in draft_line(screen) and "drafts" not in draft_line(screen), screen
+    assert input_rows(screen) == 1, screen
+
+    # A chooser still fits above the editor after scrolling either menu.
+    pane("send-keys", "-t", "preview:0.0", "C-p", "t")
+    screen = capture(pane, "Thinking visibility")
+    assert "Off" in screen and "Status line" in screen and "Scrollback" in screen, screen
+    assert "keep this draft" in draft_line(screen), screen
+    pane("send-keys", "-t", "preview:0.0", "Escape")
+    screen = settle(pane, lambda screen: "Thinking visibility" not in screen)
+    assert "Thinking visibility" not in screen, screen
+    assert "keep this draft" in draft_line(screen) and input_rows(screen) == 1, screen

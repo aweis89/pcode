@@ -117,6 +117,18 @@ class SessionBrowser:
                 event.app.exit(result=self.selected.id)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
+        shortcuts.set_help(
+            lambda: [
+                ("Type", "Search in the search field"),
+                ("↑/↓", "Select session / scroll turns"),
+                ("PgUp/PgDn", "Page"),
+                ("Ctrl+U/D", "Half page"),
+                ("Enter", "Resume selected session"),
+                ("Delete", "Delete selected session (twice; list focused)"),
+                ("Tab/Shift+Tab", "Change focus"),
+                ("Esc/Ctrl+C", "Cancel"),
+            ]
+        )
 
         @shortcuts.add("f", "Search")
         def search(event):
@@ -169,11 +181,6 @@ class SessionBrowser:
                 header,
                 self.query,
                 body,
-                Label("↑↓ Select/scroll · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label(
-                    "Type to search (↑↓ select while typing) · Enter Resume · Tab Focus · "
-                    "Esc Cancel"
-                ),
                 Label(shortcuts.summary),
             ]
         )
@@ -357,7 +364,9 @@ class SessionBrowser:
         return await self.app.run_async()
 
 
-def session_info_dialog(rows, *, input=None, output=None, style=None):
+def session_info_dialog(
+    rows, *, input=None, output=None, style=None, key_prefix: str | None = None
+):
     """Read-only view of the live session; every key that closes it exits the same way."""
     width = max((len(label) for label, _ in rows), default=0)
     body = TextArea(
@@ -376,27 +385,33 @@ def session_info_dialog(rows, *, input=None, output=None, style=None):
         event.app.exit(result=None)
 
     bind_list_paging(bindings, body, has_focus(body))
+    shortcuts = PrefixKeys(key_prefix)
+    shortcuts.set_help(
+        lambda: [
+            ("↑/↓", "Scroll"),
+            ("PgUp/PgDn", "Page"),
+            ("Ctrl+U/D", "Half page"),
+            ("Enter/q/Esc/Ctrl+C", "Close"),
+        ]
+    )
 
     dialog = Dialog(
         title="Session",
         body=HSplit(
             [
-                Label(
-                    "↑↓ Scroll · PgUp/PgDn Page · Ctrl+U/D Half page · Esc close · "
-                    "/resume switches session",
-                    dont_extend_height=True,
-                ),
+                Label("/resume switches session", dont_extend_height=True),
                 body,
+                Label(shortcuts.summary),
             ],
             padding=1,
         ),
         with_background=True,
     )
     return Application(
-        layout=Layout(popup_container(dialog), focused_element=body),
-        key_bindings=bindings,
+        layout=Layout(popup_container(dialog, shortcuts), focused_element=body),
+        key_bindings=shortcuts.key_bindings(bindings),
         full_screen=True,
-        mouse_support=popup_mouse(),
+        mouse_support=popup_mouse(shortcuts),
         input=input,
         output=output,
         style=popup_style(style),

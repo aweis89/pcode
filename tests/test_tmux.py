@@ -120,7 +120,8 @@ def pane(request, tmp_path):
     # the moment a marker shows and expect scrollback to be complete at that
     # instant, so paced scrollback is off; its own test turns it on. Grouping
     # and hints are off as in conftest: these panes assert on per-call summary
-    # lines and on the exact footer and task heading.
+    # lines and on the exact footer and task heading. Preserve their explicit
+    # Ctrl chords too: subprocesses do not inherit conftest's default override.
     config.joinpath("preferences.json").write_text(
         json.dumps(
             {
@@ -129,6 +130,7 @@ def pane(request, tmp_path):
                 "paced_scrollback": "off",
                 "group_tools": "off",
                 "show_hints": "off",
+                "key_prefix": "ctrl",
             }
         )
     )
@@ -1351,7 +1353,7 @@ def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(
     screen = capture(pane, "❯", running=True)
     assert "SAVED_REASONING_TEXT" not in screen  # Off: nowhere.
     # Status line: its own rows above the status row, and not in scrollback.
-    pane("send-keys", "-t", "preview:0.0", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "s")
     screen = settle(
         pane, lambda screen: thought_row(screen) == "SAVED_REASONING_TEXT", running=True
     )
@@ -1364,7 +1366,7 @@ def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(
     assert "SAVED_REASONING_TEXT" not in thought_row(screen), screen
     assert not in_scrollback(screen)
     # Scrollback: written above, and the row goes.
-    pane("send-keys", "-t", "preview:0.0", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "b")
     screen = settle(pane, in_scrollback, running=True)
     # The mode's notice sits where a thought would, padded the same: look for
     # the thought itself.
@@ -1375,10 +1377,10 @@ def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(
         screen = capture(pane, "SAVED_REASONING_TEXT", running=True, columns=width)
         assert input_rows(screen) == 1
     # Off again: gone from both.
-    pane("send-keys", "-t", "preview:0.0", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "o")
     screen = settle(pane, lambda screen: "SAVED_REASONING_TEXT" not in screen, running=True)
     assert "SAVED_REASONING_TEXT" not in screen
-    pane("send-keys", "-t", "preview:0.0", "C-t", "C-t")
+    pane("send-keys", "-t", "preview:0.0", "C-t", "b")
     settle(pane, in_scrollback, running=True)
     pane("send-keys", "-t", "preview:0.0", "C-c")
     screen = capture(pane, "Run cancelled")

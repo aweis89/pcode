@@ -77,7 +77,12 @@ def test_shortcut_hides_rows_without_losing_state(tmp_path, monkeypatch, editing
                 session.default_buffer.text = "retained draft"
 
         asyncio.run(type_draft())
-        (binding,) = session.key_bindings.get_bindings_for_keys((Keys.ControlO,))
+        with set_app(session.app):
+            (binding,) = [
+                binding
+                for binding in session.key_bindings.get_bindings_for_keys((Keys.ControlO,))
+                if binding.filter()
+            ]
         event = SimpleNamespace(app=session.app)
         binding.handler(event)
         assert activity.plan_rows(10) == []

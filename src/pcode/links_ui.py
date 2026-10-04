@@ -98,8 +98,6 @@ class LinkPicker:
                 Label(self.summary, dont_extend_height=True),
                 self.query,
                 self.list,
-                Label("↑↓ Select · PgUp/PgDn Page · Ctrl+U/D Half page"),
-                Label("Type to search · Enter open · Tab list · Esc clear search, then cancel"),
                 *footer,
             ],
             padding=1,
@@ -108,6 +106,18 @@ class LinkPicker:
             modal=True,
         )
         self.refresh()
+
+    def help(self) -> list[tuple[str, str]]:
+        return [
+            ("Type", "Search in the search field"),
+            ("↑/↓", "Select link"),
+            ("PgUp/PgDn", "Page"),
+            ("Ctrl+U/D", "Half page"),
+            ("Enter", "Open selected link"),
+            ("Tab/Shift+Tab", "Switch search / list"),
+            ("Esc", "Clear search when focused, otherwise cancel"),
+            ("Ctrl+C", "Cancel"),
+        ]
 
     def summary(self) -> str:
         tools = f" · Tools: {'shown' if self.show_tools else 'hidden'}"
@@ -158,6 +168,7 @@ def links_dialog(
         shortcuts=shortcuts,
         footer=(Label(shortcuts.summary),),
     )
+    shortcuts.set_help(picker.help)
 
     @shortcuts.add("f", "Search")
     def search(event):

@@ -129,6 +129,19 @@ def hosts_dialog(
             event.app.exit(result=("attach", entry.id))
 
     shortcuts = PrefixKeys(key_prefix)
+    shortcuts.set_help(
+        lambda: [
+            ("Type", "Search in the search field"),
+            ("↑/↓", "Select session"),
+            ("PgUp/PgDn", "Page"),
+            ("Ctrl+U/D", "Half page"),
+            ("Enter", "Switch session"),
+            ("Tab/Shift+Tab", "Switch search / list"),
+            ("Delete", "Stop selected session (twice; list focused)"),
+            ("Esc", "Clear search when focused, otherwise cancel"),
+            ("Ctrl+C", "Cancel"),
+        ]
+    )
 
     @shortcuts.add("f", "Search")
     def search(event):
@@ -177,7 +190,6 @@ def hosts_dialog(
                 query,
                 choices,
                 Label(lambda: status[0], dont_extend_height=True),
-                Label("Type to search · Enter switch · Tab list · Esc cancel"),
                 Label(shortcuts.summary),
             ],
             padding=1,

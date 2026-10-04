@@ -133,8 +133,8 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | --- | --- | --- |
 | `send_mode` | `steering` | `steering`, `queue`, `interrupt` (what Enter does while a turn runs; see [sending while the agent is working](commands.md#sending-while-the-agent-is-working)) |
 | `editing_mode` | `emacs` | `emacs`, `vi` (prompt editor key bindings; see [vi editing](commands.md#optional-vi-editing)) |
-| `key_prefix` | `ctrl` | `ctrl` (shortcuts are Ctrl+letter chords), or a leader pressed before the letter, such as `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"`; the leader lists its shortcuts while it waits. See [shortcut prefix](commands.md#shortcut-prefix) |
-| `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, Ctrl+Q flips it inside one popup, see [popup keys](commands.md#popup-keys)) |
+| `key_prefix` | `ctrl+b` | A leader pressed before the action letter: Ctrl+B opens the current action menu. Other leaders include `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"`; `ctrl` restores direct Ctrl+letter chords. F1 browses contextual help. See [shortcut prefix](commands.md#shortcut-prefix) |
+| `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, Ctrl+B `q` flips it inside one popup, see [popup keys](commands.md#popup-keys)) |
 | `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |
 
 ### Scrollback and display
@@ -150,15 +150,15 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `diff_renderer` | `delta` | `delta`, `rich` (draw diffs in scrollback and `/diffs` with [delta](https://dandavison.github.io/delta/) when it's installed, falling back to Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
 | `delta_args` | `` | delta's arguments, quoted as in a shell, such as `--line-numbers`; the only delta configuration pcode reads (git config is ignored), and they override pcode's own choices |
 | `diff_layout` | `auto` | `auto`, `unified`, `side-by-side` (delta's layout; `auto` goes side by side at 180 columns or wider) |
-| `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+G or `/show-commands`) |
+| `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+B `g` or `/show-commands`) |
 | `group_tools` | `on` | `on`, `off` (fold each run of tool calls into one line; `/group-tools`, see [grouping tool calls](transcript.md#grouping-tool-calls)) |
 | `command_scrollback_lines` | `20` | Positive integer, lines of each command's output mirrored into scrollback |
 | `command_preview_lines` | `10` | Positive integer, lines in the live preview of a running command |
 | `tool_error_scrollback` | `off` | `on`, `off` (keep a failed tool call's full diagnostic in scrollback instead of one line) |
 | `error_scrollback_lines` | `20` | Positive integer, lines of an error notice kept in scrollback before it is clipped |
-| `show_tasks` | `on` | `on`, `off` (show the Tasks/Tools widget; Ctrl+O or `/show-tasks`) |
+| `show_tasks` | `on` | `on`, `off` (show the Tasks/Tools widget; Ctrl+B `o` or `/show-tasks`) |
 | `autohide_tasks` | `off` | `on`, `off` (hide the Tasks/Tools widget when a turn ends; `/autohide-tasks`) |
-| `show_hints` | `on` | `on`, `off` (compact shortcut hints: `steering (^S)` in the footer, `(^O hide)` on the Tasks/Tools heading) |
+| `show_hints` | `on` | `on`, `off` (show one compact help indicator at the prompt instead of shortcut hints beside individual controls) |
 | `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
 | `tasks_max_height` | unset | Rows (`20`) or a share of the screen (`0.5`) for the Tasks/Tools widget and editor together; unset keeps the widget to 10 rows or half the screen |
 | `paced_scrollback` | `typed` | `typed`, `rows`, `off` (type settled prose out, or roll blocks in a row per frame; see [the transcript](transcript.md#paced-scrollback)) |

@@ -20,7 +20,13 @@ from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
 from prompt_toolkit.key_binding.vi_state import InputMode
-from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout import (
+    ConditionalContainer,
+    HSplit,
+    Layout,
+    VSplit,
+    Window,
+)
 from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
@@ -54,13 +60,14 @@ from pcode.input_keys import configure_newline_keys
 from pcode.jobs import WATCHED_PREFIX
 from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN
+from pcode.popup_ui import shortcut_hint
 from pcode.preferences import (
     SETTINGS,
     SYNTAX_THEMES,
     TERMINAL_SYNTAX,
     load_preferences,
 )
-from pcode.prefix_keys import PrefixKeys, compact_label, shortcut_label
+from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.prompt_keys import PromptCallbacks, prompt_key_bindings
 from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
 from pcode.shell_mode import SHELL_PREFIX
@@ -2062,14 +2069,8 @@ class PromptLayout:
 
     @_per_render
     def notice_rows(self):
-        """Freeze the expiring notice for this render so height matches content.
-
-        A waiting leader's hint borrows the slot: it answers a keystroke and
-        goes with the next one, which is what a notice is for.
-        """
+        """Freeze the expiring notice for this render so height matches content."""
         width = self.size().columns - 1
-        if self.shortcuts.pending:
-            return chrome_rows(self.shortcuts.hint_text(), width, "class:activity.system")
         return self.activity.notice_rows(width)
 
     @_per_render
@@ -2195,16 +2196,11 @@ class PromptLayout:
         )
 
     def plan_heading(self):
-        """`Tasks 1/3`, then the key that hides the widget when hints are on."""
+        """The task heading, without permanent shortcut instructions."""
         activity = self.activity
         width = self.size().columns - 8
         style = "class:plan.heading" if activity.displayed_plan else "bold"
         fragments = panel_fragments([(style, activity.panel_heading())], width)
-        if activity.show_hints:
-            hint = f" ({compact_label(self.shortcuts.label('o'))} hide)"
-            # The hint never squeezes the heading itself; a narrow pane drops it.
-            if cell_len(fragments[0][1]) + cell_len(hint) <= width:
-                fragments.append(("class:plan.hint", hint))
         return fragments
 
     def plan_heading_border(self) -> VSplit:
@@ -2404,7 +2400,15 @@ class PromptLayout:
         )
 
     def layout(self) -> Layout:
-        children = [self.menu, self.activity_panel(), self.queued(), self.editor_frame()]
+        children = [
+            self.menu,
+            self.activity_panel(),
+            self.queued(),
+            # This prompt can be only three rows tall. A float would inherit
+            # that height and clip the menu, so reserve space only while open.
+            shortcut_hint(self.shortcuts),
+            self.editor_frame(),
+        ]
         if self.transcript is not None:
             children[:0] = [self.typing(), Window()]
         if self.session.bottom_toolbar is not None:

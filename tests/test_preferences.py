@@ -163,6 +163,41 @@ def test_theme_save_failure_keeps_current_selection():
     assert "Could not save defaults" in app.transcript.console.file.getvalue()
 
 
+@pytest.mark.usefixtures("shipped_key_prefix")
+def test_shortcuts_default_to_ctrl_b_without_saved_preferences():
+    from pcode.preferences import SETTINGS
+    from pcode.prefix_keys import PrefixKeys, configured_prefix, shortcut_label
+
+    assert "key_prefix" not in load_preferences()
+    assert SETTINGS["key_prefix"].default == "ctrl+b"
+    assert configured_prefix() == "ctrl+b"
+    assert PrefixKeys().leader == ("c-b",)
+    assert shortcut_label("s") == "Ctrl+B s"
+
+
+@pytest.mark.usefixtures("shipped_key_prefix")
+def test_saved_ctrl_chords_override_shipped_prefix_default():
+    from pcode.prefix_keys import PrefixKeys, configured_prefix, shortcut_label
+
+    save_preferences(key_prefix="ctrl")
+
+    assert configured_prefix() == "ctrl"
+    assert PrefixKeys().leader == ()
+    assert shortcut_label("s") == "Ctrl+S"
+
+
+@pytest.mark.usefixtures("shipped_key_prefix")
+def test_invalid_saved_prefix_falls_back_to_ctrl_b():
+    from pcode.prefix_keys import configured_prefix
+
+    path = preferences_path()
+    path.parent.mkdir(parents=True)
+    path.write_text('{"key_prefix": "invalid"}')
+
+    assert "key_prefix" not in load_preferences()
+    assert configured_prefix() == "ctrl+b"
+
+
 def test_config_dir_override_moves_every_config_file(monkeypatch, tmp_path):
     from pcode.anthropic_oauth import credentials_path
     from pcode.ext import user_extension_dir

@@ -11,6 +11,9 @@ pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is no
 SCRIPT = """
 import os, tempfile
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
+from pcode.preferences import save_preferences
+# Preserve the fixture's Ctrl shortcuts in this isolated config.
+save_preferences(key_prefix="ctrl")
 from pcode.app import PreviewApp
 PreviewApp().run()
 """
