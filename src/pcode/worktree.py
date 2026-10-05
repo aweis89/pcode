@@ -599,6 +599,13 @@ def leave_worktree(workspace: Path, session, *, ask, notify, merge: bool = True)
             session.info.workspace = str(linked.main)
             session.save_info()
 
+    def forget():
+        # Its review checkpoint was of the checkout just removed.
+        if session is not None:
+            from pcode.sessions import forget_refs
+
+            forget_refs(session.info)
+
     try:
         if untouched:
             remove(linked)
@@ -609,6 +616,7 @@ def leave_worktree(workspace: Path, session, *, ask, notify, merge: bool = True)
                 shutil.rmtree(session.directory, ignore_errors=True)
             else:
                 repoint()
+            forget()
             notify(f"worktree: removed untouched {linked.path}")
             return deleted
         if dirty or not ours or not unmerged:
@@ -636,6 +644,7 @@ def leave_worktree(workspace: Path, session, *, ask, notify, merge: bool = True)
             return False
         notify("worktree: " + finish(linked))
         repoint()
+        forget()
     except (WorktreeError, OSError) as error:
         notify(f"worktree: {error}\nworktree: kept; {resume}")
     return False

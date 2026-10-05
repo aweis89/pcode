@@ -2769,6 +2769,10 @@ class SessionController:
             session.save_info()
         except OSError:
             pass
+        from pcode.sessions import forget_refs
+
+        # Its review checkpoint was of the checkout just removed.
+        forget_refs(session.info)
 
     # --- Startup and new conversations ---
 

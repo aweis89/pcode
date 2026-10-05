@@ -334,3 +334,28 @@ def test_since_review_ignores_what_merging_mainline_brings_in(repo, linked):
     (path / "mine.py").unlink()  # work reverted since the review is news too
     (later,) = load_review(path, [], reviewed=reviewed).since_review
     assert later.path == "mine.py" and later.operation == "deleted"
+
+
+def test_a_sessions_refs_go_with_the_session_or_its_worktree(repo, tmp_path):
+    from pcode.sessions import SavedSession, delete_session
+
+    linked = worktree.create(repo, "pcode-refs")
+    root = tmp_path / "sessions"
+    tree = load_review(linked.path, []).checkpoint
+    gone = SavedSession.create("test:local", linked.path, root)
+    git_diff.mark_reviewed(linked.path, gone.info.id, tree)
+    gone.close()
+    delete_session(gone.info.id, root)
+    assert git(repo, "for-each-ref", "refs/pcode") == ""
+
+    kept = SavedSession.create("test:local", linked.path, root)
+    git_diff.mark_reviewed(linked.path, kept.info.id, tree)
+    git_diff.mark_reviewed(linked.path, "other-session", tree)
+    # Leaving an untouched worktree removes it, and the review of it.
+    worktree.leave_worktree(linked.path, kept, ask=None, notify=lambda _: None)
+    remaining = git(repo, "for-each-ref", "--format=%(refname)", "refs/pcode").split()
+    assert remaining == [
+        f"refs/pcode/sessions/other-session/{n}" for n in ("review-base", "reviewed")
+    ]
+    git_diff.forget_session(repo, "other-session")
+    assert git(repo, "for-each-ref", "refs/pcode") == ""

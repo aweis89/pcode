@@ -688,13 +688,13 @@ The top line lists the views with their file counts; **Ctrl+B `v`** cycles them:
   again. Committing what you reviewed doesn't count as new.
 
 Marking reviewed records exactly the state on screen. A saved session keeps it
-in the repository under `refs/pcode/reviewed/<session id>`, so it survives
-restarts and is shared by the session's worktrees; an unsaved one keeps it
-until `/new`. The ref keeps that snapshot, untracked files included, in the
-repository until you delete it, which also starts the review over: list them
-with `git for-each-ref refs/pcode` and remove one with `git update-ref -d`.
-They hold trees, not commits, so they never show up in `git log --all`. Changes a merge from mainline (or, in a shared checkout, a pull) brings
-in don't count as new.
+in the repository under `refs/pcode/sessions/<session id>/`, so it survives
+restarts; an unsaved one keeps it until `/new`. The ref keeps that snapshot,
+untracked files included, in the repository until the session is deleted or
+pcode removes its worktree. To start the review over sooner, delete it with
+`git update-ref -d refs/pcode/sessions/<session id>/reviewed`. Refs hold trees,
+not commits, so they never show up in `git log --all`. Changes a merge from
+mainline (or, in a shared checkout, a pull) brings in don't count as new.
 
 ### Notes for the agent
 

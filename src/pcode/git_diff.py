@@ -10,8 +10,8 @@ or its commits touched, since anything else there may be the user's. A commit
 counts as the session's when it is new since the start, was made after the
 session began, and by this checkout's git identity; a pulled commit is neither.
 The same load also cuts out what is not yet committed, and what changed since
-the tree last marked reviewed, kept under `refs/pcode/reviewed/<session>` with
-the tree it was compared against under `refs/pcode/review-base/<session>`.
+the tree last marked reviewed, kept under the session's refs (`SESSION_REFS`)
+with the tree it was compared against.
 
 `git diff` never shows untracked files, and staging them would change the
 user's index. So the working tree is recorded into a throwaway copy of the index
@@ -56,12 +56,28 @@ class GitDiffError(Exception):
     """Git could not produce the review."""
 
 
-# One ref per session, holding the tree last marked reviewed, and one for the
-# base tree it was compared against then (merging mainline moves the base): a
-# ref keeps the
-# tree from garbage collection, and no session file has to be written for it.
-REVIEW_REF = "refs/pcode/reviewed/"
-REVIEW_BASE_REF = "refs/pcode/review-base/"
+# Each session's refs live under one prefix, so one sweep removes them with the
+# session or its worktree: a ref keeps what it names from garbage collection,
+# and no session file has to be written for it. The review checkpoint is
+# `reviewed` (the tree last marked reviewed) and `review-base` (the base tree
+# it was compared against then, since merging mainline moves the base).
+SESSION_REFS = "refs/pcode/sessions/"
+
+
+def session_ref(key: str, name: str) -> str:
+    """Session `key`'s ref called `name`; GitDiffError for a key git would misread."""
+    if not _valid_key(key):
+        raise GitDiffError("invalid session id")
+    return f"{SESSION_REFS}{key}/{name}"
+
+
+def forget_session(workspace: Path, key: str) -> None:
+    """Delete every ref session `key` holds, releasing what they kept."""
+    prefix = session_ref(key, "")
+    listed = _git(workspace, "for-each-ref", "--format=%(refname)", prefix).decode().split()
+    if listed:
+        commands = "".join(f"delete {name}\n" for name in listed)
+        _git(workspace, "update-ref", "--stdin", input=commands.encode())
 
 
 @dataclass(frozen=True)
@@ -169,10 +185,10 @@ def reviewed(workspace: Path, key: str) -> Checkpoint | None:
     if not _valid_key(key):
         return None
     found = []
-    for prefix in (REVIEW_REF, REVIEW_BASE_REF):
+    for name in ("reviewed", "review-base"):
         try:
-            name = f"{prefix}{key}^{{tree}}"
-            out = _git(workspace, "rev-parse", "--verify", "--quiet", name, check=False)
+            spec = f"{session_ref(key, name)}^{{tree}}"
+            out = _git(workspace, "rev-parse", "--verify", "--quiet", spec, check=False)
         except GitDiffError:
             return None
         found.append(out.decode().strip() or None)
@@ -183,18 +199,22 @@ def reviewed(workspace: Path, key: str) -> Checkpoint | None:
 def mark_reviewed(workspace: Path, key: str, checkpoint: Checkpoint) -> None:
     """Record `checkpoint` as session `key`'s reviewed state, both refs at once."""
     names = [checkpoint.tree, *([checkpoint.base] if checkpoint.base else [])]
-    if not _valid_key(key) or not all(re.fullmatch(r"[0-9a-f]{40,64}", n) for n in names):
+    if not _valid_key(key) or not all(_is_object_name(name) for name in names):
         raise GitDiffError("invalid review checkpoint")
-    commands = f"update {REVIEW_REF}{key} {checkpoint.tree}\n"
-    if checkpoint.base:
-        commands += f"update {REVIEW_BASE_REF}{key} {checkpoint.base}\n"
-    else:
-        commands += f"delete {REVIEW_BASE_REF}{key}\n"
+    commands = f"update {session_ref(key, 'reviewed')} {checkpoint.tree}\n"
+    base = session_ref(key, "review-base")
+    commands += f"update {base} {checkpoint.base}\n" if checkpoint.base else f"delete {base}\n"
     _git(workspace, "update-ref", "--stdin", input=commands.encode())
 
 
+def _is_object_name(name: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", name))
+
+
 def _valid_key(key: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", key))
+    # Stricter than git's ref rules: one plain path component, no "..", no
+    # ".lock" ending, so the key can never reach outside its prefix.
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", key))
 
 
 def _branch_base(linked: worktree.Worktree) -> tuple[str, str, str]:

@@ -144,9 +144,33 @@ def delete_session(identity: str, root: Path | None = None) -> None:
     except Timeout:
         raise SessionError("This session is open in another process.") from None
     try:
+        try:
+            info = read_info(directory)
+        except SessionError:
+            info = None
         shutil.rmtree(directory)
     finally:
         lock.release()
+    if info is not None:
+        # By the directory just removed: its refs are keyed by that id.
+        forget_refs(info.model_copy(update={"id": identity}))
+
+
+def forget_refs(info: SessionInfo) -> None:
+    """Drop the git refs a session kept (its /diffs review checkpoint).
+
+    Best effort: the repository may be gone, and a leftover ref only holds
+    objects git would otherwise collect.
+    """
+    from pcode.git_diff import GitDiffError, forget_session
+    from pcode.worktree import session_scope
+
+    try:
+        scope = session_scope(info)
+        if scope.is_dir():
+            forget_session(scope, info.id)
+    except (GitDiffError, OSError):
+        pass
 
 
 @dataclass
