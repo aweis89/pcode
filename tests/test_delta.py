@@ -86,6 +86,10 @@ def test_layout_follows_the_width_only_in_auto(layout, width, side_by_side):
     assert ("--side-by-side" in command) is side_by_side
 
 
+def test_the_default_layout_is_unified_at_every_width():
+    assert "--side-by-side" not in Delta("delta").command(SIDE_BY_SIDE_WIDTH * 2)
+
+
 def test_a_side_by_side_flag_in_the_arguments_is_the_layout():
     assert Delta("delta", ("-s",), layout="unified").side_by_side(40)
 
@@ -228,7 +232,7 @@ def test_real_delta_renders_the_change(monkeypatch, tmp_path):
     (tmp_path / "home").mkdir(exist_ok=True)
     (tmp_path / "home" / ".gitconfig").write_text("[delta]\n    side-by-side = true\n")
     monkeypatch.setenv("DELTA_FEATURES", "+side-by-side")
-    delta = Delta(shutil.which("delta"))
+    delta = Delta(shutil.which("delta"), layout="auto")
     unified = delta.render(PATCH, 80)
     assert unified and any("return 2" in line.plain for line in unified)
     assert not unified[0].plain.strip() == ""

@@ -25,7 +25,7 @@ The same commands are available inside pcode as `/config`, with tab completion:
 **Most config edits affect the next launch, not the running conversation.** To change
 an active setting and save its default immediately, use `/theme`, `/effort`,
 `/model`, or `/autocompact` instead. The layout settings `attach_tasks`,
-`tasks_max_height`, `task_style` and `tool_glyphs` apply immediately through `/config`. CLI overrides such as
+`tasks_max_height`, `tasks_min_rows`, `tasks_min_columns`, `task_style`, `tool_glyphs` and `tool_max_lines` apply immediately through `/config`. CLI overrides such as
 `--theme` and `--model` do not rewrite global defaults, and resumed sessions retain
 their own model.
 
@@ -146,22 +146,26 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
 | `spinner` | `arc` | A Rich spinner name, e.g. `dots`, `line`, `point` (`python -m rich.spinner` previews them; `/config set spinner` lists the ones that fit; applies on next launch) |
 | `show_thinking` | `status-line` | `off`, `status-line`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`) |
-| `thinking_max_lines` | `10` | Max rows of thinking above the status row in `status-line` mode; a short pane gets fewer (at most a quarter of its height). Applies on next launch |
+| `thinking_max_lines` | `10` | Max rows of thinking above the status row in `status-line` mode, or a share of the screen (`0.2`). A row count is also capped at a quarter of the pane, so a short pane gets fewer. Applies on next launch |
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; `/show-edits`) |
 | `diff_renderer` | `delta` | `delta`, `rich` (draw diffs in scrollback and `/diffs` with [delta](https://dandavison.github.io/delta/) when it's installed, falling back to Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
 | `delta_args` | `` | delta's arguments, quoted as in a shell, such as `--line-numbers`; the only delta configuration pcode reads (git config is ignored), and they override pcode's own choices |
-| `diff_layout` | `auto` | `auto`, `unified`, `side-by-side` (delta's layout; `auto` goes side by side at 180 columns or wider) |
+| `diff_dedent` | `on` | `on`, `off` (strip the indentation every line of a diff hunk shares, so an edit deep in a nested block starts at the left edge; with delta or Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
+| `diff_layout` | `unified` | `unified`, `side-by-side`, `auto` (delta's layout; `auto` goes side by side at 180 columns or wider) |
 | `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+B `g` or `/show-commands`) |
 | `group_tools` | `on` | `on`, `off` (fold each run of tool calls into one line; `/group-tools`, see [grouping tool calls](transcript.md#grouping-tool-calls)) |
 | `command_scrollback_lines` | `20` | Positive integer, lines of each command's output mirrored into scrollback |
-| `command_preview_lines` | `10` | Positive integer, lines in the live preview of a running command |
+| `command_preview_lines` | `10` | Rows (`10`) or a share of the screen (`0.25`) for the live preview of a running command |
 | `tool_error_scrollback` | `off` | `on`, `off` (keep a failed tool call's full diagnostic in scrollback instead of one line) |
 | `error_scrollback_lines` | `20` | Positive integer, lines of an error notice kept in scrollback before it is clipped |
 | `show_tasks` | `on` | `on`, `off` (show the Tasks/Tools widget; Ctrl+B `o` or `/show-tasks`) |
 | `autohide_tasks` | `off` | `on`, `off` (hide the Tasks/Tools widget when a turn ends; `/autohide-tasks`) |
+| `tasks_min_rows` | `30` | Hide the Tasks/Tools widget in a pane shorter than this, such as a stacked split; `0` never hides. Ctrl+B `o` overrides it until the pane crosses the threshold again |
+| `tasks_min_columns` | `100` | Hide the Tasks/Tools widget in a pane narrower than this, such as a side-by-side split; `0` never hides. Ctrl+B `o` overrides it the same way |
 | `show_hints` | `on` | `on`, `off` (show one compact help indicator at the prompt instead of shortcut hints beside individual controls) |
 | `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
-| `tool_glyphs` | `auto` | `on` leads the tool row above the status row with a symbol for the call (`⎿`, `$`, `⌕`, `✎`, `⎘`, `⧖`), `off` spells out the verb instead (shell calls keep `$`) and hangs the row with `└`, for fonts that draw those symbols badly. `auto` is on except on the Linux console (`/config` applies immediately) |
+| `tool_glyphs` | `auto` | `on` leads the tool row above the status row with a symbol for the call (`$`, `⌕`, `✎`, `⎘`, `⧖`), `off` drops them and spells out the verb once the call settles (shell calls keep `$`), for fonts that draw those symbols badly. `auto` is on except on the Linux console (`/config` applies immediately) |
+| `tool_max_lines` | `3` | Max tool calls listed above the status row, newest last; `1` shows only the call the status row is on. A short pane gets fewer, sharing a quarter of its height with the thinking rows (`/config` applies immediately) |
 | `task_style` | `status` | `status` (shade task text by status), `icons` (one text weight, coloured icons only; `/config` applies immediately) |
 | `tasks_max_height` | unset | Rows (`20`) or a share of the screen (`0.5`) for the Tasks/Tools widget and editor together; unset keeps the widget to 10 rows or half the screen |
 | `paced_scrollback` | `typed` | `typed`, `rows`, `off` (type settled prose out, or roll blocks in a row per frame; see [the transcript](transcript.md#paced-scrollback)) |

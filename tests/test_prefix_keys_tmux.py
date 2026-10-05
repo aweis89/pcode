@@ -12,7 +12,9 @@ SCRIPT = """
 import json, os, pathlib, tempfile
 os.environ["XDG_CONFIG_HOME"] = config = tempfile.mkdtemp()
 pathlib.Path(config, "pcode").mkdir()
-pathlib.Path(config, "pcode", "preferences.json").write_text(json.dumps({"key_prefix": "ctrl+p"}))
+pathlib.Path(config, "pcode", "preferences.json").write_text(json.dumps(
+    {"key_prefix": "ctrl+p", "tasks_min_rows": "0", "tasks_min_columns": "0"}
+))
 from pcode.app import PreviewApp
 PreviewApp().run()
 """

@@ -46,9 +46,11 @@ from pcode.preferences import (
     hints_preference,
     load_preferences,
     parse_height,
+    preference_count,
     save_preferences,
     thinking_mode_preference,
     thinking_settings,
+    tool_rows_preference,
 )
 from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.runtime import (
@@ -147,7 +149,10 @@ class PreviewApp:
             == "on",
             task_style=load_preferences().get("task_style", SETTINGS["task_style"].default),
             tool_glyphs=load_preferences().get("tool_glyphs", SETTINGS["tool_glyphs"].default),
+            tool_max_rows=tool_rows_preference(),
             tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
+            tasks_min_rows=preference_count("tasks_min_rows"),
+            tasks_min_columns=preference_count("tasks_min_columns"),
             show_hints=hints_preference(),
             thinking_mode=thinking_mode_preference(),
         )
@@ -551,6 +556,7 @@ class PreviewApp:
 
     def turn_started(self, text: str, *, echo: bool) -> None:
         self.activity.tools.clear()
+        self.activity.forget_calls()
         self.activity.cache_note = ""
         if echo:
             self.output.begin_turn(text)
@@ -676,8 +682,11 @@ class PreviewApp:
             preferences.get("attach_tasks", SETTINGS["attach_tasks"].default) == "on"
         )
         self.activity.tasks_max_height = parse_height(preferences.get("tasks_max_height"))
+        self.activity.tasks_min_rows = preference_count("tasks_min_rows")
+        self.activity.tasks_min_columns = preference_count("tasks_min_columns")
         self.activity.task_style = preferences.get("task_style", SETTINGS["task_style"].default)
         self.activity.tool_glyphs = preferences.get("tool_glyphs", SETTINGS["tool_glyphs"].default)
+        self.activity.tool_max_rows = tool_rows_preference()
         self.activity.show_hints = hints_preference()
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
@@ -686,7 +695,16 @@ class PreviewApp:
             len(edits) >= 2
             and edits[0] in ("set", "unset")
             and edits[1]
-            in ("attach_tasks", "tasks_max_height", "task_style", "tool_glyphs", "show_hints")
+            in (
+                "attach_tasks",
+                "tasks_max_height",
+                "tasks_min_rows",
+                "tasks_min_columns",
+                "task_style",
+                "tool_glyphs",
+                "tool_max_lines",
+                "show_hints",
+            )
         ):
             result = result.replace("Applies on next launch.", "Layout settings apply immediately.")
         self.transcript.note(result)
@@ -707,8 +725,19 @@ class PreviewApp:
         return argument == "on"
 
     def show_tasks(self, argument: str) -> None:
-        self.set_show_tasks(self.toggle_argument("/show-tasks", argument, self.activity.show_tasks))
-        state = "on" if self.activity.show_tasks else "off"
+        activity = self.activity
+        if argument:
+            shown = self.toggle_argument("/show-tasks", argument, activity.show_tasks)
+            # `on` means on screen now, even in a pane below the size thresholds.
+            activity.tasks_unhidden = shown and activity.screen_small
+        else:
+            # Bare acts on what is on screen, like Ctrl+O: in a small pane it
+            # overrides the size rule rather than saving the widget as off.
+            shown = activity.toggle_tasks()
+        self.set_show_tasks(shown)
+        state = "on" if activity.show_tasks else "off"
+        if activity.show_tasks and activity.tasks_too_big:
+            state += " (hidden in this pane: see tasks_min_rows and tasks_min_columns)"
         self.transcript.flash(
             f"Show tasks: {state}. Usage: /show-tasks [on|off] ({self.shortcut('o')})"
         )
@@ -920,6 +949,7 @@ class PreviewApp:
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
                 delta=self.transcript.delta,
+                dedent=self.transcript.diff_dedent,
                 color_system=self.transcript.console.color_system,
                 input=modal_input,
                 output=session.app.output,
@@ -1062,13 +1092,13 @@ class PreviewApp:
         from pcode.git_diff import GitDiffError
 
         self.diffs_requested = False
-        delta = self.transcript.delta
+        delta, dedent = self.transcript.delta, self.transcript.diff_dedent
         # The diff pane's width: the screen less its frame and scrollbar.
         width = max(1, session.app.output.get_size().columns - 4)
 
         def load():
             review = self.load_review()
-            return review, render_review(review, delta, width) if review else {}
+            return review, render_review(review, delta, width, dedent=dedent) if review else {}
 
         try:
             review, rendered = await asyncio.to_thread(load)
@@ -1090,6 +1120,7 @@ class PreviewApp:
                 delta=delta,
                 rendered=rendered,
                 width=width,
+                dedent=dedent,
                 input=modal_input,
                 output=session.app.output,
                 style=session.app.style,

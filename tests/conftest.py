@@ -221,6 +221,14 @@ def isolated_preferences(monkeypatch, tmp_path, request):
         "show_hints",
         replace_setting(preferences.SETTINGS["show_hints"], default="off"),
     )
+    # The shipped thresholds would hide the task widget on the small screens
+    # most tests draw; tests/test_task_size_autohide.py covers them itself.
+    for name in ("tasks_min_rows", "tasks_min_columns"):
+        monkeypatch.setitem(
+            preferences.SETTINGS,
+            name,
+            replace_setting(preferences.SETTINGS[name], default="0"),
+        )
     # Both are on by default. Off here, so a test's first turn makes no extra
     # model request and no terminal title escape lands in captured output;
     # tests/test_session_naming.py turns them on itself.

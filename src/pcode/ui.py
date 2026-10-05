@@ -67,6 +67,8 @@ from pcode.preferences import (
     SYNTAX_THEMES,
     TERMINAL_SYNTAX,
     load_preferences,
+    parse_height,
+    screen_rows,
 )
 from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.prompt_keys import PromptCallbacks, prompt_key_bindings
@@ -227,9 +229,13 @@ class Palette:
                 "activity.thinking.icon": f"noitalic {self.muted}",
                 # The tool row under the thought: upright where the thought is
                 # italic, and muted whether its call runs or has settled, so it
-                # never flips shade. Only a settled call's mark takes a colour.
+                # never flips shade; a running call's mark is the status row's
+                # spinner in this shade, not its accent. Only a settled call's
+                # mark takes a colour, and a success is dimmed so it never
+                # reads as a plan's completed step, which uses the same `✓`
+                # at full strength.
                 "activity.tool": self.muted,
-                "activity.tool.done": f"nodim {self.success}",
+                "activity.tool.done": f"dim {self.success}",
                 "activity.tool.failed": "nodim ansired",
                 # System work is pcode's own: the badge and accent mark it, and
                 # its queued rows keep an italic detail.
@@ -452,13 +458,12 @@ THINKING_KEEP = 2000
 # Default for `thinking_max_lines`: rows the newest thought may wrap to above
 # the status row. A thought is a sentence or two, which one row rarely holds.
 THOUGHT_ROWS = 10
+# Default for `tool_max_lines`: the turn's latest calls listed above the
+# status row, so parallel calls each show and a finished one lingers.
+TOOL_ROWS = 3
 # Marks the first thought row in the spinner's column, without resembling
 # a stalled frame of the round spinner below it.
 THOUGHT_ICON = "∴"
-# Cells before the tool row's icon: it lines up with the spinner below it.
-TOOL_INDENT = "  "
-# With no thought to hang from, the row stands alone in the thought's column.
-LONE_TOOL_ICON = "›"
 # The tool row's stand-ins for common verbs (`tool_display.LABELS`), so it
 # says `$ make test` rather than `Run shell · make test`. A tool not listed
 # keeps its verb spelled out. Each is one cell wide, ambiguous-width or not.
@@ -471,16 +476,12 @@ TOOL_GLYPHS = {
     **dict.fromkeys(("Read file", "Read results", "Read job output", "File info"), "⎘"),
     "Wait for job": "⧖",
 }
-# Hangs the row from the thought's text, which is what the call is for:
-# `⎿` with the glyphs, else the box drawing the frames already need.
-TOOL_HOOK = "⎿"
-PLAIN_TOOL_HOOK = "└"
 
 
 def tool_glyphs_on(setting: str) -> bool:
     """Whether the `tool_glyphs` setting (`auto`, `on`, `off`) draws the symbols.
 
-    Almost no monospace font has `⎿`, `⌕`, `⎘` or `⧖`: the terminal draws
+    Almost no monospace font has `⌕`, `⎘` or `⧖`: the terminal draws
     them from a fallback font, which on macOS and most desktops looks fine
     and on the Linux console is a box, so `auto` leaves them off where
     `TERM` says it is that console (tmux on it says otherwise). A terminal
@@ -525,7 +526,7 @@ class StatusLine:
     the detail. Right, in a fixed column: the run's tool tally and the phase
     clock, muted. Narrow panes drop the tally, then the clock, then cut the
     detail, and only then the phase. A tool call's command or path never
-    rides this row: it gets the tool row above (`Activity.tool_fragments`).
+    rides this row: it gets the tool rows above (`Activity.tool_rows`).
     """
 
     phase: str
@@ -715,10 +716,21 @@ class Activity:
     task_style: str = "status"
     # The `tool_glyphs` setting: `auto`, `on` or `off` (see `tool_glyphs_on`).
     tool_glyphs: str = "auto"
+    # The `tool_max_lines` setting: the most tool rows above the status row.
+    tool_max_rows: int = TOOL_ROWS
     # Cap on the task widget plus the editor box: whole rows, or a share of the
     # screen below 1 (0.5 is half). None keeps the default layout.
     tasks_max_height: float | None = None
     tasks_autohidden: bool = False
+    # Hide the widget in a pane shorter or narrower than these (0 never hides),
+    # so one preference suits a full screen and a split alike. Each terminal
+    # measures its own pane: see `fit_screen`.
+    tasks_min_rows: int = 0
+    tasks_min_columns: int = 0
+    screen_small: bool = False
+    # Ctrl+O showed the widget in a small pane; dropped when the pane crosses
+    # the threshold, so the next split or unsplit decides afresh.
+    tasks_unhidden: bool = False
     # Inline shortcut hints, such as the key that hides the task list.
     show_hints: bool = True
     # Where the model's thinking shows: `off`, `status-line` (its own rows
@@ -773,6 +785,9 @@ class Activity:
     _held: _HeldStatus | None = field(default=None, init=False, repr=False, compare=False)
     # The turn's latest call on the tool row, kept there once it finishes.
     _last_call: ToolCall | None = field(default=None, init=False, repr=False, compare=False)
+    # The turn's calls in the order the tool rows first saw them, so finished
+    # ones keep their rows while the next calls run. Drawing state like `_held`.
+    _seen_calls: list[ToolCall] = field(default_factory=list, init=False, repr=False, compare=False)
 
     @property
     def show_thinking(self) -> bool:
@@ -929,26 +944,54 @@ class Activity:
         self.prompt_detail = ""
         self.status = ""
         self._held = None
-        self._last_call = None
+        self.forget_calls()
         self.thought, self.thought_done = "", True
         self.tasks_autohidden = False
+
+    def forget_calls(self) -> None:
+        """Empty the tool rows: a new turn never opens on the last one's calls.
+
+        Its own step, since a terminal attached to a host learns of a new
+        turn from `turn_started` alone; `start_prompt` runs only on the host.
+        """
+        self._last_call = None
+        self._seen_calls = []
 
     def height_cap(self, rows: int) -> int | None:
         """The task widget plus editor box's row limit on a screen this tall."""
         cap = self.tasks_max_height
-        if cap is None:
-            return None
-        return min(rows, int(rows * cap) if cap < 1 else int(cap))
+        return None if cap is None else screen_rows(cap, rows)
+
+    def fit_screen(self, columns: int, rows: int) -> None:
+        """Note whether this pane is below the widget's size thresholds."""
+        small = rows < self.tasks_min_rows or columns < self.tasks_min_columns
+        if small != self.screen_small:
+            self.screen_small = small
+            self.tasks_unhidden = False
 
     @property
     def tasks_shown(self) -> bool:
-        """Visible only when enabled and not auto-hidden after the last turn."""
-        return self.show_tasks and not self.tasks_autohidden
+        """Visible when enabled, not auto-hidden after the last turn, and the pane fits."""
+        return self.show_tasks and not self.tasks_autohidden and not self.tasks_too_big
+
+    @property
+    def tasks_too_big(self) -> bool:
+        """The pane is below the size thresholds and Ctrl+O has not overridden them."""
+        return self.screen_small and not self.tasks_unhidden
 
     def toggle_tasks(self) -> bool:
-        """Ctrl+O acts on what is on screen, so auto-hidden reads as hidden."""
-        self.show_tasks = not self.tasks_shown
+        """Ctrl+O acts on what is on screen, so auto-hidden reads as hidden.
+
+        In a small pane it only overrides the size rule for that pane, leaving
+        `show_tasks` on so a larger pane still shows the widget.
+        """
+        shown = self.tasks_shown
         self.tasks_autohidden = False
+        if self.screen_small and self.show_tasks:
+            self.tasks_unhidden = not shown
+            return self.show_tasks
+        self.show_tasks = not shown
+        self.tasks_unhidden = self.show_tasks and self.screen_small
         return self.show_tasks
 
     def finish_prompt(self, state: str) -> None:
@@ -962,7 +1005,7 @@ class Activity:
         self.tasks_autohidden = False
         self.thought, self.thought_done = "", True
         self._held = None  # A new turn never opens on the last one's line.
-        self._last_call = None
+        self.forget_calls()
         self.prompt = text
         self.prompt_kind = kind
         self.prompt_detail = detail
@@ -1048,41 +1091,75 @@ class Activity:
             line.call, line.settled = call, True
         return line
 
-    def tool_fragments(self, line: StatusLine, width: int) -> list[tuple[str, str]]:
-        """The tool row between the thought and the status row: `  ⎿ $ ls -la`.
+    def tool_rows(
+        self, line: StatusLine, width: int, limit: int | None = None, spinner: str = "·"
+    ) -> list[list[tuple[str, str]]]:
+        """The tool rows between the thought and the status row: `⠋ $ ls -la`.
 
-        What the status row's verb acts on, with the full pane width to say it,
-        led by the verb's glyph (`$ ls -la`, `TOOL_GLYPHS`). The hook hangs it
-        from the thought above; with none, the glyph alone leads it in the
-        thought's column, so it never hangs from nothing. Once a call has run
-        it stays for the rest of the turn, marked `✓` or `✗`, so the editor
-        box does not jump a row with every call. A verb with no glyph is
-        spelled out whenever the status row no longer says it.
+        `spinner` marks a running call: the status row's current frame.
+
+        The turn's latest calls, oldest first, at most `tool_max_rows` (and
+        `limit`, the pane's share). Parallel calls each get a row, and a
+        finished call keeps its row, marked `✓` or `✗`, until newer calls
+        push it out, so the editor box does not jump with every call. The
+        call the status row's verb acts on always keeps its row, so at one
+        row this is that call alone.
         """
-        call = line.call or self._last_call
-        if call is None or not self.status_shown or width < 1:
+        # Work pcode runs itself (`prompt_kind` system) has no tool rows.
+        if not self.status_shown or self.prompt_kind != "user" or width < 1:
             return []
+        current = line.call or self._last_call
+        seen = self._seen_calls
+        for call in (*self.tools.calls, current):
+            # Delegates have panel rows, and a sub-agent's calls are its own:
+            # one shows only while the status row reports it.
+            if (
+                call is not None
+                and call.event.name != DELEGATE
+                and not call.event.parent_call_id
+                and all(call is not other for other in seen)
+            ):
+                seen.append(call)
+        count = max(1, self.tool_max_rows if limit is None else min(self.tool_max_rows, limit))
+        room = count - (current is not None)
+        others = [call for call in seen if call is not current]
+        kept = others[-room:] if room else []
+        shown = [call for call in seen if call is current or any(call is k for k in kept)]
+        if current is not None and all(call is not current for call in shown):
+            shown.append(current)  # A sub-agent's call, newest of all.
+        return [self._tool_row(call, line, width, spinner) for call in shown]
+
+    def _tool_row(
+        self, call: ToolCall, line: StatusLine, width: int, spinner: str
+    ) -> list[tuple[str, str]]:
+        """One call's row: its state mark, then its verb's glyph (`⠋ $ ls -la`).
+
+        Every row has the same columns, flush with the thought's `∴` or with
+        none, so parallel calls line up and nothing shifts as a thought comes
+        and goes: the mark (the main spinner's frame in the muted shade while
+        it runs, `✓` or `✗` once settled), then the glyph (`TOOL_GLYPHS`). A
+        verb with no glyph is spelled out whenever the status row does not
+        say it for this call.
+        """
         label, detail = call_parts(call)
-        hung = self.thought_shown
-        symbols = tool_glyphs_on(self.tool_glyphs)
-        glyph = (TOOL_GLYPHS if symbols else PLAIN_TOOL_GLYPHS).get(label)
+        glyph = (TOOL_GLYPHS if tool_glyphs_on(self.tool_glyphs) else PLAIN_TOOL_GLYPHS).get(label)
         if glyph:
             text = detail or label
-        elif detail and line.phase == label:
+        elif detail and call is line.call and line.phase == label:
             text = detail
         else:
             text = " · ".join(filter(None, (label, detail)))
         if call.settled is None:
-            hook = TOOL_HOOK if symbols else PLAIN_TOOL_HOOK
-            icon = ("class:activity.tool", hook if hung else glyph or LONE_TOOL_ICON)
-            if not hung:
-                glyph = None  # Alone, the glyph is the row's mark already.
+            mark = ("class:activity.tool", spinner)
         elif call.failed:
-            icon = ("class:activity.tool.failed", "✗")
+            mark = ("class:activity.tool.failed", "✗")
         else:
-            icon = ("class:activity.tool.done", "✓")
-        row = [icon, ("class:activity.tool", " " + " ".join(filter(None, (glyph, text))))]
-        return fit_fragments([("", TOOL_INDENT), *row] if hung else row, width)
+            mark = ("class:activity.tool.done", "✓")
+        # A wide spinner (`dots12`) would push running rows' text past
+        # settled ones'; pad the settled mark's column to its width.
+        pad = "" if call.settled is None else " " * max(0, cell_len(spinner) - 1)
+        body = ("class:activity.tool", pad + " " + " ".join(filter(None, (glyph, text))))
+        return fit_fragments([mark, body], width)
 
     def held_status_line(self, tally: str = "", hold: float = 0.0) -> StatusLine:
         """The status line, keeping what the row said for at least `hold` seconds.
@@ -2047,7 +2124,9 @@ class PromptLayout:
         # pcode's whole bottom block; slow it ~1.6x, which still reads as motion
         # but noticeably cuts render frequency.
         self.spinner.interval = round(self.spinner.interval * 1.6)
-        self.thought_max_rows = int(load_preferences().get("thinking_max_lines", str(THOUGHT_ROWS)))
+        self.thought_max_rows = parse_height(load_preferences().get("thinking_max_lines")) or float(
+            THOUGHT_ROWS
+        )
         self.menu = CompletionsMenu(
             max_height=20, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
         )
@@ -2056,7 +2135,11 @@ class PromptLayout:
         self.menu_overflowed = False
 
     def size(self):
-        return self.session.app.output.get_size()
+        size = self.session.app.output.get_size()
+        # Every layout read comes through here, so the task widget's size rule
+        # follows a resize or split before anything is measured against it.
+        self.activity.fit_screen(size.columns, size.rows)
+        return size
 
     # Heights and rows, each computed at most once per redraw.
 
@@ -2079,7 +2162,9 @@ class PromptLayout:
         """Seconds until the next frame."""
         return self.spinner.interval / 1000
 
+    @_per_render
     def spinner_frame(self) -> str:
+        """This redraw's frame, one for every spinner on screen, so they turn together."""
         return self.spinner.render(monotonic()).plain
 
     @_per_render
@@ -2166,7 +2251,10 @@ class PromptLayout:
         # Chrome: the two rule lines, plus the indented `$ command` a shell
         # preview repeats below its heading, exactly as scrollback does.
         chrome = 2 if edits else 3
-        budget = min(transcript.command_preview_lines, room - editor_height - plan_height - chrome)
+        budget = min(
+            max(1, screen_rows(transcript.command_preview_lines, size.rows)),
+            room - editor_height - plan_height - chrome,
+        )
         if budget <= 0:
             return plans, "", [], editor_height
         body = event.text if edits else event.output
@@ -2219,10 +2307,16 @@ class PromptLayout:
     def thought_rows(self):
         """The newest thought, on fewer rows in a short pane.
 
-        The tool row counts against the same cap, keeping at least one row
+        The tool rows count against the same cap, keeping at least one row
         for the thought.
         """
-        rows = min(self.thought_max_rows, max(1, self.size().rows // 4 - len(self.tool_rows())))
+        screen, cap = self.size().rows, self.thought_max_rows
+        # A fixed count still yields to a short pane (a quarter of it, less
+        # the tool rows); a share of the screen is that share less the tool rows.
+        share = screen_rows(cap, screen) if cap < 1 else screen // 4
+        rows = max(1, share - len(self.tool_rows()))
+        if cap >= 1:
+            rows = min(int(cap), rows)
         return self.activity.thought_fragments(self.size().columns - 1, rows)
 
     @_per_render
@@ -2238,9 +2332,15 @@ class PromptLayout:
 
     @_per_render
     def tool_rows(self):
-        """What the running or latest tool call acts on, under the thought."""
-        row = self.activity.tool_fragments(self.status_line(), self.size().columns - 1)
-        return [row] if row else []
+        """The turn's latest tool calls, under the thought.
+
+        They share a quarter of the pane with the thought, which keeps one
+        row of it when there is one to show.
+        """
+        limit = self.size().rows // 4 - int(self.activity.thought_shown)
+        return self.activity.tool_rows(
+            self.status_line(), self.size().columns - 1, limit, self.spinner_frame()
+        )
 
     @_per_render
     def aside_rows(self):
@@ -2371,8 +2471,11 @@ class PromptLayout:
                 return []
             transcript = self.transcript
             meta = [transcript.pending_tally() if transcript is not None else ""]
-            if self.plan_attached() and self.activity.displayed_plan:
-                meta.insert(0, self.activity.panel_title())
+            activity = self.activity
+            # A plan hidden only for the pane's size still says it exists.
+            hidden = activity.show_tasks and activity.tasks_too_big
+            if (self.plan_attached() or hidden) and activity.displayed_plan:
+                meta.insert(0, activity.panel_title())
             line = replace(self.status_line(), tally=" · ".join(part for part in meta if part))
             status = line.fragments(self.spinner_frame(), columns - 6, rule=True)
             if not status:
@@ -2787,13 +2890,17 @@ class Transcript:
         self.command_scrollback = preferences.get("show_commands", "off") == "on"
         self.group_tools = preferences.get("group_tools", SETTINGS["group_tools"].default) == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
-        self.command_preview_lines = int(preferences.get("command_preview_lines", "10"))
+        # Rows, or a share of the screen; resolved against the pane when drawn.
+        self.command_preview_lines = parse_height(
+            preferences.get("command_preview_lines")
+        ) or float(SETTINGS["command_preview_lines"].default)
         self.activity = activity
         self.console = console
         self.theme = theme
         self.detected_theme = detect_theme() if detected_theme is None else detected_theme
         self.syntax_themes = syntax_themes(preferences)
         self._delta = delta_from_preferences(preferences)
+        self.diff_dedent = preferences.get("diff_dedent", SETTINGS["diff_dedent"].default) == "on"
         self._output: TerminalOutput | None = None
         self.regenerate_on_resize = preferences.get("regenerate_on_resize", "on") == "on"
         self.paced_scrollback = preferences.get(
@@ -2852,7 +2959,7 @@ class Transcript:
         objects = tuple(
             Markdown(obj.markup, code_theme=self.code_theme)
             if isinstance(obj, (Markdown, RetainedMarkdown))
-            else replace(obj, code_theme=self.code_theme, delta=self.delta)
+            else replace(obj, code_theme=self.code_theme, delta=self.delta, dedent=self.diff_dedent)
             if isinstance(obj, EditTranscript)
             else replace(obj, code_theme=self.code_theme)
             if isinstance(obj, (TranscriptNotice, CommandTranscript))

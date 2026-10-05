@@ -23,6 +23,8 @@ from pcode.edit_ui import (
     editor_command,
     lay_out,
     notes_prompt,
+    quote_for,
+    render_review,
     split_patch,
 )
 from pcode.git_diff import Review
@@ -559,3 +561,20 @@ def test_quotes_holding_backticks_get_a_longer_fence():
     note = Note(anchor=None, line=1, quote=("+x = '```'",), text="hm")
     note.anchor = lay_out([change("a.py")], {}, []).rows[0].anchor
     assert notes_prompt([note]).splitlines()[3:6] == ["````diff", "+x = '```'", "````"]
+
+
+def test_the_review_dedents_hunks_like_the_scrollback_unless_turned_off():
+    nested = "@@ -1,2 +1,2 @@\n         keep = 1\n-        old = 2\n+        new = 2"
+    deep = change("a.py", patch=nested)
+    with create_pipe_input() as pipe:
+        ui = browser([deep], pipe)
+        assert "-old = 2" in ui.page.text and "         keep" not in ui.page.text
+        ui = DiffBrowser(review([deep]), dedent=False, input=pipe, output=DummyOutput())
+        assert "-        old = 2" in ui.page.text
+    # delta is asked for, and looked up by, the dedented hunk.
+    delta = fake_delta()
+    rendered = render_review(review([deep]), delta, 80)
+    assert all("\n-old = 2" in patch for patch in rendered)
+    # A note still quotes the code as it is in the file.
+    note_rows = [row for row in lay_out([deep], {}, []).rows if row.anchor and row.anchor.index]
+    assert any("        old" in line for line in quote_for(deep, note_rows[0].anchor))

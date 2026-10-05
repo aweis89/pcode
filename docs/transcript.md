@@ -65,8 +65,8 @@ Limits:
 
 When [delta](https://dandavison.github.io/delta/) is on your `PATH`, edit
 blocks, the live preview of an edit being written, `/tools` details, and `/diffs` use
-it: syntax-highlighted code, word-level changes, and a side-by-side layout when
-the terminal is wide enough. The Homebrew formula installs it for you. Without
+it: syntax-highlighted code and word-level changes, with an optional
+side-by-side layout. The Homebrew formula installs it for you. Without
 it, or if delta exits with an error, pcode falls back to its built-in Rich
 diffs; `diff_renderer rich` always uses them.
 
@@ -83,10 +83,18 @@ pager, no file or hunk headers (the block heading already names the file), and
 the layout. A flag in `delta_args` replaces pcode's choice of that flag, so
 `--side-by-side` gives the side-by-side layout at every width and
 `--width=variable` stops backgrounds at the end of the text. Any
-`--hunk-header-style` brings the hunk headers back. With
-`diff_layout auto`, a diff 180 columns or wider is shown side by side, and a
-narrower one gets the unified view; the `/diffs` pane is four columns narrower
-than the terminal. Settings apply on the next launch.
+`--hunk-header-style` brings the hunk headers back. Diffs are unified (inline)
+at every width by default. `diff_layout side-by-side` always shows them side by
+side, and `diff_layout auto` does so only for a diff 180 columns or wider,
+keeping narrower ones unified; the `/diffs` pane is four columns narrower than
+the terminal. Settings apply on the next launch.
+
+Each hunk drops the indentation all of its lines share, so a change deep in a
+nested block starts at the left edge instead of several levels in. The lines
+keep their indentation relative to each other, and line numbers stay correct.
+This applies to edit blocks and `/diffs` with delta or Rich, but not to the
+live preview, whose lines arrive one at a time. `diff_dedent off` shows the
+file's own indentation.
 
 A `--features NAME` that names a `[delta "NAME"]` section of your git config
 finds nothing here; put that section's settings in `delta_args` as flags.
@@ -260,7 +268,7 @@ captured output** into scrollback. A failed call's output is mirrored only when
 ```sh
 pcode config set show_commands on             # Mirror commands and output (default off)
 pcode config set command_scrollback_lines 80  # Output rows per block; default 20
-pcode config set command_preview_lines 10     # Live output height; default 10
+pcode config set command_preview_lines 10     # Live output height; default 10, or 0.25 of the screen
 pcode config set show_commands off            # Summary lines only (default)
 ```
 

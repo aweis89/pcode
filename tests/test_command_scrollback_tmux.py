@@ -16,7 +16,10 @@ import asyncio, os, tempfile
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()
 from pcode.preferences import save_preferences
 # Preserve the fixture's Ctrl shortcuts in this isolated config.
-save_preferences(key_prefix="ctrl", autohide_tasks="off")  # Assert on the idle widget.
+# Assert on the idle widget, at any pane size the test resizes to.
+save_preferences(
+    key_prefix="ctrl", autohide_tasks="off", tasks_min_rows="0", tasks_min_columns="0"
+)
 from pcode.app import PreviewApp
 from pcode.runtime import Message, ToolStarted, ToolSummary
 

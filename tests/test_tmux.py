@@ -126,6 +126,8 @@ def pane(request, tmp_path):
         json.dumps(
             {
                 "autohide_tasks": "off",
+                "tasks_min_rows": "0",
+                "tasks_min_columns": "0",
                 "project_extensions": "on",
                 "paced_scrollback": "off",
                 "group_tools": "off",
@@ -1004,7 +1006,9 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     assert status.startswith(SPINNER_ROW) and "Run shell" in status
     assert "Tools" not in screen and "Tasks ·" not in screen
     history = pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
-    assert history.count("file_11.py") == 1
+    # Scrollback holds each call once. The newest calls are also on the live
+    # tool rows (`tool_max_lines`), so count one that has left them.
+    assert history.count("file_10.py") == 1
     assert history.count("INSPECTABLE ERROR") == 1
     assert "✗ Read file failed" in history
 
@@ -1109,7 +1113,7 @@ def test_empty_input_resize_preserves_transcript_without_task_ghosts(pane):
             marker = f"RESIZE_TRANSCRIPT_{i:03d}"
             assert history.count(marker) == 1, f"Lost or duplicated {marker}:\n{history}"
         history = single_editor_history(pane, "A task")
-        assert history.count("file_11.py") == 1
+        assert history.count("file_10.py") == 1  # Off the live tool rows.
 
 
 @pytest.mark.parametrize(
@@ -1209,7 +1213,8 @@ def test_single_running_tool_needs_no_box_above_the_editor(pane):
     assert screen.count("┌") == screen.count("└") == 1
     assert lines[top].startswith(SPINNER_ROW)
     assert "Run shell" in lines[top] and "FIRST_DETAIL" not in lines[top]
-    assert lines[top - 1].strip().startswith(TOOL_ROW)
+    # Led by the spinner's frame, as the status row is.
+    assert lines[top - 1].strip().split(" ", 1)[1].startswith(TOOL_ROW)
     assert "Tasks" not in screen and "Tools" not in screen
     assert "✓ Read file" in pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")
     assert input_rows(screen) == 1
@@ -1242,7 +1247,8 @@ def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
     screen = settle(pane, lambda screen: "file_30.py" in screen, running=True)
     lines = screen.splitlines()
     tool = next(i for i, line in enumerate(lines) if "SLOW_FILE" in line)
-    assert lines[tool].strip() == "⎘ SLOW_FILE"
+    # Led by the spinner's frame while it runs.
+    assert lines[tool].strip().split(" ", 1)[1] == "⎘ SLOW_FILE"
     assert lines[tool + 1].startswith(SPINNER_ROW)
     assert lines[tool - 1].strip() == ""
     assert "✓ Read file  file_30.py" in lines[tool - 2]

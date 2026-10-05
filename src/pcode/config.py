@@ -3,7 +3,7 @@
 Editing defaults deliberately does not mutate a running conversation. In-session
 shortcuts change both the active setting and its saved default; the terminal also
 applies layout-only settings (`attach_tasks`, `tasks_max_height`, `task_style`,
-`tool_glyphs` and `show_hints`) immediately.
+`tool_glyphs`, `tool_max_lines` and `show_hints`) immediately.
 
 `config project ...` edits the workspace's `.pcode/preferences.json`, which is
 layered over the user file at launch (except for `USER_ONLY` keys).

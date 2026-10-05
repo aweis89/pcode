@@ -44,7 +44,7 @@ _MARK = "\ue000"
 class Delta:
     executable: str
     args: tuple[str, ...] = ()
-    layout: str = "auto"
+    layout: str = "unified"
     light: bool = False
 
     def side_by_side(self, width: int) -> bool:
@@ -177,8 +177,8 @@ def from_preferences(preferences: dict[str, str], *, light: bool = False) -> Del
         args = tuple(shlex.split(preferences.get("delta_args", "")))
     except ValueError:
         args = ()
-    layout = preferences.get("diff_layout", "auto")
-    return Delta(executable, args, layout if layout in LAYOUTS else "auto", light)
+    layout = preferences.get("diff_layout", "unified")
+    return Delta(executable, args, layout if layout in LAYOUTS else "unified", light)
 
 
 def find_delta() -> str | None:

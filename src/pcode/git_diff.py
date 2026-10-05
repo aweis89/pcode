@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from pcode import worktree
-from pcode.edits import edit_text, sensitive_path
+from pcode.edits import edit_text, sensitive_path, source_lines
 from pcode.runtime import EditCompleted
 from pcode.tool_display import plain
 
@@ -407,7 +407,9 @@ def _pair(entries: list[tuple[str, str, str]], patch: bytes):
 def _change(status: str, old: str, new: str, chunk: bytes) -> EditCompleted:
     path = plain(edit_text(new if old == new else f"{old} → {new}"), limit=None)
     operation = OPERATIONS.get(status, "edited")
-    lines = chunk.decode("utf-8", "replace").splitlines()
+    # Only "\n" ends a line, as in git's hunk counts; a CRLF file's "\r" goes.
+    text = chunk.decode("utf-8", "replace")
+    lines = [line.rstrip("\n").removesuffix("\r") for line in source_lines(text)]
     added, removed = _counts(lines)
     if sensitive_path(old) or sensitive_path(new):
         return EditCompleted("", path, operation, "", added, removed, omitted="Sensitive file")
@@ -418,18 +420,24 @@ def _change(status: str, old: str, new: str, chunk: bytes) -> EditCompleted:
     # `diff --git` repeats the path and `index` only names blobs. Hunk lines
     # always carry a prefix, so neither can be file content.
     body = [line for line in lines if not line.startswith(("diff --git ", "index "))]
-    shown = edit_text("\n".join(body)).splitlines()
+    shown = edit_text("\n".join(body)).split("\n")
     truncated = len(shown) > MAX_DIFF_LINES
     patch = "\n".join(shown[:MAX_DIFF_LINES])
     return EditCompleted("", path, operation, patch, added, removed, truncated)
 
 
 def _counts(lines: list[str]) -> tuple[int, int]:
-    """Changed lines inside hunks; the `---`/`+++` headers come before the first."""
+    """Changed lines inside hunks; each file's `---`/`+++` headers come before its first.
+
+    A type change is two patches in one chunk, so a second `diff --git` header
+    leaves the first patch's hunks.
+    """
     added = removed = 0
     in_hunk = False
     for line in lines:
-        if line.startswith("@@"):
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif line.startswith("@@"):
             in_hunk = True
         elif in_hunk and line.startswith("+"):
             added += 1

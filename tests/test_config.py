@@ -67,10 +67,14 @@ def test_defaults_and_path_do_not_create_files():
         "thinking_max_lines": "10",
         "show_tasks": "on",
         "autohide_tasks": "off",
+        # conftest's override; the shipped thresholds are 30 and 100.
+        "tasks_min_rows": "0",
+        "tasks_min_columns": "0",
         "show_hints": "off",  # conftest's test default; the shipped one is "on".
         "attach_tasks": "on",
         "task_style": "status",
         "tool_glyphs": "auto",
+        "tool_max_lines": "3",
         "tasks_max_height": None,
         "transcript_max_chars": "2000000",
         "error_scrollback_lines": "20",
@@ -81,7 +85,8 @@ def test_defaults_and_path_do_not_create_files():
         "show_edits": "on",
         "diff_renderer": "delta",
         "delta_args": "",
-        "diff_layout": "auto",
+        "diff_layout": "unified",
+        "diff_dedent": "on",
         "group_tools": "off",
         "command_scrollback_lines": "20",
         "command_preview_lines": "10",
@@ -384,6 +389,9 @@ def test_slash_config_switches_task_style_immediately(tmp_path):
     assert text_style().dim
     app.handle("/config set tool_glyphs off")
     assert app.activity.tool_glyphs == "off"
+    assert app.activity.tool_max_rows == 3
+    app.handle("/config set tool_max_lines 5")
+    assert app.activity.tool_max_rows == 5
     app.handle("/config set task_style icons")
     assert app.activity.task_style == "icons"
     assert not text_style().dim

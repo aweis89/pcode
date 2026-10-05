@@ -29,7 +29,7 @@ from prompt_toolkit.widgets import Label, TextArea
 
 from pcode.delta import Delta
 from pcode.edit_transcript import DiffLexer, text_fragments
-from pcode.edits import edit_text
+from pcode.edits import edit_text, patch_text
 from pcode.frame import Frame
 from pcode.git_diff import Review
 from pcode.popup_ui import (
@@ -167,11 +167,13 @@ def lay_out(
     side_by_side: bool = False,
     uncommitted: frozenset[str] = frozenset(),
     empty: str = "",
+    dedent: bool = True,
 ) -> Page:
     """Every change in one document, notes under the rows they are about.
 
     `rendered` holds delta's line groups by hunk patch; a hunk missing from it,
-    or delta failed on, shows its own patch lines.
+    or delta failed on, shows its own patch lines. `dedent` strips each hunk's
+    shared indentation (`diff_dedent`), as `render_review` must have too.
     """
     lines: list[str] = []
     styled: dict[int, list[tuple[str, str]]] = {}
@@ -201,7 +203,7 @@ def lay_out(
         heading = marker + change_heading(change)
         file_anchor = Anchor(path)
         header, preamble, hunks = (
-            split_patch(edit_text(change.patch)) if change.patch else ([], [], [])
+            split_patch(patch_text(change.patch, dedent=dedent)) if change.patch else ([], [], [])
         )
         # A note goes under its line where that row is shown, else under its
         # hunk, else (another view, or a refresh changed the hunk) under the
@@ -262,6 +264,8 @@ def quote_for(change: EditCompleted, anchor: Anchor) -> tuple[str, ...]:
     """The diff lines a note quotes: around the noted line, else the hunk's start."""
     if not anchor.hunk:
         return ()
+    # Undedented: the agent reads the code as it is. Dedenting keeps every
+    # line, so the anchor's index points at the same line either way.
     _, _, hunks = split_patch(edit_text(change.patch))
     hunk = next((h for h in hunks if h.header == anchor.hunk), None)
     if hunk is None:
@@ -305,7 +309,12 @@ def editor_command(path: Path, line: int | None, environ=os.environ) -> list[str
 
 
 def render_review(
-    review: Review, delta: Delta | None, width: int, known: dict[str, list | None] | None = None
+    review: Review,
+    delta: Delta | None,
+    width: int,
+    known: dict[str, list | None] | None = None,
+    *,
+    dedent: bool = True,
 ) -> dict[str, list | None]:
     """delta's layout of every hunk in every view of `review`, in one delta run.
 
@@ -317,7 +326,7 @@ def render_review(
     patches = []
     for change in (*review.changes, *review.uncommitted, *(review.since_review or [])):
         if change.patch:
-            header, _, hunks = split_patch(edit_text(change.patch))
+            header, _, hunks = split_patch(patch_text(change.patch, dedent=dedent))
             patches += [hunk_patch(header, hunk) for hunk in hunks]
     patches = list(dict.fromkeys(patches))
     missing = [patch for patch in patches if patch not in known]
@@ -355,6 +364,7 @@ class DiffBrowser:
         delta: Delta | None = None,
         rendered: dict[str, list | None] | None = None,
         width: int = 0,
+        dedent: bool = True,
         key_prefix: str | None = None,
         **app_options,
     ) -> None:
@@ -362,6 +372,7 @@ class DiffBrowser:
         self.reload = reload
         self.mark = mark
         self.delta = delta
+        self.dedent = dedent
         # `rendered` is delta's layout of the review's hunks at `width`, made
         # before the popup opened so it never flashes the plain patch first.
         self.width = width
@@ -563,7 +574,7 @@ class DiffBrowser:
 
     def render(self, width: int, review: Review | None = None) -> dict[str, list | None]:
         known = self.rendered if width == self.width else {}
-        return render_review(review or self.review, self.delta, width, known)
+        return render_review(review or self.review, self.delta, width, known, dedent=self.dedent)
 
     def pane_width(self) -> int:
         # The frame's two borders, the scrollbar, and a spare column: every
@@ -643,6 +654,7 @@ class DiffBrowser:
             side_by_side=self.side_by_side(),
             uncommitted=uncommitted,
             empty=NO_MATCH if self.changes() and not self.visible else self.empty(),
+            dedent=self.dedent,
         )
         self.lexer.rows = self.page.styled
         row = self.find(keep)
@@ -729,7 +741,7 @@ class DiffBrowser:
         if self.scope == "paths":
             return all(fuzzy_match(term, change.path.casefold()) for term in terms)
         # Match the redacted text, so redaction cannot hide the row a query matched.
-        text = "\n".join([change_heading(change), edit_text(change.patch)])
+        text = "\n".join([change_heading(change), patch_text(change.patch, dedent=self.dedent)])
         return not terms or bool(matching_rows(text, terms))
 
     def diff_rows(self) -> list[int]:

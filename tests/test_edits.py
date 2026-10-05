@@ -6,7 +6,7 @@ from pydantic_ai import ModelRetry
 from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 from rich.console import Console
 
-from pcode.edits import MAX_SOURCE, completed_change
+from pcode.edits import MAX_SOURCE, completed_change, dedent_patch
 from pcode.filesystem import DisplayFileSystem, FileChangeEvent
 from pcode.runtime import EditCompleted
 from pcode.ui import Transcript
@@ -288,3 +288,80 @@ def test_external_alias_does_not_capture_sensitive_contents(tmp_path):
         assert not ctx.changes[-1].patch
 
     asyncio.run(exercise())
+
+
+def test_dedent_patch_strips_each_hunks_shared_indent():
+    patch = "\n".join(
+        [
+            "--- a/x.py",
+            "+++ b/x.py",
+            "@@ -1,3 +1,3 @@",
+            "         if ready:",
+            "-            go()",
+            "+            run()",
+            "",
+            "@@ -20,2 +20,3 @@",
+            "     def f():",
+            "-        return 1",
+            "+        return 2",
+            "+",
+            r"\ No newline at end of file",
+        ]
+    )
+    assert dedent_patch(patch).split("\n") == [
+        "--- a/x.py",
+        "+++ b/x.py",
+        "@@ -1,3 +1,3 @@",
+        " if ready:",
+        "-    go()",
+        "+    run()",
+        "",
+        "@@ -20,2 +20,3 @@",
+        " def f():",
+        "-    return 1",
+        "+    return 2",
+        "+",
+        r"\ No newline at end of file",
+    ]
+
+
+def test_dedent_patch_reads_hunks_by_their_counts():
+    # A removed "-- x" line looks like a file header, and an unindented line
+    # anywhere in the hunk means there is nothing to strip.
+    patch = "@@ -1,2 +1 @@\n-    -- x\n-    y\n+    z"
+    assert dedent_patch(patch) == "@@ -1,2 +1 @@\n--- x\n-y\n+z"
+    flush = "@@ -1 +1 @@\n-top\n+    nested"
+    assert dedent_patch(flush) == flush
+
+
+def test_diff_dedent_setting_controls_rendered_indent():
+    before = "class A:\n" + "".join(f"    def f{n}(self):\n        return {n}\n" for n in range(9))
+    after = before.replace("return 4", "return 40")
+    change = completed_change("a.py", before, after)
+
+    def rendered(dedent: str) -> str:
+        stream = StringIO()
+        console = Console(file=stream, width=60)
+        preferences = {"diff_renderer": "rich", "diff_dedent": dedent}
+        Transcript(console, preferences=preferences).edit(change)
+        return stream.getvalue()
+
+    assert "\n-    return 4\n" in rendered("on")
+    assert "\n-        return 4\n" in rendered("off")
+
+
+def test_dedent_patch_keeps_whitespace_changes_and_skips_malformed_hunks():
+    # Trailing spaces removed from a blank line stay visible past the shared indent.
+    whitespace = "@@ -1,2 +1,2 @@\n         x\n-          \n+"
+    assert dedent_patch(whitespace) == "@@ -1,2 +1,2 @@\n x\n-  \n+"
+    # A line without a marker breaks the counts: dedenting half the hunk would
+    # misalign it, so none of it is.
+    broken = "@@ -1,3 +1,3 @@\n     a\nc\n+    d"
+    assert dedent_patch(broken) == broken
+
+
+def test_change_counts_lines_as_git_does():
+    # U+2028 inside a line is not a line break: replacing that line is -1 +1.
+    change = completed_change("a.py", "s = 'a\u2028b'\n", "s = 'c'\n")
+    assert (change.added, change.removed) == (1, 1)
+    assert change.patch.split("\n")[3:] == ["-s = 'a b'", "+s = 'c'"]

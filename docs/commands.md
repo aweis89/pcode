@@ -208,6 +208,14 @@ status row and stays in the transcript.
 as soon as the model finishes a turn, keeping the idle prompt compact; it
 returns on the next turn, and Ctrl+B `o` brings it back immediately. Default: off.
 
+The widget also hides in a pane shorter than `tasks_min_rows` (default 30) or
+narrower than `tasks_min_columns` (default 100), so splitting a terminal either
+way frees the room for the transcript, and the widget comes back once the pane
+is large enough again. Each attached terminal checks its own pane. Ctrl+B `o`
+shows it in a small pane anyway until the pane crosses the threshold again.
+Set either to `0` to never hide for that dimension; both apply immediately
+through `/config`.
+
 The widget sits at the top of the editor box by default (`attach_tasks=on`),
 with a divider between the tasks and your draft. While a turn runs, the status
 row is the box's top border and the tasks hang straight under it; between turns
@@ -283,30 +291,36 @@ call gets its line in [scrollback](transcript.md).
 The status row always reads the same way: a spinner, what the turn is doing,
 and on the right the run's tool count and how long this phase has lasted.
 The command, path, or pattern a tool call works on gets its own row above,
-with the full width of the pane, so the status row stays short. Under a
-thought it hangs from it with `⎿`:
+with the full width of the pane, so the status row stays short. While the
+call runs, the row spins with the status row's spinner, in a muted shade:
 
 ```text
 ∴ Checking where the config is loaded
-  ⎿ ✎ src/app.py
+◜ ✎ src/app.py
 ┌─ ◜ Edit file ────────────────────────────────────── ✓7 ✗1 tools · 2s ─┐
 ```
 
 Read top to bottom, that is why (the thought), what (the call), and how it is
 going (the status row). A glyph stands in for the call's verb: `$` runs a
 command, `⌕` searches, `✎` edits or writes a file, `⎘` reads one, and `⧖`
-waits on a job. A tool without one keeps its verb spelled out, and with no
-thought above, the row starts with the glyph, or `›` for those. Many fonts
-lack `⎿`, `⌕`, `⎘` and `⧖`, and the terminal borrows them from another font;
-if they look off in yours, `/config set tool_glyphs off` hangs the row with
-`└` and names the verb once the call settles. Shell calls keep `$`.
-Once a call finishes, its row is marked `✓` or `✗` and stays until the next
-call or the end of the turn:
+waits on a job. A tool without one keeps its verb spelled out. Many fonts
+lack `⌕`, `⎘` and `⧖`, and the terminal borrows them from another font;
+if they look off in yours, `/config set tool_glyphs off` drops them and names
+the verb once the call settles. Shell calls keep `$`.
+Once a call finishes, its spinner turns into `✓` or `✗` and the row stays
+while the next calls run, newest last, so parallel calls each get a row and
+line up whether or not a thought is showing:
 
 ```text
-  ✓ ⎘ src/app.py
-┌─ ◜ Waiting for model ───────────────────────────────── ✓8 tools · 0s ─┐
+∴ Checking where the config is loaded
+✓ ⎘ src/app.py
+✓ ⌕ load_config
+◜ $ make test
+┌─ ◜ Run shell ──────────────────────────────────────── ✓9 tools · 3s ─┐
 ```
+
+The turn's three latest calls are shown, fewer in a short pane;
+`/config set tool_max_lines 1` keeps just the call the status row is on.
 
 Work pcode runs itself has no tool row, just its detail on the status row:
 
@@ -333,6 +347,11 @@ is saved (default on); `pcode config set show_tasks off` sets it from the shell.
 `/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
 when the model finishes a turn, keeping the idle prompt compact. It returns on
 the next turn, and Ctrl+B `o` brings it back immediately. Default off.
+
+It also hides in a pane shorter than `tasks_min_rows` (default 30) or narrower
+than `tasks_min_columns` (default 100), and returns when the pane grows back, so
+a split in either direction keeps the transcript readable. Ctrl+B `o` overrides
+that for the pane; `0` turns either check off.
 
 By default the widget is attached to the top of the editor box
 (`attach_tasks=on`), with a divider between tasks and your draft. The running

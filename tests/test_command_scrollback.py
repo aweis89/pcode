@@ -472,5 +472,11 @@ def test_preview_height_setting_is_independent_of_scrollback_limit(limit):
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "abc"])
 def test_preview_height_rejects_invalid_values(value):
-    with pytest.raises(ValueError, match="positive integer"):
+    with pytest.raises(ValueError, match="whole number of rows or a fraction"):
         configure(["set", "command_preview_lines", value])
+
+
+def test_preview_height_accepts_a_share_of_the_screen():
+    configure(["set", "command_preview_lines", "0.25"])
+    view, _ = transcript()
+    assert view.command_preview_lines == 0.25

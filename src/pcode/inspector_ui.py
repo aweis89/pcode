@@ -23,7 +23,7 @@ from rich.theme import Theme
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.delta import Delta
 from pcode.edit_transcript import EditTranscript
-from pcode.edits import edit_text
+from pcode.edits import patch_text
 from pcode.frame import Frame
 from pcode.inspection import InspectedCall, ToolArchive
 from pcode.popup_ui import (
@@ -188,11 +188,13 @@ class ToolInspector:
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
         delta: Delta | None = None,
+        dedent: bool = True,
         color_system: str | None = "truecolor",
         key_prefix: str | None = None,
         **app_options,
     ) -> None:
         self.archive = archive
+        self.dedent = dedent
         self.failed = failed
         self.edits = edits
         self.code_theme = code_theme
@@ -324,7 +326,8 @@ class ToolInspector:
             return
         self.prefetched_width = width = info.window_width
         patches = [
-            edit_text(change.patch)
+            # As EditTranscript shows it, or the prefetched render is never used.
+            patch_text(change.patch, dedent=self.dedent)
             for call in self.archive.calls
             for change in call.changes
             if change.patch
@@ -418,7 +421,11 @@ class ToolInspector:
             # scrollback's row cap does not apply.
             changes = [
                 EditTranscript(
-                    change, code_theme=self.code_theme, max_rows=sys.maxsize, delta=self.delta
+                    change,
+                    code_theme=self.code_theme,
+                    max_rows=sys.maxsize,
+                    delta=self.delta,
+                    dedent=self.dedent,
                 )
                 for change in call.changes
             ]

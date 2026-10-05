@@ -163,6 +163,11 @@ def parse_height(value: str | None) -> float | None:
     return height if height > 0 else None
 
 
+def screen_rows(height: float, rows: int) -> int:
+    """A `parse_height` value as rows of a screen `rows` tall, never more than it has."""
+    return min(rows, int(rows * height) if height < 1 else int(height))
+
+
 # Ctrl chords every surface keeps for itself, or that the terminal sends as
 # another key; a leader on one of them would take away something essential.
 RESERVED_CHORDS = {
@@ -466,9 +471,14 @@ SETTINGS = {
         "win over pcode's own",
     ),
     "diff_layout": Setting(
-        "auto",
+        "unified",
         DIFF_LAYOUTS,
-        description="delta layout: auto is side-by-side at 180+ columns, else unified",
+        description="delta layout: unified, side-by-side, or auto (side-by-side at 180+ columns)",
+    ),
+    "diff_dedent": Setting(
+        "on",
+        ("on", "off"),
+        description="Strip the indentation every line of a diff hunk shares, delta or rich",
     ),
     "show_commands": Setting(
         "off",
@@ -492,14 +502,27 @@ SETTINGS = {
     # caps separately from the scrollback mirror.
     "command_preview_lines": Setting(
         "10",
-        positive_integer=True,
-        description="Lines of the pinned live preview of a running shell command",
+        height=True,
+        description="Lines of the pinned live preview of a running shell command, "
+        "or 0.25 for a quarter of the screen",
     ),
     "show_tasks": Setting(
         "on", ("on", "off"), description="Show the model's plan as a pinned task list"
     ),
     "autohide_tasks": Setting(
         "off", ("on", "off"), description="Hide the task list when a turn ends"
+    ),
+    # Checked against each terminal's own pane on every resize, so a split
+    # hides the list and unsplitting brings it back; 0 never hides.
+    "tasks_min_rows": Setting(
+        "30",
+        whole_number=True,
+        description="Hide the task list in a pane shorter than this (0: never)",
+    ),
+    "tasks_min_columns": Setting(
+        "100",
+        whole_number=True,
+        description="Hide the task list in a pane narrower than this (0: never)",
     ),
     "show_hints": Setting(
         "on",
@@ -519,6 +542,12 @@ SETTINGS = {
         ("auto", "on", "off"),
         description="Symbols on the tool row; off spells out verbs but shell's $ "
         "(auto: off on the Linux console)",
+    ),
+    "tool_max_lines": Setting(
+        "3",
+        positive_integer=True,
+        description="Max tool calls listed above the status row, newest last; "
+        "a short pane shows fewer",
     ),
     "tasks_max_height": Setting(
         None,
@@ -540,9 +569,9 @@ SETTINGS = {
     # Read when the prompt is built, so it applies on the next launch.
     "thinking_max_lines": Setting(
         "10",
-        positive_integer=True,
-        description="Max rows of thinking above the status row (status-line mode); "
-        "a short pane shows fewer",
+        height=True,
+        description="Max rows of thinking above the status row (status-line mode), "
+        "or 0.2 for a fifth of the screen; a fixed count is capped at a quarter of it",
     ),
     "editing_mode": Setting(
         "emacs", ("emacs", "vi"), description="Key bindings for the prompt editor"
@@ -961,6 +990,19 @@ def thinking_mode_preference() -> str:
 def hints_preference() -> bool:
     """Whether the prompt's keybinding help indicator (`show_hints`) is on."""
     return load_preferences().get("show_hints", SETTINGS["show_hints"].default) == "on"
+
+
+def preference_count(key: str) -> int:
+    """A saved whole-number setting, or its default when unset or not a number."""
+    value = str(load_preferences().get(key, ""))
+    if not value.isascii() or not value.isdecimal():
+        value = SETTINGS[key].default
+    return int(value)
+
+
+def tool_rows_preference() -> int:
+    """The most tool rows above the status row (`tool_max_lines`)."""
+    return int(load_preferences().get("tool_max_lines", SETTINGS["tool_max_lines"].default))
 
 
 def openai_profile(model: str, resolved=None) -> dict:

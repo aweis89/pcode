@@ -8,6 +8,7 @@ from rich.console import Console
 
 from pcode import git_diff, worktree
 from pcode.app import PreviewApp
+from pcode.edits import patch_text
 from pcode.git_diff import GitDiffError, load_review
 from pcode.runtime import EditCompleted
 
@@ -121,6 +122,7 @@ def test_renames_deletions_type_and_mode_changes_line_up_with_their_patches(repo
     assert "+five" in changes["old.py → new.py"].patch
     assert changes["gone.py"].operation == "deleted" and "-bye" in changes["gone.py"].patch
     assert "+README" in changes["kind.txt"].patch and "-file" in changes["kind.txt"].patch
+    assert (changes["kind.txt"].added, changes["kind.txt"].removed) == (1, 1)
     assert "new mode 100755" in changes["mode.sh"].patch
     assert "Binary files" in changes["bin.dat"].patch
     assert "+b" in changes["sp ace.py"].patch
@@ -359,3 +361,29 @@ def test_a_sessions_refs_go_with_the_session_or_its_worktree(repo, tmp_path):
     ]
     git_diff.forget_session(repo, "other-session")
     assert git(repo, "for-each-ref", "refs/pcode") == ""
+
+
+def test_only_newlines_split_patch_lines(repo):
+    # A form feed or U+2028 inside a line is not a line break to git: splitting
+    # there adds lines its hunk counts do not include. A CRLF file's "\r" goes.
+    source = "class A:\n    def f(self):\n        x = 1\n        \f\n        s = '\u2028'\n"
+    commit(repo, "a.py", source + "        return x\n        y = '\u2028- 2'\n")
+    commit(repo, "crlf.txt", "one\r\ntwo\r\n")
+    (repo / "a.py").write_text(source + "        return x + 1\n        y = '\u2028+ 2'\n")
+    (repo / "crlf.txt").write_bytes(b"one\r\nthree\r\n")
+
+    tree, _ = git_diff._snapshot(repo)
+    changes = {change.path: change for change in git_diff._tree_diff(repo, "HEAD", tree, None)}
+
+    shown = patch_text(changes["a.py"].patch, dedent=True).split("\n")
+    assert shown[3:] == [
+        " x = 1",
+        " ",
+        " s = ' '",
+        "-return x",
+        "-y = ' - 2'",
+        "+return x + 1",
+        "+y = ' + 2'",
+    ]
+    assert (changes["a.py"].added, changes["a.py"].removed) == (2, 2)
+    assert changes["crlf.txt"].patch.split("\n")[3:] == [" one", "-two", "+three"]

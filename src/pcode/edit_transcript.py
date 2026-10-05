@@ -16,7 +16,7 @@ from rich.text import Text
 
 from pcode.block import DONE, block_heading, block_rule
 from pcode.delta import Delta, preview_patch
-from pcode.edits import edit_text
+from pcode.edits import edit_text, patch_text
 from pcode.runtime import EditCompleted
 from pcode.syntax import transparent_theme
 from pcode.tool_display import command_text
@@ -28,6 +28,7 @@ class EditTranscript:
     code_theme: str = "monokai"
     max_rows: int = 60
     delta: Delta | None = None
+    dedent: bool = True
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         change = self.change
@@ -39,7 +40,7 @@ class EditTranscript:
             )
         )
         if change.patch:
-            text = edit_text(change.patch)
+            text = patch_text(change.patch, dedent=self.dedent)
             lines = self.delta.render(text, options.max_width) if self.delta else None
             patch = (
                 Text("\n").join(lines)
@@ -62,7 +63,8 @@ def prefetch_edits(objects, width: int) -> None:
     patches: dict[Delta, list[str]] = {}
     for obj in objects:
         if isinstance(obj, EditTranscript) and obj.delta is not None and obj.change.patch:
-            patches.setdefault(obj.delta, []).append(edit_text(obj.change.patch))
+            text = patch_text(obj.change.patch, dedent=obj.dedent)
+            patches.setdefault(obj.delta, []).append(text)
     for delta, texts in patches.items():
         delta.prefetch(texts, width)
 

@@ -130,8 +130,9 @@ def test_edit_and_queue_during_generation(outcome):
 
 
 def tool_row(activity, width=80):
-    """The tool row's text, for the line the status row would show."""
-    return "".join(text for _, text in activity.tool_fragments(activity.status_line(), width))
+    """The tool rows' text, one line each, for the line the status row would show."""
+    rows = activity.tool_rows(activity.status_line(), width)
+    return "\n".join("".join(text for _, text in row) for row in rows)
 
 
 def styled(fragments):
@@ -199,20 +200,27 @@ def test_status_row_reports_the_newest_running_tool_call():
     # The call's detail is never on the status row: the tool row has it, led
     # by the newest call's glyph in place of its verb.
     assert "pattern" not in "".join(text for _, text in fragments)
-    assert tool_row(activity) == "⌕ pattern"
-    # A result hands the row back to the call still running.
+    # Parallel calls each get a row, in the order they started.
+    assert tool_row(activity) == "· ⎘ example.py\n· ⌕ pattern"
+    # A result hands the status row back to the call still running, and the
+    # finished call keeps its row, marked done.
     activity.tools.record(ToolSummary("grep", "pattern", call_id="two"))
     parts = styled(activity.status_fragments("⠋", 80))
     # One call is its own phase: its label is already the verb.
     assert parts["activity.phase"] == "Read file" and "activity.detail" not in parts
     # The status row says the verb; the tool row's glyph stands in for it.
-    assert tool_row(activity) == "⎘ example.py"
-    # Under a thought it hangs from the thought's text, in the spinner's column.
+    assert tool_row(activity) == "· ⎘ example.py\n✓ ⌕ pattern"
+    # At one row, only the call the status row reports.
+    activity.tool_max_rows = 1
+    assert tool_row(activity) == "· ⎘ example.py"
+    # A running call's mark is the status row's spinner frame, in the tool
+    # row's muted shade, and a thought above does not move the row.
     activity.think("Checking the example")
-    assert activity.tool_fragments(activity.status_line(), 80) == [
-        ("", "  "),
-        ("class:activity.tool", "⎿"),
-        ("class:activity.tool", " ⎘ example.py"),
+    assert activity.tool_rows(activity.status_line(), 80, spinner="◜") == [
+        [
+            ("class:activity.tool", "◜"),
+            ("class:activity.tool", " ⎘ example.py"),
+        ]
     ]
 
 
@@ -227,7 +235,7 @@ def test_finished_call_is_held_as_done_under_the_models_phase():
     # Nothing runs, so a stale `Running` status gives the model the turn,
     # and the held call is muted chrome with its result mark, not live work.
     assert parts["activity.phase"] == "Waiting for model" and "activity.detail" not in parts
-    assert activity.tool_fragments(activity.status_line(), 80) == [
+    assert activity.tool_rows(activity.status_line(), 80)[-1] == [
         ("class:activity.tool.done", "✓"),
         ("class:activity.tool", " ⎘ example.py"),
     ]
@@ -248,7 +256,7 @@ def test_tool_row_spells_out_a_verb_with_no_glyph():
     activity = Activity(prompt="Fix bug", prompt_state="running")
     activity.tools.record(ToolStarted("web_search", "pcode docs", "one"))
     # The status row names the verb while it runs, so the row need not.
-    assert tool_row(activity) == "› pcode docs"
+    assert tool_row(activity) == "· pcode docs"
     activity.tools.record(ToolSummary("web_search", "pcode docs", call_id="one"))
     assert tool_row(activity) == "✓ web_search · pcode docs"
 
@@ -259,25 +267,130 @@ def test_tool_row_spells_out_verbs_with_glyphs_off(monkeypatch):
 
     activity = Activity(prompt="Fix bug", prompt_state="running", tool_glyphs="off")
     activity.tools.record(ToolStarted("read_file", "example.py", "one"))
-    # The status row names the verb while it runs; a plain hook under a thought.
-    assert tool_row(activity) == "› example.py"
+    # The status row names the verb while it runs, thought or none.
+    assert tool_row(activity) == "· example.py"
     activity.think("Checking the example")
-    assert tool_row(activity) == "  └ example.py"
+    assert tool_row(activity) == "· example.py"
     activity.tools.record(ToolSummary("read_file", "example.py", call_id="one"))
-    assert tool_row(activity) == "  ✓ Read file · example.py"
+    assert tool_row(activity) == "✓ Read file · example.py"
     # `auto` draws the symbols except on the Linux console, which has no
     # fallback font for them.
     activity.tool_glyphs = "auto"
     monkeypatch.setenv("TERM", "linux")
-    assert tool_row(activity) == "  ✓ Read file · example.py"
+    assert tool_row(activity) == "✓ Read file · example.py"
     monkeypatch.setenv("TERM", "xterm-256color")
-    assert tool_row(activity) == "  ✓ ⎘ example.py"
+    assert tool_row(activity) == "✓ ⎘ example.py"
     # `$` is ASCII, in every font: shell calls keep it with the symbols off.
     activity.tool_glyphs = "off"
     activity.tools.record(ToolStarted("shell", "make test", "two"))
-    assert tool_row(activity) == "  └ $ make test"
+    assert tool_row(activity) == "✓ Read file · example.py\n· $ make test"
     activity.tools.record(ToolSummary("shell", "make test", call_id="two"))
-    assert tool_row(activity) == "  ✓ $ make test"
+    assert tool_row(activity) == "✓ Read file · example.py\n✓ $ make test"
+
+
+def test_tool_rows_line_up_under_a_wide_spinner():
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running")
+    activity.tools.record(ToolStarted("read_file", "a.py", "one"))
+    tool_row(activity)  # Drawn while it runs.
+    activity.tools.record(ToolSummary("read_file", "a.py", call_id="one"))
+    activity.tools.record(ToolStarted("read_file", "b.py", "two"))
+    rows = activity.tool_rows(activity.status_line(), 80, spinner="⢀⠀")
+    assert ["".join(text for _, text in row) for row in rows] == ["✓  ⎘ a.py", "⢀⠀ ⎘ b.py"]
+
+
+def test_tool_rows_keep_the_latest_calls_and_the_status_rows_own():
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running", tool_max_rows=2)
+
+    def run(name, detail, call_id):
+        activity.tools.record(ToolStarted(name, detail, call_id))
+        tool_row(activity)  # Drawn while it runs.
+        activity.tools.record(ToolSummary(name, detail, call_id=call_id))
+
+    run("read_file", "a.py", "one")
+    run("read_file", "b.py", "two")
+    run("read_file", "c.py", "three")
+    # The oldest finished call gives its row up to the newest.
+    assert tool_row(activity) == "✓ ⎘ b.py\n✓ ⎘ c.py"
+    # A delegate has its own panel row, and its sub-agent's calls are its own.
+    activity.tools.record(ToolStarted("delegate_task", "", "d", agent="worker", task="t"))
+    activity.tools.record(ToolStarted("grep", "x", "d:grep", parent_call_id="d"))
+    activity.tools.record(ToolStarted("read_file", "d.py", "four"))
+    assert tool_row(activity) == "✓ ⎘ c.py\n· ⎘ d.py"
+    # The call the status row reports keeps its row, however the window slides:
+    # at one row, it is the only one.
+    line = activity.status_line()
+    activity.tools.record(ToolStarted("read_file", "e.py", "five"))
+    activity.tools.record(ToolStarted("read_file", "f.py", "six"))
+    rows = activity.tool_rows(line, 80)
+    assert ["".join(text for _, text in row) for row in rows] == ["· ⎘ d.py", "· ⎘ f.py"]
+    assert len(activity.tool_rows(line, 80, limit=0)) == 1
+    activity.tool_max_rows = 1
+    assert ["".join(text for _, text in row) for row in activity.tool_rows(line, 80)] == [
+        "· ⎘ d.py"
+    ]
+
+
+def test_tool_rows_show_a_sub_agents_call_only_while_reported():
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running")
+    activity.tools.record(ToolStarted("delegate_task", "", "d", agent="worker", task="t"))
+    activity.tools.record(ToolStarted("read_file", "a.py", "one"))
+    activity.tools.record(ToolStarted("grep", "needle", "d:grep", parent_call_id="d"))
+    # The status row reports the sub-agent's newest call, so it gets a row.
+    assert tool_row(activity) == "· ⎘ a.py\n· ⌕ needle"
+    activity.tools.record(ToolSummary("grep", "needle", call_id="d:grep"))
+    activity.tools.recent = None  # Its dwell is over.
+    assert tool_row(activity) == "· ⎘ a.py"
+
+
+def test_tool_rows_skip_system_work_and_clear_for_each_turn():
+    from pcode.runtime import ToolStarted
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running")
+    activity.tools.record(ToolStarted("read_file", "a.py", "one"))
+    assert tool_row(activity) == "· ⎘ a.py"
+    # A wake turn is pcode's own work: no tool rows, as before.
+    activity.prompt_kind = "system"
+    assert tool_row(activity) == ""
+    activity.prompt_kind = "user"
+    # A terminal attached to a host hears of a new turn only through
+    # `turn_started`, never `start_prompt`; either clears the rows.
+    app = PreviewApp(console=Console(file=StringIO()))
+    app.activity = activity
+    app.turn_started("next", echo=False)
+    assert tool_row(activity) == ""
+
+
+def test_tool_rows_share_a_short_pane_with_the_thought():
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.data_structures import Size
+
+    from pcode.runtime import ToolStarted
+    from pcode.ui import Activity, PromptLayout
+
+    activity = Activity(prompt="Fix bug", prompt_state="running")
+    for index in range(3):
+        activity.tools.record(ToolStarted("read_file", f"{index}.py", str(index)))
+    activity.think("Looking around " * 20)
+    with create_pipe_input() as pipe:
+        layout = PromptLayout(PromptSession(input=pipe, output=DummyOutput()), activity, None, None)
+    with patch.object(layout, "size", return_value=Size(rows=12, columns=40)):
+        # A quarter of 12 rows: two tool rows, and one for the thought.
+        assert len(layout.tool_rows()) == 2
+        assert len(layout.thought_rows()) == 1
+    with patch.object(layout, "size", return_value=Size(rows=40, columns=40)):
+        assert len(layout.tool_rows()) == 3
+        # A running call spins with the status row's own frame.
+        assert layout.tool_rows()[0][0] == ("class:activity.tool", layout.spinner_frame())
 
 
 def test_tool_row_marks_a_failed_call_and_fits_the_width():
@@ -289,13 +402,13 @@ def test_tool_row_marks_a_failed_call_and_fits_the_width():
     activity = Activity(prompt="Fix bug", prompt_state="running")
     activity.tools.record(ToolStarted("run_shell", "make test\n" * 30, "one"))
     activity.tools.record(ToolSummary("run_shell", "make test", call_id="one", failed=True))
-    fragments = activity.tool_fragments(activity.status_line(), 30)
+    (fragments,) = activity.tool_rows(activity.status_line(), 30)
     assert fragments[0] == ("class:activity.tool.failed", "✗")
     rendered = "".join(text for _, text in fragments)
     assert "\n" not in rendered and cell_len(rendered) <= 30 and rendered.endswith("…")
     # Nothing to show once the turn is over.
     activity.finish_prompt("done")
-    assert activity.tool_fragments(activity.status_line(), 30) == []
+    assert activity.tool_rows(activity.status_line(), 30) == []
 
 
 def test_status_row_waits_on_sub_agents_listed_in_the_panel(monkeypatch):
@@ -524,7 +637,7 @@ def test_status_row_truncates_to_terminal_width(width):
     assert cell_len(rendered) <= width
     # The path is the tool row's, never the status row's.
     assert "界面" not in rendered
-    row = "".join(text for _, text in activity.tool_fragments(activity.status_line(), width))
+    row = tool_row(activity, width)
     assert "\n" not in row and cell_len(row) <= width
     if width >= 12:
         assert "界面" in row and row.endswith("…")
