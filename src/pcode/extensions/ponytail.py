@@ -194,7 +194,7 @@ def setup(pcode) -> None:
             )
             return
         if wanted != current:
-            pcode.ui.request_reload()  # Refuses mid-turn, before anything changes.
+            pcode.ui.request_reload()  # Waits out a running turn; refuses with no live session.
         write_mode(wanted)
         pcode.ui.notify(
             f"Ponytail {wanted}." if wanted != current else f"Ponytail is already {wanted}."

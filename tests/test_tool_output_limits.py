@@ -367,3 +367,69 @@ def test_single_long_line_is_recoverable_through_documented_shell_path(tmp_path)
         capabilities=[create_coder(tmp_path)],
     ).run_sync("Find target")
     assert result.output == "Found"
+
+
+def test_session_tools_page_themselves_and_are_never_spilled():
+    payload = {"text": "x" * 20000, "next_offset": 16000}
+
+    def read_session():
+        return payload
+
+    part = returns(invoke(create_tool_output_limits(), read_session).all_messages())[0]
+    assert part.content == payload
+    assert not tool_results_path().exists()
+
+
+@pytest.mark.parametrize("later_turn", [False, True])
+def test_reading_a_spill_is_shown_by_its_source_and_window_not_its_handle(later_turn):
+    """A later turn's read finds the spilling call in history, not this run's calls."""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+    from pydantic_ai.models.function import AgentInfo
+
+    from pcode.runtime import RunStatus, ToolStarted
+
+    payload = "".join(f"row {i:04d}\n" for i in range(3000))
+
+    async def run():
+        async def model(messages, info: AgentInfo):
+            parts = returns(messages)
+            prompt = next(
+                p.content
+                for m in reversed(messages)
+                if isinstance(m, ModelRequest)
+                for p in m.parts
+                if isinstance(p, UserPromptPart)
+            )
+            if not parts:
+                yield {0: DeltaToolCall(name="large_result", json_args="{}")}
+            elif parts[-1].tool_name == "large_result" and (prompt == "Read") == later_turn:
+                handle = parts[-1].metadata["overflow_handle"]
+                args = json.dumps({"handle": handle, "offset": 200, "limit": 50})
+                yield {0: DeltaToolCall(name="read_tool_result", json_args=args)}
+            else:
+                yield "Done"
+
+        agent = Agent(
+            FunctionModel(stream_function=model), capabilities=[create_tool_output_limits()]
+        )
+
+        @agent.tool_plain
+        def large_result() -> str:
+            return payload
+
+        runtime = AgentRuntime(agent)
+        events = [e async for e in runtime.stream("Inspect")]
+        if later_turn:
+            events = [e async for e in runtime.stream("Read")]
+        reads = [e for e in events if getattr(e, "name", "") == "read_tool_result"]
+        started = next(e for e in reads if isinstance(e, ToolStarted))
+        summary = next(e for e in reads if isinstance(e, ToolSummary))
+        assert started.detail == "large_result output · lines 201–250"
+        assert summary.detail == "large_result output · lines 201–250 → 50 of 3,000 lines"
+        status = [
+            e.text for e in events if isinstance(e, RunStatus) and "read_tool_result" in e.text
+        ]
+        assert status == ["Running read_tool_result · large_result output · lines 201–250…"]
+        assert not any("toolu" in e.detail or "/" in e.detail for e in reads)
+
+    asyncio.run(run())

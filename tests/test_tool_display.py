@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 from dataclasses import asdict
 from io import StringIO
@@ -11,7 +12,7 @@ from rich.console import Console
 
 from pcode.live import AgentRuntime
 from pcode.runtime import RunStatus, ToolSummary
-from pcode.tool_display import label, result_detail, subject, target
+from pcode.tool_display import label, result_detail, spilled_call_id, subject, target
 from pcode.ui import Transcript
 
 
@@ -561,6 +562,54 @@ def test_tool_search_shows_its_queries():
     assert target("search_tools", {}) == "queries unavailable"
 
 
+def test_session_search_shows_its_query_scope_and_paging():
+    assert label("search_sessions") == "Search sessions"
+    assert target("search_sessions", {"query": "status line"}) == '"status line"'
+    assert (
+        target("search_sessions", {"query": "x", "scope": "all", "after": "cursor"})
+        == '"x" · scope all · next page'
+    )
+    assert target("search_sessions", {}) == "query unavailable"
+
+
+def test_session_read_shows_the_sessions_name(tmp_path, monkeypatch):
+    from pcode.sessions import SessionInfo
+
+    monkeypatch.setenv("PCODE_SESSION_DIR", str(tmp_path))
+    session_id = "0123456789abcdef"
+    directory = tmp_path / session_id
+    directory.mkdir()
+
+    def save(**names):
+        info = SessionInfo(
+            id=session_id,
+            model="m",
+            workspace="/w",
+            created="t",
+            updated="t",
+            packages={},
+            **names,
+        )
+        (directory / "session.json").write_text(info.model_dump_json())
+
+    save(title="Fix the status line")
+    args = {"session_id": session_id, "turn_id": "t1"}
+    assert target("read_session", args) == '"Fix the status line" (01234567)'
+    save(title="Fix the status line", name="Renamed")
+    stat = (directory / "session.json").stat()
+    os.utime(directory / "session.json", ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+    assert target("read_session", {**args, "offset": 50, "scope": "session"}) == (
+        '"Renamed" (01234567) · from char 50 · scope session'
+    )
+    assert target("read_session", {**args, "offset": True}) == '"Renamed" (01234567)'
+    (directory / "session.json").write_text("not json")
+    os.utime(directory / "session.json", ns=(stat.st_atime_ns, stat.st_mtime_ns + 2 * 10**9))
+    assert target("read_session", args) == "01234567"
+    assert target("read_session", {"session_id": "unknown-session"}) == "unknown-"
+    assert target("read_session", {"session_id": "../" + session_id}) == "../01234"
+    assert target("read_session", {}) == "session unavailable"
+
+
 @pytest.mark.parametrize("outcome", ["retry", "failed"])
 def test_tool_failure_shows_workspace_boundary_in_transcript(outcome):
     message = "Path '/' resolves outside the root directory."
@@ -615,4 +664,66 @@ def test_empty_tool_failure_has_explicit_fallback(content):
     assert result_detail("read_file", {}, content, "retry") == (
         ". → Retry requested · No error details returned.",
         True,
+    )
+
+
+@pytest.mark.parametrize(
+    "args,source,expected",
+    [
+        ({"handle": "run/toolu_1.0"}, "search_sessions", "search_sessions output · lines 1–200"),
+        (
+            {"handle": "run/toolu_1.0", "offset": 200, "limit": 50},
+            "",
+            "stored output · lines 201–250",
+        ),
+        ({"handle": "h", "from_end": True, "limit": 30}, "grep", "grep output · last 30 lines"),
+        (
+            {"handle": "h", "from_end": True, "offset": 30, "limit": 30},
+            "",
+            "stored output · lines 31–60 from end",
+        ),
+        ({"handle": "h", "pattern": "row 15"}, "shell", '"row 15" in shell output · matches 1–200'),
+        ({"handle": "h", "limit": "many"}, "", "stored output"),
+        ({"handle": "h", "limit": 5000}, "", "stored output · lines 1–1000"),
+    ],
+)
+def test_stored_result_reads_name_their_source_and_window_not_the_handle(args, source, expected):
+    assert target("read_tool_result", args, source) == expected
+
+
+@pytest.mark.parametrize(
+    "handle,call_id",
+    [
+        ("da0a06c7-e1ef/toolu_013Bk.0", "toolu_013Bk"),
+        ("run/toolu_013Bk.1.content", "toolu_013Bk"),
+        ("run/call.with.dots.12", "call.with.dots"),
+        ("toolu_013Bk", ""),
+        ("run/toolu_013Bk", ""),
+    ],
+)
+def test_spill_handles_resolve_to_the_call_that_spilled(handle, call_id):
+    assert spilled_call_id({"handle": handle}) == call_id
+
+
+@pytest.mark.parametrize(
+    "content,expected,failed",
+    [
+        ("[handle 'r/c.0': 132 matching line(s); showing 132]\n{", "132 lines", False),
+        ("[handle 'r/c.0': 3,000 matching line(s); showing 200]\nx", "200 of 3,000 lines", False),
+        (
+            "[handle 'r/c.0': 1 matching line(s); showing 1, output capped]\nx",
+            "1 line · output capped",
+            False,
+        ),
+        (
+            "[No stored tool result for handle 'r/c.0'. Use the exact handle]",
+            "No stored result",
+            True,
+        ),
+    ],
+)
+def test_stored_result_read_summaries(content, expected, failed):
+    assert result_detail("read_tool_result", {"handle": "r/c.0"}, content, "success", "grep") == (
+        f"grep output · lines 1–200 → {expected}",
+        failed,
     )

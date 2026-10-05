@@ -17,6 +17,7 @@ import re
 import shlex
 import subprocess
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -366,9 +367,12 @@ class DiffBrowser:
         width: int = 0,
         dedent: bool = True,
         key_prefix: str | None = None,
+        handoff: Callable[[], AbstractContextManager] = nullcontext,
         **app_options,
     ) -> None:
         self.review = review
+        # Wraps $EDITOR: whatever the terminal must stop sending while it runs.
+        self.handoff = handoff
         self.reload = reload
         self.mark = mark
         self.delta = delta
@@ -829,10 +833,11 @@ class DiffBrowser:
 
         async def edit():
             try:
-                await run_in_terminal(
-                    lambda: subprocess.run(command, cwd=self.review.root, check=False),
-                    in_executor=True,
-                )
+                with self.handoff():
+                    await run_in_terminal(
+                        lambda: subprocess.run(command, cwd=self.review.root, check=False),
+                        in_executor=True,
+                    )
             except OSError as error:
                 self.notice = f"Could not start {command[0]}: {error}"
                 return

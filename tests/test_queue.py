@@ -180,12 +180,12 @@ def test_status_row_keeps_one_shape_with_meta_right_aligned():
     from pcode.ui import Activity
 
     activity = Activity(prompt_state="running", status="Responding…")
-    fragments = activity.status_fragments("⠋", 60, "✓7 ✗1 tools")
+    fragments = activity.status_fragments("⠋", 60, "✓ 7 ✗ 1 tools")
     rendered = "".join(text for _, text in fragments)
     assert cell_len(rendered) == 60
     assert rendered.startswith("⠋ Responding ")
-    assert rendered.endswith("✓7 ✗1 tools · 0s")
-    assert styled(fragments)["activity.meta"] == "✓7 ✗1 tools · 0s"
+    assert rendered.endswith("✓ 7 ✗ 1 tools · 0s")
+    assert styled(fragments)["activity.meta"] == "✓ 7 ✗ 1 tools · 0s"
 
 
 def test_status_row_reports_the_newest_running_tool_call():
@@ -213,7 +213,7 @@ def test_status_row_reports_the_newest_running_tool_call():
     # At one row, only the call the status row reports.
     activity.tool_max_rows = 1
     assert tool_row(activity) == "· ⎘ example.py"
-    # A running call's mark is the status row's spinner frame, in the tool
+    # A running call's mark is the tool spinner's frame, in the tool
     # row's muted shade, and a thought above does not move the row.
     activity.think("Checking the example")
     assert activity.tool_rows(activity.status_line(), 80, spinner="◜") == [
@@ -336,6 +336,69 @@ def test_tool_rows_keep_the_latest_calls_and_the_status_rows_own():
     ]
 
 
+def test_tool_rows_clear_a_finished_call_after_it_lingers():
+    from dataclasses import replace
+
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running", tool_linger_seconds=10)
+    for detail, call_id in (("a.py", "one"), ("b.py", "two")):
+        activity.tools.record(ToolStarted("read_file", detail, call_id))
+        tool_row(activity)
+        activity.tools.record(ToolSummary("read_file", detail, call_id=call_id))
+    activity.tools.record(ToolStarted("read_file", "c.py", "three"))
+    assert tool_row(activity) == "✓ ⎘ a.py\n✓ ⎘ b.py\n· ⎘ c.py"
+    # `a.py` finished long ago; `b.py` just now; `c.py` is still running.
+    activity._seen_calls[0].settled -= 11
+    assert tool_row(activity) == "✓ ⎘ b.py\n· ⎘ c.py"
+    # Even the status row's own call clears once it has lingered.
+    activity.tools.record(ToolSummary("read_file", "c.py", call_id="three"))
+    for call in activity._seen_calls:
+        call.settled -= 11
+    assert tool_row(activity) == ""
+    # Except while the status row still names it.
+    line = replace(activity.status_line(), call=activity._seen_calls[-1])
+    rows = activity.tool_rows(line, 80)
+    assert ["".join(text for _, text in row) for row in rows] == ["✓ ⎘ c.py"]
+    # 0 keeps finished rows until newer calls push them out.
+    activity.tool_linger_seconds = 0
+    assert tool_row(activity) == "✓ ⎘ a.py\n✓ ⎘ b.py\n✓ ⎘ c.py"
+
+
+def test_tool_rows_tell_lookalike_calls_apart():
+    from pcode.runtime import EditCompleted, ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running", tool_max_rows=4)
+
+    def run(name, detail, call_id, *, failed=False, added=0, removed=0, omitted=""):
+        activity.tools.record(ToolStarted(name, detail, call_id))
+        tool_row(activity)  # Drawn while it runs.
+        if name in ("edit_file", "write_file"):
+            change = EditCompleted(call_id, detail, "modified", "", added, removed, omitted=omitted)
+            activity.tools.record_edit(change)
+        activity.tools.record(ToolSummary(name, detail, call_id=call_id, failed=failed))
+
+    # Edits to one file say what each changed.
+    run("edit_file", "a.py", "one", added=3, removed=1)
+    run("edit_file", "a.py", "two", added=1)
+    assert tool_row(activity) == "✓ ✎ a.py · +3 −1\n✓ ✎ a.py · +1 −0"
+    # A repeated call shares the row of the one before it, counted, but a
+    # failure keeps a row of its own.
+    run("grep", "pattern", "three", failed=True)
+    run("grep", "pattern", "four")
+    run("grep", "pattern", "five")
+    assert tool_row(activity) == ("✓ ✎ a.py · +3 −1\n✓ ✎ a.py · +1 −0\n✗ ⌕ pattern\n✓ ⌕ pattern ×2")
+    # An edit with no diff has no counts, rather than `+0 −0`.
+    run("write_file", "img.bin", "six", omitted="Binary content")
+    assert tool_row(activity).endswith("✓ ✎ img.bin")
+    # The counts outlast a long path cut to the pane.
+    run("edit_file", "src/" + "deep/" * 20 + "b.py", "seven", added=2, removed=2)
+    last = "".join(text for _, text in activity.tool_rows(activity.status_line(), 40)[-1])
+    assert last.endswith("… · +2 −2") and len(last) == 40
+
+
 def test_tool_rows_show_a_sub_agents_call_only_while_reported():
     from pcode.runtime import ToolStarted, ToolSummary
     from pcode.ui import Activity
@@ -389,8 +452,8 @@ def test_tool_rows_share_a_short_pane_with_the_thought():
         assert len(layout.thought_rows()) == 1
     with patch.object(layout, "size", return_value=Size(rows=40, columns=40)):
         assert len(layout.tool_rows()) == 3
-        # A running call spins with the status row's own frame.
-        assert layout.tool_rows()[0][0] == ("class:activity.tool", layout.spinner_frame())
+        # A running call spins with the tool spinner's frame.
+        assert layout.tool_rows()[0][0] == ("class:activity.tool", layout.tool_spinner_frame())
 
 
 def test_tool_row_marks_a_failed_call_and_fits_the_width():
@@ -424,7 +487,7 @@ def test_status_row_waits_on_sub_agents_listed_in_the_panel(monkeypatch):
             ToolStarted("delegate_task", "", call_id, agent="worker", task=f"task {call_id}")
         )
     parts = styled(activity.status_fragments("⠋", 80))
-    assert parts["activity.phase"] == "Waiting for 2 sub-agents"
+    assert parts["activity.phase"] == "Waiting for 2 agents"
     assert "Worker" not in row()
     # A sub-agent's tool call is still reported on the row while it runs.
     activity.tools.record(ToolStarted("read_file", "x.py", "a:read", parent_call_id="a"))
@@ -433,15 +496,52 @@ def test_status_row_waits_on_sub_agents_listed_in_the_panel(monkeypatch):
     monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 1e9)
     activity.tools.record(ToolSummary("read_file", "x.py", call_id="a:read"))
     parts = styled(activity.status_fragments("⠋", 80))
-    assert parts["activity.phase"] == "Waiting for 2 sub-agents"
+    assert parts["activity.phase"] == "Waiting for 2 agents"
     assert tool_row(activity) == "✓ ⎘ x.py"
     monkeypatch.setattr("pcode.tool_panel.STATUS_DWELL", 0.0)
     activity.tools.record(ToolSummary("delegate_task", "done", call_id="b"))
     parts = styled(activity.status_fragments("⠋", 80))
-    assert parts["activity.phase"] == "Waiting for 1 sub-agent"
+    assert parts["activity.phase"] == "Waiting for 1 agent"
     # With the panel hidden, the row is the only place left to name one.
     activity.show_tasks = False
     assert "Worker" in row() and "task a" in row()
+
+
+def test_status_row_names_the_active_step_only_while_the_panel_hides_it():
+    from pcode.runtime import ToolStarted
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running", status="Thinking…")
+    activity.plan = [
+        {"content": "Inspect", "status": "completed"},
+        {
+            "content": "Add the migration",
+            "active_form": "Adding the migration",
+            "status": "in_progress",
+        },
+    ]
+    # The panel already shows the step, so the row stays short.
+    assert "activity.detail" not in styled(activity.status_fragments("⠋", 80))
+    activity.show_tasks = False
+    parts = styled(activity.status_fragments("⠋", 80))
+    assert parts["activity.phase"] == "Thinking"
+    assert parts["activity.detail"] == " · Adding the migration"
+    # A running tool keeps its verb as the phase; the step is still the why.
+    activity.tools.record(ToolStarted("read_file", "example.py", "one"))
+    parts = styled(activity.status_fragments("⠋", 80))
+    assert parts["activity.phase"] == "Read file"
+    assert parts["activity.detail"] == " · Adding the migration"
+    # A status with its own detail keeps it.
+    activity.tools.clear()
+    activity.status = "Retrying · Overloaded…"
+    assert styled(activity.status_fragments("⠋", 80))["activity.detail"] == " · Overloaded"
+    # `active_form` is optional: the step's text stands in.
+    activity.status = "Thinking…"
+    del activity.plan[1]["active_form"]
+    assert styled(activity.status_fragments("⠋", 80))["activity.detail"] == " · Add the migration"
+    # No step in progress, no detail.
+    activity.plan[1]["status"] = "completed"
+    assert "activity.detail" not in styled(activity.status_fragments("⠋", 80))
 
 
 def test_phase_clock_restarts_when_the_phase_changes(monkeypatch):
@@ -632,7 +732,7 @@ def test_status_row_truncates_to_terminal_width(width):
 
     activity = Activity(prompt_state="running")
     activity.tools.record(ToolStarted("read_file", "界面/path\n" * 30, "one"))
-    rendered = "".join(text for _, text in activity.status_fragments("⠋", width, "✓3 tools"))
+    rendered = "".join(text for _, text in activity.status_fragments("⠋", width, "✓ 3 tools"))
     assert "\n" not in rendered
     assert cell_len(rendered) <= width
     # The path is the tool row's, never the status row's.
@@ -649,7 +749,7 @@ def test_narrow_status_row_drops_the_tally_before_the_detail():
     activity = Activity(
         prompt_state="running", status="Retrying · Overloaded, retrying request 1/3…"
     )
-    parts = styled(activity.status_fragments("⠋", 32, "✓12 ✗3 tools"))
+    parts = styled(activity.status_fragments("⠋", 32, "✓ 12 ✗ 3 tools"))
     assert parts["activity.meta"] == "0s"
     assert parts["activity.detail"].startswith(" · Overloaded")
 

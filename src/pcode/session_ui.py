@@ -3,12 +3,12 @@
 import re
 from pathlib import Path
 
-from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.application import Application
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Always, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
-from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
+from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Label, TextArea
 from rich.markdown import Markdown
@@ -21,7 +21,7 @@ from pcode.frame import Dialog, Frame
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,
-    list_pane_height,
+    fit_width,
     popup_container,
     popup_mouse,
     popup_style,
@@ -200,24 +200,13 @@ class SessionBrowser:
                 + (f" · {self.status}" if self.status else "")
             )
         )
-        wide = VSplit(
+        # Stacked at every width so a long session name gets the full row:
+        # turns fill the top two thirds, the session list the bottom third.
+        body = HSplit(
             [
-                Frame(self.list, title="Sessions", width=Dimension(weight=2)),
-                Frame(self.detail, title="Turns", width=Dimension(weight=3)),
+                Frame(self.detail, title="Turns", height=Dimension(weight=2)),
+                Frame(self.list, title="Sessions", height=Dimension(weight=1)),
             ]
-        )
-        narrow = HSplit(
-            [
-                Frame(
-                    self.list,
-                    title="Sessions",
-                    height=lambda: list_pane_height(len(self.visible)),
-                ),
-                Frame(self.detail, title="Turns"),
-            ]
-        )
-        body = DynamicContainer(
-            lambda: wide if get_app().output.get_size().columns >= 100 else narrow
         )
         root_container = HSplit(
             [
@@ -504,11 +493,13 @@ def session_info_dialog(
 ):
     """Read-only view of the live session; every key that closes it exits the same way."""
     width = max((len(label) for label, _ in rows), default=0)
+    lines = [f"{label.ljust(width)}  {value}" for label, value in rows]
     body = TextArea(
-        text="\n".join(f"{label.ljust(width)}  {value}" for label, value in rows),
+        text="\n".join(lines),
         read_only=True,
         scrollbar=True,
         focus_on_click=True,
+        width=fit_width(lines),
     )
     bindings = KeyBindings()
 

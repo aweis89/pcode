@@ -56,7 +56,7 @@ from pcode.edit_transcript import (
     prefetch_edits,
 )
 from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fragment
-from pcode.frame import Frame
+from pcode.frame import TITLE_CHROME, Frame
 from pcode.input_keys import configure_newline_keys
 from pcode.jobs import WATCHED_PREFIX
 from pcode.layout_speed import install_fast_layout_division
@@ -212,31 +212,37 @@ class Palette:
                 "prompt": f"{self.accent} bold",
                 # The live area has three weights. Live: the spinner and the
                 # phase word, the one thing that says the turn is moving.
-                # Content: what it is doing, in the terminal's own text colour.
+                # Content: what it is doing, in the session name's hue, so the
+                # border's text keeps one colour whether it holds the name or
+                # the turn's detail, and never reads as prose. A sub-agent's
+                # line there takes its own hue instead (`activity.agent`).
                 # Chrome: counts, clocks, notices, jobs and queues, muted.
                 "activity.spinner": self.accent,
                 "activity.badge": self.accent,
                 "activity.phase": f"nodim {self.accent} bold",
-                "activity.detail": "nodim",
+                "activity.detail": f"nodim {self.task_heading}",
+                # Weight only: the colour comes from its `agent.hue.N` class.
+                "activity.agent": "nodim",
                 "activity.meta": self.muted,
                 # The thinking rows above the status row: the model's newest
                 # thought, faded like scrollback thinking (`pcode.thinking`) and
                 # italic so it reads as a quote rather than as the turn's phase
-                # (accent) or what it is doing (plain). No hue: the plan
-                # heading's shade would make a thought look like a label.
+                # (accent) or what it is doing (the task heading's hue). Muted
+                # and hue-less, so a thought never reads as either.
                 "activity.thinking": f"italic {self.muted}",
                 # Keep the reasoning marker upright beside the italic text.
                 "activity.thinking.icon": f"noitalic {self.muted}",
                 # The tool row under the thought: upright where the thought is
                 # italic, and muted whether its call runs or has settled, so it
                 # never flips shade; a running call's mark is the status row's
-                # spinner in this shade, not its accent. Only a settled call's
-                # mark takes a colour, and a success is dimmed so it never
-                # reads as a plan's completed step, which uses the same `✓`
-                # at full strength.
+                # spinner in this shade, not its accent. Only a success takes a
+                # colour, dimmed so it never reads as a plan's completed step,
+                # which uses the same `✓` at full strength. A failure is dimmed
+                # without a hue: plenty of commands are meant to fail (a grep
+                # with no match, a probe), so the row notes it without alarm.
                 "activity.tool": self.muted,
                 "activity.tool.done": f"dim {self.success}",
-                "activity.tool.failed": "nodim ansired",
+                "activity.tool.failed": f"dim {self.muted}",
                 # System work is pcode's own: the badge and accent mark it, and
                 # its queued rows keep an italic detail.
                 "activity.system": self.accent,
@@ -256,6 +262,15 @@ class Palette:
                 "block.rule": self.muted,
                 "block.heading": self.accent,
                 "frame.border": self.muted,
+                # The editor box's session name is the session's own metadata,
+                # in the task heading's hue (unbolded) so it never reads as the
+                # reply above it, nor as the accent's busy status row. The last
+                # turn's mark leads it: a quiet tick, a muted stop for a cancel
+                # the user asked for, and red only for a failure.
+                "session.name": f"nodim {self.task_heading}",
+                "session.done": f"nodim {self.success}",
+                "session.cancelled": self.muted,
+                "session.failed": "nodim ansired bold",
                 # The keybinding overlay: keys in the accent so the eye finds
                 # them first, its way out muted in the bottom border.
                 "hint.key": f"{self.accent} bold",
@@ -461,8 +476,11 @@ THOUGHT_ROWS = 10
 # Default for `tool_max_lines`: the turn's latest calls listed above the
 # status row, so parallel calls each show and a finished one lingers.
 TOOL_ROWS = 3
+# Default for `tool_linger_seconds`: a finished call's row clears after this,
+# so a long wait on the model does not keep showing stale calls.
+TOOL_LINGER_SECONDS = 10
 # Marks the first thought row in the spinner's column, without resembling
-# a stalled frame of the round spinner below it.
+# a stalled frame of the spinners below it.
 THOUGHT_ICON = "∴"
 # The tool row's stand-ins for common verbs (`tool_display.LABELS`), so it
 # says `$ make test` rather than `Run shell · make test`. A tool not listed
@@ -512,6 +530,22 @@ def status_parts(status: str) -> tuple[str, str]:
     return "Working", text
 
 
+def status_spinner(setting: str = "spinner") -> Spinner:
+    """A spinner for the bottom block, as the `setting` preference names it.
+
+    `spinner` is the status row's (waits on a model), `tool_spinner` running
+    tool calls'.
+    """
+    spinner = Spinner(load_preferences().get(setting, SETTINGS[setting].default))
+    # Every frame is a full layout pass (~2-3ms), so the animation loop alone
+    # costs a few percent of a core for the length of a turn. Rich's built-in
+    # interval is tuned for a dedicated terminal spinner, not for driving
+    # pcode's whole bottom block; slow it ~1.6x, which still reads as motion
+    # but noticeably cuts render frequency.
+    spinner.interval = round(spinner.interval * 1.6)
+    return spinner
+
+
 def clock(seconds: float) -> str:
     """`8s`, `2m05s`: whole seconds, since the row is not a stopwatch."""
     seconds = max(0, int(seconds))
@@ -540,6 +574,8 @@ class StatusLine:
     call: ToolCall | None = None
     # Whether `call` had finished when the line was taken.
     settled: bool = False
+    # The hue slot of the sub-agent the detail describes, if it describes one.
+    hue: int | None = None
 
     def fragments(self, spinner: str, width: int, *, rule: bool = False) -> list[tuple[str, str]]:
         """The row, `width` cells wide when it has meta; `rule` draws the gap as border."""
@@ -560,7 +596,10 @@ class StatusLine:
         room = width - (cell_len(suffix) + 2 if suffix else 0)
         # A detail with no room to say anything is dropped, not left as `·…`.
         if detail and room - needed >= DETAIL_MIN_CELLS // 2:
-            head.append(("class:activity.detail", detail))
+            style = "class:activity.detail"
+            if self.hue is not None:
+                style = f"class:activity.agent,agent.hue.{self.hue}"
+            head.append((style, detail))
         fitted = fit_fragments(head, room)
         if not suffix:
             return fitted
@@ -599,6 +638,15 @@ def call_parts(call: ToolCall) -> tuple[str, str]:
     """A call's verb (`Run shell`) and what it acts on (`ls -la`), if anything."""
     label, _, detail = call.line(timed=False).partition(" · ")
     return label, detail
+
+
+def _row_key(call: ToolCall) -> tuple:
+    """What a tool row says of `call`, so back-to-back lookalikes can share it.
+
+    Its state is part of it: a failure, or a call still running, never hides
+    behind a lookalike's mark.
+    """
+    return (*call_parts(call), call.change, call.failed, call.settled is None)
 
 
 def head_rows(text: str, width: int, rows: int) -> list[str]:
@@ -646,6 +694,10 @@ def latest_thought(text: str) -> str:
     # The buffer keeps the block's tail only (THINKING_KEEP), so a long
     # section can outlive its title; its newest line stands in then.
     return lines[-1].replace("**", "") if lines else ""
+
+
+# How the last turn ended, at the head of the idle editor box's title.
+TURN_MARKS = {"done": "✓", "cancelled": "⊘", "failed": "✗"}
 
 
 def fit_fragments(fragments: list[tuple[str, str]], width: int) -> list[tuple[str, str]]:
@@ -718,6 +770,9 @@ class Activity:
     tool_glyphs: str = "auto"
     # The `tool_max_lines` setting: the most tool rows above the status row.
     tool_max_rows: int = TOOL_ROWS
+    # The `tool_linger_seconds` setting: how long a finished call keeps its
+    # tool row; 0 keeps it until newer calls push it out.
+    tool_linger_seconds: int = TOOL_LINGER_SECONDS
     # Cap on the task widget plus the editor box: whole rows, or a share of the
     # screen below 1 (0.5 is half). None keeps the default layout.
     tasks_max_height: float | None = None
@@ -743,6 +798,11 @@ class Activity:
     queued_modes: list[str] = field(default_factory=list)
     prompt: str = ""
     prompt_state: str = ""
+    # How the conversation's last model turn ended (`done`, `cancelled`,
+    # `failed`), for the editor box's title. Unlike `prompt_state`, a `!command`,
+    # `/compact` or slow slash command never touches it, and a switch of
+    # conversation clears it.
+    turn_outcome: str = ""
     # True while a `!command` typed at the prompt is running.
     user_command: bool = False
     # "user" echoes what was typed; "system" marks work pcode runs on its own
@@ -940,6 +1000,7 @@ class Activity:
         self.workers = Workers()
         self.prompt = ""
         self.prompt_state = ""
+        self.turn_outcome = ""
         self.prompt_kind = "user"
         self.prompt_detail = ""
         self.status = ""
@@ -1025,6 +1086,22 @@ class Activity:
         max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
         return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
 
+    def hidden_step(self) -> str:
+        """The active plan step, when the task panel is not showing it.
+
+        Its present-continuous form (`Adding the migration`), else its text:
+        `active_form` is optional, and the status row's detail is a gerund.
+        Judged by the widget's visibility alone: the row is sized from
+        activity state, so a preview that squeezes the plan rows out of a
+        short pane does not count as hiding it.
+        """
+        if self.tasks_shown:
+            return ""
+        step = next((i for i in self.displayed_plan if i.get("status") == "in_progress"), None)
+        if step is None:
+            return ""
+        return step.get("active_form") or step.get("content") or ""
+
     def panel_title(self) -> str:
         items = self.displayed_plan
         if not items:
@@ -1070,21 +1147,28 @@ class Activity:
             # The clock is the call's own, whatever the model said last.
             self._phase_seconds("")
             phase = call_parts(call)[0] if running < 2 else f"Running {running} tools"
-            return StatusLine(phase, tally=tally, elapsed=call.elapsed, call=call)
-        clock = phase
+            return StatusLine(
+                phase, self.hidden_step(), tally=tally, elapsed=call.elapsed, call=call
+            )
+        clock, hue = phase, None
         if agents := self.tools.delegates:
-            # The panel lists the sub-agents themselves, so this row just says
+            # The panel lists the agents themselves, so this row just says
             # the turn is waiting on them, unless the panel is hidden. One
             # clock for the whole wait, however the count changes.
             count = len(agents)
-            phase = f"Waiting for {count} sub-agent{'s' * (count > 1)}"
-            detail = "" if self.tasks_shown else agents[-1].line(timed=False)
+            phase = f"Waiting for {count} agent{'s' * (count > 1)}"
+            if not self.tasks_shown:
+                detail, hue = agents[-1].line(timed=False), agents[-1].hue
+            else:
+                detail = ""
             clock = "\0sub-agents"
         elif phase.startswith("Running") and not running and not self.user_command:
             # Written for a call that has since finished; the model has the turn.
             phase = clock = "Waiting for model"
             detail = ""
-        line = StatusLine(phase, detail, tally=tally, elapsed=self._phase_seconds(clock))
+        # With the panel hidden, the active step says what the turn is for.
+        detail = detail or self.hidden_step()
+        line = StatusLine(phase, detail, tally=tally, elapsed=self._phase_seconds(clock), hue=hue)
         if call is not None:
             # Just finished: held briefly and marked done, so a burst of fast
             # calls reads as progress rather than strobing.
@@ -1094,16 +1178,19 @@ class Activity:
     def tool_rows(
         self, line: StatusLine, width: int, limit: int | None = None, spinner: str = "·"
     ) -> list[list[tuple[str, str]]]:
-        """The tool rows between the thought and the status row: `⠋ $ ls -la`.
+        """The tool rows between the thought and the status row: `◜ $ ls -la`.
 
-        `spinner` marks a running call: the status row's current frame.
+        `spinner` marks a running call: the tool spinner's current frame.
 
         The turn's latest calls, oldest first, at most `tool_max_rows` (and
         `limit`, the pane's share). Parallel calls each get a row, and a
         finished call keeps its row, marked `✓` or `✗`, until newer calls
-        push it out, so the editor box does not jump with every call. The
-        call the status row's verb acts on always keeps its row, so at one
-        row this is that call alone.
+        push it out or `tool_linger_seconds` passes, so the editor box does
+        not jump with every call yet a long wait on the model does not show
+        stale ones. The call the status row's verb acts on always keeps its
+        row, so at one row this is that call alone. Back-to-back calls that
+        would draw the same row (a retried search, a run of edits with the
+        same counts) share one, counted `×2`.
         """
         # Work pcode runs itself (`prompt_kind` system) has no tool rows.
         if not self.status_shown or self.prompt_kind != "user" or width < 1:
@@ -1120,23 +1207,51 @@ class Activity:
                 and all(call is not other for other in seen)
             ):
                 seen.append(call)
+        groups: list[list[ToolCall]] = []
+        for call in seen:
+            if groups and _row_key(groups[-1][-1]) == _row_key(call):
+                groups[-1].append(call)
+            else:
+                groups.append([call])
+        if linger := self.tool_linger_seconds:
+            cutoff = monotonic() - linger
+            groups = [
+                group
+                for group in groups
+                if any(
+                    call is line.call or call.settled is None or call.settled > cutoff
+                    for call in group
+                )
+            ]
+            # `_last_call` lingers like any other; the status row's own call stays.
+            if current is not line.call and current is not None and current.settled is not None:
+                current = current if current.settled > cutoff else None
+
+        def has_current(group: list[ToolCall]) -> bool:
+            return any(call is current for call in group)
+
         count = max(1, self.tool_max_rows if limit is None else min(self.tool_max_rows, limit))
         room = count - (current is not None)
-        others = [call for call in seen if call is not current]
+        others = [group for group in groups if not has_current(group)]
         kept = others[-room:] if room else []
-        shown = [call for call in seen if call is current or any(call is k for k in kept)]
-        if current is not None and all(call is not current for call in shown):
-            shown.append(current)  # A sub-agent's call, newest of all.
-        return [self._tool_row(call, line, width, spinner) for call in shown]
+        shown = [g for g in groups if has_current(g) or any(g is k for k in kept)]
+        if current is not None and not any(has_current(group) for group in shown):
+            shown.append([current])  # A sub-agent's call, newest of all.
+        return [
+            self._tool_row(
+                current if has_current(group) else group[-1], line, width, spinner, len(group)
+            )
+            for group in shown
+        ]
 
     def _tool_row(
-        self, call: ToolCall, line: StatusLine, width: int, spinner: str
+        self, call: ToolCall, line: StatusLine, width: int, spinner: str, repeats: int = 1
     ) -> list[tuple[str, str]]:
-        """One call's row: its state mark, then its verb's glyph (`⠋ $ ls -la`).
+        """One call's row: its state mark, then its verb's glyph (`◜ $ ls -la`).
 
         Every row has the same columns, flush with the thought's `∴` or with
         none, so parallel calls line up and nothing shifts as a thought comes
-        and goes: the mark (the main spinner's frame in the muted shade while
+        and goes: the mark (the tool spinner's frame in the muted shade while
         it runs, `✓` or `✗` once settled), then the glyph (`TOOL_GLYPHS`). A
         verb with no glyph is spelled out whenever the status row does not
         say it for this call.
@@ -1149,6 +1264,10 @@ class Activity:
             text = detail
         else:
             text = " · ".join(filter(None, (label, detail)))
+        # What tells lookalike rows apart, kept whole when a long path is cut.
+        tail = "".join(
+            filter(None, (call.change and f" · {call.change}", repeats > 1 and f" ×{repeats}"))
+        )
         if call.settled is None:
             mark = ("class:activity.tool", spinner)
         elif call.failed:
@@ -1159,7 +1278,11 @@ class Activity:
         # settled ones'; pad the settled mark's column to its width.
         pad = "" if call.settled is None else " " * max(0, cell_len(spinner) - 1)
         body = ("class:activity.tool", pad + " " + " ".join(filter(None, (glyph, text))))
-        return fit_fragments([mark, body], width)
+        if not tail:
+            return fit_fragments([mark, body], width)
+        if cell_len(tail) >= width // 2:
+            return fit_fragments([mark, body, ("class:activity.tool", tail)], width)
+        return [*fit_fragments([mark, body], width - cell_len(tail)), ("class:activity.tool", tail)]
 
     def held_status_line(self, tally: str = "", hold: float = 0.0) -> StatusLine:
         """The status line, keeping what the row said for at least `hold` seconds.
@@ -1203,7 +1326,7 @@ class Activity:
     def status_fragments(
         self, spinner: str, width: int, tally: str = "", hold: float = 0.0, *, rule: bool = False
     ):
-        """The editor's top border: `◜ Phase · detail ── ✓7 tools · 12s`."""
+        """The editor's top border: `⠋ Phase · detail ── ✓ 7 tools · 12s`."""
         return self.held_status_line(tally, hold).fragments(spinner, width, rule=rule)
 
     def queue_rows(self, budget: int):
@@ -2104,26 +2227,25 @@ class PromptLayout:
         activity: Activity,
         transcript: "Transcript | None",
         shortcuts: PrefixKeys,
+        session_title: Callable[[], str] = lambda: "",
     ):
         self.session = session
         self.activity = activity
         self.transcript = transcript
         self.shortcuts = shortcuts
+        self.session_title = session_title
         self.editor = _fit_editor(session)
         self.render_cache = None
         self.animation_task = None
         self.preview_body = lru_cache(maxsize=1)(_preview_body)
         self.live_delta = LiveDeltaPreview(lambda: self.session.app.invalidate())
-        # The status row, side questions and waits share a spinner frame.
+        # The status row and side questions (waits on a model) share one
+        # spinner; running tool calls and the terminal's own waits (a command)
+        # share another, so the two kinds of wait look different at a glance.
         # Plan steps use a static marker, so motion only ever means
         # "the turn is waiting on this". Who owns the work is the badge and colour.
-        self.spinner = Spinner(load_preferences().get("spinner", SETTINGS["spinner"].default))
-        # Every frame is a full layout pass (~2-3ms), so the animation loop alone
-        # costs a few percent of a core for the length of a turn. Rich's built-in
-        # interval is tuned for a dedicated terminal spinner, not for driving
-        # pcode's whole bottom block; slow it ~1.6x, which still reads as motion
-        # but noticeably cuts render frequency.
-        self.spinner.interval = round(self.spinner.interval * 1.6)
+        self.spinner = status_spinner()
+        self.tool_spinner = status_spinner("tool_spinner")
         self.thought_max_rows = parse_height(load_preferences().get("thinking_max_lines")) or float(
             THOUGHT_ROWS
         )
@@ -2160,12 +2282,17 @@ class PromptLayout:
 
     def refresh_interval(self) -> float:
         """Seconds until the next frame."""
-        return self.spinner.interval / 1000
+        return min(self.spinner.interval, self.tool_spinner.interval) / 1000
 
     @_per_render
     def spinner_frame(self) -> str:
-        """This redraw's frame, one for every spinner on screen, so they turn together."""
+        """This redraw's model-wait frame, shared so every such spinner turns together."""
         return self.spinner.render(monotonic()).plain
+
+    @_per_render
+    def tool_spinner_frame(self) -> str:
+        """This redraw's frame for running tool calls and commands."""
+        return self.tool_spinner.render(monotonic()).plain
 
     @_per_render
     def base_plan_rows(self, budget: int | None = None):
@@ -2192,7 +2319,7 @@ class PromptLayout:
         activity, transcript = self.activity, self.transcript
         if transcript is None:
             return None
-        edits = transcript.show_edits and activity.edit_previews
+        edits = transcript.live_edit_previews and activity.edit_previews
         if not edits:
             # The preview ended, so the next edit never flashes this one's diff.
             self.live_delta.forget()
@@ -2339,7 +2466,7 @@ class PromptLayout:
         """
         limit = self.size().rows // 4 - int(self.activity.thought_shown)
         return self.activity.tool_rows(
-            self.status_line(), self.size().columns - 1, limit, self.spinner_frame()
+            self.status_line(), self.size().columns - 1, limit, self.tool_spinner_frame()
         )
 
     @_per_render
@@ -2349,7 +2476,7 @@ class PromptLayout:
     @_per_render
     def wait_rows(self):
         """The terminal's own wait (the host starting, a command running there)."""
-        return self.activity.wait_fragments(self.spinner_frame(), self.size().columns - 1)
+        return self.activity.wait_fragments(self.tool_spinner_frame(), self.size().columns - 1)
 
     @_per_render
     def typing_row(self):
@@ -2457,12 +2584,12 @@ class PromptLayout:
         )
 
     def status_border(self) -> Window:
-        """The editor's top border carrying the status: `┌─ ◜ Phase ── ✓1 tool · 4s ─┐`.
+        """The editor's top border carrying the status: `┌─ ⠋ Phase ── ✓ 1 tool · 4s ─┐`.
 
         It takes the place of the task heading while a turn runs: the tasks
         hang under what the turn is doing, and the status costs no row. The
         heading's count moves to the right-hand meta, so a plan longer than
-        its window still says how much there is (`Tasks 2/14 · ✓1 tool`).
+        its window still says how much there is (`Tasks 2/14 · ✓ 1 tool`).
         """
 
         def fragments():
@@ -2494,8 +2621,13 @@ class PromptLayout:
         activity = self.activity
         width = self.size().columns - 8
         style = "class:plan.heading" if activity.displayed_plan else "bold"
-        fragments = panel_fragments([(style, activity.panel_heading())], width)
-        return fragments
+        heading = [(style, activity.panel_heading())]
+        # Attached, the heading takes the editor's top border, so it carries
+        # the session's name too (`Tasks 2/5 · Fix the login test`). A detached
+        # task box sits above an editor box already showing it.
+        if self.plan_attached() and (label := self.session_label()):
+            return fit_fragments([*heading, ("class:activity.meta", " · "), *label], width)
+        return panel_fragments(heading, width)
 
     def plan_heading_border(self) -> VSplit:
         """A top border with the heading at the left, cut to fit the row.
@@ -2617,9 +2749,42 @@ class PromptLayout:
             filter=Condition(lambda: bool(self.typing_row())),
         )
 
+    def session_name(self) -> str:
+        """The session's /rename name or model-given title, on one line; else empty.
+
+        Never a fallback such as the first prompt, so a new session keeps a
+        plain rule.
+        """
+        return " ".join((self.session_title() or "").split())
+
+    def session_label(self) -> list[tuple[str, str]]:
+        """The last turn's mark, then the session's name; either may be absent.
+
+        A new session, with no name and no finished turn, gets nothing.
+        """
+        label = []
+        outcome = self.activity.turn_outcome
+        if mark := TURN_MARKS.get(outcome):
+            label.append((f"class:session.{outcome}", mark))
+        if name := self.session_name():
+            if label:
+                label.append(("", " "))
+            label.append(("class:session.name", name))
+        return label
+
+    def idle_title(self) -> list[tuple[str, str]]:
+        """The idle editor box's heading: how the last turn ended, and the name.
+
+        Coming back to a finished turn, it says what the session is about and
+        whether the turn worked; while a turn runs, the status row takes the
+        border instead.
+        """
+        # Corners, stub, a space either side, and at least one rule cell.
+        return fit_fragments(self.session_label(), self.size().columns - TITLE_CHROME - 1)
+
     def editor_frame(self) -> Frame:
         session = self.session
-        editor_frame = Frame(self.editor, height=self.frame_height)
+        editor_frame = Frame(self.editor, title=self.idle_title, height=self.frame_height)
         # Replace only the bottom border: the badge must not add a row or alter CPR sizing.
         editor_frame.container.children[-1] = VSplit(
             [
@@ -2727,7 +2892,7 @@ class PromptLayout:
         self.render_cache = {}
         transcript, activity = self.transcript, self.activity
         if transcript is None or not (
-            (transcript.show_edits and activity.edit_previews)
+            (transcript.live_edit_previews and activity.edit_previews)
             or (transcript.command_scrollback and activity.command_outputs)
             or any(key.startswith(WATCHED_PREFIX) for key in activity.command_outputs)
         ):
@@ -2784,6 +2949,7 @@ def create_prompt(
     on_previous_session=None,
     on_copy_response=None,
     key_prefix: str | None = None,
+    session_title: Callable[[], str] = lambda: "",
     **kwargs,
 ) -> PromptSession:
     configure_newline_keys()
@@ -2829,7 +2995,7 @@ def create_prompt(
     )
     session.shortcuts = shortcuts
 
-    prompt_layout = PromptLayout(session, activity, transcript, shortcuts)
+    prompt_layout = PromptLayout(session, activity, transcript, shortcuts, session_title)
     if transcript is not None:
 
         def accept(buffer):
@@ -2856,15 +3022,13 @@ def create_prompt(
     return session
 
 
-def tally(succeeded: int, failed: int, sep: str = "") -> str:
-    """`✓2 ✗1`, dropping a zero side, so each mark only ever counts its own outcome."""
-    return " ".join(
-        f"{mark}{sep}{count}" for mark, count in (("✓", succeeded), ("✗", failed)) if count
-    )
+def tally(succeeded: int, failed: int) -> str:
+    """`✓ 2 ✗ 1`, dropping a zero side, so each mark only ever counts its own outcome."""
+    return " ".join(f"{mark} {count}" for mark, count in (("✓", succeeded), ("✗", failed)) if count)
 
 
 def tool_count(name: str, count: int, failed: int) -> str:
-    """One tool's part of a group line: `Read file ✓3`, `Search code ✗1`, `Search code ✓2 ✗1`."""
+    """One tool's part of a group line: `Read file ✓ 3`, `Search code ✓ 2 ✗ 1`."""
     return f"{name} {tally(count - failed, failed)}"
 
 
@@ -2887,6 +3051,7 @@ class Transcript:
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
         self.tool_error_scrollback = preferences.get("tool_error_scrollback", "off") == "on"
         self.show_edits = preferences.get("show_edits", "on") == "on"
+        self.live_edits = preferences.get("live_edits", SETTINGS["live_edits"].default) == "on"
         self.command_scrollback = preferences.get("show_commands", "off") == "on"
         self.group_tools = preferences.get("group_tools", SETTINGS["group_tools"].default) == "on"
         self.command_scrollback_lines = int(preferences.get("command_scrollback_lines", "20"))
@@ -3049,16 +3214,16 @@ class Transcript:
 
     @staticmethod
     def group_line(events: list[ToolSummary], *, width: int) -> Text:
-        """`✓ 15 tools · Edit file ✓10 · Run shell ✓5`, most used first.
+        """`✓ 15 tools · Edit file ✓ 10 · Run shell ✓ 5`, most used first.
 
         Failures split the run's count and their tool's, so a run that hit
-        one still stands out: `✓ 5 ✗ 1 tools · Read file ✓3 · Search code ✓2 ✗1`.
+        one still stands out: `✓ 5 ✗ 1 tools · Read file ✓ 3 · Search code ✓ 2 ✗ 1`.
         """
         counts = Counter(label(event.name) for event in events)
         failures = Counter(label(event.name) for event in events if event.failed)
         failed = failures.total()
         parts = [tool_count(name, count, failures[name]) for name, count in counts.most_common()]
-        head = tally(len(events) - failed, failed, sep=" ")
+        head = tally(len(events) - failed, failed)
         line = Text(f"{head} tools · " + " · ".join(parts), style="pcode.thinking")
         line.no_wrap = True
         line.overflow = "ellipsis"
@@ -3093,7 +3258,7 @@ class Transcript:
         return line.plain
 
     def pending_tally(self) -> str:
-        """The open run's count for the status row: `✓7 ✗1 tools`, or empty."""
+        """The open run's count for the status row: `✓ 7 ✗ 1 tools`, or empty."""
         if not self._group:
             return ""
         failed = sum(event.failed for event in self._group)
@@ -3110,6 +3275,11 @@ class Transcript:
         for children in orphans.values():
             for line in self.child_lines(children):
                 self.print(line, tool_line=True)
+
+    @property
+    def live_edit_previews(self) -> bool:
+        """Whether a not-yet-applied edit is previewed in the live panel."""
+        return self.show_edits and self.live_edits
 
     @recorded
     def edit(self, event) -> None:

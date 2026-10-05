@@ -32,6 +32,7 @@ def present_events(events, *, activity, transcript, edits) -> None:
                 activity.edit_previews[event.call_id] = event
         elif isinstance(event, EditCompleted):
             edits.append(event)
+            activity.tools.record_edit(event)
             transcript.edit(event)
         elif isinstance(event, CommandOutput):
             activity.command_outputs.pop(event.call_id, None)
@@ -167,7 +168,7 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         activity.tools.record_plan(event.call_id, event.items)
         activity.workers.record(event)
     elif isinstance(event, ChildText):
-        # A worker's own prose feeds `/workers`; the transcript never shows it.
+        # A worker's own prose feeds `/agents`; the transcript never shows it.
         activity.workers.record(event)
         return
     elif isinstance(event, (ToolStarted, ToolSummary)):

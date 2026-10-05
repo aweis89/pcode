@@ -2,7 +2,7 @@
 
 The conversation's transcript shows a worker only as its delegate row and the
 calls beneath it. This keeps what the worker itself said and did, in order, so
-`/workers` can show it while it runs and after it settles. Memory only: nothing
+`/agents` can show it while it runs and after it settles. Memory only: nothing
 here is journaled, so a resumed session starts with no workers.
 """
 

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve screenshots icons cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall sync
+.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve screenshots screenshot-live icons cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall sync
 
 # Harness lives in the pydantic-ai repo (src/pydantic_ai_harness, docs/harness,
 # tests/harness) and ships with each Pydantic AI release.
@@ -50,8 +50,11 @@ docs: ## Build the docs site into site/ (fails on broken links)
 docs-serve: ## Preview the docs site with live reload at http://localhost:8000
 	uv run --group docs zensical serve
 
-screenshots: ## Regenerate docs screenshots from scripted scenes (SCENES="tree jobs" for some)
-	uv run python scripts/screenshots/run.py $(SCENES)
+screenshots: ## Regenerate docs screenshots from scripted scenes (SCENES="tree jobs" for some, ARGS=--iterm for your iTerm2 colors)
+	uv run python scripts/screenshots/run.py $(ARGS) $(SCENES)
+
+screenshot-live: ## Play one scene in this terminal to screenshot it yourself (SCENE=review)
+	uv run python scripts/screenshots/run.py --live $(or $(SCENE),review)
 
 icons: ## Browse terminal icon candidates (ARGS="--category thinking --single-cell")
 	uv run python scripts/icons.py $(ARGS)

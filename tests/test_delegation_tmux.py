@@ -56,7 +56,7 @@ def test_delegate_stays_visible_without_its_calls_through_resize_and_cancel(pane
         lines = screen.splitlines()
         top = max(i for i, line in enumerate(lines) if line.startswith("┌"))
         assert lines[top].startswith(SPINNER_ROW)
-        assert "✦ Explorer" in lines[top + 1]
+        assert "» Explorer" in lines[top + 1]
         assert lines[top + 2].startswith("├")
         assert "Search" not in screen
         assert input_rows(screen) == 1
@@ -84,7 +84,7 @@ def test_task_tree_guides_survive_resize_at_each_depth(pane):
         pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
         screen = capture(pane, "src/auth.py", running=True, columns=width)
         assert "Main task" in screen
-        assert "│└── ✦ Explorer" in screen
+        assert "│└── » Explorer" in screen
         assert "│    ├── ✓ Inspect" in screen
         assert "│    ├── ↺ Work" in screen
         assert "│    └── ○ Validate" in screen

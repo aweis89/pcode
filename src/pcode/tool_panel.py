@@ -6,14 +6,14 @@ from time import monotonic
 
 from rich.text import Text
 
-from pcode.runtime import ToolStarted, ToolSummary
+from pcode.runtime import EditCompleted, ToolStarted, ToolSummary
 from pcode.tool_display import JOB_HANDLE_TOOLS, PLAN_TOOLS, command_preview, label, plain
 
 # Delegates outlive their own chatter, so they keep the panel's first rows.
 DELEGATE = "delegate_task"
 # Marks a row as a sub-agent rather than a tool. One terminal cell wide in
 # common fonts, unlike emoji, so the panel's width math still holds.
-AGENT_ICON = "✦"
+AGENT_ICON = "»"
 # On the status row, a command that finishes in milliseconds appears and
 # vanishes before it can be read, and a burst of them strobes. A finished call
 # keeps the row, marked done, for this long after it settles, unless real work
@@ -70,6 +70,9 @@ class ToolCall:
     failed: bool = False
     # A delegate's slot in the hue ring, kept for its whole run.
     hue: int = 0
+    # What an edit changed (`+3 −1`), once its `EditCompleted` arrives: two
+    # edits to one file are otherwise the same row.
+    change: str = ""
 
     @property
     def elapsed(self) -> float:
@@ -107,7 +110,7 @@ class ToolCall:
         return " · ".join(part for part in (label(event.name), state, clock, detail) if part)
 
     def _delegate_line(self, elapsed: float | None) -> str:
-        """`✦ Worker · 5.5s · Thinking · <task>`: the agent is what tells delegates apart.
+        """`» Worker · 5.5s · Thinking · <task>`: the agent is what tells delegates apart.
 
         A settled delegate's last phase is stale (nearly always "Responding"),
         so it says how it ended instead.
@@ -139,6 +142,19 @@ class ToolHistory:
     recent: ToolCall | None = None
     # Each running delegate's plan, keyed by its call id.
     plans: dict[str, list[dict]] = field(default_factory=dict)
+
+    def record_edit(self, change: EditCompleted) -> None:
+        """Note an edit's line counts on its call, running or just settled.
+
+        A change with no diff (binary, sensitive, too large) has no counts to
+        give: `+0 −0` would say it changed nothing.
+        """
+        if change.omitted or change.operation == "unchanged":
+            return
+        for call in (*self.calls, self.recent):
+            if call is not None and change.call_id and call.event.call_id == change.call_id:
+                call.change = f"+{change.added} −{change.removed}"
+                return
 
     def record_plan(self, call_id: str, items: list[dict]) -> None:
         if any(c.event.call_id == call_id for c in self.calls):
@@ -255,7 +271,7 @@ class ToolHistory:
         remaining = count - len(delegates)
         nodes = []
         for parent in delegates:
-            # `✦` stands in for a task icon: with a task's icon in front, a
+            # `»` stands in for a task icon: with a task's icon in front, a
             # sub-agent would read as one of the parent's tasks. Its hue,
             # shared with its plan rows, tells parallel sub-agents apart.
             node = _PanelNode((f"class:plan.agent,agent.hue.{parent.hue}", parent.line()))
@@ -340,7 +356,7 @@ def _row_parts(style: str, line: str) -> list[tuple[str, str]]:
 
     The guides stay muted whatever the row's status, so a dimmed row keeps
     its place in the tree. A task's icon takes its status's colour even under
-    a sub-agent's hue; a sub-agent's `✦` and name go bold in that hue.
+    a sub-agent's hue; a sub-agent's `»` and name go bold in that hue.
     """
     kind = _PART_STYLED.search(style)
     if kind is None:

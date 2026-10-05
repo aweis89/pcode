@@ -187,11 +187,18 @@ def derive_colors(style_name: str, fallback: Mapping, backdrop: str | None = Non
             on_surface,
             last_resort["muted"],
         ),
+        # Apart from the accent, since the status row's detail and the session
+        # name wear it beside the accented phase. Not added to `taken`: the
+        # first sub-agent hue shares the Keyword colour on purpose.
         "task_heading": _pick(
             (
-                _token(style, Token.Keyword),
-                _token(style, Token.Name.Class),
-                fallback["task_heading"],
+                color
+                for color in (
+                    _token(style, Token.Keyword),
+                    _token(style, Token.Name.Class),
+                    fallback["task_heading"],
+                )
+                if _normalize(color) != accent
             ),
             on_surface,
             last_resort["task_heading"],

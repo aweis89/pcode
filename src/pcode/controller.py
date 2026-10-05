@@ -68,7 +68,7 @@ TERMINAL_COMMANDS = frozenset(
         "/links",
         "/copy",
         "/tree",
-        "/workers",
+        "/agents",
         "/resume",
         "/switch",
         "/restart",
@@ -124,6 +124,7 @@ SESSION_FIELDS = (
     "queued_modes",
     "prompt",
     "prompt_state",
+    "turn_outcome",
     "prompt_kind",
     "prompt_detail",
     "user_command",
@@ -489,6 +490,7 @@ class SessionController:
         self.skill_requested: str | None = None
         self.skill_mcp_requested: tuple[str, tuple[str, ...]] | None = None
         self.reload_requested = False
+        self.reload_pending = False  # Asked for mid-turn; `consume` runs it between turns.
         self.login_requested: str | None = None
         self.logout_requested: str | None = None
         # Runs the sign-ins and sign-outs those two ask for.
@@ -1162,6 +1164,9 @@ class SessionController:
                 await asyncio.gather(*active, return_exceptions=True)
         if self.reload_requested:
             await self.reload_extensions()
+        elif self.reload_pending and not (self.activity.busy or self.activity.queued_prompts):
+            # Deferred by busy work that was not a turn, which `consume` would wait out.
+            await self.apply_pending_reload()
         if self.login_requested:
             await self.perform_login()
         if self.logout_requested:
@@ -1239,6 +1244,7 @@ class SessionController:
             # that follows it is sent.
             if self.pending_model is not None:
                 await self.apply_pending_model()
+            await self.apply_pending_reload()
             if owner is not None:
                 # Everything shown from here to `after_turn` is this message's.
                 owner.started()
@@ -1278,9 +1284,11 @@ class SessionController:
                             return
                         success = False
                         self.activity.finish_prompt("cancelled")
+                        self.activity.turn_outcome = "cancelled"
                         self.view.cancelled()
             except Exception as error:
                 self.view.error(error_message(error), title="Agent failed")
+                self.activity.turn_outcome = "failed"
                 success = False
             finally:
                 self.live_task = None
@@ -1291,6 +1299,7 @@ class SessionController:
             # agree with what the next request will use.
             if self.pending_model is not None:
                 await self.apply_pending_model()
+            await self.apply_pending_reload()
             self.view.session_changed()
             await self.view.after_turn()
 
@@ -1389,7 +1398,9 @@ class SessionController:
         # Abandoning a wait is the exception, not the rule: restore the safe
         # default so the next Ctrl+C-free cancellation cannot kill a command.
         self.set_cancel_policy("detach")
-        self.activity.finish_prompt("cancelled" if cancelled else "failed" if failure else "done")
+        outcome = "cancelled" if cancelled else "failed" if failure else "done"
+        self.activity.finish_prompt(outcome)
+        self.activity.turn_outcome = outcome
         self.report_finished_jobs()
         self.view.redraw()
         if cancelled:
@@ -2309,17 +2320,46 @@ class SessionController:
     def reload(self, argument: str) -> None:
         if argument:
             raise ValueError("/reload takes no arguments.")
-        if not self.model or not hasattr(self.runtime, "replace_agent"):
-            raise ValueError("/reload requires a live model session.")
+        self._check_reloadable()
         if self.activity.busy or self.activity.queued_prompts:
             raise ValueError("/reload is unavailable while working. Cancel or wait, then retry.")
         self.reload_requested = True
+
+    def _check_reloadable(self) -> None:
+        if not self.model or not hasattr(self.runtime, "replace_agent"):
+            raise ValueError("/reload requires a live model session.")
+
+    def request_extension_reload(self) -> None:
+        """An extension's `request_reload`: now when idle, else once the running turn ends.
+
+        Unlike a typed /reload, the extension has usually just changed what its
+        `setup` contributes (`/browser attach`), so refusing mid-turn would
+        only make the user retype it. The agent is never swapped under a
+        request in flight: `consume` applies it between turns.
+        """
+        self._check_reloadable()
+        if self.activity.busy or self.activity.queued_prompts:
+            if not self.reload_pending:
+                self.reload_pending = True
+                self._extension_notice("Extensions reload once the running work finishes.", "info")
+        else:
+            self.reload_requested = True
+
+    async def apply_pending_reload(self) -> None:
+        """Run a reload an extension asked for mid-turn, now that no request is in flight."""
+        if not self.reload_pending:
+            return
+        try:
+            await self.reload_extensions()
+        except Exception as error:
+            self.view.error(error_message(error), title="Reload failed")
 
     async def reload_extensions(self) -> None:
         """Re-import every extension and rebuild the agent around the same conversation."""
         from pcode.agent import create_agent
 
         self.reload_requested = False
+        self.reload_pending = False
         loaded = await asyncio.to_thread(self._load_extensions)
         # Construct first, so a failure leaves the previous agent in place.
         agent = await asyncio.to_thread(
@@ -2360,7 +2400,7 @@ class SessionController:
 
         return load_extensions(
             workspace or self.workspace,
-            ExtensionUI(self._extension_notice, lambda: self.reload("")),
+            ExtensionUI(self._extension_notice, self.request_extension_reload),
             session_dir=self.session_dir,
         )
 
@@ -2561,7 +2601,12 @@ class SessionController:
                 ("Mode", "Canned replies only. Start with -m PROVIDER:MODEL for a real agent."),
             ]
         totals = self.runtime.totals
+        saved = self.runtime.session
+        # What the session is called leads: it is what tells sessions apart,
+        # and below the overhead rows it falls off a short terminal.
         rows = [
+            *([("Name", saved.info.name)] if saved and saved.info.name else []),
+            *([("Title", saved.info.title)] if saved and saved.info.title else []),
             ("Model", self.model),
             ("Effort", self.current_effort()),
             ("Workspace", str(self.workspace)),
@@ -2580,12 +2625,9 @@ class SessionController:
                 self.autocompact_state() + " · /compact [focus] · /autocompact on|off|200k|auto",
             ),
         ]
-        saved = self.runtime.session
         if saved:
             rows += [
                 ("Session", saved.info.id),
-                *([("Name", saved.info.name)] if saved.info.name else []),
-                *([("Title", saved.info.title)] if saved.info.title else []),
                 ("Saved in", str(saved.directory)),
                 ("Started", saved.info.created[:16]),
                 ("Updated", saved.info.updated[:16]),
@@ -2924,6 +2966,8 @@ class SessionController:
     def new(self, argument: str) -> None:
         self.cancel_naming()
         self.runtime.reset()
+        # On the host too, not just this terminal's copy, so one attaching later agrees.
+        self.activity.turn_outcome = ""
         self.view.conversation_reset("New conversation")
         self.view.note(
             "Context reset; MCP servers are off unless marked enabled. Screen cleared; "
@@ -3045,6 +3089,7 @@ class SessionController:
         self.activity.prompt = ""
         self.activity.prompt_kind = "user"
         self.activity.prompt_detail = ""
+        self.activity.turn_outcome = ""
         self.view.replay_conversation()
         self.mcp_defaults_requested = True
 
@@ -3405,6 +3450,7 @@ class SessionController:
         if self.activity.busy or self.activity.queued:
             raise ValueError("/tree is unavailable while working or messages are queued.")
         draft = await self.runtime.navigate(identity, edit=edit)
+        self.activity.turn_outcome = ""
         self.view.show_branch()
         self.view.note(
             "Context switched; previous branches are kept. File changes and tool effects "

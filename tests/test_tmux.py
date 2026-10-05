@@ -186,8 +186,8 @@ def pane(request, tmp_path):
 
 
 # The status rides the editor box's top border, led by a frame of the
-# default `arc` spinner.
-BUSY_FRAMES = tuple(f"┌─ {frame} " for frame in "◜◠◝◞◡◟")
+# default `dots` spinner.
+BUSY_FRAMES = tuple(f"┌─ {frame} " for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 # The footer always names the mode the next Enter sends with.
 SEND_MODES = ("steering", "queue", "interrupt")
@@ -316,6 +316,32 @@ def test_footer_theme_switch_keeps_editor_compact(pane):
             pane("send-keys", "-t", "preview:0.0", "Enter")
             # The style gallery scrolls the sample away, so wait on its last row.
             assert input_rows(capture(pane, GALLERY_TAIL)) == 1
+
+
+def test_terminal_appearance_report_repaints_auto_theme(pane):
+    capture(pane, "❯")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/theme auto")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    screen = capture(pane, "Theme: auto (")
+    assert b"\x1b[?2031h" in pane.output.read_bytes()
+    detected = "light" if "Theme: auto (light)" in screen else "dark"
+    # Mode 2031 reports 1 for dark and 2 for light: report the other one.
+    report = "\x1b[?997;1n" if detected == "light" else "\x1b[?997;2n"
+
+    def colors():
+        return pane("capture-pane", "-p", "-e", "-t", "preview:0.0")
+
+    before, replays = colors(), pane.output.read_bytes().count(REPLAY)
+    pane("send-keys", "-t", "preview:0.0", "-l", report + "hi")
+    until(
+        lambda: pane.output.read_bytes().count(REPLAY) > replays,
+        lambda: "No repaint after the appearance report",
+    )
+    screen = capture(pane, "❯ hi")  # Typing around the report is untouched.
+    assert "997" not in screen
+    pane("send-keys", "-t", "preview:0.0", "C-u")
+    capture(pane, "❯")
+    until(lambda: colors() != before, lambda: "Palette unchanged after the report")
 
 
 def test_transcript_uses_terminal_scrollback(pane):
@@ -890,7 +916,7 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, release, split):
     resize(pane, "split-window", split, "-t", "preview:0.0", "cat")
     release()
     completed = capture(pane, "✓ Task 0")
-    assert any(line.startswith("┌─ Tasks 12/12 ─") for line in completed.splitlines())
+    assert any(line.startswith("┌─ Tasks 12/12 · ✓ ─") for line in completed.splitlines())
     assert "│✓ Task 0" in completed
     assert input_rows(completed) == 1
     assert completed.count("┌") == completed.count("└") == 1
@@ -1213,7 +1239,7 @@ def test_single_running_tool_needs_no_box_above_the_editor(pane):
     assert screen.count("┌") == screen.count("└") == 1
     assert lines[top].startswith(SPINNER_ROW)
     assert "Run shell" in lines[top] and "FIRST_DETAIL" not in lines[top]
-    # Led by the spinner's frame, as the status row is.
+    # Led by the tool spinner's frame.
     assert lines[top - 1].strip().split(" ", 1)[1].startswith(TOOL_ROW)
     assert "Tasks" not in screen and "Tools" not in screen
     assert "✓ Read file" in pane("capture-pane", "-p", "-S", "-", "-t", "preview:0.0")

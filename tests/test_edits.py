@@ -91,6 +91,15 @@ def test_completed_diffs_retained_while_hidden_and_reprojected():
     assert transcript.replay() == []
 
 
+def test_live_edit_previews_are_opt_in_and_follow_show_edits():
+    console = Console(file=StringIO())
+    assert not Transcript(console, preferences={}).live_edit_previews
+    transcript = Transcript(console, preferences={"live_edits": "on"})
+    assert transcript.live_edit_previews
+    transcript.show_edits = False
+    assert not transcript.live_edit_previews
+
+
 def test_read_only_adapter_never_exposes_writes(tmp_path):
     original = DisplayFileSystem(read_only=True)
     assert original.get_toolset().__class__.__name__ == "FilteredToolset"

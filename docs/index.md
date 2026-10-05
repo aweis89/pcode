@@ -1,9 +1,13 @@
 # pcode
 
-A coding agent for people who live in the terminal. It streams into your
-terminal's normal scrollback instead of taking over the screen, keeps every
-conversation so you can resume, search or fork it, and runs on the model
-subscription you already pay for.
+pcode is a terminal coding agent built on [Pydantic AI](https://ai.pydantic.dev/):
+background jobs that wake the agent when CI or tests finish, scrollback you can
+re-render to show or hide every command and diff, `/tools` for every call the
+agent made, a forkable conversation tree in the style of
+[pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md),
+and a worktree per session so agents run in parallel. It runs on any model
+Pydantic AI supports, and on your Claude subscription through Anthropic's own
+Agent SDK and Claude Code login, the way Anthropic supports, or your ChatGPT one.
 
 ```sh
 brew tap aweis89/pcode https://github.com/aweis89/pcode.git
@@ -41,7 +45,7 @@ next.
 | Ctrl+B `g`, `/show-commands` | Mirror each command and its output into scrollback, or hide them |
 | `/show-edits` | Show or hide the diff of every file edit |
 | `/show-thinking` | Show the model's reasoning on the status line, in scrollback, or not at all |
-| `/group-tools` | Fold each run of tool calls into one line (on by default): `✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1` |
+| `/group-tools` | Fold each run of tool calls into one line (on by default): `✓ 15 ✗ 1 tools · Edit file ✓ 10 · Run shell ✓ 5 ✗ 1` |
 | Ctrl+B `o`, `/show-tasks` | Show or hide the live task and tool panel |
 
 Resizing the terminal re-renders at the new width too, so a narrowed pane
@@ -170,9 +174,9 @@ Each starts with a clean context and its own plan, so the main conversation
 only gets their results.
 
 Sub-agents in most tools are a black box until they return. In pcode, the task
-panel lists each running worker with its purpose, and `/workers` opens a live
-view of all of them: each worker's assignment, plan, streamed text, every tool
-call it makes, and its reasoning if you want it. Workers can run on a
+panel lists each running agent with its purpose, and `/agents` opens a live
+view of all of them: each agent's assignment, plan, streamed text, every tool
+call it makes, and its reasoning if you want it. Agents can run on a
 different model from the parent (`/subagents`), and with `worker_isolation` on
 each one edits in its own worktree and comes back as a branch to review. See
 [parallel agents](guide/parallel.md#sub-agents-in-parallel).

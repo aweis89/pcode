@@ -282,6 +282,7 @@ def test_aside_answers_while_a_turn_runs_and_records_nothing(tmp_path):
         events = await main
         assert answer.answer == "Answer: Why this file?"
         assert reports[-1] == ("Answer: Why this file?", "")
+        assert ("Answer: Why this file?", "Responding…") in reports
         assert Message("Main answer.") in events
         # Mid-turn the question joins the request in flight rather than following
         # it as a second user message, which providers reject.
@@ -558,6 +559,7 @@ def test_a_ready_side_answer_opens_the_viewer_unless_auto_open_is_off():
 
         class Browser:
             def __init__(self, asides, **options):
+                self.edit = options["edit"]
                 browsers.append(self)
 
             async def run(self):
@@ -584,6 +586,11 @@ def test_a_ready_side_answer_opens_the_viewer_unless_auto_open_is_off():
                 # Nobody typed a bare /btw: the settled answer opened the viewer.
                 await wait_for(lambda: len(browsers) == 1)
                 await wait_for(lambda: "Opening it." in printed.getvalue())
+                # Opened by itself, it keeps out of the editor; asked for, it opens there.
+                assert not browsers[0].edit
+                pipe.send_text("/btw\r")
+                await wait_for(lambda: len(browsers) == 2)
+                assert browsers[1].edit
                 save_preferences(btw_auto_open="off")
                 answered.clear()
                 pipe.send_text("/btw and this one?\r")
@@ -591,7 +598,7 @@ def test_a_ready_side_answer_opens_the_viewer_unless_auto_open_is_off():
                 answered.set()
                 await wait_for(lambda: "/btw opens it." in printed.getvalue())
                 await asyncio.sleep(0.05)
-                assert len(browsers) == 1
+                assert len(browsers) == 2
                 pipe.send_text("/quit\r")
 
             with (
@@ -603,25 +610,58 @@ def test_a_ready_side_answer_opens_the_viewer_unless_auto_open_is_off():
     asyncio.run(run())
 
 
+def test_a_side_run_reports_the_main_status_rows_words(tmp_path):
+    from pydantic_ai import (
+        FunctionToolCallEvent,
+        PartDeltaEvent,
+        PartStartEvent,
+        TextPart,
+        ThinkingPart,
+        ThinkingPartDelta,
+        ToolCallPart,
+    )
+
+    async def events():
+        yield PartStartEvent(index=0, part=ThinkingPart(content="hm"))
+        yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" more"))
+        yield FunctionToolCallEvent(ToolCallPart("shell", {"command": "ls"}, tool_call_id="a"))
+        yield PartStartEvent(index=1, part=TextPart(content="Done"))
+
+    runtime = AgentRuntime(Agent(TestModel(), capabilities=[create_coder(tmp_path)]))
+    reports = []
+    asyncio.run(runtime._aside_answer(events(), lambda _, activity: reports.append(activity)))
+    # One report per change of phase: a thought's deltas are not news.
+    assert reports == ["Thinking…", "Run shell · ls", "Responding…", ""]
+
+
 def test_aside_browser_streams_the_answer_and_marks_it_read():
     from pcode.aside_ui import AsideBrowser
 
     asides = Asides()
-    running = Aside(question="why this file?", answer="Because", activity="Reading read_file")
+    running = Aside(question="why this file?", answer="Because", activity="Read file · app.py")
     asides.items.append(running)
     browser = AsideBrowser(asides, output=None, input=None)
+
+    def status():
+        return "".join(text for _, text in browser.status_fragments())
+
     assert "why this file?" in browser.list.text
     assert "(running" in browser.list.text
     body = browser.detail.text(80)
     assert "why this file?" in body
     assert "Because" in body
-    assert "Reading read_file" in body
+    # Progress is the main prompt's status row, docked under the answer.
+    assert "Read file" not in body
+    assert "Read file · app.py" in status()
+    assert ("class:activity.phase", "Read file") in browser.status_fragments()
+    assert any(style == "class:activity.spinner" for style, _ in browser.status_fragments())
     # A running answer is not read yet, so the footer keeps announcing it.
     assert not running.read
     asides.update(running, answer="Because the task named it.", activity="")
     running.settle("answered")
     browser.refresh()
     assert "Because the task named it." in browser.detail.text(80)
+    assert status() == ""
     assert running.read
     assert "(answered" in browser.list.text
 

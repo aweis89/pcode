@@ -380,7 +380,7 @@ def test_parallel_parents_take_priority_over_child_chatter():
     history.record(ToolStarted("read_file", "newest.py", "status-row"))
     rows = history.rows(3)
     assert len(rows) == 3
-    assert all("✦ Explorer-" in text and "Read" not in text for _, text in rows)
+    assert all("» Explorer-" in text and "Read" not in text for _, text in rows)
 
 
 def test_timeout_settles_inflight_child_tool_before_parent_resumes():
@@ -589,7 +589,7 @@ def test_a_finished_delegate_leaves_the_panel_without_taking_the_status_row(fail
     state = "Failed" if failed else "Done"
     finished = ToolCall(delegate_started("explorer", "investigate", "x"), settled=1.0)
     finished.failed = failed
-    assert re.fullmatch(rf"✦ Explorer · {state} · investigate", finished.line(timed=False))
+    assert re.fullmatch(rf"» Explorer · {state} · investigate", finished.line(timed=False))
 
 
 def test_a_finished_delegate_leaves_its_siblings_running():
@@ -757,7 +757,7 @@ def test_a_delegate_shows_its_plan_but_not_its_calls():
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     history.record(ToolStarted("grep", "newest", "status-row"))
     rows = [text for _, text in task_panel_rows([], history, 10, "*")]
-    assert rows[0].startswith("✦ Worker · ") and " · Starting · fix it" in rows[0]
+    assert rows[0].startswith("» Worker · ") and " · Starting · fix it" in rows[0]
     assert rows[1:] == [
         "├── ✓ Read the code",
         "├── * Fix the bug",
@@ -788,7 +788,7 @@ def test_a_short_panel_keeps_the_delegate_before_its_plan():
     history.record_plan("parent", [{"content": f"step {i}", "status": "pending"} for i in range(5)])
     rows = task_panel_rows([{"content": "Parent task", "status": "in_progress"}], history, 3, "*")
     assert rows[0] == ("class:plan.in_progress", "* Parent task")
-    assert rows[1][1].startswith("└── ✦ Worker")
+    assert rows[1][1].startswith("└── » Worker")
     assert rows[2] == ("class:plan.pending,agent.hue.0", "    └── ○ step 0")
 
 

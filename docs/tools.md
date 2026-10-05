@@ -365,6 +365,8 @@ sign in, the model leaves it on screen and asks; log in there and tell it when
 you are done. A `browser` sub-agent shares the same window, so a multi-step
 task can run without every page landing in the main context. `/browser off`
 quits that Chrome and removes the tools; a fresh pcode starts with them off.
+All three work mid-turn: the running turn keeps the tools it started with, and
+the change applies once it finishes.
 
 pcode starts Chrome with its own profile under `~/.local/state/pcode/chrome`,
 apart from your everyday one. Because it is your real Chrome rather than
@@ -423,11 +425,11 @@ command previews, and the plan panel still show what happened. A `run_code` call
 snippet makes and its size (`grep · read_file ×2 · 12 lines`); the snippet
 itself is visible in the tool-call inspector.
 
-The snippet also streams into the pinned preview box as the model writes it,
-titled `Preparing code · not yet run`, in the same place edit diffs and command
-output appear. Only complete lines are shown, the box clears once the snippet
-runs, and the text never enters the transcript. `/show-edits off` hides it along
-with edit previews.
+With `live_edits` on (off by default), the snippet also streams into the pinned
+preview box as the model writes it, titled `Preparing code · not yet run`, in
+the same place edit diffs and command output appear. Only complete lines are
+shown, the box clears once the snippet runs, and the text never enters the
+transcript. `/show-edits off` hides it along with edit previews.
 
 Snippets run in a sandbox with no access to the host filesystem or environment;
 the lookup tools above are the only way out, and they follow the usual workspace

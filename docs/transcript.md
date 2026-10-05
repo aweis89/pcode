@@ -28,12 +28,13 @@ Git's working tree, so it doesn't fold in earlier changes of yours. New files ar
 marked as created; unchanged files have no patch. Failed calls aren't shown as
 successful edits.
 
-While the model is still generating a file-tool call, a preview shows the
-proposed replacement or file content, labeled **not applied**. It shows only
-complete lines. It shares the live panel's height budget
-(`command_preview_lines`) and disappears on execution, cancellation, or failure;
-it is never saved as an applied change. Providers that send arguments all at
-once may skip this phase.
+With `live_edits` on (off by default), a preview shows the proposed
+replacement or file content while the model is still generating a file-tool
+call, labeled **not applied**. It shows only complete lines. It shares the live
+panel's height budget (`command_preview_lines`) and disappears on execution,
+cancellation, or failure; it is never saved as an applied change. Providers
+that send arguments all at once may skip this phase. `/config set live_edits
+on` turns it on at once; `/show-edits off` hides it along with completed diffs.
 
 ```text
 /show-edits off   Hide edit blocks and previews, and redraw retained scrollback
@@ -155,7 +156,7 @@ apply, and output redirected to a file or pipe can't be redrawn.
 This view shows the readable text the provider actually exposes, which may
 itself be a summary. It is **not hidden internal reasoning**. There is no length
 or row limit. Sub-agents' thinking isn't shown in the parent transcript (use
-`/workers`). The old `thinking_display` and `thinking_lines` preferences are
+`/agents`). The old `thinking_display` and `thinking_lines` preferences are
 ignored.
 
 **Privacy:** readable thinking is saved in sessions even while hidden, and
@@ -226,7 +227,7 @@ steps it completed are written when the cancellation is reported.
 
 With `group_tools` on (the default), a run of consecutive tool calls leaves one line in
 scrollback instead of one per call. While the run is going, the status row
-counts it at the right (`✓7 ✗1 tools`). The full line is written once something else
+counts it at the right (`✓ 7 ✗ 1 tools`). The full line is written once something else
 reaches scrollback (the model's reply, a diff, mirrored command output) or the
 turn ends. `/tools` still lists every call.
 
@@ -235,10 +236,10 @@ pcode config set group_tools off  # One line per call instead (default on)
 ```
 
 ```text
-✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1
+✓ 15 ✗ 1 tools · Edit file ✓ 10 · Run shell ✓ 5 ✗ 1
 ✓ Delegate task  worker · Fix the flaky test → Completed  41.2s
-    ✓ 6 tools · Read file ✓4 · Run shell ✓2
-✓ 2 ✗ 1 tools · Read file ✓2 · Search code ✗1
+    ✓ 6 tools · Read file ✓ 4 · Run shell ✓ 2
+✓ 2 ✗ 1 tools · Read file ✓ 2 · Search code ✗ 1
 ```
 
 `✓` counts successes and `✗` failures, for the run as a whole at the start of

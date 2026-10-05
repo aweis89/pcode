@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from pcode.jobs import JobRegistry
 
 LABELS = {
-    # Verb + object, so a group tally ("Read file ✓15 · Run shell ✓1") says
+    # Verb + object, so a group tally ("Read file ✓ 15 · Run shell ✓ 1") says
     # what each count acted on without the per-row path or command beside it.
     "run_code": "Run code",
     "delegate_task": "Delegate task",
@@ -41,6 +41,8 @@ LABELS = {
     "stop_command": "Stop command",
     "write_plan": "Write plan",
     "search_tools": "Find tools",
+    "search_sessions": "Search sessions",
+    "read_session": "Read session",
     "inventory_agent_context": "Context",
 }
 _SENSITIVE = re.compile(
@@ -253,7 +255,113 @@ def assignment(name: str, args: dict) -> tuple[str, str]:
     )
 
 
-def target(name: str, args: dict) -> str:
+# Harness keys a spill `<run_id>/<tool_call_id>.<retry>`, plus `.content` for
+# the content part of a `ToolReturn`.
+_SPILL_HANDLE = re.compile(r"[^/]+/(.+)\.\d+(?:\.content)?")
+# Harness clamps a read to this many lines (its private `_MAX_READ_LINES`).
+_MAX_STORED_READ_LINES = 1000
+
+
+def spilled_call_id(args: dict) -> str:
+    """The id of the call whose output a `read_tool_result` call reads, or "" if unknown."""
+    handle = args.get("handle")
+    match = _SPILL_HANDLE.fullmatch(handle) if isinstance(handle, str) else None
+    return match[1] if match else ""
+
+
+def stored_source(args: dict, called: dict[str, str]) -> str:
+    """The tool, among `called` (call id to tool name), that spilled what `args` reads."""
+    return called.get(spilled_call_id(args), "")
+
+
+def stored_slice(args: dict, source: str = "") -> str:
+    """What a `read_tool_result` call reads, in place of its opaque handle.
+
+    The handle is a run id and a provider call id, which tell a reader nothing.
+    The tool that produced the output and the window read from it do.
+    """
+    where = f"{plain(source, 40)} output" if source else "stored output"
+    pattern = args.get("pattern")
+    matching = isinstance(pattern, str) and bool(pattern)
+    if matching:
+        where = f"{json.dumps(plain(argument(pattern), 40), ensure_ascii=False)} in {where}"
+    offset, limit = args.get("offset", 0), args.get("limit", 200)
+    if not (isinstance(offset, int) and isinstance(limit, int)) or offset < 0 or limit < 1:
+        return where
+    limit = min(limit, _MAX_STORED_READ_LINES)
+    unit = "matches" if matching else "lines"
+    if args.get("from_end") is True:
+        span = (
+            f"last {limit} {unit}"
+            if not offset
+            else f"{unit} {offset + 1}–{offset + limit} from end"
+        )
+    else:
+        span = f"{unit} {offset + 1}–{offset + limit}"
+    return f"{where} · {span}"
+
+
+def session_recall(name: str, args: dict) -> str:
+    """What a recall call looks for: the query searched, or the session being read."""
+    if name == "search_sessions":
+        query = args.get("query")
+        if not isinstance(query, str):
+            return "query unavailable"
+        parts = [json.dumps(plain(argument(query), 80), ensure_ascii=False)]
+    else:
+        session_id = args.get("session_id")
+        if not isinstance(session_id, str):
+            return "session unavailable"
+        title = session_name(session_id)
+        shown = argument(session_id)[:8]  # A short id, as /resume lists them.
+        parts = [f"{json.dumps(title, ensure_ascii=False)} ({shown})" if title else shown]
+        offset = args.get("offset")
+        if isinstance(offset, int) and not isinstance(offset, bool) and offset > 0:
+            parts.append(f"from char {offset}")
+    scope = args.get("scope")
+    if isinstance(scope, str) and scope != "project":
+        parts.append(f"scope {plain(scope, 20)}")
+    if isinstance(args.get("after"), str) and args["after"].strip():
+        parts.append("next page")
+    return " · ".join(parts)
+
+
+_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_session_names: dict[str, tuple[int, str]] = {}
+
+
+def session_name(session_id: str) -> str:
+    """A saved session's /rename name, else its auto title, or "" if unknown.
+
+    Status rows redraw often, so the metadata is reread only when it changes:
+    a title named after the first lookup still shows on the next one. Only the
+    default session root is consulted; a session elsewhere shows its id alone.
+    """
+    if not _SESSION_ID.fullmatch(session_id):
+        return ""  # Never let a model-supplied id walk out of the session root.
+    from pcode.sessions import SessionError, read_info, session_root
+
+    directory = session_root() / session_id
+    try:
+        stamp = (directory / "session.json").stat().st_mtime_ns
+    except OSError:
+        return ""
+    key = str(directory)
+    cached = _session_names.get(key)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    try:
+        info = read_info(directory)
+    except SessionError:
+        title = ""  # Cached too, so an unreadable file is not reparsed every redraw.
+    else:
+        title = plain(argument(info.name or info.title or ""), 60)
+    _session_names[key] = (stamp, title)
+    return title
+
+
+def target(name: str, args: dict, source: str = "") -> str:
+    """`source` names the tool whose stored output a `read_tool_result` call reads."""
     if name == "run_code":
         code = args.get("code")
         return code_preview(code) if isinstance(code, str) else "code unavailable"
@@ -272,8 +380,9 @@ def target(name: str, args: dict) -> str:
         job_id = args.get("job_id")
         return argument(job_id) if isinstance(job_id, str) else "job unavailable"
     if name == "read_tool_result":
-        handle = args.get("handle")
-        return argument(handle) if isinstance(handle, str) else "handle unavailable"
+        return stored_slice(args, source)
+    if name in {"search_sessions", "read_session"}:
+        return session_recall(name, args)
     if name == "search_tools":
         queries = args.get("queries")
         if not isinstance(queries, list):
@@ -386,9 +495,11 @@ def command_error(content: object) -> str:
     return ("… earlier error output truncated\n" if truncated else "") + excerpt
 
 
-def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple[str, bool]:
+def result_detail(
+    name: str, args: dict, content: object, outcome: str, source: str = ""
+) -> tuple[str, bool]:
     """Extract metrics from known Harness formats, with a safe unknown-format fallback."""
-    where = target(name, args)
+    where = target(name, args, source)
     text = content if isinstance(content, str) else ""
     failed = outcome != "success"
     # Harness 0.31 reports plan validation failures as ordinary string returns.
@@ -412,6 +523,21 @@ def result_detail(name: str, args: dict, content: object, outcome: str) -> tuple
     elif text.startswith("[Tool output too large (") and name != "shell":
         # Do not count the preview's lines/matches as if it were the full result.
         result = "Output stored · preview in context"
+    elif name == "read_tool_result":
+        # Harness heads every slice with `[handle '…': N matching line(s); showing M]`.
+        match = re.match(
+            r"\[handle .*?: ([\d,]+) matching line\(s\); showing (\d+)(, output capped)?\]", text
+        )
+        if match:
+            total, shown = int(match[1].replace(",", "")), int(match[2])
+            noun = "line" if total == 1 else "lines"
+            result = f"{total:,} {noun}" if shown == total else f"{shown:,} of {total:,} {noun}"
+            if match[3]:
+                result += " · output capped"
+        elif text.startswith("[No stored tool result"):
+            result, failed = "No stored result", True
+        else:
+            result = "Read finished"
     elif name == "delegate_task":
         # A normal return without a lifecycle end can be a rejected delegation
         # (e.g. max_calls exhausted), not proof the child completed.

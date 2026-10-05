@@ -8,17 +8,17 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Callable
-from contextlib import ExitStack, aclosing, asynccontextmanager
+from contextlib import ExitStack, aclosing, asynccontextmanager, nullcontext
 from pathlib import Path
 
 from prompt_toolkit.application import get_app
-from prompt_toolkit.input import create_input
 from prompt_toolkit.styles import DynamicStyle
 from rich.cells import cell_len
 from rich.console import Console
 from rich.rule import Rule
 from rich.text import Text
 
+from pcode.appearance import AppearanceWatch
 from pcode.cli import ask, restore_stdin
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
@@ -61,6 +61,7 @@ from pcode.runtime import (
     ToolSummary,
 )
 from pcode.shell_mode import shell_command
+from pcode.startup_input import StartupInput
 from pcode.stream_display import PrintedReply, present_events, present_stream_event
 from pcode.terminal_notify import TabProgress, TabTitle
 from pcode.theme import THEMES, replay_pending_input
@@ -150,6 +151,7 @@ class PreviewApp:
             task_style=load_preferences().get("task_style", SETTINGS["task_style"].default),
             tool_glyphs=load_preferences().get("tool_glyphs", SETTINGS["tool_glyphs"].default),
             tool_max_rows=tool_rows_preference(),
+            tool_linger_seconds=preference_count("tool_linger_seconds"),
             tasks_max_height=parse_height(load_preferences().get("tasks_max_height")),
             tasks_min_rows=preference_count("tasks_min_rows"),
             tasks_min_columns=preference_count("tasks_min_columns"),
@@ -203,6 +205,7 @@ class PreviewApp:
         # The tab's progress bar, while this terminal runs its prompt.
         self._progress: TabProgress | None = None
         self._title: TabTitle | None = None
+        self._appearance: AppearanceWatch | None = None
         # The in-process controller's loops, while this terminal runs them.
         self._loops: list = []
         agent = getattr(self.runtime, "agent", None)
@@ -233,6 +236,11 @@ class PreviewApp:
         # The viewer follows answers that settle while it is open, so auto-open
         # has nothing to do then.
         self.aside_view_open = False
+        # The popup generation an auto-open `/btw` was queued in. That viewer
+        # opens on the answer, not the editor, since it can land mid-keystroke.
+        # Matched by generation rather than order: a queued command can be
+        # dropped (Ctrl+C) or superseded without ever reaching `read_asides`.
+        self._auto_open_generation: int | None = None
         self.registry = CommandRegistry()
         self._session_commands: set[str] = set()
         for command in (
@@ -292,9 +300,9 @@ class PreviewApp:
             ),
             self.controller.registry.find("/btw"),
             Command(
-                "/workers",
-                "Follow delegated workers' own output, live and read-only",
-                self.workers,
+                "/agents",
+                "Follow delegated agents' own output, live and read-only",
+                self.agents,
                 group="Inspect",
             ),
             self.controller.registry.find("/model"),
@@ -542,6 +550,7 @@ class PreviewApp:
         # already using it instead of racing it.
         opening = self.auto_open_asides()
         if opening:
+            self._auto_open_generation = self._popup_generation
             self.controller.command("/btw", self._popup_generation)
         on = f"{aside.label}: " if aside.label else ""
         self.transcript.note(
@@ -687,7 +696,11 @@ class PreviewApp:
         self.activity.task_style = preferences.get("task_style", SETTINGS["task_style"].default)
         self.activity.tool_glyphs = preferences.get("tool_glyphs", SETTINGS["tool_glyphs"].default)
         self.activity.tool_max_rows = tool_rows_preference()
+        self.activity.tool_linger_seconds = preference_count("tool_linger_seconds")
         self.activity.show_hints = hints_preference()
+        self.transcript.live_edits = (
+            preferences.get("live_edits", SETTINGS["live_edits"].default) == "on"
+        )
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
         edits = args[1:] if args[:1] == ["project"] else args
@@ -703,7 +716,9 @@ class PreviewApp:
                 "task_style",
                 "tool_glyphs",
                 "tool_max_lines",
+                "tool_linger_seconds",
                 "show_hints",
+                "live_edits",
             )
         ):
             result = result.replace("Applies on next launch.", "Layout settings apply immediately.")
@@ -885,8 +900,11 @@ class PreviewApp:
                     # A separate parser prevents the editor's escape-flush timer
                     # from stealing the modal's first Escape key.
                     stdin = getattr(session.app.input, "stdin", None)
+                    # It also filters appearance replies, which arrive at any time.
                     modal_input = (
-                        create_input(stdin=stdin) if stdin is not None else session.app.input
+                        StartupInput(stdin, b"", self.follow_appearance)
+                        if stdin is not None
+                        else session.app.input
                     )
                     try:
                         # Include requests queued during preparation and terminal
@@ -1124,6 +1142,7 @@ class PreviewApp:
                 input=modal_input,
                 output=session.app.output,
                 style=session.app.style,
+                handoff=self._appearance.paused if self._appearance else nullcontext,
             )
             await browser.run()
         if prompt := notes_prompt(browser.notes):
@@ -1154,6 +1173,16 @@ class PreviewApp:
             selected += f" ({self.transcript.resolved_theme})"
         self.transcript.flash(f"Theme: {selected}.")
         self.transcript.regenerate()
+
+    def follow_appearance(self, detected: str) -> None:
+        """The terminal reported its background; repaint if `theme auto` now differs."""
+        if detected == self.transcript.detected_theme:
+            return
+        self.transcript.detected_theme = detected
+        if self.transcript.theme == "auto":
+            self.transcript.regenerate()
+            if self.prompt_session is not None:
+                self.prompt_session.app.invalidate()  # The editor's style follows too.
 
     def syntax(self, argument: str) -> None:
         """Choose the Pygments style for code, the completion menu and the prompt.
@@ -1505,6 +1534,10 @@ class PreviewApp:
 
         output, session = self.output, self.prompt_session
         latest = self.asides.latest()
+        auto = (
+            self._command_popup_generation is not None
+            and self._command_popup_generation == self._auto_open_generation
+        )
         self.aside_view_open = True
         try:
             async with self.popup(output, session) as modal_input:
@@ -1514,6 +1547,7 @@ class PreviewApp:
                     check_bridge=self.controller.check_bridge,
                     stop=self.controller.cancel_asides,
                     selected=latest.id if latest else None,
+                    edit=not auto,
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,
                     color_system=self.transcript.console.color_system,
@@ -1527,9 +1561,9 @@ class PreviewApp:
         finally:
             self.aside_view_open = False
 
-    def workers(self, argument: str) -> None:
+    def agents(self, argument: str) -> None:
         if not self.activity.workers.items:
-            self.transcript.note("No workers yet. They appear once the model delegates a task.")
+            self.transcript.note("No agents yet. They appear once the model delegates a task.")
             return
         self.worker_view_requested = True
 
@@ -2100,6 +2134,8 @@ class PreviewApp:
             on_previous_session=lambda: submit("/switch -"),
             on_copy_response=lambda: submit("/copy"),
             bottom_toolbar=self.toolbar,
+            # Whichever controller is on screen: /switch replaces it.
+            session_title=lambda: self.controller.session_title(),
             vi_mode=load_preferences().get("editing_mode", "emacs") == "vi",
         )
         output = TerminalOutput(
@@ -2128,6 +2164,9 @@ class PreviewApp:
             )
             # Whichever controller is on screen: /switch replaces it.
             self._title = TabTitle(lambda: self.controller.session_title(), terminal, title_mode)
+            self._appearance = AppearanceWatch(
+                terminal, active=lambda: self.transcript.theme == "auto"
+            )
 
         async def watch_branch():
             """Keep the footer's branch current without a Git process every 2 s.
@@ -2154,7 +2193,7 @@ class PreviewApp:
 
         def start():
             restore_stdin()
-            replay_pending_input(session.app)
+            replay_pending_input(session.app, self.follow_appearance)
             if stalls is not None:
                 session.app.create_background_task(stalls.heartbeat())
             session.app.create_background_task(watch_branch())
@@ -2164,6 +2203,8 @@ class PreviewApp:
                 session.app.create_background_task(self._progress.run())
             if self._title is not None:
                 session.app.create_background_task(self._title.run())
+            if self._appearance is not None:
+                session.app.create_background_task(self._appearance.run())
             if early is not None:
                 session.app.create_background_task(initialize_host())
             else:
@@ -2187,6 +2228,9 @@ class PreviewApp:
             if self._title is not None:
                 self._title.close()
                 self._title = None
+            if self._appearance is not None:
+                self._appearance.close()
+                self._appearance = None
             await self.leave_controller(self.controller)
             await output.flush(drain=True)
             self.transcript.output = None
@@ -2475,6 +2519,25 @@ def main() -> None:
         help="Stop every session host, or those running older pcode code, and exit",
     )
     parser.add_argument(
+        "--email-listen",
+        action="store_true",
+        help="Take tasks by email from the account set up with --email-setup; "
+        "each starts a sandboxed background session in its own worktree",
+    )
+    parser.add_argument(
+        "--email-ttl",
+        default="8h",
+        metavar="DURATION",
+        help="With --email-listen: stop listening after this long (default 8h)",
+    )
+    parser.add_argument(
+        "--email-setup",
+        nargs="?",
+        const="",
+        metavar="ADDRESS",
+        help="Store a Gmail app password in the keychain and enable --email-listen for it",
+    )
+    parser.add_argument(
         "--profile",
         type=Path,
         nargs="?",
@@ -2561,7 +2624,9 @@ def _select_project_root(argv: list[str]) -> None:
     set_project_root(root if root.is_dir() else Path.cwd())
 
 
-def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
+def _enter_worktree(
+    workspace: Path, requested, *, always: bool = False, base: str | None = None
+) -> tuple[Path, str | None]:
     """Create the session's worktree when asked to, returning (workspace, session id).
 
     `requested` is None (use the `worktree` setting), True (unnamed), or a
@@ -2569,7 +2634,8 @@ def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
     and `git branch` show which ones pcode made; unnamed ones use the session
     ID's prefix, so `pcode -c <prefix>` finds the session. Already inside a
     linked worktree, or outside git, the workspace is left alone rather than
-    nested.
+    nested. `always` (a remote host) makes one regardless, and fails outside
+    git; `base` is the commit or branch it starts from, else the mainline.
     """
     from uuid import uuid4
 
@@ -2578,16 +2644,16 @@ def _enter_worktree(workspace: Path, requested) -> tuple[Path, str | None]:
     if requested is None and load_preferences().get("worktree", "off") != "on":
         return workspace, None
     if worktree.main_checkout(workspace) is None:
-        if requested is None:
+        if requested is None and not always:
             return workspace, None
         raise worktree.WorktreeError(
             f"--worktree needs a git repository; {workspace} is not in one."
         )
-    if worktree.is_linked(workspace):
+    if worktree.is_linked(workspace) and not always:
         return workspace, None
     identity = str(uuid4())
     name = requested if isinstance(requested, str) else identity[:8]
-    created = worktree.create(workspace, SESSION_WORKTREE_PREFIX + name)
+    created = worktree.create(workspace, SESSION_WORKTREE_PREFIX + name, base)
     try:
         worktree.run_setup(created, stream=sys.stderr)
     except worktree.WorktreeError:
@@ -2804,6 +2870,27 @@ def _print_hosted(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         parser.exit(1)
 
 
+def _email(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """`--email-setup` and `--email-listen` (`pcode.email_remote`)."""
+    from pcode.email_remote import cli
+    from pcode.email_remote.mailbox import SetupError
+
+    if args.email_setup is not None and args.email_listen:
+        parser.error("--email-setup and --email-listen are separate steps")
+    if args.prompt or args.print or args.attach is not None or args.resume:
+        parser.error("--email-listen and --email-setup take no prompt or session options")
+    try:
+        if args.email_setup is not None:
+            status = cli.setup(args.email_setup or None)
+        else:
+            status = cli.listen(args.workspace or Path.cwd(), ttl=args.email_ttl, model=args.model)
+    except (SetupError, ValueError, OSError) as error:
+        parser.exit(2, f"pcode: {error_message(error)}\n")
+    except KeyboardInterrupt:
+        parser.exit(130)
+    sys.exit(status)
+
+
 def _tidy_stopped_host(app) -> None:
     """After `/stop`: the host kept its worktree so this terminal can ask, as a local exit does."""
     from pcode.remote import wait_for_exit_sync
@@ -2832,6 +2919,9 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             print(configure(args.arguments))
         except (OSError, ValueError) as error:
             parser.exit(2, f"{error}\n")
+        return
+    if args.email_setup is not None or args.email_listen:
+        _email(args, parser)
         return
     if args.resume and (args.no_save or args.theme_preview):
         parser.error("--continue cannot be combined with --no-save or --theme-preview")

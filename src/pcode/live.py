@@ -19,6 +19,8 @@ from pydantic_ai import (
     PartStartEvent,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
     ToolReturn,
 )
 from pydantic_ai.capabilities import LocalWorkspace
@@ -87,7 +89,7 @@ from pcode.shell_tools import JobShell
 from pcode.steering import Steering
 from pcode.stream_events import EventTranslator
 from pcode.token_accounting import TokenAccounting, TokenTotals
-from pcode.tool_display import target
+from pcode.tool_display import label, target
 from pcode.turn import TurnContext
 
 
@@ -503,11 +505,21 @@ class AgentRuntime:
             if report is not None:
                 report("\n\n".join([*blocks, partial] if partial else blocks), activity)
 
+        # The phases are the main status row's words, since the viewer draws
+        # them with that row: `Thinking…`, `Responding…`, `Run shell · ls`.
         async for event in events:
             if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
                 partial += event.part.content
+                activity = "Responding…"
             elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
                 partial += event.delta.content_delta
+                activity = "Responding…"
+            elif (isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart)) or (
+                isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta)
+            ):
+                if activity == "Thinking…":
+                    continue  # Nothing new to show: thoughts are not the answer.
+                activity = "Thinking…"
             elif isinstance(event, PartEndEvent) and isinstance(event.part, TextPart):
                 if event.part.content:
                     blocks.append(event.part.content)
@@ -519,7 +531,7 @@ class AgentRuntime:
                     args = {}
                 where = target(event.part.tool_name, args)
                 tools[event.part.tool_call_id] = event.part.tool_name
-                activity = f"Running {event.part.tool_name}" + (f" · {where}" if where else "")
+                activity = label(event.part.tool_name) + (f" · {where}" if where else "")
             elif isinstance(event, FunctionToolResultEvent):
                 tools.pop(event.tool_call_id, None)
                 activity = "Waiting for model…" if not tools else activity

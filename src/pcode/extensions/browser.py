@@ -200,7 +200,7 @@ def _subagent(pcode, toolset):
 
 def setup(pcode) -> None:
     def turn_on() -> None:
-        pcode.ui.request_reload()  # Refuses mid-turn, before anything changes.
+        pcode.ui.request_reload()  # Waits out a running turn; refuses with no live session.
         STATE.enabled = True
         pcode.ui.notify(
             "Browser tools on for this conversation. Pages the model reads can act on "
@@ -231,7 +231,12 @@ def setup(pcode) -> None:
                     return
                 raise
             if not STATE.enabled:
-                turn_on()
+                try:
+                    turn_on()
+                except ValueError:
+                    # Refused (no live session): leave nothing half-open behind.
+                    _spawn(STATE.close())
+                    raise
             pcode.ui.notify(
                 f"Joining your browser at {STATE.cdp_url}: the model can act as every account "
                 "you are signed in to there. A new tab opens on first use.",
@@ -241,9 +246,9 @@ def setup(pcode) -> None:
             if not STATE.enabled:
                 raise ValueError("The browser is already off.")
             pcode.ui.request_reload()
+            # The reload's `setup` closes it: a running turn keeps the tools until then.
             STATE.enabled = False
-            _spawn(STATE.close())
-            pcode.ui.notify("Browser closed; its tools leave on the next request.")
+            pcode.ui.notify("Browser off; it closes as its tools leave.")
         else:
             pcode.ui.notify(f"Browser {STATE.describe()}. /browser launch|attach|off.")
 
@@ -270,6 +275,8 @@ def setup(pcode) -> None:
     if not pcode.is_worker:
         pcode.on_close(STATE.close)
     if not STATE.enabled:
+        if not pcode.is_worker and STATE.session is not None:
+            _spawn(STATE.close())  # `/browser off`, now that no agent holds the tools.
         return
     toolset = STATE.open()
     pcode.add_capability(_capability(pcode, toolset))

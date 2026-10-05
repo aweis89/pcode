@@ -110,6 +110,7 @@ def test_prompt_preview_uses_colors_and_updates_them_with_the_theme(text):
         stream = StringIO()
         activity = Activity(edit_previews={"one": EditPreview("one", "x.py", text)})
         view = Transcript(Console(file=stream), activity=activity)
+        view.live_edits = True
         with create_pipe_input() as pipe:
             session = create_prompt(
                 CommandRegistry(),

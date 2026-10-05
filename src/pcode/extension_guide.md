@@ -217,8 +217,9 @@ line in the transcript. Safe to call from tools, hooks, and commands.
 
 `pcode.ui.request_reload()` asks for `/reload` once the terminal is idle, for a
 command that changes what `setup` contributes (see the bundled `browser.py`,
-whose `/browser launch` adds tools). It raises `ValueError` mid-turn, so call it
-before changing state. State that must survive the reload cannot live in the
+whose `/browser launch` adds tools). Mid-turn it waits for the turn to end, so
+the running turn keeps the tools it started with. It raises `ValueError` without
+a live model session, so call it before changing state. State that must survive the reload cannot live in the
 extension module, which is re-imported.
 
 `@pcode.on_close` registers an `async` function run when the terminal exits,

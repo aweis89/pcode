@@ -64,24 +64,24 @@ result, so the files a worker reads and the output of its commands never fill
 the session's context. There is no limit on how many run at once unless you
 set `worker_concurrency`.
 
-### See what every worker is doing: `/workers`
+### See what every agent is doing: `/agents`
 
 Sub-agents in most tools are a black box until they return. In pcode, the task
-panel lists each running worker beneath your task with its purpose, and
-`/workers` opens a live view of all of them, even mid-turn:
+panel lists each running agent beneath your task with its purpose, and
+`/agents` opens a live view of all of them, even mid-turn:
 
-- each worker's assignment and its own task plan
+- each agent's assignment and its own task plan
 - what it's writing, streamed as it goes
 - every tool call it makes
 - its reasoning, with Ctrl+B `t`
 
-The view is read-only, so watching never steers a worker. Worker tool calls
+The view is read-only, so watching never steers an agent. Their tool calls
 also show under the parent's in scrollback and in `/tools`.
 
-### Workers on other models
+### Agents on other models
 
-By default workers run on the session's model. Name another model in your
-request ("ask openai-codex:gpt-6-astra for a second opinion") and the worker runs
+By default agents run on the session's model. Name another model in your
+request ("ask openai-codex:gpt-6-astra for a second opinion") and the agent runs
 on it. `/subagents` gives the agent a standing list of other models to pick from, for example a cheaper, faster model
 for mechanical changes, or a different vendor for a second opinion:
 
@@ -89,11 +89,11 @@ for mechanical changes, or a different vendor for a second opinion:
 ❯ /subagents openai-codex:gpt-6-astra anthropic:claude-sonnet-5
 ```
 
-### Workers in their own worktrees
+### Agents in their own worktrees
 
-Workers share the session's checkout by default, which is right for
+Agents share the session's checkout by default, which is right for
 investigation and small edits. For parallel editing, turn on
-`worker_isolation` alongside `worktree`. Each worker then works on its own
+`worker_isolation` alongside `worktree`. Each agent then works on its own
 branch starting from the session's current commit, and its result comes back
 as a branch to review and merge in, never straight into your work:
 

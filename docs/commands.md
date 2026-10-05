@@ -102,17 +102,22 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   instead, one side question each ([choosing the model](side-questions.md#choosing-the-model)).
   A `+EFFORT` suffix (`$openai:gpt-5+high`), or a bare `+EFFORT` word for the
   conversation's model, sets that question's reasoning effort from the `/effort` levels.
-- `/workers`: follow delegated workers live in a read-only popup: each worker's
+- `/agents`: follow delegated agents live in a read-only popup: each agent's
   assignment, plan, prose, and tool calls, which the transcript only summarizes. Works
-  while the turn runs. **Ctrl+B `t`** shows or hides reasoning. Workers are kept in memory
+  while the turn runs. **Ctrl+B `t`** shows or hides reasoning. Agents are kept in memory
   only, so a resumed session starts with none.
 - `/skill:NAME [text]`: run a discovered skill; see
   [Skills as slash commands](workspace.md#skills-as-slash-commands).
 - `/theme light`, `/theme dark`, `/theme auto`: change the input and future output
   palette; bare `/theme` toggles. Auto (the built-in default) detects the terminal
   background at startup, falling back to `COLORFGBG`, then dark (including for
-  redirected output). A saved theme takes precedence. Restart pcode after changing your
-  terminal background. `pcode config set theme auto` also restores auto mode, and
+  redirected output). A saved theme takes precedence. Auto also follows the terminal
+  when it switches between light and dark while pcode runs: immediately in terminals
+  that announce the change (Ghostty, kitty, iTerm2 3.6.6+, foot, GNOME Terminal and
+  other VTE 0.82+ terminals, Contour, and tmux 3.6+ passing it on), and within a couple of
+  seconds of the system appearance changing on macOS or GNOME, for any terminal that
+  answers background queries. A terminal that keeps its own colors when the system
+  switches keeps its palette too. `pcode config set theme auto` also restores auto mode, and
   `pcode --theme light|dark|auto` picks the palette for one launch. The
   palette decides which `/syntax` setting applies (`syntax_dark` or `syntax_light`);
   body text and background stay terminal-native either way.
@@ -292,12 +297,13 @@ The status row always reads the same way: a spinner, what the turn is doing,
 and on the right the run's tool count and how long this phase has lasted.
 The command, path, or pattern a tool call works on gets its own row above,
 with the full width of the pane, so the status row stays short. While the
-call runs, the row spins with the status row's spinner, in a muted shade:
+call runs, the row spins in a muted shade with a round spinner, so it never
+reads as the status row's dotted one, which means the model is working:
 
 ```text
 ∴ Checking where the config is loaded
 ◜ ✎ src/app.py
-┌─ ◜ Edit file ────────────────────────────────────── ✓7 ✗1 tools · 2s ─┐
+┌─ ⠋ Edit file ──────────────────────────────────── ✓ 7 ✗ 1 tools · 2s ─┐
 ```
 
 Read top to bottom, that is why (the thought), what (the call), and how it is
@@ -316,11 +322,12 @@ line up whether or not a thought is showing:
 ✓ ⎘ src/app.py
 ✓ ⌕ load_config
 ◜ $ make test
-┌─ ◜ Run shell ──────────────────────────────────────── ✓9 tools · 3s ─┐
+┌─ ◜ Run shell ────────────────────────────────────── ✓ 9 tools · 3s ─┐
 ```
 
 The turn's three latest calls are shown, fewer in a short pane;
 `/config set tool_max_lines 1` keeps just the call the status row is on.
+A finished call's row clears after 10 seconds (`tool_linger_seconds`; `0` keeps it).
 
 Work pcode runs itself has no tool row, just its detail on the status row:
 
@@ -332,7 +339,10 @@ A spinner means the turn is waiting on that row. Running jobs are counted in
 the footer below the editor as `1 job` or `N jobs`, including jobs being waited
 on; the count is hidden at zero. Use `/jobs` for individual job details.
 The phase is the one highlighted word, and a stall shows as its clock climbing
-(`Thinking · 40s`). Each row holds what it says for a moment, so a burst of
+(`Thinking · 40s`). With the Tasks/Tools widget hidden (Ctrl+B `o` or
+`/show-tasks off`, or a pane too small for it), the plan's active step follows the phase as its detail
+(`Waiting for model · Adding the migration`), so the row still says what the
+turn is for. Each row holds what it says for a moment, so a burst of
 quick calls reads as progress rather than flicker. `◈` marks work pcode runs
 itself, such as compaction.
 Faded, indented rows above the status row show the model's newest thoughts, up
@@ -379,14 +389,14 @@ resumed sessions; `/new` clears them.
 
 ### Delegated sub-agents
 
-A running `delegate_task` has its own row, starting with `✦` instead of a status
+A running `delegate_task` has its own row, starting with `»` instead of a status
 icon and drawn in its own color, so it never reads as one of your tasks. It
 shows the agent, elapsed time, phase, and the purpose the model gave (or the
 start of its assignment). The phase is `Waiting for model`, `Thinking`,
 `Working` (one of its tools is running), or `Responding`. The row stays for the
 sub-agent's whole run and leaves when it finishes; scrollback records whether it
 was done or failed. While nothing else is running, the status row reads
-`Waiting for 2 sub-agents`, and names the newest one when the widget is hidden.
+`Waiting for 2 agents`, and names the newest one when the widget is hidden.
 
 A sub-agent that plans shows up to three of its tasks beneath it, centered on
 its active task, and they update as it works. Its own tool calls show on the
@@ -397,7 +407,7 @@ opt in (see "Sub-agents" in pcode's extension guide).
 
 ```text
 * Fix the flaky login test
-└── ✦ Worker · 12.4s · Working · Investigate the retry path
+└── » Worker · 12.4s · Working · Investigate the retry path
     ├── ✓ Read the retry code
     ├── * Reproduce the failure
     └── ○ Report back
@@ -632,7 +642,7 @@ these actions alongside the current popup's navigation and editing keys:
 | `/jobs` | `w` watch in the preview · `k` stop |
 | `/links` | `f` search · `t` show/hide tool links |
 | `/tree` | `y` copy the selection, or pick a quote or code block from a response |
-| `/workers` | `t` thinking |
+| `/agents` | `t` thinking |
 
 With `key_prefix ctrl`, use Ctrl+letter instead: Ctrl+Y copies.
 

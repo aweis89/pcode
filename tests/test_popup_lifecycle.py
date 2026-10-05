@@ -26,7 +26,7 @@ def test_popup_restores_transcript_after_terminal_release(monkeypatch, outcome, 
     modal_input = Mock()
     modal_input.close.side_effect = lambda: events.append("close input")
     factory = Mock(return_value=modal_input)
-    monkeypatch.setattr("pcode.app.create_input", factory)
+    monkeypatch.setattr("pcode.app.StartupInput", factory)
     session = SimpleNamespace(app=SimpleNamespace(input=editor_input))
 
     async def run():
@@ -79,7 +79,7 @@ def test_popup_restores_transcript_after_terminal_release(monkeypatch, outcome, 
         "flush",
     ]
     if separate_input:
-        factory.assert_called_once_with(stdin=editor_input.stdin)
+        factory.assert_called_once_with(editor_input.stdin, b"", app.follow_appearance)
         modal_input.close.assert_called_once_with()
     else:
         factory.assert_not_called()

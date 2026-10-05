@@ -26,6 +26,7 @@ import sys
 import time
 from pathlib import Path
 
+from pcode import remote_profile
 from pcode.controller import INTENTS, SESSION_FIELDS, SessionController
 from pcode.error_report import error_message
 from pcode.host_protocol import (
@@ -140,6 +141,10 @@ class _Client:
     # Intents: the controller's, with commands tagged by who sent them.
 
     def submit(self, text: str, mode: str) -> None:
+        if mode == "shell" and remote_profile.active() is not None:
+            # A `!command` runs outside the sandbox; an unattended host takes none,
+            # whoever connects (its own model's commands cannot connect at all).
+            raise PermissionError("Shell mode is off in a remote session.")
         self.host.touch(self)
         self.host.controller.submit(text, mode)
 
@@ -232,7 +237,8 @@ class _Client:
                 self.host.emit_aside(aside)
 
     def stop(self, keep_worktree: bool = False) -> None:
-        self.host.keep_worktree = bool(keep_worktree)
+        # A remote profile keeps its worktree however the host is stopped.
+        self.host.keep_worktree = bool(keep_worktree) or remote_profile.active() is not None
         self.host.stop()
 
 
@@ -381,6 +387,8 @@ class SessionHost:
         # Open connections, counted from hello on: a terminal mid-handshake is not
         # a client yet, and must not find the host gone.
         self.connections = 0
+        # A remote profile's per-turn wall clock, while a turn runs.
+        self._turn_clock: asyncio.TimerHandle | None = None
 
     @property
     def socket(self) -> Path:
@@ -431,7 +439,9 @@ class SessionHost:
             await controller.warn_meridian_thinking()
             # Optional, and it can hang; the session must not wait for it.
             self.tasks.append(asyncio.create_task(self._refresh_context()))
-            controller.start_mcp_defaults()
+            profile = remote_profile.active()
+            if profile is None or profile.mcp:
+                controller.start_mcp_defaults()
         self.push_state()
         self.start()
 
@@ -648,8 +658,30 @@ class SessionHost:
     def turn_began(self, prompt: str) -> None:
         self.reset_buffer()
         self.update(state="working", last_prompt=prompt, title=self.entry.title or prompt)
+        profile = remote_profile.active()
+        if profile is not None:
+            remote_profile.BUDGET.start()
+            if profile.turn_minutes:
+                self._turn_clock = asyncio.get_running_loop().call_later(
+                    profile.turn_minutes * 60, self.turn_expired
+                )
+
+    def turn_expired(self) -> None:
+        """The remote profile's wall clock ran out: stop the turn and say why."""
+        self._turn_clock = None
+        controller = self.controller
+        task = controller.live_task
+        if task is None or task.done():
+            return
+        self.view.warning(remote_profile.BUDGET.expire())
+        # As Ctrl+C does: commands the turn is waiting on stop with it.
+        controller.set_cancel_policy("stop")
+        task.cancel()
 
     def turn_finished(self) -> None:
+        if self._turn_clock is not None:
+            self._turn_clock.cancel()
+            self._turn_clock = None
         outcome = {"done": "done", "failed": "failed", "cancelled": "cancelled"}.get(
             self.activity.prompt_state, "done"
         )
@@ -742,7 +774,25 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-save", action="store_true")
     parser.add_argument("--worktree", nargs="?", const=True)
     parser.add_argument("--no-worktree", action="store_true")
+    # JSON from `RemoteProfile.to_json`: an unattended host's fixed limits.
+    parser.add_argument("--remote-profile")
     return parser
+
+
+def remote_resume_workspace(info, workspace: Path, profile) -> Path:
+    """Where a remote session resumes: its own worktree, else a fresh one.
+
+    A local resume whose worktree was merged or cleaned away falls back to the
+    project checkout. An unattended one must never work in the shared
+    checkout, so it gets a new worktree instead.
+    """
+    from pcode.app import _enter_worktree
+
+    if Path(info.workspace).is_dir():
+        return Path(info.workspace).resolve()
+    print(f"workspace: {info.workspace} is gone; continuing in a new worktree", file=sys.stderr)
+    created, _ = _enter_worktree(workspace, True, always=True, base=profile.base)
+    return created.resolve()
 
 
 async def _serve(args: argparse.Namespace) -> None:
@@ -758,6 +808,11 @@ async def _serve(args: argparse.Namespace) -> None:
     from pcode.worktree import leave_worktree
 
     os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+    profile = (
+        remote_profile.RemoteProfile.from_json(args.remote_profile) if args.remote_profile else None
+    )
+    # Before anything reads it: extensions, the sandbox policy, the agent.
+    remote_profile.activate(profile)
     workspace = args.workspace.resolve()
     entry = HostEntry(
         id=args.id,
@@ -778,7 +833,10 @@ async def _serve(args: argparse.Namespace) -> None:
             args.resume, args.session_dir, workspace, fork_if_open=True, fork=args.fork
         )
         try:
-            workspace = Path(_resume_workspace(saved.info, workspace)).resolve()
+            if profile is not None:
+                workspace = remote_resume_workspace(saved.info, workspace, profile)
+            else:
+                workspace = Path(_resume_workspace(saved.info, workspace)).resolve()
         except BaseException:
             saved.abandon()  # A copy made for this resume is removed, not left listed.
             raise
@@ -786,6 +844,12 @@ async def _serve(args: argparse.Namespace) -> None:
         prompt = first_prompt(saved.info, saved.directory.parent)
         first = "" if prompt.startswith("(") else prompt
         entry.title = saved.info.name or saved.info.title or first
+    elif profile is not None:
+        # Never the shared checkout, even from inside a linked worktree.
+        workspace, session_id = _enter_worktree(
+            workspace, args.worktree or True, always=True, base=profile.base
+        )
+        workspace = workspace.resolve()
     elif not args.no_worktree:
         workspace, session_id = _enter_worktree(workspace, args.worktree)
         workspace = workspace.resolve()
@@ -793,6 +857,8 @@ async def _serve(args: argparse.Namespace) -> None:
     write_entry(entry)
 
     host = SessionHost(entry)
+    # An unattended session's worktree is left for its owner to inspect.
+    host.keep_worktree = profile is not None
     controller = host.controller
     controller.model = args.model
     controller.workspace = workspace

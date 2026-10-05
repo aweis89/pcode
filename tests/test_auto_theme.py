@@ -167,7 +167,6 @@ def test_typing_during_query_is_replayed_with_split_utf8(monkeypatch, reply, dra
     master, slave = pty.openpty()
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setattr(theme, "_pending_input", bytearray())
-    monkeypatch.setattr(theme, "_awaiting_reply", False)
 
     def terminal():
         if select.select([master], [], [], 2)[0]:

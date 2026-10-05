@@ -11,7 +11,12 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import Capability, CombinedCapability, LocalWorkspace
+from pydantic_ai.capabilities import (
+    AbstractCapability,
+    Capability,
+    CombinedCapability,
+    LocalWorkspace,
+)
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
@@ -26,6 +31,7 @@ from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
 from pydantic_ai_harness.subagents import ModelOption, SubAgent
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
+from pcode import remote_profile
 from pcode.cache_settings import ProviderCacheSettings, model_settings
 from pcode.cache_warnings import CacheBustReporting
 from pcode.claude_sdk import ClaudeWorkspace
@@ -241,6 +247,29 @@ def _cache_notices() -> CacheBustReporting | None:
     )
 
 
+class TurnLimits(AbstractCapability):
+    """Charges every model request and tool call to a remote host's turn budget.
+
+    In the agent's capabilities and in delegation's shared ones, so a
+    sub-agent's work counts against the turn that delegated it. A sub-agent's
+    failure comes back to the parent as a retryable result; the parent's next
+    request then fails too, as the budget stays spent.
+    """
+
+    async def before_model_request(self, ctx, request_context):
+        remote_profile.BUDGET.charge_request()
+        return request_context
+
+    async def before_tool_execute(self, ctx, *, call, tool_def, args):
+        remote_profile.BUDGET.charge_tool_call()
+        return args
+
+
+def turn_limits() -> list[TurnLimits]:
+    """The limits when a remote profile is active (`pcode.remote_profile`), else none."""
+    return [TurnLimits()] if remote_profile.active() is not None else []
+
+
 def _worker_capabilities(capabilities: Sequence) -> list:
     """The parent's capabilities, copied for the built-in worker.
 
@@ -254,6 +283,7 @@ def _worker_capabilities(capabilities: Sequence) -> list:
         MeridianSessionIdentity,
         ModelOutputLimits,
         CacheBustReporting,
+        TurnLimits,
     )
     return [
         copy(capability)
@@ -313,6 +343,8 @@ def _delegation(
             *([replace(cache_notices)] if cache_notices else []),
             ProviderCacheSettings(),
             replace(output_limits),
+            # A remote host's turn budget counts its sub-agents' work too.
+            *turn_limits(),
         ],
     )
 
@@ -348,6 +380,7 @@ def create_coder(
         DelegationReporting(),
         MeridianSessionIdentity(),
         ModelOutputLimits(),
+        *turn_limits(),
     ]
     # Ahead of the worker copy below, so a delegate edits under the same schema.
     if strict_tools := create_strict_tools():

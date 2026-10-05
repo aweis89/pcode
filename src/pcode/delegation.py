@@ -48,6 +48,7 @@ from pcode.tool_display import (
     invocation,
     result_detail,
     stated_purpose,
+    stored_source,
     subject,
     target,
 )
@@ -142,6 +143,8 @@ async def stream_child_activity(_ctx, events):
     parent = _parent.get()
     plan_items: list[dict] = []
     tools = {}
+    # The child's calls by id, so its `read_tool_result` rows name what spilled.
+    called: dict[str, str] = {}
     phase = ""
     async for event in events:
         if parent is None:
@@ -177,13 +180,14 @@ async def stream_child_activity(_ctx, events):
             except (TypeError, ValueError):
                 args = {}
             tools[part.tool_call_id] = (part.tool_name, args, monotonic())
+            called[part.tool_call_id] = part.tool_name
             agent, task = assignment(part.tool_name, args)
             # Resolved here, in the child's context, so an isolated worker's
             # job ids are looked up among its own jobs, not the parent's.
             command, purpose = subject(part.tool_name, args, registry())
             child = ToolStarted(
                 part.tool_name,
-                target(part.tool_name, args),
+                target(part.tool_name, args, stored_source(args, called)),
                 f"{parent_id}:{part.tool_call_id}",
                 arguments=capture(args),
                 run_id=parent.run_id or "",
@@ -201,7 +205,9 @@ async def stream_child_activity(_ctx, events):
                 event.tool_call_id, (event.part.tool_name or "tool", {}, monotonic())
             )
             outcome = "retry" if isinstance(event.part, RetryPromptPart) else event.part.outcome
-            detail, failed = result_detail(name, args, event.part.content, outcome)
+            detail, failed = result_detail(
+                name, args, event.part.content, outcome, stored_source(args, called)
+            )
             content = (
                 result_projection(event.part.content) if name == "shell" else event.part.content
             )

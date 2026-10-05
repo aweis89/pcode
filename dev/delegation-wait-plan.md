@@ -210,7 +210,7 @@ short requests.
 - [ ] Wait deadline capability, used by `shell` and `wait_for_job`
 - [ ] `BackgroundDelegation`: optional background, foreground detach at the deadline
 - [ ] Bounded run-end wait with status notes
-- [ ] Delegate rows, `/workers` and status line for background children
+- [ ] Delegate rows, `/agents` and status line for background children
 - [ ] Hooks the background path skips, applied where they matter
 - [ ] Live check of model behavior on Opus 5.5 and Codex
 - [ ] Cache verification on a real long delegation

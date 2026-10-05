@@ -47,6 +47,15 @@ def test_defaults_and_path_do_not_create_files():
         "subagent_models": "",
         "session_host": "off",
         "session_host_idle_minutes": "0",
+        "email_owner": None,
+        "email_mcp": "off",
+        "email_turn_minutes": "30",
+        "email_turn_requests": "100",
+        "email_turn_tool_calls": "100",
+        "email_concurrent_sessions": "2",
+        "email_max_sessions": "20",
+        "email_session_inputs": "20",
+        "email_max_inputs": "100",
         "claude_idle_processes": "1",
         "claude_idle_minutes": "10",
         "desktop_notifications": "on",
@@ -62,7 +71,8 @@ def test_defaults_and_path_do_not_create_files():
         "debug": "off",
         "profile": "off",
         "stall_log": "on",
-        "spinner": "arc",
+        "spinner": "dots",
+        "tool_spinner": "arc",
         "show_thinking": "status-line",
         "thinking_max_lines": "10",
         "show_tasks": "on",
@@ -75,6 +85,7 @@ def test_defaults_and_path_do_not_create_files():
         "task_style": "status",
         "tool_glyphs": "auto",
         "tool_max_lines": "3",
+        "tool_linger_seconds": "10",
         "tasks_max_height": None,
         "transcript_max_chars": "2000000",
         "error_scrollback_lines": "20",
@@ -83,6 +94,7 @@ def test_defaults_and_path_do_not_create_files():
         "paced_scrollback": "typed",
         "show_commands": "off",
         "show_edits": "on",
+        "live_edits": "off",
         "diff_renderer": "delta",
         "delta_args": "",
         "diff_layout": "unified",
@@ -402,6 +414,18 @@ def test_slash_config_switches_task_style_immediately(tmp_path):
     assert "Layout settings apply immediately." in output.getvalue()
 
 
+def test_slash_config_toggles_live_edits_immediately(tmp_path):
+    set_project_root(tmp_path)
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output, width=160))
+    assert not app.transcript.live_edit_previews
+    app.handle("/config set live_edits on")
+    assert app.transcript.live_edit_previews
+    assert "Layout settings apply immediately." in output.getvalue()
+    app.handle("/config unset live_edits")
+    assert not app.transcript.live_edit_previews
+
+
 def test_an_unknown_saved_task_style_falls_back_to_status(tmp_path):
     set_project_root(tmp_path)
     path = preferences_path()
@@ -488,7 +512,8 @@ def test_spinner_setting_picks_the_status_row_animation():
     from pcode.preferences import SPINNERS
     from pcode.ui import PromptLayout
 
-    assert configure(["get", "spinner"]) == "arc"
+    assert configure(["get", "spinner"]) == "dots"
+    assert configure(["get", "tool_spinner"]) == "arc"
     # Every offered spinner keeps the row steady: no emoji, one width per frame.
     assert {"dots", "line", "point"} <= set(SPINNERS)
     assert not {"moon", "clock", "arrow2", "shark"} & set(SPINNERS)
@@ -502,11 +527,16 @@ def test_spinner_setting_picks_the_status_row_animation():
 
         with create_pipe_input() as pipe:
             session = PromptSession(input=pipe, output=DummyOutput())
-        return PromptLayout(session, None, None, None).spinner_frame()
+        layout = PromptLayout(session, None, None, None)
+        return layout.spinner_frame(), layout.tool_spinner_frame()
 
-    assert frame() in tuple("◜◠◝◞◡◟")
+    main, tool = frame()
+    assert main in tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    assert tool in tuple("◜◠◝◞◡◟")
     configure(["set", "spinner", "line"])
-    assert frame() in tuple("-\\|/")
+    assert frame()[0] in tuple("-\\|/")
+    configure(["set", "tool_spinner", "point"])
+    assert frame()[1] in {"∙∙∙", "●∙∙", "∙●∙", "∙∙●"}
 
 
 @pytest.mark.parametrize("value", ["0", "1", "3"])

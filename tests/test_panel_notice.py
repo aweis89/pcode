@@ -91,6 +91,92 @@ def test_a_wait_renders_above_the_editor():
     assert screen.index("Loading saved sessions") < screen.index("┌")
 
 
+def test_idle_editor_border_names_the_session_once_it_has_a_name():
+    title = ""
+
+    def tops(activity, columns=40):
+        async def run():
+            stream = StringIO()
+            app = PreviewApp(console=Console(file=stream, width=columns, color_system=None))
+            with create_pipe_input() as pipe:
+                output = Vt100_Output(
+                    stream, lambda: Size(rows=24, columns=columns), enable_cpr=False
+                )
+                session = create_prompt(
+                    CommandRegistry(),
+                    activity=activity,
+                    transcript=app.transcript,
+                    on_submit=lambda text: None,
+                    session_title=lambda: title,
+                    input=pipe,
+                    output=output,
+                )
+                with set_app(session.app):
+                    session.app.renderer.render(session.app, session.app.layout)
+                screen = session.app.renderer._last_screen
+                return [
+                    "".join(screen.data_buffer[row][col].char for col in range(columns)).rstrip()
+                    for row in range(screen.height)
+                ]
+
+        return [line for line in asyncio.run(run()) if line.startswith("┌")]
+
+    def editor_top(activity, columns=40):
+        # The editor box is the lowest box; a detached task box sits above it.
+        return tops(activity, columns)[-1]
+
+    # No name yet (a new session): a plain rule.
+    assert editor_top(Activity()) == "┌" + "─" * 38 + "┐"
+    title = "Rework\nthe status row"
+    assert editor_top(Activity()) == "┌─ Rework the status row " + "─" * 14 + "┐"
+    # A long name is cut to the pane, leaving the rule its corners.
+    title = "x" * 100
+    top = editor_top(Activity())
+    assert len(top) == 40 and top.endswith("… ─┐"), top
+    # While a turn runs, the status row has the border.
+    running = Activity(prompt="Fix", prompt_state="running", status="Thinking…")
+    assert "x" not in editor_top(running)
+    assert "Thinking" in editor_top(running)
+    # Attached tasks head the idle box, and the name rides along.
+    title = "Rework the status row"
+    planned = Activity()
+    planned.plan = [{"content": "Inspect", "status": "completed"}]
+    assert editor_top(planned, 60).startswith("┌─ Tasks 1/1 · Rework the status row ─")
+    # Detached, the task box has its own heading and the editor keeps the name.
+    planned.attach_tasks = False
+    tasks, editor = tops(planned, 60)
+    assert tasks.startswith("┌─ Tasks 1/1 ─")
+    assert editor.startswith("┌─ Rework the status row ─")
+    # The last turn's outcome leads the name, and shows before there is one.
+    for state, mark in [("done", "✓"), ("cancelled", "⊘"), ("failed", "✗")]:
+        assert editor_top(Activity(turn_outcome=state)).startswith(f"┌─ {mark} Rework the status ")
+    title = ""
+    assert editor_top(Activity(turn_outcome="failed")).startswith("┌─ ✗ ─")
+    title = "Rework the status row"
+    planned.attach_tasks = True
+    planned.turn_outcome = "done"
+    assert editor_top(planned, 60).startswith("┌─ Tasks 1/1 · ✓ Rework the status row ─")
+
+
+def test_session_label_colours_the_name_and_a_failure_in_red():
+    from pcode.ui import PALETTES, PromptLayout
+
+    layout = PromptLayout.__new__(PromptLayout)
+    layout.activity = Activity(turn_outcome="failed")
+    layout.session_title = lambda: "Fix login"
+    assert layout.session_label() == [
+        ("class:session.failed", "✗"),
+        ("", " "),
+        ("class:session.name", "Fix login"),
+    ]
+    palette = PALETTES["dark"]
+    style = dict(palette.prompt_style().style_rules)
+    assert "ansired" in style["session.failed"]
+    # Coloured like the task heading, neither dimmed nor bold.
+    assert palette.task_heading in style["session.name"]
+    assert "bold" not in style["session.name"]
+
+
 def test_toggle_renders_above_the_editor_instead_of_entering_scrollback():
     async def run():
         stream = StringIO()

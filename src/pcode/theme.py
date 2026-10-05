@@ -12,7 +12,6 @@ import time
 
 THEMES = ("dark", "light", "auto")
 _pending_input = bytearray()
-_awaiting_reply = False
 _BACKGROUND = re.compile(
     rb"\x1b\]11;rgb:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})(?:\x07|\x1b\\)"
 )
@@ -48,7 +47,6 @@ def _terminal():
 
 
 def _query_background(timeout: float = 0.15) -> str | None:
-    global _awaiting_reply
     # Nothing will be colored, so there is no palette to match: stay quiet
     # rather than write an escape sequence into whatever stdout is.
     if os.environ.get("TERM") == "dumb" or not (sys.stdout.isatty() or sys.stderr.isatty()):
@@ -79,8 +77,6 @@ def _query_background(timeout: float = 0.15) -> str | None:
             if handle is None:
                 # Keep the query behind any text already queued on stdout.
                 sys.stdout.flush()
-            if handle is None:
-                _awaiting_reply = True
             os.write(query_fd, b"\x1b]11;?\x1b\\")
             deadline = time.monotonic() + timeout
             while True:
@@ -94,8 +90,6 @@ def _query_background(timeout: float = 0.15) -> str | None:
                 result = background_theme(response)
                 if result is not None:
                     response[:] = _BACKGROUND.sub(b"", response)
-                    if handle is None:
-                        _awaiting_reply = False
                     return result
         finally:
             termios.tcsetattr(fd, termios.TCSANOW, original)
@@ -111,18 +105,21 @@ def _query_background(timeout: float = 0.15) -> str | None:
     return None
 
 
-def replay_pending_input(app) -> None:
-    """Return bytes read during the probe before the editor reads newer input."""
-    global _awaiting_reply
+def replay_pending_input(app, on_theme=None) -> None:
+    """Return bytes read during the probe before the editor reads newer input.
+
+    Also keeps filtering appearance replies out of typing for the whole
+    session, passing each to `on_theme`: a late answer to the startup probe,
+    and every later one `pcode.appearance` asks for.
+    """
     from prompt_toolkit.input.vt100 import Vt100Input
 
     from pcode.startup_input import StartupInput
 
-    if not (_pending_input or _awaiting_reply) or not isinstance(app.input, Vt100Input):
+    if not isinstance(app.input, Vt100Input):
         return
-    app.input = StartupInput(app.input.stdin, bytes(_pending_input), _awaiting_reply)
+    app.input = StartupInput(app.input.stdin, bytes(_pending_input), on_theme)
     _pending_input.clear()
-    _awaiting_reply = False
 
 
 def detect_theme() -> str:

@@ -47,9 +47,9 @@ def test_a_run_of_calls_waits_for_its_close_and_writes_one_line():
     for event in (edit(1), edit(2), run(1), edit(3)):
         view.tool_result(event)
     assert stream.getvalue() == ""
-    assert view.pending_group_row(80) == "✓ 4 tools · Edit file ✓3 · Run shell ✓1"
+    assert view.pending_group_row(80) == "✓ 4 tools · Edit file ✓ 3 · Run shell ✓ 1"
     view.events((Message("Done."),))
-    assert stream.getvalue().splitlines()[0] == "✓ 4 tools · Edit file ✓3 · Run shell ✓1"
+    assert stream.getvalue().splitlines()[0] == "✓ 4 tools · Edit file ✓ 3 · Run shell ✓ 1"
     assert view.pending_group_row(80) == ""
 
 
@@ -58,7 +58,7 @@ def test_turn_end_closes_a_run_and_a_redraw_rebuilds_it():
     for event in (edit(1), run(1)):
         view.tool_result(event)
     view.settle_tools()
-    assert stream.getvalue() == "✓ 2 tools · Edit file ✓1 · Run shell ✓1\n"
+    assert stream.getvalue() == "✓ 2 tools · Edit file ✓ 1 · Run shell ✓ 1\n"
     assert replayed(view) == stream.getvalue()
 
 
@@ -67,10 +67,10 @@ def test_a_redraw_mid_run_keeps_the_run_open():
     for event in (edit(1), run(1)):
         view.tool_result(event)
     assert replayed(view) == ""
-    assert view.pending_group_row(80) == "✓ 2 tools · Edit file ✓1 · Run shell ✓1"
+    assert view.pending_group_row(80) == "✓ 2 tools · Edit file ✓ 1 · Run shell ✓ 1"
     view.tool_result(edit(2))
     view.settle_tools()
-    assert stream.getvalue() == "✓ 3 tools · Edit file ✓2 · Run shell ✓1\n"
+    assert stream.getvalue() == "✓ 3 tools · Edit file ✓ 2 · Run shell ✓ 1\n"
 
 
 def test_a_run_of_one_keeps_the_calls_own_line():
@@ -84,9 +84,9 @@ def test_a_failure_folds_into_the_run_and_splits_its_tools_count():
     view, stream = grouped()
     for event in (edit(1), edit(2), run(1, failed=True), edit(3), run(2)):
         view.tool_result(event)
-    assert view.pending_group_row(80) == "✓ 4 ✗ 1 tools · Edit file ✓3 · Run shell ✓1 ✗1"
+    assert view.pending_group_row(80) == "✓ 4 ✗ 1 tools · Edit file ✓ 3 · Run shell ✓ 1 ✗ 1"
     view.settle_tools()
-    assert stream.getvalue() == "✓ 4 ✗ 1 tools · Edit file ✓3 · Run shell ✓1 ✗1\n"
+    assert stream.getvalue() == "✓ 4 ✗ 1 tools · Edit file ✓ 3 · Run shell ✓ 1 ✗ 1\n"
     assert replayed(view) == stream.getvalue()
 
 
@@ -95,12 +95,12 @@ def test_each_mark_counts_only_its_own_outcome():
     for event in (edit(1), run(1, failed=True), run(2, failed=True)):
         view.tool_result(event)
     view.settle_tools()
-    assert stream.getvalue() == "✓ 1 ✗ 2 tools · Run shell ✗2 · Edit file ✓1\n"
+    assert stream.getvalue() == "✓ 1 ✗ 2 tools · Run shell ✗ 2 · Edit file ✓ 1\n"
     view, stream = grouped()
     for event in (run(1, failed=True), run(2, failed=True)):
         view.tool_result(event)
     view.settle_tools()
-    assert stream.getvalue() == "✗ 2 tools · Run shell ✗2\n"
+    assert stream.getvalue() == "✗ 2 tools · Run shell ✗ 2\n"
 
 
 def test_a_lone_failure_keeps_its_own_line():
@@ -116,7 +116,7 @@ def test_a_background_job_exit_is_not_folded_into_the_run():
     view.tool_result(edit(2))
     view.tool_result(JobFinished("shell", "make → j1 · exit 0", command="make"))
     lines = stream.getvalue().splitlines()
-    assert lines[0] == "✓ 2 tools · Edit file ✓2"
+    assert lines[0] == "✓ 2 tools · Edit file ✓ 2"
     assert "j1" in lines[1]
 
 
@@ -135,9 +135,9 @@ def test_a_delegate_gets_its_own_line_with_its_calls_folded_beneath():
     view.tool_result(edit(3))
     view.settle_tools()
     lines = stream.getvalue().splitlines()
-    assert lines[0] == "✓ 2 tools · Edit file ✓2"
+    assert lines[0] == "✓ 2 tools · Edit file ✓ 2"
     assert lines[1] == "✓ Delegate task  worker · look → Completed"
-    assert lines[2] == "    ✓ 3 ✗ 1 tools · Read file ✓2 · Run shell ✓1 ✗1"
+    assert lines[2] == "    ✓ 3 ✗ 1 tools · Read file ✓ 2 · Run shell ✓ 1 ✗ 1"
     assert lines[3].startswith("✓ Edit file  f3.py")
     assert replayed(view) == stream.getvalue()
 
@@ -150,7 +150,7 @@ def test_output_with_a_body_closes_the_run():
         ToolSummary("shell", "pytest → exit 0", call_id="s", command="pytest", result="ok")
     )
     lines = stream.getvalue().splitlines()
-    assert lines[0] == "✓ 2 tools · Edit file ✓2"
+    assert lines[0] == "✓ 2 tools · Edit file ✓ 2"
     assert any("$ pytest" in line for line in lines[1:])
 
 
@@ -169,7 +169,7 @@ def test_restored_history_closes_its_last_run():
     with view.restore():
         view.tool_result(edit(1))
         view.tool_result(edit(2))
-    assert "✓ 2 tools · Edit file ✓2" in stream.getvalue()
+    assert "✓ 2 tools · Edit file ✓ 2" in stream.getvalue()
 
 
 def test_slash_command_toggles_and_saves_the_default():
@@ -222,12 +222,12 @@ def test_a_running_turn_counts_the_run_on_its_status_row():
     # The count sits beside the spinner that says the run is still going, on
     # the editor box's top border.
     assert row.startswith("┌─ ")
-    assert row[3] in "◜◠◝◞◡◟"
+    assert row[3] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     assert row[4:].startswith(" Working")
-    assert row.endswith("✓3 tools · 0s ─┐")
+    assert row.endswith("✓ 3 tools · 0s ─┐")
 
 
 def test_without_a_status_row_the_run_is_counted_flush_left():
     lines = render_panel(running=False)
     (row,) = [line for line in lines if "tools" in line]
-    assert row == "✓ 3 tools · Edit file ✓2 · Run shell ✓1"
+    assert row == "✓ 3 tools · Edit file ✓ 2 · Run shell ✓ 1"

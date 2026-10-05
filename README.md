@@ -1,11 +1,17 @@
-<img width="1512" height="929" alt="Screenshot 2026-10-04 at 2 16 28 PM" src="https://github.com/user-attachments/assets/691eaf44-d136-4d65-b8ec-0cadd22724f5" />
+<img width="1360" alt="pcode fixing a bug: a word-level diff of the edit, then a worker sub-agent reviewing it with its own plan nested under the task list" src="docs/assets/screenshots/readme.png" />
 
 # pcode
 
-A coding agent for people who live in the terminal. It streams into your
-terminal's normal scrollback instead of taking over the screen, keeps every
-conversation so you can resume, search or fork it, and runs on the model
-subscription you already pay for.
+pcode is a terminal coding agent built on [Pydantic AI](https://ai.pydantic.dev/):
+background jobs that wake the agent when CI or tests finish, scrollback you can
+re-render to show or hide every command and diff, `/tools` for every call the
+agent made, a forkable conversation tree in the style of
+[pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md),
+and a worktree per session so agents run in parallel. It runs on any model
+Pydantic AI supports, and on your Claude subscription through Anthropic's own
+Agent SDK and Claude Code login, the way Anthropic supports, or your ChatGPT one.
+You can even email it a task from your phone: a new email starts a session, and
+replying continues it.
 
 **Documentation: [aweis89.github.io/pcode](https://aweis89.github.io/pcode/)**
 
@@ -15,16 +21,16 @@ subscription you already pay for.
 - `/tree` rewinds and forks the conversation at any point.
 - A shell built for slow work: long commands become background jobs, and a
   finished job wakes the agent. Good for watching CI and fixing what fails.
-- Your Claude subscription through Anthropic's own Agent SDK and Claude Code
-  login, or your ChatGPT one, or any API key.
+- Every conversation is kept, so you can resume, search or fork it.
 - A git worktree per session, so several agents can work on one repo at once.
+- [Email remote control](https://aweis89.github.io/pcode/email/): send a task
+  from Gmail on your phone, reply to keep going, and take the session over at a
+  terminal with `pcode --attach`.
 - `/btw` side questions, background sessions, recall of past sessions, a
   browser the agent can drive, and Python extensions.
-- Built on [Pydantic AI](https://ai.pydantic.dev/) and its Harness coder
-  capabilities, with the rest of a finished agent on top: MCP with OAuth and
-  tool search, searchable sessions, jobs, worktrees. Any model Pydantic AI
-  supports works (plus your Claude Code and ChatGPT subscriptions), and
-  extensions are plain Pydantic AI capabilities.
+- Pydantic AI's Harness coder capabilities, with the rest of a finished agent
+  on top: MCP with OAuth and tool search, searchable sessions, jobs,
+  worktrees. Extensions are plain Pydantic AI capabilities.
 
 See [PLAN.md](https://github.com/aweis89/pcode/blob/master/PLAN.md) for the longer-term direction.
 
@@ -67,7 +73,7 @@ before pointing it at anything you care about.
 | [Getting started](https://aweis89.github.io/pcode/getting-started/) | Homebrew and source installs, `-C`, `--print`, shell completion |
 | [Scrollback and transparency](https://aweis89.github.io/pcode/guide/scrollback/) | Guide: what goes into scrollback, `/tools`, `/diffs` |
 | [A shell for long-running work](https://aweis89.github.io/pcode/guide/shell/) | Guide: background jobs, watching CI |
-| [Parallel agents](https://aweis89.github.io/pcode/guide/parallel/) | Guide: worktrees, parallel sub-agents, `/workers` |
+| [Parallel agents](https://aweis89.github.io/pcode/guide/parallel/) | Guide: worktrees, parallel sub-agents, `/agents` |
 | [Extending pcode](https://aweis89.github.io/pcode/guide/extending/) | Guide: extensions, skills, settings |
 | [Providers and models](https://aweis89.github.io/pcode/providers/) | Authentication, supported providers, the model picker, reasoning effort, Claude Code, Meridian, proxies |
 | [Configuration](https://aweis89.github.io/pcode/configuration/) | `pcode config`, per-repository overrides, trusting repository code, the settings table, syntax styles |

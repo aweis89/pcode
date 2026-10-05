@@ -15,7 +15,7 @@ from pcode.commands import CommandRegistry
 from pcode.runtime import CommandOutput, EditPreview, ToolStarted
 from pcode.ui import Activity, Transcript, create_prompt
 
-# Long enough for one animation frame of the default spinner (arc: 160ms after
+# Long enough for one animation frame of the default spinner (dots: 128ms after
 # pcode slows it), with margin for a loaded machine. With `invalidate` mocked
 # nothing repaints, so a tick schedules no next one: waiting longer still sees
 # exactly one call.
@@ -92,7 +92,9 @@ def test_preview_cache_keys_and_per_redraw_layout(monkeypatch):
         activity = Activity()
         activity.command_outputs["one"] = CommandOutput("one", "test", "first\nlast")
         view = Transcript(
-            Console(file=stream), activity=activity, preferences={"show_commands": "on"}
+            Console(file=stream),
+            activity=activity,
+            preferences={"show_commands": "on", "live_edits": "on"},
         )
         with create_pipe_input() as pipe:
             session = create_prompt(

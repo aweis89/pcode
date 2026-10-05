@@ -30,6 +30,7 @@ nav = [
     { "MCP servers" = "mcp.md" },
     { "Working in a repository" = "workspace.md" },
     { "Sessions and recovery" = "sessions.md" },
+    { "Email remote control" = "email.md" },
     { "Conversation tree" = "conversation-tree.md" },
     { "Side questions" = "side-questions.md" },
     { "Context, limits and caching" = "context.md" },

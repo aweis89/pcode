@@ -15,6 +15,7 @@ from pcode.frame import Dialog
 from pcode.host_protocol import HostEntry, code_fingerprint
 from pcode.popup_ui import (
     bind_list_paging,
+    fit_width,
     popup_container,
     popup_mouse,
     popup_style,
@@ -100,7 +101,13 @@ def hosts_dialog(
     code = code_fingerprint()
     visible: list[HostEntry] = []
     query = TextArea(height=1, prompt="Search: ", multiline=False)
-    choices = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+    choices = TextArea(
+        read_only=True,
+        wrap_lines=False,
+        scrollbar=True,
+        # Fit every row, not just the filtered ones, so searching does not resize the box.
+        width=fit_width([host_row(entry, current, code=code) for entry in entries]),
+    )
     choices.window.cursorline = Always()
     status = [""]
     armed: list[str | None] = [None]

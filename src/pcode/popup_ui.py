@@ -552,6 +552,16 @@ def list_pane_height(rows: int = LIST_ROWS_MAX) -> Dimension:
     )
 
 
+def fit_width(lines: Sequence[str]) -> Dimension:
+    """Width for a read-only list in a dialog: its longest row, capped by the terminal.
+
+    A ``TextArea`` states no preferred width, so a ``Dialog`` shrinks to its
+    labels and clips or wraps every long row. Ask for the longest one (+1 for
+    the scrollbar); the terminal's width is the cap.
+    """
+    return Dimension(min=40, preferred=max(map(get_cwidth, lines), default=0) + 1)
+
+
 @dataclass(frozen=True)
 class PopupCommand:
     """A slash command typed into a popup's editor instead of a message.
@@ -600,9 +610,13 @@ class PopupInput:
     would outrank typing. Its shortcuts go through ``PrefixKeys`` instead,
     which keeps them working here too.
 
-    Focus it with ``open``. A popup should not open with focus here: one that
-    appears on its own could swallow keystrokes meant for the main prompt, and
-    Enter would then send them.
+    Focus it with ``open``. A popup that can appear on its own should not
+    open with focus here: it could swallow keystrokes meant for the main
+    prompt, and Enter would then send them.
+
+    ``back``, when given, is what Esc does from an empty draft instead of
+    stepping out to ``home``: for a popup that opens in the editor, so one
+    Esc still leaves it as it would from the reader.
 
     ``prompt`` borrows the editor to ask for one value, e.g. instructions for
     an action, with its own title and ``submit``; the draft set aside comes
@@ -625,6 +639,7 @@ class PopupInput:
         placeholder: str = "",
         shortcuts: PrefixKeys | None = None,
         commands: Sequence[PopupCommand] = (),
+        back: Callable[[object], None] | None = None,
     ) -> None:
         # Ctrl+J and Shift+Enter arrive as terminal-specific sequences; the
         # main prompt registers them too, but a popup can open without it.
@@ -633,6 +648,7 @@ class PopupInput:
         # Where Esc returns focus: the popup's list, usually. A callable picks
         # it as Esc is pressed, for a popup whose list can be hidden.
         self.home = home
+        self.back = back
         self.title = title
         self.placeholder = placeholder
         # Whether Enter sends an empty draft; a prompt can treat it as a default.
@@ -688,6 +704,9 @@ class PopupInput:
         def leave(event):
             # The draft stays: Esc steps out to browse, it does not discard.
             # From a prompt it cancels that, bringing the draft back.
+            if self.back is not None and not self.prompting and not self.area.text:
+                self.back(event.app)
+                return
             self._restore()
             event.app.layout.focus(self.home() if callable(self.home) else self.home)
 

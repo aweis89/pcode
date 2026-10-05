@@ -2,7 +2,7 @@
 
 from scene import Call, Think, launch
 
-MODEL = "claude:claude-opus-5"
+MODEL = "claude:claude-opus-5-5"
 SIZE = (100, 30)
 PREFERENCES = {"show_commands": "off"}
 

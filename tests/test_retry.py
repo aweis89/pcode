@@ -317,6 +317,7 @@ def test_resend_uses_send_pipeline_and_original_prompt_spinner(following):
                     await wait(
                         lambda: app.activity.prompt_state == "failed" and not app.activity.busy
                     )
+                    assert app.activity.turn_outcome == "failed"
                     pipe.send_text("/resend\r" + ("next message\r" if following else ""))
                     await asyncio.wait_for(started.wait(), 5)
                     queued = ["next message"] if following else []
@@ -348,6 +349,7 @@ def test_resend_uses_send_pipeline_and_original_prompt_spinner(following):
                     if following:
                         assert calls[2] == ["make the requested change", "next message"]
                     assert app.activity.prompt_state == "done"
+                    assert app.activity.turn_outcome == "done"
                     assert session.default_buffer.text == "draft"
                     pipe.send_text("\x15/quit\r")
                     await asyncio.wait_for(task, 5)

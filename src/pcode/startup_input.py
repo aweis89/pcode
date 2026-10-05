@@ -1,77 +1,82 @@
 """Return startup probe bytes through prompt_toolkit's normal input callback."""
 
 import asyncio
+import re
+from collections.abc import Callable
 from contextlib import contextmanager
 
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.input.vt100_parser import Vt100Parser
 
+# An OSC 11 background reply, or a mode 2031 color-scheme report (1 dark, 2 light).
+_REPLY = re.compile(r"\x1b\]11;[^\x07\x1b]{0,64}(?:\x07|\x1b\\)|\x1b\[\?997;([12])n")
+# A tail that may still become one of those: held until the next read. Only
+# characters a color reply contains, so typing after a truncated reply is
+# released at its first keystroke instead of being held for the flush to drop.
+_OPEN = re.compile(r"\x1b\]11;[0-9A-Fa-f:/rgb]{0,40}\x1b?|\x1b\[\?997;[12]?")
+_HEADERS = ("\x1b]11;", "\x1b[?997;")
 
-class BackgroundReplyParser(Vt100Parser):
-    """Discard one delayed OSC 11 reply, even when split across terminal reads."""
 
-    _header = "\x1b]11;"
+class TerminalReplyParser(Vt100Parser):
+    """Take terminal appearance replies out of the key stream, even split across reads.
 
-    def __init__(self, callback):
+    The startup probe's reply can arrive after the editor starts, and later
+    queries (see `pcode.appearance`) always do. A terminated OSC 11 reply is
+    dropped even when its color can't be read; anything else, including an
+    overlong or unterminated reply, reaches prompt_toolkit as ordinary input.
+    """
+
+    def __init__(self, callback, on_theme: Callable[[str], None] | None = None):
         super().__init__(callback)
         self.pending = ""
-        self.waiting = True
+        self.on_theme = on_theme
 
     def feed(self, data: str) -> None:
-        if not self.waiting:
-            super().feed(data)
-            return
-        self.pending += data
-        start = self.pending.find(self._header)
-        if start < 0:
-            # Hold only a possible split header, never ordinary typing.
-            keep = next(
-                (
-                    n
-                    for n in range(len(self._header) - 1, 0, -1)
-                    if self.pending.endswith(self._header[:n])
-                ),
-                0,
-            )
-            text = self.pending[:-keep] if keep else self.pending
-            self.pending = self.pending[-keep:] if keep else ""
-            super().feed(text)
-            return
-        super().feed(self.pending[:start])
-        self.pending = self.pending[start:]
-        bell = self.pending.find("\x07")
-        st = self.pending.find("\x1b\\")
-        endings = [end for end in (bell + 1 if bell >= 0 else 0, st + 2 if st >= 0 else 0) if end]
-        if endings:
-            end = min(endings)
-            from pcode.theme import background_theme
+        text, self.pending = self.pending + data, ""
+        while match := _REPLY.search(text):
+            super().feed(text[: match.start()])
+            text = text[match.end() :]
+            self._report(match)
+        hold = _held(text)
+        super().feed(text[:hold])
+        self.pending = text[hold:]
 
-            if background_theme(self.pending[:end].encode()) is None:
-                super().feed(self.pending[:end])
-            tail, self.pending = self.pending[end:], ""
-            self.waiting = False
-            super().feed(tail)
-        elif len(self.pending) > 128:
-            # A malformed response must not hold subsequent typing indefinitely.
-            text, self.pending = self.pending, ""
-            self.waiting = False
-            super().feed(text)
+    def _report(self, match: re.Match) -> None:
+        from pcode.theme import background_theme
+
+        if match.group(1):
+            detected = "dark" if match.group(1) == "1" else "light"
+        else:
+            detected = background_theme(match.group().encode())
+        if detected is not None and self.on_theme is not None:
+            self.on_theme(detected)
 
     def flush(self) -> None:
         text, self.pending = self.pending, ""
         # An incomplete terminal reply must not hold the next prompt hostage.
-        # Bare Escape is still a key and must reach the ordinary parser.
-        if not text.startswith("\x1b]"):
+        # Anything shorter than a whole header (Escape, Alt-], Alt-[ then ?)
+        # is more likely typing, and must reach the parser.
+        if not text.startswith(_HEADERS):
             super().feed(text)
         super().flush()
 
 
+def _held(text: str) -> int:
+    """Where an unfinished reply may start in `text`; len(text) when none can."""
+    start = text.find("\x1b")
+    while start >= 0:
+        tail = text[start:]
+        if any(header.startswith(tail) for header in _HEADERS) or _OPEN.fullmatch(tail):
+            return start
+        start = text.find("\x1b", start + 1)
+    return len(text)
+
+
 class StartupInput(Vt100Input):
-    def __init__(self, stdin, pending: bytes, awaiting_reply: bool):
+    def __init__(self, stdin, pending: bytes, on_theme: Callable[[str], None] | None = None):
         super().__init__(stdin)
         self.pending = pending
-        if awaiting_reply:
-            self.vt100_parser = BackgroundReplyParser(lambda key: self._buffer.append(key))
+        self.vt100_parser = TerminalReplyParser(lambda key: self._buffer.append(key), on_theme)
 
     @contextmanager
     def attach(self, input_ready_callback):

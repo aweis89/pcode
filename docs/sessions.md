@@ -151,7 +151,7 @@ Everything. The host runs the session's commands (`/model`, `/effort`, `/compact
 `/resend`, `/new`, `/tree`, `/btw`, `/mcp`, `/jobs`, `/worktree`, `/login`,
 `/reload`, skills, and extension commands), and opens their pickers in the
 terminal that typed them. The terminal runs its own (`/switch`, `/resume`,
-`/status`, `/tools`, `/diffs`, `/links`, `/workers`, `/help`, `/config`, and the
+`/status`, `/tools`, `/diffs`, `/links`, `/agents`, `/help`, `/config`, and the
 display commands).
 MCP sign-ins that need a browser open it from the host, on the same machine.
 
@@ -222,6 +222,11 @@ After a new session's first turn, pcode asks the session's own model for a
 short title, in the background and at low effort. `/resume` lists it before the
 first prompt and finds the session by its words, `/switch` lists it in place of
 the first prompt, and the terminal [tab](configuration.md#tab-title) shows it.
+Between turns it also heads the editor box (`┌─ Fix the flaky login test ──┐`,
+or `┌─ Tasks 3/5 · Fix the flaky login test ──┐` above an attached task list), so coming back
+to a pane tells you what it was about; while a turn runs, the
+status row takes that border, and a session with no title or name yet keeps a
+plain rule.
 `/rename NAME` replaces it everywhere, and `/rename -` goes back to the title.
 
 The request carries only your first message and the start of the reply, not the

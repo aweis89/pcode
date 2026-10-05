@@ -116,7 +116,7 @@ def test_a_sub_agent_keeps_its_hue_when_an_earlier_one_finishes():
 def test_row_parts_color_guides_and_icons_apart_from_the_text():
     rows = [
         ("class:plan.completed,agent.hue.1", "    ├── ✓ Read it"),
-        ("class:plan.agent,agent.hue.1", "└── ✦ Worker · 1.0s · Working · Fix it"),
+        ("class:plan.agent,agent.hue.1", "└── » Worker · 1.0s · Working · Fix it"),
         ("class:plan", "Queued: keep whole"),
     ]
     assert panel_fragments(rows, 80) == [
@@ -125,7 +125,7 @@ def test_row_parts_color_guides_and_icons_apart_from_the_text():
         ("class:plan.completed,agent.hue.1", " Read it"),
         ("", "\n"),
         ("class:plan.tree", "└── "),
-        ("class:plan.agent,agent.hue.1 bold", "✦ Worker"),
+        ("class:plan.agent,agent.hue.1 bold", "» Worker"),
         ("class:plan.agent,agent.hue.1", " · 1.0s · Working · Fix it"),
         ("", "\n"),
         ("class:plan", "Queued: keep whole"),

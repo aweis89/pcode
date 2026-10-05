@@ -19,6 +19,13 @@ from pydantic_ai_harness.tool_output_limits import (
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.shell import REDUCED_SHELL_OUTPUT, split_envelope
 
+# Tools that bound and page their own output (character offsets, cursors). A
+# spill pages by line instead, and their JSON keeps a turn's text on one line,
+# so the spill is unreadable through read_tool_result and only adds a hop.
+# Exempt means not truncated either: their own caps (read_session's max_chars,
+# search_sessions' limit) are all that bound them.
+SELF_PAGING_TOOLS = ("search_sessions", "read_session")
+
 
 def tool_results_path() -> Path:
     """Stable across workspaces and restarts so saved spill handles remain readable."""
@@ -89,6 +96,7 @@ def create_tool_output_limits() -> ToolOutputLimits:
     retention = int(value("retention_hours"))
     return CodingToolOutputLimits(
         bands=[] if mode == "off" else [Band(over=threshold, action=action)],
+        per_tool={name: [] for name in SELF_PAGING_TOOLS},
         store=LocalFileStore(
             base_dir=tool_results_path(),
             cleanup_after=timedelta(hours=retention) if retention else None,

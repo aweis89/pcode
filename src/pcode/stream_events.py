@@ -26,7 +26,13 @@ from pydantic_ai import (
     ThinkingPart,
     ThinkingPartDelta,
 )
-from pydantic_ai.messages import NativeToolCallPart, NativeToolReturnPart, RetryPromptPart
+from pydantic_ai.messages import (
+    ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
+    RetryPromptPart,
+    ToolCallPart,
+)
 from pydantic_ai_harness.shell import (
     CommandFinishedEvent,
     CommandOutputEvent,
@@ -67,6 +73,7 @@ from pcode.tool_display import (
     native_result_detail,
     native_result_projection,
     result_detail,
+    spilled_call_id,
     stated_purpose,
     subject,
     target,
@@ -103,6 +110,9 @@ class EventTranslator:
         self.emitted_text = False
         # Running tools by call id: (name, args, monotonic start).
         self.tools: dict[str, tuple[str, dict, float]] = {}
+        # Every tool this run called, by call id, settled or not: a later
+        # `read_tool_result` names the call whose spilled output it reads.
+        self.called: dict[str, str] = {}
         self.delegates: dict[str, ToolStarted] = {}
         self.child_tools: dict[str, ToolStarted] = {}
         self.delegation_ends: dict[str, DelegationEndEvent] = {}
@@ -160,11 +170,34 @@ class EventTranslator:
             return RunStatus("Waiting for model…")
         if len(tools) == 1:
             name, args, _ = next(iter(tools.values()))
-            where = target(name, args)
+            where = target(name, args, self.spill_source(name, args))
             title = label(name) if name == "delegate_task" else name
             return RunStatus(f"Running {title}" + (f" · {where}" if where else "") + "…")
         names = ", ".join(label(item[0]) for item in list(tools.values())[:3])
         return RunStatus(f"Running {len(tools)} tools · {names}…")
+
+    def spill_source(self, name: str, args: dict) -> str:
+        """The tool whose stored output a `read_tool_result` call reads, or "".
+
+        This run's calls are not in the turn's history until it settles;
+        earlier turns', including a resumed session's, are. Either answer is
+        remembered, so a call's start, status, and result scan history once.
+        """
+        call_id = spilled_call_id(args) if name == "read_tool_result" else ""
+        if not call_id:
+            return ""
+        if call_id not in self.called:
+            self.called[call_id] = next(
+                (
+                    part.tool_name
+                    for message in reversed(self.context.history)
+                    if isinstance(message, ModelResponse)
+                    for part in message.parts
+                    if isinstance(part, ToolCallPart) and part.tool_call_id == call_id
+                ),
+                "",
+            )
+        return self.called[call_id]
 
     # Harness and pcode capability events
 
@@ -307,11 +340,12 @@ class EventTranslator:
         except (ValueError, TypeError):
             args = {}
         self.tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
+        self.called[event.part.tool_call_id] = event.part.tool_name
         agent, task = assignment(event.part.tool_name, args)
         command, purpose = subject(event.part.tool_name, args, self.runtime.jobs)
         start = ToolStarted(
             event.part.tool_name,
-            target(event.part.tool_name, args),
+            target(event.part.tool_name, args, self.spill_source(event.part.tool_name, args)),
             event.part.tool_call_id,
             arguments=capture(args if args else event.part.args),
             run_id=self.run_id,
@@ -334,7 +368,9 @@ class EventTranslator:
             (event.part.tool_name or "tool", {}, monotonic()),
         )
         outcome = "retry" if isinstance(event.part, RetryPromptPart) else event.part.outcome
-        detail, failed = result_detail(name, args, event.part.content, outcome)
+        detail, failed = result_detail(
+            name, args, event.part.content, outcome, self.spill_source(name, args)
+        )
         shell_end = self.shell_ends.pop(event.tool_call_id, None)
         if name == "shell" and shell_end is not None and outcome == "success":
             # The result's own job marker is authoritative: it is

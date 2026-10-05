@@ -457,6 +457,8 @@ def test_worktree_merge_runs_under_a_system_row_with_a_terminal(repo):
     asyncio.run(app.controller.perform_job())
     assert errors and "conflicts" in errors[-1]
     assert app.activity.prompt_state == "failed"
+    # Not a model turn, so the editor box's outcome mark is untouched.
+    assert app.activity.turn_outcome == ""
 
 
 def test_worktree_merge_runs_mid_turn_without_taking_the_turns_row(repo):

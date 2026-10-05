@@ -36,6 +36,7 @@ class Runtime:
         pass
 
 app = PreviewApp(model="test:local", runtime=Runtime())
+app.transcript.live_edits = True
 app.run()
 """
 
@@ -65,6 +66,7 @@ class Runtime:
         pass
 
 app = PreviewApp(model="test:local", runtime=Runtime())
+app.transcript.live_edits = True
 app.run()
 """
 

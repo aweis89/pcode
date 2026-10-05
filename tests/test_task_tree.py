@@ -44,7 +44,7 @@ def test_only_delegates_and_their_plans_nest_under_the_active_task(task_tree):
     assert rows == [
         ("class:plan.completed", "✓ Inspect"),
         ("class:plan.in_progress", "* Implement"),
-        ("class:plan.agent,agent.hue.0", "└── ✦ Worker · 0.0s · Working · Fix it"),
+        ("class:plan.agent,agent.hue.0", "└── » Worker · 0.0s · Working · Fix it"),
         ("class:plan.in_progress,agent.hue.0", "    ├── * Read the code"),
         ("class:plan.pending,agent.hue.0", "    └── ○ Test the fix"),
         ("class:plan.pending", "○ Validate"),
@@ -64,7 +64,7 @@ def test_clipped_tree_keeps_ancestors_and_ends_at_the_last_visible_sibling(task_
         assert text == ["* Implement"]
     else:
         assert "* Implement" in text
-        assert "└── ✦ Worker · 0.0s · Working · Fix it" in text
+        assert "└── » Worker · 0.0s · Working · Fix it" in text
         if budget == 3:
             assert text[-1] == "    └── * Read the code"
         if budget >= 4:
@@ -80,10 +80,10 @@ def test_parallel_delegates_have_separate_branches(task_tree):
     history.record(ToolStarted("read_file", "diff", "reviewer:read", parent_call_id="reviewer"))
     text = [text for _, text in history.rows(10, nested=True)]
     assert text == [
-        "├── ✦ Worker · 0.0s · Working · Fix it",
+        "├── » Worker · 0.0s · Working · Fix it",
         "│   ├── ↺ Read the code",
         "│   └── ○ Test the fix",
-        "└── ✦ Reviewer · 0.0s · Starting · Review",
+        "└── » Reviewer · 0.0s · Starting · Review",
         "    └── ○ Check diff",
     ]
 
@@ -96,7 +96,7 @@ def test_without_an_active_task_only_the_delegate_children_have_guides(task_tree
         "✓ Inspect",
         "✓ Implement",
         "○ Validate",
-        "✦ Worker · 0.0s · Working · Fix it",
+        "» Worker · 0.0s · Working · Fix it",
         "├── * Read the code",
         "└── ○ Test the fix",
     ]

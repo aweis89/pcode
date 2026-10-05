@@ -107,6 +107,9 @@ def test_command_toggles_state_and_requests_a_reload(tmp_path, fresh_state, monk
         command.handler("launch")
     command.handler("off")
     assert not fresh_state.enabled and reloads == [True, True]
+    # A running turn may still be using it; the reload's `setup` closes it.
+    assert fresh_state.session is not None
+    browser_extension(tmp_path, ui)
     assert fresh_state.session is None
 
 
@@ -143,6 +146,19 @@ def test_a_refused_reload_leaves_state_untouched(tmp_path, fresh_state):
     with pytest.raises(ValueError, match="busy"):
         extension.commands[0].handler("launch")
     assert not fresh_state.enabled and fresh_state.session is None
+
+
+def test_a_refused_attach_leaves_nothing_open(tmp_path, fresh_state, monkeypatch):
+    monkeypatch.setenv("PCODE_BROWSER_CDP_URL", "ws://127.0.0.1:9333/devtools/browser/x")
+
+    def refuse():
+        raise ValueError("no session")
+
+    _, extension = browser_extension(tmp_path, ExtensionUI(None, refuse))
+    with pytest.raises(ValueError, match="no session"):
+        extension.commands[0].handler("attach")
+    assert not fresh_state.enabled and fresh_state.session is None
+    assert not fresh_state.attach
 
 
 def test_delegate_task_lists_the_browser_agent(tmp_path, monkeypatch, fresh_state):

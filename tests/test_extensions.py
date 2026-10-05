@@ -294,6 +294,79 @@ def test_reload_rebuilds_the_agent_and_commands(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
+@pytest.mark.in_process("stubs the controller's reload_extensions to record when it runs")
+def test_extension_reload_asked_mid_turn_waits_for_the_turn_to_end():
+    """`/browser attach` mid-turn: no refusal, and the agent is swapped between turns."""
+    from unittest.mock import patch
+
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from pcode.runtime import Message
+    from pcode.ui import create_prompt
+
+    async def wait_for(predicate):
+        async with asyncio.timeout(5):
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+    async def run():
+        started, finish = asyncio.Event(), asyncio.Event()
+        events = []
+
+        class Runtime:
+            session = None
+            recovery_blocked = ""
+
+            def replace_agent(self, agent):  # Marks the session as reloadable.
+                pass
+
+            async def stream(self, text):
+                events.append(f"turn {text}")
+                started.set()
+                await finish.wait()
+                yield Message("done")
+
+        output = StringIO()
+        app = PreviewApp(model="test", runtime=Runtime(), console=Console(file=output))
+
+        async def reload_extensions():
+            app.controller.reload_requested = app.controller.reload_pending = False
+            events.append("reload")
+
+        app.controller.reload_extensions = reload_extensions
+        session = None
+        with create_pipe_input() as pipe:
+
+            def prompt(*args, **kwargs):
+                nonlocal session
+                session = create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+                return session
+
+            with patch("pcode.app.create_prompt", prompt):
+                task = asyncio.create_task(app.run_async())
+                try:
+                    await wait_for(lambda: session is not None and session.app.is_running)
+                    pipe.send_text("first\r")
+                    await asyncio.wait_for(started.wait(), 5)
+                    app.controller.request_extension_reload()
+                    app.controller.request_extension_reload()  # Asked twice, run once.
+                    assert app.controller.reload_pending
+                    assert not app.controller.reload_requested
+                    finish.set()
+                    await wait_for(lambda: events == ["turn first", "reload"])
+                    pipe.send_text("/quit\r")
+                    await asyncio.wait_for(task, 5)
+                finally:
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+        assert output.getvalue().count("Extensions reload once the running work finishes.") == 1
+        assert "unavailable while working" not in output.getvalue()
+
+    asyncio.run(run())
+
+
 def test_disabled_extension_is_listed_but_not_imported(tmp_path):
     write_extension(user_extension_dir(), "greeter", GREETER)
     write_extension(

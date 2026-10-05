@@ -114,6 +114,9 @@ def launch(turns: dict[str, list[list]], *, model: str, preferences: dict | None
     import pcode.agent
     from pcode.preferences import save_preferences
 
+    # run.py's own overrides (`--iterm` picks the palette) win over the scene's.
+    overrides = json.loads(os.environ.get("SCREENSHOT_PREFERENCES", "{}"))
+    preferences = {**(preferences or {}), **overrides}
     if preferences:
         save_preferences(**preferences)
     # The status line reads effort support from the model's profile and the

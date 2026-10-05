@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic_ai import ModelRetry
 
-from pcode import sandbox
+from pcode import remote_profile, sandbox
 from pcode.jobs import COMMAND_SANDBOX
 
 DEFAULT_ENABLED = False
@@ -74,7 +74,8 @@ def setup(pcode) -> None:
         if tool_def.name != "shell":
             return await handler(args)
         config = enforced(sandbox.load_config)
-        if config.get("shell_sandbox", True) is False:
+        # A remote host's profile fixes the shell sandbox on.
+        if config.get("shell_sandbox", True) is False and remote_profile.active() is None:
             return await handler(args)
         if sandbox.backend() is None:
             raise ModelRetry(

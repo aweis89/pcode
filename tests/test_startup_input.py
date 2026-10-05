@@ -59,25 +59,70 @@ cli.main()
             child.terminate(force=True)
 
 
-@pytest.mark.parametrize("ending", ["\x07", "\x1b\\"])
-def test_delayed_background_reply_is_filtered_at_every_split(ending):
-    from pcode.startup_input import BackgroundReplyParser
+@pytest.mark.parametrize(
+    "reply, detected",
+    [
+        ("\x1b]11;rgb:ffff/ffff/ffff\x07", "light"),
+        ("\x1b]11;rgb:0000/0000/0000\x1b\\", "dark"),
+        ("\x1b[?997;1n", "dark"),
+        ("\x1b[?997;2n", "light"),
+    ],
+)
+def test_appearance_reply_is_filtered_at_every_split(reply, detected):
+    from pcode.startup_input import TerminalReplyParser
 
-    text = "early " + "\x1b]11;rgb:ffff/ffff/ffff" + ending + "draft"
+    text = "early \x1b[A" + reply + "draft\x1b[B"
     for split in range(len(text) + 1):
-        keys = []
-        parser = BackgroundReplyParser(keys.append)
+        keys, themes = [], []
+        parser = TerminalReplyParser(keys.append, themes.append)
         parser.feed(text[:split])
         parser.feed(text[split:])
         parser.flush()
-        assert "".join(key.data for key in keys) == "early draft", split
+        typed = [key.data for key in keys]
+        assert "".join(typed) == "early \x1b[Adraft\x1b[B", split
+        assert "\x1b[A" in typed and "\x1b[B" in typed, split  # Still parsed as arrows.
+        assert themes == [detected], split
+
+
+def test_replies_keep_being_filtered_after_the_first():
+    from pcode.startup_input import TerminalReplyParser
+
+    keys, themes = [], []
+    parser = TerminalReplyParser(keys.append, themes.append)
+    for reply in ("\x1b]11;rgb:0/0/0\x07", "a", "\x1b[?997;2n", "b", "\x1b]11;rgb:f/f/f\x07"):
+        parser.feed(reply)
+    parser.flush()
+    assert "".join(key.data for key in keys) == "ab"
+    assert themes == ["dark", "light", "light"]
+
+
+@pytest.mark.parametrize("reads", [["\x1b]"], ["\x1b", "]"], ["\x1b[", "?"]])
+def test_keys_that_start_like_a_reply_survive_the_escape_timeout(reads):
+    from pcode.startup_input import TerminalReplyParser
+
+    keys = []
+    parser = TerminalReplyParser(keys.append)
+    for data in reads:
+        parser.feed(data)
+    parser.flush()
+    assert "".join(key.data for key in keys) == "".join(reads)
+
+
+def test_typing_after_a_truncated_reply_is_released_without_a_pause():
+    from pcode.startup_input import TerminalReplyParser
+
+    keys = []
+    parser = TerminalReplyParser(keys.append)
+    parser.feed("\x1b]11;rgb:ff")
+    parser.feed("hello world")
+    assert "hello world" in "".join(key.data for key in keys)
 
 
 def test_truncated_background_reply_does_not_hold_later_typing():
-    from pcode.startup_input import BackgroundReplyParser
+    from pcode.startup_input import TerminalReplyParser
 
     keys = []
-    parser = BackgroundReplyParser(keys.append)
+    parser = TerminalReplyParser(keys.append)
     parser.feed("\x1b]11;rgb:ffff/")
     parser.flush()
     parser.feed("next prompt\r")
@@ -105,7 +150,7 @@ def test_buffered_escape_uses_the_normal_input_timeout():
                 event.app.exit(result="escaped")
 
             app = Application(
-                input=StartupInput(stdin, b"\x1b", awaiting_reply=True),
+                input=StartupInput(stdin, b"\x1b"),
                 output=DummyOutput(),
                 key_bindings=bindings,
             )

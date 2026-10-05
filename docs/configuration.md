@@ -25,7 +25,7 @@ The same commands are available inside pcode as `/config`, with tab completion:
 **Most config edits affect the next launch, not the running conversation.** To change
 an active setting and save its default immediately, use `/theme`, `/effort`,
 `/model`, or `/autocompact` instead. The layout settings `attach_tasks`,
-`tasks_max_height`, `tasks_min_rows`, `tasks_min_columns`, `task_style`, `tool_glyphs` and `tool_max_lines` apply immediately through `/config`. CLI overrides such as
+`tasks_max_height`, `tasks_min_rows`, `tasks_min_columns`, `task_style`, `tool_glyphs`, `tool_max_lines` and `tool_linger_seconds` apply immediately through `/config`. CLI overrides such as
 `--theme` and `--model` do not rewrite global defaults, and resumed sessions retain
 their own model.
 
@@ -144,10 +144,12 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `theme` | `auto` | `dark`, `light`, `auto` |
 | `syntax_dark` | `terminal` | `terminal` or a Pygments style, for the dark palette |
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
-| `spinner` | `arc` | A Rich spinner name, e.g. `dots`, `line`, `point` (`python -m rich.spinner` previews them; `/config set spinner` lists the ones that fit; applies on next launch) |
+| `spinner` | `dots` | The status row's animation while the model works. A Rich spinner name, e.g. `dots`, `line`, `point` (`python -m rich.spinner` previews them; `/config set spinner` lists the ones that fit; applies on next launch) |
+| `tool_spinner` | `arc` | The same, for a running tool call's row and the terminal's own waits, so they look different from the model's |
 | `show_thinking` | `status-line` | `off`, `status-line`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`) |
 | `thinking_max_lines` | `10` | Max rows of thinking above the status row in `status-line` mode, or a share of the screen (`0.2`). A row count is also capped at a quarter of the pane, so a short pane gets fewer. Applies on next launch |
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; `/show-edits`) |
+| `live_edits` | `off` | `on`, `off` (preview an edit or `run_code` snippet at the bottom while the model writes it) |
 | `diff_renderer` | `delta` | `delta`, `rich` (draw diffs in scrollback and `/diffs` with [delta](https://dandavison.github.io/delta/) when it's installed, falling back to Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
 | `delta_args` | `` | delta's arguments, quoted as in a shell, such as `--line-numbers`; the only delta configuration pcode reads (git config is ignored), and they override pcode's own choices |
 | `diff_dedent` | `on` | `on`, `off` (strip the indentation every line of a diff hunk shares, so an edit deep in a nested block starts at the left edge; with delta or Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
@@ -166,6 +168,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
 | `tool_glyphs` | `auto` | `on` leads the tool row above the status row with a symbol for the call (`$`, `⌕`, `✎`, `⎘`, `⧖`), `off` drops them and spells out the verb once the call settles (shell calls keep `$`), for fonts that draw those symbols badly. `auto` is on except on the Linux console (`/config` applies immediately) |
 | `tool_max_lines` | `3` | Max tool calls listed above the status row, newest last; `1` shows only the call the status row is on. A short pane gets fewer, sharing a quarter of its height with the thinking rows (`/config` applies immediately) |
+| `tool_linger_seconds` | `10` | Seconds a finished tool call stays listed above the status row, so a long wait on the model doesn't keep showing stale calls; `0` keeps it until newer calls push it out (`/config` applies immediately) |
 | `task_style` | `status` | `status` (shade task text by status), `icons` (one text weight, coloured icons only; `/config` applies immediately) |
 | `tasks_max_height` | unset | Rows (`20`) or a share of the screen (`0.5`) for the Tasks/Tools widget and editor together; unset keeps the widget to 10 rows or half the screen |
 | `paced_scrollback` | `typed` | `typed`, `rows`, `off` (type settled prose out, or roll blocks in a row per frame; see [the transcript](transcript.md#paced-scrollback)) |
@@ -211,6 +214,22 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `worktree` | `off` | `on`, `off` (start new sessions in `.worktrees/` git worktrees; does not enable worker isolation on its own) |
 | `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |
 | `worker_isolation` | `off` | `on`, `off` (opt in to isolated built-in worker tasks; also requires effective `worktree=on`, not just the CLI launch override; checked at each delegation) |
+
+### Email remote control
+
+Settings for [`pcode --email-listen`](email.md). All of them are user-only: a repository's `.pcode/preferences.json` cannot set them.
+
+| Key | Built-in default | Values |
+| --- | --- | --- |
+| `email_owner` | unset | the Gmail address allowed to control pcode by email; set by `pcode --email-setup` |
+| `email_mcp` | `off` | `on`, `off` (start default MCP servers in email-started sessions; they run outside the sandbox) |
+| `email_turn_minutes` | `30` | wall-clock minutes per email-started turn; `0` is no limit |
+| `email_turn_requests` | `100` | model requests per email-started turn, sub-agents included; `0` is no limit |
+| `email_turn_tool_calls` | `100` | tool calls per email-started turn, sub-agents included; `0` is no limit |
+| `email_concurrent_sessions` | `2` | email sessions that may be working at once |
+| `email_max_sessions` | `20` | sessions one `--email-listen` may start |
+| `email_session_inputs` | `20` | emails that may wait in one session |
+| `email_max_inputs` | `100` | emails that may wait across every session |
 
 ### Repository instructions, skills and extensions
 

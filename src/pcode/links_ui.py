@@ -15,6 +15,7 @@ from pcode.frame import Dialog
 from pcode.links import Link
 from pcode.popup_ui import (
     bind_list_paging,
+    fit_width,
     popup_container,
     popup_mouse,
     popup_style,
@@ -66,7 +67,13 @@ class LinkPicker:
         self.show_tools = True
         self.visible: list[Link] = []
         self.query = TextArea(height=1, prompt="Search: ", multiline=False)
-        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.list = TextArea(
+            read_only=True,
+            wrap_lines=False,
+            scrollbar=True,
+            # Fit every row, not just the filtered ones, so searching does not resize the box.
+            width=fit_width([text for _, text in link_rows(links)]),
+        )
         self.list.window.cursorline = Always()
         keys = self.key_bindings = KeyBindings()
         self.query.buffer.on_text_changed += lambda _: self.refresh()

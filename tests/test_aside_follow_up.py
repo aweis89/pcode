@@ -373,6 +373,70 @@ def test_the_viewer_sends_a_follow_up_typed_in_its_editor():
     asyncio.run(run())
 
 
+def test_a_viewer_the_user_opened_reads_in_its_editor():
+    """`edit`: typing replies at once, and Esc from an empty draft leaves as from the answer."""
+
+    async def run():
+        asides = Asides()
+        first = answered("first?", "One.")
+        second = answered("second?", "Two.")
+        asides.items.extend([first, second])
+        asked = []
+
+        def ask(thread, question):
+            asked.append((thread, question))
+
+        with create_pipe_input() as pipe:
+            browser = AsideBrowser(asides, ask=ask, edit=True, input=pipe, output=DummyOutput())
+            app = browser.app
+            task = asyncio.create_task(browser.run())
+
+            async def press(keys, wait=0.05):
+                pipe.send_text(keys)
+                await asyncio.sleep(wait)
+
+            try:
+                await asyncio.sleep(0.05)
+                # Several threads: the list comes first, since there is a choice.
+                assert app.layout.has_focus(browser.list)
+                await press("\r")
+                # Choosing one lands in the editor, so the follow-up is just typed.
+                assert not browser.listing()
+                assert app.layout.has_focus(browser.input.area)
+                await press("and why?\r")
+                assert asked == [(second.thread, "and why?")]
+                # A draft still makes Esc step out to the answer, keeping it.
+                await press("draft")
+                await press("\x1b", wait=0.7)
+                assert app.layout.has_focus(browser.detail)
+                await press("\t")
+                assert app.layout.has_focus(browser.input.area)
+                await press("\x7f" * len("draft"))
+                # Empty, Esc goes back to the list as the answer's Esc would.
+                await press("\x1b", wait=0.7)
+                assert browser.listing() and app.layout.has_focus(browser.list)
+                assert not task.done()
+                pipe.send_text("\x1b")
+                await asyncio.wait_for(task, 2)
+            finally:
+                if not task.done():
+                    app.exit()
+                    await task
+
+        # A lone thread opens straight in the editor; one Esc closes.
+        lone = Asides()
+        lone.items.append(answered("only?", "Yes."))
+        with create_pipe_input() as pipe:
+            browser = AsideBrowser(lone, ask=ask, edit=True, input=pipe, output=DummyOutput())
+            assert browser.app.layout.has_focus(browser.input.area)
+            task = asyncio.create_task(browser.run())
+            await asyncio.sleep(0.05)
+            pipe.send_text("\x1b")
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+
+
 def test_follow_up_framing_is_only_in_the_question():
     assert framed_follow_up("why?").startswith(FOLLOW_UP_FRAMING)
     assert framed_follow_up("why?").endswith("Question: why?")

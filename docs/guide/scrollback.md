@@ -21,7 +21,7 @@ A typical rhythm:
    reply is easy to find:
 
     ```text
-    ✓ 15 ✗ 1 tools · Edit file ✓10 · Run shell ✓5 ✗1
+    ✓ 15 ✗ 1 tools · Edit file ✓ 10 · Run shell ✓ 5 ✗ 1
     ```
 
 3. Want a line per call instead? `/group-tools off` unfolds them, again for the

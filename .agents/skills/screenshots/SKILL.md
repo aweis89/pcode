@@ -16,7 +16,29 @@ touched, and nothing costs anything.
 make screenshots                       # every scene
 make screenshots SCENES="tree jobs"    # some scenes
 uv run --no-sync python scripts/screenshots/run.py --text tools   # also print each shot as text
+make screenshots SCENES=review ARGS=--iterm   # tmp/screenshots/, in your iTerm2 profile's colors
+make screenshot-live SCENE=review      # play it in this terminal; screenshot it yourself
 ```
+
+The docs SVGs use Rich's dark terminal theme. `--iterm` reads the profile
+named by `$ITERM_PROFILE` from iTerm2's plist (its `(Light)`/`(Dark)` colors
+per the current macOS appearance), sets pcode's `theme` to match the
+background, and writes to `tmp/screenshots/` unless given `--out`. `--png` also
+renders each shot as a 2x PNG in headless Chrome (`CHROME` overrides the
+binary). The README's `docs/assets/screenshots/readme.png` is `--iterm --png
+review` output, copied by hand, so `make screenshots` never refreshes it. It is
+a PNG because GitHub shows an SVG through `<img>`, which loads no fonts. `--live`
+attaches your terminal to the scene's tmux pane, sized to your window. Each
+shot but the last waits for `Ctrl-b Space`; `Ctrl-b d` leaves (`Ctrl-b Ctrl-b d`
+inside your own tmux). Closing the window instead skips cleanup, so check
+`pgrep -fl pcode-demo` afterwards.
+
+Shots taken while a turn runs show iTerm2's tab progress bar (OSC 9;4) across
+the top: the runner logs the pane's raw output (`pipe-pane`) and draws the last
+report pcode sent, as `iterm.py` copies iTerm2's drawing. iTerm2's default style
+otherwise, the profile's `Progress Bar Color Scheme` and `Height` with
+`--iterm`. `--live` passes the reports through to your terminal's real bar,
+except from inside your own tmux, which drops them.
 
 Each `("shot", name)` step writes `docs/assets/screenshots/<name>.svg`. You
 can't look at an SVG, so run with `--text` and read the plain-text dump to
@@ -59,5 +81,7 @@ scenes fix.
   interrupted, `pgrep -fl pcode-demo` finds leftovers.
 - `launch()` patches `pcode.agent.resolve_model`, so the terminal must run
   in-process (`--no-host`, which `launch()` passes). A model resolved some
-  other way isn't scripted. `/btw` goes through `resolve_model`; delegated
-  workers haven't been tried yet, so check a `/workers` scene with `--text`.
+  other way isn't scripted. `/btw` and delegated workers (on the session's
+  model) are scripted too: a worker's prompt is its `task`, so key its turn on
+  a phrase from the task that the parent's prompt doesn't contain (see
+  `scenes/review.py`), or the parent's key will answer the worker as well.

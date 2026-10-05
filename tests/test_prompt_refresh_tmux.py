@@ -34,7 +34,7 @@ def test_animation_elapsed_resize_and_cancel_after_idle(pane):
     pane("send-keys", "-t", "preview:0.0", "ANIMATING_PROMPT", "Enter")
 
     def status_row(screen):
-        # The status rides the editor's top border: `┌─ ◜ Run shell …`; the
+        # The status rides the editor's top border: `┌─ ⠋ Run shell …`; the
         # tool row above it says what the call acts on.
         return next(line for line in screen.splitlines() if line.startswith("┌─ "))
 

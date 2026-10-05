@@ -29,3 +29,42 @@ def test_task_heading_tracks_theme_changes():
         attrs = style.get_attrs_for_style_str("class:frame.label class:plan.heading")
         assert attrs.color == palette.task_heading[1:]
         assert attrs.bold
+
+
+@pytest.mark.parametrize("theme", ["dark", "light", "terminal"])
+def test_session_name_and_status_detail_wear_the_heading_hue_undimmed(theme):
+    from pcode.ui import TERMINAL_PALETTE
+
+    palette = TERMINAL_PALETTE if theme == "terminal" else PALETTES[theme]
+    style = merge_styles([default_ui_style(), palette.prompt_style()])
+    hue = palette.task_heading.lstrip("#")
+    # Under the frame's own classes, so an inherited dim (the terminal
+    # palette's muted border is `fg:default dim`) would show here.
+    for classes in (
+        "class:frame.border class:frame.label class:session.name",
+        "class:frame.border class:activity.detail",
+    ):
+        attrs = style.get_attrs_for_style_str(classes)
+        assert attrs.color == hue and not attrs.dim and not attrs.bold, classes
+
+
+def test_a_sub_agent_detail_on_the_status_row_keeps_its_own_hue():
+    from pcode.ui import StatusLine
+
+    palette = PALETTES["dark"]
+    style = palette.prompt_style()
+    fragments = StatusLine("Waiting for 1 agent", "✦ Worker · Thinking", hue=1).fragments("⠋", 80)
+    detail = next(name for name, text in fragments if "Worker" in text)
+    assert style.get_attrs_for_style_str(detail).color == palette.agents[1].lstrip("#")
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_derived_task_heading_never_matches_the_accent(theme):
+    from pygments.styles import get_all_styles
+
+    from pcode.syntax_colors import derive_colors
+
+    palette = PALETTES[theme]
+    for name in get_all_styles():
+        colors = derive_colors(name, palette.__dict__, palette.surface)
+        assert colors["task_heading"] != colors["accent"], name

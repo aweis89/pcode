@@ -1,4 +1,4 @@
-"""Read-only popup following delegated workers' own streams; never steers them."""
+"""Read-only popup following delegated agents' own streams; never steers them."""
 
 import asyncio
 
@@ -55,7 +55,7 @@ def tool_line(event) -> Text:
 def details(worker: Worker | None, *, code_theme: str, show_thinking: bool) -> list:
     """The worker's assignment, plan, then everything it said and did, in order."""
     if worker is None:
-        return [Text("Workers appear here once the model delegates a task.", style="dim")]
+        return [Text("Agents appear here once the model delegates a task.", style="dim")]
     blocks: list = [
         TaskPrompt(literal(worker.task)),
         Text(f"  {worker.agent} · {worker.elapsed():.0f}s · {worker.state()}", style="dim"),
@@ -119,7 +119,7 @@ class WorkerBrowser:
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
         shortcuts.set_help(
             lambda: [
-                ("↑/↓", "Select worker / scroll output"),
+                ("↑/↓", "Select agent / scroll output"),
                 ("PgUp/PgDn", "Page"),
                 ("Ctrl+U/D", "Half page"),
                 ("Tab/Shift+Tab", "Change focus"),
@@ -137,19 +137,19 @@ class WorkerBrowser:
 
         header = Label(
             lambda: (
-                f"Workers · {len(self.items)} this session · {self.workers.running()} running"
+                f"Agents · {len(self.items)} this session · {self.workers.running()} running"
                 f" · read-only · thinking {'on' if self.show_thinking else 'off'}"
             )
         )
         wide = VSplit(
             [
-                Frame(self.list, title="Workers", width=Dimension(weight=2)),
+                Frame(self.list, title="Agents", width=Dimension(weight=2)),
                 Frame(self.detail, title="Output", width=Dimension(weight=3)),
             ]
         )
         narrow = HSplit(
             [
-                Frame(self.list, title="Workers", height=lambda: list_pane_height(len(self.items))),
+                Frame(self.list, title="Agents", height=lambda: list_pane_height(len(self.items))),
                 Frame(self.detail, title="Output"),
             ]
         )
@@ -176,7 +176,7 @@ class WorkerBrowser:
     def refresh(self, *, force: bool = True) -> None:
         """Rebuild the list from the current records, keeping the selection."""
         self.items = list(self.workers.items)
-        lines = [row(worker) for worker in self.items] or ["No workers yet"]
+        lines = [row(worker) for worker in self.items] or ["No agents yet"]
         index = next(
             (i for i, worker in enumerate(self.items) if worker.call_id == self.selected),
             max(0, len(self.items) - 1),

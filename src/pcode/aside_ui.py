@@ -7,6 +7,7 @@ thread into the conversation is returned as a `Bridge` for the app to run.
 
 import asyncio
 from collections.abc import Callable
+from time import monotonic
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.document import Document
@@ -18,9 +19,11 @@ from prompt_toolkit.layout import (
     DynamicContainer,
     Float,
     FloatContainer,
+    FormattedTextControl,
     HSplit,
     Layout,
     VSplit,
+    Window,
 )
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Label, TextArea
@@ -48,6 +51,7 @@ from pcode.prefix_keys import PrefixKeys
 from pcode.session_ui import literal
 from pcode.task_prompt import TaskPrompt
 from pcode.tool_display import plain
+from pcode.ui import StatusLine, status_parts, status_spinner
 
 # A streaming answer should look live without repainting the pane every token.
 REFRESH_SECONDS = 0.3
@@ -83,8 +87,8 @@ def exchange(aside: Aside, *, code_theme: str, first: bool = True) -> list:
     if answer := literal(aside.answer):
         blocks.append(Markdown(answer, code_theme=code_theme))
     if aside.running:
-        blocks.extend([Text(""), Text(f"  ({aside.activity or 'working'}…)", style="dim")])
-    elif aside.error:
+        return blocks  # Its progress is the viewer's status row, not text here.
+    if aside.error:
         blocks.extend([Text(""), Text(f"  {aside.status}: {aside.error}", style="dim")])
     elif not answer:
         blocks.append(Text(f"  ({aside.status}; no answer)", style="dim"))
@@ -118,6 +122,12 @@ class AsideBrowser:
 
     Enter on the list hides it to read the selected thread full width, and Esc
     brings it back; a viewer opened on a single thread starts that way.
+
+    With `edit`, for a viewer the user opened, reading a thread puts the
+    cursor in the follow-up editor rather than on the answer, so typing
+    replies at once, and Esc from an empty draft does what it would from the
+    answer. Leave it off for a viewer that opens by itself: it could arrive
+    mid-keystroke at the main prompt, and Enter would send what was typed.
     """
 
     def __init__(
@@ -128,6 +138,7 @@ class AsideBrowser:
         check_bridge: Callable[[str], object] | None = None,
         stop: Callable[[], object] | None = None,
         selected: str | None = None,
+        edit: bool = False,
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
         color_system: str | None = "truecolor",
@@ -136,9 +147,11 @@ class AsideBrowser:
     ) -> None:
         self.asides = asides
         self.ask = ask
+        self.edit = edit and ask is not None
         self.check_bridge = check_bridge
         self.stop_running = stop or asides.cancel
         self.code_theme = code_theme
+        self.spinner = status_spinner()
         self.threads = asides.threads()
         # `selected` names a question; the list selects the thread it is in.
         chosen = next((aside for aside in asides.items if aside.id == selected), None)
@@ -170,6 +183,7 @@ class AsideBrowser:
                 placeholder="Ask a follow-up, or / for commands…",
                 shortcuts=shortcuts,
                 commands=self.commands(),
+                back=self.back if self.edit else None,
             )
             if ask is not None or check_bridge is not None
             else None
@@ -187,10 +201,7 @@ class AsideBrowser:
 
         @keys.add("escape", eager=True)
         def escape(event):
-            if self.reading and len(self.threads) > 1:
-                self.back_to_list(event.app)
-            else:
-                event.app.exit(result=None)
+            self.back(event.app)
 
         @keys.add("c-c")
         def interrupt(event):
@@ -245,6 +256,11 @@ class AsideBrowser:
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
 
+        # The main prompt's status row, over the editor as it is there.
+        status_row = ConditionalContainer(
+            Window(FormattedTextControl(self.status_fragments), height=1),
+            Condition(lambda: self.running_aside() is not None),
+        )
         header = Label(
             lambda: (
                 f"Side questions · {len(self.asides.items)} asked · "
@@ -281,6 +297,7 @@ class AsideBrowser:
             [
                 header,
                 body,
+                status_row,
                 *([self.input] if self.input else []),
                 Label(shortcuts.summary),
             ]
@@ -297,9 +314,9 @@ class AsideBrowser:
             ],
         )
         self.app = Application(
-            # Opens on the list, never the editor: the viewer can open by itself
-            # when an answer lands, mid-keystroke at the main prompt.
-            layout=Layout(popup_container(overlaid, shortcuts), focused_element=self.home()),
+            # Opens in the editor only with `edit`: the viewer can also open by
+            # itself when an answer lands, mid-keystroke at the main prompt.
+            layout=Layout(popup_container(overlaid, shortcuts), focused_element=self.start()),
             key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             mouse_support=popup_mouse(shortcuts),
@@ -307,6 +324,21 @@ class AsideBrowser:
             **app_options,
         )
         self.refresh()
+
+    def running_aside(self) -> Aside | None:
+        """The selected thread's newest question, while its answer runs."""
+        thread = self.current()
+        return thread[-1] if thread and thread[-1].running else None
+
+    def status_fragments(self):
+        """The running answer as the main status row draws a turn: `⠋ Thinking … 4s`."""
+        aside = self.running_aside()
+        if aside is None:
+            return []
+        phase, detail = status_parts(aside.activity)
+        line = StatusLine(phase, detail, elapsed=aside.elapsed)
+        width = get_app().output.get_size().columns - 1
+        return [("", " "), *line.fragments(self.spinner.render(monotonic()).plain, width)]
 
     def listing(self) -> bool:
         """Whether the question list is on screen: several threads, none opened to read."""
@@ -316,10 +348,33 @@ class AsideBrowser:
         """Where focus rests outside the editor: the list when shown, else the answer."""
         return self.list if self.listing() else self.detail
 
+    def reader(self):
+        """Where focus goes to read a thread: the editor with `edit`, else the answer."""
+        return self.input.area if self.edit and self.input is not None else self.detail
+
+    def start(self):
+        """Where focus opens: the list when shown, else wherever reading puts it."""
+        return self.list if self.listing() else self.reader()
+
     def read(self, app) -> None:
         """Hide the list so the selected thread's answer gets the whole width."""
         self.reading = True
-        app.layout.focus(self.detail)
+        app.layout.focus(self.reader())
+
+    def going_back_to_list(self) -> bool:
+        """Whether Esc from the reader returns to the list rather than closing."""
+        return self.reading and len(self.threads) > 1
+
+    def leaving(self) -> str:
+        """What Esc from the reader does, for the help."""
+        return "return to questions" if self.going_back_to_list() else "close"
+
+    def back(self, app) -> None:
+        """Esc from the reader: back to the list when there is one, else close."""
+        if self.going_back_to_list():
+            self.back_to_list(app)
+        else:
+            app.exit(result=None)
 
     def back_to_list(self, app) -> None:
         self.reading = False
@@ -354,6 +409,8 @@ class AsideBrowser:
                     else (
                         "Close completions, otherwise return to questions"
                         if self.listing()
+                        else f"Close completions, otherwise {self.leaving()}"
+                        if self.edit and not self.input.text
                         else "Close completions, otherwise return to reader"
                     ),
                 ),
@@ -364,8 +421,13 @@ class AsideBrowser:
             ("↑/↓", "Select question" if self.app.layout.has_focus(self.list) else "Scroll answer"),
             ("PgUp/PgDn", "Page"),
             ("Ctrl+U/D", "Half page"),
-            ("Enter", "Read selected thread" if self.listing() else "Close"),
-            ("Esc", "Questions" if self.reading and len(self.threads) > 1 else "Close"),
+            (
+                "Enter",
+                ("Reply to selected thread" if self.edit else "Read selected thread")
+                if self.listing()
+                else "Close",
+            ),
+            ("Esc", "Questions" if self.going_back_to_list() else "Close"),
             ("Tab/Shift+Tab", "Change focus"),
             interrupt,
         ]
@@ -459,7 +521,8 @@ class AsideBrowser:
         state = (
             self.selected,
             tuple(
-                (aside.id, aside.status, aside.answer, aside.activity, aside.error)
+                # Not `activity`: the status row reads that live, not the pane.
+                (aside.id, aside.status, aside.answer, aside.error)
                 for aside in thread
             ),
         )
@@ -601,8 +664,17 @@ class AsideBrowser:
                     self.select()
                 self.app.invalidate()
 
+        async def spin():
+            # The status row turns at the main prompt's pace, apart from the
+            # slower refresh of the answer itself.
+            while True:
+                await asyncio.sleep(self.spinner.interval / 1000)
+                if self.running_aside() is not None:
+                    self.app.invalidate()
+
         def start():
             self.app.create_background_task(follow())
+            self.app.create_background_task(spin())
 
         return await self.app.run_async(pre_run=start)
 
