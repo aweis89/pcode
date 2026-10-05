@@ -131,7 +131,8 @@ def test_all_popups_share_style_scope(kind):
     from pcode.aside import Asides
     from pcode.aside_ui import AsideBrowser
     from pcode.conversation_tree import ConversationTree
-    from pcode.edit_ui import EditBrowser
+    from pcode.edit_ui import DiffBrowser
+    from pcode.git_diff import Review
     from pcode.inspection import ToolArchive
     from pcode.inspector_ui import ToolInspector
     from pcode.links_ui import links_dialog
@@ -150,7 +151,7 @@ def test_all_popups_share_style_scope(kind):
         elif kind == "tools":
             app = ToolInspector(ToolArchive(), **options).app
         elif kind == "edits":
-            app = EditBrowser([], **options).app
+            app = DiffBrowser(Review("t", [], "none"), **options).app
         elif kind == "links":
             app = links_dialog([], **options)
         elif kind == "asides":

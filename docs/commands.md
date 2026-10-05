@@ -26,9 +26,10 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   word completes from the `/model` catalog. Bare lists them, `off` clears them
   ([details](tools.md#sub-agents-on-other-models)).
 - `/tools`: the [tool-call inspector](#tool-call-inspector) for the current conversation,
-  including resumed calls. `/tools failed` opens it filtered to failures.
-- `/diffs`: review the session's work as a git diff, one entry per file, in a
-  full-screen popup (see [Diff browser](#diff-browser)).
+  including resumed calls. `/tools failed` opens it filtered to failures, and
+  `/tools edits` to calls that changed files.
+- `/diffs`: review the session's work as a git diff, leave notes for the agent,
+  and see what's new since your last review (see [Diff browser](#diff-browser)).
 - `/links`: pick a URL from the active conversation branch: your prompts, tool
   arguments and results, or the assistant's replies, most recent first. Duplicate
   URLs appear once, at their latest position; tool links show the tool name.
@@ -605,8 +606,8 @@ these actions alongside the current popup's navigation and editing keys:
 | Popup | Shortcuts |
 | --- | --- |
 | `/btw` | `r` reply · `y` copy · `o` link · `s` summarize · `t` merge to `/tree` · `k` stop (or type `/copy`, `/links`, `/summarize`, `/merge`, `/stop` in the follow-up editor) |
-| `/tools` | `f` search · `x` failures only · `t` tool filter · `y` copy command · `o` copy output |
-| `/diffs` | `f` search the focused pane · `s` / `r` next / previous match · `v` next view |
+| `/tools` | `f` search · `x` failures only · `e` edits only · `t` tool filter · `y` copy command · `o` copy output |
+| `/diffs` | `f` search the focused pane · `s` / `r` next / previous match · `v` next view · `n` note · `a` mark reviewed · `e` open in editor · `g` refresh |
 | `/resume` | `f` search · `r` prompts only · `g` all workspaces · `x` delete (twice) |
 | `/switch` | `f` search · `n` new session · `x` stop (twice) |
 | `/jobs` | `w` watch in the preview · `k` stop |
@@ -648,9 +649,12 @@ opens, so no restart is needed.
 
 ## Diff browser
 
-`/diffs` opens a full-screen popup with one net git diff per file, however many
-times the file was edited, in the same colors as scrollback. The first line says
-what is being compared. It opens on the session's net work:
+`/diffs` is for reviewing what the agent built: every changed file in one
+scroll, in the same colors as scrollback, with notes you can send back to the
+agent. It needs a git repository; outside one it says so and points to
+`/tools edits`, which shows each file tool's edit with the call that made it.
+
+The net change it shows depends on the checkout:
 
 - **In a linked worktree** (the default with `worktree on`): the whole branch
   against its merge-base with the mainline branch, including uncommitted and
@@ -670,37 +674,54 @@ what is being compared. It opens on the session's net work:
   rebase or branch switch), or the session predates this, it falls back to
   uncommitted changes in edited files, and the title says so.
 
-Ctrl+B `v` (the `v` shortcut) cycles to two more views:
+### Views and review checkpoints
 
-- **Uncommitted**: what the next commit would take in, against `HEAD`. In a
-  checkout other than a linked worktree, it's limited to the same session
-  files.
-- **Tool edits**: each edit the file tools made, newest first, including ones
-  later reverted. Resumed and branched conversations show the edits of their
-  own branch; nothing is re-read from disk or re-applied. Outside git this is
-  the only view.
+The top line lists the views with their file counts; **Ctrl+B `v`** cycles them:
 
-Each view loads the first time you show it. If the net view is empty, the
-browser opens on the first view that isn't and says so. A switch keeps your
-search, and stays on the selected file if the new view has it. When git can't
-produce a view (no commits yet, a detached mainline), that view names the
-reason.
+- **All changes**: the net change above. Files with uncommitted changes are
+  marked `●`.
+- **Uncommitted**: what the next commit would take in, against `HEAD` (in a
+  shared checkout, limited to the same session files).
+- **Since review**: what changed since you last pressed **Ctrl+B `a`** (mark
+  reviewed). The browser opens here whenever there's something new, so on a
+  long session you read only the latest work instead of the whole branch
+  again. Committing what you reviewed doesn't count as new.
 
-Untracked files are included without touching your staging area. Untracked files
-that look sensitive (`.env`, keys, credentials) are listed but never read, and
-tracked ones show only their line counts. Secrets in other diffs are redacted as
-in scrollback. A file's diff is clipped at 2,000 lines, and a file over 1 MB
-shows only its counts.
+Marking reviewed records exactly the state on screen. A saved session keeps it
+in the repository under `refs/pcode/reviewed/<session id>`, so it survives
+restarts and is shared by the session's worktrees; an unsaved one keeps it
+until `/new`. The ref keeps that snapshot, untracked files included, in the
+repository until you delete it, which also starts the review over: list them
+with `git for-each-ref refs/pcode` and remove one with `git update-ref -d`.
+They hold trees, not commits, so they never show up in `git log --all`. Changes a merge from mainline (or, in a shared checkout, a pull) brings
+in don't count as new.
 
-The diff fills most of the screen, with a small file selector at the bottom.
-Keys are listed in the header:
+### Notes for the agent
+
+Move the cursor to a line in the diff and press **Ctrl+B `n`** to write a note
+about it; Enter saves it and Escape drops it. A note sits under its line, and
+pressing Ctrl+B `n` on the note edits it (saving it empty deletes it). On a
+file's heading, the note is about the whole file. When you close `/diffs`, the
+notes are added to your prompt as `path:line`, the diff lines around it, and
+your note, ready to send or edit first.
+
+With side-by-side diffs, a note anchors to the start of its hunk, since
+delta's rows pair two lines up.
+
+**Ctrl+B `e`** opens the file under the cursor in `$VISUAL` or `$EDITOR`, at
+that line where the editor accepts one (vi-style `+line`, `--goto` for VS Code
+and its forks, `path:line` for Helix, Zed and Sublime). The review reloads when
+the editor closes. **Ctrl+B `g`** reloads it at any time, for instance while the
+agent is still writing; the view, your place, and your notes are kept.
+
+### Moving around
 
 - The browser opens in the search line, searching paths (see Ctrl+B `f` below).
   Enter moves to the file list.
-- Up/Down in the file list selects a file.
+- The file list is an index: selecting a file scrolls the diff to it, and
+  moving through the diff keeps the list on the file under the cursor.
 - Tab/Shift+Tab switch between the file list and the diff. The
-  [popup keys](#popup-keys) act on whichever has focus; Ctrl+Home/Ctrl+End jump
-  to the first or last line of the diff.
+  [popup keys](#popup-keys) act on whichever has focus.
 - **Ctrl+B `f`** searches whichever pane has focus. In the file list it filters
   files by path; in the diff it filters to changes with a matching line and
   jumps to the first one. Matching is fuzzy: a plain substring, or joined word
@@ -710,7 +731,15 @@ Keys are listed in the header:
   again starts a fresh query for that pane.
 - **Ctrl+B `s`**/**Ctrl+B `r`** jump to the next/previous matching diff line (Emacs's
   search keys), from either pane or the search line.
-- Escape or Ctrl+C closes the popup and restores the editor draft.
+- Escape or Ctrl+C closes the popup and restores the editor draft, with any
+  notes added to it.
+
+Untracked files are included without touching your staging area. Untracked files
+that look sensitive (`.env`, keys, credentials) are listed but never read, and
+tracked ones show only their line counts. Secrets in other diffs are redacted as
+in scrollback. A file's diff is clipped at 2,000 lines, and a file over 1 MB
+shows only its counts. When git can't produce the review (no commits yet, a
+detached mainline), `/diffs` says why instead of opening.
 
 ## Tool-call inspector
 
@@ -728,7 +757,8 @@ and scrollback catches up when you close it. Inspecting never reruns a tool.
   tries OSC 52 first. tmux passes OSC 52 through only with
   `tmux set -g set-clipboard on`. Copies are truncated at 64 KiB, and the header
   says what was copied or that copying failed.
-- **Ctrl+B `x`** toggles failures only, **Ctrl+B `t`** cycles tool-name filters, and
+- **Ctrl+B `x`** toggles failures only, **Ctrl+B `e`** toggles calls that changed
+  files, **Ctrl+B `t`** cycles tool-name filters, and
   **Ctrl+B `f`** focuses search. Search matches tool names, statuses, and
   command/summary previews, not the full output. These work from any pane,
   including the search field.
@@ -741,7 +771,9 @@ and scrollback catches up when you close it. Inspecting never reruns a tool.
 - Wide terminals show calls and details side by side; narrow ones stack them.
 
 Details include call and run IDs, timestamp and duration when captured,
-structured arguments, outcome, and the returned output or error. Commands and
+structured arguments, outcome, and the returned output or error. A call that
+changed files leads with its diff, drawn like the scrollback's (through delta
+when it's on), then the result, then the raw arguments that asked for it. Commands and
 results are shown as blocks, highlighted when they're code or JSON and verbatim
 otherwise. Shell commands are formatted as Bash with `shfmt` when it's on your
 `PATH` (the command is never executed); otherwise pcode breaks one-line commands

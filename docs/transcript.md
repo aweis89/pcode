@@ -64,7 +64,7 @@ Limits:
 ### Diffs with delta
 
 When [delta](https://dandavison.github.io/delta/) is on your `PATH`, edit
-blocks, the live preview of an edit being written, and the `/diffs` popup use
+blocks, the live preview of an edit being written, `/tools` details, and `/diffs` use
 it: syntax-highlighted code, word-level changes, and a side-by-side layout when
 the terminal is wide enough. The Homebrew formula installs it for you. Without
 it, or if delta exits with an error, pcode falls back to its built-in Rich

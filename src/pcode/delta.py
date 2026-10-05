@@ -32,6 +32,8 @@ SIDE_BY_SIDE_WIDTH = 180
 TIMEOUT = 2.0
 # A batch gets a little longer per patch, up to this.
 MAX_TIMEOUT = 5.0
+# Patches per delta run, so a batch fits within MAX_TIMEOUT.
+BATCH = 60
 # delta extends a background to the edge with "erase to end of line", which
 # neither Rich nor prompt_toolkit keeps; it is replaced with padding instead.
 ERASE_LINE = "\x1b[0K"
@@ -91,45 +93,77 @@ class Delta:
             output = _run(command, patch)
             if cache:
                 _remember(key, output)
-        if output is None:
-            return None
-        lines = output.splitlines()
-        # With the file section omitted, delta still opens with its blank line.
-        while lines and not lines[0].strip():
-            lines.pop(0)
-        # Padding to pcode's width would wrap every row of a wider user width.
-        pad = 0 if self.given() & WIDTH_FLAGS else width
-        gutter = bool(set(command) & LINE_NUMBER_FLAGS)
-        return [row for line in lines for row in _rows(line, pad, gutter)]
+        groups = self._groups(command, width, output)
+        return None if groups is None else [row for group in groups for row in group]
+
+    def render_all(self, patches: list[str], width: int) -> list[list[list[Text]] | None]:
+        """Each patch through one delta run, as one group of rows per output line.
+
+        Unlike `render`, the results come back rather than through the shared
+        cache, so a review with more hunks than the cache holds is not evicted
+        while it is laid out. A line delta folds keeps its rows together, so a
+        caller can match output lines to patch lines. None marks a patch delta
+        failed on.
+        """
+        command = tuple(self.command(max(1, width)))
+        outputs = self._outputs(command, patches)
+        return [self._groups(command, width, outputs.get(patch)) for patch in patches]
 
     def prefetch(self, patches: list[str], width: int) -> None:
-        """Render many patches through one delta process, ready for `render`.
+        """Render many patches through one delta process, ready for `render`."""
+        self._outputs(tuple(self.command(max(1, width))), patches)
+
+    def _outputs(self, command: tuple[str, ...], patches: list[str]) -> dict[str, str | None]:
+        """delta's raw output for each patch, running only those not cached.
 
         Starting delta costs tens of milliseconds, and a scrollback rebuild
         renders every edit block at once. The patches go in one input,
         separated by a marker line delta passes through untouched, since only
-        `+`, `-`, space and backslash lines continue a hunk. If the output
-        does not split back into one piece per patch, nothing is kept, and
-        `render` runs each patch alone. If delta fails outright, every patch is
-        recorded as failed, so the blocks fall back to Rich at once instead of
-        each waiting on its own failing run.
+        `+`, `-`, space and backslash lines continue a hunk. A big set goes in
+        batches, each within one run's timeout. If a batch's output does not
+        split back into one piece per patch, its patches are left unrendered
+        (None, and not cached) rather than each started alone: a review can hold
+        hundreds. If delta fails outright, every patch is recorded as failed,
+        so the blocks fall back to Rich at once instead of each waiting on its
+        own failing run.
         """
-        command = tuple(self.command(max(1, width)))
+        outputs: dict[str, str | None] = {}
         with _lock:
-            missing = list(dict.fromkeys(p for p in patches if (command, p) not in _cache))
-        if len(missing) < 2:
-            return
-        marker = f"pcode-delta-{secrets.token_hex(8)}"
-        output = _run(command, f"\n{marker}\n".join(missing), len(missing))
+            for patch in dict.fromkeys(patches):
+                if (command, patch) in _cache:
+                    outputs[patch] = _cache[(command, patch)]
+        missing = [patch for patch in dict.fromkeys(patches) if patch not in outputs]
+        if len(missing) == 1:
+            outputs[missing[0]] = _remember((command, missing[0]), _run(command, missing[0]))
+            return outputs
+        for start in range(0, len(missing), BATCH):
+            batch = missing[start : start + BATCH]
+            marker = f"pcode-delta-{secrets.token_hex(8)}"
+            output = _run(command, f"\n{marker}\n".join(batch), len(batch))
+            pieces = None if output is None else output.split(f"{marker}\n")
+            if pieces is not None and len(pieces) != len(batch):
+                outputs.update(dict.fromkeys(batch))
+                continue
+            for patch, piece in zip(batch, pieces or [None] * len(batch), strict=True):
+                outputs[patch] = _remember(
+                    (command, patch), piece if piece and piece.strip() else None
+                )
+        return outputs
+
+    def _groups(
+        self, command: tuple[str, ...], width: int, output: str | None
+    ) -> list[list[Text]] | None:
         if output is None:
-            for patch in missing:
-                _remember((command, patch), None)
-            return
-        pieces = output.split(f"{marker}\n")
-        if len(pieces) != len(missing):
-            return
-        for patch, piece in zip(missing, pieces, strict=True):
-            _remember((command, patch), piece if piece.strip() else None)
+            return None
+        lines = output.splitlines()
+        # With the file section omitted, delta still opens with its blank line.
+        # Only that one: a hunk's first context line can be blank too.
+        if lines and not lines[0].strip():
+            lines.pop(0)
+        # Padding to pcode's width would wrap every row of a wider user width.
+        pad = 0 if self.given() & WIDTH_FLAGS else width
+        gutter = bool(set(command) & LINE_NUMBER_FLAGS)
+        return [_rows(line, pad, gutter) for line in lines]
 
 
 def from_preferences(preferences: dict[str, str], *, light: bool = False) -> Delta | None:

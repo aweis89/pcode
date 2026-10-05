@@ -8,7 +8,7 @@ from rich.console import Console
 
 from pcode import git_diff, worktree
 from pcode.app import PreviewApp
-from pcode.git_diff import GitDiffError, session_diff
+from pcode.git_diff import GitDiffError, load_review
 from pcode.runtime import EditCompleted
 
 pytestmark = pytest.mark.skipif(
@@ -66,7 +66,7 @@ def test_branch_diff_is_net_per_file_and_ignores_merged_mainline(repo, linked):
     git(linked.path, "merge", "-q", "--no-edit", "main")
     before = untouched(linked.path)
 
-    view = session_diff(linked.path, [])
+    view = load_review(linked.path, [])
 
     assert untouched(linked.path) == before
     changes = by_path(view)
@@ -79,14 +79,14 @@ def test_branch_diff_is_net_per_file_and_ignores_merged_mainline(repo, linked):
     # Merging mainline in moved the merge-base up to mainline's tip.
     base = git(linked.path, "rev-parse", "--short", "main")
     assert view.title == (
-        f"Git diff · feature vs main (merge-base {base}) · includes uncommitted and new files"
+        f"feature vs main (merge-base {base}) · includes uncommitted and new files"
     )
 
 
 def test_merged_branch_has_nothing_to_show(repo, linked):
     commit(linked.path, "done.py", "x\n")
     worktree.merge(linked)
-    view = session_diff(linked.path, [])
+    view = load_review(linked.path, [])
     assert view.changes == []
     assert view.empty == "feature has nothing that main does not already have."
 
@@ -115,7 +115,7 @@ def test_renames_deletions_type_and_mode_changes_line_up_with_their_patches(repo
     (path / "sp ace.py").write_text("a\nb\n")
     (path / "ünï.py").write_text("u\n")
 
-    changes = by_path(session_diff(path, []))
+    changes = by_path(load_review(path, []))
 
     assert changes["old.py → new.py"].operation == "renamed"
     assert "+five" in changes["old.py → new.py"].patch
@@ -134,7 +134,7 @@ def test_secrets_stay_out_of_the_view_and_the_object_store(repo, linked):
     (path / ".env.local").write_text("TOKEN=synthetic-untracked\n")
     (path / "app.py").write_text('token = "synthetic-secret"\n')
 
-    changes = by_path(session_diff(path, []))
+    changes = by_path(load_review(path, []))
 
     unread = changes[".env.local"]
     assert (unread.operation, unread.omitted, unread.patch) == (
@@ -154,12 +154,12 @@ def test_secrets_stay_out_of_the_view_and_the_object_store(repo, linked):
 
 def test_large_diffs_are_clipped_or_only_counted(repo, linked, monkeypatch):
     (linked.path / "long.py").write_text("".join(f"line {i}\n" for i in range(2500)))
-    change = by_path(session_diff(linked.path, []))["long.py"]
+    change = by_path(load_review(linked.path, []))["long.py"]
     assert change.truncated and change.added == 2500
     assert len(change.patch.splitlines()) == git_diff.MAX_DIFF_LINES
 
     monkeypatch.setattr(git_diff, "MAX_FILE_DIFF", 100)
-    change = by_path(session_diff(linked.path, []))["long.py"]
+    change = by_path(load_review(linked.path, []))["long.py"]
     assert change.omitted == "Diff exceeds preview size limit" and change.added == 2500
 
 
@@ -175,62 +175,101 @@ def test_shared_checkout_shows_only_edited_files_against_head(repo):
     workspace = repo / "sub"
     before = untouched(repo)
 
-    view = session_diff(workspace, ["edited.py", "created.py", str(repo / "sub" / "edited.py")])
+    view = load_review(workspace, ["edited.py", "created.py", str(repo / "sub" / "edited.py")])
 
     assert untouched(repo) == before
     assert list(by_path(view)) == ["sub/created.py", "sub/edited.py"]
     short = git(repo, "rev-parse", "--short", "HEAD")
     assert view.title == (
-        f"Git diff · uncommitted changes vs HEAD ({short}) · only files edited this session"
+        f"uncommitted changes vs HEAD ({short}) · only files edited this session"
         " · no starting commit recorded"
     )
-    assert session_diff(workspace, []).changes == []
-    assert session_diff(workspace, ["../../elsewhere.py"]).changes == []
+    assert load_review(workspace, []).changes == []
+    assert load_review(workspace, ["../../elsewhere.py"]).changes == []
 
 
 def test_outside_git_there_is_no_view_and_a_repository_without_commits_errors(tmp_path):
-    assert session_diff(tmp_path, ["a.py"]) is None
+    assert load_review(tmp_path, ["a.py"]) is None
     git(tmp_path, "init", "-q")
     with pytest.raises(GitDiffError, match="no commits"):
-        session_diff(tmp_path, ["a.py"])
+        load_review(tmp_path, ["a.py"])
 
 
 def edited(path: str, call_id: str) -> EditCompleted:
     return EditCompleted(call_id, path, "edited", "@@ -1 +1 @@\n-a\n+b", 1, 1)
 
 
-def test_app_offers_git_views_then_the_tool_edit_log(repo, linked, tmp_path, monkeypatch):
+def test_app_loads_the_review_and_keeps_an_unsaved_checkpoint(repo, linked, tmp_path):
     (linked.path / "new.py").write_text("x\n")
     app = PreviewApp(console=Console(file=StringIO()), workspace=linked.path)
-    views = [load() for load in app.diff_views()]
-    assert [[change.path for change in view.changes] for view in views] == [
-        ["new.py"],
-        ["new.py"],
-        [],
-    ]
-    assert views[2].title == "Tool edits, newest first"
+    review = app.load_review()
+    assert [c.path for c in review.changes] == [c.path for c in review.uncommitted] == ["new.py"]
+    assert review.since_review is None and review.root == linked.path
+    # An unsaved session keeps its checkpoint in memory, never in a ref.
+    app.mark_reviewed(review.checkpoint)
+    assert git(repo, "for-each-ref", "refs/pcode") == ""
+    (linked.path / "new.py").write_text("y\n")
+    (since,) = app.load_review().since_review
+    assert "-x" in since.patch and "+y" in since.patch
+    app.controller.new("")
+    assert app.load_review().since_review is None
 
     outside = tmp_path / "plain"
     outside.mkdir()
-    app = PreviewApp(console=Console(file=StringIO()), workspace=outside)
-    app.present_events((edited("first.py", "1"), edited("second.py", "2")))
-    (log,) = [load() for load in app.diff_views()]
-    assert log.title == "Tool edits, newest first"
-    assert [change.path for change in log.changes] == ["second.py", "first.py"]
+    assert PreviewApp(console=Console(file=StringIO()), workspace=outside).load_review() is None
 
-    def broken(*args):
-        raise GitDiffError("git diff failed: boom")
 
-    monkeypatch.setattr(git_diff, "session_views", broken)
-    (log,) = [load() for load in app.diff_views()]
-    assert log.title == "Tool edits, newest first · git diff unavailable: git diff failed: boom"
-    assert len(log.changes) == 2
+def test_review_checkpoints_live_in_a_ref_and_diff_tree_to_tree(repo, linked):
+    path = linked.path
+    commit(path, "a.py", "one\n")
+    (path / "a.py").write_text("two\n")
+    (path / "b.py").write_text("new\n")
+    before = untouched(path)
+    first = load_review(path, [])
+    assert untouched(path) == before  # recording the tree writes no index or ref
+    assert first.since_review is None
+    assert git_diff.reviewed(path, "session-1") is None
+    git_diff.mark_reviewed(path, "session-1", first.checkpoint)
+    assert git_diff.reviewed(path, "session-1") == first.checkpoint
+    assert git_diff.reviewed(repo, "session-1") == first.checkpoint  # shared across worktrees
+    assert first.checkpoint.base == git(path, "rev-parse", "main^{tree}")
+    # Trees only: nothing new reaches `git log --all`.
+    assert git(path, "log", "--all", "--format=%H").count("\n") == 1
 
-    # A git view that fails later is kept, naming the error, beside the others.
-    monkeypatch.setattr(git_diff, "session_views", lambda *args: [lambda: broken()])
-    failed, log = [load() for load in app.diff_views()]
-    assert failed.title == "Git diff · git diff unavailable: git diff failed: boom"
-    assert failed.changes == [] and len(log.changes) == 2
+    unchanged = load_review(path, [], reviewed=first.checkpoint)
+    assert unchanged.since_review == [] and unchanged.tree == first.tree
+    commit(path, "a.py", "two\n")  # committing what was reviewed is not new
+    (path / "b.py").write_text("newer\n")
+    later = load_review(path, [], reviewed=first.checkpoint)
+    assert [c.path for c in later.since_review] == ["b.py"]
+    assert "-new" in later.since_review[0].patch and "+newer" in later.since_review[0].patch
+    assert [c.path for c in later.uncommitted] == ["b.py"]
+    # A tree git does not have shows everything, rather than failing the load.
+    assert load_review(path, [], reviewed=git_diff.Checkpoint("f" * 40)).since_review is None
+    # A checkpoint recorded without its base still loads, against today's.
+    git_diff.mark_reviewed(path, "session-1", git_diff.Checkpoint(first.tree))
+    assert git_diff.reviewed(path, "session-1") == git_diff.Checkpoint(first.tree)
+
+    for key in ("../escape", "", "-x"):
+        assert git_diff.reviewed(path, key) is None
+        with pytest.raises(GitDiffError):
+            git_diff.mark_reviewed(path, key, first.checkpoint)
+    with pytest.raises(GitDiffError):
+        git_diff.mark_reviewed(path, "ok", git_diff.Checkpoint("HEAD"))
+    with pytest.raises(GitDiffError):
+        git_diff.mark_reviewed(path, "ok", git_diff.Checkpoint(first.tree, "HEAD\nupdate x"))
+
+
+def test_a_merge_in_progress_outside_the_session_still_loads(repo):
+    commit(repo, "c.txt", "base\n")
+    git(repo, "checkout", "-q", "-b", "other")
+    commit(repo, "c.txt", "other\n")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "c.txt", "main\n")
+    subprocess.run(["git", "-C", str(repo), "merge", "-q", "other"], capture_output=True)
+    (repo / "mine.py").write_text("x\n")
+    review = load_review(repo, ["mine.py"])
+    assert [c.path for c in review.changes] == ["mine.py"] and review.tree
 
 
 def test_shared_checkout_keeps_committed_session_work(repo):
@@ -246,22 +285,23 @@ def test_shared_checkout_keeps_committed_session_work(repo):
     git(repo, "commit", "-q", "-am", "agent")
     (repo / "a.py").write_text("three\n")  # and edited again, uncommitted
 
-    net, uncommitted = [load() for load in git_diff.session_views(repo, ["a.py"], start, since)]
+    net = load_review(repo, ["a.py"], start, since)
     assert list(by_path(net)) == ["a.py", "shell.py"]
     assert "-one" in by_path(net)["a.py"].patch and "+three" in by_path(net)["a.py"].patch
     assert net.title.startswith(
-        f"Git diff · since the session started ({git(repo, 'rev-parse', '--short', start)})"
+        f"since the session started ({git(repo, 'rev-parse', '--short', start)})"
     )
-    assert list(by_path(uncommitted)) == ["a.py"]
-    assert "-two" in by_path(uncommitted)["a.py"].patch
+    uncommitted = {change.path: change for change in net.uncommitted}
+    assert list(uncommitted) == ["a.py"]
+    assert "-two" in uncommitted["a.py"].patch
 
     # HEAD no longer descends from the start: back to uncommitted, edited files only.
     git(repo, "reset", "-q", "--hard", f"{start}~1")
     commit(repo, "a.py", "rewritten\n")
     (repo / "a.py").write_text("dirty\n")
-    view = git_diff.session_diff(repo, ["a.py"], start, since)
+    view = load_review(repo, ["a.py"], start, since)
     assert list(by_path(view)) == ["a.py"] and view.title.endswith("HEAD moved off the start")
-    assert git_diff.session_diff(repo, ["a.py"], "--output=/tmp/x", since).title.endswith(
+    assert load_review(repo, ["a.py"], "--output=/tmp/x", since).title.endswith(
         "HEAD moved off the start"
     )
 
@@ -281,3 +321,16 @@ def test_new_sessions_record_their_starting_commit(repo, tmp_path):
         assert session.info.start_commit is None
     finally:
         session.close()
+
+
+def test_since_review_ignores_what_merging_mainline_brings_in(repo, linked):
+    path = linked.path
+    commit(path, "mine.py", "one\n")
+    reviewed = load_review(path, []).checkpoint
+    commit(repo, "main_only.py", "from main\n")
+    git(path, "merge", "-q", "--no-edit", "main")
+    assert load_review(path, [], reviewed=reviewed).since_review == []
+    (path / "mine.py").write_text("two\n")
+    (path / "mine.py").unlink()  # work reverted since the review is news too
+    (later,) = load_review(path, [], reviewed=reviewed).since_review
+    assert later.path == "mine.py" and later.operation == "deleted"

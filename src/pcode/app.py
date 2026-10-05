@@ -215,6 +215,8 @@ class PreviewApp:
         self._command_popup_generation: int | None = None
         self.inspector_requested: str | None = None
         self.diffs_requested = False
+        # The checkpoint last marked reviewed, for a session with no saved id to key it by.
+        self.reviewed_checkpoint = None
         self.links_requested = False
         self.copy_requested = False
         # Unsaved conversations have no journal to re-read, so keep their changes.
@@ -254,9 +256,9 @@ class PreviewApp:
             ),
             Command(
                 "/tools",
-                "Browse tool calls and results; 'failed' shows only failures",
+                "Browse tool calls and results; 'failed' or 'edits' narrows them",
                 self.tools,
-                ("failed",),
+                ("failed", "edits"),
                 group="Inspect",
             ),
             Command(
@@ -490,6 +492,7 @@ class PreviewApp:
         """A new conversation: clear the screen and the live panel, and say so."""
         self.activity.reset()
         self.edits.clear()
+        self.reviewed_checkpoint = None
         self.transcript.clear()
         self.transcript.print(Rule(title, style="pcode.muted"))
 
@@ -881,6 +884,7 @@ class PreviewApp:
         from pcode.inspector_ui import ToolInspector
 
         failed = self.inspector_requested == "failed"
+        edits = self.inspector_requested == "edits"
         self.inspector_requested = None
         if self.hosted:
             # A host's journal is only re-read when a turn ends, so mid-turn the
@@ -912,6 +916,7 @@ class PreviewApp:
             inspector = ToolInspector(
                 archive,
                 failed=failed,
+                edits=edits,
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
                 delta=self.transcript.delta,
@@ -1024,66 +1029,79 @@ class PreviewApp:
             if record.get("kind") == "EditCompleted"
         ]
 
-    def diff_views(self):
-        """Loaders for /diffs: the session's git views, then its tool edit log.
-
-        A git view that fails becomes an empty view naming the error, so the
-        others stay reachable.
-        """
-        from pcode import git_diff
-        from pcode.edit_ui import EMPTY
-        from pcode.git_diff import DiffView, GitDiffError
-
-        edits = self.recorded_edits()
+    def review_key(self) -> str | None:
+        """The session id its review checkpoint is kept under; None for an unsaved one."""
         info = getattr(getattr(self.runtime, "session", None), "info", None)
-        reason = ""
-        try:
-            views = git_diff.session_views(
-                self.workspace,
-                [edit.path for edit in edits],
-                getattr(info, "start_commit", None),
-                getattr(info, "created", None),
-            )
-        except GitDiffError as error:
-            views, reason = [], f" · git diff unavailable: {plain(str(error), limit=160)}"
+        return getattr(info, "id", None)
 
-        def guarded(load):
-            def view():
-                try:
-                    return load()
-                except GitDiffError as error:
-                    detail = f"git diff unavailable: {plain(str(error), limit=160)}"
-                    return DiffView(f"Git diff · {detail}", [], detail.capitalize() + ".")
+    def load_review(self):
+        """The session's git review for /diffs, or None outside a git repository."""
+        from pcode import git_diff
 
-            return view
+        info = getattr(getattr(self.runtime, "session", None), "info", None)
+        key = self.review_key()
+        reviewed = git_diff.reviewed(self.workspace, key) if key else self.reviewed_checkpoint
+        return git_diff.load_review(
+            self.workspace,
+            [edit.path for edit in self.recorded_edits()],
+            getattr(info, "start_commit", None),
+            getattr(info, "created", None),
+            reviewed,
+        )
 
-        def tool_log():
-            return DiffView(f"Tool edits, newest first{reason}", list(reversed(edits)), EMPTY)
+    def mark_reviewed(self, checkpoint) -> None:
+        """Record a checkpoint: in git for a saved session, else for this process."""
+        from pcode import git_diff
 
-        return [*map(guarded, views), tool_log]
+        if (key := self.review_key()) is not None:
+            git_diff.mark_reviewed(self.workspace, key, checkpoint)
+        self.reviewed_checkpoint = checkpoint
 
     async def browse_diffs(self, output: TerminalOutput, session) -> None:
-        from pcode.edit_ui import EditBrowser, first_view
+        from pcode.edit_ui import DiffBrowser, notes_prompt, render_review
+        from pcode.git_diff import GitDiffError
 
         self.diffs_requested = False
+        delta = self.transcript.delta
+        # The diff pane's width: the screen less its frame and scrollbar.
+        width = max(1, session.app.output.get_size().columns - 4)
 
         def load():
-            loaders = self.diff_views()
-            return loaders, *first_view(loaders)
+            review = self.load_review()
+            return review, render_review(review, delta, width) if review else {}
 
-        loaders, index, loaded = await asyncio.to_thread(load)
+        try:
+            review, rendered = await asyncio.to_thread(load)
+        except GitDiffError as error:
+            self.transcript.error(f"git diff unavailable: {plain(str(error), limit=160)}")
+            return
+        if review is None:
+            self.transcript.note(
+                "/diffs reviews git changes, and this workspace is not in a git repository."
+                " Each file tool's edits are in /tools edits."
+            )
+            return
         async with self.popup(output, session) as modal_input:
-            browser = EditBrowser(
-                views=loaders,
-                loaded=loaded,
-                view=index,
+            browser = DiffBrowser(
+                review,
+                reload=self.load_review,
+                mark=self.mark_reviewed,
                 code_theme=self.transcript.code_theme,
-                delta=self.transcript.delta,
+                delta=delta,
+                rendered=rendered,
+                width=width,
                 input=modal_input,
                 output=session.app.output,
                 style=session.app.style,
             )
             await browser.run()
+        if prompt := notes_prompt(browser.notes):
+            buffer = session.default_buffer
+            draft = buffer.text.rstrip()
+            buffer.text = f"{draft}\n\n{prompt}" if draft else prompt
+            buffer.cursor_position = len(buffer.text)
+            count = len(browser.notes)
+            self.transcript.note(f"Added {count} review note{'s' * (count != 1)} to the prompt.")
 
     def help(self, argument: str) -> None:
         self.transcript.help(self.registry, self.shortcut)
@@ -1424,6 +1442,7 @@ class PreviewApp:
         if self._progress is not None:
             self._progress.switched()
         self.edits.clear()
+        self.reviewed_checkpoint = None
         for name, value in welcome["activity"].items():
             controller.apply_field(name, value)
         self.commands_changed()

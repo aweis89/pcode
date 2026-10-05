@@ -233,7 +233,8 @@ def _popups(tmp_path, options):
     from pcode.aside import Aside, Asides
     from pcode.aside_ui import AsideBrowser
     from pcode.conversation_tree import ConversationTree
-    from pcode.edit_ui import EditBrowser
+    from pcode.edit_ui import DiffBrowser
+    from pcode.git_diff import Review
     from pcode.inspection import ToolArchive
     from pcode.inspector_ui import ToolInspector
     from pcode.links_ui import links_dialog
@@ -243,7 +244,9 @@ def _popups(tmp_path, options):
 
     links = links_dialog([], **options)
     info = session_info_dialog([("Model", "test:local")], **options)
-    edits = EditBrowser([EditCompleted("1", "a.py", "edited", "+x", added=1)], **options)
+    edits = DiffBrowser(
+        Review("t", [EditCompleted("1", "a.py", "edited", "+x", added=1)], "none"), **options
+    )
     tree = TreeBrowser(ConversationTree(), **options)
     # Two threads, since a lone one reads full width with no list to page.
     records = Asides()

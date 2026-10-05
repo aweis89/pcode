@@ -783,3 +783,17 @@ def test_delta_prefetches_every_patch_at_the_rendered_details_width():
 
     width = asyncio.run(run())
     assert [c for c in delta.calls if c[0] == "prefetch"] == [("prefetch", (PATCH,), width)]
+
+
+def test_edits_filter_shows_only_calls_that_changed_files():
+    archive = edit_archive()
+    call(archive, "plain")
+    with create_pipe_input() as pipe:
+        ui = ToolInspector(archive, edits=True, input=pipe, output=DummyOutput())
+        assert [c.call_id for c in ui.visible] == ["edit"]
+        ui.edits = False
+        ui.refresh()
+        assert len(ui.visible) == 2
+    app = PreviewApp(console=Console(file=StringIO()))
+    app.handle("/tools edits")
+    assert app.inspector_requested == "edits"

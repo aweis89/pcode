@@ -184,6 +184,7 @@ class ToolInspector:
         archive: ToolArchive,
         *,
         failed: bool = False,
+        edits: bool = False,
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
         delta: Delta | None = None,
@@ -193,6 +194,7 @@ class ToolInspector:
     ) -> None:
         self.archive = archive
         self.failed = failed
+        self.edits = edits
         self.code_theme = code_theme
         self.delta = delta
         self.tool = "All"
@@ -246,6 +248,11 @@ class ToolInspector:
             self.failed = not self.failed
             self.refresh()
 
+        @shortcuts.add("e", "Edits only")
+        def edits_only(event):
+            self.edits = not self.edits
+            self.refresh()
+
         @shortcuts.add("t", "Tool filter")
         def tool(event):
             self.tool = self.names[(self.names.index(self.tool) + 1) % len(self.names)]
@@ -263,6 +270,7 @@ class ToolInspector:
             lambda: (
                 f"Tool inspector · {len(self.visible)}/{len(self.archive.calls)} calls · "
                 f"Status: {'Failed' if self.failed else 'All'} · Tool: {self.tool}"
+                + (" · Edits only" if self.edits else "")
                 + (f" · {self.notice}" if self.notice else "")
             )
         )
@@ -334,6 +342,7 @@ class ToolInspector:
             call
             for call in reversed(self.archive.calls)
             if (not self.failed or call.state == "failed")
+            and (not self.edits or call.changes)
             and (self.tool == "All" or call.name == self.tool)
             and query in call.title().casefold()
         ]

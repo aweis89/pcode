@@ -6,16 +6,15 @@ import sys
 
 import pytest
 from prompt_toolkit.data_structures import Size
-from prompt_toolkit.document import Document
-from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 from rich.text import Text
 
 from pcode import delta as delta_module
 from pcode.delta import ERASE_LINE, SIDE_BY_SIDE_WIDTH, Delta, from_preferences, preview_patch
-from pcode.edit_transcript import EditTranscript, LiveDeltaPreview, prefetch_edits
-from pcode.edit_ui import EditBrowser
+from pcode.edit_transcript import LiveDeltaPreview
+from pcode.edit_ui import render_review
+from pcode.git_diff import Review
 from pcode.runtime import EditCompleted
 from pcode.tool_panel import panel_fragments
 from pcode.ui import Transcript
@@ -185,41 +184,21 @@ def test_a_user_width_is_not_padded_to_pcodes():
     assert custom.render("p", 30)[0].plain == "x"
 
 
-def test_browser_renders_a_whole_view_in_one_run(tmp_path):
+def test_a_review_renders_every_hunk_of_every_view_in_one_run(tmp_path):
     delta, runs = echoing_delta(tmp_path)
     changes = [
         EditCompleted(str(n), f"f{n}.py", "edited", PATCH + f"\n+row {n}", 2, 1) for n in range(3)
     ]
-    with create_pipe_input() as pipe:
-        ui = EditBrowser(changes, delta=delta, input=pipe, output=SizedOutput())
-        for row in range(3):
-            ui.files.buffer.cursor_position = ui.files.document.translate_row_col_to_index(row, 0)
-            assert f"+row {row}" in ui.diff.text
+    review = Review("Net", changes, "none", uncommitted=changes[:1], since_review=changes[1:])
+    rendered = render_review(review, delta, 60)
+    assert runs.read_text().count("run") == 1 and len(rendered) == 3
+    # One group per output line (this stand-in echoes the header too).
+    for change, groups in zip(changes, rendered.values(), strict=True):
+        assert [g[0].plain.rstrip() for g in groups] == change.patch.splitlines()
+    # Already rendered at this width: nothing runs again.
+    assert render_review(review, delta, 60, rendered) == rendered
     assert runs.read_text().count("run") == 1
-
-
-def test_scrollback_writes_prefetch_their_edit_blocks(tmp_path):
-    delta, runs = echoing_delta(tmp_path)
-    blocks = [EditTranscript(change(PATCH + f"\n+line {n}"), delta=delta) for n in range(4)]
-    prefetch_edits([Text("prose"), *blocks], 70)
-    console = Console(width=70, record=True)
-    for block in blocks:
-        console.print(block)
-    assert "+line 3" in console.export_text()
-    assert runs.read_text().count("run") == 1
-
-
-def test_edit_block_uses_delta_lines_and_falls_back_to_rich():
-    delta = fake()
-    console = Console(width=50, record=True)
-    console.print(EditTranscript(change(), delta=delta))
-    text = console.export_text()
-    assert "DELTA 50" in text and "second row" in text and "-    return 1" not in text
-    assert delta.calls == [(PATCH, 50)]
-
-    console = Console(width=50, record=True)
-    console.print(EditTranscript(change(), delta=fake("fail")))
-    assert "-    return 1" in console.export_text()
+    assert render_review(review, None, 60) == {}
 
 
 def test_transcript_tells_delta_the_palette(monkeypatch):
@@ -238,29 +217,9 @@ class SizedOutput(DummyOutput):
         return Size(rows=40, columns=self.columns)
 
 
-def test_browser_shows_delta_rows_styled_and_searchable():
-    delta = fake()
-    output = SizedOutput()
-    with create_pipe_input() as pipe:
-        ui = EditBrowser([change()], delta=delta, input=pipe, output=output)
-        rows = ui.diff.text.splitlines()
-        assert rows[0].startswith("Edited x.py") and rows[2:] == ["DELTA 80", "", "second row"]
-        assert delta.calls == [(PATCH, 80)]
-        styled = ui.lexer.lex_document(Document(ui.diff.text))(2)
-        assert "".join(text for _, text in styled) == "DELTA 80"
-        assert any("bg:" in style for style, _ in styled)
-        # The heading is still classified as a plain diff line.
-        assert ui.lexer.lex_document(Document(ui.diff.text))(0)[0][1] == rows[0]
-
-        output.columns = 104
-        ui.rewidth(ui.app)
-        assert ui.diff.text.splitlines()[2] == "DELTA 100"
-
-
-def test_browser_falls_back_to_the_plain_patch():
-    with create_pipe_input() as pipe:
-        ui = EditBrowser([change()], delta=fake("fail"), input=pipe, output=DummyOutput())
-        assert "-    return 1" in ui.diff.text and ui.lexer.rows == {}
+def test_render_all_marks_each_failed_patch():
+    delta = Delta("/nonexistent/delta")
+    assert delta.render_all([PATCH, PATCH + "\n+x"], 80) == [None, None]
 
 
 @pytest.mark.skipif(shutil.which("delta") is None, reason="delta is optional")
@@ -439,3 +398,31 @@ def test_real_delta_draws_a_streaming_preview_at_the_panel_width():
 def test_panel_passes_styled_rows_through():
     fragments = panel_fragments([("class:a", "plain"), [("bg:red", "x"), ("", "y")]], 20)
     assert fragments == [("class:a", "plain"), ("", "\n"), ("bg:red", "x"), ("", "y")]
+
+
+def test_a_batch_that_does_not_split_back_is_left_unrendered(tmp_path):
+    delta, runs = echoing_delta(tmp_path)
+    script = tmp_path / "delta"
+    # Swallows the separators, so the output is one piece for three patches.
+    script.write_text(script.read_text().replace("sys.stdin.read()", "'one piece\\n'"))
+    patches = [PATCH.replace("2", str(n)) for n in range(30, 33)]
+    assert delta.render_all(patches, 60) == [None] * 3
+    assert runs.read_text().count("run") == 1  # never started once per patch
+    assert not any(key[1] in patches for key in delta_module._cache)
+
+
+def test_batches_stay_within_one_runs_timeout(tmp_path, monkeypatch):
+    delta, runs = echoing_delta(tmp_path)
+    monkeypatch.setattr(delta_module, "BATCH", 2)
+    patches = [PATCH.replace("2", str(n)) for n in range(10, 15)]
+    assert all(delta.render_all(patches, 60))
+    assert runs.read_text().count("run") == 3
+
+
+@pytest.mark.skipif(shutil.which("delta") is None, reason="delta is optional")
+def test_real_delta_keeps_a_hunk_that_opens_on_a_blank_line():
+    patch = "--- a/x.py\n+++ b/x.py\n@@ -1,4 +1,4 @@\n \n a = 1\n-b = 2\n+b = 3"
+    delta = Delta(shutil.which("delta"))
+    for batch in ([patch], [patch, PATCH]):
+        groups = delta.render_all(batch, 80)[0]
+        assert len(groups) == 4 and groups[0][0].plain.strip() == ""

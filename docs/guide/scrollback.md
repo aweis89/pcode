@@ -84,6 +84,7 @@ did last week. Opening it never reruns anything. See the
 
 ## Review the changes: `/diffs`
 
-`/diffs` shows the session's work as a git diff, one entry per file, in a
-full-screen browser. It's the quickest way to review what changed before you
-commit or merge. See the [diff browser](../commands.md#diff-browser).
+`/diffs` shows the session's work as a git diff, every file in one scroll. It
+opens on what changed since you last marked it reviewed, and notes you leave on
+a line go back to the agent in your prompt when you close it. See the
+[diff browser](../commands.md#diff-browser).

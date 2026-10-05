@@ -9,14 +9,16 @@ commit the session started from, but only for files this session's tools edited
 or its commits touched, since anything else there may be the user's. A commit
 counts as the session's when it is new since the start, was made after the
 session began, and by this checkout's git identity; a pulled commit is neither.
-Each view also has a companion showing only what is not yet committed.
+The same load also cuts out what is not yet committed, and what changed since
+the tree last marked reviewed, kept under `refs/pcode/reviewed/<session>` with
+the tree it was compared against under `refs/pcode/review-base/<session>`.
 
 `git diff` never shows untracked files, and staging them would change the
 user's index. So the working tree is recorded into a throwaway copy of the index
-(`GIT_INDEX_FILE`) and diffed with `--cached`; the real index is never written.
-The copy sits beside the real one because a split index finds its shared half
-there. Untracked files that look sensitive are listed but never hashed, so their
-contents do not reach the object store.
+(`GIT_INDEX_FILE`), written out as a tree, and diffed tree to tree; the real
+index is never written. The copy sits beside the real one because a split index
+finds its shared half there. Untracked files that look sensitive are listed but
+never hashed, so their contents do not reach the object store.
 """
 
 import os
@@ -24,9 +26,8 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
-from functools import partial
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pcode import worktree
@@ -41,7 +42,6 @@ MAX_DIFF_LINES = 2000
 OPERATIONS = {"A": "created", "C": "copied", "D": "deleted", "R": "renamed"}
 # Pin everything user config can change about the output this module parses.
 DIFF_OPTIONS = (
-    "--cached",
     "--no-color",
     "--no-ext-diff",
     "--no-textconv",
@@ -53,119 +53,191 @@ DIFF_OPTIONS = (
 
 
 class GitDiffError(Exception):
-    """Git could not produce the view; the caller falls back to the tool-edit log."""
+    """Git could not produce the review."""
+
+
+# One ref per session, holding the tree last marked reviewed, and one for the
+# base tree it was compared against then (merging mainline moves the base): a
+# ref keeps the
+# tree from garbage collection, and no session file has to be written for it.
+REVIEW_REF = "refs/pcode/reviewed/"
+REVIEW_BASE_REF = "refs/pcode/review-base/"
 
 
 @dataclass(frozen=True)
-class DiffView:
+class Checkpoint:
+    """What was marked reviewed: the working tree, and the base it was compared with."""
+
+    tree: str
+    # None for a checkpoint whose base was not recorded; the current one stands in.
+    base: str | None = None
+
+
+@dataclass(frozen=True)
+class Review:
+    """One load of /diffs: the session's net work, and two narrower cuts of it.
+
+    `changes` is the net work against its base (`title` says which).
+    `uncommitted` is what the next commit would take in, and `since_review` what
+    changed since the tree last marked reviewed (None when there is none). All
+    three describe `tree`, the working tree as recorded for this load, so marking
+    it reviewed records exactly what was shown. Paths are relative to `root`.
+    """
+
     title: str
     changes: list[EditCompleted]
     empty: str
+    root: Path | None = None
+    uncommitted: list[EditCompleted] = field(default_factory=list)
+    since_review: list[EditCompleted] | None = None
+    tree: str | None = None
+    # The base's tree, recorded with `tree` when it is marked reviewed.
+    base_tree: str | None = None
+
+    @property
+    def checkpoint(self) -> Checkpoint | None:
+        return Checkpoint(self.tree, self.base_tree) if self.tree else None
 
 
-def session_views(
+def load_review(
     workspace: Path,
     edited: Iterable[str],
     start: str | None = None,
     since: str | None = None,
-) -> list[Callable[[], DiffView]]:
-    """Loaders for the git views of `workspace`, the session's net work first.
+    reviewed: Checkpoint | None = None,
+) -> Review | None:
+    """The review of `workspace`, or None outside a git repository.
 
-    Empty outside a git repository. `edited` holds the paths this session's
-    file tools changed, relative to the workspace; `start` is the commit the
-    session began at and `since` when (ISO 8601). Only a shared checkout uses
-    them. Each loader runs git and may raise GitDiffError.
+    `edited` holds the paths this session's file tools changed, relative to
+    the workspace; `start` is the commit the session began at and `since` when
+    (ISO 8601). Only a shared checkout uses them. `reviewed` is the checkpoint
+    last marked reviewed. Raises GitDiffError when git cannot produce the review.
     """
     try:
         if worktree.project_checkout(workspace) is None:
-            return []
+            return None
         linked = worktree.describe(workspace)
     except worktree.WorktreeError as error:
         raise GitDiffError(str(error)) from error
     if linked is not None:
-        return [partial(branch_diff, linked), partial(uncommitted_diff, linked.path)]
-    edited = list(edited)
-    return [
-        partial(edited_files_diff, workspace, edited, start, since),
-        partial(uncommitted_diff, workspace, edited, start, since, shared=True),
+        top = _toplevel(linked.path)
+        base, title, empty = _branch_base(linked)
+        only = None
+    else:
+        top = _toplevel(workspace)
+        base, title, empty, only = _session_base(workspace, top, edited, start, since)
+    if only is not None and not only:
+        return Review(title, [], empty, root=top)
+    tree, secret = _snapshot(top, only)
+    unread = [
+        EditCompleted("", plain(path, limit=None), "created", omitted="Sensitive file; not read")
+        for path in sorted(secret)
     ]
+    changes = _tree_diff(top, base, tree, only) + unread
+    uncommitted = changes if base == "HEAD" else _tree_diff(top, "HEAD", tree, only) + unread
+    since_review = None
+    if reviewed is not None:
+        try:
+            # Only the session's work: files that differ from the base now, or
+            # differed from the base of the time when reviewed. A file
+            # mainline's merge (or a pull) brought in differs from neither, so
+            # it is not news. The reviewed tree never held the unread files.
+            then = reviewed.base or base
+            ours = _names(top, base, tree, only) | _names(top, then, reviewed.tree, only)
+            since_review = _tree_diff(top, reviewed.tree, tree, ours) if ours else []
+        except GitDiffError:
+            since_review = None  # a tree git no longer has: review everything
+    base_tree = _git(top, "rev-parse", f"{base}^{{tree}}").decode().strip()
+    return Review(
+        title,
+        sorted(changes, key=_path),
+        empty,
+        root=top,
+        uncommitted=sorted(uncommitted, key=_path),
+        since_review=since_review,
+        tree=tree,
+        base_tree=base_tree,
+    )
 
 
-def session_diff(
-    workspace: Path, edited: Iterable[str], start: str | None = None, since: str | None = None
-) -> DiffView | None:
-    """The session's net git view of `workspace`, or None outside a git repository."""
-    views = session_views(workspace, edited, start, since)
-    return views[0]() if views else None
+def _path(change: EditCompleted) -> str:
+    return change.path
 
 
-def branch_diff(linked: worktree.Worktree) -> DiffView:
+def reviewed(workspace: Path, key: str) -> Checkpoint | None:
+    """The checkpoint last marked reviewed for session `key`, if git still has it."""
+    if not _valid_key(key):
+        return None
+    found = []
+    for prefix in (REVIEW_REF, REVIEW_BASE_REF):
+        try:
+            name = f"{prefix}{key}^{{tree}}"
+            out = _git(workspace, "rev-parse", "--verify", "--quiet", name, check=False)
+        except GitDiffError:
+            return None
+        found.append(out.decode().strip() or None)
+    tree, base = found
+    return Checkpoint(tree, base) if tree else None
+
+
+def mark_reviewed(workspace: Path, key: str, checkpoint: Checkpoint) -> None:
+    """Record `checkpoint` as session `key`'s reviewed state, both refs at once."""
+    names = [checkpoint.tree, *([checkpoint.base] if checkpoint.base else [])]
+    if not _valid_key(key) or not all(re.fullmatch(r"[0-9a-f]{40,64}", n) for n in names):
+        raise GitDiffError("invalid review checkpoint")
+    commands = f"update {REVIEW_REF}{key} {checkpoint.tree}\n"
+    if checkpoint.base:
+        commands += f"update {REVIEW_BASE_REF}{key} {checkpoint.base}\n"
+    else:
+        commands += f"delete {REVIEW_BASE_REF}{key}\n"
+    _git(workspace, "update-ref", "--stdin", input=commands.encode())
+
+
+def _valid_key(key: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", key))
+
+
+def _branch_base(linked: worktree.Worktree) -> tuple[str, str, str]:
+    """A linked worktree's whole branch, against its merge-base with mainline."""
     try:
         mainline = worktree.mainline_branch(linked.main)
     except worktree.WorktreeError as error:
         raise GitDiffError(str(error)) from error
     base = _git(linked.path, "merge-base", "HEAD", mainline).decode().strip()
     branch, mainline = plain(linked.branch), plain(mainline)
-    return DiffView(
-        f"Git diff · {branch} vs {mainline} (merge-base {_short(linked.path, base)})"
+    return (
+        base,
+        f"{branch} vs {mainline} (merge-base {_short(linked.path, base)})"
         " · includes uncommitted and new files",
-        _diff(linked.path, base),
         f"{branch} has nothing that {mainline} does not already have.",
     )
 
 
-def edited_files_diff(
-    workspace: Path, edited: Iterable[str], start: str | None = None, since: str | None = None
-) -> DiffView:
+def _session_base(
+    workspace: Path, top: Path, edited: Iterable[str], start: str | None, since: str | None
+) -> tuple[str, str, str, set[str]]:
     """A shared checkout's session work: the working tree against the starting commit.
 
-    Falls back to uncommitted changes against HEAD, in edited files only, when
-    no start was recorded or HEAD no longer descends from it (a rebase, a
-    branch switch).
+    Limited to files this session edited or committed. Falls back to
+    uncommitted changes against HEAD, in edited files only, when no start was
+    recorded or HEAD no longer descends from it (a rebase, a branch switch).
     """
-    top = _toplevel(workspace)
     edited_paths = _top_relative(workspace, top, edited)
     if start is None or not _is_ancestor(top, start):
         why = "no starting commit recorded" if start is None else "HEAD moved off the start"
-        return DiffView(
-            f"Git diff · uncommitted changes vs HEAD ({_short(top, 'HEAD')})"
+        return (
+            "HEAD",
+            f"uncommitted changes vs HEAD ({_short(top, 'HEAD')})"
             f" · only files edited this session · {why}",
-            _diff(top, "HEAD", only=edited_paths) if edited_paths else [],
             "No uncommitted changes in files edited this session.",
+            edited_paths,
         )
-    paths = edited_paths | _committed(top, start, since)
-    return DiffView(
-        f"Git diff · since the session started ({_short(top, start)})"
+    return (
+        start,
+        f"since the session started ({_short(top, start)})"
         " · files this session edited or committed, including uncommitted and new files",
-        _diff(top, start, only=paths) if paths else [],
         "No changes since the session started in files it edited or committed.",
-    )
-
-
-def uncommitted_diff(
-    workspace: Path,
-    edited: Iterable[str] = (),
-    start: str | None = None,
-    since: str | None = None,
-    *,
-    shared: bool = False,
-) -> DiffView:
-    """What the next commit would take in; a shared checkout limits it to session files."""
-    top = _toplevel(workspace)
-    short = _short(top, "HEAD")
-    if not shared:
-        return DiffView(
-            f"Git diff · uncommitted changes vs HEAD ({short}) · including new files",
-            _diff(top, "HEAD"),
-            "No uncommitted changes.",
-        )
-    paths = _top_relative(workspace, top, edited)
-    if start is not None and _is_ancestor(top, start):
-        paths |= _committed(top, start, since)
-    return DiffView(
-        f"Git diff · uncommitted changes vs HEAD ({short}) · only files this session touched",
-        _diff(top, "HEAD", only=paths) if paths else [],
-        "No uncommitted changes in files this session touched.",
+        edited_paths | _committed(top, start, since),
     )
 
 
@@ -210,19 +282,19 @@ def _committed(top: Path, start: str, since: str | None) -> set[str]:
     return _paths(_git(top, *args, f"{start}..HEAD", "--"))
 
 
-def _diff(top: Path, base: str, only: set[str] | None = None) -> list[EditCompleted]:
-    """Working tree against `base`, including untracked files, one change per file."""
+def _snapshot(top: Path, only: set[str] | None = None) -> tuple[str, set[str]]:
+    """Record the working tree as a tree object, and the untracked secrets left out.
+
+    Untracked files are included, limited to `only` where given; the real
+    index is never written. Untracked files that look sensitive are not
+    hashed, so their contents never reach the object store.
+    """
     index = Path(
         _git(top, "rev-parse", "--path-format=absolute", "--git-path", "index").decode().strip()
     )
     descriptor, scratch = tempfile.mkstemp(prefix="pcode-diff-index-", dir=index.parent)
     os.close(descriptor)
-    env = {
-        **os.environ,
-        "GIT_INDEX_FILE": scratch,
-        "GIT_LITERAL_PATHSPECS": "1",
-        "GIT_OPTIONAL_LOCKS": "0",
-    }
+    env = {**os.environ, "GIT_INDEX_FILE": scratch, "GIT_OPTIONAL_LOCKS": "0"}
     try:
         # Starting from the real index keeps staged work and its stat cache, so
         # only files that differ from it are hashed below. copy2 keeps the
@@ -238,8 +310,11 @@ def _diff(top: Path, base: str, only: set[str] | None = None) -> list[EditComple
         if only is not None:
             untracked &= only
             changed &= only
+        # A tree cannot hold a conflict, so a merge in progress outside `only`
+        # is recorded as its files stand; the diffs never look outside `only`.
+        unmerged = _paths(_git(top, "diff", "--name-only", "-z", "--diff-filter=U", env=env))
         secret = {path for path in untracked if sensitive_path(path)}
-        stage = sorted(changed | (untracked - secret))
+        stage = sorted(changed | unmerged | (untracked - secret))
         if stage:
             listing = b"\0".join(path.encode("utf-8", "surrogateescape") for path in stage)
             _git(
@@ -248,27 +323,50 @@ def _diff(top: Path, base: str, only: set[str] | None = None) -> list[EditComple
                 "--all",
                 "--pathspec-from-file=-",
                 "--pathspec-file-nul",
-                env=env,
+                env={**env, "GIT_LITERAL_PATHSPECS": "1"},
                 input=listing,
             )
-        # Limit git itself, not just the result: against a start commit, a pull
-        # would otherwise patch every file it brought in. Literal pathspecs
-        # (set above); a rename with one side outside `only` shows as one side.
-        paths = ["--", *sorted(only)] if only is not None else []
-        names = _git(top, "diff", *DIFF_OPTIONS, "--name-status", "-z", base, *paths, env=env)
-        patch = _git(top, "diff", *DIFF_OPTIONS, "--patch", base, *paths, env=env)
+        tree = _git(top, "write-tree", env=env).decode().strip()
     finally:
         Path(scratch).unlink(missing_ok=True)
-    changes = [
+    return tree, secret
+
+
+DIFF_ENV = {"GIT_LITERAL_PATHSPECS": "1", "GIT_OPTIONAL_LOCKS": "0"}
+
+
+def _names(top: Path, base: str, tree: str, only: set[str] | None) -> set[str]:
+    """Every path, either side of a rename, that differs between `base` and `tree`."""
+    paths = ["--", *sorted(only)] if only is not None else []
+    names = _git(
+        top,
+        "diff",
+        *DIFF_OPTIONS,
+        "--name-status",
+        "-z",
+        base,
+        tree,
+        *paths,
+        env={**os.environ, **DIFF_ENV},
+    )
+    found = {path for _, old, new in _entries(names) for path in (old, new)}
+    return found if only is None else found & only
+
+
+def _tree_diff(top: Path, base: str, tree: str, only: set[str] | None) -> list[EditCompleted]:
+    """`tree` against `base`, one change per file, limited to `only` where given."""
+    env = {**os.environ, **DIFF_ENV}
+    # Limit git itself, not just the result: against a start commit, a pull
+    # would otherwise patch every file it brought in. A rename with one side
+    # outside `only` shows as one side.
+    paths = ["--", *sorted(only)] if only is not None else []
+    names = _git(top, "diff", *DIFF_OPTIONS, "--name-status", "-z", base, tree, *paths, env=env)
+    patch = _git(top, "diff", *DIFF_OPTIONS, "--patch", base, tree, *paths, env=env)
+    return [
         _change(status, old, new, chunk)
         for (status, old, new), chunk in _pair(_entries(names), patch)
         if only is None or old in only or new in only
     ]
-    changes.extend(
-        EditCompleted("", plain(path, limit=None), "created", omitted="Sensitive file; not read")
-        for path in secret
-    )
-    return sorted(changes, key=lambda change: change.path)
 
 
 def _pair(entries: list[tuple[str, str, str]], patch: bytes):
