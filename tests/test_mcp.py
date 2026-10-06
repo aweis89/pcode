@@ -286,17 +286,22 @@ def test_changes_go_ahead_beside_a_running_turn(tmp_path):
         controller.prompts.put("earlier", "steering")
         controller.command("/mcp enable docs")
         controller.prompts.put("use docs", "steering")
+        assert controller.has_steering()
         controller.command_started("/mcp enable docs")
         await controller.run_command("/mcp enable docs")
         assert controller.mcp_task is not None
         # Steering sent after the enable waits for it, so it arrives with the
         # server's tools; what was sent before is not held up.
+        assert controller.has_steering()
         assert controller.take_steering() == ["earlier"]
+        assert not controller.has_steering()
         assert controller.take_steering() == []
         # One MCP change at a time.
         await controller.run_command("/mcp disable docs")
         await asyncio.gather(controller.mcp_task, return_exceptions=True)
+        assert controller.has_steering()
         assert controller.take_steering() == ["use docs"]
+        assert not controller.has_steering()
         # The turn keeps its status line.
         assert app.activity.status == "Running shell…"
         turn.cancel()

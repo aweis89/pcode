@@ -73,7 +73,7 @@ def test_session_help_lists_delete_binding(tmp_path):
                 "Delete",
                 "Delete selected session (twice; list focused)",
             ) in browser.prefix_keys.hint_rows()
-            assert browser.prefix_keys.summary().endswith("Keybindings")
+            assert browser.prefix_keys.summary().endswith("Keys")
             assert "Delete" not in browser.prefix_keys.summary()
 
 
@@ -111,7 +111,7 @@ def test_help_is_modal_in_reader_and_nested_pickers(picker):
 
             try:
                 await asyncio.wait_for(rendered.wait(), 2)
-                await send("\x1bOP")  # F1 opens contextual help even inside a modal picker.
+                await send("\x1f")  # Ctrl+/ opens contextual help even inside a modal picker.
                 assert browser.prefix_keys.browsing
                 with set_app(browser.app):
                     assert all(row in browser.prefix_keys.hint_rows() for row in browser.help())

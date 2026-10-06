@@ -260,6 +260,21 @@ class PreviewApp:
                 argument_descriptions=config_argument_descriptions(),
                 group="App",
             ),
+            Command(
+                "/bind",
+                "List, set, or reset prompt keybindings; bind KEY /command [args]",
+                self.bind,
+                free_arguments=True,
+                argument_completer=self.complete_bind,
+                group="App",
+            ),
+            Command(
+                "/unbind",
+                "Disable a prompt binding; /bind reset KEY restores its default",
+                self.unbind,
+                free_arguments=True,
+                group="App",
+            ),
             Command("/quit", "Exit pcode", self.quit, aliases=("/exit",), group="App"),
             Command(
                 "/status",
@@ -354,7 +369,7 @@ class PreviewApp:
             self.controller.registry.find("/worktree"),
             Command(
                 "/show-tasks",
-                f"Tasks/Tools widget: on / off; bare toggles ({shortcut_label('o')})",
+                "Tasks/Tools widget: on / off; bare toggles",
                 self.show_tasks,
                 ("on", "off"),
                 group="Display",
@@ -368,8 +383,7 @@ class PreviewApp:
             ),
             Command(
                 "/show-thinking",
-                "Where thinking shows: off / status-line / scrollback; bare cycles "
-                f"({shortcut_label('t')})",
+                "Where thinking shows: off / status-line / scrollback; bare cycles",
                 self.show_thinking,
                 THINKING_MODES,
                 group="Display",
@@ -383,8 +397,7 @@ class PreviewApp:
             ),
             Command(
                 "/show-commands",
-                "Shell command output in scrollback: on / off; bare toggles "
-                f"({shortcut_label('g')})",
+                "Shell command output in scrollback: on / off; bare toggles",
                 self.show_commands,
                 ("on", "off"),
                 group="Display",
@@ -679,6 +692,32 @@ class PreviewApp:
         except _PopupSuperseded:
             pass
 
+    def prompt_bindings(self):
+        bindings = getattr(self.prompt_session, "command_bindings", None)
+        if bindings is None:
+            raise ValueError("Keybindings require an interactive prompt.")
+        return bindings
+
+    def bind(self, argument: str) -> None:
+        try:
+            result = self.prompt_bindings().manage(argument)
+        except OSError as error:
+            raise ValueError(f"Could not access keybindings: {error}") from None
+        self.transcript.note(result)
+        self.prompt_session.app.invalidate()
+
+    def unbind(self, argument: str) -> None:
+        try:
+            result = self.prompt_bindings().manage(argument, unbind=True)
+        except OSError as error:
+            raise ValueError(f"Could not access keybindings: {error}") from None
+        self.transcript.note(result)
+        self.prompt_session.app.invalidate()
+
+    def complete_bind(self, argument: str):
+        bindings = getattr(self.prompt_session, "command_bindings", None)
+        return bindings.complete(argument) if bindings is not None else ()
+
     def config(self, argument: str) -> None:
         args = shlex.split(argument)
         try:
@@ -868,6 +907,9 @@ class PreviewApp:
 
     def shortcut(self, key: str) -> str:
         """How this session's prompt spells shortcut ``key``, e.g. Ctrl+O."""
+        bindings = getattr(self.prompt_session, "command_bindings", None)
+        if bindings is not None:
+            return bindings.action_label(key)
         shortcuts = getattr(self.prompt_session, "shortcuts", None)
         return shortcuts.label(key) if shortcuts is not None else shortcut_label(key)
 
@@ -2123,6 +2165,7 @@ class PreviewApp:
             transcript=self.transcript,
             workspace=lambda: self.workspace,
             on_submit=submit,
+            on_command=submit,
             on_cancel=cancel,
             on_tasks=self.set_show_tasks,
             on_thinking=self.show_thinking,

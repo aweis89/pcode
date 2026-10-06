@@ -23,6 +23,9 @@ replying continues it.
   finished job wakes the agent. Good for watching CI and fixing what fails.
 - Every conversation is kept, so you can resume, search or fork it.
 - A git worktree per session, so several agents can work on one repo at once.
+- [Custom keybindings and Vim editing](https://aweis89.github.io/pcode/keybindings/):
+  map keys to commands with arguments, add a Space leader in normal mode, or use
+  `jj` to leave insert mode.
 - [Email remote control](https://aweis89.github.io/pcode/email/): send a task
   from Gmail on your phone, reply to keep going, and take the session over at a
   terminal with `pcode --attach`.
@@ -43,18 +46,11 @@ brew tap aweis89/pcode https://github.com/aweis89/pcode.git
 brew install --HEAD aweis89/pcode/pcode
 ```
 
-Or from a checkout with [uv](https://docs.astral.sh/uv/):
-
-```sh
-uv run pcode -m openai-codex:gpt-5.6-luna   # this checkout only
-uv tool install --editable '.[claude]'      # bare `pcode` everywhere; drop [claude] to skip claude: models
-```
-
 ## Quick start
 
 ```sh
 codex login                                  # or /login [claude|openai-codex] inside pcode, or export a provider API key
-pcode -m openai-codex:gpt-5.6-luna           # interactive; /model (Ctrl+B then l) saves a default
+pcode -m openai-codex:gpt-5.6-luna           # interactive; /model (Ctrl+L) saves a default
 pcode                                        # reuses the saved model, or opens the offline preview
 pcode -C /path/to/repo "Summarize the open TODOs"
 git diff | pcode -p --no-save                # non-interactive: reply to stdout
@@ -78,6 +74,7 @@ before pointing it at anything you care about.
 | [Providers and models](https://aweis89.github.io/pcode/providers/) | Authentication, supported providers, the model picker, reasoning effort, Claude Code, Meridian, proxies |
 | [Configuration](https://aweis89.github.io/pcode/configuration/) | `pcode config`, per-repository overrides, trusting repository code, the settings table, syntax styles |
 | [Commands and keys](https://aweis89.github.io/pcode/commands/) | Slash commands, key bindings, vi mode, tmux newlines, status line, `!command`, the diff and tool inspectors |
+| [Keybindings](https://aweis89.github.io/pcode/keybindings/) | Custom command mappings with `/bind`, Ctrl shortcuts, vi editing, a normal-mode leader, and custom escape sequences such as `jj` |
 | [Tools](https://aweis89.github.io/pcode/tools/) | Tool permissions, web search, the browser, code mode |
 | [MCP servers](https://aweis89.github.io/pcode/mcp/) | Opt-in MCP configuration, OAuth sign-in, deferred tool search |
 | [Working in a repository](https://aweis89.github.io/pcode/workspace/) | `AGENTS.md`/`CLAUDE.md`, skills as slash commands, one worktree per session |

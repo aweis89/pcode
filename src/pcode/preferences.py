@@ -189,6 +189,8 @@ RESERVED_CHORDS = {
     "c-j": "inserts a newline",
     "c-m": "is Enter",
     "c-[": "is Escape",
+    # Terminals send Ctrl+/ as Ctrl+_ (0x1f).
+    "c-_": "opens keybinding help (Ctrl+/)",
 }
 _CTRL_HEADS = ("ctrl+", "ctrl-", "control+", "control-", "c-")
 _CTRL_NAMES = {"space": "@", "spc": "@"}
@@ -691,7 +693,7 @@ SETTINGS = {
     # a modifier. Read when a popup opens, so no restart is needed.
     # Read as each popup opens; the main prompt picks it up on the next launch.
     "key_prefix": Setting(
-        "ctrl+b",
+        "ctrl",
         key_prefix=True,
         description=(
             "Shortcut prefix: ctrl for Ctrl+key chords, or a leader such as ctrl+p "

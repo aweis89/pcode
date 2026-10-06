@@ -36,6 +36,26 @@ def draft_line(screen: str) -> str:
     return next(line for line in screen.splitlines() if line.startswith("│❯"))
 
 
+def test_custom_ctrl_binding_runs_command_without_sending_or_moving_draft(pane):
+    capture(pane, "steering")
+    pane("send-keys", "-t", "preview:0.0", "-l", "/bind e /show-thinking off")
+    pane("send-keys", "-t", "preview:0.0", "Enter")
+    capture(pane, "Saved Ctrl+E")
+    pane("send-keys", "-t", "preview:0.0", "-l", "keep this draft")
+    capture(pane, "keep this draft")
+    pane("send-keys", "-t", "preview:0.0", "C-a", "C-e")
+    screen = capture(pane, "Thinking: off")
+    assert "keep this draft" in draft_line(screen)
+    pane("send-keys", "-t", "preview:0.0", "-l", "X")
+    screen = capture(pane, "Xkeep this draft")
+    assert "Xkeep this draft" in draft_line(screen)
+    pane("send-keys", "-t", "preview:0.0", "C-_")
+    capture(pane, "/show-thinking off")
+    pane("send-keys", "-t", "preview:0.0", "Escape")
+    screen = settle(pane, lambda screen: "Keybindings · Prompt" not in screen)
+    assert "Xkeep this draft" in draft_line(screen)
+
+
 @pytest.mark.parametrize("pane", [VI_SCRIPT], indirect=True)
 def test_vi_space_leader_and_jj_share_actions_with_global_prefix(pane):
     capture(pane, " INSERT ")
@@ -127,8 +147,8 @@ def test_short_terminal_help_scrolls_without_changing_draft(pane, height, scroll
     assert LAST not in screen, screen
     assert "keep this draft" in draft_line(screen) and input_rows(screen) == 1, screen
 
-    # F1 is read-only, including letters that otherwise run shortcuts.
-    pane("send-keys", "-t", "preview:0.0", "F1")
+    # Ctrl+/ is read-only, including letters that otherwise run shortcuts.
+    pane("send-keys", "-t", "preview:0.0", "C-_")
     screen = capture(pane, "Keybindings")
     assert LAST not in screen, screen
     pane("send-keys", "-t", "preview:0.0", "s", *([scroll_key] * 50))

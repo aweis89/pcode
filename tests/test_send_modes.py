@@ -60,7 +60,9 @@ def test_busy_send_modes(mode, editing_mode):
                     started.set()
                     try:
                         await release.wait()
+                        assert self.has_steering() == (mode == "steering")
                         steered.extend(self.take_steering())
+                        assert not self.has_steering()
                         if mode == "steering":
                             assert app.activity.prompt == "second"
                             assert app.activity.prompt_state == "running"

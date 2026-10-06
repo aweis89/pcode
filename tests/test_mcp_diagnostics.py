@@ -181,3 +181,58 @@ def test_failure_without_a_response_still_names_the_server():
     message = turn_error(_connect(toolset))
     assert "MCP server 'remote' failed to connect (" in message
     assert "HTTP" not in message
+
+
+def test_registration_refusal_says_to_add_a_client_id():
+    from mcp.client.auth.exceptions import OAuthRegistrationError
+
+    from pcode.live import error_message as turn_error
+    from pcode.mcp import config_path
+
+    # What Google's Drive server answers, wrapped as the SDK wraps it.
+    error = RuntimeError("Client failed to connect")
+    error.__cause__ = OAuthRegistrationError("Registration failed: 400 <html>private-body</html>")
+    message = turn_error(error)
+    assert "client_id" in message and "client_secret" in message
+    assert str(config_path()) in message
+    assert "private-body" not in message
+
+
+def test_call_that_fails_sign_in_reports_the_sign_in_error_not_a_closed_connection():
+    from mcp.client.auth.exceptions import OAuthRegistrationError
+    from pydantic_ai.exceptions import ModelRetry
+
+    from pcode.mcp import _named_toolset
+
+    registration = OAuthRegistrationError("Registration failed: 400")
+    auth = SimpleNamespace(failure=None)
+    closed = ModelRetry("Connection closed")
+
+    class Inner:
+        client = SimpleNamespace(transport=SimpleNamespace(auth=auth))
+        calls = 0
+
+        async def call_tool(self, name, args, ctx, tool):
+            self.calls += 1
+            if self.calls == 1:
+                auth.failure = registration
+            raise closed
+
+    server = _named_toolset()(Inner(), server="gdrive", config=None)
+
+    async def run():
+        with pytest.raises(OAuthRegistrationError) as caught:
+            await server.call_tool("read_file_content", {}, None, None)
+        assert caught.value is registration and caught.value.__cause__ is closed
+        # Concurrent calls closed by the same failure all see it.
+        with pytest.raises(OAuthRegistrationError):
+            await server.call_tool("read_file_content", {}, None, None)
+        # A network error during the flow is not a sign-in failure: still a retry.
+        auth.failure = TimeoutError("refresh timed out")
+        with pytest.raises(ModelRetry):
+            await server.call_tool("read_file_content", {}, None, None)
+        auth.failure = None
+        with pytest.raises(ModelRetry):
+            await server.call_tool("read_file_content", {}, None, None)
+
+    asyncio.run(run())

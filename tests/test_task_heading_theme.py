@@ -21,6 +21,19 @@ def test_task_heading_color_is_scoped(theme, color):
     assert style.get_attrs_for_style_str("class:plan.in_progress").color == palette.accent[1:]
 
 
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_finished_task_heading_turns_the_success_colour(theme):
+    from pcode.ui import Activity
+
+    palette = PALETTES[theme]
+    style = merge_styles([default_ui_style(), palette.prompt_style()])
+    done = style.get_attrs_for_style_str("class:frame.label class:plan.heading.done")
+    assert done.color == palette.success[1:] and done.bold
+    assert Activity(plan=[{"content": "a", "status": "completed"}]).plan_done
+    assert not Activity(plan=[{"content": "a", "status": "pending"}]).plan_done
+    assert not Activity().plan_done
+
+
 def test_task_heading_tracks_theme_changes():
     palette = PALETTES["dark"]
     style = merge_styles([default_ui_style(), DynamicStyle(lambda: palette.prompt_style())])

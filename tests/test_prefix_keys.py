@@ -101,8 +101,8 @@ def test_a_key_is_one_shortcut():
 def test_summary_and_hint_list_what_applies_now():
     available = [True]
     for prefix, summary in [
-        ("ctrl", "F1 Keybindings"),
-        ("ctrl+p", "^P Keybindings"),
+        ("ctrl", "Ctrl+/ Keys"),
+        ("ctrl+p", "Ctrl+P Keys"),
     ]:
         shortcuts = PrefixKeys(prefix)
         shortcuts.add("y", "Copy")(lambda event: None)
@@ -113,7 +113,7 @@ def test_summary_and_hint_list_what_applies_now():
             (shortcuts.label("y"), "Copy"),
             (shortcuts.label("k"), "Stop"),
         ]
-        assert shortcuts.hint_footer() == [("Esc", "cancel"), ("F1", "all keys")]
+        assert shortcuts.hint_footer() == [("Esc", "cancel"), ("Ctrl+/", "all keys")]
     shortcuts.pending = True
     assert shortcuts.summary() == "^P …"
     assert shortcuts.hint_rows() == [
@@ -123,7 +123,7 @@ def test_summary_and_hint_list_what_applies_now():
     available[0] = False
     assert shortcuts.hint_rows() == [("y", "Copy")]
     shortcuts.dismiss()
-    assert shortcuts.summary() == "^P Keybindings"
+    assert shortcuts.summary() == "Ctrl+P Keys"
 
 
 class Surface:
@@ -344,7 +344,7 @@ def test_the_prompt_renders_descriptive_actions_in_shared_help():
     assert "n / p  Thinking effort up / down" in screen
     assert "Select thinking visibility" in screen
     assert "Copy draft / last response" in screen
-    assert "Esc cancel · F1 all keys" in screen
+    assert "Esc cancel · Ctrl+/ all keys" in screen
 
 
 def test_help_and_flashes_name_the_prompts_own_keys():

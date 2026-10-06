@@ -164,30 +164,30 @@ def test_theme_save_failure_keeps_current_selection():
 
 
 @pytest.mark.usefixtures("shipped_key_prefix")
-def test_shortcuts_default_to_ctrl_b_without_saved_preferences():
+def test_shortcuts_default_to_ctrl_without_saved_preferences():
     from pcode.preferences import SETTINGS
     from pcode.prefix_keys import PrefixKeys, configured_prefix, shortcut_label
 
     assert "key_prefix" not in load_preferences()
-    assert SETTINGS["key_prefix"].default == "ctrl+b"
-    assert configured_prefix() == "ctrl+b"
-    assert PrefixKeys().leader == ("c-b",)
-    assert shortcut_label("s") == "Ctrl+B s"
-
-
-@pytest.mark.usefixtures("shipped_key_prefix")
-def test_saved_ctrl_chords_override_shipped_prefix_default():
-    from pcode.prefix_keys import PrefixKeys, configured_prefix, shortcut_label
-
-    save_preferences(key_prefix="ctrl")
-
+    assert SETTINGS["key_prefix"].default == "ctrl"
     assert configured_prefix() == "ctrl"
     assert PrefixKeys().leader == ()
     assert shortcut_label("s") == "Ctrl+S"
 
 
 @pytest.mark.usefixtures("shipped_key_prefix")
-def test_invalid_saved_prefix_falls_back_to_ctrl_b():
+def test_saved_leader_overrides_shipped_ctrl_default():
+    from pcode.prefix_keys import PrefixKeys, configured_prefix, shortcut_label
+
+    save_preferences(key_prefix="ctrl+b")
+
+    assert configured_prefix() == "ctrl+b"
+    assert PrefixKeys().leader == ("c-b",)
+    assert shortcut_label("s") == "Ctrl+B s"
+
+
+@pytest.mark.usefixtures("shipped_key_prefix")
+def test_invalid_saved_prefix_falls_back_to_ctrl():
     from pcode.prefix_keys import configured_prefix
 
     path = preferences_path()
@@ -195,7 +195,7 @@ def test_invalid_saved_prefix_falls_back_to_ctrl_b():
     path.write_text('{"key_prefix": "invalid"}')
 
     assert "key_prefix" not in load_preferences()
-    assert configured_prefix() == "ctrl+b"
+    assert configured_prefix() == "ctrl"
 
 
 def test_config_dir_override_moves_every_config_file(monkeypatch, tmp_path):

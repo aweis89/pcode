@@ -214,7 +214,7 @@ def test_vi_leader_can_close_its_full_help_without_hiding_global_actions():
             )
 
             async def feed():
-                pipe.send_text("draft\x1bt\x1bOP")  # F1 opens full help from the vi menu.
+                pipe.send_text("draft\x1bt\x1f")  # Ctrl+/ opens full help from the vi menu.
                 while not prompt.shortcuts.browsing:
                     await asyncio.sleep(0.01)
                 assert ("Ctrl+B t", "Select thinking visibility") in prompt.shortcuts.hint_rows()
@@ -243,7 +243,7 @@ def test_vi_leader_label_preserves_printable_case(leader):
         )
         with set_app(prompt.app):
             prompt.app.vi_state.input_mode = InputMode.NAVIGATION
-            assert prompt.shortcuts.summary() == f"{leader} Keybindings"
+            assert prompt.shortcuts.summary() == f"{leader} Keys"
 
 
 def test_vi_prefix_summary_and_strict_normal_mode_filter():
@@ -257,12 +257,12 @@ def test_vi_prefix_summary_and_strict_normal_mode_filter():
             output=DummyOutput(),
         )
         with set_app(prompt.app):
-            assert prompt.shortcuts.summary() == "^B Keybindings"
+            assert prompt.shortcuts.summary() == "Ctrl+B Keys"
             prompt.app.vi_state.temporary_navigation_mode = True
             assert not prompt.shortcuts.vi_leader_enabled()
             prompt.app.vi_state.temporary_navigation_mode = False
             prompt.app.vi_state.input_mode = InputMode.NAVIGATION
-            assert prompt.shortcuts.summary() == "Space Keybindings"
+            assert prompt.shortcuts.summary() == "Space Keys"
             prompt.app.quoted_insert = True
             assert not prompt.shortcuts.vi_leader_enabled()
 
@@ -277,5 +277,37 @@ def test_model_popup_search_does_not_adopt_vi_prefix():
             assert await asyncio.wait_for(picker.app.run_async(), 3) is None
             assert picker.search.text == "a l"
             assert picker.shortcuts.vi_leader == ()
+
+    asyncio.run(run())
+
+
+def test_vi_leader_menu_is_the_full_help_view():
+    save_preferences(vi_key_prefix="<space>")
+
+    async def run():
+        with create_pipe_input() as pipe:
+            prompt = create_prompt(
+                CommandRegistry(), vi_mode=True, input=pipe, output=DummyOutput()
+            )
+            shortcuts = prompt.shortcuts
+
+            async def feed():
+                pipe.send_text("draft\x1b ")
+                while not shortcuts.pending:
+                    await asyncio.sleep(0.01)
+                rows = shortcuts.hint_rows()
+                assert ("Enter", "Send") in rows  # Ordinary keys, as Ctrl+/ shows them.
+                assert any(label == "Select thinking visibility" for _, label in rows)
+                assert shortcuts.hint_footer() == [("Esc", "cancel")]
+                assert not shortcuts.browsing  # Letters still run actions.
+                pipe.send_text(" a!\r")
+
+            assert (
+                await asyncio.wait_for(
+                    prompt.prompt_async(pre_run=lambda: prompt.app.create_background_task(feed())),
+                    3,
+                )
+                == "draft!"
+            )
 
     asyncio.run(run())

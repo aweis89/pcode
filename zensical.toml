@@ -26,6 +26,7 @@ nav = [
     { "Providers and models" = "providers.md" },
     { "Configuration" = "configuration.md" },
     { "Commands and keys" = "commands.md" },
+    { "Keybindings" = "keybindings.md" },
     { "Tools" = "tools.md" },
     { "MCP servers" = "mcp.md" },
     { "Working in a repository" = "workspace.md" },

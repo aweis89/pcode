@@ -132,6 +132,30 @@ def test_terminal_newline_encodings(transcript, vi_mode, newline):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("vi_mode", [False, True])
+@pytest.mark.parametrize("help_key", ["\x1f", "\x1b[47;5u", "\x1b[27;5;47~"])
+def test_terminal_ctrl_slash_encodings_open_help(vi_mode, help_key):
+    async def run():
+        with create_pipe_input() as pipe:
+            prompt = create_prompt(
+                CommandRegistry(), vi_mode=vi_mode, input=pipe, output=DummyOutput()
+            )
+
+            async def feed():
+                pipe.send_text("draft" + help_key)
+                while not prompt.shortcuts.browsing:
+                    await asyncio.sleep(0.01)
+                pipe.send_text("\x1b!\r")  # Esc closes help, then typing resumes.
+
+            result = await asyncio.wait_for(
+                prompt.prompt_async(pre_run=lambda: prompt.app.create_background_task(feed())),
+                timeout=3,
+            )
+            assert result == "draft!"
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("transcript", [False, True])
 @pytest.mark.parametrize(
     "sequence,vi_mode,keys,expected,cursor,mode",

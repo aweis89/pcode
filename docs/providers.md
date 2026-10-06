@@ -133,10 +133,10 @@ environment.
 
 ## Choose a model in the terminal
 
-Use `/model` or Ctrl+B `l` to open the model picker. Type to filter, use ↑/↓ to
+Use `/model` or Ctrl+L to open the model picker. Type to filter, use ↑/↓ to
 select, and press Enter to apply. Filtering matches provider and model names,
 including joined word prefixes: `anthopus` finds Anthropic Opus, `codluna` finds
-Codex Luna, and `opus anth` works too. Escape, Ctrl+C, or Ctrl+B `l` closes the
+Codex Luna, and `opus anth` works too. Escape, Ctrl+C, or Ctrl+L closes the
 picker without changing the model or your draft. For a model not listed, type its
 full `provider:model-id` (for example `anthropic:claude-opus-5`).
 
@@ -172,7 +172,7 @@ Ctrl+C on the running turn keeps the pending selection.
 ## Saved model and effort defaults
 
 A model chosen with `/model` becomes the default for future launches once the
-selection takes effect. `/effort` and Ctrl+B `n`/Ctrl+B `p` save the effort for the
+selection takes effect. `/effort` and Ctrl+N/Ctrl+P save the effort for the
 current model only, and also save that model as the default. Preferences live in
 `~/.config/pcode/preferences.json` (or `$XDG_CONFIG_HOME/pcode/preferences.json`),
 separate from saved conversations and unaffected by `--no-save`.
@@ -189,13 +189,13 @@ separate from saved conversations and unaffected by `--no-save`.
 
 ## Reasoning effort
 
-For OpenAI/Codex, Anthropic, Claude Code, and Meridian models, Ctrl+B `n` raises
-effort and Ctrl+B `p` lowers it; or use `/effort low|medium|high|xhigh`. `/effort`
+For OpenAI/Codex, Anthropic, Claude Code, and Meridian models, Ctrl+N raises
+effort and Ctrl+P lowers it; or use `/effort low|medium|high|xhigh`. `/effort`
 alone shows the current setting and `/effort default` removes the override. Each
 model remembers its own level. The footer shows the selected effort.
 
 - Shortcuts stop at the lowest and highest levels. From the provider default they
-  start at medium, so Ctrl+B `n` selects high and Ctrl+B `p` selects low.
+  start at medium, so Ctrl+N selects high and Ctrl+P selects low.
 - Changes apply from the next turn and keep your draft.
 - Effort does not change the model's thinking configuration. Not every model
   accepts every level; the provider still validates it.

@@ -179,7 +179,7 @@ built up, pcode adds a muted note near the end of the footer under the editor,
 just before the keybindings hint, kept until your next prompt:
 
 ```text
-~/p/pcode@main · steering · claude:claude-opus-5-5 (high) · 92k/1m · cache miss 0/166k · ^B Keybindings
+~/p/pcode@main · steering · claude:claude-opus-5-5 (high) · 92k/1m · cache miss 0/166k · Ctrl+B Keys
 ```
 
 That reads "reused 0 of about 166k cached tokens"; `cache drop 41k/166k` means

@@ -11,7 +11,7 @@ from prompt_toolkit.styles import merge_styles
 from prompt_toolkit.styles.defaults import default_ui_style
 from prompt_toolkit.widgets import TextArea
 
-from pcode.ui import PALETTES, editor_mode_label
+from pcode.ui import PALETTES, editor_mode_badge, editor_mode_label
 
 
 @pytest.mark.parametrize(
@@ -28,8 +28,10 @@ def test_editor_mode_label(mode, label):
     app = Application(input=DummyInput(), output=DummyOutput(), editing_mode=EditingMode.VI)
     app.vi_state.input_mode = mode
     assert editor_mode_label(app) == label
+    assert editor_mode_badge(app) == [(f"class:editor.mode.{label.strip().lower()}", label)]
     app.editing_mode = EditingMode.EMACS
     assert editor_mode_label(app) == ""
+    assert editor_mode_badge(app) == []
 
 
 def test_visual_mode_label():
@@ -41,13 +43,24 @@ def test_visual_mode_label():
     )
     app.current_buffer.start_selection()
     assert editor_mode_label(app) == " VISUAL "
+    assert editor_mode_badge(app) == [("class:editor.mode.visual", " VISUAL ")]
+    app.current_buffer.exit_selection()
+    app.vi_state.input_mode = InputMode.NAVIGATION
+    assert editor_mode_badge(app) == [("class:editor.mode.normal", " NORMAL ")]
 
 
-@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("theme", PALETTES)
 def test_editor_mode_colors(theme):
     style = merge_styles([default_ui_style(), PALETTES[theme].prompt_style()])
-    attrs = style.get_attrs_for_style_str("class:frame class:label class:editor.mode")
-    assert attrs.color == "ffffff"
-    assert attrs.bgcolor == "b8b8b8"
-    assert not attrs.reverse
-    assert not attrs.dim
+    for mode, background in (
+        ("insert", "b8b8b8"),
+        ("normal", "2563eb"),
+        ("visual", "7c3aed"),
+        ("replace", "b91c1c"),
+    ):
+        attrs = style.get_attrs_for_style_str(f"class:frame class:label class:editor.mode.{mode}")
+        assert attrs.color == "ffffff"
+        assert attrs.bgcolor == background
+        assert not attrs.bold
+        assert not attrs.reverse
+        assert not attrs.dim

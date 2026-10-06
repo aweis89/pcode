@@ -144,7 +144,7 @@ def popup_container(body, shortcuts: PrefixKeys | None = None):
 
 
 def shortcut_hint(shortcuts: PrefixKeys):
-    """Shared contextual help for prefix actions and read-only F1 browsing."""
+    """Shared contextual help for prefix actions and read-only Ctrl+/ browsing."""
 
     def lines() -> list[StyleAndTextTuples]:
         rows = shortcuts.hint_rows()

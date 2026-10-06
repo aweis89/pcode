@@ -40,27 +40,25 @@ def test_hints_default_on(shipped_default):
     assert PreviewApp().activity.show_hints
 
 
-@pytest.mark.parametrize(
-    "prefix, indicator", [("ctrl", "F1 Keybindings"), ("ctrl+p", "^P Keybindings")]
-)
+@pytest.mark.parametrize("prefix, indicator", [("ctrl", "Ctrl+/ Keys"), ("ctrl+p", "Ctrl+P Keys")])
 def test_footer_shows_one_help_indicator(tmp_path, monkeypatch, shipped_default, prefix, indicator):
     app, _ = make_app(tmp_path, monkeypatch)
     app.prompt_session = SimpleNamespace(shortcuts=PrefixKeys(prefix))
     text = fragment_list_to_text(app.toolbar())
     assert text.endswith(f" · steering · preview · {indicator}")
-    assert text.count("Keybindings") == 1
+    assert text.count("Keys") == 1
     assert "(^S)" not in text
     save_preferences(show_hints="off")
     app.handle("/config get show_hints")  # Any /config re-reads the layout settings.
     text = fragment_list_to_text(app.toolbar())
     assert " · steering · preview" in text
-    assert "Keybindings" not in text
+    assert "Keys" not in text
 
 
 def test_narrow_footer_cuts_help_before_model_metadata(tmp_path, monkeypatch, shipped_default):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    app, _ = make_app(tmp_path, monkeypatch, width=len(" ~ · steering · preview · F1"))
-    assert fragment_list_to_text(app.toolbar()) == " ~ · steering · preview · F…"
+    app, _ = make_app(tmp_path, monkeypatch, width=len(" ~ · steering · preview · Ctrl+/"))
+    assert fragment_list_to_text(app.toolbar()) == " ~ · steering · preview · Ctrl+…"
 
 
 def test_narrow_footer_keeps_live_queue_status_before_help(tmp_path, monkeypatch, shipped_default):
@@ -72,7 +70,7 @@ def test_narrow_footer_keeps_live_queue_status_before_help(tmp_path, monkeypatch
     app.activity.queued_modes = ["queue", "queue"]
     text = fragment_list_to_text(app.toolbar())
     assert text.startswith(" ~ · steering · 2 queued · ")
-    assert "Keybindings" not in text
+    assert "Keys" not in text
 
 
 def test_config_applies_hints_at_once(tmp_path, monkeypatch, shipped_default):

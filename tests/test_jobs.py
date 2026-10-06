@@ -435,6 +435,93 @@ def test_steering_can_do_independent_work_then_collect_the_original_job(tmp_path
     assert not runtime.jobs.get("j1").stopped
 
 
+@pytest.mark.parametrize("wait_tool", ["shell", "wait_for_job"])
+def test_steering_before_an_admitted_shell_wait_does_not_miss_the_release(tmp_path, wait_tool):
+    from pydantic_ai.capabilities import AbstractCapability
+
+    async def run():
+        admitted = asyncio.Event()
+        proceed = asyncio.Event()
+        pending = []
+        release = tmp_path / "release-job"
+        source = (
+            "import time; from pathlib import Path\n"
+            f"while not Path({str(release)!r}).exists(): time.sleep(.02)\n"
+            "print('JOB_FINISHED')"
+        )
+        requests = 0
+
+        class PauseAfterAdmission(AbstractCapability):
+            async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
+                if call.tool_name == wait_tool:
+                    admitted.set()
+                    await proceed.wait()
+                return await handler(args)
+
+        async def model(messages, info):
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                yield {
+                    0: DeltaToolCall(
+                        name="shell",
+                        json_args=json.dumps(
+                            {"command": command(source), "background": wait_tool != "shell"}
+                        ),
+                    )
+                }
+            elif requests == 2 and wait_tool == "wait_for_job":
+                yield {0: DeltaToolCall(name="wait_for_job", json_args='{"job_id": "j1"}')}
+            else:
+                parts = messages[-1].parts
+                result = next(p for p in parts if isinstance(p, ToolReturnPart))
+                follow_up = next(p for p in parts if isinstance(p, UserPromptPart))
+                assert "The user sent a follow-up, so the wait ended" in result.content
+                assert "[j1 · running · pid " in result.content
+                assert follow_up.content == "Change direction"
+                assert parts.index(result) < parts.index(follow_up)
+                assert runtime.jobs.get("j1").running
+                yield "Steering received"
+
+        runtime = AgentRuntime(
+            Agent(
+                FunctionModel(stream_function=model),
+                capabilities=[create_coder(tmp_path), PauseAfterAdmission()],
+            )
+        )
+
+        def take():
+            messages = pending[:]
+            pending.clear()
+            return messages
+
+        runtime.take_steering = take
+        runtime.has_steering = lambda: bool(pending)
+
+        async def collect():
+            return [event async for event in runtime.stream("Start the job")]
+
+        task = asyncio.create_task(collect())
+        try:
+            async with asyncio.timeout(10):
+                await admitted.wait()
+                pending.append("Change direction")
+                runtime.jobs.release_waits()
+                proceed.set()
+                events = await task
+            assert Message("Steering received") in events
+            assert not pending
+            job = runtime.jobs.get("j1")
+            assert job.running and runtime.jobs.announceable(job) and not job.stopped
+        finally:
+            proceed.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            runtime.jobs.stop_all()
+
+    asyncio.run(run())
+
+
 def test_completed_job_is_reported_to_the_model_at_the_next_request(tmp_path):
     """The point of the design: no `sleep`, no polling call, no extra turn."""
     prompts = []

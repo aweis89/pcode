@@ -100,7 +100,7 @@ def test_chooser_cancel_unknown_and_f1_browse(prefix):
             assert shortcuts.visible and "No choice" in shortcuts.message
             press(app, Keys.Escape)
             assert not shortcuts.visible and not fired
-            press(app, *opening, Keys.F1, "a", Keys.ControlT)
+            press(app, *opening, Keys.ControlUnderscore, "a", Keys.ControlT)
             assert shortcuts.browsing and not shortcuts.choices and not fired
             press(app, Keys.Escape)
             assert not shortcuts.visible
@@ -113,7 +113,7 @@ def test_chooser_cancel_unknown_and_f1_browse(prefix):
 
 
 @pytest.mark.parametrize("prefix", ["ctrl", "ctrl+b"])
-def test_f1_browses_without_executing_actions_or_submitting(prefix):
+def test_help_key_browses_without_executing_actions_or_submitting(prefix):
     async def run():
         shortcuts = PrefixKeys(prefix)
         shortcuts.set_help(lambda: [("Enter", "Submit draft")], title="Editor")
@@ -124,18 +124,18 @@ def test_f1_browses_without_executing_actions_or_submitting(prefix):
         with surface(shortcuts, keys) as (app, draft):
             before = draft.buffer.document
             focus = app.layout.current_control
-            press(app, Keys.F1)
+            press(app, Keys.ControlUnderscore)
             assert shortcuts.browsing and not shortcuts.pending
             assert shortcuts.hint_rows() == [
                 ("Enter", "Submit draft"),
                 (shortcuts.label("y"), "Copy draft"),
             ]
-            assert shortcuts.hint_footer() == [("Esc / F1", "close")]
+            assert shortcuts.hint_footer() == [("Esc / Ctrl+/", "close")]
             press(app, "y", Keys.ControlY, Keys.Enter)
             assert shortcuts.browsing and not calls
             assert draft.buffer.document == before
             assert app.layout.current_control is focus
-            press(app, Keys.F1)
+            press(app, Keys.ControlUnderscore)
             assert not shortcuts.visible
             assert draft.buffer.document == before
             assert app.layout.current_control is focus
@@ -153,7 +153,7 @@ def test_f1_browses_without_executing_actions_or_submitting(prefix):
         ("ctrl+b f1", (Keys.ControlB, Keys.F1)),
     ],
 )
-def test_multikey_f1_leader_runs_actions_and_then_browses_help(prefix, leader):
+def test_multikey_f_key_leader_runs_actions_and_then_browses_help(prefix, leader):
     async def run():
         shortcuts = PrefixKeys(prefix)
         calls = []
@@ -167,7 +167,7 @@ def test_multikey_f1_leader_runs_actions_and_then_browses_help(prefix, leader):
             assert shortcuts.pending and not shortcuts.browsing
             press(app, "y")
             assert calls == ["copy"] and not shortcuts.visible
-            press(app, *leader, Keys.F1)
+            press(app, *leader, Keys.ControlUnderscore)
             assert shortcuts.browsing and not shortcuts.pending
             press(app, "y")
             assert calls == ["copy"]
@@ -199,7 +199,7 @@ def test_overlay_protects_draft_and_focus_from_defaults_and_nonkeyboard_input(ov
             focus = app.layout.current_control
             before = draft.buffer.document
             if overlay == "browse":
-                press(app, Keys.F1)
+                press(app, Keys.ControlUnderscore)
             else:
                 shortcuts.choose("Pick", [Choice("a", "Alpha", lambda event: calls.append("a"))])
             press(

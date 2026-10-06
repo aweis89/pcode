@@ -70,14 +70,14 @@ def test_picker_contextual_help_preserves_selection_and_filter(monkeypatch, pref
                 if prefix != "ctrl":
                     pipe.send_text("\x18")
                     await wait_for(lambda: picker.shortcuts.pending)
-                    assert ("F1", "all keys") in picker.shortcuts.hint_footer()
-                pipe.send_text("\x1bOP")
+                    assert ("Ctrl+/", "all keys") in picker.shortcuts.hint_footer()
+                pipe.send_text("\x1f")
                 await wait_for(lambda: picker.shortcuts.browsing)
                 assert ("Enter", "Apply selected model") in picker.shortcuts.hint_rows()
                 assert any(
                     "provider:model-id" in label for _, label in picker.shortcuts.hint_rows()
                 )
-                pipe.send_text("ignored\r\x1b[B\x1bOP")
+                pipe.send_text("ignored\r\x1b[B\x1f")
                 await wait_for(lambda: not picker.shortcuts.visible)
                 assert picker.search.text == ""
                 assert picker.selected == 0

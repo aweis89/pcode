@@ -201,6 +201,12 @@ class LoopbackOAuth(OAuth):
         self._callback_socket: socket.socket | None = None
         self._flow_lock = asyncio.Lock()
         self._expected_state: str | None = None
+        # The error that ended the latest sign-in attempt, until a request gets
+        # through. A call that triggers it sees only "Connection closed" from the
+        # MCP session, so the caller reads the real cause here (see
+        # `NamedServer.call_tool`). Shared by concurrent calls, so never cleared on
+        # entry or on read.
+        self.failure: Exception | None = None
 
     async def _exchange_token_authorization_code(
         self, auth_code: str, code_verifier: str
@@ -286,7 +292,11 @@ class LoopbackOAuth(OAuth):
                             response = yield outgoing
                             outgoing = await flow.asend(response)
                     except StopAsyncIteration:
+                        self.failure = None
                         return
+            except Exception as error:
+                self.failure = error
+                raise
             finally:
                 self._close_callback()
 

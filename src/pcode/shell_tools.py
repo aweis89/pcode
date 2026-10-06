@@ -37,6 +37,7 @@ from pydantic_ai_harness.shell._policy import recoverable
 from pydantic_ai_harness.shell._toolset import ShellToolset
 
 from pcode.jobs import OUTPUT_TAIL_BYTES, Job, JobRegistry, format_duration, registry
+from pcode.steering import steering_pending
 
 # Long enough for a real build or test suite, short enough that the tool call
 # returns before provider request timeouts and the conversation keeps its
@@ -267,7 +268,10 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
                     if match is not None and match.search(stream.matchable):
                         matched = True
                         break
-                    if self._jobs.release_generation != generation:
+                    # The release signal handles existing waits. Input may
+                    # also arrive after tool admission but before this wait, or
+                    # become deliverable once MCP activation finishes.
+                    if self._jobs.release_generation != generation or steering_pending(ctx):
                         released = True
                         break
                     await anyio.sleep(_POLL_INTERVAL)

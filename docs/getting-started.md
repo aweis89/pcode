@@ -37,7 +37,7 @@ pcode -m anthropic:claude-sonnet-5       # with ANTHROPIC_API_KEY set; other pro
 
 If you're not signed in yet, run `/login claude` or `/login openai-codex`
 inside pcode; both sign in through the provider's own flow in your browser.
-Ctrl+B `l` (or `/model`) opens a model picker at any time, and the model you pick
+Ctrl+L (or `/model`) opens a model picker at any time, and the model you pick
 is saved, so later a bare `pcode` is enough. See
 [providers and models](providers.md) for every provider.
 
@@ -65,7 +65,7 @@ A few things worth knowing on day one:
 
 - **Enter while the agent is working** steers the running turn with your
   message. Ctrl+C cancels it.
-- **Ctrl+B `g`** shows every command and its output in scrollback; press it again
+- **Ctrl+G** shows every command and its output in scrollback; press it again
   to fold them back to summaries. See
   [scrollback and transparency](guide/scrollback.md).
 - **`/tools`** shows every call the agent made, with its full output.

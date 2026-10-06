@@ -59,6 +59,7 @@ from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fr
 from pcode.frame import TITLE_CHROME, Frame
 from pcode.input_keys import configure_newline_keys
 from pcode.jobs import WATCHED_PREFIX
+from pcode.keymap import PromptKeymap
 from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN
 from pcode.popup_ui import shortcut_hint
@@ -183,6 +184,8 @@ class Palette:
             {
                 "plan": self.muted,
                 "plan.heading": f"nodim {self.task_heading} bold",
+                # Every task finished: the count turns the colour of the turn's tick.
+                "plan.heading.done": f"nodim {self.success} bold",
                 "plan.hint": f"nodim nobold {self.muted}",
                 # Task rows by status, in three weights: the active one is
                 # loud, what is left is muted, and settled work recedes.
@@ -277,6 +280,9 @@ class Palette:
                 "frame.footer": self.muted,
                 "hint.message": "yellow",
                 "editor.mode": "noreverse nodim bg:#b8b8b8 fg:#ffffff",
+                "editor.mode.normal": "bg:#2563eb",
+                "editor.mode.visual": "bg:#7c3aed",
+                "editor.mode.replace": "bg:#b91c1c",
                 # Keep foreground and background paired with the terminal theme:
                 # the app palette may still be dark on a light terminal.
                 "bottom-toolbar": "noreverse nodim bg:default fg:default",
@@ -1102,6 +1108,11 @@ class Activity:
             return ""
         return step.get("active_form") or step.get("content") or ""
 
+    @property
+    def plan_done(self) -> bool:
+        items = self.displayed_plan
+        return bool(items) and all(item.get("status") == "completed" for item in items)
+
     def panel_title(self) -> str:
         items = self.displayed_plan
         if not items:
@@ -1641,6 +1652,14 @@ def editor_mode_label(app: Application) -> str:
         InputMode.REPLACE: " REPLACE ",
         InputMode.REPLACE_SINGLE: " REPLACE ",
     }[app.vi_state.input_mode]
+
+
+def editor_mode_badge(app: Application) -> list[tuple[str, str]]:
+    """Keep the badge's text and color tied to the same live editor state."""
+    label = editor_mode_label(app)
+    if not label:
+        return []
+    return [(f"class:editor.mode.{label.strip().lower()}", label)]
 
 
 def install_reflow_renderer(app: Application) -> None:
@@ -2620,7 +2639,9 @@ class PromptLayout:
         """The task heading, without permanent shortcut instructions."""
         activity = self.activity
         width = self.size().columns - 8
-        style = "class:plan.heading" if activity.displayed_plan else "bold"
+        style = "bold"
+        if activity.displayed_plan:
+            style = "class:plan.heading.done" if activity.plan_done else "class:plan.heading"
         heading = [(style, activity.panel_heading())]
         # Attached, the heading takes the editor's top border, so it carries
         # the session's name too (`Tasks 2/5 · Fix the login test`). A detached
@@ -2792,8 +2813,7 @@ class PromptLayout:
                 Window(char="─", style="class:frame.border"),
                 ConditionalContainer(
                     Label(
-                        lambda: editor_mode_label(session.app),
-                        style="class:editor.mode",
+                        lambda: editor_mode_badge(session.app),
                         dont_extend_width=True,
                     ),
                     filter=Condition(lambda: session.app.editing_mode == EditingMode.VI),
@@ -2939,6 +2959,7 @@ def create_prompt(
     transcript: "Transcript | None" = None,
     workspace=None,
     on_submit=None,
+    on_command=None,
     on_cancel=None,
     on_effort=None,
     on_model=None,
@@ -2994,6 +3015,16 @@ def create_prompt(
         **kwargs,
     )
     session.shortcuts = shortcuts
+    session.command_bindings = (
+        PromptKeymap(
+            shortcuts,
+            registry,
+            on_command,
+            transcript.warning if transcript is not None else lambda message: None,
+        )
+        if on_command is not None
+        else None
+    )
 
     prompt_layout = PromptLayout(session, activity, transcript, shortcuts, session_title)
     if transcript is not None:

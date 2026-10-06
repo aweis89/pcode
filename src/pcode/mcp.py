@@ -300,6 +300,23 @@ def _named_toolset() -> type:
                 message = _connect_failure(self.server, self.config, status, challenge, error)
                 raise MCPConnectError(self.server, message) from error
 
+        async def call_tool(self, name, tool_args, ctx, tool):
+            from pydantic_ai.exceptions import ModelRetry
+
+            auth = getattr(mcp_transport(self.wrapped), "auth", None)
+            try:
+                return await super().call_tool(name, tool_args, ctx, tool)
+            except ModelRetry as error:
+                # A server that lists tools without sign-in can demand it on the
+                # first call. When that sign-in fails the session closes, and the
+                # model is told only "Connection closed", which it retries as a
+                # hiccup. Fail the turn with the sign-in error instead. Network
+                # errors during the flow stay retries.
+                failure = getattr(auth, "failure", None)
+                if failure is None or find_cause(failure, _from_packages(OAUTH_PACKAGES)) is None:
+                    raise
+                raise failure from error
+
     return NamedServer
 
 

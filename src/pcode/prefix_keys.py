@@ -1,6 +1,6 @@
 """Shortcut keys behind one configurable prefix, with a which-key hint.
 
-The ``key_prefix`` setting defaults to ``ctrl+b``. With a leader, a shortcut is
+The ``key_prefix`` setting defaults to ``ctrl``. With a leader, a shortcut is
 the leader and then its letter. The leader lists what it can do until an action
 is selected or the menu is dismissed.
 
@@ -53,6 +53,18 @@ _PASSTHROUGH = frozenset(
 # capitals are out.
 _CHORDABLE = frozenset("abcdefghijklmnopqrstuvwxyz@]\\^_")
 _NAMES = {"@": "Space"}
+# Opens the read-only help view everywhere; shown as Ctrl+/ (^/ when compact).
+HELP_KEY = "c-_"
+HELP_LABEL = "Ctrl+/"
+
+
+def has_ctrl_chord(key: str) -> bool:
+    return key in _CHORDABLE and f"c-{key}" not in RESERVED_CHORDS
+
+
+def validate_action_key(key: str) -> None:
+    if len(key) != 1 or not key.isprintable() or key.isspace():
+        raise ValueError("A binding key must be one printable non-whitespace character.")
 
 
 def key_label(key: str) -> str:
@@ -144,6 +156,8 @@ class PrefixKeys:
         self.help_provider: Callable[[], list[tuple[str, str]]] = lambda: []
         self.message = ""
         self.shortcuts: list[Shortcut] = []
+        self._actions: dict[str, Shortcut] = {}
+        self._bound_keys: set[str] = set()
         self.bindings = KeyBindings()
         self.waiting: Filter = Condition(self._waiting)
         if self.leader or self.vi_leader:
@@ -239,13 +253,8 @@ class PrefixKeys:
             self.bindings.add(key, filter=protected, eager=True)(ignore)
 
     def _bind_help(self) -> None:
-        # Do not eagerly consume the first key of a multi-key F1 leader.
-        # Once that leader is waiting, F1 can still open the full help view.
-        f1_leader = bool(self.leader and self.leader[0] == "f1")
-
-        @self.bindings.add(
-            "f1", filter=Condition(lambda: not f1_leader or self.visible), eager=True
-        )
+        # Terminals send Ctrl+/ as Ctrl+_, which no leader may use.
+        @self.bindings.add(HELP_KEY, eager=True)
         def help_keys(event: KeyPressEvent) -> None:
             browsing = not self.browsing
             leader = self._pending_leader
@@ -336,42 +345,59 @@ class PrefixKeys:
         Consecutive shortcuts with the same ``group`` list as one row under
         that name, such as ``n / p  Thinking effort up / down``.
         """
-        if key not in _CHORDABLE or f"c-{key}" in RESERVED_CHORDS:
+        if not has_ctrl_chord(key):
             raise ValueError(f"{key!r} cannot be a shortcut: it has no free Ctrl chord")
         if any(shortcut.key == key for shortcut in self.shortcuts):
             raise ValueError(f"{key!r} is already a shortcut here")
         condition = to_filter(filter)
 
         def decorator(handler: Callable[[KeyPressEvent], None]):
-            self.shortcuts.append(Shortcut(key, label, handler, condition, group))
-            if not self.leader:
-                # Eager, so a chord that starts a longer default binding
-                # (Ctrl+X in Emacs mode) fires at once instead of after a pause.
-                self.bindings.add(f"c-{key}", filter=condition & ~self.waiting, eager=True)(handler)
-                if not self.vi_leader:
-                    return handler
-
-            @self.bindings.add(
-                key,
-                filter=Condition(lambda: self.pending and self._pending_leader != (key,))
-                & self.waiting
-                & condition,
-                eager=True,
-            )
-            def run(event: KeyPressEvent) -> None:
-                leader = self._pending_leader
-                self.dismiss()
-                event.app.invalidate()
-                handler(event)
-                # An action may replace the menu with a chooser. The same
-                # leader must still dismiss that chooser, just as the global
-                # prefix does, but it must not take choices in another menu.
-                if self.visible and not self._pending_leader:
-                    self._pending_leader = leader
-
+            self.set_shortcut(Shortcut(key, label, handler, condition, group))
             return handler
 
         return decorator
+
+    def set_shortcut(self, shortcut: Shortcut) -> None:
+        """Replace an action in place, or add one, without replacing the keymap."""
+        key = shortcut.key
+        validate_action_key(key)
+        old = self._actions.get(key)
+        if old is None:
+            self.shortcuts.append(shortcut)
+        else:
+            self.shortcuts[self.shortcuts.index(old)] = shortcut
+        self._actions[key] = shortcut
+        if key in self._bound_keys:
+            return
+        self._bound_keys.add(key)
+        enabled = Condition(lambda: key in self._actions and self._actions[key].filter())
+
+        def run(event: KeyPressEvent) -> None:
+            action = self._actions[key]
+            leader = self._pending_leader
+            self.dismiss()
+            event.app.invalidate()
+            action.handler(event)
+            # Preserve the originating leader when an action opens a chooser.
+            if self.visible and not self._pending_leader:
+                self._pending_leader = leader
+
+        if not self.leader and has_ctrl_chord(key):
+            self.bindings.add(f"c-{key}", filter=enabled & ~self.waiting, eager=True)(run)
+        if self.leader or self.vi_leader:
+            self.bindings.add(
+                key,
+                filter=Condition(lambda: self.pending and self._pending_leader != (key,))
+                & self.waiting
+                & enabled,
+                eager=True,
+            )(run)
+
+    def remove(self, key: str) -> None:
+        """Disable a registered action; its bindings become inactive immediately."""
+        old = self._actions.pop(key, None)
+        if old is not None:
+            self.shortcuts.remove(old)
 
     def gate(self, bindings: KeyBindingsBase) -> KeyBindingsBase:
         """``bindings``, switched off while a shortcut, help, or choice menu is open.
@@ -391,13 +417,21 @@ class PrefixKeys:
 
     def label(self, key: str) -> str:
         """How to press shortcut ``key``: Ctrl+Y, or Ctrl+P y after a leader."""
+        if not self.leader and not has_ctrl_chord(key):
+            return (
+                _shortcut_label(self.vi_leader, key)
+                if self.vi_leader
+                else f"leader {key} (needs a prefix)"
+            )
         return _shortcut_label(self.leader, key)
 
     def available(self) -> list[Shortcut]:
         return [
             shortcut
             for shortcut in self.shortcuts
-            if shortcut.filter() and not (self.pending and self._pending_leader == (shortcut.key,))
+            if shortcut.filter()
+            and (self.leader or self.vi_leader or has_ctrl_chord(shortcut.key))
+            and not (self.pending and self._pending_leader == (shortcut.key,))
         ]
 
     def summary(self) -> str:
@@ -407,8 +441,8 @@ class PrefixKeys:
             leader = self._pending_leader or leader
         elif self.vi_leader and self.vi_leader_enabled():
             leader = self.vi_leader
-        key = compact_label(_leader_label(leader)) if leader else "F1"
-        return f"{key} {'…' if self.pending else 'Keybindings'}"
+        key = _leader_label(leader) if leader else HELP_LABEL
+        return f"{compact_label(key)} …" if self.pending else f"{key} Keys"
 
     def hint_rows(self) -> list[tuple[str, str]]:
         """The which-key list: (key, what it does). ``hint_footer`` says how to leave."""
@@ -422,15 +456,20 @@ class PrefixKeys:
             )
             for run in self._grouped(self.available())
         ]
-        return self.help_provider() + actions if self.browsing else actions
+        return self.help_provider() + actions if self.browsing or self._vi_pending else actions
+
+    @property
+    def _vi_pending(self) -> bool:
+        """The vi alias is waiting: its menu doubles as the full help view."""
+        return bool(self.vi_leader) and self.pending and self._pending_leader == self.vi_leader
 
     def hint_footer(self) -> list[tuple[str, str]]:
         """How to back out of the open overlay, for its bottom border."""
         if self.browsing:
-            return [("Esc / F1", "close")]
-        if self.choices:
+            return [(f"Esc / {HELP_LABEL}", "close")]
+        if self.choices or self._vi_pending:
             return [("Esc", "cancel")]
-        return [("Esc", "cancel"), ("F1", "all keys")]
+        return [("Esc", "cancel"), (HELP_LABEL, "all keys")]
 
     @staticmethod
     def _grouped(shortcuts: list[Shortcut]) -> list[list[Shortcut]]:

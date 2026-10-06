@@ -29,6 +29,8 @@ def make_app(width=80, workspace=None):
             [
                 "/help",
                 "/config",
+                "/bind",
+                "/unbind",
                 "/quit",
                 "/status",
                 "/tools",

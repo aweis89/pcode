@@ -61,6 +61,7 @@ from pcode.mcp import (
     OAUTH_PACKAGES,
     MCPConnectError,
     MCPState,
+    config_path,
     deferred_schemas_rejected,
     find_cause,
 )
@@ -163,6 +164,7 @@ class AgentRuntime:
         # is not reset by `_clear`, `/new`, or conversation checkout.
         self.jobs = job_registry()
         self.take_steering = lambda: []
+        self.has_steering = lambda: False
         # Prompt overhead describes the agent's configuration, not one
         # conversation, so it outlives /new and conversation checkout.
         self.request_parameters = None
@@ -1038,7 +1040,7 @@ class AgentRuntime:
         return (
             ([StepPersistence(store=self.session.store)] if self.session else [])
             + [
-                Steering(lambda: self._consume_steering(run_id)),
+                Steering(lambda: self._consume_steering(run_id), lambda: self.has_steering()),
                 # Finished jobs reach the model here rather than by
                 # being polled for; see `pcode.job_notices`. Ahead of the
                 # checkpoint, so a saved request carries the notices it
@@ -1207,6 +1209,18 @@ def error_message(error: Exception, *, unexpected: str | None = None) -> str:
     if (mcp := _mcp_failure(error)) is not None:
         # SDK messages can carry token-endpoint bodies; the diagnostics log has them.
         if mcp == "auth":
+            from mcp.client.auth.exceptions import OAuthRegistrationError
+
+            if find_cause(error, OAuthRegistrationError) is not None:
+                # Google's Workspace servers refuse dynamic registration; retrying
+                # sign-in cannot help until the entry names a client.
+                return (
+                    "MCP server sign-in failed: it did not accept pcode's automatic OAuth "
+                    "client registration, so it needs a pre-registered client. Add "
+                    f"`client_id` and `client_secret` to its entry in {config_path()} "
+                    "(docs: MCP > Pre-registered clients), then `/mcp disable NAME` and "
+                    "`/mcp enable NAME`. Not the model or provider."
+                )
             return (
                 f"MCP server sign-in failed ({name}), not the model or provider. "
                 "Retry with `/mcp enable NAME`, or `/mcp logout NAME` to start over. "

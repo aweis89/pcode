@@ -69,15 +69,23 @@ class CommandRegistry:
             groups.setdefault(command.group, []).append(command)
         return list(groups.items())
 
-    def dispatch(self, text: str) -> bool:
+    def resolve(self, text: str) -> tuple[Command, str] | None:
+        """Validate a command's declared arguments without executing its handler."""
         parts = text.strip().split(maxsplit=1)
         command = self.find(parts[0]) if parts else None
         if command is None:
-            return False
+            return None
         argument = parts[1].strip() if len(parts) > 1 else ""
         if argument and not command.free_arguments and argument not in command.arguments:
             usage = "|".join(command.arguments)
             raise ValueError(f"Usage: {command.name}" + (f" [{usage}]" if usage else ""))
+        return command, argument
+
+    def dispatch(self, text: str) -> bool:
+        resolved = self.resolve(text)
+        if resolved is None:
+            return False
+        command, argument = resolved
         command.handler(argument)
         return True
 

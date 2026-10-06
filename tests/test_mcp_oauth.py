@@ -933,6 +933,8 @@ def test_non_interactive_enable_never_opens_a_browser(monkeypatch):
         async with httpx2.AsyncClient(auth=auth, transport=transport) as client:
             with pytest.raises(SignInRequired):
                 await client.get(URL)
+        # The MCP session reports only "Connection closed"; the cause stays here.
+        assert isinstance(auth.failure, SignInRequired)
         assert provider.browser_visits == 0
         assert provider.grants == []
         assert auth._callback_socket is None

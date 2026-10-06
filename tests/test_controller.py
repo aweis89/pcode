@@ -195,6 +195,40 @@ def test_steering_releases_a_shell_wait_only_while_a_turn_runs():
     asyncio.run(run())
 
 
+def test_steering_peek_respects_modes_mcp_ordering_and_queue_resets():
+    session = Session()
+    controller = session.controller
+    controller.prompts.put("queued", "queue")
+    controller.prompts.put("interrupt", "interrupt")
+    assert not controller.has_steering()
+    controller.prompts.put("before enable", "steering")
+    assert controller.has_steering()
+    controller.hold_later_steering()
+    controller.pending_mcp = 1
+    controller.prompts.put("after enable", "steering")
+    assert controller.has_steering()
+    assert controller.has_steering()  # Peeking doesn't consume or render anything.
+    assert controller.prompts.steering() == 2
+    assert session.shown == [] and session.redraws == 0
+    assert controller.take_steering() == ["before enable"]
+    assert not controller.has_steering()
+    assert controller.take_steering() == []
+    controller.pending_mcp = 0
+    assert controller.has_steering()
+    assert controller.take_steering() == ["after enable"]
+    assert not controller.has_steering()
+    assert controller.steering_before_mcp is None
+
+    controller.prompts.put("discarded", "steering")
+    assert controller.has_steering()
+    controller.clear_queue()
+    assert not controller.has_steering()
+    controller.prompts.put("fresh generation", "steering")
+    assert controller.has_steering()
+    assert controller.take_steering() == ["fresh generation"]
+    assert not controller.has_steering()
+
+
 def test_cancel_stops_work_then_side_questions_then_just_says_so():
     async def run():
         session = Session()

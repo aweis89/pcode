@@ -2,6 +2,7 @@
 
 import shutil
 import time
+from types import SimpleNamespace
 
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -11,7 +12,9 @@ from pcode.jobs_ui import JobBrowser, details
 
 
 def press(browser, key):
-    browser.app.key_bindings.get_bindings_for_keys((key,))[-1].handler(None)
+    browser.app.key_bindings.get_bindings_for_keys((key,))[-1].handler(
+        SimpleNamespace(app=browser.app)
+    )
 
 
 def until_logged(jobs, job, text):

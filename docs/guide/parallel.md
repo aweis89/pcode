@@ -43,7 +43,7 @@ files like `.envrc`. See
 
 Every session runs in a background host, so you can juggle them from one
 terminal. `/switch` moves to another running session (or starts a new one), and
-Ctrl+B `^` flips back to the last one. Closing the terminal doesn't stop a turn;
+Ctrl+^ flips back to the last one. Closing the terminal doesn't stop a turn;
 `pcode --attach` picks it back up, and you get a desktop notification when a
 background session finishes. See
 [background sessions](../sessions.md#background-sessions).
@@ -73,7 +73,7 @@ panel lists each running agent beneath your task with its purpose, and
 - each agent's assignment and its own task plan
 - what it's writing, streamed as it goes
 - every tool call it makes
-- its reasoning, with Ctrl+B `t`
+- its reasoning, with Ctrl+T
 
 The view is read-only, so watching never steers an agent. Their tool calls
 also show under the parent's in scrollback and in `/tools`.

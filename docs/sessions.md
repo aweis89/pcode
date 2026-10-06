@@ -24,12 +24,12 @@ Inside a hosted session:
 
 - `/switch` opens a picker over every running host, with what each one is doing,
   plus [stopped sessions](#idle-hosts-stop) with a reply you haven't read.
-  Enter shows that session in this terminal (resuming a stopped one); Ctrl+B `n`
-  starts a new one; Ctrl+B `x` (or Delete in the list), pressed twice, stops one
+  Enter shows that session in this terminal (resuming a stopped one); Ctrl+N
+  starts a new one; Ctrl+X (or Delete in the list), pressed twice, stops one
   or drops a stopped one from the list. A turn you switch away from keeps
   running. Both are [shortcuts](commands.md#shortcut-prefix).
 - `/switch HOST` goes straight to one by host or session ID prefix, and
-  `/switch -` (or Ctrl+B `^`) back to the
+  `/switch -` (or Ctrl+^) back to the
   one this terminal showed before. Pressed again, it flips back.
 - `/switch new` starts a new session and switches to it. `/switch new PROMPT`
   starts one working on PROMPT and leaves it in the background; this terminal
@@ -201,12 +201,12 @@ selected session's prompts, responses, and tool calls alongside.
 - ↑/↓ move the selection while you type (Ctrl+U/Ctrl+D by half a page).
 - Tab moves to the session list, and Tab again to the content pane, where arrows
   scroll by line, PageUp/PageDown by page, and Ctrl+U/Ctrl+D by half a page.
-- From anywhere, Ctrl+B `f` returns to the search, Ctrl+B `r` narrows it to prompts only,
-  and Ctrl+B `g` includes every workspace (these are
+- From anywhere, Ctrl+F returns to the search, Ctrl+R narrows it to prompts only,
+  and Ctrl+G includes every workspace (these are
   [shortcuts](commands.md#shortcut-prefix)).
 - Enter resumes the selected session in place, restoring its model, history, and
   plan. Esc cancels.
-- Ctrl+B `x` (or Delete in the session list), pressed twice, permanently deletes the
+- Ctrl+X (or Delete in the session list), pressed twice, permanently deletes the
   selected session. The active session and one open in another process are
   refused.
 

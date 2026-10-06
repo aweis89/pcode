@@ -47,7 +47,6 @@ from pcode.preferences import (
     save_preferences,
     subagent_models,
 )
-from pcode.prefix_keys import shortcut_label
 from pcode.rpc import transportable
 from pcode.runtime import CommandOutput, JobFinished, Message, ToolSummary
 from pcode.shell_mode import execute, shell_command
@@ -60,6 +59,8 @@ TERMINAL_COMMANDS = frozenset(
         "/help",
         "/commands",
         "/config",
+        "/bind",
+        "/unbind",
         "/quit",
         "/exit",
         "/status",
@@ -186,6 +187,8 @@ FRONTEND_COMMANDS = frozenset(
         "/group-tools",
         "/redraw",
         "/config",
+        "/bind",
+        "/unbind",
     }
 )
 
@@ -593,14 +596,13 @@ class SessionController:
         return (
             Command(
                 "/model",
-                f"Choose a model; keeps the conversation ({shortcut_label('l')})",
+                "Choose a model; keeps the conversation",
                 self.select_model,
                 group="Model",
             ),
             Command(
                 "/effort",
-                "Set reasoning effort: low / medium / high / xhigh / default "
-                f"({shortcut_label('n')} / {shortcut_label('p')})",
+                "Set reasoning effort: low / medium / high / xhigh / default",
                 self.effort,
                 ("low", "medium", "high", "xhigh", "default"),
                 group="Model",
@@ -1056,16 +1058,23 @@ class SessionController:
             self.view.note(f"Stopped {stopped} side question(s).")
         return stopped
 
-    def take_steering(self) -> list[str]:
-        """The runtime's hook: steering messages for the next model request."""
+    def _steering_limit(self) -> int | None:
         # Like queued prompts, steering sent after MCP work waits for it, so
         # "/mcp enable x" then "use x" reaches the model with x's tools.
         if self.mcp_task is None and not self.pending_mcp:
-            self.steering_before_mcp = None
-        limit = self.steering_before_mcp
+            return None
+        return self.steering_before_mcp
+
+    def has_steering(self) -> bool:
+        """Peek at deliverable input without consuming, displaying, or journaling it."""
+        limit = self._steering_limit()
+        return self.prompts.steering() > 0 and (limit is None or limit > 0)
+
+    def take_steering(self) -> list[str]:
+        """The runtime's hook: steering messages for the next model request."""
+        limit = self._steering_limit()
         messages = self.prompts.take_steering(limit)
-        if limit is not None:
-            self.steering_before_mcp = limit - len(messages)
+        self.steering_before_mcp = None if limit is None else limit - len(messages)
         for text in messages:
             self.activity.start_prompt(text)
             self.view.user(text)
@@ -1269,6 +1278,7 @@ class SessionController:
                     else:
                         self.activity.start_prompt(text)
                     self.runtime.take_steering = self.take_steering
+                    self.runtime.has_steering = self.has_steering
                     self.live_task = asyncio.create_task(
                         self.run_turn(
                             text,

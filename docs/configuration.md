@@ -50,12 +50,29 @@ force inactive providers to appear. The current provider is also hidden if it
 is excluded. This only filters the selector, not explicit `/model PROVIDER:MODEL`
 commands, CLI model overrides, or resumed sessions.
 
+## Keybindings
+
+Use [`/bind` and `/unbind`](keybindings.md) to customize main-prompt action keys.
+Mappings are user-only and stored in `bindings.json`, separate from
+`preferences.json`: `$PCODE_CONFIG_DIR/bindings.json` when set, otherwise
+`$XDG_CONFIG_HOME/pcode/bindings.json`, defaulting to
+`~/.config/pcode/bindings.json`. There is no project binding file or project
+configuration override. Writes are locked and atomic.
+
+Binding edits apply immediately in the current terminal. Other running terminals
+pick them up on their next start or a binding management edit, not automatically.
+The editor and prefix preferences (`editing_mode`, `vi_escape_sequence`,
+`vi_key_prefix`, and `key_prefix`) still require restarting the prompt; see
+[Keybindings](keybindings.md) for their setup and how global shortcuts and the
+optional vi leader share mappings.
+
 ## Independent instances
 
 `PCODE_CONFIG_DIR` points pcode at a different config directory without moving
 the rest of your `XDG_CONFIG_HOME`. Everything pcode keeps there follows it:
 `preferences.json`, `credentials.json` and `mcp-credentials.json` (so each
-instance has its own `/login`), `mcp.json`, `extensions/`, and `worktree-setup`.
+instance has its own `/login`), `mcp.json`, `bindings.json`, `extensions/`, and
+`worktree-setup`.
 Sessions and other state still live under `XDG_STATE_HOME`; set
 `PCODE_SESSION_DIR` too if those should be separate.
 
@@ -135,8 +152,8 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `editing_mode` | `emacs` | `emacs`, `vi` (prompt editor key bindings; see [vi editing](commands.md#optional-vi-editing)) |
 | `vi_key_prefix` | `off` | Additional leader for the main prompt's vi normal mode: `<space>` or a single printable non-whitespace character, such as `,` or `\`. Keeps the global prefix. Requires restart; see [normal-mode shortcuts](commands.md#normal-mode-shortcut-prefix). |
 | `vi_escape_sequence` | `escape` | Escape-only by default; set `jj` (or another printable sequence without spaces) to also leave vi insert mode with that sequence. Escape remains available. Requires restart; see [vi editing](commands.md#optional-vi-editing). |
-| `key_prefix` | `ctrl+b` | A leader pressed before the action letter: Ctrl+B opens the current action menu. Other leaders include `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"`; `ctrl` restores direct Ctrl+letter chords. F1 browses contextual help. See [shortcut prefix](commands.md#shortcut-prefix) |
-| `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, Ctrl+B `q` flips it inside one popup, see [popup keys](commands.md#popup-keys)) |
+| `key_prefix` | `ctrl` | Direct Ctrl+letter shortcuts, such as Ctrl+L for models and Ctrl+Y to copy. No global action-menu leader by default. Set `ctrl+b`, `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"` to use a leader before the action letter; existing saved leaders remain supported. Ctrl+/ browses contextual help. See [shortcut prefix](commands.md#shortcut-prefix) |
+| `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, Ctrl+Q flips it inside one popup, see [popup keys](commands.md#popup-keys)) |
 | `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |
 
 ### Scrollback and display
@@ -156,16 +173,16 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `delta_args` | `` | delta's arguments, quoted as in a shell, such as `--line-numbers`; the only delta configuration pcode reads (git config is ignored), and they override pcode's own choices |
 | `diff_dedent` | `on` | `on`, `off` (strip the indentation every line of a diff hunk shares, so an edit deep in a nested block starts at the left edge; with delta or Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
 | `diff_layout` | `unified` | `unified`, `side-by-side`, `auto` (delta's layout; `auto` goes side by side at 180 columns or wider) |
-| `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+B `g` or `/show-commands`) |
+| `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+G or `/show-commands`) |
 | `group_tools` | `on` | `on`, `off` (fold each run of tool calls into one line; `/group-tools`, see [grouping tool calls](transcript.md#grouping-tool-calls)) |
 | `command_scrollback_lines` | `20` | Positive integer, lines of each command's output mirrored into scrollback |
 | `command_preview_lines` | `10` | Rows (`10`) or a share of the screen (`0.25`) for the live preview of a running command |
 | `tool_error_scrollback` | `off` | `on`, `off` (keep a failed tool call's full diagnostic in scrollback instead of one line) |
 | `error_scrollback_lines` | `20` | Positive integer, lines of an error notice kept in scrollback before it is clipped |
-| `show_tasks` | `on` | `on`, `off` (show the Tasks/Tools widget; Ctrl+B `o` or `/show-tasks`) |
+| `show_tasks` | `on` | `on`, `off` (show the Tasks/Tools widget; Ctrl+O or `/show-tasks`) |
 | `autohide_tasks` | `off` | `on`, `off` (hide the Tasks/Tools widget when a turn ends; `/autohide-tasks`) |
-| `tasks_min_rows` | `30` | Hide the Tasks/Tools widget in a pane shorter than this, such as a stacked split; `0` never hides. Ctrl+B `o` overrides it until the pane crosses the threshold again |
-| `tasks_min_columns` | `100` | Hide the Tasks/Tools widget in a pane narrower than this, such as a side-by-side split; `0` never hides. Ctrl+B `o` overrides it the same way |
+| `tasks_min_rows` | `30` | Hide the Tasks/Tools widget in a pane shorter than this, such as a stacked split; `0` never hides. Ctrl+O overrides it until the pane crosses the threshold again |
+| `tasks_min_columns` | `100` | Hide the Tasks/Tools widget in a pane narrower than this, such as a side-by-side split; `0` never hides. Ctrl+O overrides it the same way |
 | `show_hints` | `on` | `on`, `off` (show one compact help indicator at the prompt instead of shortcut hints beside individual controls) |
 | `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
 | `tool_glyphs` | `auto` | `on` leads the tool row above the status row with a symbol for the call (`$`, `⌕`, `✎`, `⎘`, `⧖`), `off` drops them and spells out the verb once the call settles (shell calls keep `$`), for fonts that draw those symbols badly. `auto` is on except on the Linux console (`/config` applies immediately) |
@@ -397,7 +414,7 @@ malformed file, but config commands report it and refuse to overwrite it: use
 `pcode config path` to find and repair it first. Invalid commands exit nonzero.
 
 `PCODE_CONFIG_DIR` overrides the user config directory for preferences, extensions,
-MCP configuration, worktree setup, and stored logins. Otherwise pcode uses
+MCP configuration, keybindings, worktree setup, and stored logins. Otherwise pcode uses
 `$XDG_CONFIG_HOME/pcode`, defaulting to `~/.config/pcode`. Per-file overrides
 (`PCODE_CREDENTIALS_FILE`, `PCODE_CODEX_CREDENTIALS_FILE`, `PCODE_MCP_CONFIG`)
 take precedence.
