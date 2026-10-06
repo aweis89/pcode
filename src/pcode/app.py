@@ -934,8 +934,8 @@ class PreviewApp:
         edits = self.inspector_requested == "edits"
         self.inspector_requested = None
         if self.hosted:
-            # A host's journal is only re-read when a turn ends, so mid-turn the
-            # tree would still end at the previous turn, and the branch filter
+            # A host's journal is re-read when a turn ends (or on an edit), so
+            # mid-turn the tree could still end at the previous turn, and the branch filter
             # below would drop every call the running turn has made.
             self.runtime.refresh()
         saved = getattr(self.runtime, "session", None)

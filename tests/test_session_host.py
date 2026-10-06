@@ -135,6 +135,35 @@ def test_records_can_stop_where_a_running_turn_began(tmp_path):
         session.close()
 
 
+def test_an_attached_terminal_sees_the_running_turns_edits(tmp_path):
+    """/diffs reads edits from the journal by branch, so it must follow mid-turn."""
+    from pcode.remote import HostedSession
+
+    session = SavedSession.create("test", tmp_path, tmp_path / "sessions")
+    try:
+        session.append("turn_started", prompt="one", run_id="a", parent_id=None)
+        session.append("turn_completed", run_id="a")
+        terminal = RemoteController(View(), Activity())
+        terminal.runtime = HostedSession(terminal, {"id": "h", "pid": 1})
+        terminal.runtime.follow({"session_directory": str(session.directory)})
+        # The next turn starts after the terminal last read the journal.
+        session.append("turn_started", prompt="two", run_id="b", parent_id="a")
+
+        def edited():
+            return [
+                record["path"]
+                for record in terminal.runtime.session.active_records()
+                if record["kind"] == "EditCompleted"
+            ]
+
+        edit = EditCompleted("c1", "a.py", "edit", "@@ -1 +1 @@\n-a\n+b", 1, 1)
+        session.event(edit, run_id="b")
+        terminal.receive("turn_event", (edit,), {})
+        assert edited() == ["a.py"]
+    finally:
+        session.close()
+
+
 @pytest.fixture
 def host_dir(monkeypatch):
     # macOS caps a Unix socket path at 104 bytes, and pytest's tmp_path is longer.

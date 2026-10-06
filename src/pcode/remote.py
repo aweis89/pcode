@@ -45,6 +45,7 @@ from pcode.host_protocol import (
 from pcode.jobs import Job, JobRegistry
 from pcode.remote_profile import RemoteProfile, scrubbed_env
 from pcode.rpc import Peer, decode
+from pcode.runtime import EditCompleted
 
 
 class HostError(RuntimeError):
@@ -362,7 +363,12 @@ class RemoteController:
             return self._read_asides()
         if name == "after_command" and self._command_waits:
             self.activity.end_wait(self._command_waits.pop(0))
-        if name in ("turn_ended", "replay_conversation", "show_branch") and self.runtime:
+        if self.runtime and (
+            name in ("turn_ended", "replay_conversation", "show_branch")
+            # The host journals an edit before sending it. /diffs reads the
+            # running turn's edits from the journal, mid-turn too.
+            or (name == "turn_event" and isinstance(args[0], EditCompleted))
+        ):
             self.runtime.refresh()
         return getattr(self.view, name)(*args, **kwargs)
 
