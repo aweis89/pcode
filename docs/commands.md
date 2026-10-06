@@ -625,7 +625,7 @@ number of pending messages.
 - **steering**: deliver input at the next model request, after active tools finish.
   A shell command the turn is waiting on doesn't hold that request back: the wait
   ends and hands the model a [job](tools.md#shell-jobs) handle, and the command
-  keeps running. Pending input is labeled “Steering (next model request)”; once
+  keeps running. Pending input is labeled “Steering”; once
   delivered, it replaces the active prompt in the task bar. If the turn finishes
   first, it's sent as a follow-up turn.
 - **queue**: wait for the current turn to finish, then start a follow-up turn.

@@ -98,7 +98,7 @@ def test_busy_send_modes(mode, editing_mode):
                     if mode != "interrupt":
                         assert calls == ["first"]
                         assert app.activity.prompt == "first"
-                        label = "Steering (next model request)" if mode == "steering" else "Queued"
+                        label = "Steering" if mode == "steering" else "Queued"
                         rows = [("class:plan", f"{label}: second")]
                         # Hosted, the queue reaches the terminal a moment after the input.
                         await wait(lambda: app.activity.queue_rows(3) == rows)
@@ -240,7 +240,7 @@ def test_pending_rows_preserve_submission_modes():
     )
     assert [text for _, text in activity.queue_rows(3)] == [
         "Queued: same",
-        "Steering (next model request): same",
+        "Steering: same",
         "Interrupting: stop",
     ]
     assert activity.queue_rows(1) == [("class:plan", "… 3 more pending")]

@@ -1338,7 +1338,7 @@ class Activity:
         for index, text in enumerate(self.queued_prompts[:visible]):
             mode = self.queued_modes[index] if index < len(self.queued_modes) else "queue"
             prefix = {
-                "steering": "Steering (next model request)",
+                "steering": "Steering",
                 "interrupt": "Interrupting",
             }.get(mode, "Queued")
             system = system_command(text)

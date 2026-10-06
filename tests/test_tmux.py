@@ -1189,7 +1189,7 @@ def test_prompt_header_stays_one_line_and_truncates_on_resize(pane):
 @pytest.mark.parametrize("mode", ["queue", "steering"])
 def test_queued_messages_stay_directly_above_editor(pane, mode):
     capture(pane, "❯")
-    label = "Queued" if mode == "queue" else "Steering (next model request)"
+    label = "Queued" if mode == "queue" else "Steering"
     pane("send-keys", "-t", "preview:0.0", "-l", "active prompt")
     pane("send-keys", "-t", "preview:0.0", "Enter")
     capture(pane, "COMMITTED MARKER", running=True)

@@ -830,7 +830,7 @@ def test_queued_system_commands_are_badged_like_the_running_row():
     )
     assert activity.queue_rows(3) == [
         ("class:activity.system.detail", "Queued ◈ Compacting context ▸ keep tests"),
-        ("class:activity.system.detail", "Steering (next model request) ◈ Compacting context"),
+        ("class:activity.system.detail", "Steering ◈ Compacting context"),
         ("class:plan", "Queued: write /compact docs"),
     ]
 
