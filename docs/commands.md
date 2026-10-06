@@ -477,6 +477,30 @@ completion), and Ctrl+J inserts a newline. Escape takes priority in vi mode, so
 Escape then Enter submits rather than inserting a newline; that's why Alt+Enter
 is a newline only in Emacs mode. Other pcode shortcuts are unchanged.
 
+To leave insert mode by typing `jj`, set the optional escape sequence and restart:
+
+```sh
+pcode config set vi_escape_sequence jj
+```
+
+Inside a session, `/config set vi_escape_sequence jj` saves the same setting for
+next launch. This requires `editing_mode vi`. Other literal sequences, such as
+`jk`, work too; use printable characters without spaces. The sequence applies
+only in the main prompt's vi insert mode, not normal mode or popup search fields.
+Escape remains available as a fallback, and bracketed paste inserts the sequence
+as text instead of changing modes.
+
+Type the sequence without pausing for a second between keys. A partial sequence
+(such as a lone `j`) waits up to one second before being inserted; a nonmatching
+next key inserts the pending text immediately. To restore Escape-only behavior:
+
+```sh
+pcode config set vi_escape_sequence escape
+```
+
+`pcode config unset vi_escape_sequence` also restores the default. Restart after
+changing this setting.
+
 Vi mode waits only 100 ms for a terminal escape sequence to complete, so Escape
 enters normal mode without a noticeable pause. Very slow or laggy connections
 may occasionally split an escape sequence.

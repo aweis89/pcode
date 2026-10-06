@@ -133,6 +133,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | --- | --- | --- |
 | `send_mode` | `steering` | `steering`, `queue`, `interrupt` (what Enter does while a turn runs; see [sending while the agent is working](commands.md#sending-while-the-agent-is-working)) |
 | `editing_mode` | `emacs` | `emacs`, `vi` (prompt editor key bindings; see [vi editing](commands.md#optional-vi-editing)) |
+| `vi_escape_sequence` | `escape` | Escape-only by default; set `jj` (or another printable sequence without spaces) to also leave vi insert mode with that sequence. Escape remains available. Requires restart; see [vi editing](commands.md#optional-vi-editing). |
 | `key_prefix` | `ctrl+b` | A leader pressed before the action letter: Ctrl+B opens the current action menu. Other leaders include `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"`; `ctrl` restores direct Ctrl+letter chords. F1 browses contextual help. See [shortcut prefix](commands.md#shortcut-prefix) |
 | `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, Ctrl+B `q` flips it inside one popup, see [popup keys](commands.md#popup-keys)) |
 | `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |

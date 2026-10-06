@@ -11,13 +11,14 @@ from dataclasses import dataclass
 from prompt_toolkit.application import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Condition, vi_mode
+from prompt_toolkit.filters import Condition, vi_insert_mode, vi_mode
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.keys import Keys
 
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.paste import PastedText
+from pcode.preferences import SETTINGS, load_preferences
 from pcode.prefix_keys import Choice, PrefixKeys
 
 
@@ -223,6 +224,16 @@ def _editing_keys(
         state.input_mode = InputMode.NAVIGATION
         if buffer.selection_state:
             buffer.exit_selection()
+
+    sequence = load_preferences().get("vi_escape_sequence", SETTINGS["vi_escape_sequence"].default)
+    if sequence != "escape":
+        # Native sequence buffering preserves unmatched/expired characters. Its
+        # timeout is separate from terminal Escape decoding; paste bypasses it.
+        keys.add(
+            *sequence,
+            filter=vi_insert_mode & Condition(lambda: not get_app().quoted_insert),
+            eager=True,
+        )(normal_mode)
 
     @keys.add("c-j")
     @keys.add("escape", "enter", filter=~vi_mode)

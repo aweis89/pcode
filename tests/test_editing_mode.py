@@ -132,6 +132,87 @@ def test_terminal_newline_encodings(transcript, vi_mode, newline):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("transcript", [False, True])
+@pytest.mark.parametrize(
+    "sequence,vi_mode,keys,expected,cursor,mode",
+    [
+        ("jj", True, "hellojj", "hello", 4, InputMode.NAVIGATION),
+        ("jk", True, "hellojk0iX", "Xhello", 1, InputMode.INSERT),
+        ("jj", True, "hellojx", "hellojx", 7, InputMode.INSERT),
+        ("j", True, "hello\x16j", "helloj", 6, InputMode.INSERT),
+        ("jj", True, "helloj\x1b", "helloj", 5, InputMode.NAVIGATION),
+        ("jj", True, "hello\x1b0Rjj", "jjllo", 2, InputMode.REPLACE),
+        ("jj", True, "hello\x1b", "hello", 4, InputMode.NAVIGATION),
+        ("escape", True, "hellojj", "hellojj", 7, InputMode.INSERT),
+        ("jj", False, "hellojj", "hellojj", 7, None),
+        # Native normal-mode j motions must not become the insert-mode mapping.
+        ("jj", True, "a\nb\nc\x1bggjj", "a\nb\nc", 4, InputMode.NAVIGATION),
+        ("jj", True, "\x1b[200~hellojj\x1b[201~", "hellojj", 7, InputMode.INSERT),
+        # A partial match is flushed before submission, rather than discarded.
+        ("jj", True, "helloj", "helloj", 6, InputMode.INSERT),
+    ],
+)
+def test_vi_escape_sequence(transcript, sequence, vi_mode, keys, expected, cursor, mode):
+    save_preferences(vi_escape_sequence=sequence)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            snapshots = []
+
+            def submit(text):
+                snapshots.append(
+                    (text, prompt.default_buffer.cursor_position, prompt.app.vi_state.input_mode)
+                )
+                prompt.app.exit()
+
+            prompt = create_prompt(
+                CommandRegistry(),
+                vi_mode=vi_mode,
+                input=pipe,
+                output=DummyOutput(),
+                transcript=Transcript(Console(file=StringIO())) if transcript else None,
+                on_submit=submit if transcript else None,
+            )
+            pipe.send_text(keys + "\r")
+            if transcript:
+                await asyncio.wait_for(prompt.app.run_async(), timeout=3)
+                assert snapshots[0][:2] == (expected, cursor)
+                if mode is not None:
+                    assert snapshots[0][2] == mode
+            else:
+                assert await asyncio.wait_for(prompt.prompt_async(), timeout=3) == expected
+
+    asyncio.run(run())
+
+
+def test_vi_escape_sequence_partial_match_expires():
+    save_preferences(vi_escape_sequence="jj")
+
+    async def run():
+        with create_pipe_input() as pipe:
+            prompt = create_prompt(
+                CommandRegistry(), vi_mode=True, input=pipe, output=DummyOutput()
+            )
+            assert prompt.app.timeoutlen == 1
+            prompt.app.timeoutlen = 0.01
+
+            async def feed():
+                pipe.send_text("j")
+                # Wait for the actual timeout flush, not a fixed scheduling delay.
+                while prompt.default_buffer.text != "j":
+                    await asyncio.sleep(0.01)
+                assert prompt.app.vi_state.input_mode == InputMode.INSERT
+                pipe.send_text("jx\r")
+
+            result = await asyncio.wait_for(
+                prompt.prompt_async(pre_run=lambda: prompt.app.create_background_task(feed())),
+                timeout=3,
+            )
+            assert result == "jjx"
+
+    asyncio.run(run())
+
+
 DOWN = "\x1b[B"
 
 

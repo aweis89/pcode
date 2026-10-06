@@ -68,6 +68,8 @@ class Setting:
     height: bool = False
     # `ctrl`, or the leader key(s) pressed before a shortcut's letter.
     key_prefix: bool = False
+    # Escape, or literal printable characters to leave vi insert mode.
+    vi_escape_sequence: bool = False
     # Tokens as `200000`, `200k`, or `1.5m`; see parse_token_count.
     token_count: bool = False
     # Command-line arguments, split as a shell would; empty means none.
@@ -98,6 +100,11 @@ class Setting:
                 } - PROVIDERS.keys()
                 if unknown:
                     raise ValueError(f"Unknown model providers: {', '.join(sorted(unknown))}")
+        elif self.vi_escape_sequence:
+            if not value or not value.isprintable() or any(char.isspace() for char in value):
+                raise ValueError(
+                    f"{key} must be escape or printable characters without whitespace."
+                )
         elif self.key_prefix:
             parse_key_prefix(value)
         elif self.token_count:
@@ -622,6 +629,12 @@ SETTINGS = {
     ),
     "editing_mode": Setting(
         "emacs", ("emacs", "vi"), description="Key bindings for the prompt editor"
+    ),
+    "vi_escape_sequence": Setting(
+        "escape",
+        vi_escape_sequence=True,
+        description="Leave vi insert mode: escape or a literal sequence such as jj; "
+        "Escape always works (next launch)",
     ),
     "theme": Setting(
         "auto",
