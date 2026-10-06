@@ -178,7 +178,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `terminal_progress` | `auto` | `auto`, `on`, `off` (the terminal's [tab progress bar](#tab-progress-bar) while a turn runs; OSC 9;4) |
 | `desktop_notifications` | `on` | `on`, `off` (desktop notification when a background session finishes; OSC 9) |
 | `terminal_title` | `on` | `on`, `off` (set the terminal [tab title](#tab-title) to the session's name; OSC 0) |
-| `session_naming` | `on` | `on`, `off` (ask the session's own model for a [title](sessions.md#session-titles) after the first turn) |
+| `session_naming` | `on` | `on`, `off` (ask the session's own model for a [title](sessions.md#session-titles) beside the first turn) |
 
 ### Tools and sub-agents
 

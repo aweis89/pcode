@@ -39,6 +39,7 @@ def make_app(workspace, monkeypatch, *, model=None, width=100):
 def test_footer_counts_running_jobs_before_model_metadata(
     tmp_path, monkeypatch, busy, count, label, width
 ):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=width)
     app.activity.busy = busy
     app.activity.job_count = count
@@ -143,11 +144,12 @@ def test_long_unicode_path_stays_one_row(tmp_path, monkeypatch, width):
         assert "· preview" in text
 
 
-def test_narrow_busy_footer_keeps_send_mode_and_activity(tmp_path, monkeypatch):
-    app, _ = make_app(tmp_path, monkeypatch, model="test:local", width=30)
+def test_narrow_footer_keeps_the_path_and_cuts_from_the_end(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    app, _ = make_app(tmp_path / "p/pcode", monkeypatch, model="test:local", width=30)
     app.activity.busy = True
     text = fragment_list_to_text(app.toolbar())
-    assert text.startswith(" steering · test:local")
+    assert text.startswith(" ~/p/pcode · steering · test:")
     assert text.endswith("…")
     assert cell_len(text) <= 30
 
@@ -265,15 +267,15 @@ def test_provider_and_context_stay_one_row(tmp_path, monkeypatch, width):
     )
     text = fragment_list_to_text(app.toolbar())
     assert cell_len(text) <= width
-    if width >= 60:
-        assert "anthropic:claude-sonnet-4-6" in text
+    # The path leads, so at 60 columns it pushes the model name a few cells off.
     if width >= 100:
+        assert "anthropic:claude-sonnet-4-6" in text
         assert "0/1m" in text
 
 
 @pytest.mark.parametrize("mode", ["steering", "queue", "interrupt"])
 @pytest.mark.parametrize("width", [20, 35, 40, 100])
-def test_send_mode_survives_long_model_and_path(tmp_path, monkeypatch, mode, width):
+def test_a_long_path_leaves_room_for_the_send_mode(tmp_path, monkeypatch, mode, width):
     app, _ = make_app(
         tmp_path / ("workspace" * 20),
         monkeypatch,
@@ -282,7 +284,8 @@ def test_send_mode_survives_long_model_and_path(tmp_path, monkeypatch, mode, wid
     )
     app.send_mode = mode
     text = fragment_list_to_text(app.toolbar())
-    assert text.startswith(f" {mode}")
+    # Under pressure the path gives way just enough for the send mode.
+    assert f"… · {mode}" in text
     assert cell_len(text) <= width
 
 

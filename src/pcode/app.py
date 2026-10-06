@@ -1790,8 +1790,8 @@ class PreviewApp:
             model += f" → {self.pending_model}"
         if self.model:
             model += f" ({self.current_effort()})"
-        # Put send mode and activity ahead of model/path metadata so they are
-        # never pushed off the footer by long provider names or narrow panes.
+        # Read left to right and cut from the right: the path leads, then send
+        # mode and live activity, then metadata, with the help hint last.
         once = " (once)" if self.send_mode_once else ""
         segments = [("mode", f"{self.next_send_mode}{once}")]
         if self._startup_pending:
@@ -1814,13 +1814,6 @@ class PreviewApp:
             segments.extend([("sep", " · "), ("activity", f"{running} btw running")])
         if unread := self.asides.unread:
             segments.extend([("sep", " · "), ("activity", f"{unread} btw ready")])
-        # Keep live status ahead of help when the terminal is narrow. Help is
-        # discoverable before model/path metadata, but never at a queue's expense.
-        if self.activity.show_hints:
-            shortcuts = getattr(self.prompt_session, "shortcuts", None)
-            if shortcuts is None:
-                shortcuts = PrefixKeys()
-            segments.extend([("sep", " · "), ("hint", shortcuts.summary())])
         segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
         context = self.controller.context_label()
         # Colorize the token counts distinctly from the " · " and "/" around them.
@@ -1832,15 +1825,21 @@ class PreviewApp:
             for part in parts
             if part
         )
-        # Only spend spare width on the path; preserve the send mode first.
-        path_width = max(0, width - cell_len("".join(value for _, value in segments)) - 4)
-        # Last and outside the path's budget: a narrow pane cuts it first.
         if self.activity.cache_note:
             segments.extend([("sep", " · "), ("cache", self.activity.cache_note)])
+        if self.activity.show_hints:
+            shortcuts = getattr(self.prompt_session, "shortcuts", None)
+            if shortcuts is None:
+                shortcuts = PrefixKeys()
+            segments.extend([("sep", " · "), ("hint", shortcuts.summary())])
         details = "".join(value for _, value in segments)
-        path = Text(location if path_width else "")
-        if path_width:
-            path.truncate(path_width, overflow="ellipsis")
+        # The path takes any spare width; under pressure it keeps a third of
+        # the row, and never so much that the send mode after it is cut.
+        spare = width - cell_len(details) - 4  # The leading space and " · ".
+        # One more cell than the separators for the line's own trailing "…".
+        floor = min(width // 3, width - cell_len(segments[0][1]) - 5)
+        path = Text(location)
+        path.truncate(max(spare, floor, 1), overflow="ellipsis")
         text = Text(f" {path.plain} · {details}" if path.plain else f" {details}")
         text.truncate(width, overflow="ellipsis")
         prefix = [("text", " ")]

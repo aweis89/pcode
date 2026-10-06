@@ -40,10 +40,8 @@ def test_a_long_answer_is_cut_to_a_list_row():
     assert len(cleaned) <= 60 and cleaned.startswith("word word")
 
 
-def test_the_request_carries_the_first_exchange_trimmed():
-    text = request_text("x" * 5000, "z" * 5000)
-    assert text.count("x") == 2000 and text.count("z") == 1500
-    assert "assistant's reply" not in request_text("Just a prompt", "  ")
+def test_the_request_carries_the_first_prompt_trimmed():
+    assert request_text("  " + "x" * 5000).count("x") == 2000
 
 
 def test_suggest_title_asks_the_sessions_own_model_at_low_effort(monkeypatch):
@@ -55,7 +53,7 @@ def test_suggest_title_asks_the_sessions_own_model_at_low_effort(monkeypatch):
         return SideModel(name, model, None)
 
     monkeypatch.setattr("pcode.agent.side_model", side_model)
-    assert asyncio.run(suggest_title("anthropic:x", "Fix the parser", "Done")) == "Fix the parser"
+    assert asyncio.run(suggest_title("anthropic:x", "Fix the parser")) == "Fix the parser"
     assert asked == [("anthropic:x", "low")]
 
 
@@ -110,8 +108,8 @@ def test_a_title_is_saved_without_moving_the_session_in_resume(tmp_path, monkeyp
     save_preferences(session_naming="on")
     asked = []
 
-    async def suggest(model, prompt, reply="", *, workspace=None):
-        asked.append((model, prompt, reply, workspace))
+    async def suggest(model, prompt, *, workspace=None):
+        asked.append((model, prompt, workspace))
         return "Parser fix"
 
     monkeypatch.setattr("pcode.session_naming.suggest_title", suggest)
@@ -127,7 +125,8 @@ def test_a_title_is_saved_without_moving_the_session_in_resume(tmp_path, monkeyp
 
     try:
         asyncio.run(run())
-        assert asked == [("test:local", "Fix the parser", "Patched parser.py", tmp_path)]
+        # Without a prompt handed over, the first one is read from the journal.
+        assert asked == [("test:local", "Fix the parser", tmp_path)]
         (info,) = list_sessions(root)
         assert (info.title, info.updated) == ("Parser fix", updated)
         assert app.controller.session_title() == "Parser fix"
@@ -146,7 +145,7 @@ def test_no_title_when_off_named_or_failing(tmp_path, monkeypatch, case):
     save_preferences(session_naming="off" if case == "off" else "on")
     calls = []
 
-    async def suggest(model, prompt, reply="", *, workspace=None):
+    async def suggest(model, prompt, *, workspace=None):
         calls.append(prompt)
         raise RuntimeError("provider down")
 
@@ -172,7 +171,7 @@ def test_a_title_arriving_after_rename_is_dropped(tmp_path, monkeypatch):
     save_preferences(session_naming="on")
     app, saved, root = saved_app(tmp_path)
 
-    async def suggest(model, prompt, reply="", *, workspace=None):
+    async def suggest(model, prompt, *, workspace=None):
         app.controller.rename("Typed meanwhile")
         return "Late title"
 
@@ -201,7 +200,7 @@ def test_new_cancels_a_title_request_and_reopening_asks_again(tmp_path, monkeypa
     app, saved, root = saved_app(tmp_path)
     started = []
 
-    async def suggest(model, prompt, reply="", *, workspace=None):
+    async def suggest(model, prompt, *, workspace=None):
         started.append(prompt)
         await asyncio.Event().wait()  # Answers only when cancelled.
 

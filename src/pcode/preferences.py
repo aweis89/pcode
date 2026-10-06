@@ -392,7 +392,7 @@ SETTINGS = {
     "session_naming": Setting(
         "on",
         ("on", "off"),
-        description="Title each new session after its first turn, asking its own model "
+        description="Title each new session from its first prompt, asking its own model "
         "at low effort; /rename overrides",
     ),
     "terminal_title": Setting(

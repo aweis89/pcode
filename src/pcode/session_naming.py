@@ -1,8 +1,9 @@
-"""A short title for a saved session, asked of its own model after the first turn.
+"""A short title for a saved session, asked of its own model beside the first turn.
 
 One small request beside the conversation, not part of it: the first prompt
-and the start of the reply go to the session's model at low effort, and the
-answer is cleaned into one short line. Nothing here raises past the caller's
+goes to the session's model at low effort, and the answer is cleaned into one
+short line. The reply is not waited for: compared on saved sessions, it
+changed little, and a first turn can run for minutes. Nothing here raises past the caller's
 `try`: a title is a convenience, and a session without one lists by its
 first prompt as before.
 
@@ -17,13 +18,12 @@ import re
 INSTRUCTIONS = (
     "You name coding-assistant sessions so they can be found again later. "
     "Reply with only a title of 3 to 6 words for the session below: plain text, "
-    "no quotes, no trailing punctuation, no prefix such as 'Title:'. Name the task "
-    "or topic, not the assistant or the user."
+    "in sentence case, no quotes, no trailing punctuation, no prefix such as "
+    "'Title:'. Name the task or topic, not the assistant or the user."
 )
 
-# How much of the first exchange the request carries.
+# How much of the first prompt the request carries.
 PROMPT_CHARS = 2000
-REPLY_CHARS = 1500
 TITLE_CHARS = 60
 TIMEOUT_SECONDS = 60.0
 
@@ -41,14 +41,11 @@ def clean_title(text: str) -> str:
     return plain(" ".join(plain(line, None).split()), TITLE_CHARS)
 
 
-def request_text(prompt: str, reply: str) -> str:
-    text = f"First message from the user:\n{prompt.strip()[:PROMPT_CHARS]}"
-    if reply.strip():
-        text += f"\n\nStart of the assistant's reply:\n{reply.strip()[:REPLY_CHARS]}"
-    return text
+def request_text(prompt: str) -> str:
+    return f"First message from the user:\n{prompt.strip()[:PROMPT_CHARS]}"
 
 
-async def suggest_title(model: str, prompt: str, reply: str = "", *, workspace=None) -> str:
+async def suggest_title(model: str, prompt: str, *, workspace=None) -> str:
     """Ask `model` for a title; raises whatever the request raises, or TimeoutError."""
     from pydantic_ai.direct import model_request_stream
     from pydantic_ai.messages import ModelRequest, UserPromptPart
@@ -67,7 +64,7 @@ async def suggest_title(model: str, prompt: str, reply: str = "", *, workspace=N
         if workspace is not None:
             settings[CWD_SETTING] = str(workspace)
     messages = [
-        ModelRequest(parts=[UserPromptPart(request_text(prompt, reply))], instructions=INSTRUCTIONS)
+        ModelRequest(parts=[UserPromptPart(request_text(prompt))], instructions=INSTRUCTIONS)
     ]
 
     async def ask() -> str:

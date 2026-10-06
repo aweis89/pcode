@@ -175,16 +175,17 @@ reduction. There is no per-tool configuration.
 ## Prompt cache notices
 
 When a request reuses much less of the prompt cache than an earlier one had
-built up, pcode adds a muted note to the end of the footer under the editor,
-kept until your next prompt:
+built up, pcode adds a muted note near the end of the footer under the editor,
+just before the keybindings hint, kept until your next prompt:
 
 ```text
-~/p/pcode@main · steering (^S) · claude:claude-opus-5-5 (high) · 92k/1m · cache miss 0/166k
+~/p/pcode@main · steering · claude:claude-opus-5-5 (high) · 92k/1m · cache miss 0/166k · ^B Keybindings
 ```
 
 That reads "reused 0 of about 166k cached tokens"; `cache drop 41k/166k` means
-some was reused. A sub-agent's drop is labeled `sub-agent cache …`. The note is
-the last thing in the footer, so a narrow pane drops it first. It never goes into
+some was reused. A sub-agent's drop is labeled `sub-agent cache …`. A narrow
+pane cuts the footer from the right, so only the keybindings hint is cut before
+this note. It never goes into
 the scrollback.
 
 The full notice is saved with the session (in `transcript.jsonl` in its session

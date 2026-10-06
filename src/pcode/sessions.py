@@ -43,7 +43,7 @@ class SessionInfo(BaseModel):
     status: str = "new"
     # Set with /rename; /resume lists and searches it.
     name: str | None = None
-    # Asked of the model after the first turn (`session_naming`); `name` wins.
+    # Asked of the model beside the first turn (`session_naming`); `name` wins.
     title: str | None = None
     turns: int = 0
     input_tokens: int = 0

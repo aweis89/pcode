@@ -709,7 +709,7 @@ class SessionHost:
             and not running
             and not self.controller.startup_pending
             and not self.controller.asides.running
-            # A title asked for after the first turn would be lost.
+            # A title asked for beside the first turn would be lost.
             and (self.controller.naming_task is None or self.controller.naming_task.done())
         )
 

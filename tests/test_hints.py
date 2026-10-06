@@ -1,6 +1,7 @@
 """One contextual help indicator replaces hints beside individual controls."""
 
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -46,7 +47,7 @@ def test_footer_shows_one_help_indicator(tmp_path, monkeypatch, shipped_default,
     app, _ = make_app(tmp_path, monkeypatch)
     app.prompt_session = SimpleNamespace(shortcuts=PrefixKeys(prefix))
     text = fragment_list_to_text(app.toolbar())
-    assert f" · steering · {indicator} · preview" in text
+    assert text.endswith(f" · steering · preview · {indicator}")
     assert text.count("Keybindings") == 1
     assert "(^S)" not in text
     save_preferences(show_hints="off")
@@ -56,19 +57,21 @@ def test_footer_shows_one_help_indicator(tmp_path, monkeypatch, shipped_default,
     assert "Keybindings" not in text
 
 
-def test_narrow_footer_keeps_help_before_model_metadata(tmp_path, monkeypatch, shipped_default):
-    app, _ = make_app(tmp_path, monkeypatch, width=len(" steering · F1 Keybindings"))
-    assert fragment_list_to_text(app.toolbar()) == " steering · F1 Keybinding…"
+def test_narrow_footer_cuts_help_before_model_metadata(tmp_path, monkeypatch, shipped_default):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    app, _ = make_app(tmp_path, monkeypatch, width=len(" ~ · steering · preview · F1"))
+    assert fragment_list_to_text(app.toolbar()) == " ~ · steering · preview · F…"
 
 
 def test_narrow_footer_keeps_live_queue_status_before_help(tmp_path, monkeypatch, shipped_default):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app, _ = make_app(tmp_path, monkeypatch, width=30)
     app.prompt_session = SimpleNamespace(shortcuts=PrefixKeys("ctrl+b"))
     app.activity.busy = True
     app.activity.queued = 2
     app.activity.queued_modes = ["queue", "queue"]
     text = fragment_list_to_text(app.toolbar())
-    assert text.startswith(" steering · 2 queued · ")
+    assert text.startswith(" ~ · steering · 2 queued · ")
     assert "Keybindings" not in text
 
 

@@ -283,7 +283,7 @@ class TabTitle:
     """Keep the terminal's title on the session's name, sampled once a second.
 
     `source` is read on each tick, so a name given by /rename, by the model
-    after the first turn, or by the host a hosted terminal follows needs no
+    during the first turn, or by the host a hosted terminal follows needs no
     hook of its own. Nothing is sent until there is a name, so a session
     without one leaves the title to the shell.
     """

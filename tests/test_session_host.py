@@ -205,6 +205,8 @@ class Script:
             yield {1: DeltaToolCall(name="read_file", json_args='{"path": "sample.txt"}')}
         elif "also check the tests" in texts:
             yield "Steering received."
+        elif prompt == "fail at once":
+            raise RuntimeError("provider down")
         elif prompt.startswith("hang"):
             yield "Started. "
             await self.gate(prompt).wait()
@@ -320,28 +322,32 @@ def test_terminal_sees_a_turn_the_host_runs(tmp_path, host_dir):
     asyncio.run(run())
 
 
-def test_a_session_is_titled_after_its_first_turn(tmp_path, host_dir, monkeypatch):
+def test_a_session_is_titled_beside_its_first_turn(tmp_path, host_dir, monkeypatch):
     from pcode.preferences import save_preferences
     from pcode.sessions import list_sessions
 
     save_preferences(session_naming="on")
     asked = []
 
-    async def suggest(model, prompt, reply="", *, workspace=None):
-        asked.append((model, prompt, reply))
+    async def suggest(model, prompt, *, workspace=None):
+        asked.append((model, prompt))
         return "Greeting the host"
 
     monkeypatch.setattr("pcode.session_naming.suggest_title", suggest)
 
     async def run():
-        host = await start_host("aaaa1111", tmp_path, Script())
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
         try:
             terminal, view, _ = await attach(host)
-            terminal.submit("hello", "queue")
-            await until(lambda: view.count("after_turn"))
+            terminal.submit("hang hello", "queue")
+            # Asked from the prompt alone, while the first turn is still running.
             # The title reaches the attached terminal (its tab), /switch, and /resume.
             await until(lambda: terminal.session_title() == "Greeting the host")
-            assert asked == [("function:script", "hello", "Echo: hello")]
+            assert not view.count("after_turn")
+            script.release("hang hello")
+            await until(lambda: view.count("after_turn"))
+            assert asked == [("function:script", "hang hello")]
             (entry,) = list_hosts()
             assert entry.title == "Greeting the host"
             (info,) = list_sessions(tmp_path / "sessions")
@@ -354,6 +360,65 @@ def test_a_session_is_titled_after_its_first_turn(tmp_path, host_dir, monkeypatc
             host.controller.rename("Custom name")
             await until(lambda: terminal.session_title() == "Custom name")
             assert list_hosts()[0].title == "Custom name"
+            terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_later_turn_titles_an_untitled_session_from_its_first_prompt(
+    tmp_path, host_dir, monkeypatch
+):
+    from pcode.preferences import save_preferences
+
+    save_preferences(session_naming="off")
+    asked = []
+
+    async def suggest(model, prompt, *, workspace=None):
+        asked.append(prompt)
+        return "Greeting the host"
+
+    monkeypatch.setattr("pcode.session_naming.suggest_title", suggest)
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal, view, _ = await attach(host)
+            terminal.submit("hello", "queue")
+            await until(lambda: view.count("after_turn"))
+            save_preferences(session_naming="on")
+            terminal.submit("again", "queue")
+            await until(lambda: terminal.session_title() == "Greeting the host")
+            assert asked == ["hello"]
+            terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_first_turn_that_fails_before_any_output_is_still_titled(tmp_path, host_dir, monkeypatch):
+    from pcode.preferences import save_preferences
+
+    save_preferences(session_naming="on")
+    asked = []
+
+    async def suggest(model, prompt, *, workspace=None):
+        asked.append(prompt)
+        return "Failing provider"
+
+    monkeypatch.setattr("pcode.session_naming.suggest_title", suggest)
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal, view, _ = await attach(host)
+            terminal.submit("fail at once", "queue")
+            await until(lambda: terminal.session_title() == "Failing provider")
+            terminal.submit("again", "queue")
+            await until(lambda: view.count("after_turn") == 2)
+            assert asked == ["fail at once"]
             terminal.close()
         finally:
             await stop_host(host)

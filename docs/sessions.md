@@ -218,8 +218,9 @@ are refused.
 
 ### Session titles
 
-After a new session's first turn, pcode asks the session's own model for a
-short title, in the background and at low effort. `/resume` lists it before the
+When a new session's first turn starts, pcode asks the session's own model for a
+short title, in the background and at low effort, so it usually arrives while
+the turn is still running. `/resume` lists it before the
 first prompt and finds the session by its words, `/switch` lists it in place of
 the first prompt, and the terminal [tab](configuration.md#tab-title) shows it.
 Between turns it also heads the editor box (`┌─ Fix the flaky login test ──┐`,
@@ -229,11 +230,11 @@ status row takes that border, and a session with no title or name yet keeps a
 plain rule.
 `/rename NAME` replaces it everywhere, and `/rename -` goes back to the title.
 
-The request carries only your first message and the start of the reply, not the
-conversation, so it costs a fraction of a turn. If the request fails, nothing
+The request carries only your first message, not the conversation or the
+reply, so it costs well under a thousand tokens. If the request fails, nothing
 is shown and the session lists by its first prompt as before; pcode asks again
 the next time the session is opened, not on every turn. Sessions from before
-titles existed get one after their next turn.
+titles existed get one when their next turn starts.
 `pcode config set session_naming off` turns titles off.
 
 ### Continuing a session that is open elsewhere

@@ -504,7 +504,7 @@ class SessionController:
         self.asides.on_failure = self.record_aside_failure
         self.asides.on_update = lambda aside: self.view.aside_changed(aside)
         self.asides.on_settle = self.aside_settled
-        # Titling a session after its first turn (`session_naming`): the running
+        # Titling a session beside its first turn (`session_naming`): the running
         # request, and the sessions asked already while open, so a failure is
         # not retried on every turn. Opening a session (/new, /resume) clears it.
         self.naming_task: asyncio.Task | None = None
@@ -1377,13 +1377,23 @@ class SessionController:
         # A turn creates the session's journal on first use. Attached terminals
         # read it from disk (/tools, /diffs), so they need its path mid-turn,
         # not only once the turn ends.
-        journaled = getattr(runtime, "session", None) is not None
+        session = getattr(runtime, "session", None)
+        journaled = session is not None
+        # The title is asked for beside the first turn rather than after it: the
+        # prompt alone names it as well as prompt and reply do, and a long turn
+        # left the session untitled for minutes. A session that existed already
+        # (resumed, or after a first turn that failed) is named from its first
+        # prompt on disk.
+        first_prompt = prompt if session is None and not (resend or wake) else None
+        if journaled:
+            self.start_naming(first_prompt)
         try:
             async with aclosing(source) as stream:
                 async for event in stream:
                     if not journaled and getattr(runtime, "session", None) is not None:
                         journaled = True
                         self.view.session_changed()
+                        self.start_naming(first_prompt)
                     self.view.turn_event(event)
                     if (job_id := delivered_job(event)) is not None:
                         self.report_delivered_job(job_id)
@@ -1392,6 +1402,9 @@ class SessionController:
         except Exception as error:
             failure = error
         finally:
+            # A turn that ended before its first event opened the session all the same.
+            if getattr(runtime, "session", None) is not None:
+                self.start_naming(first_prompt)
             self.view.turn_ended()
             # MCP work started beside the turn may outlast it.
             self.activity.status = self.mcp_status if self.mcp_task is not None else ""
@@ -1421,8 +1434,6 @@ class SessionController:
             self.view.error(error_message(failure), title="Agent failed")
             if hint := stale_install():
                 self.view.warning(hint)
-        if not (cancelled or failure):
-            self.start_naming()
         if (cancelled or failure) and runtime.session:
             # A cancel is something the user asked for, so it has nothing worth
             # pointing at. Name the traceback file rather than the directory it
@@ -2906,8 +2917,12 @@ class SessionController:
             return ""
         return session.info.name or session.info.title or ""
 
-    def start_naming(self) -> None:
-        """Ask for a title in the background, once, for a saved session that has none."""
+    def start_naming(self, prompt: str | None = None) -> None:
+        """Ask for a title in the background, once, for a saved session that has none.
+
+        `prompt` is the session's first prompt when the caller has it; without
+        one it is read from the journal.
+        """
         session = getattr(self.runtime, "session", None)
         if session is None or not self.model:
             return
@@ -2920,22 +2935,23 @@ class SessionController:
         if load_preferences().get("session_naming", setting.default) != "on":
             return
         self._naming_tried.add(info.id)
-        self.naming_task = asyncio.create_task(self._name_session(session, self.model))
+        self.naming_task = asyncio.create_task(self._name_session(session, self.model, prompt))
 
-    async def _name_session(self, session, model: str) -> None:
+    async def _name_session(self, session, model: str, prompt: str | None) -> None:
         import logging
 
         from pcode.session_naming import suggest_title
         from pcode.sessions import session_turns
 
         try:
-            turns = await asyncio.to_thread(session_turns, session.info, session.directory.parent)
-            first = next((turn for turn in turns or () if turn.prompt.strip()), None)
-            if first is None:
+            if not (prompt and prompt.strip()):
+                turns = await asyncio.to_thread(
+                    session_turns, session.info, session.directory.parent
+                )
+                prompt = next((turn.prompt for turn in turns or () if turn.prompt.strip()), "")
+            if not prompt:
                 return
-            title = await suggest_title(
-                model, first.prompt, first.response, workspace=self.workspace
-            )
+            title = await suggest_title(model, prompt, workspace=self.workspace)
         except Exception as error:  # noqa: BLE001 - a title is never worth an error.
             logging.getLogger(__name__).debug("session title failed: %s", error)
             return
