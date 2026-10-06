@@ -3,8 +3,8 @@
 delta never reads the user's git config (`--no-gitconfig`, which also ignores
 `--config`) or its own `DELTA_*`/`BAT_*` environment: `delta_args` is the one
 place to customize it, so pcode's diffs look the same whatever `git diff` is set
-up to do. pcode adds only what it must decide itself (width, dark or light, no
-pager, and the layout) and leaves out any of those the user's own arguments
+up to do. pcode sets width, dark or light, no pager or headers, layout, and
+syntax colors on deletions. It leaves out defaults the user's own arguments
 already pass: delta rejects a flag given twice. Anything that goes wrong (delta
 missing, unknown arguments, a timeout) returns None, and the caller falls back
 to its own Rich rendering.
@@ -63,6 +63,9 @@ class Delta:
         defaults = [
             ({"--paging"}, "--paging=never"),
             (WIDTH_FLAGS, f"--width={width}"),
+            # Match additions' syntax colors without changing delta's backgrounds.
+            ({"--minus-style"}, "--minus-style=syntax auto"),
+            ({"--minus-emph-style"}, "--minus-emph-style=syntax auto"),
             ({"--dark", "--light"}, "--light" if self.light else "--dark"),
             # The block heading already names the file.
             ({"--file-style"}, "--file-style=omit"),

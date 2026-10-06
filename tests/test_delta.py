@@ -49,6 +49,8 @@ def test_command_adds_only_what_the_user_did_not_choose():
         "--no-gitconfig",
         "--paging=never",
         "--width=100",
+        "--minus-style=syntax auto",
+        "--minus-emph-style=syntax auto",
         "--dark",
         "--file-style=omit",
         "--hunk-header-style=omit",
@@ -60,6 +62,8 @@ def test_command_adds_only_what_the_user_did_not_choose():
         "delta",
         "--no-gitconfig",
         "--paging=never",
+        "--minus-style=syntax auto",
+        "--minus-emph-style=syntax auto",
         "--hunk-header-style=omit",
         "--width=variable",
         "--light",
@@ -84,6 +88,23 @@ def test_command_adds_only_what_the_user_did_not_choose():
 def test_layout_follows_the_width_only_in_auto(layout, width, side_by_side):
     command = Delta("delta", layout=layout).command(width)
     assert ("--side-by-side" in command) is side_by_side
+
+
+@pytest.mark.parametrize("light", [False, True])
+@pytest.mark.parametrize("layout", ["unified", "side-by-side"])
+def test_deletions_default_to_syntax_colors_and_allow_overrides(light, layout):
+    command = Delta("delta", light=light, layout=layout).command(100)
+    assert "--minus-style=syntax auto" in command
+    assert "--minus-emph-style=syntax auto" in command
+    custom = Delta(
+        "delta",
+        ("--minus-style", "red normal", "--minus-emph-style=bold red normal"),
+        light=light,
+        layout=layout,
+    ).command(100)
+    assert "--minus-style=syntax auto" not in custom
+    assert "--minus-emph-style=syntax auto" not in custom
+    assert custom[-3:] == ["--minus-style", "red normal", "--minus-emph-style=bold red normal"]
 
 
 def test_the_default_layout_is_unified_at_every_width():

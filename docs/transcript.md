@@ -80,8 +80,10 @@ variables (`DELTA_FEATURES`, `BAT_THEME`), so these diffs look the same however
 ```
 
 pcode itself only sets the width, dark or light (from your pcode theme), no
-pager, no file or hunk headers (the block heading already names the file), and
-the layout. A flag in `delta_args` replaces pcode's choice of that flag, so
+pager, no file or hunk headers (the block heading already names the file),
+the layout, and syntax highlighting on removed lines as well as added lines.
+The default background colors are unchanged. A flag in `delta_args` replaces
+pcode's choice of that flag, so
 `--side-by-side` gives the side-by-side layout at every width and
 `--width=variable` stops backgrounds at the end of the text. Any
 `--hunk-header-style` brings the hunk headers back. Diffs are unified (inline)
