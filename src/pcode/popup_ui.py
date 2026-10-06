@@ -31,7 +31,13 @@ from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UICo
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
+from prompt_toolkit.layout.processors import (
+    AfterInput,
+    ConditionalProcessor,
+    Processor,
+    Transformation,
+    TransformationInput,
+)
 from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import TextArea
@@ -550,6 +556,41 @@ def list_pane_height(rows: int = LIST_ROWS_MAX) -> Dimension:
         preferred=visible + _BORDERS,
         max=LIST_ROWS_MAX + _BORDERS,
     )
+
+
+class EllipsisProcessor(Processor):
+    """Cut a line that overflows its window, ending it with ``…``.
+
+    For an unwrapped list, whose rows would otherwise stop dead at the edge
+    with no sign that more follows. The buffer keeps the whole line, so the
+    row is as long as the pane allows at any terminal width.
+    """
+
+    def apply_transformation(self, ti: TransformationInput) -> Transformation:
+        fragments = ti.fragments
+        if sum(get_cwidth(text) for _, text, *_ in fragments) <= ti.width:
+            return Transformation(fragments)
+        room = max(ti.width - 1, 0)
+        kept: StyleAndTextTuples = []
+        used = chars = 0
+        style = ""
+        for style, text, *_ in fragments:
+            for char in text:
+                width = get_cwidth(char)
+                if used + width > room:
+                    break
+                kept.append((style, char))
+                used += width
+                chars += 1
+            else:
+                continue
+            break
+        kept.append((style, "…"))
+        return Transformation(
+            kept,
+            source_to_display=lambda i: min(i, chars),
+            display_to_source=lambda i: min(i, chars),
+        )
 
 
 def fit_width(lines: Sequence[str]) -> Dimension:

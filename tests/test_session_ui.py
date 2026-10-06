@@ -174,6 +174,26 @@ def test_browser_scopes_searches_and_shows_turns(tmp_path):
         assert app.detail.text().endswith("▌ Cache question elsewhere\n\n  (no response text)")
 
 
+def test_session_rows_fill_the_pane_and_end_in_an_ellipsis():
+    from prompt_toolkit.layout.processors import TransformationInput
+
+    from pcode.popup_ui import EllipsisProcessor
+
+    def shown(text, width):
+        ti = TransformationInput(None, None, 0, lambda i: i, [("", text)], width, 1)
+        result = EllipsisProcessor().apply_transformation(ti)
+        return "".join(text for _, text, *_ in result.fragments), result
+
+    line = "x" * 100 + " tail"
+    # Wider than the old 80-character cut, and the end of the row says more follows.
+    assert shown(line, 90)[0] == "x" * 89 + "…"
+    assert shown(line, 200)[0] == line
+    # Double-width characters never push the ellipsis past the edge.
+    assert shown("界" * 10, 9)[0] == "界" * 4 + "…"
+    _, result = shown(line, 90)
+    assert result.source_to_display(95) == 89
+
+
 def test_browser_scopes_without_git(tmp_path):
     with (
         create_pipe_input() as pipe,

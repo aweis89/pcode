@@ -19,6 +19,7 @@ from rich.theme import Theme
 from pcode.diagnostics import redact
 from pcode.frame import Dialog, Frame
 from pcode.popup_ui import (
+    EllipsisProcessor,
     RichPane,
     bind_list_paging,
     fit_width,
@@ -135,7 +136,13 @@ class SessionBrowser:
         self.pending_delete: str | None = None
         self.status = ""
         self.query = TextArea(height=1, prompt="Search: ", multiline=False)
-        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        # Rows hold the whole first prompt; the processor cuts each at the pane's edge.
+        self.list = TextArea(
+            read_only=True,
+            wrap_lines=False,
+            scrollbar=True,
+            input_processors=[EllipsisProcessor()],
+        )
         self.list.window.cursorline = Always()
         self.detail = RichPane(theme=rich_theme, color_system=color_system)
         self.query.buffer.on_text_changed += lambda _: self.refresh(keep_selection=False)
@@ -363,7 +370,7 @@ class SessionBrowser:
             if name := display_name(info):
                 first = f"{name} · {first}"
             when = info.updated[5:16].replace("T", " ")
-            self._titles[info.id] = f"{marker}{when}  {info.id[:8]}  {plain(first, 80)}"
+            self._titles[info.id] = f"{marker}{when}  {info.id[:8]}  {plain(first, limit=None)}"
         return self._titles[info.id]
 
     def heading(self, info: SessionInfo, shown: int, total: int) -> str:
