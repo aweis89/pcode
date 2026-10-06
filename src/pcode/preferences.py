@@ -70,6 +70,8 @@ class Setting:
     key_prefix: bool = False
     # Escape, or literal printable characters to leave vi insert mode.
     vi_escape_sequence: bool = False
+    # An additional, printable leader used only in vi normal mode.
+    vi_key_prefix: bool = False
     # Tokens as `200000`, `200k`, or `1.5m`; see parse_token_count.
     token_count: bool = False
     # Command-line arguments, split as a shell would; empty means none.
@@ -105,6 +107,8 @@ class Setting:
                 raise ValueError(
                     f"{key} must be escape or printable characters without whitespace."
                 )
+        elif self.vi_key_prefix:
+            parse_vi_key_prefix(value)
         elif self.key_prefix:
             parse_key_prefix(value)
         elif self.token_count:
@@ -209,6 +213,19 @@ def _prefix_key(token: str) -> str:
     raise ValueError(
         f"key_prefix: {token!r} is not a key pcode can use as a leader. "
         "Use ctrl, or keys such as ctrl+p, ctrl+space, ctrl+] or f2."
+    )
+
+
+def parse_vi_key_prefix(value: str) -> tuple[str, ...]:
+    """An optional single printable leader, separate from the global prefix."""
+    if value == "off":
+        return ()
+    if value == "<space>":
+        return (" ",)
+    if len(value) == 1 and value.isprintable() and not value.isspace():
+        return (value,)
+    raise ValueError(
+        "vi_key_prefix must be off, <space>, or one printable non-whitespace character."
     )
 
 
@@ -629,6 +646,12 @@ SETTINGS = {
     ),
     "editing_mode": Setting(
         "emacs", ("emacs", "vi"), description="Key bindings for the prompt editor"
+    ),
+    "vi_key_prefix": Setting(
+        "off",
+        vi_key_prefix=True,
+        description="Additional vi normal-mode shortcut leader: off, <space>, or one printable "
+        "character (next launch)",
     ),
     "vi_escape_sequence": Setting(
         "escape",

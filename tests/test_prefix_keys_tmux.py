@@ -18,6 +18,15 @@ pathlib.Path(config, "pcode", "preferences.json").write_text(json.dumps(
 from pcode.app import PreviewApp
 PreviewApp().run()
 """
+VI_SCRIPT = """
+from pcode.preferences import save_preferences
+from pcode.app import PreviewApp
+save_preferences(
+    editing_mode="vi", vi_key_prefix="<space>", vi_escape_sequence="jj",
+    key_prefix="ctrl+b", show_hints="on",
+)
+PreviewApp().run()
+"""
 HINT = "Cycle send mode"
 # The overlay's last row: a short terminal shows it only after scrolling.
 LAST = "Copy draft / last response"
@@ -25,6 +34,37 @@ LAST = "Copy draft / last response"
 
 def draft_line(screen: str) -> str:
     return next(line for line in screen.splitlines() if line.startswith("│❯"))
+
+
+@pytest.mark.parametrize("pane", [VI_SCRIPT], indirect=True)
+def test_vi_space_leader_and_jj_share_actions_with_global_prefix(pane):
+    capture(pane, " INSERT ")
+    pane("send-keys", "-t", "preview:0.0", "-l", "keep this draft")
+    capture(pane, "keep this draft")
+    pane("send-keys", "-t", "preview:0.0", "-l", "jj")
+    capture(pane, " NORMAL ")
+    pane("send-keys", "-t", "preview:0.0", "Space")
+    screen = capture(pane, HINT)
+    assert "Select model" in screen
+    assert "keep this draft" in draft_line(screen)
+    pane("send-keys", "-t", "preview:0.0", "s")
+    screen = capture(pane, "queue")
+    assert HINT not in screen and " NORMAL " in screen
+    assert "keep this draft" in draft_line(screen)
+    # The ordinary prefix still opens the very same menu.
+    pane("send-keys", "-t", "preview:0.0", "C-b")
+    capture(pane, HINT)
+    pane("send-keys", "-t", "preview:0.0", "s")
+    capture(pane, "interrupt")
+    # Repeated Space dismisses the menu rather than typing or moving the draft.
+    pane("send-keys", "-t", "preview:0.0", "Space")
+    capture(pane, HINT)
+    pane("send-keys", "-t", "preview:0.0", "Space")
+    screen = settle(pane, lambda screen: HINT not in screen)
+    assert HINT not in screen and "keep this draft" in draft_line(screen)
+    pane("send-keys", "-t", "preview:0.0", "-l", "a more")
+    screen = capture(pane, "keep this draft more")
+    assert " INSERT " in screen
 
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)

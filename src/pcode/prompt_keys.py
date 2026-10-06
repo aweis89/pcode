@@ -51,7 +51,10 @@ def prompt_key_bindings(
     """
     pasted = PastedText()
     # The prompt and popups share one contextual keybinding overlay.
-    shortcuts = PrefixKeys(key_prefix)
+    shortcuts = PrefixKeys(
+        key_prefix,
+        vi_prefix=load_preferences().get("vi_key_prefix", SETTINGS["vi_key_prefix"].default),
+    )
     _add_shortcuts(shortcuts, activity, transcript, callbacks, pasted)
     shortcuts.set_help(
         lambda: [

@@ -477,6 +477,8 @@ completion), and Ctrl+J inserts a newline. Escape takes priority in vi mode, so
 Escape then Enter submits rather than inserting a newline; that's why Alt+Enter
 is a newline only in Emacs mode. Other pcode shortcuts are unchanged.
 
+### Custom insert-mode escape sequence
+
 To leave insert mode by typing `jj`, set the optional escape sequence and restart:
 
 ```sh
@@ -500,6 +502,50 @@ pcode config set vi_escape_sequence escape
 
 `pcode config unset vi_escape_sequence` also restores the default. Restart after
 changing this setting.
+
+### Normal-mode shortcut prefix
+
+Add an optional leader for the main prompt's vi normal mode:
+
+```sh
+pcode config set vi_key_prefix '<space>'
+```
+
+Inside pcode, use `/config set vi_key_prefix <space>`. Restart to apply it.
+The quotes in the shell command prevent `<space>` from being interpreted as
+shell redirection. `vi_key_prefix` defaults to `off`; it also accepts a single
+printable character, such as `,` or `\`.
+
+After Escape (or your configured `jj`), press Space to open the existing action
+menu, then the action letter:
+
+| Sequence | Action |
+| --- | --- |
+| Space `l` | Choose a model |
+| Space `n` / Space `p` | Increase / decrease thinking effort |
+| Space `s` | Cycle send mode |
+| Space `t` | Choose thinking visibility |
+| Space `o` | Show / hide the task panel |
+| Space `y` | Copy the draft, or the last response when the draft is empty |
+
+The global `key_prefix` is unchanged: Ctrl+B `l` still works with the default
+prefix, and direct Ctrl+L still works with `key_prefix ctrl`. Both routes invoke
+the same actions and keep your draft. Escape, Ctrl+C, or pressing the normal-mode
+leader again dismisses its menu. If you choose an action letter as your leader,
+that letter is reserved for dismissal in its own menu; use the global shortcut
+for that action instead.
+
+The extra leader does not apply in insert, replace, or visual mode, while a vi
+operator is waiting for a motion, or in popup search fields. Space still types a
+space in insert mode, and bracketed paste is not interpreted as shortcuts.
+
+To disable the extra leader, set `vi_key_prefix off` or unset it, then restart:
+
+```sh
+pcode config unset vi_key_prefix
+```
+
+### Escape timing and newlines
 
 Vi mode waits only 100 ms for a terminal escape sequence to complete, so Escape
 enters normal mode without a noticeable pause. Very slow or laggy connections

@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from prompt_toolkit.application import get_app
-from prompt_toolkit.filters import Condition, Filter, FilterOrBool, to_filter
+from prompt_toolkit.filters import Condition, Filter, FilterOrBool, to_filter, vi_navigation_mode
 from prompt_toolkit.key_binding import (
     ConditionalKeyBindings,
     KeyBindings,
@@ -22,9 +22,16 @@ from prompt_toolkit.key_binding import (
     merge_key_bindings,
 )
 from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.keys import Keys
 
-from pcode.preferences import RESERVED_CHORDS, SETTINGS, load_preferences, parse_key_prefix
+from pcode.preferences import (
+    RESERVED_CHORDS,
+    SETTINGS,
+    load_preferences,
+    parse_key_prefix,
+    parse_vi_key_prefix,
+)
 
 # Input that is not a keystroke keeps its own handler while a leader waits:
 # a swallowed cursor-position report would stall the renderer, and a paste
@@ -50,6 +57,8 @@ _NAMES = {"@": "Space"}
 
 def key_label(key: str) -> str:
     """How a prompt_toolkit key name reads to a person: c-p is Ctrl+P, f2 is F2."""
+    if len(key) == 1:
+        return "Space" if key == " " else key
     if key.startswith("c-"):
         rest = key[2:]
         return f"Ctrl+{_NAMES.get(rest, rest.upper())}"
@@ -113,8 +122,19 @@ class PrefixKeys:
     defaults to the saved ``key_prefix``, read once, here.
     """
 
-    def __init__(self, prefix: str | None = None) -> None:
+    def __init__(self, prefix: str | None = None, *, vi_prefix: str = "off") -> None:
         self.leader = parse_key_prefix(configured_prefix() if prefix is None else prefix)
+        # Only the main prompt opts into this alias; popup inputs keep their keys.
+        self.vi_leader = parse_vi_key_prefix(vi_prefix)
+        self.vi_leader_enabled = vi_navigation_mode & Condition(
+            lambda: (
+                get_app().vi_state.input_mode == InputMode.NAVIGATION
+                and not get_app().quoted_insert
+            )
+        )
+        # Remember which leader opened the menu, including its help/choices,
+        # so repeating a vi alias can close it without hijacking other menus.
+        self._pending_leader: tuple[str, ...] = ()
         self.pending = False
         self.browsing = False
         self.help_offset = 0
@@ -126,7 +146,7 @@ class PrefixKeys:
         self.shortcuts: list[Shortcut] = []
         self.bindings = KeyBindings()
         self.waiting: Filter = Condition(self._waiting)
-        if self.leader:
+        if self.leader or self.vi_leader:
             self._bind_leader()
         self._bind_help()
         self._bind_choices()
@@ -145,6 +165,7 @@ class PrefixKeys:
         return self.pending or self.browsing or bool(self.choices)
 
     def dismiss(self) -> None:
+        self._pending_leader = ()
         self.pending = self.browsing = False
         self.choices = ()
         self.choice_title = ""
@@ -227,8 +248,11 @@ class PrefixKeys:
         )
         def help_keys(event: KeyPressEvent) -> None:
             browsing = not self.browsing
+            leader = self._pending_leader
             self.dismiss()
             self.browsing = browsing
+            if browsing:
+                self._pending_leader = leader
             event.app.invalidate()
 
         browse = Condition(lambda: self.browsing)
@@ -262,12 +286,26 @@ class PrefixKeys:
 
         # Eager so the leader wins over whatever the key did before. Pressed
         # again while waiting, it cancels.
-        @keys.add(*self.leader, eager=True)
-        def lead(event: KeyPressEvent) -> None:
-            pending = not self.visible
-            self.dismiss()
-            self.pending = pending
-            event.app.invalidate()
+        def bind(leader: tuple[str, ...], filter: FilterOrBool = True) -> None:
+            @keys.add(*leader, filter=filter, eager=True)
+            def lead(event: KeyPressEvent) -> None:
+                pending = not self.visible
+                self.dismiss()
+                self.pending = pending
+                if pending:
+                    self._pending_leader = leader
+                event.app.invalidate()
+
+        if self.leader:
+            bind(self.leader)
+        if self.vi_leader:
+            # Do not steal choices or actions from a menu opened by another
+            # prefix, even when the alias itself is an action letter.
+            bind(
+                self.vi_leader,
+                self.vi_leader_enabled
+                & Condition(lambda: not self.visible or self._pending_leader == self.vi_leader),
+            )
 
         # Esc cancels; unknown keys keep the menu open with an error instead
         # of typing into the draft or invoking an underlying list command.
@@ -310,15 +348,26 @@ class PrefixKeys:
                 # Eager, so a chord that starts a longer default binding
                 # (Ctrl+X in Emacs mode) fires at once instead of after a pause.
                 self.bindings.add(f"c-{key}", filter=condition & ~self.waiting, eager=True)(handler)
-                return handler
+                if not self.vi_leader:
+                    return handler
 
             @self.bindings.add(
-                key, filter=Condition(lambda: self.pending) & self.waiting & condition, eager=True
+                key,
+                filter=Condition(lambda: self.pending and self._pending_leader != (key,))
+                & self.waiting
+                & condition,
+                eager=True,
             )
             def run(event: KeyPressEvent) -> None:
+                leader = self._pending_leader
                 self.dismiss()
                 event.app.invalidate()
                 handler(event)
+                # An action may replace the menu with a chooser. The same
+                # leader must still dismiss that chooser, just as the global
+                # prefix does, but it must not take choices in another menu.
+                if self.visible and not self._pending_leader:
+                    self._pending_leader = leader
 
             return handler
 
@@ -345,11 +394,20 @@ class PrefixKeys:
         return _shortcut_label(self.leader, key)
 
     def available(self) -> list[Shortcut]:
-        return [shortcut for shortcut in self.shortcuts if shortcut.filter()]
+        return [
+            shortcut
+            for shortcut in self.shortcuts
+            if shortcut.filter() and not (self.pending and self._pending_leader == (shortcut.key,))
+        ]
 
     def summary(self) -> str:
         """The single help affordance, never a list of individual bindings."""
-        key = compact_label(self.leader_label) if self.leader else "F1"
+        leader = self.leader
+        if self.pending:
+            leader = self._pending_leader or leader
+        elif self.vi_leader and self.vi_leader_enabled():
+            leader = self.vi_leader
+        key = compact_label(_leader_label(leader)) if leader else "F1"
         return f"{key} {'…' if self.pending else 'Keybindings'}"
 
     def hint_rows(self) -> list[tuple[str, str]]:
