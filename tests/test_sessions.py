@@ -732,7 +732,8 @@ def test_sessions_compact_reports_space_and_needs_the_listing(tmp_path, monkeypa
         sys, "argv", ["pcode", "--sessions", "--compact", "--session-dir", str(root)]
     )
     main()
-    assert "MB freed" in capsys.readouterr().out
+    # Long temp paths wrap the line, so compare words, not layout.
+    assert "MB freed" in " ".join(capsys.readouterr().out.split())
 
     monkeypatch.setattr(sys, "argv", ["pcode", "--compact"])
     with pytest.raises(SystemExit) as raised:

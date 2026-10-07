@@ -1,7 +1,7 @@
 [project]
 name = "pcode"
 version = "0.1.0"
-description = "A terminal coding agent built on Pydantic AI Harness"
+description = "Terminal-native AI coding agent with background jobs, parallel worktrees, forkable sessions, and multi-model support"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

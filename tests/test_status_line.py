@@ -136,7 +136,7 @@ def test_footer_shows_a_model_chosen_during_a_run(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("width", [20, 40, 60, 100])
 def test_long_unicode_path_stays_one_row(tmp_path, monkeypatch, width):
-    app, _ = make_app(tmp_path / ("界" * 100 + "\npath"), monkeypatch, width=width)
+    app, _ = make_app(tmp_path / ("界" * 80 + "\npath"), monkeypatch, width=width)
     text = fragment_list_to_text(app.toolbar())
     assert cell_len(text) <= width
     assert "\n" not in text
@@ -263,7 +263,7 @@ def test_footer_provider_and_context(tmp_path, monkeypatch, model):
 def test_provider_and_context_stay_one_row(tmp_path, monkeypatch, width):
     monkeypatch.setattr("pcode.context_usage.context_window", lambda model: 1_000_000)
     app, _ = make_app(
-        tmp_path / ("界" * 100), monkeypatch, model="anthropic:claude-sonnet-4-6", width=width
+        tmp_path / ("界" * 80), monkeypatch, model="anthropic:claude-sonnet-4-6", width=width
     )
     text = fragment_list_to_text(app.toolbar())
     assert cell_len(text) <= width

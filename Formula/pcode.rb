@@ -1,5 +1,5 @@
 class Pcode < Formula
-  desc "Streaming terminal for a Pydantic AI Coder agent"
+  desc "Terminal-native AI coding agent built for long-running and parallel work"
   homepage "https://github.com/cruxwell/pcode"
   head "https://github.com/cruxwell/pcode.git", branch: "master"
 

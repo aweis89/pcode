@@ -1,0 +1,51 @@
+name: ci
+
+# Lint plus the fast suite on every push and pull request. The real-tmux
+# regressions (make test-tmux) and the socket-transport rerun stay local:
+# they are most of the wall clock and need a real terminal setup.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
+
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      # Tests make real commits in scratch repos. Config, not GIT_AUTHOR_*
+      # env vars: those would override the `git -c user.email=...` some
+      # tests use to commit as someone else.
+      - run: git config --global user.name ci && git config --global user.email ci@example.com
+      - run: uv run --locked pytest -n auto

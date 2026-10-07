@@ -358,12 +358,12 @@ def test_resize_replay_debounces_width_and_height_changes(monkeypatch, width_cha
         output.app.output.get_size = lambda: current
         output.regenerate = lambda replay: replays.append((clock, replay))
 
-        async def wait_for(awaitable, *, timeout):
+        async def wait():
+            # Each poll times out after 0.1s with whatever size is current.
             nonlocal current, clock
-            awaitable.close()
             rows, columns = next(sizes)
             current = Size(rows=rows, columns=columns if width_changes else 80)
-            clock += timeout
+            clock += 0.1
             raise TimeoutError
 
         async def sleep(delay):
@@ -374,7 +374,7 @@ def test_resize_replay_debounces_width_and_height_changes(monkeypatch, width_cha
                 raise asyncio.CancelledError
 
         monkeypatch.setattr("pcode.ui.monotonic", lambda: clock)
-        monkeypatch.setattr("pcode.ui.asyncio.wait_for", wait_for)
+        monkeypatch.setattr(output.changed, "wait", wait)
         monkeypatch.setattr("pcode.ui.asyncio.sleep", sleep)
         output.flush = flush
         try:
@@ -384,5 +384,25 @@ def test_resize_replay_debounces_width_and_height_changes(monkeypatch, width_cha
         assert len(replays) == 1
         assert replays[0][0] >= (0.65 if width_changes else 0.45)
         assert replays[0][1] is output.resize_replay
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("turns", range(5))
+def test_resize_polling_stops_when_cancelled_as_output_arrives(turns):
+    # Exiting the editor cancels this loop, often just as a last write sets
+    # `changed`. 3.11's wait_for dropped that cancel and the loop polled forever.
+    async def run():
+        output, _ = make_output()
+        output.resize_replay = lambda: None
+        task = asyncio.create_task(output.run())
+        await asyncio.sleep(0.01)  # Parked in the poll.
+        output.changed.set()
+        for _ in range(turns):
+            await asyncio.sleep(0)
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=1)
+        assert done, "run() kept polling after being cancelled"
+        assert task.cancelled()
 
     asyncio.run(run())

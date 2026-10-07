@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import json
+import signal
 import subprocess
 import sys
 import time
@@ -78,6 +79,47 @@ def test_a_stall_holding_the_gil_is_logged_without_stacks(tmp_path):
     [record] = records(path)
     assert record["stacks"] == [] and record["stall_ms"] >= 200
     assert record["gc_ms"] > 0
+
+
+def test_a_suspended_process_logs_no_stall(tmp_path):
+    """Ctrl+Z stops the watcher with the loop: a late beat with no CPU behind it is not a stall."""
+    path = tmp_path / "stalls.jsonl"
+    script = f"""
+import asyncio, sys
+from pathlib import Path
+from pcode.stall_log import StallWatch
+
+async def main():
+    watch = StallWatch(Path({str(path)!r}))
+    task = asyncio.create_task(watch.heartbeat())
+    resumed = asyncio.Event()
+    asyncio.get_running_loop().add_reader(sys.stdin, resumed.set)
+    await asyncio.sleep(0.1)
+    print("ready", flush=True)
+    # Idle in the loop's own selector, as a session waiting for keys is.
+    await resumed.wait()
+    await asyncio.sleep(0.3)
+    task.cancel()
+    watch.stop()
+
+asyncio.run(main())
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert child.stdout.readline() == "ready\n"
+        child.send_signal(signal.SIGSTOP)
+        time.sleep(0.6)
+        child.send_signal(signal.SIGCONT)
+        child.stdin.write("\n")
+        child.stdin.close()
+        assert child.wait(timeout=30) == 0
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+    assert records(path) == []
 
 
 def test_a_stall_still_open_at_stop_is_written(tmp_path):

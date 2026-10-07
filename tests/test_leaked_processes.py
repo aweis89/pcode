@@ -97,9 +97,12 @@ def gone(process: psutil.Process) -> bool:
 
 
 def test_a_run_stops_what_it_leaked_and_nothing_else(spawn, run):
-    mine, other = spawn(run()), spawn(run())
+    identity = run()
+    mine, other = spawn(identity), spawn(run())
 
-    stopped = leaked_processes.reap_run(mine.environ()[RUN_ENV])
+    # Not `mine.environ()` again: macOS can fail that read of a live process
+    # transiently (sysctl KERN_PROCARGS2 -> EIO), and `spawn` already saw the tag.
+    stopped = leaked_processes.reap_run(identity)
 
     assert [line.split()[0] for line in stopped] == [str(mine.pid)]
     assert gone(mine)

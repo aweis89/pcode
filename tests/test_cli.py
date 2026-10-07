@@ -12,6 +12,14 @@ from pcode.live import error_message
 from pcode.sessions import SavedSession, list_sessions
 
 
+def test_cli_version(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["pcode", "--version"])
+    with pytest.raises(SystemExit) as exit_info:
+        main()
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.startswith("pcode 0.")
+
+
 def test_cli_passes_model_and_workspace(monkeypatch, tmp_path):
     monkeypatch.setenv("PCODE_SESSION_DIR", str(tmp_path / "sessions"))
     monkeypatch.setattr(

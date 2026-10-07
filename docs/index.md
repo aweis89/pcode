@@ -1,13 +1,13 @@
 # pcode
 
-pcode is a terminal coding agent built on [Pydantic AI](https://ai.pydantic.dev/):
-background jobs that wake the agent when CI or tests finish, scrollback you can
-re-render to show or hide every command and diff, `/tools` for every call the
-agent made, a forkable conversation tree in the style of
-[pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md),
-and a worktree per session so agents run in parallel. It runs on any model
-Pydantic AI supports, and on your Claude subscription through Anthropic's own
-Agent SDK and Claude Code login, the way Anthropic supports, or your ChatGPT one.
+pcode is a terminal-native coding agent built for long-running and parallel
+work. Background commands wake the agent when they finish, every session can
+use its own git worktree, conversations can be rewound and forked (in the style
+of [pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md)),
+and every tool call stays inspectable. It runs on any model
+[Pydantic AI](https://ai.pydantic.dev/) supports, and on your Claude
+subscription through Anthropic's own Agent SDK and Claude Code login, the way
+Anthropic supports, or your ChatGPT one.
 
 ```sh
 brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git

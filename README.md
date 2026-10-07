@@ -1,42 +1,26 @@
-<img width="1512" height="947" alt="Screenshot 2026-10-06 at 7 23 29 PM" src="https://github.com/user-attachments/assets/a648fede-d703-44ef-8b52-895d3a0cd2af" />
-<img width="1360" alt="pcode fixing a bug: a word-level diff of the edit, then a worker sub-agent reviewing it with its own plan nested under the task list" src="docs/assets/screenshots/readme.png" />
+<img width="1512" height="947" alt="Screenshot 2026-10-06 at 7 23 29 PM" src="https://github.com/user-attachments/assets/a648fede-d703-44ef-8b52-895d3a0cd2af" />
+<img width="1360" alt="pcode fixing a bug: a word-level diff of the edit, then a worker sub-agent reviewing it with its own plan nested under the task list" src="https://raw.githubusercontent.com/cruxwell/pcode/master/docs/assets/screenshots/readme.png" />
 
 # pcode
 
-pcode is a terminal coding agent built on [Pydantic AI](https://ai.pydantic.dev/):
-background jobs that wake the agent when CI or tests finish, scrollback you can
-re-render to show or hide every command and diff, `/tools` for every call the
-agent made, a forkable conversation tree in the style of
-[pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md),
-and a worktree per session so agents run in parallel. It runs on any model
-Pydantic AI supports, and on your Claude subscription through Anthropic's own
-Agent SDK and Claude Code login, the way Anthropic supports, or your ChatGPT one.
-You can even email it a task from your phone: a new email starts a session, and
-replying continues it.
+pcode is a terminal-native coding agent built for long-running and parallel
+work. Background commands wake the agent when they finish, every session can
+use its own git worktree, conversations can be rewound and forked, and every
+tool call stays inspectable.
+
+- **Slow work doesn't block you.** Long commands become background jobs, and a
+  finished job wakes the agent, so it can watch tests or CI and fix what fails.
+- **Agents in parallel.** A git worktree per session lets several agents work
+  on one repo at once.
+- **Rewind and fork.** `/tree` returns to any point in a conversation and
+  branches from there. Every session is kept, so you can resume or search it.
+- **Nothing hidden.** `/tools` shows every command the agent ran and its full
+  output, and scrollback re-renders to show or fold every command and diff.
+
+It runs on any model [Pydantic AI](https://ai.pydantic.dev/) supports, or on
+your Claude or ChatGPT subscription.
 
 **Documentation: [cruxwell.github.io/pcode](https://cruxwell.github.io/pcode/)**
-
-- Scrollback you can re-render after the fact: show every command and diff
-  while it runs, fold them to summaries when it's done.
-- `/tools` shows every command the agent ran and its full output.
-- `/tree` rewinds and forks the conversation at any point.
-- A shell built for slow work: long commands become background jobs, and a
-  finished job wakes the agent. Good for watching CI and fixing what fails.
-- Every conversation is kept, so you can resume, search or fork it.
-- A git worktree per session, so several agents can work on one repo at once.
-- [Custom keybindings and Vim editing](https://cruxwell.github.io/pcode/keybindings/):
-  map keys to commands with arguments, add a Space leader in normal mode, or use
-  `jj` to leave insert mode.
-- [Email remote control](https://cruxwell.github.io/pcode/email/): send a task
-  from Gmail on your phone, reply to keep going, and take the session over at a
-  terminal with `pcode --attach`.
-- `/btw` side questions, background sessions, recall of past sessions, a
-  browser the agent can drive, and Python extensions.
-- Pydantic AI's Harness coder capabilities, with the rest of a finished agent
-  on top: MCP with OAuth and tool search, searchable sessions, jobs,
-  worktrees. Extensions are plain Pydantic AI capabilities.
-
-See [PLAN.md](https://github.com/cruxwell/pcode/blob/master/PLAN.md) for the longer-term direction.
 
 ## Install
 
@@ -62,6 +46,26 @@ pcode --theme-preview                        # offline sample output and the sty
 **Live mode edits files and runs shell commands with your permissions and no
 approval prompt.** Read [tool permissions](https://cruxwell.github.io/pcode/tools/#tool-permissions)
 before pointing it at anything you care about.
+
+## More
+
+- **Your subscription:** Claude runs through Anthropic's own Agent SDK and
+  Claude Code login, the way Anthropic supports, and ChatGPT through a Codex
+  login. See [providers](https://cruxwell.github.io/pcode/providers/).
+- [Email remote control](https://cruxwell.github.io/pcode/email/): send a task
+  from Gmail on your phone, reply to keep going, and take the session over at a
+  terminal with `pcode --attach`.
+- [Custom keybindings and Vim editing](https://cruxwell.github.io/pcode/keybindings/):
+  map keys to commands with arguments, add a Space leader in normal mode, or use
+  `jj` to leave insert mode.
+- `/btw` side questions, background sessions, recall of past sessions, a
+  browser the agent can drive, and Python extensions.
+- Pydantic AI's Harness coder capabilities, with the rest of a finished agent
+  on top: MCP with OAuth and tool search, searchable sessions, jobs,
+  worktrees. Extensions are plain Pydantic AI capabilities. The conversation
+  tree follows [pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md)'s.
+
+See [PLAN.md](https://github.com/cruxwell/pcode/blob/master/PLAN.md) for the longer-term direction.
 
 ## Documentation
 
@@ -89,6 +93,10 @@ The same pages build into a browsable site with `make docs-serve`; `make docs`
 checks every page and anchor link.
 
 ## Contributing
+
+Bugs: [open an issue](https://github.com/cruxwell/pcode/issues/new/choose).
+Security problems: see [SECURITY.md](https://github.com/cruxwell/pcode/blob/master/SECURITY.md). Setup and checks are in
+[CONTRIBUTING.md](https://github.com/cruxwell/pcode/blob/master/CONTRIBUTING.md).
 
 ```sh
 make test        # fast suite; real-tmux regressions skipped

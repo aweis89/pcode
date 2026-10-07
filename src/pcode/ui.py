@@ -2128,8 +2128,12 @@ class TerminalOutput:
             if self.resize_replay is None:
                 await self.changed.wait()
             else:
+                # Not asyncio.wait_for: on 3.11 it swallows a cancel that lands
+                # as the event fires, so this loop outlived the editor and
+                # Ctrl+D never exited.
                 try:
-                    await asyncio.wait_for(self.changed.wait(), timeout=0.1)
+                    async with asyncio.timeout(0.1):
+                        await self.changed.wait()
                 except TimeoutError:
                     pass
                 # Height changes can scroll pieces of the live preview into

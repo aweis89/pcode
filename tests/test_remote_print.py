@@ -156,7 +156,12 @@ def test_the_tab_is_busy_while_the_host_works_on_the_message(tmp_path, host_dir,
         os.close(terminal)
 
 
-def test_a_session_command_runs_in_the_host_and_returns_when_done(tmp_path, host_dir):
+def test_a_session_command_runs_in_the_host_and_returns_when_done(tmp_path, host_dir, monkeypatch):
+    from pcode import models
+
+    # With no provider signed in, /model notes that and never reaches the picker.
+    monkeypatch.setattr(models, "active_providers", lambda current: {"anthropic"})
+
     async def run():
         host = await start_host("aaaa1111", tmp_path, Script())
         try:

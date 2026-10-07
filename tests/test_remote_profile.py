@@ -290,11 +290,25 @@ def git_worktree(tmp_path, monkeypatch=None):
     return sandbox.real(repo), sandbox.real(tree)
 
 
+def worktree_roots(repo, tree):
+    """`base_roots(tree)` minus the temp roots that hold `repo`.
+
+    /tmp is always a write root, and on Linux pytest's tmp_path sits under it,
+    which would make the whole shared checkout writable.
+    """
+    temp = {sandbox.real("/tmp"), sandbox.real("/var/tmp")}
+    return [
+        root
+        for root in sandbox.base_roots(tree)
+        if root not in temp or not repo.is_relative_to(root)
+    ]
+
+
 def test_a_remote_session_can_write_its_worktree_and_branch_but_not_git_config(
     profile, tmp_path, monkeypatch
 ):
     repo, tree = git_worktree(tmp_path, monkeypatch)
-    rules = sandbox.Policy.build(sandbox.base_roots(tree), config={})
+    rules = sandbox.Policy.build(worktree_roots(repo, tree), config={})
     git = repo / ".git"
     assert rules.can_write(tree / "src.py")
     assert rules.can_write(git / "objects" / "ab" / "cdef")
@@ -310,7 +324,7 @@ def test_a_remote_session_can_write_its_worktree_and_branch_but_not_git_config(
     ):
         assert not rules.can_write(path), path
     remote_profile.activate(None)
-    assert sandbox.Policy.build(sandbox.base_roots(tree), config={}).can_write(git / "config")
+    assert sandbox.Policy.build(worktree_roots(repo, tree), config={}).can_write(git / "config")
 
 
 @pytest.mark.skipif(sandbox.backend() != "seatbelt", reason="needs macOS sandbox-exec")
@@ -318,7 +332,7 @@ def test_a_sandboxed_command_can_commit_in_its_worktree_but_not_touch_the_config
     profile, tmp_path, monkeypatch
 ):
     repo, tree = git_worktree(tmp_path, monkeypatch)
-    rules = sandbox.Policy.build(sandbox.base_roots(tree), config={})
+    rules = sandbox.Policy.build(worktree_roots(repo, tree), config={})
     prefix = sandbox.command_prefix(rules, tmp_path / "job")
     script = (
         "echo x > f.txt && git add f.txt && "
