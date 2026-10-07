@@ -29,6 +29,15 @@ git metadata (a GitHub tarball, say) needs the same variable or fails.
 
 ## Traps
 
+- Homebrew refuses formulae from untrusted taps, but `brew install` with the
+  fully qualified `cruxwell/pcode/pcode` trusts that formula itself. Keep every
+  install and upgrade line in the docs fully qualified, or users hit a
+  `brew trust` error instead.
+- Test a formula change by tapping this checkout (`brew tap cruxwell/pcode-test
+  $PWD`) and installing both ways. A HEAD test needs the tap's `head` pointed at
+  the local branch with `using: :git`. The v0.1.0 tarball has a static version,
+  so a stable install never exercises the pretend-version path; only HEAD does.
+
 - The formula commit is pushed with the workflow's `GITHUB_TOKEN`, which does
   not trigger other workflows, so `ci` never runs on it. It needs `master` to
   accept that push; branch protection that blocks it breaks step 4 only, and
