@@ -93,6 +93,10 @@ checks every page and anchor link.
 
 ## Contributing
 
+Bugs: [open an issue](https://github.com/cruxwell/pcode/issues/new/choose).
+Security problems: see [SECURITY.md](https://github.com/cruxwell/pcode/blob/master/SECURITY.md). Setup and checks are in
+[CONTRIBUTING.md](https://github.com/cruxwell/pcode/blob/master/CONTRIBUTING.md).
+
 ```sh
 make test        # fast suite; real-tmux regressions skipped
 make test-all    # everything, before touching layout, streaming, the editor, or the prompt

@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import importlib.metadata
 import os
 import re
 import shlex
@@ -2447,6 +2448,9 @@ def main() -> None:
     # The workspace's `.pcode/preferences.json` overlays user defaults, so it has
     # to be known before the first load_preferences() (the --theme default).
     _select_project_root(sys.argv[1:])
+    parser.add_argument(
+        "--version", action="version", version=f"pcode {importlib.metadata.version('pcode')}"
+    )
     parser.add_argument(
         "--theme",
         choices=THEMES,

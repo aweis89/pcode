@@ -1,0 +1,61 @@
+name: Bug report
+description: Something broke or behaved unexpectedly
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. pcode -m ...
+        2. typed ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: pcode version
+      description: Output of `pcode --version`, plus how you installed it (Homebrew, uv, source).
+      placeholder: pcode 0.1.0, Homebrew
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Provider and model
+      description: The `-m` value or the model shown in the status line, and how you signed in (API key, Claude login, Codex login).
+      placeholder: claude:claude-sonnet-5 via Claude login
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: macOS 26.0 (Apple Silicon), Ubuntu 24.04, ...
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal
+      description: Terminal app, and tmux/screen if you use one.
+      placeholder: Ghostty 1.2 inside tmux 3.5
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Failed turns write tracebacks to the session's `errors.log` under
+        `~/.local/state/pcode/sessions/`. Paste the relevant part, or a
+        screenshot for display glitches. Check for secrets before posting.
+      render: text
