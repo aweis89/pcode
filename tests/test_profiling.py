@@ -276,8 +276,11 @@ def test_function_clock_remains_valid_with_background_sampling(tmp_path):
     profile = ResourceProfile(tmp_path / "clock", cpu=True, interval=0.01)
     profile.start()
     try:
-        deadline = monotonic() + 0.1
-        while monotonic() < deadline:
+        # Work until the sampler thread has run at least once beside the
+        # profiler, past the opening sample; a loaded machine can starve it
+        # for well over any fixed window.
+        started = monotonic()
+        while monotonic() < started + 0.1 or (profile._samples < 2 and monotonic() < started + 30):
             cpu_work()
     finally:
         profile.stop()

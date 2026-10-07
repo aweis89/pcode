@@ -34,9 +34,11 @@ MAX_BYTES = 1_000_000
 """The log is renamed to `stalls.jsonl.1` past this size, replacing the previous one."""
 FRAMES_KEPT = 30
 STACKS_KEPT = 3
-BUSY_SHARE = 0.5
+BUSY_SHARE = 0.1
 """Process CPU per wall second above which an unsampled stall was work, not a suspended
-process (Ctrl+Z, a sleeping laptop), which stops the watcher thread as well."""
+process (Ctrl+Z, a sleeping laptop), which stops the watcher thread as well. Low,
+because a busy process on a loaded machine is still a stall the user feels yet may
+get only a fraction of a core (a quarter was measured); a suspended one gets none."""
 
 
 def stall_log_path() -> Path:
