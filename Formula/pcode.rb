@@ -1,6 +1,8 @@
 class Pcode < Formula
   desc "Terminal-native AI coding agent built for long-running and parallel work"
   homepage "https://github.com/cruxwell/pcode"
+  url "https://github.com/cruxwell/pcode/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "f0e3e0ed720e4e7b3ff08e4deb0a6bb6707256698df3e12adc31d4440f2e0508"
   head "https://github.com/cruxwell/pcode.git", branch: "master"
 
   depends_on "uv" => :build
@@ -17,6 +19,9 @@ class Pcode < Formula
   # as Homebrew resources. Dependency downloads require network access at build time.
   def install
     libexec.install "pyproject.toml", "uv.lock", "src"
+    # The package version comes from git tags, and no .git is staged here, so
+    # name it: the release itself, or 0.dev0+g<commit> for a HEAD build.
+    ENV["SETUPTOOLS_SCM_PRETEND_VERSION"] = version.head? ? "0.dev0+g#{version.commit}" : version.to_s
     ENV["UV_PYTHON_DOWNLOADS"] = "never"
     ENV["UV_PROJECT_ENVIRONMENT"] = libexec/".venv"
     ENV["UV_LINK_MODE"] = "copy"
