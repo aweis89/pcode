@@ -1,4 +1,4 @@
-<img width="1512" height="936" alt="Screenshot 2026-10-06 at 7 19 18 PM" src="https://github.com/user-attachments/assets/51d14e64-6c4e-4a6a-8683-d33a9f04b718" />
+<img width="1512" height="947" alt="Screenshot 2026-10-06 at 7 23 29 PM" src="https://github.com/user-attachments/assets/a648fede-d703-44ef-8b52-895d3a0cd2af" />
 <img width="1360" alt="pcode fixing a bug: a word-level diff of the edit, then a worker sub-agent reviewing it with its own plan nested under the task list" src="docs/assets/screenshots/readme.png" />
 
 # pcode
