@@ -10,6 +10,11 @@ import pytest
 
 RUN_KEY = pytest.StashKey[str | None]()
 
+# Rich forces terminal output for any non-empty FORCE_COLOR, "0" included, which
+# pads and truncates rendered text the suite compares exactly. Dropped at import,
+# before any module builds a Console, and so for subprocesses too.
+os.environ.pop("FORCE_COLOR", None)
+
 # Private tmux servers are parented to init, so a pytest that dies without
 # running fixture teardown (SIGKILL, a timeout, an abandoned CI runner) strands
 # the server plus its ~170MB Python child forever. Sweep the previous run's

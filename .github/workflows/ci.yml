@@ -16,9 +16,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  FORCE_COLOR: "0"
-
 jobs:
   lint:
     runs-on: ubuntu-latest
