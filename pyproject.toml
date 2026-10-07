@@ -78,6 +78,9 @@ include = ["/src", "/LICENSE", "/README.md", "/pyproject.toml"]
 # Homebrew formula, which stages no .git) pass SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PCODE.
 [tool.hatch.version]
 source = "vcs"
+# Names the package for setuptools-scm, which is what makes the scoped
+# SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PCODE work.
+raw-options = { dist_name = "pcode" }
 
 [tool.hatch.metadata]
 allow-direct-references = true
