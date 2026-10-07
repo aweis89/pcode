@@ -1,6 +1,6 @@
 [project]
 name = "pcode"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Terminal-native AI coding agent with background jobs, parallel worktrees, forkable sessions, and multi-model support"
 readme = "README.md"
 license = "MIT"
@@ -64,7 +64,7 @@ pcode-benchmark = "pcode.profile_benchmark:main"
 
 [build-system]
 # 1.27 is the first to accept an SPDX `license` string with `license-files`.
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.27", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
@@ -72,6 +72,15 @@ build-backend = "hatchling.build"
 # local scratch under tmp/ and agent config. Tests stay out: they read docs/,
 # dev/, scripts/ and .githooks/ and expect a git checkout.
 include = ["/src", "/LICENSE", "/README.md", "/pyproject.toml"]
+
+# The version comes from the git tag (v0.1.0 -> 0.1.0); untagged commits get a
+# dev version such as 0.1.1.dev3+gabc1234. Builds without git metadata (the
+# Homebrew formula, which stages no .git) pass SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PCODE.
+[tool.hatch.version]
+source = "vcs"
+# Names the package for setuptools-scm, which is what makes the scoped
+# SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PCODE work.
+raw-options = { dist_name = "pcode" }
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -97,3 +106,8 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.uv]
+# Rebuild the project when the commit or tags change, so `uv run` and the
+# editable install report the current version rather than a cached one.
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]

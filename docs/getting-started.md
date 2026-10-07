@@ -6,11 +6,11 @@ With [Homebrew](https://brew.sh/):
 
 ```sh
 brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
-brew install --HEAD cruxwell/pcode/pcode
+brew install cruxwell/pcode/pcode
 ```
 
-The repository doubles as its own tap, which is why the URL is needed. There
-are no tagged releases yet, so `--HEAD` installs the latest `master`. Homebrew
+The repository doubles as its own tap, which is why the URL is needed. That
+installs the latest release; add `--HEAD` to track `master` instead. Homebrew
 installs pcode and its dependencies into a private environment without touching
 your global Python, and adds `shfmt` for nicer command formatting in `/tools`
 and [delta](https://dandavison.github.io/delta/) for
@@ -19,9 +19,24 @@ and [delta](https://dandavison.github.io/delta/) for
 To update or remove it:
 
 ```sh
-brew update && brew upgrade --fetch-HEAD cruxwell/pcode/pcode
+brew update && brew upgrade cruxwell/pcode/pcode   # --fetch-HEAD for a --HEAD install
 brew uninstall pcode && brew untap cruxwell/pcode
 ```
+
+### With uv
+
+pcode is on [PyPI](https://pypi.org/project/pcode/), so
+[uv](https://docs.astral.sh/uv/) can install it into its own environment:
+
+```sh
+uv tool install 'pcode[claude]'    # `claude` adds Claude subscription support
+uv tool upgrade pcode
+uv tool uninstall pcode
+```
+
+Leave out `[claude]` if you don't use a Claude subscription: it bundles the
+Claude Code CLI, about 95 MB. Homebrew also adds `shfmt` and delta, which uv
+doesn't; install them yourself if you want them.
 
 To install from a checkout instead, see [run from source](#run-from-source).
 

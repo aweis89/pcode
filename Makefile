@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve screenshots screenshot-live icons cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall sync
+.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve screenshots screenshot-live icons cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall sync release
 
 # Harness lives in the pydantic-ai repo (src/pydantic_ai_harness, docs/harness,
 # tests/harness) and ships with each Pydantic AI release.
@@ -95,13 +95,16 @@ sync: ## Set up hooks and identity, then align the mainline with origin (safe af
 clean-merged: worktree-clean ## Also delete merged branches left behind, local and on origin (ARGS=--dry-run)
 	@sh scripts/clean-merged-branches.sh $(ARGS)
 
-brew-install: ## Alternative: install the frozen HEAD build via Homebrew
-	brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
-	brew install --HEAD cruxwell/pcode/pcode
+release: ## Tag origin's master as the next release and push it (BUMP=minor|major, VERSION=x.y.z); CI publishes
+	@sh scripts/release.sh
 
-brew-update: ## Upgrade the Homebrew HEAD build
+brew-install: ## Alternative: install the latest release via Homebrew (ARGS=--HEAD for master)
+	brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
+	brew install $(ARGS) cruxwell/pcode/pcode
+
+brew-update: ## Upgrade the Homebrew build (ARGS=--fetch-HEAD for a HEAD install)
 	brew update
-	brew upgrade --fetch-HEAD cruxwell/pcode/pcode
+	brew upgrade $(ARGS) cruxwell/pcode/pcode
 
 brew-uninstall: ## Remove the Homebrew build and tap
 	brew uninstall pcode

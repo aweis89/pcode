@@ -28,8 +28,16 @@ With [Homebrew](https://brew.sh/):
 
 ```sh
 brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
-brew install --HEAD cruxwell/pcode/pcode
+brew install cruxwell/pcode/pcode
 ```
+
+Or from [PyPI](https://pypi.org/project/pcode/) with [uv](https://docs.astral.sh/uv/):
+
+```sh
+uv tool install 'pcode[claude]'
+```
+
+`brew install --HEAD` tracks `master` instead of the latest release.
 
 ## Quick start
 

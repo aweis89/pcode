@@ -11,7 +11,7 @@ Anthropic supports, or your ChatGPT one.
 
 ```sh
 brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
-brew install --HEAD cruxwell/pcode/pcode
+brew install cruxwell/pcode/pcode     # or: uv tool install 'pcode[claude]'
 pcode -m claude:claude-sonnet-5        # or openai-codex:gpt-5.6-luna, or any API-key provider
 ```
 
