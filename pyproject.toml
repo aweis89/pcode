@@ -75,7 +75,7 @@ include = ["/src", "/LICENSE", "/README.md", "/pyproject.toml"]
 
 # The version comes from the git tag (v0.1.0 -> 0.1.0); untagged commits get a
 # dev version such as 0.1.1.dev3+gabc1234. Builds without git metadata (the
-# Homebrew formula, which stages no .git) pass SETUPTOOLS_SCM_PRETEND_VERSION.
+# Homebrew formula, which stages no .git) pass SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PCODE.
 [tool.hatch.version]
 source = "vcs"
 

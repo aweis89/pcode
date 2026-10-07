@@ -23,7 +23,7 @@ and refuses a commit whose `ci` run didn't pass (`FORCE=1` overrides it).
 
 An untagged build gets a dev version from git, such as
 `0.1.1.dev3+gabc1234`. Homebrew stages no `.git`, so the formula passes the
-version in through `SETUPTOOLS_SCM_PRETEND_VERSION`: the release for a stable
+version in through `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PCODE`: the release for a stable
 install, `0.dev0+g<commit>` for `--HEAD`. Any other build from a tree without
 git metadata (a GitHub tarball, say) needs the same variable or fails.
 

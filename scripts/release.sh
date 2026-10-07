@@ -30,6 +30,18 @@ else
 fi
 tag="v$next"
 
+# PEP 440 as hatch-vcs writes it: anything else builds a differently named
+# package and the publish run fails after the tag is already out.
+if ! printf '%s\n' "$next" | grep -qE '^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?$'; then
+	echo "VERSION $next is not like 1.2.3 or 1.2.3rc1" >&2
+	exit 1
+fi
+if [ -n "$latest" ] && [ "${FORCE:-}" != 1 ] &&
+	[ "$(printf '%s\n%s\n' "${latest#v}" "$next" | sort -V | tail -n 1)" != "$next" ]; then
+	echo "$tag is not newer than $latest; FORCE=1 to release it anyway" >&2
+	exit 1
+fi
+
 if git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null; then
 	echo "$tag already exists" >&2
 	exit 1
@@ -40,7 +52,8 @@ if [ -n "$latest" ] && [ "$(git rev-parse "$latest^{commit}")" = "$commit" ]; th
 fi
 
 if command -v gh >/dev/null 2>&1; then
-	ci=$(gh run list --commit "$commit" --workflow ci --json conclusion --jq '.[0].conclusion // "none"' 2>/dev/null || echo unknown)
+	ci=$(gh run list --commit "$commit" --workflow ci --json status,conclusion \
+		--jq '.[0] | if . == null then "none" elif .conclusion == "" then .status else .conclusion end' 2>/dev/null || echo unknown)
 else
 	ci="unknown (no gh)"
 fi
@@ -56,7 +69,7 @@ if [ -n "$latest" ]; then
 fi
 if [ "${YES:-}" != 1 ]; then
 	printf 'Tag and push %s? [y/N] ' "$tag"
-	read -r answer
+	read -r answer || answer=
 	[ "$answer" = y ] || [ "$answer" = Y ] || { echo "aborted"; exit 1; }
 fi
 

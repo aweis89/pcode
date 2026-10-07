@@ -18,10 +18,11 @@ class Pcode < Formula
   # This upstream tap uses uv.lock rather than duplicating its dependency tree
   # as Homebrew resources. Dependency downloads require network access at build time.
   def install
-    libexec.install "pyproject.toml", "uv.lock", "src"
+    libexec.install "pyproject.toml", "uv.lock", "src", "README.md", "LICENSE"
     # The package version comes from git tags, and no .git is staged here, so
     # name it: the release itself, or 0.dev0+g<commit> for a HEAD build.
-    ENV["SETUPTOOLS_SCM_PRETEND_VERSION"] = version.head? ? "0.dev0+g#{version.commit}" : version.to_s
+    # Scoped to pcode, so a dependency built from source keeps its own.
+    ENV["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PCODE"] = version.head? ? "0.dev0+g#{version.commit}" : version.to_s
     ENV["UV_PYTHON_DOWNLOADS"] = "never"
     ENV["UV_PROJECT_ENVIRONMENT"] = libexec/".venv"
     ENV["UV_LINK_MODE"] = "copy"

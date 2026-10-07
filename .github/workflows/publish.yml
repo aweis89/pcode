@@ -49,6 +49,9 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Lets "Re-run all jobs" get past files an earlier attempt uploaded.
+          skip-existing: true
 
   release:
     needs: publish
@@ -89,4 +92,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "chore: point the Homebrew formula at $GITHUB_REF_NAME"
-          git push origin HEAD:master
+          # master may move while this runs; replay the one-line change on it.
+          for attempt in 1 2 3; do
+            git push origin HEAD:master && exit 0
+            git pull --rebase origin master
+          done
+          exit 1
