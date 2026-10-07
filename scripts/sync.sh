@@ -6,6 +6,8 @@
 #                             # from an older clone that doesn't yet
 #
 # Safe to run any time. It:
+#  0. repoints an origin still at the pre-transfer aweis89/pcode to
+#     cruxwell/pcode, keeping its scheme (https or ssh);
 #  1. points core.hooksPath at .githooks and sets this clone's user.email,
 #     which the hooks enforce (SYNC_EMAIL=... overrides; otherwise an existing
 #     local value, else the global one);
@@ -19,6 +21,13 @@
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
+
+url=$(git remote get-url origin)
+new_url=$(printf '%s' "$url" | sed -E 's#github\.com([:/])aweis89/pcode#github.com\1cruxwell/pcode#')
+if [ "$new_url" != "$url" ]; then
+	git remote set-url origin "$new_url"
+	echo "origin: moved to $new_url (was $url)"
+fi
 
 git config core.hooksPath .githooks
 git fetch --quiet --prune origin
