@@ -5,6 +5,11 @@ class Pcode < Formula
   sha256 "f0e3e0ed720e4e7b3ff08e4deb0a6bb6707256698df3e12adc31d4440f2e0508"
   head "https://github.com/cruxwell/pcode.git", branch: "master"
 
+  # Prebuilt extension modules (jiter's, for one) carry @rpath dylib IDs with no
+  # header room for the Cellar path Homebrew would write, which fails the
+  # install. Nothing links against them, so their IDs can stay as built.
+  preserve_rpath
+
   depends_on "uv" => :build
   depends_on "git-delta"
   depends_on "python@3.13"
