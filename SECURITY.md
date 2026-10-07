@@ -13,7 +13,7 @@ attacker controls (a repository's files, a web page the agent reads, an MCP
 server, an email), and what they can get from it.
 
 You should hear back within a week. pcode is an alpha maintained by one person,
-so fixes land on the latest release only.
+so fixes land on `master` and the next release.
 
 ## What counts
 
@@ -23,7 +23,7 @@ In scope:
   model or third party when they shouldn't be.
 - Repository content running code before you've
   [trusted the repository](https://cruxwell.github.io/pcode/configuration/#trusting-a-repositorys-own-code).
-- Escaping the [sandbox](https://cruxwell.github.io/pcode/tools/#tool-permissions)
+- Escaping the [sandbox](https://cruxwell.github.io/pcode/tools/#write-policy-and-shell-sandbox-opt-in)
   when it's enabled, or bypassing a tool permission rule.
 - Email remote control acting on mail from a sender it shouldn't accept.
 

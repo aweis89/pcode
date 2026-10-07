@@ -23,7 +23,7 @@ body:
     id: version
     attributes:
       label: pcode version
-      description: Output of `pcode --version`, plus how you installed it (Homebrew, uv, source).
+      description: Output of `pcode --version`, how you installed it (Homebrew, uv, source), and for Homebrew HEAD or source installs the commit (`brew info pcode` or `git rev-parse --short HEAD`).
       placeholder: pcode 0.1.0, Homebrew
     validations:
       required: true

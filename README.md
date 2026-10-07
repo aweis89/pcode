@@ -1,4 +1,4 @@
-<img width="1360" alt="pcode fixing a bug: a word-level diff of the edit, then a worker sub-agent reviewing it with its own plan nested under the task list" src="docs/assets/screenshots/readme.png" />
+<img width="1360" alt="pcode fixing a bug: a word-level diff of the edit, then a worker sub-agent reviewing it with its own plan nested under the task list" src="https://raw.githubusercontent.com/cruxwell/pcode/master/docs/assets/screenshots/readme.png" />
 
 # pcode
 
