@@ -118,7 +118,7 @@ pcode -m anthropic:<model-id>   # then: /login
     compatibility support, not an official third-party integration, and
     entitlements, quotas, and server behavior can change at any time. The
     supported path is `ANTHROPIC_API_KEY`. See
-    [Anthropic provider options](https://github.com/aweis89/pcode/blob/master/dev/anthropic-providers.md)
+    [Anthropic provider options](https://github.com/cruxwell/pcode/blob/master/dev/anthropic-providers.md)
     for the account risk and the alternatives.
 
 If a model is rejected with `400 claude_code_version_too_old`, the Claude Code
@@ -224,7 +224,7 @@ models are left out of `/model`, and naming one tells you what to install.
 
 pcode keeps one Claude Code process per conversation and runs every tool itself.
 Unlike Meridian, a tool round does not start a new process.
-[Anthropic provider options](https://github.com/aweis89/pcode/blob/master/dev/anthropic-providers.md#direct-sdk-provider)
+[Anthropic provider options](https://github.com/cruxwell/pcode/blob/master/dev/anthropic-providers.md#direct-sdk-provider)
 has the design and measurements.
 
 ### Signing in
@@ -281,7 +281,7 @@ writes it to the cache again.
 
 [Meridian](https://github.com/rynfar/meridian) runs Claude Code behind a local
 Anthropic-compatible API, so a `meridian:` model uses your Claude subscription.
-[Anthropic provider options](https://github.com/aweis89/pcode/blob/master/dev/anthropic-providers.md)
+[Anthropic provider options](https://github.com/cruxwell/pcode/blob/master/dev/anthropic-providers.md)
 compares it with `/login`.
 
 ```sh

@@ -10,8 +10,8 @@ Pydantic AI supports, and on your Claude subscription through Anthropic's own
 Agent SDK and Claude Code login, the way Anthropic supports, or your ChatGPT one.
 
 ```sh
-brew tap aweis89/pcode https://github.com/aweis89/pcode.git
-brew install --HEAD aweis89/pcode/pcode
+brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
+brew install --HEAD cruxwell/pcode/pcode
 pcode -m claude:claude-sonnet-5        # or openai-codex:gpt-5.6-luna, or any API-key provider
 ```
 
@@ -232,4 +232,4 @@ mode, a configurable shortcut prefix, and per-repository settings. See
   [context, limits and caching](context.md), [the transcript](transcript.md).
 
 Working on pcode itself? The contributor notes live in
-[`dev/`](https://github.com/aweis89/pcode/tree/master/dev) in the repository.
+[`dev/`](https://github.com/cruxwell/pcode/tree/master/dev) in the repository.

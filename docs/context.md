@@ -235,5 +235,5 @@ The files contain sizes, digests, and token counts, never prompt text. Set
 `PCODE_CACHE_DIAGNOSTICS=off` to skip them even with `debug` on, or to a
 directory to write them there; the notice itself is unaffected. `make cache-report`
 summarizes cache performance across saved sessions.
-[Prompt caching](https://github.com/aweis89/pcode/blob/master/dev/prompt-caching.md#reading-a-cache-notice)
+[Prompt caching](https://github.com/cruxwell/pcode/blob/master/dev/prompt-caching.md#reading-a-cache-notice)
 explains how to read the comparison and the files.

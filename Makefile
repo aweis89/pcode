@@ -96,13 +96,13 @@ clean-merged: worktree-clean ## Also delete merged branches left behind, local a
 	@sh scripts/clean-merged-branches.sh $(ARGS)
 
 brew-install: ## Alternative: install the frozen HEAD build via Homebrew
-	brew tap aweis89/pcode https://github.com/aweis89/pcode.git
-	brew install --HEAD aweis89/pcode/pcode
+	brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
+	brew install --HEAD cruxwell/pcode/pcode
 
 brew-update: ## Upgrade the Homebrew HEAD build
 	brew update
-	brew upgrade --fetch-HEAD aweis89/pcode/pcode
+	brew upgrade --fetch-HEAD cruxwell/pcode/pcode
 
 brew-uninstall: ## Remove the Homebrew build and tap
 	brew uninstall pcode
-	brew untap aweis89/pcode
+	brew untap cruxwell/pcode

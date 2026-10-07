@@ -1,7 +1,7 @@
 class Pcode < Formula
   desc "Streaming terminal for a Pydantic AI Coder agent"
-  homepage "https://github.com/aweis89/pcode"
-  head "https://github.com/aweis89/pcode.git", branch: "master"
+  homepage "https://github.com/cruxwell/pcode"
+  head "https://github.com/cruxwell/pcode.git", branch: "master"
 
   depends_on "uv" => :build
   depends_on "git-delta"
@@ -45,7 +45,7 @@ class Pcode < Formula
       With Node.js installed, run:
         pcode --upgrade-meridian
       pcode then starts its own private Meridian. Details:
-        https://aweis89.github.io/pcode/providers/#local-meridian-provider
+        https://cruxwell.github.io/pcode/providers/#local-meridian-provider
     EOS
   end
 

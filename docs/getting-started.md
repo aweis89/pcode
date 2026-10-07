@@ -5,8 +5,8 @@
 With [Homebrew](https://brew.sh/):
 
 ```sh
-brew tap aweis89/pcode https://github.com/aweis89/pcode.git
-brew install --HEAD aweis89/pcode/pcode
+brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
+brew install --HEAD cruxwell/pcode/pcode
 ```
 
 The repository doubles as its own tap, which is why the URL is needed. There
@@ -19,8 +19,8 @@ and [delta](https://dandavison.github.io/delta/) for
 To update or remove it:
 
 ```sh
-brew update && brew upgrade --fetch-HEAD aweis89/pcode/pcode
-brew uninstall pcode && brew untap aweis89/pcode
+brew update && brew upgrade --fetch-HEAD cruxwell/pcode/pcode
+brew uninstall pcode && brew untap cruxwell/pcode
 ```
 
 To install from a checkout instead, see [run from source](#run-from-source).

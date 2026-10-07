@@ -71,7 +71,7 @@ Extensions run in-process with your permissions. A repository's
 code someone else wrote; see
 [trusting a repository's own code](../configuration.md#trusting-a-repositorys-own-code).
 
-The [extension guide](https://github.com/aweis89/pcode/blob/master/src/pcode/extension_guide.md)
+The [extension guide](https://github.com/cruxwell/pcode/blob/master/src/pcode/extension_guide.md)
 covers the full API. It's the same document pcode reads when you ask it to
 write one.
 

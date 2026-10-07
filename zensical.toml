@@ -6,9 +6,9 @@
 [project]
 site_name = "pcode"
 site_description = "A streaming terminal for a Pydantic AI Coder agent"
-site_url = "https://aweis89.github.io/pcode/"
-repo_url = "https://github.com/aweis89/pcode"
-repo_name = "aweis89/pcode"
+site_url = "https://cruxwell.github.io/pcode/"
+repo_url = "https://github.com/cruxwell/pcode"
+repo_name = "cruxwell/pcode"
 edit_uri = "edit/master/docs/"
 docs_dir = "docs"
 site_dir = "site"

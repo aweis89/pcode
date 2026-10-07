@@ -6,7 +6,7 @@ PyPI trusted publishing (no API token anywhere).
 ## One-time setup
 
 1. On PyPI, add a *pending* trusted publisher for project `pcode`
-   (https://pypi.org/manage/account/publishing/): owner `aweis89`, repo
+   (https://pypi.org/manage/account/publishing/): owner `cruxwell`, repo
    `pcode`, workflow `publish.yml`, environment `pypi`. The project is created
    by the first upload.
 2. On GitHub, create the `pypi` environment (Settings → Environments). Adding

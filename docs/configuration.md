@@ -269,7 +269,7 @@ Settings for [`pcode --email-listen`](email.md). All of them are user-only: a re
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `debug` | `off` | `on`, `off` (also write request fingerprints to disk with each cache notice) |
-| `profile` | `off` | `off`, `resources`, `cpu`, `memory` (capture each session's resource use; see [profiling](https://github.com/aweis89/pcode/blob/master/dev/profiling.md)) |
+| `profile` | `off` | `off`, `resources`, `cpu`, `memory` (capture each session's resource use; see [profiling](https://github.com/cruxwell/pcode/blob/master/dev/profiling.md)) |
 | `stall_log` | `on` | `on`, `off` (when the editor stops responding for roughly 150 ms or more, append what was running to `~/.local/state/pcode/stalls.jsonl`) |
 
 ## Tab title
