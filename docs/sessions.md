@@ -129,7 +129,7 @@ notification goes out, whether or not a terminal is showing it: pcode asks the
 terminal to raise it (OSC 9, which Ghostty shows by default), once per turn however many
 terminals are open; `pcode config set desktop_notifications off` turns it off.
 While a turn runs, the tab also shows a
-[progress bar](configuration.md#tab-progress-bar).
+[progress bar](terminal.md#progress-bar).
 
 ### Idle hosts stop
 
@@ -249,7 +249,7 @@ When a new session's first turn starts, pcode asks the session's own model for a
 short title, in the background and at low effort, so it usually arrives while
 the turn is still running. `/resume` lists it before the
 first prompt and finds the session by its words, `/switch` lists it in place of
-the first prompt, and the terminal [tab](configuration.md#tab-title) shows it.
+the first prompt, and the terminal [tab](terminal.md#tab-and-pane-titles) shows it.
 Between turns it also heads the editor box (`┌─ Fix the flaky login test ──┐`,
 or `┌─ Tasks 3/5 · Fix the flaky login test ──┐` above an attached task list), so coming back
 to a pane tells you what it was about; while a turn runs, the
