@@ -25,6 +25,45 @@ def dropped_connection() -> ModelAPIError:
     return error
 
 
+def streamed_overload() -> ModelAPIError:
+    from openai import APIError
+
+    message = "Our servers are currently overloaded. Please try again later."
+    error = ModelAPIError("test:local", message)
+    error.__cause__ = APIError(
+        message, request=httpx2.Request("POST", "https://example.com"), body=None
+    )
+    return error
+
+
+@pytest.mark.parametrize("field", ["code", "type", "message"])
+def test_streamed_overload_classification(field):
+    from openai import APIError
+
+    value = (
+        "Our servers are currently overloaded. Please try again later."
+        if field == "message"
+        else "overloaded_error"
+    )
+    error = APIError(
+        "Provider failure",
+        request=httpx2.Request("POST", "https://example.com"),
+        body={"error": {field: value}},
+    )
+    assert transient(error)
+    error.status_code = 429
+    assert not transient(error)
+
+
+def test_overload_matching_does_not_retry_unrelated_errors():
+    assert transient(streamed_overload())
+    assert not transient(ValueError(str(streamed_overload())))
+    assert not transient(ModelAPIError("test:local", "Invalid request; try again later."))
+    error = streamed_overload()
+    error.__cause__.status_code = 401
+    assert not transient(error)
+
+
 def test_transient_classification_ignores_answered_requests():
     assert transient(dropped_connection())
     answered = ModelAPIError("test:local", "Rate limited.")
@@ -192,7 +231,8 @@ def test_resend_is_refused_without_history_or_with_arguments():
 
 
 @pytest.mark.parametrize("saved", [False, True])
-def test_retry_preserves_tools_and_exact_request_after_partial_stream(tmp_path, saved):
+@pytest.mark.parametrize("error", [dropped_connection, streamed_overload])
+def test_retry_preserves_tools_and_exact_request_after_partial_stream(tmp_path, saved, error):
     from copy import deepcopy
 
     from pydantic_ai.messages import UserPromptPart
@@ -209,7 +249,7 @@ def test_retry_preserves_tools_and_exact_request_after_partial_stream(tmp_path, 
             yield {0: DeltaToolCall(name="write_once", json_args="{}")}
         elif len(calls) < 4:
             yield "Abandoned partial answer"
-            raise dropped_connection()
+            raise error()
         else:
             yield "done"
 
