@@ -20,6 +20,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from iterm import session_colors
 from run import DEMO_ROOT, ITERM_OUT, load, lock_demo_root, stop_jobs
 
 HERE = Path(__file__).resolve().parent
@@ -74,7 +75,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("scene", nargs="?", default="tabs", help="a scene with TABS")
     parser.add_argument("--out", type=Path, help=f"PNG to write ({ITERM_OUT}/<scene>-iterm.png)")
-    parser.add_argument("--profile", default="Default", help="iTerm2 profile (Default)")
+    parser.add_argument(
+        "--profile", help="iTerm2 profile for the tabs (default: this tab's own profile)"
+    )
     parser.add_argument("--keep", action="store_true", help="leave the window open afterwards")
     args = parser.parse_args()
     scene = load(args.scene)
@@ -84,6 +87,11 @@ def main() -> None:
     out = args.out or ITERM_OUT / f"{args.scene}-iterm.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     columns, rows = getattr(scene, "SIZE", (100, 30))
+    # Asked of the session, not $ITERM_PROFILE: that one is fixed when the
+    # session starts, and misses a profile switched to since.
+    live = session_colors()
+    profile = args.profile or (live and live[0]) or os.environ.get("ITERM_PROFILE") or "Default"
+    print(f"iTerm2 profile: {profile}")
     lock = lock_demo_root()  # noqa: F841 - held until exit; the tabs' run.py skip it
     with tempfile.TemporaryDirectory(prefix="pcode-tabs-") as tmp:
         ready = Path(tmp)
@@ -111,7 +119,7 @@ def main() -> None:
             commands.append(f"/bin/sh {script}")
         window, servers = None, []
         try:
-            window = open_window(commands, args.profile, columns, rows)
+            window = open_window(commands, profile, columns, rows)
             time.sleep(1)
             go.touch()
             deadline = time.monotonic() + TIMEOUT
@@ -132,8 +140,19 @@ def main() -> None:
                 f'tell application "iTerm2" to tell tab {active} of window id {window} to select'
             )
             osascript('tell application "iTerm2" to activate')
-            # Titles and progress are sampled once a second; let the tab bar catch up.
-            time.sleep(2.5)
+            # Titles and progress are sampled once a second, and a title can
+            # reach its tab a moment after the pane has it.
+            expected = [scene.TABS[tab].title for tab in tabs]
+            deadline = time.monotonic() + 10
+            while True:
+                titles = tab_titles(window)
+                named = len(titles) == len(tabs) and all(
+                    want in got for want, got in zip(expected, titles, strict=True)
+                )
+                if named or time.monotonic() > deadline:
+                    break
+                time.sleep(0.3)
+            time.sleep(1.5)  # one more progress tick
             for tab, title in zip(tabs, tab_titles(window), strict=False):
                 print(f"{tab}: {title}")
             shot = subprocess.run(

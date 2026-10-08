@@ -20,10 +20,11 @@ make screenshots SCENES=review ARGS=--iterm   # tmp/screenshots/, in your iTerm2
 make screenshot-live SCENE=review      # play it in this terminal; screenshot it yourself
 ```
 
-The docs SVGs use Rich's dark terminal theme. `--iterm` reads the profile
-named by `$ITERM_PROFILE` from iTerm2's plist (its `(Light)`/`(Dark)` colors
-per the current macOS appearance), sets pcode's `theme` to match the
-background, and writes to `tmp/screenshots/` unless given `--out`. `--png` also
+The docs SVGs use Rich's dark terminal theme. `--iterm` takes the colors of
+the iTerm2 session you run it from, asked of iTerm2 itself (AppleScript), so
+Dynamic Profiles and built-in presets come out as you see them; the progress
+bar's style comes from that session's profile. It sets pcode's `theme` to
+match the background, and writes to `tmp/screenshots/` unless given `--out`. `--png` also
 renders each shot as a 2x PNG in headless Chrome (`CHROME` overrides the
 binary). The README's `docs/assets/screenshots/readme.png` is `--iterm --png
 review` output, copied by hand, so `make screenshots` never refreshes it. It is
@@ -46,7 +47,8 @@ The runner plays them side by side and draws `ACTIVE`'s screen under iTerm2's
 tab bar (`iterm.py`'s `tab_bar_svg`, after 3.7's Tahoe style): with the bar
 showing, iTerm2 draws each tab's progress as a ring around its tab instead of
 along the session. `iterm_window.py` plays the same tabs as real tabs in a new
-iTerm2 window (`--profile`, default `Default`) and captures it with
+iTerm2 window, in the profile of the tab you run it from (`--profile` picks
+another), and captures it with
 `screencapture`, which needs Screen Recording permission for the terminal you
 run it from; without it the script waits for you to take the shot. iTerm2
 starts a tab's command with a bare PATH, so its launcher exports yours.
