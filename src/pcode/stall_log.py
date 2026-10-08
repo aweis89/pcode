@@ -36,7 +36,7 @@ FRAMES_KEPT = 30
 STACKS_KEPT = 3
 BUSY_SHARE = 0.1
 """Process CPU per wall second above which an unsampled stall was work, not a suspended
-process (Ctrl+Z, a sleeping laptop), which stops the watcher thread as well. Low,
+process (Ctrl+Z), which stops the watcher thread as well. Low,
 because a busy process on a loaded machine is still a stall the user feels yet may
 get only a fraction of a core (a quarter was measured); a suspended one gets none."""
 
@@ -67,6 +67,16 @@ def _idle(frame) -> bool:
         and caller is not None
         and caller.f_code.co_name == "_run_once"
     )
+
+
+def _suspended(before: tuple[float, float], after: tuple[float, float], threshold: float) -> bool:
+    """Whether the process was stopped (Ctrl+Z) between two (wall, process CPU) readings.
+
+    The watcher thread is stopped with it, so its wait overran, and nothing ran
+    meanwhile. A stall that holds the GIL also delays the watcher, but burns CPU.
+    """
+    gap = after[0] - before[0]
+    return gap >= threshold and after[1] - before[1] < BUSY_SHARE * gap
 
 
 class StallWatch:
@@ -118,29 +128,48 @@ class StallWatch:
             self._gc_seconds += time.monotonic() - self._gc_started
 
     def _watch(self) -> None:
-        stalled = None  # The overdue `_due` being sampled.
+        stalled = None  # When the beat being sampled fell due (or the resume, if later).
         samples: Counter[tuple[str, ...]] = Counter()
         context: dict = {}
         settled = None  # The late beat last accounted for.
         # (wall, process CPU, GC seconds) at the last poll before the stall.
         mark = (time.monotonic(), time.process_time(), self._gc_seconds)
-        while not self._stop.wait(POLL):
+        # A beat due before this fell due while the whole process was stopped,
+        # so it counts as late only from here.
+        resumed = float("-inf")
+        while True:
+            # Taken just before waiting, so the watcher's own work (a write, a
+            # stack walk) is not mistaken for time spent stopped.
+            waited = (time.monotonic(), time.process_time())
+            if self._stop.wait(POLL):
+                break
             now = time.monotonic()
+            if _suspended(waited, (now, time.process_time()), self.threshold):
+                # The loop may resume mid-callback, so sampling it now would
+                # blame that callback for the pause. A stall already under way
+                # is written as far as it got.
+                if samples:
+                    self._write(waited[0] - stalled, samples, context, mark, ended=waited[0])
+                resumed = now
+                stalled, samples, context = None, Counter(), {}
             late = self._late
             if late is not None and late[0] != settled:
                 settled = late[0]
+                # From when it ran, how late it was counting from the resume.
+                lateness = late[0] + late[1] - max(late[0], resumed)
                 wall, cpu, _ = mark
                 busy = time.process_time() - cpu >= BUSY_SHARE * (now - wall)
-                if samples or busy:
-                    self._write(late[1], samples, context or self._context(), mark)
+                if lateness >= self.threshold and (samples or busy):
+                    self._write(lateness, samples, context or self._context(), mark)
                 stalled, samples, context = None, Counter(), {}
             due = self._due
-            overdue = due is not None and now >= due + self.threshold
+            start = None if due is None else max(due, resumed)
+            overdue = start is not None and now >= start + self.threshold
             if overdue:
                 frame = sys._current_frames().get(self._loop_thread)
                 if frame is not None and not _idle(frame):
                     if stalled is None:
-                        stalled, context = due, self._context()
+                        stalled, context = start, self._context()
                     stack = []
                     while frame is not None and len(stack) < FRAMES_KEPT:
                         stack.append(_where(frame))
@@ -151,8 +180,13 @@ class StallWatch:
             if stalled is None and not overdue:
                 mark = (now, time.process_time(), self._gc_seconds)
         if samples:
-            # Stopped mid-stall: the loop is late by at least this much.
-            self._write(time.monotonic() - stalled, samples, context, mark)
+            # Stopped mid-stall: the loop is late by at least this much, up to
+            # the last poll if the process was suspended since.
+            now = time.monotonic()
+            ended = (
+                waited[0] if _suspended(waited, (now, time.process_time()), self.threshold) else now
+            )
+            self._write(ended - stalled, samples, context, mark, ended=ended)
 
     def _context(self) -> dict:
         if self.context is None:
@@ -162,9 +196,13 @@ class StallWatch:
         except Exception:
             return {}
 
-    def _write(self, late: float, samples: Counter, context: dict, mark: tuple) -> None:
+    def _write(
+        self, late: float, samples: Counter, context: dict, mark: tuple, ended: float | None = None
+    ) -> None:
+        """`ended` is when the stall ended on the monotonic clock, if not just now."""
+        began = time.time() - late - (0.0 if ended is None else time.monotonic() - ended)
         record = {
-            "at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - late)),
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(began)),
             "pid": os.getpid(),
             "stall_ms": round(late * 1000),
             "gc_ms": round((self._gc_seconds - mark[2]) * 1000, 1),

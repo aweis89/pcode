@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -54,6 +55,28 @@ def test_a_blocking_subprocess_is_a_stall_though_it_waits_in_a_selector(tmp_path
     asyncio.run(watched(StallWatch(path), body))
     [record] = records(path)
     assert any("subprocess" in frame for frame in record["stacks"][0]["frames"])
+
+
+def test_a_slow_log_write_is_not_mistaken_for_a_suspension(tmp_path):
+    """Writing one stall can take a while on a slow disk; the next stall, already
+    under way, must still be logged."""
+    path = tmp_path / "stalls.jsonl"
+    watch = StallWatch(path)
+    write = watch._write
+
+    def slow_write(*args, **kwargs):
+        time.sleep(0.15)
+        write(*args, **kwargs)
+
+    watch._write = slow_write
+
+    async def body():
+        time.sleep(0.3)
+        await asyncio.sleep(0.01)
+        time.sleep(0.6)
+
+    asyncio.run(watched(watch, body, settle=0.4))
+    assert len(records(path)) == 2
 
 
 def test_a_stall_holding_the_gil_is_logged_without_stacks(tmp_path):
@@ -120,6 +143,86 @@ asyncio.run(main())
         child.wait()
         child.stdout.close()
     assert records(path) == []
+
+
+def test_a_process_suspended_mid_callback_logs_no_stall(tmp_path):
+    """Ctrl+Z can land while a callback runs, not only while the loop idles: the
+    loop is then busy when both threads resume, which is no stall either."""
+    path = tmp_path / "stalls.jsonl"
+    script = f"""
+import asyncio, os, signal, time
+from pathlib import Path
+from pcode.stall_log import StallWatch
+
+async def main():
+    watch = StallWatch(Path({str(path)!r}))
+    task = asyncio.create_task(watch.heartbeat())
+    await asyncio.sleep(0.1)
+    os.kill(os.getpid(), signal.SIGSTOP)
+    # Resumed mid-callback: work on, briefly enough not to be a stall itself.
+    end = time.monotonic() + 0.06
+    while time.monotonic() < end:
+        pass
+    await asyncio.sleep(0.3)
+    task.cancel()
+    watch.stop()
+
+asyncio.run(main())
+"""
+    child = subprocess.Popen([sys.executable, "-c", script])
+    try:
+        _, status = os.waitpid(child.pid, os.WUNTRACED)
+        assert os.WIFSTOPPED(status)
+        time.sleep(0.6)
+        child.send_signal(signal.SIGCONT)
+        assert child.wait(timeout=30) == 0
+    finally:
+        child.kill()
+        child.wait()
+    assert records(path) == []
+
+
+def test_a_stall_on_both_sides_of_a_suspension_is_logged_without_it(tmp_path):
+    """Ctrl+Z pressed because the terminal froze, then `fg`: the freeze is still
+    there, before and after, but the time spent stopped is not part of it."""
+    path = tmp_path / "stalls.jsonl"
+    script = f"""
+import asyncio, os, signal, time
+from pathlib import Path
+from pcode.stall_log import StallWatch
+
+def spin(seconds):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        pass
+
+async def main():
+    watch = StallWatch(Path({str(path)!r}))
+    task = asyncio.create_task(watch.heartbeat())
+    await asyncio.sleep(0.1)
+    spin(0.3)
+    os.kill(os.getpid(), signal.SIGSTOP)
+    spin(1.0)
+    await asyncio.sleep(0.3)
+    task.cancel()
+    watch.stop()
+
+asyncio.run(main())
+"""
+    child = subprocess.Popen([sys.executable, "-c", script])
+    try:
+        _, status = os.waitpid(child.pid, os.WUNTRACED)
+        assert os.WIFSTOPPED(status)
+        time.sleep(0.6)
+        child.send_signal(signal.SIGCONT)
+        assert child.wait(timeout=30) == 0
+    finally:
+        child.kill()
+        child.wait()
+    stalls = sorted(record["stall_ms"] for record in records(path))
+    # Before the stop, then after it: neither spans the 600 ms spent stopped.
+    assert len(stalls) == 2, stalls
+    assert 150 <= stalls[0] < 600 and 800 <= stalls[1] < 1500, stalls
 
 
 def test_a_stall_still_open_at_stop_is_written(tmp_path):
