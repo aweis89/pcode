@@ -1,6 +1,6 @@
-<img width="1416" height="1280" alt="Screenshot 2026-10-08 at 2 09 46 PM" src="https://github.com/user-attachments/assets/f102ffbc-818f-4367-860b-fe5749f3bb46" />
+<img width="1392" height="1522" alt="pcode in a dark terminal" src="docs/assets/screenshots/pcode-dark.png" />
 
-<img width="1686" height="1278" alt="Screenshot 2026-10-08 at 2 02 33 PM" src="https://github.com/user-attachments/assets/503b10e6-849a-473b-afcc-fb4d8234973f" />
+<img width="1392" height="1522" alt="pcode in a light terminal" src="docs/assets/screenshots/pcode-light.png" />
 
 # pcode
 
