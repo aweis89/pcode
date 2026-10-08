@@ -27,10 +27,9 @@ import tempfile
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from iterm import Look, profile_look, progress_bar_svg, tab_bar_svg
+from iterm import Look, profile_look, progress_bar_svg
 from rich.console import Console
 from rich.text import Text
 
@@ -102,12 +101,7 @@ def load(name: str):
     return module
 
 
-def svg(
-    ansi: str, width: int, title: str, look: Look, progress: tuple | None, tabs: list | None = None
-) -> str:
-    """The screen as Rich's terminal window; `tabs` adds iTerm2's tab bar, which
-    then carries each tab's progress (see `tab_bar_svg`) in place of `progress`.
-    """
+def svg(ansi: str, width: int, title: str, look: Look, progress: tuple | None) -> str:
     console = Console(
         record=True, width=width, file=io.StringIO(), force_terminal=True, color_system="truecolor"
     )
@@ -117,8 +111,6 @@ def svg(
         console.print(line, no_wrap=True, overflow="crop")
     # Rich's default SVG theme is a dark terminal.
     image = console.export_svg(title=title, **({"theme": look.theme} if look.theme else {}))
-    if tabs:
-        return with_tab_bar(image, tabs, look, width)
     if progress:
         # Along the top of the session, under the title bar, as iTerm2 draws it.
         # Rich puts the terminal at (9, 41) inside a window 1px in from the edge.
@@ -127,26 +119,6 @@ def svg(
         bar = progress_bar_svg(*progress, look, 1, 41, frame - 2)
         image = image[:start] + bar + image[start:]
     return image
-
-
-def with_tab_bar(image: str, tabs: list, look: Look, columns: int) -> str:
-    """Rich's window with iTerm2's tab bar between its title bar and the terminal.
-
-    Rich puts the terminal at (9, 41) in a window 1px in from the edge; the bar
-    goes at 41 and everything below moves down by its height.
-    """
-    start = '<g transform="translate(9, 41)"'
-    view = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', image)
-    frame, tall = float(view[1]), float(view[2])
-    # Rich's cell is 0.61 of its 20px font; iTerm2's points are scaled to match
-    # a 12pt Menlo cell (7.22pt), so the tabs keep their size beside the text.
-    scale = (frame - 18) / columns / 7.22
-    bar, height = tab_bar_svg(tabs, look, 1, 41, frame - 2, scale)
-    image = image.replace(start, bar + f'<g transform="translate(9, {41 + height:.1f})"', 1)
-    image = image.replace(view[0], f'viewBox="0 0 {view[1]} {tall + height:.1f}"', 1)
-    # The window's outline, the first rect: one taller to hold the bar.
-    outline = re.search(r'(<rect fill="[^"]+" stroke="[^"]+"[^>]*height=")([\d.]+)"', image)
-    return image.replace(outline[0], f'{outline[1]}{float(outline[2]) + height:.1f}"', 1)
 
 
 # OSC 9;4;state[;value], raw or inside tmux's passthrough wrapper.
@@ -404,8 +376,8 @@ def play(
     and sets pcode's palette to match; `live` attaches this terminal to the scene's
     pane instead of saving SVGs, for a screenshot of your real terminal.
 
-    A scene with `TABS` plays them all and draws one shot under a tab bar, or,
-    `live`, plays just `tab`. `ready` is written, with the pane's tmux server,
+    A scene with `TABS` plays only live, one `tab` at a time: iterm_window.py
+    opens each in a real iTerm2 tab. `ready` is written, with the pane's tmux server,
     once a live scene's steps are done (see iterm_window.py).
     """
     scene = load(name)
@@ -418,8 +390,7 @@ def play(
     command = [sys.executable, str(SCENES / f"{name}.py")]
     tabs = getattr(scene, "TABS", None)
     if tabs is not None and not live:
-        size = (width, height)
-        return play_tabs(name, scene, out, size, text=text, look=look, preferences=preferences)
+        raise SystemExit(f"{name} is a real iTerm2 window: run iterm_window.py {name}")
     root, steps = DEMO_ROOT, getattr(scene, "STEPS", [])
     if tabs is not None:
         if tab not in tabs:
@@ -459,72 +430,6 @@ def play(
         return []
 
 
-def play_tabs(
-    name: str, scene, out: Path, size: tuple, *, text: bool, look: Look, preferences: dict
-) -> list[Path]:
-    """Play every tab of scene `name` side by side, each its own session, then
-    save `ACTIVE`'s screen under a tab bar showing them all, as `<name>.svg`.
-    """
-    width, _ = size
-    with contextlib.ExitStack() as stack:
-        stack.callback(shutil.rmtree, DEMO_ROOT.resolve(), ignore_errors=True)
-        panes = {
-            tab: stack.enter_context(
-                session(
-                    [sys.executable, str(SCENES / f"{name}.py"), tab],
-                    DEMO_ROOT / tab,
-                    size,
-                    preferences,
-                )
-            )
-            for tab in scene.TABS
-        }
-        with ThreadPoolExecutor(len(panes)) as pool:
-            futures = [
-                pool.submit(
-                    play_steps,
-                    pane,
-                    scene.TABS[tab].steps,
-                    out,
-                    width,
-                    text=False,
-                    look=look,
-                    live=False,
-                )
-                for tab, pane in panes.items()
-            ]
-            try:
-                for future in futures:
-                    future.result()
-            except BaseException:
-                # The other tabs' waits now fail at once instead of timing out.
-                for pane in panes.values():
-                    pane.kill()
-                raise
-        for pane in panes.values():
-            pane.still()
-        # Reports are sampled once a second (see play_steps).
-        time.sleep(1.2)
-        # iTerm2's default tab title appends the foreground job, which is pcode.
-        bar = [
-            (f"{pane.title()} (pcode)", last_progress(pane.log), tab == scene.ACTIVE)
-            for tab, pane in panes.items()
-        ]
-        # Every tab reported at least once; nothing means its log went missing.
-        unreported = [tab for tab, (_, progress, _) in zip(panes, bar) if progress is None]
-        if unreported:
-            raise RuntimeError(f"no progress reports from {', '.join(unreported)}")
-        active = panes[scene.ACTIVE]
-        path = out / f"{name}.svg"
-        path.write_text(svg(active.screen(colors=True), width, active.title(), look, None, bar))
-        if text:
-            print(f"--- {path.name}")
-            for title, progress, selected in bar:
-                print(f"{'*' if selected else ' '} {title}  {progress}")
-            print(active.screen().rstrip())
-        return [path]
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("scenes", nargs="*", help="scene names (default: all)")
@@ -552,7 +457,9 @@ def main() -> None:
         "--ready", type=Path, help="--live: write the tmux server's name here once played"
     )
     args = parser.parse_args()
-    names = args.scenes or sorted(p.stem for p in SCENES.glob("*.py"))
+    # Scenes with TABS are whole iTerm2 windows, shot by iterm_window.py.
+    every = sorted(p.stem for p in SCENES.glob("*.py"))
+    names = args.scenes or [name for name in every if not hasattr(load(name), "TABS")]
     if args.live:
         if len(names) != 1:
             parser.error("--live plays exactly one scene")

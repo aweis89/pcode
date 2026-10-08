@@ -6,7 +6,8 @@ pane titles**, and a running turn shows as a **progress bar** on the tab or
 split. Run a few sessions side by side and those two signals tell you, without
 switching, what each one is doing and whether it's still working.
 
-![Five pcode sessions in iTerm2 tabs, each named for its task: three plans at different stages, one failed turn in red and one finished, with the active session's plan and a sub-agent reviewing its fix on screen](assets/screenshots/tabs.svg)
+![Five pcode sessions in iTerm2 tabs, each named for its task: three plans at different stages, one failed turn in red and one finished, with the active session's plan and a sub-agent reviewing its fix on screen](assets/screenshots/tabs-light.png#only-light)
+![Five pcode sessions in iTerm2 tabs, each named for its task: three plans at different stages, one failed turn in red and one finished, with the active session's plan and a sub-agent reviewing its fix on screen](assets/screenshots/tabs-dark.png#only-dark)
 
 How they look (where the title shows, how wide a tab gets, how thick and what
 colour the bar is) is up to the terminal, so most of the tuning happens in its

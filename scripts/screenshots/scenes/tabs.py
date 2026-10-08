@@ -2,11 +2,10 @@
 showing how far along it is: plans at different stages, one failed turn and
 one finished.
 
-Not a single pane like the other scenes: `run.py` starts every tab in `TABS`
-as its own session (this file with the tab's name as its argument), plays each
-tab's steps side by side, then draws `ACTIVE`'s screen under an iTerm2 tab bar
-built from all of them. `run.py --live tabs --tab NAME` plays one tab;
-`iterm_window.py tabs` opens them all as real tabs in a new iTerm2 window.
+Not a single pane like the other scenes, and not drawn as an SVG: the shot is
+a real iTerm2 window. `iterm_window.py tabs` opens each tab in `TABS` as its
+own session (`run.py --live tabs --tab NAME`, this file with the tab's name as
+its argument), then selects `ACTIVE` and captures the window.
 """
 
 import sys

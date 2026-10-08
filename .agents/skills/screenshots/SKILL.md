@@ -43,15 +43,15 @@ except from inside your own tmux, which drops them.
 
 A scene with `TABS` (`scenes/tabs.py`) is several sessions at once, one per
 tab, each a short named turn and then the turn left where the shot wants it.
-The runner plays them side by side and draws `ACTIVE`'s screen under iTerm2's
-tab bar (`iterm.py`'s `tab_bar_svg`, after 3.7's Tahoe style): with the bar
-showing, iTerm2 draws each tab's progress as a ring around its tab instead of
-along the session. `iterm_window.py` plays the same tabs as real tabs in a new
-iTerm2 window, in the profile of the tab you run it from (`--profile` picks
-another), and captures it with
-`screencapture`, which needs Screen Recording permission for the terminal you
-run it from; without it the script waits for you to take the shot. iTerm2
-starts a tab's command with a bare PATH, so its launcher exports yours.
+It is shot as a real iTerm2 window, not an SVG, so `make screenshots` skips it:
+`iterm_window.py` opens each tab with `run.py --live --tab`, in the profile of
+the tab you run it from (`--profile` picks another), waits until every tab has
+played and shows its title, then captures the window with `screencapture`.
+That needs Screen Recording permission for your terminal; without it the script
+waits for you to take the shot (Cmd-Shift-4, Space, click the window). The docs
+keep a light and a dark capture (`tabs-light.png`, `tabs-dark.png`), shown per
+the reader's theme with `#only-light`/`#only-dark`. iTerm2 starts a tab's
+command with a bare PATH, so its launcher exports yours.
 
 Each `("shot", name)` step writes `docs/assets/screenshots/<name>.svg`. You
 can't look at an SVG, so run with `--text` and read the plain-text dump to
