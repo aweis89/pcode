@@ -42,6 +42,7 @@ from pcode.popup_ui import (
     PopupInput,
     RichPane,
     bind_list_paging,
+    focus_overlay,
     list_pane_height,
     popup_container,
     popup_mouse,
@@ -631,7 +632,7 @@ class AsideBrowser:
 
         self.picker = build(close)
         # A link picker opens in its search line, so typing filters at once.
-        self.app.layout.focus(getattr(self.picker, "query", None) or self.picker.list)
+        focus_overlay(self.app, getattr(self.picker, "query", None) or self.picker.list)
 
     def details(self, thread: list[Aside]) -> tuple[list, int]:
         """The thread's questions and answers in order, and where the newest begins."""

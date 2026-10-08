@@ -1,6 +1,8 @@
 import asyncio
 import os
 import pty
+import select
+import time
 from io import StringIO
 
 import pytest
@@ -262,6 +264,22 @@ def test_the_terminal_is_the_first_stream_that_is_one():
             os.close(fd)
 
 
+def read_pty(main: int, settle: float = 0.2, deadline: float = 5.0) -> bytes:
+    """Everything written to the pty, gathered across reads.
+
+    Linux hands pty writes to the reader through a kernel work queue, so a
+    single read straight after two writes can return only the first.
+    """
+    data = b""
+    end = time.monotonic() + deadline
+    while time.monotonic() < end:
+        ready, _, _ = select.select([main], [], [], settle if data else end - time.monotonic())
+        if not ready:
+            break
+        data += os.read(main, 4096)
+    return data
+
+
 def test_shown_takes_the_bar_down_as_its_block_ends():
     main, terminal = pty.openpty()
     try:
@@ -273,7 +291,7 @@ def test_shown_takes_the_bar_down_as_its_block_ends():
                 await asyncio.sleep(0.1)
 
         asyncio.run(run())
-        assert os.read(main, 4096) == (progress(INDETERMINATE) + progress(CLEAR)).encode()
+        assert read_pty(main) == (progress(INDETERMINATE) + progress(CLEAR)).encode()
     finally:
         os.close(main)
         os.close(terminal)
@@ -293,7 +311,7 @@ def test_cancelling_the_task_clears_a_real_terminal():
                 await task
 
         asyncio.run(run())
-        assert os.read(main, 4096) == (progress(INDETERMINATE) + progress(CLEAR)).encode()
+        assert read_pty(main) == (progress(INDETERMINATE) + progress(CLEAR)).encode()
     finally:
         os.close(main)
         os.close(terminal)

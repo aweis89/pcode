@@ -936,3 +936,38 @@ def test_tree_browser_is_read_only_while_a_turn_runs():
     browser.navigable = True
     enter.handler(event)
     assert exits == [{"result": ("a", False)}]
+
+
+def test_keys_typed_ahead_of_a_pickers_first_frame_reach_the_picker(monkeypatch):
+    """A paste or typeahead lands before any redraw; Enter must open the link,
+    not fall through to the viewer and close it."""
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from pcode import aside_ui
+    from pcode.aside_ui import AsideBrowser
+
+    opened: list[str] = []
+    monkeypatch.setattr(aside_ui, "open_link", opened.append)
+    asides = Asides()
+    aside = Aside(question="see https://q.test", answer="Docs: https://docs.test")
+    aside.settle("answered")
+    asides.items.append(aside)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            browser = AsideBrowser(asides, key_prefix="ctrl", input=pipe, output=DummyOutput())
+            task = asyncio.create_task(browser.run())
+            async with asyncio.timeout(5):
+                while not browser.app.is_running:
+                    await asyncio.sleep(0.01)
+                # One write: prompt_toolkit handles the whole batch before redrawing.
+                pipe.send_text("\x0fq.test\r")
+                while not opened and not task.done():
+                    await asyncio.sleep(0.01)
+            assert opened == ["https://q.test"]
+            assert not task.done()
+            pipe.send_text("\x1b")
+            assert await asyncio.wait_for(task, 5) is None
+
+    asyncio.run(run())

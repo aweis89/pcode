@@ -851,9 +851,6 @@ class Activity:
     _held: _HeldStatus | None = field(default=None, init=False, repr=False, compare=False)
     # The turn's latest call on the tool row, kept there once it finishes.
     _last_call: ToolCall | None = field(default=None, init=False, repr=False, compare=False)
-    # The turn's calls in the order the tool rows first saw them, so finished
-    # ones keep their rows while the next calls run. Drawing state like `_held`.
-    _seen_calls: list[ToolCall] = field(default_factory=list, init=False, repr=False, compare=False)
 
     @property
     def show_thinking(self) -> bool:
@@ -1022,7 +1019,7 @@ class Activity:
         turn from `turn_started` alone; `start_prompt` runs only on the host.
         """
         self._last_call = None
-        self._seen_calls = []
+        self.tools.started.clear()
 
     def height_cap(self, rows: int) -> int | None:
         """The task widget plus editor box's row limit on a screen this tall."""
@@ -1207,19 +1204,10 @@ class Activity:
         if not self.status_shown or self.prompt_kind != "user" or width < 1:
             return []
         current = line.call or self._last_call
-        seen = self._seen_calls
-        for call in (*self.tools.calls, current):
-            # Delegates have panel rows, and a sub-agent's calls are its own:
-            # one shows only while the status row reports it.
-            if (
-                call is not None
-                and call.event.name != DELEGATE
-                and not call.event.parent_call_id
-                and all(call is not other for other in seen)
-            ):
-                seen.append(call)
+        # A sub-agent's call is not among them: it shows only while the status
+        # row reports it (appended below).
         groups: list[list[ToolCall]] = []
-        for call in seen:
+        for call in self.tools.started:
             if groups and _row_key(groups[-1][-1]) == _row_key(call):
                 groups[-1].append(call)
             else:

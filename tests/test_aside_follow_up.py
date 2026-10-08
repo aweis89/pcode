@@ -40,7 +40,7 @@ class Recorder(AbstractCapability):
                 "model": request_context.model.model_name,
                 "conversation": ctx.conversation_id,
                 "settings": request_context.model_settings,
-                "messages": deepcopy(request_context.messages),
+                "messages": deepcopy(list(request_context.messages)),
             }
         )
         return request_context

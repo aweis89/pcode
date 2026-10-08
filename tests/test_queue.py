@@ -350,15 +350,15 @@ def test_tool_rows_clear_a_finished_call_after_it_lingers():
     activity.tools.record(ToolStarted("read_file", "c.py", "three"))
     assert tool_row(activity) == "✓ ⎘ a.py\n✓ ⎘ b.py\n· ⎘ c.py"
     # `a.py` finished long ago; `b.py` just now; `c.py` is still running.
-    activity._seen_calls[0].settled -= 11
+    activity.tools.started[0].settled -= 11
     assert tool_row(activity) == "✓ ⎘ b.py\n· ⎘ c.py"
     # Even the status row's own call clears once it has lingered.
     activity.tools.record(ToolSummary("read_file", "c.py", call_id="three"))
-    for call in activity._seen_calls:
+    for call in activity.tools.started:
         call.settled -= 11
     assert tool_row(activity) == ""
     # Except while the status row still names it.
-    line = replace(activity.status_line(), call=activity._seen_calls[-1])
+    line = replace(activity.status_line(), call=activity.tools.started[-1])
     rows = activity.tool_rows(line, 80)
     assert ["".join(text for _, text in row) for row in rows] == ["✓ ⎘ c.py"]
     # 0 keeps finished rows until newer calls push them out.
@@ -1100,3 +1100,23 @@ def test_quit_cancels_active_run(command):
                         await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(run())
+
+
+def test_tool_rows_hold_calls_that_finished_between_frames():
+    """A loaded terminal draws less often; a call that ran entirely between two
+    frames, a failure included, must still get its row."""
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.ui import Activity
+
+    activity = Activity(prompt="Fix bug", prompt_state="running")
+    for number, call_id in ((1, "one"), (2, "two")):
+        activity.tools.record(ToolStarted("read_file", f"{number}.py", call_id))
+        activity.tools.record(
+            ToolSummary("read_file", f"{number}.py", call_id=call_id, failed=number == 2)
+        )
+    activity.tools.record(ToolStarted("read_file", "3.py", "three"))
+    # No frame drew while `1.py` or `2.py` ran.
+    assert tool_row(activity) == "✓ ⎘ 1.py\n✗ ⎘ 2.py\n· ⎘ 3.py"
+    # A new turn drops finished rows; the call the status row reports stays.
+    activity.forget_calls()
+    assert tool_row(activity) == "· ⎘ 3.py"

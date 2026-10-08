@@ -28,6 +28,7 @@ from pcode.frame import Frame
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,
+    focus_overlay,
     list_pane_height,
     popup_container,
     popup_mouse,
@@ -242,7 +243,7 @@ class TreeBrowser:
             self.copy_text(snippet.kind, snippet.text, output)
 
         self.picker = SnippetPicker(choices, on_pick=pick, on_cancel=close)
-        self.app.layout.focus(self.picker.list)
+        focus_overlay(self.app, self.picker.list)
 
     def branch(self, identity: str | None) -> tuple[str, ...]:
         """Root-to-leaf path through ``identity``, following the active branch below it."""

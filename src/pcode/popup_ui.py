@@ -133,6 +133,19 @@ def mark_matches(line: StyleAndTextTuples, words: Sequence[str]) -> StyleAndText
     return result
 
 
+def focus_overlay(app, target) -> None:
+    """Focus `target` inside an overlay that has just appeared.
+
+    prompt_toolkit finds a control's key bindings through a child-to-parent map
+    it rebuilds only on redraw. Until then an overlay swapped into a
+    `DynamicContainer` has no known parents, so typed-ahead or pasted keys reach
+    the app's bindings instead of the overlay's: Enter closed the viewer behind
+    a link picker rather than opening the link.
+    """
+    app.layout.update_parents_relations()
+    app.layout.focus(target)
+
+
 def popup_container(body, shortcuts: PrefixKeys | None = None):
     """Scope every modal surface under the same style class.
 

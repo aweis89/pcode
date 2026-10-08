@@ -142,6 +142,11 @@ class ToolHistory:
     recent: ToolCall | None = None
     # Each running delegate's plan, keyed by its call id.
     plans: dict[str, list[dict]] = field(default_factory=dict)
+    # Every top-level call since the tool rows were last emptied, in start
+    # order and kept once settled, so finished calls hold their rows. Recorded
+    # here rather than when a frame draws: a call that started and finished
+    # between two frames would otherwise never get a row.
+    started: list[ToolCall] = field(default_factory=list)
 
     def record_edit(self, change: EditCompleted) -> None:
         """Note an edit's line counts on its call, running or just settled.
@@ -194,11 +199,15 @@ class ToolHistory:
                 # finished.
                 used = [c.hue for c in self.delegates]
                 call.hue = min(range(AGENT_HUES), key=lambda hue: (used.count(hue), hue))
+            # Delegates have panel rows, and a sub-agent's calls are its own.
+            elif not event.parent_call_id:
+                self.started.append(call)
             self.calls.append(call)
 
     def clear(self) -> None:
         self.calls.clear()
         self.plans.clear()
+        self.started.clear()
         self.recent = None
 
     @property
