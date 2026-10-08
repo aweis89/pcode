@@ -366,15 +366,20 @@ directory to remove it; conversations are never deleted for you.
 
 ### Disk use
 
-Each turn keeps its two newest checkpoints in `steps.sqlite3`. Sessions saved by
-older pcode versions kept every step and can reach gigabytes. To shrink them:
+Each turn keeps its two newest checkpoints in `steps.sqlite3`, and every message
+is stored once however many checkpoints include it, so a long session grows with
+what was said rather than with how many times it was saved. Sessions saved by
+older pcode versions kept every step, or a whole copy of the conversation in each
+checkpoint, and can reach gigabytes. To shrink them:
 
 ```sh
-pcode --sessions --compact   # Drop superseded checkpoints, report space freed.
+pcode --sessions --compact   # Drop superseded checkpoints, store messages once, report space freed.
 ```
 
 This rewrites each closed session's store in place, skipping any open in another
-process, and reports what it reclaimed. No conversation is lost: `--continue`,
+process, and reports what it reclaimed. It also clears messages no checkpoint
+still uses. Sessions saved or compacted this way can't be resumed by older pcode
+versions, so restart any pcode still running an older version first. No conversation is lost: `--continue`,
 `/resume`, `/tree` navigation to earlier turns, and recall all work afterwards.
 
 ## Checkpoints
