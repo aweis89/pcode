@@ -1,3 +1,4 @@
+<img width="1686" height="1278" alt="Screenshot 2026-10-08 at 2 02 33 PM" src="https://github.com/user-attachments/assets/503b10e6-849a-473b-afcc-fb4d8234973f" />
 <img width="1512" height="947" alt="Screenshot 2026-10-06 at 7 23 29 PM" src="https://github.com/user-attachments/assets/a648fede-d703-44ef-8b52-895d3a0cd2af" />
 <img width="1360" alt="pcode fixing a bug: a word-level diff of the edit, then a worker sub-agent reviewing it with its own plan nested under the task list" src="https://raw.githubusercontent.com/cruxwell/pcode/master/docs/assets/screenshots/readme.png" />
 
