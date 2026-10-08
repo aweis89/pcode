@@ -270,7 +270,7 @@ class Policy:
         config: dict | None = None,
         grants: Iterable[Path] = (),
     ) -> Policy:
-        from pcode import remote_profile
+        from pcode import codex_login, remote_profile
 
         config = load_config() if config is None else config
         home = config_dir()
@@ -280,6 +280,7 @@ class Policy:
                 *DEFAULT_DENY_READ,
                 str(home / "credentials.json"),
                 str(home / "mcp-credentials.json"),
+                str(codex_login.credentials_path()),
             ]
         services: list[str] = []
         sockets: list[Path] = []

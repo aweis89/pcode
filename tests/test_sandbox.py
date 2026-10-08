@@ -145,6 +145,16 @@ def test_config_adds_write_roots_and_replaces_deny_list(repo, tmp_path):
     assert rules.protected == [sandbox.real(sandbox.config_dir())]
 
 
+def test_default_deny_list_hides_stored_credentials(repo, tmp_path, monkeypatch):
+    home = sandbox.config_dir()
+    rules = sandbox.Policy.build([repo], {})
+    for name in ("credentials.json", "mcp-credentials.json", "codex-credentials.json"):
+        assert not rules.can_read(sandbox.real(home / name)), name
+    moved = tmp_path / "elsewhere" / "codex.json"
+    monkeypatch.setenv("PCODE_CODEX_CREDENTIALS_FILE", str(moved))
+    assert not sandbox.Policy.build([repo], {}).can_read(sandbox.real(moved))
+
+
 def test_malformed_config_is_an_error_and_global_grants_persist(tmp_path):
     sandbox.config_path().parent.mkdir(parents=True)
     sandbox.config_path().write_text("{nope")
