@@ -38,6 +38,7 @@ from pcode.host_protocol import (
     find_host,
     list_hosts,
     list_stopped,
+    remove_entry,
     socket_path,
     write_entry,
 )
@@ -721,6 +722,44 @@ def test_stopping_an_idle_host_tells_terminals_it_closed_and_nothing_else(tmp_pa
         assert not view.count("cancelled")
 
     asyncio.run(run())
+
+
+def test_kill_hosts_idle_stops_idle_hosts_attached_or_not_and_keeps_their_worktrees(
+    host_dir, monkeypatch, capsys
+):
+    from pcode.app import main
+
+    for identity, state, attached in (
+        ("idle0001", "idle", 0),
+        ("idle0002", "idle", 1),
+        ("work0001", "working", 1),
+        ("boot0001", "starting", 0),
+        ("gone0001", "idle", 0),
+    ):
+        entry = HostEntry(id=identity, pid=os.getpid(), model="test", workspace="/")
+        entry.state, entry.attached, entry.title = state, attached, identity
+        write_entry(entry)
+    stopped = []
+
+    async def stop_entry(entry, *, keep_worktree=False):
+        if entry.id == "gone0001":
+            raise ConnectionRefusedError("refused")
+        stopped.append((entry.id, keep_worktree))
+
+    monkeypatch.setattr("pcode.remote.stop_entry", stop_entry)
+    monkeypatch.setattr(sys, "argv", ["pcode", "--kill-hosts", "idle"])
+    main()
+    assert sorted(stopped) == [("idle0001", True), ("idle0002", True)]
+    output = capsys.readouterr()
+    assert "Stopped idle0002  idle0002" in output.out
+    assert "Could not stop gone0001: refused" in output.err
+
+    for entry in list_hosts():
+        remove_entry(entry.id)
+    # The flag's old name still works.
+    monkeypatch.setattr(sys, "argv", ["pcode", "--stop-hosts", "idle"])
+    main()
+    assert "No idle session hosts." in capsys.readouterr().out
 
 
 def test_a_terminal_on_another_protocol_is_refused(tmp_path, host_dir):

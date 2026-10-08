@@ -2559,10 +2559,16 @@ def main() -> None:
         "hosts",
     )
     parser.add_argument("--hosts", action="store_true", help="List running session hosts and exit")
+    host_kinds = ("all", "stale", "idle")
     parser.add_argument(
-        "--stop-hosts",
-        choices=("all", "stale"),
-        help="Stop every session host, or those running older pcode code, and exit",
+        "--kill-hosts",
+        choices=host_kinds,
+        help="Stop every session host, those running older pcode code, or those with no "
+        "turn running (even with a terminal attached), and exit",
+    )
+    # The flag's old name, kept working for scripts and habit.
+    parser.add_argument(
+        "--stop-hosts", dest="kill_hosts", choices=host_kinds, help=argparse.SUPPRESS
     )
     parser.add_argument(
         "--email-listen",
@@ -2767,6 +2773,37 @@ def _resume_workspace(info, requested: Path | None) -> Path:
         f"The session's workspace {workspace} no longer exists, and neither does its "
         f"project checkout. Continue it elsewhere with `pcode -C DIR --continue {info.id}`."
     )
+
+
+def _kill_hosts(which: str, entries: list, code: str) -> None:
+    """`--kill-hosts all|stale|idle`, reporting each host as it stops.
+
+    `idle` means the state `--hosts` shows: no turn running, whether or not a
+    terminal is attached. An attached terminal is what keeps a forgotten tab's
+    host from stopping itself, so those are the ones this is for. Its terminal
+    is left saying the host exited, and background jobs outlive it as they
+    outlive any host. Nobody chose to finish those sessions, so their
+    worktrees are kept as they are, never merged or removed.
+    """
+    from pcode.remote import HostError, stop_entry
+
+    chosen = [
+        entry
+        for entry in entries
+        if which == "all"
+        or (which == "stale" and entry.stale(code))
+        or (which == "idle" and entry.state == "idle")
+    ]
+    for entry in chosen:
+        try:
+            asyncio.run(stop_entry(entry, keep_worktree=which == "idle"))
+        except (OSError, HostError) as error:
+            # Gone since it was listed (stopped itself, or crashed).
+            print(f"Could not stop {entry.id}: {error}", file=sys.stderr)
+            continue
+        print(f"Stopped {entry.id}  {entry.label()}")
+    if not chosen:
+        print("No session hosts to stop." if which == "all" else f"No {which} session hosts.")
 
 
 def _stopped_session(selector: str, root: Path | None = None) -> str | None:
@@ -3014,19 +3051,14 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         app.transcript.events(app.preview.demo(), show_tools=True)
         app.transcript.syntax_gallery()
         return
-    if args.hosts or args.stop_hosts:
+    if args.hosts or args.kill_hosts:
         from pcode.host_protocol import code_fingerprint, list_hosts
         from pcode.host_ui import host_row, ordered
 
         code = code_fingerprint()
         entries = ordered(list_hosts())
-        if args.stop_hosts:
-            from pcode.remote import stop_entry
-
-            for entry in entries:
-                if args.stop_hosts == "all" or entry.stale(code):
-                    asyncio.run(stop_entry(entry))
-                    print(f"Stopped {entry.id}  {entry.label()}")
+        if args.kill_hosts:
+            _kill_hosts(args.kill_hosts, entries, code)
             return
         for entry in entries:
             print(f"{entry.id}  {host_row(entry, None, code=code).strip()}")
