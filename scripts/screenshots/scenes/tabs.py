@@ -16,7 +16,7 @@ from pydantic_ai.exceptions import ModelHTTPError
 from scene import Call, Fail, launch
 
 MODEL = "claude:claude-opus-5-5"
-SIZE = (110, 34)
+SIZE = (110, 40)
 ACTIVE = "discount"
 # Holds a running turn on its current step until the scene ends.
 HOLD = "; sleep 600"
@@ -40,7 +40,8 @@ class Tab:
     """One session: a short first turn that gets it named `title`, then `work`.
 
     `work` is the second turn's responses; `wait` is text on screen once the
-    turn is where the shot wants it.
+    turn is where the shot wants it. `workers` holds the turns of sub-agents it
+    delegates to, keyed by a phrase from their task that the prompts don't hold.
     """
 
     title: str
@@ -49,6 +50,7 @@ class Tab:
     task: str
     work: list[list]
     wait: str
+    workers: dict = field(default_factory=dict)
     turns: dict = field(init=False)
 
     def __post_init__(self):
@@ -61,6 +63,7 @@ class Tab:
         }
         if self.task:
             self.turns[self.task] = self.work
+        self.turns.update(self.workers)
 
     @property
     def steps(self) -> list[tuple]:
@@ -79,9 +82,27 @@ DISCOUNT = [
     "Find where the discount is applied",
     "Apply the discount as a percentage",
     "Add a regression test for percentage discounts",
-    "Run the test suite",
-    "Note the fix in the README",
+    "Get an independent review of the fix",
+    "Commit the fix",
 ]
+REVIEWER = [
+    "Read the diff against main",
+    "Check edge cases: 0%, 100%, fractional",
+    "Report findings",
+]
+REVIEW = (
+    "Review the discount fix in acme/orders.py: total() now treats discount as "
+    "a percentage. Check the diff against main and edge cases (0%, 100%, "
+    "fractional) and report anything wrong. Do not edit files."
+)
+EDGES = (
+    "python3 -c 'from acme.orders import Order, total; "
+    "print([total(Order(1, [19.99, 5.01], discount=d)) for d in (0, 12.5, 100)])'" + HOLD
+)
+TEST_OLD = "    assert total(Order(1, [10.0, 30.0], discount=25)) == 30.0\n"
+TEST_NEW = TEST_OLD + (
+    "\n\ndef test_zero_discount_keeps_subtotal():\n    assert total(Order(2, [12.5])) == 12.5\n"
+)
 CSV = [
     "Read the Order model and its fields",
     "Add an orders_to_csv() exporter",
@@ -110,16 +131,30 @@ TABS = {
             [Call("read_file", path="acme/orders.py")],
             [plan(DISCOUNT, 1)],
             [Call("edit_file", path="acme/orders.py", old_text=FIX_OLD, new_text=FIX_NEW)],
-            [plan(DISCOUNT, 3)],
+            [plan(DISCOUNT, 2)],
+            [Call("edit_file", path="tests/test_orders.py", old_text=TEST_OLD, new_text=TEST_NEW)],
             [
+                "Fixed and tested. Handing the change to a worker for an independent "
+                "review of the edge cases before committing.",
+                plan(DISCOUNT, 3),
                 Call(
-                    "shell",
-                    command="python3 -m unittest discover tests" + HOLD,
-                    purpose="running the test suite",
-                )
+                    "delegate_task",
+                    agent_name="worker",
+                    task=REVIEW,
+                    purpose="reviewing the discount fix",
+                ),
             ],
         ],
-        wait="running the test suite",
+        wait="checking discount edge cases",
+        # The worker runs on the same scripted model; its prompt is its task.
+        workers={
+            "Review the discount fix": [
+                [plan(REVIEWER, 0)],
+                [Call("shell", command="git diff main -- acme/orders.py")],
+                [plan(REVIEWER, 1)],
+                [Call("shell", command=EDGES, purpose="checking discount edge cases")],
+            ]
+        },
     ),
     "csv": Tab(
         title="Add CSV export",
