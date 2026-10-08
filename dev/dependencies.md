@@ -12,11 +12,11 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | Library (distribution) | Verified installed version | Official documentation | Upstream source |
 | --- | --- | --- | --- |
 | prompt_toolkit (`prompt-toolkit`) | 3.0.53 | [Docs](https://python-prompt-toolkit.readthedocs.io/en/stable/) | [python-prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) |
-| Rich (`rich`) | 14.3.4 | [Docs](https://rich.readthedocs.io/en/stable/) | [rich](https://github.com/Textualize/rich) |
-| Pydantic AI (`pydantic-ai-slim`) | 2.52.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
-| Pydantic AI Harness (`pydantic-ai-harness`) | 0.52.0 (released with Pydantic AI 2.52.0) | [Docs](https://pydantic.dev/docs/ai/harness/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `src/pydantic_ai_harness/`) |
+| Rich (`rich`) | 15.0.0 | [Docs](https://rich.readthedocs.io/en/stable/) | [rich](https://github.com/Textualize/rich) |
+| Pydantic AI (`pydantic-ai-slim`) | 2.54.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
+| Pydantic AI Harness (`pydantic-ai-harness`) | 0.54.0 (released with Pydantic AI 2.54.0) | [Docs](https://pydantic.dev/docs/ai/harness/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `src/pydantic_ai_harness/`) |
 | Playwright (`playwright`, via the Harness `playwright` extra; Chromium downloaded on first `/browser` use) | 1.63.0 | [Docs](https://playwright.dev/python/) | [playwright-python](https://github.com/microsoft/playwright-python) |
-| Claude Agent SDK (`claude-agent-sdk`, bundles the Claude Code CLI) | 0.2.160 (CLI 2.1.283) | [Docs](https://code.claude.com/docs/en/agent-sdk/python) | [claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python) |
+| Claude Agent SDK (`claude-agent-sdk`, bundles the Claude Code CLI) | 0.2.164 (CLI 2.1.292) | [Docs](https://code.claude.com/docs/en/agent-sdk/python) | [claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python) |
 
 From the repository root, this read-only command prints installed versions and
 package source locations without importing the agent runtime or loading credentials:
@@ -920,9 +920,9 @@ we cannot reconstruct provider-omitted content.
 
 ## Live shell output
 
-Harness comes from PyPI, pinned to one minor (`>=0.52.0,<0.53`). It pins
-`pydantic-ai-slim` to its own release exactly (Harness 0.52.x ships with Pydantic
-AI 2.52.x), so upgrade the two together.
+Harness comes from PyPI, pinned to one minor (`>=0.54.0,<0.55`). It pins
+`pydantic-ai-slim` to its own release exactly (Harness 0.54.x ships with Pydantic
+AI 2.54.x), so upgrade the two together.
 
 Since Harness 0.52 every capability works through the run's workspace
 (`ctx.workspace`) rather than a directory argument: `Coder(path)`,
