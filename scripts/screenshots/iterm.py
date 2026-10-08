@@ -13,6 +13,7 @@ import os
 import plistlib
 import subprocess
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 
 from rich.terminal_theme import TerminalTheme
@@ -123,13 +124,27 @@ def progress_bar_svg(
 
     States: 1 a percentage, 2 an error, 3 indeterminate, 4 a warning (paused).
     """
+    # Capped so a tall profile setting stays clear of the title.
+    height = min(look.bar_height, 8)
+    return _progress_fill(state, value, look, x, bottom - height, width, height)
+
+
+def _progress_fill(
+    state: int,
+    value: int | None,
+    look: Look,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    gradient: str = "iterm-progress",
+    clip: str = "",
+) -> str:
+    """The bar's gradient fill over the box at (x, y), as far as the report says."""
     indeterminate = state == 3
     percent = 100 if indeterminate else value or 0
     if state not in (1, 2, 3, 4) or not percent:
         return ""
-    # Capped so a tall profile setting stays clear of the title.
-    height = min(look.bar_height, 8)
-    y = bottom - height
     colors = {2: ERROR, 4: WARNING[look.dark]}.get(state) or _scheme(look, indeterminate)
     if indeterminate:
         # Stands in for the animation: iTerm2 slides two bar-wide gradients.
@@ -141,8 +156,96 @@ def progress_bar_svg(
         f'stop-color="rgb({r * 255:.0f},{g * 255:.0f},{b * 255:.0f})" stop-opacity="{a}"/>'
         for i, (r, g, b, a) in enumerate(colors)
     )
+    clipped = f' clip-path="url(#{clip})"' if clip else ""
     return (
-        f'<defs><linearGradient id="iterm-progress">{stops}</linearGradient></defs>'
-        f'<rect fill="url(#iterm-progress)" x="{x}" y="{y}" width="{width:.1f}" '
-        f'height="{height}"/>'
+        f'<defs><linearGradient id="{gradient}">{stops}</linearGradient></defs>'
+        f'<rect fill="url(#{gradient})" x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" '
+        f'height="{height:.1f}"{clipped}/>'
     )
+
+
+# iTerm2's tab bar with more than one tab, after the Tahoe style of 3.7
+# (ThirdParty/PSMTabBarControl/source/PSMTahoeTabStyle.swift): a 36pt bar
+# holding a 28pt rounded container, each tab a pill in it, the selected one
+# filled. With the bar showing, a session's OSC 9;4 report is drawn as a 2pt
+# ring around its tab's pill (filled left to right as far as the percentage
+# goes) instead of the bar along the top of the session.
+TAB_FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif"
+# (bar, container, selected pill, selected text, other text), sRGB.
+TAB_COLORS = {
+    True: ((45, 48, 50), (43, 46, 48), (98, 100, 102), (239, 239, 239), (126, 128, 129)),
+    False: ((225, 225, 225), (230, 230, 230), (247, 247, 247), (70, 70, 70), (70, 70, 70)),
+}
+
+
+def _rgb(color: tuple[int, int, int]) -> str:
+    return "rgb({},{},{})".format(*color)
+
+
+def _pill(x: float, y: float, width: float, height: float) -> str:
+    """A stadium's outline as path data, for an even-odd ring."""
+    r = height / 2
+    return (
+        f"M{x + r:.1f},{y:.1f} H{x + width - r:.1f} "
+        f"A{r:.1f},{r:.1f} 0 0 1 {x + width - r:.1f},{y + height:.1f} "
+        f"H{x + r:.1f} A{r:.1f},{r:.1f} 0 0 1 {x + r:.1f},{y:.1f} Z"
+    )
+
+
+def _fit(title: str, width: float, size: float) -> str:
+    """`title` cut with an ellipsis to roughly fit `width` in a proportional font."""
+    room = int(width / (size * 0.52))
+    return title if len(title) <= room else title[: max(1, room - 1)].rstrip() + "…"
+
+
+def tab_bar_svg(tabs: list[tuple], look: Look, x: float, y: float, width: float, scale: float):
+    """SVG for iTerm2's tab bar across `width` from (x, y), and its height.
+
+    `tabs` holds (title, progress, selected) per tab, progress as
+    `last_progress` returns it. `scale` is pixels per point, so the bar keeps its
+    size next to the terminal's text.
+    """
+    bar, container, pill, selected_text, text = TAB_COLORS[look.dark]
+    k = scale
+    height = 36 * k
+    add = 32 * k  # the new-tab button, right of the container
+    box_x, box_y, box_h = x + 8 * k, y + 4 * k, 28 * k
+    box_w = width - 16 * k - add
+    parts = [
+        f'<rect fill="{_rgb(bar)}" x="{x}" y="{y}" width="{width}" height="{height:.1f}"/>',
+        f'<rect fill="{_rgb(container)}" x="{box_x:.1f}" y="{box_y:.1f}" width="{box_w:.1f}" '
+        f'height="{box_h:.1f}" rx="{box_h / 2:.1f}"/>',
+        f'<text fill="{_rgb(text)}" font-family="{TAB_FONT}" font-size="{20 * k:.1f}" '
+        f'font-weight="300" text-anchor="middle" dominant-baseline="central" '
+        f'x="{box_x + box_w + add / 2:.1f}" y="{box_y + box_h / 2:.1f}">+</text>',
+    ]
+    cell_w = box_w / max(1, len(tabs))
+    font = 11 * k
+    ring = 2 * k
+    for index, (title, progress, selected) in enumerate(tabs):
+        # backgroundRect: 2pt in from the cell's top, 1pt from its bottom.
+        px, py = box_x + index * cell_w + 2 * k, box_y + 2 * k
+        pw, ph = cell_w - 4 * k, box_h - 3 * k
+        if selected:
+            parts.append(
+                f'<rect fill="{_rgb(pill)}" x="{px:.1f}" y="{py:.1f}" width="{pw:.1f}" '
+                f'height="{ph:.1f}" rx="{ph / 2:.1f}"/>'
+            )
+        if progress:
+            clip = f"iterm-tab-ring-{index}"
+            ox, oy, ow, oh = px - ring, py - ring, pw + 2 * ring, ph + 2 * ring
+            parts.append(
+                f'<defs><clipPath id="{clip}"><path clip-rule="evenodd" '
+                f'd="{_pill(ox, oy, ow, oh)} {_pill(px, py, pw, ph)}"/></clipPath></defs>'
+            )
+            parts.append(
+                _progress_fill(*progress, look, ox, oy, ow, oh, f"iterm-tab-progress-{index}", clip)
+            )
+        color = selected_text if selected else text
+        parts.append(
+            f'<text fill="{_rgb(color)}" font-family="{TAB_FONT}" font-size="{font:.1f}" '
+            f'text-anchor="middle" dominant-baseline="central" '
+            f'x="{px + pw / 2:.1f}" y="{py + ph / 2:.1f}">'
+            f"{escape(_fit(title, pw - 24 * k, font))}</text>"
+        )
+    return "".join(parts), height

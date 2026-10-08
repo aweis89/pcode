@@ -283,6 +283,8 @@ keep a title stack (xterm, iTerm2, kitty, Ghostty and VTE terminals such as
 GNOME Terminal, among others). Elsewhere the title stays until your shell's
 prompt sets its own.
 
+![Five pcode sessions in iTerm2 tabs, each named for its task: three plans at different stages, one failed turn in red and one finished, with the active session's plan on screen](assets/screenshots/tabs.svg)
+
 Inside tmux the name goes to the pane title. tmux shows it in the outer tab
 only with `set -g set-titles on`, whose default `set-titles-string` includes the
 pane title. `pcode config set terminal_title off` leaves the title alone.
@@ -291,7 +293,8 @@ pane title. `pcode config set terminal_title off` leaves the title alone.
 
 While a turn runs, pcode reports progress to the terminal itself (OSC 9;4),
 which draws it outside the screen: Ghostty and kitty as a thin bar along the
-top of the split, iTerm2 in the pane's top margin, Windows Terminal in the
+top of the split, iTerm2 in the pane's top margin (or, from 3.7, as a ring
+around each tab while the tab bar shows), Windows Terminal in the
 tab, WezTerm wherever its
 Lua config puts it. A busy tab is visible from the others.
 
