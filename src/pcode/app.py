@@ -2620,18 +2620,24 @@ def main() -> None:
     )
     parser.add_argument(
         "--theme-preview",
-        # The flag was named --demo before it grew the style gallery; keep the
-        # old spelling working for scripts and the Homebrew smoke test.
-        "--demo",
         dest="theme_preview",
         action="store_true",
         help="Print an offline sample and the syntax-style gallery, then exit",
     )
+    # The flag was named --demo before it grew the style gallery; keep the old
+    # spelling working for scripts and the Homebrew smoke test, out of --help.
+    parser.add_argument("--demo", dest="theme_preview", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--sessions", action="store_true", help="List saved sessions and exit")
+    from pcode.models import LEGACY_ANTHROPIC_AUTH
+
     parser.add_argument(
         "--upgrade-meridian",
         action="store_true",
-        help="Install or upgrade the Meridian proxy with npm, then exit",
+        help=(
+            "Install or upgrade the Meridian proxy with npm, then exit"
+            if LEGACY_ANTHROPIC_AUTH
+            else argparse.SUPPRESS
+        ),
     )
     parser.add_argument(
         "--compact",

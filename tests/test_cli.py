@@ -360,6 +360,16 @@ def test_missing_login_has_actionable_message_without_dumping_auth(monkeypatch, 
     )
 
 
+def test_help_hides_old_aliases_and_legacy_flags(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["pcode", "--help"])
+    with pytest.raises(SystemExit):
+        main()
+    shown = capsys.readouterr().out
+    assert "--theme-preview" in shown
+    assert "--demo" not in shown
+    assert "--upgrade-meridian" not in shown
+
+
 def test_theme_preview_cli_passes_the_theme(monkeypatch):
     # `--demo` is the old name for this flag, kept so scripts keep working.
     monkeypatch.setattr(sys, "argv", ["pcode", "--demo", "--theme", "light"])
