@@ -6,8 +6,6 @@ the text as written: this pulls each top-level quote and fenced code block out
 of it for a small picker, shared by `/copy` and `/tree`.
 """
 
-from __future__ import annotations
-
 import re
 from dataclasses import dataclass
 
