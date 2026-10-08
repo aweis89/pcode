@@ -17,6 +17,9 @@ AGENT_ICON = "»"
 # The built-in sub-agent. Its rows lead with the purpose alone; any other
 # agent's name is shown, since it can mean different tools and permissions.
 DEFAULT_AGENT = "worker"
+# A delegate's purpose leads its row, so it is cut shorter than the 60 cells
+# a purpose may have: the clock and phase after it must still fit 80 columns.
+PURPOSE_CELLS = 40
 # On the status row, a command that finishes in milliseconds appears and
 # vanishes before it can be read, and a burst of them strobes. A finished call
 # keeps the row, marked done, for this long after it settles, unless real work
@@ -117,9 +120,10 @@ class ToolCall:
 
         The parent's stated purpose leads, since it is what tells delegates
         apart; the agent's name joins it only when it is not the default
-        worker (`» Reviewer · checking the fix · ...`). With no purpose the
-        task text stands in, and goes last: it can run long, and would push
-        the clock and state off the row.
+        worker (`» Reviewer: checking the fix · ...`). Either way the head runs
+        to the first ` · `, which `_row_parts` sets bold, and is kept short so
+        the clock and state survive a narrow pane. With no purpose the task
+        text stands in, and goes last: it can run long.
 
         A settled delegate's last phase is stale (nearly always "Responding"),
         so it says how it ended instead.
@@ -134,7 +138,9 @@ class ToolCall:
         if event.purpose:
             # Sessions saved before delegates recorded their agent had only workers.
             default = event.agent in ("", DEFAULT_AGENT)
-            head = event.purpose if default else f"{name} · {event.purpose}"
+            # Its own ` · ` would end the bold head partway through.
+            purpose = plain(event.purpose.replace(" · ", " – "), PURPOSE_CELLS)
+            head = purpose if default else f"{name}: {purpose}"
             parts = (f"{AGENT_ICON} {head}", clock, state)
         else:
             task = event.task or plain(event.detail, limit=None)
@@ -382,7 +388,7 @@ def _row_parts(style: str, line: str) -> list[tuple[str, str]]:
 
     The guides stay muted whatever the row's status, so a dimmed row keeps
     its place in the tree. A task's icon takes its status's colour even under
-    a sub-agent's hue; a sub-agent's `»` and name go bold in that hue.
+    a sub-agent's hue; a sub-agent's `»` and head (its purpose, or name) go bold in that hue.
     """
     kind = _PART_STYLED.search(style)
     if kind is None:

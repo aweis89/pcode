@@ -405,13 +405,13 @@ A running `delegate_task` has its own row, starting with `»` instead of a statu
 icon and drawn in its own color, so it never reads as one of your tasks. It
 leads with the purpose the model gave the delegation, then elapsed time and
 phase. A sub-agent other than the built-in worker, such as an extension's
-reviewer, is named ahead of its purpose (`» Reviewer · checking the fix`). With
+reviewer, is named ahead of its purpose (`» Reviewer: checking the fix`). With
 no purpose, the row names the agent and ends with the start of its assignment
 instead. The phase is `Waiting for model`, `Thinking`,
 `Working` (one of its tools is running), or `Responding`. The row stays for the
 sub-agent's whole run and leaves when it finishes; scrollback records whether it
 was done or failed. While nothing else is running, the status row reads
-`Waiting for 2 agents`, and names the newest one when the widget is hidden.
+`Waiting for 2 agents`, and shows the newest one's row when the widget is hidden.
 
 A sub-agent that plans shows up to three of its tasks beneath it, centered on
 its active task, and they update as it works. Its own tool calls show on the

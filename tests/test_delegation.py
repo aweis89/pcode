@@ -790,9 +790,24 @@ def test_a_delegate_row_leads_with_its_purpose_and_names_only_other_agents():
     rows = [text for _, text in task_panel_rows([], history, 10, "*")]
     assert rows == [
         "» w purpose · 0.0s · Starting",
-        "» Reviewer · r purpose · 0.0s · Starting",
+        "» Reviewer: r purpose · 0.0s · Starting",
         # Saved before delegates recorded their agent: only workers existed.
         "» old purpose · 0.0s · Starting",
+    ]
+
+
+def test_a_long_purpose_leaves_the_delegate_rows_clock_and_state_in_80_columns():
+    history = ToolHistory()
+    purpose = "checking every discount edge case against the main branch" + " x" * 4
+    history.record(delegate_started("worker", purpose, "w", purpose=purpose[:60]))
+    rows = task_panel_rows([{"content": "Parent task", "status": "in_progress"}], history, 5, "*")
+    text = "".join(part for _, part in panel_fragments(rows, 80))
+    assert "0.0s · Starting" in text
+    # A ` · ` of its own would cut the bold head short.
+    history = ToolHistory()
+    history.record(delegate_started("worker", "fix · test", "w", purpose="fix · test"))
+    assert [t for _, t in task_panel_rows([], history, 5, "*")] == [
+        "» fix – test · 0.0s · Starting"
     ]
 
 
