@@ -1276,8 +1276,13 @@ def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
     # Led by the spinner's frame while it runs.
     assert lines[tool].strip().split(" ", 1)[1] == "⎘ SLOW_FILE"
     assert lines[tool + 1].startswith(SPINNER_ROW)
-    assert lines[tool - 1].strip() == ""
-    assert "✓ Read file  file_30.py" in lines[tool - 2]
+    # The transcript's last tool line, then a blank line, then the live rows:
+    # the newest finished calls (while they linger, `tool_max_lines` of them
+    # at most) above the running one.
+    last = max(i for i, line in enumerate(lines) if "✓ Read file  file_30.py" in line)
+    assert lines[last + 1].strip() == ""
+    live = [line.strip() for line in lines[last + 2 : tool]]
+    assert live in ([], ["✓ ⎘ file_30.py"], ["✓ ⎘ file_29.py", "✓ ⎘ file_30.py"]), screen
 
 
 IMMEDIATE_PROMPT_SCRIPT = """

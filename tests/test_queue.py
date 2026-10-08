@@ -350,15 +350,15 @@ def test_tool_rows_clear_a_finished_call_after_it_lingers():
     activity.tools.record(ToolStarted("read_file", "c.py", "three"))
     assert tool_row(activity) == "✓ ⎘ a.py\n✓ ⎘ b.py\n· ⎘ c.py"
     # `a.py` finished long ago; `b.py` just now; `c.py` is still running.
-    activity.tools.started[0].settled -= 11
+    activity.tools.turn_calls[0].settled -= 11
     assert tool_row(activity) == "✓ ⎘ b.py\n· ⎘ c.py"
     # Even the status row's own call clears once it has lingered.
     activity.tools.record(ToolSummary("read_file", "c.py", call_id="three"))
-    for call in activity.tools.started:
+    for call in activity.tools.turn_calls:
         call.settled -= 11
     assert tool_row(activity) == ""
     # Except while the status row still names it.
-    line = replace(activity.status_line(), call=activity.tools.started[-1])
+    line = replace(activity.status_line(), call=activity.tools.turn_calls[-1])
     rows = activity.tool_rows(line, 80)
     assert ["".join(text for _, text in row) for row in rows] == ["✓ ⎘ c.py"]
     # 0 keeps finished rows until newer calls push them out.

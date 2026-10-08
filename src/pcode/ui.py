@@ -1019,7 +1019,7 @@ class Activity:
         turn from `turn_started` alone; `start_prompt` runs only on the host.
         """
         self._last_call = None
-        self.tools.started.clear()
+        self.tools.turn_calls.clear()
 
     def height_cap(self, rows: int) -> int | None:
         """The task widget plus editor box's row limit on a screen this tall."""
@@ -1207,7 +1207,7 @@ class Activity:
         # A sub-agent's call is not among them: it shows only while the status
         # row reports it (appended below).
         groups: list[list[ToolCall]] = []
-        for call in self.tools.started:
+        for call in self.tools.turn_calls:
             if groups and _row_key(groups[-1][-1]) == _row_key(call):
                 groups[-1].append(call)
             else:

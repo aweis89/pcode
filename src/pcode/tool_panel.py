@@ -128,7 +128,8 @@ class ToolCall:
 
 @dataclass
 class ToolHistory:
-    """Calls still in flight, oldest first. A result removes its call.
+    """Calls still in flight, oldest first. A result removes its call from
+    `calls`; `turn_calls` keeps the turn's top-level calls for the tool rows.
 
     The two surfaces split the work: the status row reports tool calls, and
     the task panel lists running delegates with their plans. A delegate
@@ -146,7 +147,7 @@ class ToolHistory:
     # order and kept once settled, so finished calls hold their rows. Recorded
     # here rather than when a frame draws: a call that started and finished
     # between two frames would otherwise never get a row.
-    started: list[ToolCall] = field(default_factory=list)
+    turn_calls: list[ToolCall] = field(default_factory=list)
 
     def record_edit(self, change: EditCompleted) -> None:
         """Note an edit's line counts on its call, running or just settled.
@@ -201,13 +202,13 @@ class ToolHistory:
                 call.hue = min(range(AGENT_HUES), key=lambda hue: (used.count(hue), hue))
             # Delegates have panel rows, and a sub-agent's calls are its own.
             elif not event.parent_call_id:
-                self.started.append(call)
+                self.turn_calls.append(call)
             self.calls.append(call)
 
     def clear(self) -> None:
         self.calls.clear()
         self.plans.clear()
-        self.started.clear()
+        self.turn_calls.clear()
         self.recent = None
 
     @property

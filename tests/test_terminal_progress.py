@@ -273,7 +273,8 @@ def read_pty(main: int, settle: float = 0.2, deadline: float = 5.0) -> bytes:
     data = b""
     end = time.monotonic() + deadline
     while time.monotonic() < end:
-        ready, _, _ = select.select([main], [], [], settle if data else end - time.monotonic())
+        wait = settle if data else max(0.0, end - time.monotonic())
+        ready, _, _ = select.select([main], [], [], wait)
         if not ready:
             break
         data += os.read(main, 4096)
