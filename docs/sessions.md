@@ -440,12 +440,11 @@ pcode config set retry_attempts 0   # Disable automatic retries
 
 Authentication failures, HTTP status errors, tool errors, and cancellation are
 not retried. For Anthropic, rate-limit, billing, and server errors surface
-immediately instead of waiting through hidden SDK backoff; an expired OAuth
-token is still refreshed. Other providers' SDKs may retry internally.
+immediately instead of waiting through hidden SDK backoff. Other providers' SDKs may retry internally.
 
 One HTTP error is handled automatically. Anthropic ties each server-side
 `web_search` result to the account that ran the search, so a session resumed
-under a different login fails with
+under a different API key or account fails with
 `Invalid encrypted_content in search_result block`, and would keep failing since
 the results are in the history. pcode drops those results, keeping each page's
 title and URL and the model's own reading of them, says how many it removed, and

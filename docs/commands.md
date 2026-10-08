@@ -6,7 +6,7 @@ Type `/` to open the command menu, then narrow it by typing. Use Tab or the
 arrow keys to choose. Enter accepts a selected completion; another Enter runs it.
 
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
-- `/config [diff | get KEY | set KEY VALUE | unset KEY]`: inspect or change saved
+- `/config [list | diff | path | get KEY | set KEY VALUE | unset KEY | reset | project ...]`: inspect or change saved
   settings from inside a session, with completion for setting names and values. See
   [Configuration](configuration.md#settings-reference).
 - `/bind` (or `/bind list`): list default, custom, and disabled prompt bindings;
@@ -344,8 +344,8 @@ It also hides in a pane shorter than `tasks_min_rows` (default 30) or narrower
 than `tasks_min_columns` (default 100), and returns when the pane grows back, so
 a split in either direction keeps the transcript readable. Each attached
 terminal checks its own pane. Ctrl+O shows it in a small pane anyway until the
-pane crosses the threshold again; `0` turns either check off. Both apply
-immediately through `/config`.
+pane crosses the threshold again; `0` turns either check off. `tasks_min_rows` and
+`tasks_min_columns` apply immediately through `/config`.
 
 By default the widget is attached to the top of the editor box
 (`attach_tasks=on`), with a divider between tasks and your draft. The running
@@ -631,7 +631,7 @@ acting on whichever pane has focus:
 Ctrl+D never closes a popup; it always half-pages. A list with a search line
 keeps these keys working while you type, so the query stays where it is.
 
-Popups with a search line (`/tools`, `/resume`, `/diffs`, `/links`) open with
+Popups with a search line (`/tools`, `/resume`, `/switch`, `/diffs`, `/links`) open with
 the cursor in it, so you can type to filter straight away. Each popup's
 shortcuts follow the [shortcut prefix](#shortcut-prefix) and act from any pane,
 the search line and the `/btw` editor included, so typing never triggers one.

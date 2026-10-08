@@ -31,6 +31,8 @@ def test_documented_defaults_match():
         cell = rows[key]
         if default is None:
             ok = cell.startswith(("unset", "`null`"))
+        elif default == "":
+            ok = cell == "empty"
         else:
             ok = cell.startswith(f"`{default}`")
         if not ok:

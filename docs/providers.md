@@ -27,7 +27,8 @@ For ordinary OpenAI API models, use `openai:<model-id>` with `OPENAI_API_KEY` in
 your environment. For Anthropic API models, use `anthropic:<model-id>` with
 `ANTHROPIC_API_KEY`; to use a Claude subscription instead, pick a
 [Claude Code model](#claude-code-provider). Use the exact model ID your account
-offers; pcode does not remap aliases. Every provider in the table below works with the default install.
+offers; pcode does not remap aliases. Every provider in the table below works with the default install except
+`claude:`, which needs the [`claude` extra](#claude-code-provider).
 
 ## Supported providers
 
@@ -159,7 +160,7 @@ pcode -m claude:claude-sonnet-5   # then /login claude if Claude Code is not sig
 ```
 
 The Claude Code CLI comes bundled, so you need neither Node.js nor a separate
-`claude` install. Because the bundle is large (about 215 MB installed), it is the
+`claude` install. Because the bundle is large (over 200 MB installed), it is the
 optional `claude` extra. The Homebrew formula and `make install` include it;
 elsewhere install `pcode[claude]`, for example
 `uv tool install --editable '.[claude]'` from a checkout. Without it, `claude:`

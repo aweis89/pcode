@@ -7,7 +7,7 @@ of [pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs
 and every tool call stays inspectable. It runs on any model
 [Pydantic AI](https://ai.pydantic.dev/) supports, or on your ChatGPT or Claude
 subscription (Claude through Anthropic's own Agent SDK and Claude Code login,
-the way Anthropic supports).
+the route Anthropic supports).
 
 ```sh
 brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git

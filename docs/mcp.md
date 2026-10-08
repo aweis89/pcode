@@ -88,8 +88,9 @@ a browser and a reachable local callback; there is no headless or device-code
 login.
 
 - Servers without dynamic client registration need a
-  [pre-registered client](#pre-registered-clients). pcode chooses the OAuth
-  scopes and the local callback port itself; neither can be set in `mcp.json`.
+  [pre-registered client](#pre-registered-clients). Scopes come from the
+  server's OAuth metadata and pcode picks the local callback port; neither can
+  be set in `mcp.json`.
 - **Sign-ins are saved** in `~/.config/pcode/mcp-credentials.json` (owner-only),
   keyed by server URL. Disabling and re-enabling, `/new`, resume, and restart
   reuse them, refreshing silently; the browser opens again only when the service

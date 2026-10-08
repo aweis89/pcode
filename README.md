@@ -43,22 +43,23 @@ uv tool install 'pcode[claude]'
 
 ```sh
 pcode -m claude:claude-sonnet-5              # Claude subscription; run /login claude if not signed in
-pcode -m openai-codex:gpt-5.6-luna           # ChatGPT subscription (/login openai-codex), or any API-key provider
-pcode                                        # reuses your last model; with none, an offline preview
+pcode -m openai-codex:gpt-5.6-luna           # ChatGPT subscription (/login openai-codex)
+pcode -m anthropic:claude-sonnet-5           # or any provider, with its API key set
+pcode                                        # reuses the model /model (Ctrl+L) saved; with none, an offline preview
 pcode -C /path/to/repo "Summarize the open TODOs"
 git diff | pcode -p --no-save                # non-interactive: reply to stdout
 pcode --continue                             # resume this directory's newest session
 pcode --theme-preview                        # offline sample output and the style gallery
 ```
 
-**Live mode edits files and runs shell commands with your permissions and no
+**The agent edits files and runs shell commands with your permissions and no
 approval prompt.** Read [tool permissions](https://cruxwell.github.io/pcode/tools/#tool-permissions)
 before pointing it at anything you care about.
 
 ## More
 
 - **Your subscription:** Claude runs through Anthropic's own Agent SDK and
-  Claude Code login, the way Anthropic supports, and ChatGPT through a Codex
+  Claude Code login (the route Anthropic supports), and ChatGPT through a Codex
   login. See [providers](https://cruxwell.github.io/pcode/providers/).
 - [Email remote control](https://cruxwell.github.io/pcode/email/): send a task
   from Gmail on your phone, reply to keep going, and take the session over at a

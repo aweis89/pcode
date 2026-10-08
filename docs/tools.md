@@ -17,7 +17,7 @@ Without the sandbox, this is what the agent can do without asking:
   protect.
 - **Read and write files anywhere the OS permits** with the file tools,
   including other worktrees, temporary directories and credential files such
-  as SSH keys. The only exception: files matching `.git/*`, `.env`, `.env.*`,
+  as SSH keys and pcode's own logins. The only exception: files matching `.git/*`, `.env`, `.env.*`,
   `*.pem`, `*.key` and `**/secrets*` are read-only through the file tools, at
   any depth. The shell is not bound by this.
 - **Call any tool you have enabled**: [MCP servers](mcp.md), the
@@ -99,10 +99,9 @@ can also edit by hand:
 ```
 
 `deny_read`, when present, replaces the default list, including the entries
-that hide pcode's own logins (`credentials.json` and `mcp-credentials.json` in
-the config directory), so copy those into your list if you want them kept
-unreadable. `"shell_sandbox": false`
-keeps the file-tool checks but runs shell commands unsandboxed. A file that
+that hide pcode's own logins (`credentials.json`, `mcp-credentials.json` and
+`codex-credentials.json` in the config directory), so copy those into your
+list if you want them kept unreadable. `"shell_sandbox": false` keeps the file-tool checks but runs shell commands unsandboxed. A file that
 isn't valid JSON blocks writes and shell commands until you fix it, rather than
 silently dropping the policy.
 
@@ -348,7 +347,7 @@ backend available:
 
 | | Search | Fetch a URL |
 | --- | --- | --- |
-| Model has a native tool (Anthropic, OpenAI) | provider runs it server-side | Anthropic runs it server-side |
+| Model has a native tool (`anthropic:` and OpenAI models; not `claude:`) | provider runs it server-side | Anthropic runs it server-side |
 | `EXA_API_KEY` set | Exa `web_search` | Exa `get_page` |
 | Otherwise | DuckDuckGo `web_search` | HTTP fetch `get_page`, converted to Markdown |
 
