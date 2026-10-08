@@ -50,16 +50,6 @@ class Pcode < Formula
     end
   end
 
-  def caveats
-    <<~EOS
-      meridian: models need Meridian, an npm package this formula does not install.
-      With Node.js installed, run:
-        pcode --upgrade-meridian
-      pcode then starts its own private Meridian. Details:
-        https://cruxwell.github.io/pcode/providers/#local-meridian-provider
-    EOS
-  end
-
   test do
     assert_match "--model", shell_output("#{bin}/pcode --help")
     assert_match "No saved sessions.",
