@@ -190,13 +190,18 @@ def test_released_jobs_are_adopted_though_their_owner_lives_on(tmp_path):
     root = tmp_path / "jobs"
     terminal = JobRegistry(state=lambda: root)
     terminal._home = root / "99999"  # Another process's, so this one may adopt.
+    until_finished(terminal, terminal.launch(command("pass"), cwd=tmp_path))
     live = terminal.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
     released = terminal.release()
     assert released is not None and terminal.jobs == {}
     assert JobRegistry(state=lambda: root).release() is None  # Nothing running: nothing to do.
     host = JobRegistry(state=lambda: root)
+    host.launch(command("pass"), cwd=tmp_path)  # j1 is taken here; the job was j2.
     adopted = host.adopt_orphans()
     assert [job.command for job in adopted] == [live.command]
+    # Under the id the conversation knows it by, and later launches count on from it.
+    assert adopted[0].id == live.id == "j2"
+    assert host.launch(command("pass"), cwd=tmp_path).id == "j3"
     # Too late to take back; and the terminal's next job gets a directory of its own.
     terminal.reclaim(released)
     assert terminal.jobs == {}

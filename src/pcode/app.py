@@ -9,7 +9,7 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Callable
-from contextlib import ExitStack, aclosing, asynccontextmanager, nullcontext, suppress
+from contextlib import ExitStack, aclosing, asynccontextmanager, nullcontext
 from pathlib import Path
 
 from prompt_toolkit.application import get_app
@@ -197,6 +197,10 @@ class PreviewApp:
         self.detach_requested = False
         # `/detach` in a session running here: move it into a host first.
         self.handoff_requested = False
+        # Set once a host owns this terminal's in-process session.
+        self.moved_to_host = False
+        # The editor's Enter, so what was typed during a move reaches the host.
+        self._submit_typed: Callable[[str], None] | None = None
         # The host this terminal showed before the current one, for `/switch -`.
         self.previous_host: str | None = None
         # Its conversation, to resume should that host have stopped meanwhile.
@@ -1383,14 +1387,18 @@ class PreviewApp:
         jobs = getattr(runtime, "jobs", None)
         # Both before the host starts: it takes the session's lock, and adopts
         # jobs while it boots.
+        # A title still being asked for would be written beside the host's own.
+        await self.controller.stop_naming()
         released = jobs.release() if jobs is not None else None
         saved.close()
         wait = self.activity.begin_wait("Moving this session to a background host")
         process = None
+        let_go = False
         try:
             if is_open(saved.directory):
                 # A lock is per thread: one taken on another thread is still held.
                 raise SessionError("This session's lock could not be handed to a host.")
+            let_go = True
             identity, process, log = await asyncio.to_thread(
                 spawn_host,
                 model=self.model,
@@ -1399,14 +1407,23 @@ class PreviewApp:
                 session_dir=self.session_dir,
             )
             controller, welcome = await wait_for_host(identity, self, self.activity, process, log)
+            # From here the host owns the session: an exit before this terminal
+            # shows it must leave its worktree to it.
+            self.moved_to_host = True
         except BaseException as error:
             if process is not None and process.poll() is None:
                 # Killed, never stopped: a stopped host tidies the worktree
                 # this session is still working in.
                 process.kill()
                 await asyncio.to_thread(process.wait)
-            with suppress(Timeout):  # Held on another thread: never let go of, then.
+            try:
                 saved.lock.acquire(timeout=0)
+            except Timeout:
+                if let_go:
+                    self.transcript.warning(
+                        "Another process opened this session meanwhile; turns here no "
+                        "longer save safely. Quit, then `pcode --continue` it."
+                    )
             if released is not None:
                 jobs.reclaim(released)
             if not isinstance(error, Exception):
@@ -1607,6 +1624,8 @@ class PreviewApp:
         /resume or `pcode -c`); another host keeps running.
         """
         previous = self.controller
+        # Typed while it moved: meant for the session, which now runs there.
+        typed = previous.take_typed() if handed_off else []
         if isinstance(previous, SessionController):
             # Handed off: the host now runs that same conversation.
             if not handed_off and (saved := getattr(previous.runtime, "session", None)):
@@ -1625,6 +1644,7 @@ class PreviewApp:
             # Only now, while this terminal reads `running` from the new one:
             # the loop running this command ends once it has finished.
             previous.running = False
+            previous.superseded = True
         controller.on_closed = self.host_closed
         if forked := welcome.get("forked_from"):
             note += f" · continuing a copy of {forked}"
@@ -1647,6 +1667,9 @@ class PreviewApp:
             with self.transcript.restore():
                 self.transcript.retained_note(note)
         await controller.start(welcome)
+        if self._submit_typed is not None:
+            for text in typed:
+                self._submit_typed(text)
         if self._host_watch is not None:
             self._host_watch()
         self.redraw()
@@ -2252,6 +2275,7 @@ class PreviewApp:
             else:
                 self.controller.submit(text, mode)
 
+        self._submit_typed = submit
         session = create_prompt(
             self.registry,
             activity=self.activity,
@@ -3185,8 +3209,8 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.print and args.attach is not None:
         _print_hosted(args, parser)
         return
-    # Every interactive session with a model runs in a background host unless
-    # asked not to; the canned preview (no model) has nothing to host.
+    # A session runs in a background host when asked (--host, session_host on);
+    # the canned preview (no model) has nothing to host.
     has_model = bool(args.model or args.resume or load_preferences().get("model"))
     hosted = args.attach is not None or (
         has_model
@@ -3293,7 +3317,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         else:
             app.run()
             # `is True`: tests stand a Mock in for the app, which answers every attribute.
-            if app.hosted is True:
+            if app.hosted is True or app.moved_to_host is True:
                 # Moved to a host meanwhile (/detach, /switch): leave as a hosted terminal does.
                 _leave_host(app)
             else:

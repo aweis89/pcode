@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from io import StringIO
 from pathlib import Path
@@ -995,11 +996,19 @@ def local_app(tmp_path: Path, script: Script, output: StringIO) -> PreviewApp:
 def test_detach_moves_a_session_running_here_into_a_host_and_stays_on_it(tmp_path, host_dir):
     async def run():
         output = StringIO()
-        app = local_app(tmp_path, Script(), output)
+        script = Script()
+        app = local_app(tmp_path, script, output)
         hosts: list[SessionHost] = []
         loop = asyncio.get_running_loop()
+        typed = threading.Event()
 
         def spawn_host(*, model, workspace, resume, session_dir):
+            # Typed while it moves: lands in this terminal's own queue first.
+            loop.call_soon_threadsafe(pipe.send_text, "typed meanwhile\r")
+            loop.call_soon_threadsafe(
+                lambda: loop.call_later(0.2, typed.set)  # Time to reach the queue.
+            )
+            typed.wait(5)
             # Opens the session as the real host does: refused if the terminal still held it.
             saved = SavedSession.open(resume, session_dir)
             host = asyncio.run_coroutine_threadsafe(
@@ -1023,9 +1032,18 @@ def test_detach_moves_a_session_running_here_into_a_host_and_stays_on_it(tmp_pat
                     pipe.send_text("hello here\r")
                     await seen("Echo: hello here")
                     await until(lambda: not app.activity.busy)
+                    pipe.send_text("hang here\r")
+                    await until(lambda: "hang here" in script.gates)
+                    pipe.send_text("/detach\r")
+                    await seen("so what it is doing can't move")
+                    script.release("hang here")
+                    await seen("Finished.")
+                    await until(lambda: not app.activity.busy)
                     session_id = app.runtime.session.info.id
                     pipe.send_text("/detach\r")
                     await seen("Moved to background session cccc3333")
+                    # What was typed during the move went to the host, not lost.
+                    await seen("Echo: typed meanwhile")
                     assert app.hosted and app.runtime.session_id == session_id
                     assert "left " not in output.getvalue(), "the host runs that same session"
                     pipe.send_text("hello there\r")

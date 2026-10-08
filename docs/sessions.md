@@ -12,9 +12,10 @@ terminal only draws it. The terminal stays on it, and from then on it can
 leave, switch to another session, or close, and the work carries on.
 
 - `/detach` moves the conversation, its worktree and its running background
-  commands. It waits for the session to be idle: a turn, command or side
-  question in progress can't move, so let it finish or cancel it first. A
-  session needs its first prompt (which saves it) before it can move.
+  commands (they keep their IDs). It refuses while a turn, command or side
+  question is in progress, which can't move: let it finish or cancel it first.
+  A session needs its first prompt (which saves it) before it can move.
+  Anything you type while it moves goes to the host once it is there.
 - Once it is in a host, `/detach` again (or closing the terminal) quits and
   leaves the host running for `pcode --attach`.
 - `pcode --host` (or `session_host on`) starts every session in a host instead,
@@ -68,7 +69,7 @@ Inside a hosted session:
   [goes idle](#idle-hosts-stop).
 
 From a session running in its terminal, `/switch` works too, but showing
-another session ends this one (its turn too, so it waits for one in progress);
+another session ends this one (so it refuses while a turn is in progress);
 `/resume` and `pcode --continue` bring it back.
 
 ### Scripting a running host

@@ -275,15 +275,13 @@ class JobRegistry:
 
     def reclaim(self, released: "Released") -> None:
         """Take back what `release` let go, unless another pcode adopted it meanwhile."""
-        try:
-            record = json.loads((released.home / "registry.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return  # Adopted: the adopter removes the record.
-        if record.get("owner_pid") is not None or self.jobs:
-            return
+        if self.jobs or self._home is not None or _claim(released.home) is None:
+            return  # Adopted, or this process has moved on to a directory of its own.
         self.jobs, self._home = released.jobs, released.home
         self._released -= 1
         self._save()
+        for claimed in released.home.glob("registry.claimed-*.json"):
+            claimed.unlink(missing_ok=True)
 
     def adopt_orphans(self) -> list[Job]:
         """Take over the running jobs of pcode processes that are gone.
@@ -309,10 +307,12 @@ class JobRegistry:
             owner = record.get("owner_pid") if isinstance(record, dict) else None
             if isinstance(owner, int) and _alive(owner):
                 continue
+            if (record := _claim(home)) is None:
+                continue  # Another pcode took them first.
             entries = record.get("jobs", {})
             kept = set()
-            for entry in entries.values() if isinstance(entries, dict) else ():
-                job = self._adopt(entry)
+            for identity, entry in entries.items() if isinstance(entries, dict) else ():
+                job = self._adopt(entry, identity)
                 if job is not None:
                     adopted.append(job)
                     kept.add(job.directory.resolve())
@@ -326,7 +326,11 @@ class JobRegistry:
             self._save()
         return adopted
 
-    def _adopt(self, entry: object) -> Job | None:
+    def _adopt(self, entry: object, identity: str = "") -> Job | None:
+        """A running job from another pcode's record, under its old id if that is free.
+
+        The old id is what the conversation that started it knows it by.
+        """
         if not isinstance(entry, dict):
             return None
         try:
@@ -338,9 +342,16 @@ class JobRegistry:
             return None
         if not directory.is_dir() or not _alive(supervisor_pid):
             return None
-        self._counter += 1
+        counter = self._counter
+        number = identity[1:] if identity.startswith("j") else ""
+        if number.isdigit() and identity not in self.jobs:
+            # Later launches count on from it, so never reuse it.
+            self._counter = max(self._counter, int(number))
+        else:
+            self._counter += 1
+            identity = f"j{self._counter}"
         job = Job(
-            id=f"j{self._counter}",
+            id=identity,
             command=command,
             directory=directory,
             supervisor_pid=supervisor_pid,
@@ -353,7 +364,7 @@ class JobRegistry:
         status = self._read_status(job)
         if status is not None:
             if status.get("exit_code") is not None:
-                self._counter -= 1
+                self._counter = counter
                 return None
             job.pid = status.get("pid")
         self.jobs[job.id] = job
@@ -569,6 +580,21 @@ class Released:
 
     home: Path
     jobs: dict[str, Job]
+
+
+def _claim(home: Path) -> dict | None:
+    """Take a published record for this process, or None if another got there first.
+
+    A rename is atomic, so of two processes reading the same record only one
+    goes on to own its jobs.
+    """
+    claimed = home / f"registry.claimed-{os.getpid()}.json"
+    try:
+        os.rename(home / "registry.json", claimed)
+        record = json.loads(claimed.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
 
 
 def _publish(home: Path, owner: int | None, jobs: dict[str, Job]) -> None:
