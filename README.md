@@ -1,12 +1,17 @@
-<img width="1512" height="947" alt="pcode running in a terminal" src="https://github.com/user-attachments/assets/a648fede-d703-44ef-8b52-895d3a0cd2af" />
-<img width="1360" alt="pcode fixing a bug: a word-level diff of the edit, then a worker sub-agent reviewing it with its own plan nested under the task list" src="https://raw.githubusercontent.com/cruxwell/pcode/master/docs/assets/screenshots/readme.png" />
+<img width="1416" height="1280" alt="Screenshot 2026-10-08 at 2 09 46 PM" src="https://github.com/user-attachments/assets/f102ffbc-818f-4367-860b-fe5749f3bb46" />
+
+<img width="1686" height="1278" alt="Screenshot 2026-10-08 at 2 02 33 PM" src="https://github.com/user-attachments/assets/503b10e6-849a-473b-afcc-fb4d8234973f" />
 
 # pcode
 
-pcode is a terminal-native coding agent built for long-running and parallel
-work. Background commands wake the agent when they finish, every session can
-use its own git worktree, conversations can be rewound and forked, and every
-tool call stays inspectable.
+pcode is a terminal-native coding agent that lets you change what's visible in
+your scrollback, even after the work is done. Expand commands, output, and diffs
+when you need the details; hide them when you want to read the conversation.
+The same history, with the detail you choose.
+
+Long-running commands continue in the background and wake the agent when they
+finish. Run sessions in separate git worktrees, or rewind and branch a
+conversation to try another approach.
 
 - **Slow work doesn't block you.** Long commands become background jobs, and a
   finished job wakes the agent, so it can watch tests or CI and fix what fails.
@@ -14,8 +19,9 @@ tool call stays inspectable.
   on one repo at once.
 - **Rewind and fork.** `/tree` returns to any point in a conversation and
   branches from there. Every session is kept, so you can resume or search it.
-- **Nothing hidden.** `/tools` shows every command the agent ran and its full
-  output, and scrollback re-renders to show or fold every command and diff.
+- **Change your view, not your history.** Show or hide commands, output, and
+  diffs throughout the conversation. Hidden output stays available, and `/tools`
+  lets you inspect every tool call and its full output.
 
 It runs on any model [Pydantic AI](https://ai.pydantic.dev/) supports, or on
 your Claude or ChatGPT subscription.

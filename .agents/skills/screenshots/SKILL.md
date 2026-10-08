@@ -20,10 +20,11 @@ make screenshots SCENES=review ARGS=--iterm   # tmp/screenshots/, in your iTerm2
 make screenshot-live SCENE=review      # play it in this terminal; screenshot it yourself
 ```
 
-The docs SVGs use Rich's dark terminal theme. `--iterm` reads the profile
-named by `$ITERM_PROFILE` from iTerm2's plist (its `(Light)`/`(Dark)` colors
-per the current macOS appearance), sets pcode's `theme` to match the
-background, and writes to `tmp/screenshots/` unless given `--out`. `--png` also
+The docs SVGs use Rich's dark terminal theme. `--iterm` takes the colors of
+the iTerm2 session you run it from, asked of iTerm2 itself (AppleScript), so
+Dynamic Profiles and built-in presets come out as you see them; the progress
+bar's style comes from that session's profile. It sets pcode's `theme` to
+match the background, and writes to `tmp/screenshots/` unless given `--out`. `--png` also
 renders each shot as a 2x PNG in headless Chrome (`CHROME` overrides the
 binary). The README's `docs/assets/screenshots/readme.png` is `--iterm --png
 review` output, copied by hand, so `make screenshots` never refreshes it. It is
@@ -39,6 +40,18 @@ report pcode sent, as `iterm.py` copies iTerm2's drawing. iTerm2's default style
 otherwise, the profile's `Progress Bar Color Scheme` and `Height` with
 `--iterm`. `--live` passes the reports through to your terminal's real bar,
 except from inside your own tmux, which drops them.
+
+A scene with `TABS` (`scenes/tabs.py`) is several sessions at once, one per
+tab, each a short named turn and then the turn left where the shot wants it.
+It is shot as a real iTerm2 window, not an SVG, so `make screenshots` skips it:
+`iterm_window.py` opens each tab with `run.py --live --tab`, in the profile of
+the tab you run it from (`--profile` picks another), waits until every tab has
+played and shows its title, then captures the window with `screencapture`.
+That needs Screen Recording permission for your terminal; without it the script
+waits for you to take the shot (Cmd-Shift-4, Space, click the window). The docs
+keep a light and a dark capture (`tabs-light.png`, `tabs-dark.png`), shown per
+the reader's theme with `#only-light`/`#only-dark`. iTerm2 starts a tab's
+command with a bare PATH, so its launcher exports yours.
 
 Each `("shot", name)` step writes `docs/assets/screenshots/<name>.svg`. You
 can't look at an SVG, so run with `--text` and read the plain-text dump to

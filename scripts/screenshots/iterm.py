@@ -1,14 +1,18 @@
-"""The colors of the iTerm2 profile this terminal is using, for `run.py --iterm`.
+"""The colors of the iTerm2 session this terminal is, for `run.py --iterm`.
 
-iTerm2 keeps profiles in its preferences plist. A profile with "Use Separate
-Colors for Light and Dark Mode" holds both sets under `(Light)` and `(Dark)`
-keys, so the set shown is whichever macOS appearance is active now.
+Colors are read from the running session itself (AppleScript, by
+$ITERM_SESSION_ID), so they are what you see whatever produced them: a
+profile's Light/Dark sets, a Dynamic Profile inheriting iTerm2's built-in
+presets, or colors changed for just this session. The progress bar's style
+is a profile setting with no AppleScript property, so it comes from the
+profile, in iTerm2's preferences plist or a Dynamic Profile's JSON, falling
+back to iTerm2's defaults.
 
-Not covered: Dynamic Profiles (not in the plist), iTerm2's own Light/Dark theme
-override (the system appearance is read instead), and preferences loaded from a
-custom folder.
+Without a session to ask (not in iTerm2, or AppleScript refused), colors come
+from the profile in the plist instead, which misses Dynamic Profiles.
 """
 
+import json
 import os
 import plistlib
 import subprocess
@@ -18,6 +22,15 @@ from pathlib import Path
 from rich.terminal_theme import TerminalTheme
 
 PLIST = Path.home() / "Library/Preferences/com.googlecode.iterm2.plist"
+DYNAMIC = Path.home() / "Library/Application Support/iTerm2/DynamicProfiles"
+ANSI = ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
+# A stuck AppleScript call (say, an Automation prompt nobody answers) gives up.
+OSASCRIPT_TIMEOUT = 15
+
+
+def quoted(text: str) -> str:
+    """`text` as an AppleScript string literal."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def macos_appearance() -> str:
@@ -28,16 +41,74 @@ def macos_appearance() -> str:
     return "dark" if "Dark" in found.stdout else "light"
 
 
-def _profile(prefs: dict) -> dict:
-    """$ITERM_PROFILE (set in every iTerm2 session) by name, else the default profile."""
-    profiles = prefs.get("New Bookmarks", [])
-    name = os.environ.get("ITERM_PROFILE")
-    default = prefs.get("Default Bookmark Guid")
+def session_colors() -> tuple[str, list[tuple[int, int, int]]] | None:
+    """This session's profile name and its live colors, or None.
+
+    Colors are background, foreground, then the 16 ANSI colors.
+    """
+    session = os.environ.get("ITERM_SESSION_ID", "").partition(":")[2]
+    if not session:
+        return None
+    names = [
+        "background color",
+        "foreground color",
+        *(f"ANSI {name} color" for name in ANSI),
+        *(f"ANSI bright {name} color" for name in ANSI),
+    ]
+    properties = ", ".join(f"{name} of s" for name in names)
+    wanted = f"{{{properties}, profile name of s}}"
+    # Only while iTerm2 runs: a stale session id must not launch it.
+    script = f"""
+if application "iTerm2" is running then
+    tell application "iTerm2"
+        repeat with w in windows
+            repeat with t in tabs of w
+                repeat with s in sessions of t
+                    if unique ID of s is {quoted(session)} then return {wanted}
+                end repeat
+            end repeat
+        end repeat
+    end tell
+end if"""
+    try:
+        found = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=OSASCRIPT_TIMEOUT
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    # osascript flattens the list to one comma-separated line. The colors are
+    # numbers; the profile name, last, may hold commas of its own.
+    *values, name = found.stdout.rstrip("\n").split(", ", 3 * len(names))
+    try:
+        # AppleScript colors are 16-bit components.
+        numbers = [round(int(value) / 65535 * 255) for value in values]
+    except ValueError:
+        return None
+    if found.returncode or len(numbers) != 3 * len(names):
+        return None
+    return name, [tuple(numbers[i : i + 3]) for i in range(0, len(numbers), 3)]
+
+
+def _profiles() -> tuple[list[dict], str | None]:
+    """Every profile iTerm2 has, plist then Dynamic Profiles, and the default's GUID."""
+    profiles, default = [], None
+    if PLIST.exists():
+        with PLIST.open("rb") as file:
+            prefs = plistlib.load(file)
+        profiles, default = list(prefs.get("New Bookmarks", [])), prefs.get("Default Bookmark Guid")
+    for path in sorted(DYNAMIC.glob("*")) if DYNAMIC.is_dir() else []:
+        try:
+            profiles += json.loads(path.read_text()).get("Profiles", [])
+        except (OSError, ValueError, AttributeError):
+            continue  # iTerm2 also takes plists here; those are not read
+    return profiles, default
+
+
+def _profile(name: str | None) -> dict:
+    """The profile called `name`, else the default profile, else {}."""
+    profiles, default = _profiles()
     key, wanted = ("Name", name) if name else ("Guid", default)
-    for profile in profiles:
-        if profile.get(key) == wanted:
-            return profile
-    raise LookupError(f"no iTerm2 profile {name or 'default'!r} in {PLIST}")
+    return next((p for p in profiles if p.get(key) == wanted), {})
 
 
 @dataclass
@@ -51,13 +122,8 @@ class Look:
     dark: bool = True  # the window's appearance, which picks the default bar colors
 
 
-def profile_look() -> Look:
-    """The current profile's colors and progress bar style."""
-    if not PLIST.exists():
-        raise LookupError(f"{PLIST} not found: --iterm needs iTerm2")
-    with PLIST.open("rb") as file:
-        profile = _profile(plistlib.load(file))
-    mode = macos_appearance()
+def _plist_colors(profile: dict, mode: str) -> list[tuple[int, int, int]]:
+    """Background, foreground and ANSI colors as the profile stores them."""
     separate = profile.get("Use Separate Colors for Light and Dark Mode")
     suffix = f" ({mode.title()})" if separate else ""
 
@@ -67,15 +133,26 @@ def profile_look() -> Look:
             raise LookupError(f"iTerm2 profile {profile.get('Name')!r} has no {key!r}")
         # Components are 0..1 floats; the color space (sRGB, P3, calibrated)
         # is ignored, which is close enough for a screenshot.
-        return tuple(round(value[f"{c} Component"] * 255) for c in ("Red", "Green", "Blue"))
+        return tuple(round(float(value[f"{c} Component"]) * 255) for c in ("Red", "Green", "Blue"))
 
-    background = color("Background Color")
-    theme = TerminalTheme(
-        background,
-        color("Foreground Color"),
-        [color(f"Ansi {n} Color") for n in range(8)],
-        [color(f"Ansi {n} Color") for n in range(8, 16)],
-    )
+    keys = ["Background Color", "Foreground Color", *(f"Ansi {n} Color" for n in range(16))]
+    return [color(key) for key in keys]
+
+
+def profile_look() -> Look:
+    """This session's colors and its profile's progress bar style."""
+    mode = macos_appearance()
+    live = session_colors()
+    name = live[0] if live else os.environ.get("ITERM_PROFILE")
+    profile = _profile(name)
+    if live:
+        colors = live[1]
+    elif profile:
+        colors = _plist_colors(profile, mode)
+    else:
+        raise LookupError(f"no iTerm2 session or profile {name or 'default'!r} to read colors from")
+    background, foreground, ansi = colors[0], colors[1], colors[2:]
+    theme = TerminalTheme(background, foreground, ansi[:8], ansi[8:])
     # pcode's palette follows the background, as `theme auto` would.
     luminance = 0.2126 * background[0] + 0.7152 * background[1] + 0.0722 * background[2]
     return Look(
@@ -83,7 +160,9 @@ def profile_look() -> Look:
         palette="light" if luminance > 128 else "dark",
         bar_scheme=profile.get("Progress Bar Color Scheme", "default"),
         bar_height=float(profile.get("Progress Bar Height", 2.0)),
-        dark=mode == "dark",
+        # The bar's default colors follow the window's appearance, which the
+        # session's own colors show better than macOS's setting when known.
+        dark=luminance <= 128 if live else mode == "dark",
     )
 
 
