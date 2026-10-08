@@ -13,9 +13,9 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai_harness.step_persistence import ContinuableSnapshot, SqliteStepStore
+from pydantic_ai_harness.step_persistence import ContinuableSnapshot
 
-from pcode.sessions import SessionInfo
+from pcode.sessions import PrivateStepStore, SessionInfo
 from pcode.shell import REDUCED_SHELL_OUTPUT
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "shell_report.py"
@@ -46,7 +46,7 @@ def write_session(root: Path, identity: str, calls: list[tuple[str, dict, str]])
         packages={},
     )
     (directory / "session.json").write_text(info.model_dump_json())
-    store = SqliteStepStore(database=directory / "steps.sqlite3")
+    store = PrivateStepStore(database=directory / "steps.sqlite3")
     history: list = [ModelRequest(parts=[UserPromptPart(content="start")])]
 
     async def build() -> None:

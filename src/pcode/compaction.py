@@ -384,10 +384,13 @@ class AutoCompaction(AbstractCapability):
         # to the running turn's next request, not only the next turn.
         if not self.runtime.auto_compact:
             return request_context
+        # A plain copy: the before-chain's list mirrors appends into the run's
+        # history, and copying it (deep or not) would go through those appends.
+        messages = list(request_context.messages)
         # Preserve the settled boundary even if summarization fails/cancels. In
         # --no-save mode there is no StepPersistence recovery to do this for us.
-        if not self.runtime.session and is_provider_valid(request_context.messages):
-            self.context.history = deepcopy(request_context.messages)
+        if not self.runtime.session and is_provider_valid(messages):
+            self.context.history = deepcopy(messages)
         from pcode.model_metadata import refresh_context
 
         await refresh_context(request_context.model)
@@ -405,16 +408,14 @@ class AutoCompaction(AbstractCapability):
         if limit := self.runtime.auto_compact_limit:
             threshold = min(threshold, limit)
             window = min(window, limit)
-        before = context_estimate(
-            request_context.messages, request_context.model_request_parameters
-        )
+        before = context_estimate(messages, request_context.model_request_parameters)
         if before < threshold:
             return request_context
         self.runtime.compaction_notice("Compacting context automatically…")
         usage = RunUsage()
         try:
             result = await summarize(
-                request_context.messages,
+                messages,
                 model=request_context.model,
                 usage=usage,
                 window=window,
@@ -452,6 +453,10 @@ class AutoCompaction(AbstractCapability):
                 "auto_compacted", run_id=self.run_id, before=before, after=result.after
             )
         self.context.history = deepcopy(result.messages)
-        request_context.messages = result.messages
+        # The run's history, not only this request: a before-hook's returned
+        # request no longer replaces it, and an uncompacted history would
+        # trigger compaction again on every later request of the turn.
+        ctx.messages[:] = result.messages
+        request_context.messages = list(result.messages)
         self.runtime.compaction_notice(result.description())
         return request_context

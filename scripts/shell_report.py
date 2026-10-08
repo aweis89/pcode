@@ -30,6 +30,7 @@ from pcode.sessions import (  # noqa: E402
     read_info,
     resolve_session,
     session_root,
+    snapshot_messages_json,
 )
 from pcode.shell import REDUCED_SHELL_OUTPUT, preview_text  # noqa: E402
 
@@ -150,7 +151,7 @@ def _messages(database: Path):
     try:
         query = "SELECT messages FROM snapshots WHERE parent_run_id IS NULL ORDER BY seq"
         for (raw,) in connection.execute(query):
-            yield json.loads(raw)
+            yield json.loads(snapshot_messages_json(connection, raw))
     except sqlite3.DatabaseError as error:
         raise SessionError(f"Unreadable step store: {error}") from None
     finally:

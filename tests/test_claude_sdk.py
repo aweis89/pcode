@@ -546,7 +546,7 @@ def test_input_written_while_parked_joins_the_tool_results(world):
         async def before_model_request(self, ctx, request_context):
             last = request_context.messages[-1]
             if any(isinstance(p, ToolReturnPart) for p in last.parts):
-                append_reminder(request_context, "<steer>", "<steer> say hi")
+                append_reminder(ctx, request_context, "<steer>", "<steer> say hi")
             return request_context
 
     agent, _ = make_agent(capabilities=[Reminder()])

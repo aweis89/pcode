@@ -56,6 +56,9 @@ def main() -> None:
         from pcode.completion import print_candidates
 
         sys.exit(print_candidates(sys.argv[2:]))
+    from pcode.proctitle import rename
+
+    rename()
     with ExitStack() as stack:
         _startup = stack
         _quiet_stdin(stack)

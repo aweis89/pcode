@@ -1,7 +1,19 @@
 """Deliver pending steering between model requests; never skip tools."""
 
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.messages import UserPromptPart
+from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+
+def run_request(ctx, request_context) -> ModelRequest:
+    """The step's request as the run's history holds it, for parts that must persist.
+
+    The request being sent can end in a message only it carries (Harness's
+    near-limit warning appends one), and a before-hook's request is not written
+    back to history, so a part added to that message would be sent once and lost.
+    The history's own request is in the request list too, so it is still sent.
+    """
+    last = ctx.messages[-1] if ctx.messages else None
+    return last if isinstance(last, ModelRequest) else request_context.messages[-1]
 
 
 class Steering(AbstractCapability):
@@ -14,7 +26,7 @@ class Steering(AbstractCapability):
         # Append to the framework's request so tool results remain ahead of the
         # new user input and the input is included in persisted message history.
         for text in self.take_messages():
-            request_context.messages[-1].parts.append(UserPromptPart(text))
+            run_request(ctx, request_context).parts.append(UserPromptPart(text))
         return request_context
 
 

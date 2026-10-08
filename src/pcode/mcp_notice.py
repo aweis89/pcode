@@ -87,5 +87,5 @@ class MCPServers(AbstractCapability):
         servers = tuple(_servers.get()().items())
         # "None enabled" only retracts an earlier list; it is never news on its own.
         if servers or last_reminder(request_context.messages, TAG):
-            append_reminder(request_context, TAG, render(servers, _unavailable.get()))
+            append_reminder(ctx, request_context, TAG, render(servers, _unavailable.get()))
         return request_context

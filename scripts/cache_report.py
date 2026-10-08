@@ -23,7 +23,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pcode.sessions import SessionError, list_sessions, resolve_session, session_root  # noqa: E402
+from pcode.sessions import (  # noqa: E402
+    SessionError,
+    list_sessions,
+    resolve_session,
+    session_root,
+    snapshot_messages_json,
+)
 
 PLAN_TAG = "<plan-reminder>"
 # Request parts Pydantic AI hoists ahead of the rest when it merges requests.
@@ -113,7 +119,7 @@ def _snapshots(database: Path, *, delegated: bool | None = None) -> Iterator[lis
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
         for (raw,) in connection.execute(f"{query} ORDER BY seq"):
-            yield json.loads(raw)
+            yield json.loads(snapshot_messages_json(connection, raw))
     except sqlite3.DatabaseError as error:
         raise SessionError(f"Unreadable step store: {error}") from None
     finally:

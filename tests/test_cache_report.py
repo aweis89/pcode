@@ -16,9 +16,9 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.usage import RequestUsage
-from pydantic_ai_harness.step_persistence import ContinuableSnapshot, SqliteStepStore
+from pydantic_ai_harness.step_persistence import ContinuableSnapshot
 
-from pcode.sessions import SessionInfo
+from pcode.sessions import PrivateStepStore, SessionInfo
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "cache_report.py"
 _spec = importlib.util.spec_from_file_location("cache_report", SCRIPT)
@@ -74,7 +74,7 @@ def write_session(
     directory = root / identity
     directory.mkdir(parents=True)
     write_info(directory, identity)
-    store = SqliteStepStore(database=directory / "steps.sqlite3")
+    store = PrivateStepStore(database=directory / "steps.sqlite3")
     history: list = [ModelRequest(parts=[UserPromptPart(content="start")])]
     for reminder in reminders:
         history.append(ModelRequest(parts=[UserPromptPart(content=reminder)]))
@@ -123,7 +123,7 @@ def test_healthy_session_passes_and_regression_fails(tmp_path):
 def test_delegated_runs_are_scored_separately(tmp_path):
     """A sub-agent's history is a different conversation sharing the same store."""
     directory = write_session(tmp_path, "fffffff6", healthy=True)
-    store = SqliteStepStore(database=directory / "steps.sqlite3")
+    store = PrivateStepStore(database=directory / "steps.sqlite3")
     history: list = [ModelRequest(parts=[UserPromptPart(content="task")])]
 
     async def build() -> None:
@@ -168,7 +168,7 @@ def test_duplicate_plan_reminders_are_reported(tmp_path):
 
 def count_rewrites(tmp_path: Path, *snapshots: list) -> int:
     database = tmp_path / "steps.sqlite3"
-    store = SqliteStepStore(database=database)
+    store = PrivateStepStore(database=database)
 
     async def build() -> None:
         for index, messages in enumerate(snapshots):
@@ -242,7 +242,7 @@ def test_short_session_is_not_reported_as_a_regression(tmp_path):
     directory = tmp_path / "eeeeeee5"
     directory.mkdir()
     write_info(directory, "eeeeeee5", model="test")
-    store = SqliteStepStore(database=directory / "steps.sqlite3")
+    store = PrivateStepStore(database=directory / "steps.sqlite3")
     messages = [
         ModelRequest(parts=[UserPromptPart(content="hi")]),
         response(0, read=0, write=0, total=100),
