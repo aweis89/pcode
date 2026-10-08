@@ -5,7 +5,9 @@ The console script is a shebang file, so the kernel runs it as
 default tab title appends the foreground job as `(python3)`, and it reads that
 job from argv[0] in the process's own memory (sysctl KERN_PROCARGS2), as `ps`
 does. Rewriting those bytes in place, the way setproctitle does, renames the
-job without a re-exec or a compiled dependency.
+job without a re-exec or a compiled dependency. argv[0] becomes the script's
+own path: iTerm2 shows only its basename, and `ps` still tells which install
+(or worktree) a session runs.
 """
 
 import ctypes
@@ -14,7 +16,7 @@ import sys
 
 
 def rename(name: str = "pcode") -> bool:
-    """Rewrite the C argv as `name` plus the user's arguments; True if done.
+    """Drop the interpreter from the C argv, leaving the `name` script; True if done.
 
     Only for the console script on macOS: elsewhere (pytest, `python -m`) the
     C argv belongs to some other command line, and Linux terminals name tabs
@@ -26,7 +28,7 @@ def rename(name: str = "pcode") -> bool:
     if len(orig) < 2 or orig[1] != sys.argv[0] or os.path.basename(sys.argv[0]) != name:
         return False
     try:
-        return _overwrite([name, *orig[2:]])
+        return _overwrite(orig[1:])
     except (OSError, AttributeError, ValueError):
         return False
 
@@ -46,9 +48,13 @@ def _overwrite(args: list[str]) -> bool:
         if not argv[i] or argv[i] != end:
             return False
         end += len(ctypes.string_at(argv[i])) + 1
-    title = b"".join(os.fsencode(arg) + b"\0" for arg in args)
+    # Readers find the environment that follows by counting argc NULs, so the
+    # count must still end where the strings did: the spare bytes go in front,
+    # where readers already skip the exec path's alignment NULs, and the
+    # argument dropped becomes an empty one at the end, which they skip too.
+    strings = b"".join(os.fsencode(arg) + b"\0" for arg in args)
+    title = strings + b"\0" * (argc - len(args))
     if len(title) > end - start:
         return False
-    # Leftover bytes become empty arguments, which ps and iTerm2 skip.
-    ctypes.memmove(start, title.ljust(end - start, b"\0"), end - start)
+    ctypes.memmove(start, title.rjust(end - start, b"\0"), end - start)
     return True
