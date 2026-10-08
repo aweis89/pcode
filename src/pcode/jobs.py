@@ -176,6 +176,9 @@ class JobRegistry:
         # tests change after the process-wide registry has been created.
         self._state = state
         self._home: Path | None = None
+        # Directories this process has handed to others (`release`): the next
+        # one gets a new name, so it never republishes jobs adopted elsewhere.
+        self._released = 0
         self._counter = 0
         self._waited: set[str] = set()
         # Jobs sent SIGTERM, by the time they get SIGKILL instead.
@@ -240,7 +243,8 @@ class JobRegistry:
         if self._state is None:
             return None
         if self._home is None:
-            self._home = self._state() / str(os.getpid())
+            name = str(os.getpid())
+            self._home = self._state() / (f"{name}-{self._released}" if self._released else name)
         self._home.mkdir(parents=True, exist_ok=True)
         return self._home
 
@@ -250,15 +254,36 @@ class JobRegistry:
 
     def _save(self) -> None:
         home = self._directory()
-        if home is None:
+        if home is not None:
+            _publish(home, os.getpid(), self.jobs)
+
+    def release(self) -> "Released | None":
+        """Let the next pcode to start adopt the running jobs, though this process lives on.
+
+        For a session moving into a session host: a living owner's jobs are
+        never adopted, so they would otherwise stay with this terminal, out of
+        the session's sight. None when nothing is running.
+        """
+        self.shutdown()
+        if self._home is None or not self.jobs:
+            return None
+        released = Released(self._home, self.jobs)
+        _publish(self._home, None, self.jobs)
+        self.jobs, self._home = {}, None
+        self._released += 1
+        return released
+
+    def reclaim(self, released: "Released") -> None:
+        """Take back what `release` let go, unless another pcode adopted it meanwhile."""
+        try:
+            record = json.loads((released.home / "registry.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return  # Adopted: the adopter removes the record.
+        if record.get("owner_pid") is not None or self.jobs:
             return
-        record = {
-            "owner_pid": os.getpid(),
-            "jobs": {job.id: job.record() for job in self.jobs.values()},
-        }
-        pending = home / "registry.tmp"
-        pending.write_text(json.dumps(record), encoding="utf-8")
-        pending.replace(home / "registry.json")
+        self.jobs, self._home = released.jobs, released.home
+        self._released -= 1
+        self._save()
 
     def adopt_orphans(self) -> list[Job]:
         """Take over the running jobs of pcode processes that are gone.
@@ -274,7 +299,8 @@ class JobRegistry:
             return []
         adopted = []
         for home in sorted(root.iterdir()):
-            if home.name == str(os.getpid()) or not home.is_dir():
+            # This process's own, and any it released for another to adopt.
+            if home.name.split("-")[0] == str(os.getpid()) or not home.is_dir():
                 continue
             try:
                 record = json.loads((home / "registry.json").read_text(encoding="utf-8"))
@@ -535,6 +561,22 @@ def _alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+@dataclass
+class Released:
+    """Jobs `JobRegistry.release` handed over, should they need taking back."""
+
+    home: Path
+    jobs: dict[str, Job]
+
+
+def _publish(home: Path, owner: int | None, jobs: dict[str, Job]) -> None:
+    """Write `registry.json`; with no `owner` any other pcode may adopt the jobs."""
+    record = {"owner_pid": owner, "jobs": {job.id: job.record() for job in jobs.values()}}
+    pending = home / "registry.tmp"
+    pending.write_text(json.dumps(record), encoding="utf-8")
+    pending.replace(home / "registry.json")
 
 
 def _remove_if_empty(directory: Path) -> None:

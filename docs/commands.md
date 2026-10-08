@@ -95,7 +95,9 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/stop`: end this background session's host and quit. Quitting any other way (Ctrl+D,
   `/quit`) does the same.
 - `/detach`: quit but leave this background session's host running until it
-  [goes idle](sessions.md#idle-hosts-stop); `pcode --attach` returns to it.
+  [goes idle](sessions.md#idle-hosts-stop); `pcode --attach` returns to it. In a
+  session running in this terminal, it first
+  [moves the session into a host](sessions.md#background-sessions) and stays on it.
 - `/tree`: [browse and fork the conversation](conversation-tree.md); select a user prompt
   to edit it, or an assistant response to continue from there. Existing branches are kept.
   Browsable at any time; forking waits for the running turn.

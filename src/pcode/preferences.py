@@ -354,11 +354,13 @@ SETTINGS = {
         description="Models delegate_task lists for sub-agents, comma-separated (/subagents)",
     ),
     # An untouched worktree is always removed; uncommitted changes are always kept.
+    # Off by default: one process starts faster and leaves nothing behind.
+    # `/detach` moves a session into a host when it should outlive the terminal.
     "session_host": Setting(
-        "on",
+        "off",
         ("on", "off"),
-        description="Run each session in a background host that outlives the terminal (/switch); "
-        "off runs it inside the terminal",
+        description="Run each session in a background host that outlives the terminal; "
+        "off runs it inside the terminal until /detach moves it into one",
     ),
     # 0 by default: a stopped host costs nothing, since /switch still lists one
     # with an unseen result and resumes it.
