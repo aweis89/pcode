@@ -327,6 +327,7 @@ def test_invalid_environment_override(monkeypatch):
         mp.managed_endpoint()
 
 
+@pytest.mark.usefixtures("legacy_anthropic_auth")
 def test_managed_setting_completion():
     from pcode.config import config_arguments
 

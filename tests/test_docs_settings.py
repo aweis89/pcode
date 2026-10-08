@@ -3,13 +3,14 @@
 import re
 from pathlib import Path
 
+from pcode.config import listed_settings
 from pcode.preferences import SETTINGS
 
 PAGE = Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
 ROW = re.compile(r"^\| `([a-z_0-9]+)` \| ([^|]*) \|", re.MULTILINE)
 # Read at import: conftest's autouse fixtures swap some defaults (group_tools)
-# for the duration of each test.
-DEFAULTS = {key: setting.default for key, setting in SETTINGS.items()}
+# for the duration of each test. Only what `config list` shows is documented.
+DEFAULTS = {key: SETTINGS[key].default for key in listed_settings()}
 
 
 def documented() -> dict[str, str]:

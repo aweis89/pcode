@@ -13,6 +13,7 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+from pcode import models
 from pcode.preferences import (
     MODEL_EFFORTS_KEY,
     SETTINGS,
@@ -35,9 +36,19 @@ _RESET_NOTICE = {
 }
 
 
+# Settings for the legacy Anthropic sign-in and Meridian routes: still readable
+# and settable, so an old preferences file keeps working, but not advertised.
+_LEGACY_KEYS = frozenset({"anthropic_auth", "meridian_managed"})
+
+
+def listed_settings() -> list[str]:
+    """The settings `list` and completion show."""
+    return [key for key in SETTINGS if models.LEGACY_ANTHROPIC_AUTH or key not in _LEGACY_KEYS]
+
+
 def _setting(key: str) -> Setting:
     if key not in SETTINGS:
-        raise ValueError(f"Unknown setting '{key}'. Available: {', '.join(SETTINGS)}")
+        raise ValueError(f"Unknown setting '{key}'. Available: {', '.join(listed_settings())}")
     return SETTINGS[key]
 
 
@@ -147,7 +158,7 @@ def configure(arguments: Sequence[str]) -> str:
         return str(preferences_path())
     if action == "list" and len(args) == 1:
         data = _effective_data()
-        return json.dumps({key: _effective(data, key) for key in SETTINGS}, indent=2)
+        return json.dumps({key: _effective(data, key) for key in listed_settings()}, indent=2)
     if action == "diff" and len(args) == 1:
         return _diff()
     if action == "get" and len(args) == 2:
@@ -200,7 +211,8 @@ def config_argument_descriptions() -> dict[str, str]:
 
 def config_arguments() -> tuple[str, ...]:
     """Complete subcommands, keys, and enum values with the existing completer."""
-    project_keys = [key for key in SETTINGS if key not in USER_ONLY]
+    keys = listed_settings()
+    project_keys = [key for key in keys if key not in USER_ONLY]
     return (
         "list",
         "diff",
@@ -210,10 +222,10 @@ def config_arguments() -> tuple[str, ...]:
         "unset",
         "reset",
         "project",
-        *(f"get {key}" for key in SETTINGS),
-        *(f"unset {key}" for key in SETTINGS),
-        *(f"set {key}" for key in SETTINGS),
-        *(f"set {key} {value}" for key, setting in SETTINGS.items() for value in setting.choices),
+        *(f"get {key}" for key in keys),
+        *(f"unset {key}" for key in keys),
+        *(f"set {key}" for key in keys),
+        *(f"set {key} {value}" for key in keys for value in SETTINGS[key].choices),
         "project list",
         "project path",
         "project reset",
