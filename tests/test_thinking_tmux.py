@@ -127,8 +127,17 @@ def test_completed_thinking_stays_in_scrollback(pane):
     assert history(pane).count("REASONING_29") == 1
     pane("send-keys", "-t", "preview:0.0", "/show-thinking off", "Enter")
     capture(pane, "Thinking: off")
-    assert "REASONING_" not in history(pane)
+    # The notice can arrive before the history replay. Wait for its contents,
+    # using one snapshot so a later repaint cannot split the assertions.
+    until(
+        lambda: "Public answer" in (text := history(pane)) and "REASONING_" not in text,
+        lambda: history(pane),
+    )
     pane("send-keys", "-t", "preview:0.0", "/show-thinking scrollback", "Enter")
     capture(pane, "Thinking: scrollback")
-    assert history(pane).count("REASONING_00") == 1
-    assert history(pane).count("Public answer") == 1
+    until(
+        lambda: (
+            (text := history(pane)).count("REASONING_00") == 1 and text.count("Public answer") == 1
+        ),
+        lambda: history(pane),
+    )

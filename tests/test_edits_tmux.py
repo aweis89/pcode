@@ -126,7 +126,9 @@ def test_delta_draws_the_live_preview_and_the_settled_block(pane, release):
 
     def styled_row():
         styled = pane("capture-pane", "-p", "-e", "-t", "preview:0.0")
-        return next(line for line in styled.splitlines() if "LIVE_EDIT_LINE" in line)
+        # A capture can land between clearing the preview and painting delta's
+        # replacement. Keep polling until the styled line is visible again.
+        return next((line for line in styled.splitlines() if "LIVE_EDIT_LINE" in line), "")
 
     deadline = time.monotonic() + TIMEOUT
     while "[48;" not in (row := styled_row()):
