@@ -43,7 +43,14 @@ from pcode.host_protocol import (
     write_entry,
 )
 from pcode.live import AgentRuntime
-from pcode.remote import HostError, HostLaunch, RemoteController, spawn_host
+from pcode.remote import (
+    HostError,
+    HostLaunch,
+    RemoteController,
+    request_host,
+    spawn_host,
+    stop_if_idle,
+)
 from pcode.runtime import (
     CacheBust,
     ChildPlan,
@@ -724,34 +731,34 @@ def test_stopping_an_idle_host_tells_terminals_it_closed_and_nothing_else(tmp_pa
     asyncio.run(run())
 
 
-def test_kill_hosts_idle_stops_idle_hosts_attached_or_not_and_keeps_their_worktrees(
-    host_dir, monkeypatch, capsys
-):
+def test_kill_hosts_idle_asks_each_idle_host_and_reports_what_it_did(host_dir, monkeypatch, capsys):
     from pcode.app import main
 
-    for identity, state, attached in (
-        ("idle0001", "idle", 0),
-        ("idle0002", "idle", 1),
-        ("work0001", "working", 1),
-        ("boot0001", "starting", 0),
-        ("gone0001", "idle", 0),
+    for identity, state in (
+        ("idle0001", "idle"),
+        ("busy0001", "idle"),
+        ("work0001", "working"),
+        ("gone0001", "idle"),
     ):
         entry = HostEntry(id=identity, pid=os.getpid(), model="test", workspace="/")
-        entry.state, entry.attached, entry.title = state, attached, identity
+        entry.state, entry.title = state, identity
         write_entry(entry)
-    stopped = []
+    asked = []
 
-    async def stop_entry(entry, *, keep_worktree=False):
+    async def stop_if_idle(entry):
+        asked.append(entry.id)
         if entry.id == "gone0001":
             raise ConnectionRefusedError("refused")
-        stopped.append((entry.id, keep_worktree))
+        return "a side question is running" if entry.id == "busy0001" else ""
 
-    monkeypatch.setattr("pcode.remote.stop_entry", stop_entry)
+    monkeypatch.setattr("pcode.remote.stop_if_idle", stop_if_idle)
     monkeypatch.setattr(sys, "argv", ["pcode", "--kill-hosts", "idle"])
     main()
-    assert sorted(stopped) == [("idle0001", True), ("idle0002", True)]
+    # One running a turn says so in its entry, so it is not even asked.
+    assert sorted(asked) == ["busy0001", "gone0001", "idle0001"]
     output = capsys.readouterr()
-    assert "Stopped idle0002  idle0002" in output.out
+    assert "Stopped idle0001  idle0001" in output.out
+    assert "Skipped busy0001  busy0001: a side question is running" in output.out
     assert "Could not stop gone0001: refused" in output.err
 
     for entry in list_hosts():
@@ -760,6 +767,50 @@ def test_kill_hosts_idle_stops_idle_hosts_attached_or_not_and_keeps_their_worktr
     monkeypatch.setattr(sys, "argv", ["pcode", "--stop-hosts", "idle"])
     main()
     assert "No idle session hosts." in capsys.readouterr().out
+
+
+def test_a_host_stops_as_if_idle_with_a_terminal_attached_unless_busy(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal, _, _ = await attach(host)
+            host.controller.command_idle.clear()
+            assert await request_host(host.entry, "stop_if_idle") == "a command is running"
+            assert not host.stopped.is_set()
+            host.controller.command_idle.set()
+            assert await request_host(host.entry, "stop_if_idle") == ""
+            # Stopped as it stops itself once idle: unmerged work and an
+            # unread reply are kept for resuming.
+            assert host.stopped.is_set() and host.idle_stopped and not host.keep_worktree
+            terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_host_older_than_stop_if_idle_is_judged_by_its_entry(tmp_path, host_dir):
+    old_calls = frozenset({"attach", "query", "send", "run", "stop", "asides_read"})
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            with (
+                patch("pcode.host.HOST_CALLS", old_calls),
+                patch("pcode.remote.wait_for_exit", return_value=True),
+            ):
+                host.entry.state = "working"
+                assert await stop_if_idle(host.entry) == "a turn is running"
+                assert not host.stopped.is_set()
+                host.entry.state = "idle"
+                assert await stop_if_idle(host.entry) == ""
+                await asyncio.wait_for(host.stopped.wait(), 5)
+            # Nobody said it was idle, so its worktree is left alone.
+            assert host.keep_worktree and not host.idle_stopped
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
 
 
 def test_a_terminal_on_another_protocol_is_refused(tmp_path, host_dir):

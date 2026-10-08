@@ -17,16 +17,18 @@ pcode --no-host                  # run this one inside the terminal instead
 pcode --hosts                    # list running hosts
 pcode --attach                   # reattach to the newest host in this repository
 pcode --attach 3f9c              # ...or to one by host or session ID prefix
-pcode --kill-hosts idle          # stop hosts with no turn running (or: stale, all)
+pcode --kill-hosts idle          # stop hosts with nothing running (or: stale, all)
 ```
 
 `--kill-hosts idle` is for the hosts a forgotten terminal tab keeps alive: an
-attached terminal stops a host from [stopping itself](#idle-hosts-stop), so it
-stops every host `--hosts` lists as idle, attached or not. The terminal is left
-saying its host exited, background commands keep running as they would
-anyway, and each session's worktree is kept as it is, never merged or removed;
-`pcode --continue` picks the conversation back up. `stale` stops hosts still
-running older pcode code, and `all` stops every host.
+attached terminal keeps a host from [stopping itself](#idle-hosts-stop). It
+stops every host that has nothing running, terminal attached or not, the
+same way the host would have stopped itself with no terminal: unmerged work
+stays in its worktree and a reply you haven't read stays in `/switch`. A host
+running a turn, a command, a side question or a background command is skipped
+and listed with the reason. A terminal still showing a stopped host says so and
+prints the `pcode --continue` command that resumes it. `stale` stops hosts
+still running older pcode code, and `all` stops every host.
 
 Inside a hosted session:
 

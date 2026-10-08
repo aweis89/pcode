@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -44,7 +45,7 @@ from pcode.host_protocol import (
 )
 from pcode.jobs import Job, JobRegistry
 from pcode.remote_profile import RemoteProfile, scrubbed_env
-from pcode.rpc import Peer, decode
+from pcode.rpc import Peer, RemoteError, decode
 from pcode.runtime import EditCompleted
 
 
@@ -682,11 +683,15 @@ def _running(pid: int) -> bool:
     return True
 
 
-async def wait_for_exit(pid: int, timeout: float = 30.0) -> None:
-    """Until the host has let go of its session: the next host can then open it."""
+async def wait_for_exit(pid: int, timeout: float = 30.0) -> bool:
+    """Until the host has let go of its session: the next host can then open it.
+
+    False if it was still running when `timeout` ran out.
+    """
     deadline = time.monotonic() + timeout
     while _running(pid) and time.monotonic() < deadline:
         await asyncio.sleep(0.05)
+    return not _running(pid)
 
 
 def wait_for_exit_sync(pid: int, timeout: float = 30.0) -> None:
@@ -695,23 +700,75 @@ def wait_for_exit_sync(pid: int, timeout: float = 30.0) -> None:
         time.sleep(0.05)
 
 
-async def stop_entry(entry: HostEntry, *, keep_worktree: bool = False) -> None:
-    """Stop another host without attaching to it."""
+async def stop_entry(entry: HostEntry, *, keep_worktree: bool = False) -> bool:
+    """Stop another host without attaching to it; False if it has not exited yet."""
     await notify_host(entry, "stop", keep_worktree)
-    await wait_for_exit(entry.pid)
+    return await wait_for_exit(entry.pid)
+
+
+async def stop_if_idle(entry: HostEntry) -> str:
+    """Stop a host as it would stop itself once idle, terminals or not.
+
+    Returns "" once it has exited, else what it is busy with. The host checks
+    for itself: its entry only says whether a turn runs, not a command,
+    compaction, side question or background command.
+    """
+    try:
+        reason = await request_host(entry, "stop_if_idle")
+    except RemoteError as error:
+        if error.type_name != "PermissionError":
+            raise
+        # A host older than the call can only be judged by its entry, and is
+        # stopped leaving its worktree alone: nobody chose to finish it.
+        if entry.state != "idle":
+            return "a turn is running"
+        await notify_host(entry, "stop", True)
+        reason = ""
+    if reason:
+        return reason
+    if not await wait_for_exit(entry.pid):
+        raise HostError("it was told to stop but is still running after 30 s")
+    return ""
+
+
+@asynccontextmanager
+async def _host_peer(entry: HostEntry, timeout: float = 5.0):
+    """A connection to a host for one call, not an attached terminal."""
+
+    async def hello():
+        reader, writer = await asyncio.open_unix_connection(str(entry.socket), limit=LINE_LIMIT)
+        writer.write(dumps({"type": "hello", "protocol": PROTOCOL}))
+        await writer.drain()
+        reply = await read_message(reader)
+        if reply is None or reply.get("type") != "ready":
+            writer.close()
+            raise HostError((reply or {}).get("message") or "The session host refused.")
+        return reader, writer
+
+    try:
+        # A host whose loop is wedged accepts the connection and never answers.
+        reader, writer = await asyncio.wait_for(hello(), timeout)
+    except TimeoutError:
+        raise HostError(f"The session host did not answer within {timeout:g} s.") from None
+    peer = Peer(reader, writer, object(), allowed=frozenset())
+    serving = asyncio.create_task(peer.serve())
+    try:
+        yield peer
+    finally:
+        peer.close()
+        await asyncio.gather(serving, return_exceptions=True)
 
 
 async def notify_host(entry: HostEntry, method: str, *args) -> None:
     """Make one call on a host without attaching to it (`stop`, `cancel`)."""
-    reader, writer = await asyncio.open_unix_connection(str(entry.socket), limit=LINE_LIMIT)
-    writer.write(dumps({"type": "hello", "protocol": PROTOCOL}))
-    await writer.drain()
-    reply = await read_message(reader)
-    if reply is None or reply.get("type") != "ready":
-        writer.close()
-        raise HostError((reply or {}).get("message") or "The session host refused.")
-    peer = Peer(reader, writer, object(), allowed=frozenset())
-    serving = asyncio.create_task(peer.serve())
-    peer.notify(method, *args)
-    peer.close()
-    await asyncio.gather(serving, return_exceptions=True)
+    async with _host_peer(entry) as peer:
+        peer.notify(method, *args)
+
+
+async def request_host(entry: HostEntry, method: str, *args, timeout: float = 10.0):
+    """Make one call on a host without attaching to it, and return its answer."""
+    async with _host_peer(entry) as peer:
+        try:
+            return await asyncio.wait_for(peer.request(method, *args), timeout)
+        except TimeoutError:
+            raise HostError(f"The session host did not answer within {timeout:g} s.") from None

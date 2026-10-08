@@ -2563,8 +2563,8 @@ def main() -> None:
     parser.add_argument(
         "--kill-hosts",
         choices=host_kinds,
-        help="Stop every session host, those running older pcode code, or those with no "
-        "turn running (even with a terminal attached), and exit",
+        help="Stop every session host, those running older pcode code, or those with "
+        "nothing running (even with a terminal attached), and exit",
     )
     # The flag's old name, kept working for scripts and habit.
     parser.add_argument(
@@ -2778,30 +2778,38 @@ def _resume_workspace(info, requested: Path | None) -> Path:
 def _kill_hosts(which: str, entries: list, code: str) -> None:
     """`--kill-hosts all|stale|idle`, reporting each host as it stops.
 
-    `idle` means the state `--hosts` shows: no turn running, whether or not a
-    terminal is attached. An attached terminal is what keeps a forgotten tab's
-    host from stopping itself, so those are the ones this is for. Its terminal
-    is left saying the host exited, and background jobs outlive it as they
-    outlive any host. Nobody chose to finish those sessions, so their
-    worktrees are kept as they are, never merged or removed.
+    `idle` is for the hosts forgotten terminal tabs keep alive: an attached
+    terminal stops a host from stopping itself. Each host checks for itself
+    that nothing but its terminals would be lost, then stops exactly as it
+    would once idle, so its worktree and an unread reply are kept the same way.
     """
-    from pcode.remote import HostError, stop_entry
+    from pcode.remote import HostError, stop_entry, stop_if_idle
+    from pcode.rpc import RemoteError
 
     chosen = [
         entry
         for entry in entries
         if which == "all"
         or (which == "stale" and entry.stale(code))
+        # One running a turn says so in its entry; the host checks the rest.
         or (which == "idle" and entry.state == "idle")
     ]
     for entry in chosen:
         try:
-            asyncio.run(stop_entry(entry, keep_worktree=which == "idle"))
-        except (OSError, HostError) as error:
-            # Gone since it was listed (stopped itself, or crashed).
+            if which == "idle":
+                busy = asyncio.run(stop_if_idle(entry))
+            elif not asyncio.run(stop_entry(entry)):
+                raise HostError("it was told to stop but is still running after 30 s")
+            else:
+                busy = ""
+        except (OSError, ValueError, HostError, RemoteError) as error:
+            # Usually gone since it was listed (stopped itself, or crashed).
             print(f"Could not stop {entry.id}: {error}", file=sys.stderr)
             continue
-        print(f"Stopped {entry.id}  {entry.label()}")
+        if busy:
+            print(f"Skipped {entry.id}  {entry.label()}: {busy}")
+        else:
+            print(f"Stopped {entry.id}  {entry.label()}")
     if not chosen:
         print("No session hosts to stop." if which == "all" else f"No {which} session hosts.")
 
