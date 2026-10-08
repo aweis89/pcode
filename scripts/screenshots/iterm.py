@@ -231,15 +231,14 @@ def tab_bar_svg(tabs: list[tuple], look: Look, x: float, y: float, width: float,
                 f'<rect fill="{_rgb(pill)}" x="{px:.1f}" y="{py:.1f}" width="{pw:.1f}" '
                 f'height="{ph:.1f}" rx="{ph / 2:.1f}"/>'
             )
-        if progress:
-            clip = f"iterm-tab-ring-{index}"
-            ox, oy, ow, oh = px - ring, py - ring, pw + 2 * ring, ph + 2 * ring
+        clip = f"iterm-tab-ring-{index}"
+        ox, oy, ow, oh = px - ring, py - ring, pw + 2 * ring, ph + 2 * ring
+        gradient = f"iterm-tab-progress-{index}"
+        fill = progress and _progress_fill(*progress, look, ox, oy, ow, oh, gradient, clip)
+        if fill:
             parts.append(
                 f'<defs><clipPath id="{clip}"><path clip-rule="evenodd" '
-                f'd="{_pill(ox, oy, ow, oh)} {_pill(px, py, pw, ph)}"/></clipPath></defs>'
-            )
-            parts.append(
-                _progress_fill(*progress, look, ox, oy, ow, oh, f"iterm-tab-progress-{index}", clip)
+                f'd="{_pill(ox, oy, ow, oh)} {_pill(px, py, pw, ph)}"/></clipPath></defs>{fill}'
             )
         color = selected_text if selected else text
         parts.append(

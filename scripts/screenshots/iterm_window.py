@@ -20,7 +20,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from run import DEMO_ROOT, ITERM_OUT, load, stop_jobs
+from run import DEMO_ROOT, ITERM_OUT, load, lock_demo_root, stop_jobs
 
 HERE = Path(__file__).resolve().parent
 TIMEOUT = 180
@@ -84,6 +84,7 @@ def main() -> None:
     out = args.out or ITERM_OUT / f"{args.scene}-iterm.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     columns, rows = getattr(scene, "SIZE", (100, 30))
+    lock = lock_demo_root()  # noqa: F841 - held until exit; the tabs' run.py skip it
     with tempfile.TemporaryDirectory(prefix="pcode-tabs-") as tmp:
         ready = Path(tmp)
         go = ready / "go"
@@ -96,23 +97,28 @@ def main() -> None:
                 + ["--tab", tab, "--ready", str(ready / tab)]
             )
             log = shlex.quote(str(ready / f"{tab}.log"))
+            marker = shlex.quote(str(ready / f"{tab}.failed"))
+            quoted_go = shlex.quote(str(go))
             script = ready / f"{tab}.sh"
             # iTerm2 runs a tab's command with a bare PATH: no Homebrew tmux.
             script.write_text(
                 f"export PATH={shlex.quote(os.environ['PATH'])}\n"
-                f"while [ ! -e {shlex.quote(str(go))} ]; do sleep 0.1; done\n"
-                f"{run} 2>{log} || {{ cat {log}; sleep 60; }}\n"
+                f"i=0; while [ ! -e {quoted_go} ] && [ $i -lt 600 ]; do\n"
+                f"  sleep 0.1; i=$((i+1))\ndone\n"
+                f"[ -e {quoted_go} ] || exit 1\n"
+                f"{run} 2>{log} || {{ touch {marker}; cat {log}; sleep 60; }}\n"
             )
             commands.append(f"/bin/sh {script}")
-        window = open_window(commands, args.profile, columns, rows)
-        servers = []
+        window, servers = None, []
         try:
+            window = open_window(commands, args.profile, columns, rows)
             time.sleep(1)
             go.touch()
             deadline = time.monotonic() + TIMEOUT
             while not all((ready / tab).exists() for tab in tabs):
-                if time.monotonic() > deadline:
-                    missing = [tab for tab in tabs if not (ready / tab).exists()]
+                failed = [tab for tab in tabs if (ready / f"{tab}.failed").exists()]
+                if failed or time.monotonic() > deadline:
+                    missing = failed or [tab for tab in tabs if not (ready / tab).exists()]
                     logs = "".join(
                         f"--- {tab}\n{(ready / f'{tab}.log').read_text()}"
                         for tab in missing
@@ -148,11 +154,15 @@ def main() -> None:
             # Each tab's run.py cleans up once its tmux server goes, and exits.
             for server in servers:
                 subprocess.run(["tmux", "-L", server, "kill-server"], capture_output=True)
-            time.sleep(1.5)
+            # Each removes its demo root last; then closing the window loses nothing.
+            deadline = time.monotonic() + 10
+            while any((DEMO_ROOT / tab).exists() for tab in tabs) and time.monotonic() < deadline:
+                time.sleep(0.2)
             # A tab that never got that far: its tmux server runs under the demo root.
             stop_jobs(DEMO_ROOT.resolve())
-            close = f'tell application "iTerm2" to close window id {window}'
-            subprocess.run(["osascript", "-e", close], capture_output=True)
+            if window:
+                close = f'tell application "iTerm2" to close window id {window}'
+                subprocess.run(["osascript", "-e", close], capture_output=True)
 
 
 if __name__ == "__main__":

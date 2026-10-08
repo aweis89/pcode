@@ -11,6 +11,7 @@ format.
 
 import argparse
 import contextlib
+import fcntl
 import importlib.util
 import io
 import json
@@ -255,13 +256,26 @@ def png(image: Path) -> Path:
     return out
 
 
+def lock_demo_root():
+    """Hold DEMO_ROOT for this process, or exit: runs at once delete each other's
+    demo repos and pane logs, and a shot then comes out wrong without an error.
+    """
+    lock = open(f"{DEMO_ROOT}.lock", "w")  # noqa: SIM115 - held until exit
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(f"another screenshot run is using {DEMO_ROOT}; try again when it ends")
+    return lock
+
+
 def stop_jobs(root: Path) -> None:
     """Stop background jobs a scene started; they outlive the terminal by design.
 
     Each job's supervisor leads its own process group and names its job
     directory, under `root`, on its command line. A stop is SIGTERM to the group.
     """
-    found = subprocess.run(["pgrep", "-f", str(root)], capture_output=True, text=True)
+    # The slash keeps /tmp/pcode-demo/a from matching /tmp/pcode-demo/ab.
+    found = subprocess.run(["pgrep", "-f", f"{root}/"], capture_output=True, text=True)
     for pid in map(int, found.stdout.split()):
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pid, signal.SIGTERM)
@@ -420,11 +434,16 @@ def play(
             try:
                 play_steps(pane, steps, out, width, text=False, look=look, live=True)
                 if ready:
-                    ready.write_text(pane.server)
+                    # Whole or absent: iterm_window.py reads it as soon as it exists.
+                    partial = ready.with_name(ready.name + ".tmp")
+                    partial.write_text(pane.server)
+                    os.replace(partial, ready)
             except Exception as error:  # in the pane now, in full once you detach
                 failure.append(error)
                 pane("display-message", "-d", "0", f"scene failed: {error!s:.80}  (Ctrl-b d)")
 
+        # Closing the window hangs up: exit through `session()`'s cleanup.
+        signal.signal(signal.SIGHUP, lambda *_: sys.exit(1))
         threading.Thread(target=play_live, daemon=True).start()
         print(
             "Attaching. Take each screenshot once the scene settles; Ctrl-b Space moves "
@@ -432,7 +451,7 @@ def play(
         )
         # Named `pcode`: iTerm2's tab title appends the foreground job's argv[0],
         # which in real use is pcode (see pcode.proctitle), not tmux.
-        tmux = shutil.which("tmux", path=pane.env.get("PATH"))
+        tmux = shutil.which("tmux", path=pane.env.get("PATH")) or sys.exit("tmux not found")
         attach = ["pcode", *pane.base[1:], "attach", "-t", "shot"]
         subprocess.run(attach, executable=tmux, env=pane.env)
         if failure:
@@ -474,8 +493,14 @@ def play_tabs(
                 )
                 for tab, pane in panes.items()
             ]
-            for future in futures:
-                future.result()
+            try:
+                for future in futures:
+                    future.result()
+            except BaseException:
+                # The other tabs' waits now fail at once instead of timing out.
+                for pane in panes.values():
+                    pane.kill()
+                raise
         for pane in panes.values():
             pane.still()
         # Reports are sampled once a second (see play_steps).
@@ -485,6 +510,10 @@ def play_tabs(
             (f"{pane.title()} (pcode)", last_progress(pane.log), tab == scene.ACTIVE)
             for tab, pane in panes.items()
         ]
+        # Every tab reported at least once; nothing means its log went missing.
+        unreported = [tab for tab, (_, progress, _) in zip(panes, bar) if progress is None]
+        if unreported:
+            raise RuntimeError(f"no progress reports from {', '.join(unreported)}")
         active = panes[scene.ACTIVE]
         path = out / f"{name}.svg"
         path.write_text(svg(active.screen(colors=True), width, active.title(), look, None, bar))
@@ -531,6 +560,10 @@ def main() -> None:
             parser.error("--live saves no shots for --text to print")
         if not sys.stdout.isatty():
             parser.error("--live needs a terminal to attach")
+    elif args.tab or args.ready:
+        parser.error("--tab and --ready go with --live")
+    # iterm_window.py holds the lock for the tabs it starts, which pass --ready.
+    lock = None if args.ready else lock_demo_root()  # noqa: F841 - held until exit
     # Your terminal's colors are for you, not for the docs.
     args.out = args.out or (ITERM_OUT if args.iterm else OUT)
     args.out.mkdir(parents=True, exist_ok=True)
