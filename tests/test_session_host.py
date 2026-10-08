@@ -1095,6 +1095,9 @@ def test_a_session_that_cannot_move_to_a_host_carries_on_here(tmp_path, host_dir
                 assert is_open(app.runtime.session.directory)
                 pipe.send_text("still here\r")
                 await seen("Echo: still here")
+                # The reply prints before the turn ends, and Ctrl+D during a
+                # turn cancels it rather than quitting.
+                await until(lambda: not app.activity.busy)
                 pipe.send_text("\x04")
 
             with (
