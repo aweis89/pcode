@@ -1,6 +1,7 @@
 """Exercise the real SDK with synthetic responses, never live credentials."""
 
 import asyncio
+import json
 import time
 
 import httpx2
@@ -56,6 +57,53 @@ def test_http_errors_surface_without_sdk_backoff(source, status, tmp_path):
     asyncio.run(run())
     assert len(requests) == 1
     assert notices == []
+
+
+@pytest.mark.parametrize("retries", [0, 2])
+@pytest.mark.parametrize("overloaded", [False, True])
+def test_openai_streamed_overload_uses_runtime_retry_budget(monkeypatch, retries, overloaded):
+    from pydantic_ai.models.openai import OpenAIResponsesModel
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    from pcode import retries as retry_settings
+
+    monkeypatch.setattr(retry_settings, "RETRY_DELAY", 0)
+    requests, notices = [], []
+    message = (
+        "Our servers are currently overloaded. Please try again later."
+        if overloaded
+        else "Invalid request."
+    )
+
+    def handle(request):
+        requests.append(request)
+        payload = json.dumps({"error": {"message": message}})
+        return httpx2.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=f"event: error\ndata: {payload}\n\n",
+        )
+
+    async def run():
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handle)) as client:
+            model = OpenAIResponsesModel(
+                "test-model", provider=OpenAIProvider(api_key="synthetic", http_client=client)
+            )
+            runtime = AgentRuntime(Agent(model))
+            runtime.retry_attempts = retries
+            runtime.retry_notice = notices.append
+            try:
+                with pytest.raises(ModelAPIError, match=message):
+                    async for _ in runtime.stream("hello"):
+                        pass
+            finally:
+                runtime.close()
+
+    asyncio.run(run())
+    expected_retries = retries if overloaded else 0
+    assert len(requests) == expected_retries + 1
+    assert len(notices) == expected_retries
+    assert all("Retrying provider request" in notice for notice in notices)
 
 
 def test_meridian_client_leaves_transport_retries_to_the_runtime(monkeypatch):

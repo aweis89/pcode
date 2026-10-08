@@ -442,7 +442,7 @@ SETTINGS = {
     "retry_attempts": Setting(
         "3",
         whole_number=True,
-        description="Automatic retries after a dropped connection; 0 disables",
+        description="Automatic retries after a dropped connection or streamed overload; 0 disables",
     ),
     # Pydantic AI's default of 1 ends the turn on a second malformed call, which a
     # long `replacements` array can hit by itself.

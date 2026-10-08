@@ -135,17 +135,28 @@ def transport_types(error: BaseException) -> set[str]:
 
 
 def transient(error: BaseException) -> bool:
-    """Whether the provider dropped the connection rather than answering.
+    """Whether a failed request can use the runtime's bounded retry budget.
 
-    A status code means the provider did answer: rate limits and server errors
-    need their own handling, so they are deliberately not transient here.
+    HTTP errors still need their own handling. A streamed overload has no HTTP
+    status, though: the SDK raises APIError after the response already started.
+    Recognize that explicit refusal without retrying arbitrary provider errors.
     """
     detail = error_details(error)
+    retryable = False
     while detail:
         if "status" in detail:
             return False
+        if detail["type"] in TRANSIENT_TRANSPORT:
+            retryable = True
+        if detail["type"] in {"APIError", "ModelAPIError"}:
+            retryable |= (
+                detail.get("provider_code") == "overloaded_error"
+                or detail.get("provider_type") == "overloaded_error"
+                or detail.get("provider_message", detail.get("message", ""))
+                == "Our servers are currently overloaded. Please try again later."
+            )
         detail = detail.get("cause", detail.get("context", {}))
-    return bool(transport_types(error) & TRANSIENT_TRANSPORT)
+    return retryable
 
 
 def provider_context(model) -> dict[str, str]:

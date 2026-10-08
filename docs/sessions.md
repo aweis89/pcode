@@ -427,8 +427,9 @@ between turns.
 
 ## Retries and `/resend`
 
-Dropped provider connections and transport timeouts get three automatic retries by
-default (four attempts per submitted turn). The retry picks up from the failed
+Dropped provider connections, transport timeouts, and recognized overload errors
+inside a provider response stream get three automatic retries by default (four
+attempts per submitted turn). The retry picks up from the failed
 request's checkpoint, completed tool results included, without adding a
 "continue" prompt. Partial output from the failed attempt may stay on screen but
 is not sent again. Retries show the failure and attempt count.
