@@ -39,7 +39,7 @@ from pcode.email_remote.parsing import (
 from pcode.email_remote.state import CONTROL, LAUNCHER, OutboxEntry, State
 from pcode.error_report import error_message
 from pcode.host_protocol import HostEntry
-from pcode.remote import stop_entry
+from pcode.remote import HostError, stop_entry
 from pcode.remote_profile import RemoteProfile
 
 POLL_SECONDS = 5.0
@@ -263,7 +263,7 @@ class Listener:
                 await self.api.stop(entry)
                 await stop_entry(entry, keep_worktree=True)
                 stopped.append(f"{session.key} (worktree `{entry.workspace}`)")
-            except (OSError, ConnectionError) as error:
+            except (OSError, HostError) as error:
                 self.log(f"email: could not stop host {entry.id}: {error_message(error)}")
         # Cancelled session tasks may have left SMTP running. Settle those
         # operations before retrying anything or sending the final notification.

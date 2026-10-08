@@ -757,6 +757,9 @@ class SessionHost:
                 return
 
     def stop(self) -> None:
+        # At once, not in close(): a prompt an attached terminal sends before
+        # then would otherwise start a turn only for close() to cancel it.
+        self.controller.running = False
         self.stopped.set()
 
     async def close(self) -> None:

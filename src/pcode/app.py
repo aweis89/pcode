@@ -2789,14 +2789,14 @@ def _kill_hosts(which: str, entries: list, code: str) -> None:
     chosen = [
         entry
         for entry in entries
-        if which == "all"
-        or (which == "stale" and entry.stale(code))
-        # One running a turn says so in its entry; the host checks the rest.
-        or (which == "idle" and entry.state == "idle")
+        if which in ("all", "idle") or (which == "stale" and entry.stale(code))
     ]
     for entry in chosen:
         try:
-            if which == "idle":
+            if which == "idle" and entry.state != "idle":
+                # Running a turn, or starting, says so in its entry; the host checks the rest.
+                busy = "it is starting up" if entry.state == "starting" else "a turn is running"
+            elif which == "idle":
                 busy = asyncio.run(stop_if_idle(entry))
             elif not asyncio.run(stop_entry(entry)):
                 raise HostError("it was told to stop but is still running after 30 s")
@@ -2811,7 +2811,7 @@ def _kill_hosts(which: str, entries: list, code: str) -> None:
         else:
             print(f"Stopped {entry.id}  {entry.label()}")
     if not chosen:
-        print("No session hosts to stop." if which == "all" else f"No {which} session hosts.")
+        print("No stale session hosts." if which == "stale" else "No session hosts are running.")
 
 
 def _stopped_session(selector: str, root: Path | None = None) -> str | None:

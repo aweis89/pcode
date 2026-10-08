@@ -757,6 +757,7 @@ def test_kill_hosts_idle_asks_each_idle_host_and_reports_what_it_did(host_dir, m
     # One running a turn says so in its entry, so it is not even asked.
     assert sorted(asked) == ["busy0001", "gone0001", "idle0001"]
     output = capsys.readouterr()
+    assert "Skipped work0001  work0001: a turn is running" in output.out
     assert "Stopped idle0001  idle0001" in output.out
     assert "Skipped busy0001  busy0001: a side question is running" in output.out
     assert "Could not stop gone0001: refused" in output.err
@@ -766,7 +767,7 @@ def test_kill_hosts_idle_asks_each_idle_host_and_reports_what_it_did(host_dir, m
     # The flag's old name still works.
     monkeypatch.setattr(sys, "argv", ["pcode", "--stop-hosts", "idle"])
     main()
-    assert "No idle session hosts." in capsys.readouterr().out
+    assert "No session hosts are running." in capsys.readouterr().out
 
 
 def test_a_host_stops_as_if_idle_with_a_terminal_attached_unless_busy(tmp_path, host_dir):
@@ -785,6 +786,45 @@ def test_a_host_stops_as_if_idle_with_a_terminal_attached_unless_busy(tmp_path, 
             terminal.close()
         finally:
             await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_host_says_what_it_is_busy_with(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        controller = host.controller
+        try:
+            assert host.busy_with() == ""
+            controller.startup_pending = True
+            assert host.busy_with() == "it is starting up"
+            controller.startup_pending = False
+            controller.naming_task = asyncio.get_running_loop().create_future()
+            assert host.busy_with() == "it is naming the session"
+            controller.naming_task.cancel()
+            assert host.busy_with() == ""
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_host_that_never_answers_hello_times_out(host_dir):
+    from pcode.remote import _host_peer
+
+    async def run():
+        entry = HostEntry(id="mute0001", pid=os.getpid(), model="test", workspace="/")
+
+        async def mute(reader, writer):
+            await asyncio.sleep(5)  # Accepts, then never says ready.
+
+        server = await asyncio.start_unix_server(mute, path=entry.socket)
+        try:
+            with pytest.raises(HostError, match="did not answer"):
+                async with _host_peer(entry, timeout=0.1):
+                    pass
+        finally:
+            server.close()
 
     asyncio.run(run())
 

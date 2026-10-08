@@ -23,8 +23,9 @@ pcode --kill-hosts idle          # stop hosts with nothing running (or: stale, a
 `--kill-hosts idle` is for the hosts a forgotten terminal tab keeps alive: an
 attached terminal keeps a host from [stopping itself](#idle-hosts-stop). It
 stops every host that has nothing running, terminal attached or not, the
-same way the host would have stopped itself with no terminal: unmerged work
-stays in its worktree and a reply you haven't read stays in `/switch`. A host
+same way the host would have stopped itself with no terminal: a worktree with
+unmerged work is kept (an untouched one is removed) and a reply you haven't
+read stays in `/switch`. A host
 running a turn, a command, a side question or a background command is skipped
 and listed with the reason. A terminal still showing a stopped host says so and
 prints the `pcode --continue` command that resumes it. `stale` stops hosts

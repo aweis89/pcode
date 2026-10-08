@@ -737,12 +737,15 @@ async def _host_peer(entry: HostEntry, timeout: float = 5.0):
 
     async def hello():
         reader, writer = await asyncio.open_unix_connection(str(entry.socket), limit=LINE_LIMIT)
-        writer.write(dumps({"type": "hello", "protocol": PROTOCOL}))
-        await writer.drain()
-        reply = await read_message(reader)
-        if reply is None or reply.get("type") != "ready":
-            writer.close()
-            raise HostError((reply or {}).get("message") or "The session host refused.")
+        try:
+            writer.write(dumps({"type": "hello", "protocol": PROTOCOL}))
+            await writer.drain()
+            reply = await read_message(reader)
+            if reply is None or reply.get("type") != "ready":
+                raise HostError((reply or {}).get("message") or "The session host refused.")
+        except BaseException:
+            writer.close()  # Timed out too: a long-running caller must not leak it.
+            raise
         return reader, writer
 
     try:
