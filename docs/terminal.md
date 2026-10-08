@@ -106,22 +106,35 @@ separate feature; pcode doesn't write to it.
 
 ## tmux
 
-Inside tmux, pcode's name goes to the pane title (unless `allow-set-title` is
-off). tmux can show it in two places:
+Inside tmux, pcode's name goes to the pane title (`#T`, or `#{pane_title}` in
+formats). tmux 3.5 added `allow-set-title`, which is on by default; turning it
+off makes tmux ignore the name. tmux shows nothing of the pane title until you
+ask it to, and there are three places to put it:
 
 ```tmux
-set -g set-titles on          # the outer terminal's tab title includes the active pane's title
-set -g pane-border-status top # each pane's border shows its own title
+set -g set-titles on                          # outer terminal's tab title
+set -g pane-border-status top                 # a title line above each pane
+set -g automatic-rename-format '#{pane_title}' # window names in the status line
 ```
 
-The default `set-titles-string` and `pane-border-format` both include the pane
-title, so `pane-border-status` alone puts each session's name above its pane,
-much like iTerm2's per-pane title bars.
+- `set-titles` (off by default) lets tmux set the outer terminal's tab title.
+  The default `set-titles-string`, `#S:#I:#W - "#T"`, puts the active pane's
+  title after the session, window index and window name; set it to `"#T"` for
+  the name alone.
+- `pane-border-status top` draws a status line on each pane's border. The
+  default `pane-border-format` includes the pane title, so each session's name
+  sits above its pane, much like iTerm2's per-pane title bars.
+- By default a window is named after the command in its active pane, so the
+  status line reads `python` or `pcode`. With `automatic-rename-format` set as
+  above it shows the active pane's title instead. Panes running a shell show
+  whatever title the shell sets, often the hostname, so you may prefer to
+  scope this to one window with `set -w`. `allow-rename` is a different
+  sequence that pcode doesn't send, so it has no effect here.
 
 For the progress bar, the terminal is judged by what the tmux server's
 environment inherited from the terminal it was started in (tmux replaces `TERM`
-and `TERM_PROGRAM`). Turn on `allow-passthrough` so pcode can reach the outer
-terminal directly; it is the reliable way,
+and `TERM_PROGRAM`). Turn on `allow-passthrough` (tmux 3.3 or newer, off by
+default) so pcode can reach the outer terminal directly; it is the reliable way,
 since Ghostty drops a report that is not refreshed within about 15 seconds and
 pcode refreshes it every few. Without it, tmux 3.7 or newer forwards the
 active pane's bar itself, but only when it changes, so a long turn's bar can
