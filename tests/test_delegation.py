@@ -782,6 +782,20 @@ def test_a_delegate_shows_its_plan_but_not_its_calls():
     ]
 
 
+def test_a_delegate_row_leads_with_its_purpose_and_names_only_other_agents():
+    history = ToolHistory()
+    for agent, call_id in (("worker", "w"), ("reviewer", "r"), ("", "old")):
+        purpose = f"{call_id} purpose"
+        history.record(delegate_started(agent, purpose, call_id, purpose=purpose))
+    rows = [text for _, text in task_panel_rows([], history, 10, "*")]
+    assert rows == [
+        "» w purpose · 0.0s · Starting",
+        "» Reviewer · r purpose · 0.0s · Starting",
+        # Saved before delegates recorded their agent: only workers existed.
+        "» old purpose · 0.0s · Starting",
+    ]
+
+
 def test_a_short_panel_keeps_the_delegate_before_its_plan():
     history = ToolHistory()
     history.record(delegate_started("worker", "fix it", "parent"))
