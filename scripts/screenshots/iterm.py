@@ -24,6 +24,13 @@ from rich.terminal_theme import TerminalTheme
 PLIST = Path.home() / "Library/Preferences/com.googlecode.iterm2.plist"
 DYNAMIC = Path.home() / "Library/Application Support/iTerm2/DynamicProfiles"
 ANSI = ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
+# A stuck AppleScript call (say, an Automation prompt nobody answers) gives up.
+OSASCRIPT_TIMEOUT = 15
+
+
+def quoted(text: str) -> str:
+    """`text` as an AppleScript string literal."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def macos_appearance() -> str:
@@ -49,23 +56,37 @@ def session_colors() -> tuple[str, list[tuple[int, int, int]]] | None:
         *(f"ANSI bright {name} color" for name in ANSI),
     ]
     properties = ", ".join(f"{name} of s" for name in names)
+    wanted = f"{{{properties}, profile name of s}}"
+    # Only while iTerm2 runs: a stale session id must not launch it.
     script = f"""
-tell application "iTerm2"
-    repeat with w in windows
-        repeat with t in tabs of w
-            repeat with s in sessions of t
-                if unique ID of s is "{session}" then return {{profile name of s, {properties}}}
+if application "iTerm2" is running then
+    tell application "iTerm2"
+        repeat with w in windows
+            repeat with t in tabs of w
+                repeat with s in sessions of t
+                    if unique ID of s is {quoted(session)} then return {wanted}
+                end repeat
             end repeat
         end repeat
-    end repeat
-end tell"""
-    found = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    values = [part.strip() for part in found.stdout.split(",")]
-    if found.returncode or len(values) != 1 + 3 * len(names):
+    end tell
+end if"""
+    try:
+        found = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=OSASCRIPT_TIMEOUT
+        )
+    except subprocess.TimeoutExpired:
         return None
-    # AppleScript colors are 16-bit components.
-    numbers = [round(int(value) / 65535 * 255) for value in values[1:]]
-    return values[0], [tuple(numbers[i : i + 3]) for i in range(0, len(numbers), 3)]
+    # osascript flattens the list to one comma-separated line. The colors are
+    # numbers; the profile name, last, may hold commas of its own.
+    *values, name = found.stdout.rstrip("\n").split(", ", 3 * len(names))
+    try:
+        # AppleScript colors are 16-bit components.
+        numbers = [round(int(value) / 65535 * 255) for value in values]
+    except ValueError:
+        return None
+    if found.returncode or len(numbers) != 3 * len(names):
+        return None
+    return name, [tuple(numbers[i : i + 3]) for i in range(0, len(numbers), 3)]
 
 
 def _profiles() -> tuple[list[dict], str | None]:
@@ -139,7 +160,9 @@ def profile_look() -> Look:
         palette="light" if luminance > 128 else "dark",
         bar_scheme=profile.get("Progress Bar Color Scheme", "default"),
         bar_height=float(profile.get("Progress Bar Height", 2.0)),
-        dark=mode == "dark",
+        # The bar's default colors follow the window's appearance, which the
+        # session's own colors show better than macOS's setting when known.
+        dark=luminance <= 128 if live else mode == "dark",
     )
 
 

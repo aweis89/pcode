@@ -4,7 +4,7 @@
     uv run --no-sync python scripts/screenshots/iterm_window.py --out x.png
 
 Each tab runs `run.py --live <scene> --tab <name>`, so it is the same scripted
-session the SVG shot draws, in iTerm2's own tab bar, titles and progress rings.
+session `run.py --live` plays, in iTerm2's own tab bar, titles and progress rings.
 The window opens at the scene's SIZE; once every tab has played, the scene's
 ACTIVE tab is selected and the window is captured with `screencapture`. That
 needs Screen Recording permission for the app running this (System Settings >
@@ -20,7 +20,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from iterm import session_colors
+from iterm import OSASCRIPT_TIMEOUT, quoted, session_colors
 from run import DEMO_ROOT, ITERM_OUT, load, lock_demo_root, stop_jobs
 
 HERE = Path(__file__).resolve().parent
@@ -28,15 +28,15 @@ TIMEOUT = 180
 
 
 def osascript(script: str) -> str:
-    found = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    try:
+        found = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=OSASCRIPT_TIMEOUT
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit("osascript timed out: allow this terminal to control iTerm2") from None
     if found.returncode:
         raise SystemExit(f"osascript failed: {found.stderr.strip()}")
     return found.stdout.strip()
-
-
-def quoted(text: str) -> str:
-    """`text` as an AppleScript string literal."""
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def open_window(commands: list[str], profile: str, columns: int, rows: int) -> str:

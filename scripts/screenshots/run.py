@@ -96,7 +96,8 @@ def demo_repo(path: Path) -> None:
 def load(name: str):
     spec = importlib.util.spec_from_file_location(f"scene_{name}", SCENES / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(HERE))
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))
     spec.loader.exec_module(module)
     return module
 
