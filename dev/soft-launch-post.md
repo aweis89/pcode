@@ -45,6 +45,14 @@ r/ChatGPTCoding comment.
   email mode plus local/remote session transfer as a roadmap item, not a shipped
   feature. Reloaded both to verify text, formatting, repository link, and images.
 
+- October 8, 2026: published a text-only r/SideProject post titled "pcode - A fully
+  featured, highly extensible terminal coding agent that works with your
+  Anthropic/OpenAI subscription". The shorter body covers subscription/API-key
+  support, adjustable scrollback, built-in features, and Python extensions, with
+  the repository link for screenshots. Reloaded the permalink to verify the
+  saved title, paragraphs, and repository link.
+  https://www.reddit.com/r/SideProject/comments/1x15xyq/
+
 ## Community checks
 
 Checked October 8, 2026. Recheck rules before another post; permission here is not
@@ -56,8 +64,9 @@ permission everywhere, and a successful submission is not moderator approval.
   https://www.reddit.com/r/CodingAgents/about/rules/
 - r/ChatGPTCoding: use the weekly self-promotion thread, not a standalone ad.
   Comments support one image, so combine a pair before uploading.
-- r/SideProject: the composer rejected images; not a destination for this image-led
-  post without changing the format.
+- r/SideProject: native images disabled; use a text-only post with a repository
+  link for screenshots. Sidebar welcomes project feedback and requests the title
+  format "Project name - Short description". Published in that format.
 - r/commandline: rules exclude this generative-AI project and AI-written posts.
 - r/opensource: no images; rules also prohibit AI-generated content.
 - r/AI_Agents: project links belong in the weekly project display thread, with
