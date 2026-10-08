@@ -113,6 +113,15 @@ def test_a_sub_agent_keeps_its_hue_when_an_earlier_one_finishes():
     assert [c.hue for c in history.delegates] == [1, 0]
 
 
+def test_a_delegate_rows_whole_head_goes_bold_whether_or_not_it_names_the_agent():
+    for head in ("» reviewing the fix", "» Reviewer: checking the fix"):
+        rows = [("class:plan.agent,agent.hue.0", f"└── {head} · 1.0s · Working")]
+        assert panel_fragments(rows, 80)[1:] == [
+            ("class:plan.agent,agent.hue.0 bold", head),
+            ("class:plan.agent,agent.hue.0", " · 1.0s · Working"),
+        ]
+
+
 def test_row_parts_color_guides_and_icons_apart_from_the_text():
     rows = [
         ("class:plan.completed,agent.hue.1", "    ├── ✓ Read it"),
