@@ -1017,7 +1017,12 @@ def effort_unavailable(model: str | None) -> str:
             f"{model} has no effort control; Anthropic gates it to "
             "Opus 4.5+ and Sonnet 4.6+ models."
         )
-    base = "Effort control requires an OpenAI/Codex, Anthropic, Claude, or Meridian model"
+    from pcode.models import LEGACY_ANTHROPIC_AUTH
+
+    providers = "OpenAI/Codex, Anthropic, Claude, or Meridian"
+    if not LEGACY_ANTHROPIC_AUTH:
+        providers = "OpenAI/Codex, Anthropic, or Claude"
+    base = f"Effort control requires an {providers} model"
     return f"{base}; {model} is not one." if model else f"{base}."
 
 

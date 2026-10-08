@@ -63,7 +63,7 @@ def test_unsupported_models_do_not_silently_change_settings(model):
     app, output = make_app(model)
     app.handle("/effort high")
     assert app.runtime.agent.model_settings == {"temperature": 0.5}
-    assert "requires an OpenAI/Codex, Anthropic, Claude, or Meridian model" in output.getvalue()
+    assert "requires an OpenAI/Codex, Anthropic, or Claude model" in output.getvalue()
 
 
 @pytest.mark.parametrize(

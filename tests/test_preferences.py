@@ -49,6 +49,14 @@ def test_effort_persists_per_model_and_restores():
     assert make_app("anthropic:claude-opus-4-5").current_effort() == "low"
 
 
+def test_effort_refusal_names_meridian_only_while_it_is_offered(monkeypatch):
+    from pcode.preferences import effort_unavailable
+
+    assert "Meridian" not in effort_unavailable("test:local")
+    monkeypatch.setattr("pcode.models.LEGACY_ANTHROPIC_AUTH", True)
+    assert "Meridian" in effort_unavailable("test:local")
+
+
 def test_shared_effort_default_applies_only_to_models_without_their_own():
     save_preferences(effort="medium")
     assert make_app().current_effort() == "medium"
