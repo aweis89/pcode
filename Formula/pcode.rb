@@ -3,6 +3,7 @@ class Pcode < Formula
   homepage "https://github.com/cruxwell/pcode"
   url "https://github.com/cruxwell/pcode/archive/refs/tags/v0.1.2.tar.gz"
   sha256 "508b339ddabab6985d2d6f0ec7f6c26ab57846e7b1406e10dd4bf1aaa7e3bbc5"
+  revision 1
   head "https://github.com/cruxwell/pcode.git", branch: "master"
 
   # Prebuilt extension modules (jiter's, for one) carry @rpath dylib IDs with no
@@ -12,7 +13,7 @@ class Pcode < Formula
 
   depends_on "uv" => :build
   depends_on "git-delta"
-  depends_on "python@3.13"
+  depends_on "python@3.14"
   depends_on "shfmt"
 
   # The sandbox extension's shell sandbox on Linux (macOS ships sandbox-exec).
@@ -32,7 +33,7 @@ class Pcode < Formula
     ENV["UV_PROJECT_ENVIRONMENT"] = libexec/".venv"
     ENV["UV_LINK_MODE"] = "copy"
     system "uv", "sync", "--directory", libexec, "--locked", "--no-dev", "--extra", "claude",
-                 "--no-editable", "--no-cache", "--python", formula_opt_bin("python@3.13")/"python3.13"
+                 "--no-editable", "--no-cache", "--python", formula_opt_bin("python@3.14")/"python3.14"
     bin.install_symlink libexec/".venv/bin/pcode"
     generate_completions_from_executable(bin/"pcode", "--completions")
   end

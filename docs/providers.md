@@ -163,7 +163,7 @@ The Claude Code CLI comes bundled, so you need neither Node.js nor a separate
 `claude` install. Because the bundle is large (over 200 MB installed), it is the
 optional `claude` extra. The Homebrew formula and `make install` include it;
 elsewhere install `pcode[claude]`, for example
-`uv tool install --editable '.[claude]'` from a checkout. Without it, `claude:`
+`uv tool install --python 3.14 --editable '.[claude]'` from a checkout. Without it, `claude:`
 models are left out of `/model`, and naming one tells you what to install.
 
 pcode keeps one Claude Code process per conversation and runs every tool itself.

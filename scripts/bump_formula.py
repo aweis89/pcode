@@ -5,7 +5,8 @@
 
 Sets `url` and `sha256` to GitHub's tarball for the tag, adding them above
 `head` the first time. The publish workflow runs this after each release; a
-tag older than the formula's release (a backport) leaves it alone.
+tag older than the formula's release (a backport) leaves it alone. A new
+release resets the formula revision.
 """
 
 import hashlib
@@ -34,6 +35,8 @@ def release(text: str) -> tuple[int, ...] | None:
 
 def bump(text: str, url: str, sha256: str) -> str:
     stable = f'  url "{url}"\n  sha256 "{sha256}"\n'
+    if release(text) != release(stable):
+        text = re.sub(r"(?m)^  revision \d+\n", "", text)
     text, count = re.subn(r'  url "[^"]*"\n  sha256 "[^"]*"\n', stable, text)
     if count == 0:
         text, count = re.subn(r"(?m)^(  head )", lambda m: stable + m.group(1), text, count=1)

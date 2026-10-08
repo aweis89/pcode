@@ -14,12 +14,10 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "filelock>=4,<5",
     "genai-prices>=0.1.7,<0.2",
@@ -104,6 +102,8 @@ markers = ["tmux: real-tmux layout regression (slow; opt in with --tmux)"]
 
 [tool.ruff]
 line-length = 100
+# Preserve parenthesized exception handlers instead of reformatting them for 3.14.
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

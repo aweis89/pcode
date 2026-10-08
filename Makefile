@@ -14,10 +14,9 @@ help: ## Show available targets
 EXTRAS ?= claude
 
 install: ## Install `pcode` on PATH (editable: source edits are live)
-	uv tool install --editable '.$(if $(EXTRAS),[$(EXTRAS)])' --reinstall
+	uv tool install --python 3.14 --editable '.$(if $(EXTRAS),[$(EXTRAS)])' --reinstall
 
-update: ## Rebuild the tool env after dependency changes
-	uv tool install --editable '.$(if $(EXTRAS),[$(EXTRAS)])' --reinstall
+update: install ## Rebuild the tool env after dependency changes
 
 uninstall: ## Remove the `pcode` command
 	uv tool uninstall pcode
