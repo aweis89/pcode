@@ -26,6 +26,13 @@ class Think:
     text: str
 
 
+@dataclass
+class Fail:
+    """The provider request fails with `error`, as a real one would mid-stream."""
+
+    error: Exception
+
+
 class Call:
     """A tool call with the tool's own arguments, e.g. ``Call("shell", command="ls")``."""
 
@@ -33,7 +40,7 @@ class Call:
         self.tool, self.args = tool, args
 
 
-# A response is a list of parts: `str` (answer text), `Think`, or `Call`. A
+# A response is a list of parts: `str` (answer text), `Think`, `Call`, or `Fail`. A
 # turn is the list of responses, one per model request: pcode sends a new
 # request after each round of tool results.
 
@@ -92,6 +99,8 @@ def scripted_model(
         parts = responses[index] if index < len(responses) else ["Done."]
         for position, part in enumerate(parts):
             await asyncio.sleep(delay)
+            if isinstance(part, Fail):
+                raise part.error
             if isinstance(part, Think):
                 yield {position: DeltaThinkingPart(content=part.text)}
             elif isinstance(part, Call):

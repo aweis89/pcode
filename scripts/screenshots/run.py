@@ -11,6 +11,7 @@ format.
 
 import argparse
 import contextlib
+import fcntl
 import importlib.util
 import io
 import json
@@ -95,7 +96,8 @@ def demo_repo(path: Path) -> None:
 def load(name: str):
     spec = importlib.util.spec_from_file_location(f"scene_{name}", SCENES / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(HERE))
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))
     spec.loader.exec_module(module)
     return module
 
@@ -227,23 +229,36 @@ def png(image: Path) -> Path:
     return out
 
 
+def lock_demo_root():
+    """Hold DEMO_ROOT for this process, or exit: runs at once delete each other's
+    demo repos and pane logs, and a shot then comes out wrong without an error.
+    """
+    lock = open(f"{DEMO_ROOT}.lock", "w")  # noqa: SIM115 - held until exit
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(f"another screenshot run is using {DEMO_ROOT}; try again when it ends")
+    return lock
+
+
 def stop_jobs(root: Path) -> None:
     """Stop background jobs a scene started; they outlive the terminal by design.
 
     Each job's supervisor leads its own process group and names its job
     directory, under `root`, on its command line. A stop is SIGTERM to the group.
     """
-    found = subprocess.run(["pgrep", "-f", str(root)], capture_output=True, text=True)
+    # The slash keeps /tmp/pcode-demo/a from matching /tmp/pcode-demo/ab.
+    found = subprocess.run(["pgrep", "-f", f"{root}/"], capture_output=True, text=True)
     for pid in map(int, found.stdout.split()):
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pid, signal.SIGTERM)
 
 
-def play_steps(pane: Pane, scene, out: Path, width: int, *, text: bool, look: Look, live: bool):
-    """Play the scene's steps; return the SVGs written (none when `live`)."""
+def play_steps(pane: Pane, steps, out: Path, width: int, *, text: bool, look: Look, live: bool):
+    """Play a scene's steps; return the SVGs written (none when `live`)."""
     saved = []
-    shots = sum(step[0] == "shot" for step in scene.STEPS)
-    for step in scene.STEPS:
+    shots = sum(step[0] == "shot" for step in steps)
+    for step in steps:
         kind, *args = step
         if kind == "type":
             pane("send-keys", "-t", "shot:0.0", "-l", args[0])
@@ -283,18 +298,11 @@ def play_steps(pane: Pane, scene, out: Path, width: int, *, text: bool, look: Lo
     return saved
 
 
-def play(
-    name: str, out: Path, *, text: bool = False, iterm: bool = False, live: bool = False
-) -> list[Path]:
-    """Play scene `name`. `iterm` draws SVGs in the current iTerm2 profile's colors
-    and sets pcode's palette to match; `live` attaches this terminal to the scene's
-    pane instead of saving SVGs, for a screenshot of your real terminal.
+def setup(iterm: bool) -> tuple[Look, dict]:
+    """How shots are drawn, and the preferences every scene's pcode starts with.
+
+    `iterm` takes the current iTerm2 profile's colors, with pcode's palette to match.
     """
-    scene = load(name)
-    width, height = getattr(scene, "SIZE", (100, 30))
-    if live:
-        # The pane takes this window's size, so pcode never redraws for a resize.
-        width, height = shutil.get_terminal_size()
     look = Look()
     # Always sent, so the shot can draw the bar whatever terminal runs this.
     preferences = {
@@ -302,14 +310,22 @@ def play(
         # A still of `arc` catches a broken circle; every braille frame reads whole.
         "spinner": "dots",
     }
-    # Live in iTerm2, pcode's palette follows the profile you are looking at.
-    if iterm or (live and os.environ.get("ITERM_PROFILE")):
+    if iterm:
         look = profile_look()
         preferences["theme"] = look.palette
+    return look, preferences
+
+
+@contextlib.contextmanager
+def session(command: list[str], root: Path, size: tuple[int, int], preferences: dict):
+    """Run `command` (a scene) in a fresh tmux server, inside a new demo repo
+    under `root`; yield its `Pane` once pcode's prompt is up.
+    """
+    width, height = size
     # A fixed, neutral path: pcode's banner prints the workspace in full, and a
     # default temp directory would put your username in the docs.
     # Resolved (macOS /tmp is a symlink), so pcode shows the repo as ~/acme-api.
-    root = DEMO_ROOT.resolve()
+    root = root.resolve()
     shutil.rmtree(root, ignore_errors=True)
     repo = root / "acme-api"
     repo.mkdir(parents=True)
@@ -332,39 +348,87 @@ def play(
         env.pop("TMUX", None)
         env.pop("PROMPT_TOOLKIT_NO_CPR", None)
         pane = Pane(env, root)
-        command = shlex.join([sys.executable, str(SCENES / f"{name}.py")])
         try:
             pane("new-session", "-d", "-s", "shot", "-x", str(width), "-y", str(height),
-                 "-c", str(repo), command)  # fmt: skip
+                 "-c", str(repo), shlex.join(command))  # fmt: skip
             # tmux's default title is the host name, which has no place in the docs.
             pane("select-pane", "-t", "shot:0.0", "-T", UNTITLED)
             pane("pipe-pane", "-O", "-t", "shot:0.0", f"cat >> {shlex.quote(str(pane.log))}")
             pane.wait("❯")
-            if not live:
-                return play_steps(pane, scene, out, width, text=text, look=look, live=False)
-            failure = []
-
-            def steps():
-                try:
-                    play_steps(pane, scene, out, width, text=False, look=look, live=True)
-                except Exception as error:  # in the pane now, in full once you detach
-                    failure.append(error)
-                    pane("display-message", "-d", "0", f"scene failed: {error!s:.80}  (Ctrl-b d)")
-
-            threading.Thread(target=steps, daemon=True).start()
-            print(
-                "Attaching. Take each screenshot once the scene settles; Ctrl-b Space moves "
-                "on to the next shot, Ctrl-b d leaves (Ctrl-b Ctrl-b d inside your own tmux)."
-            )
-            subprocess.run([*pane.base, "attach", "-t", "shot"], env=env)
-            if failure:
-                raise failure[0]
-            return []
+            yield pane
         finally:
             pane.kill()
             stop_jobs(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def play(
+    name: str,
+    out: Path,
+    *,
+    text: bool = False,
+    iterm: bool = False,
+    live: bool = False,
+    tab: str | None = None,
+    ready: Path | None = None,
+) -> list[Path]:
+    """Play scene `name`. `iterm` draws SVGs in the current iTerm2 profile's colors
+    and sets pcode's palette to match; `live` attaches this terminal to the scene's
+    pane instead of saving SVGs, for a screenshot of your real terminal.
+
+    A scene with `TABS` plays only live, one `tab` at a time: iterm_window.py
+    opens each in a real iTerm2 tab. `ready` is written, with the pane's tmux server,
+    once a live scene's steps are done (see iterm_window.py).
+    """
+    scene = load(name)
+    width, height = getattr(scene, "SIZE", (100, 30))
+    if live:
+        # The pane takes this window's size, so pcode never redraws for a resize.
+        width, height = shutil.get_terminal_size()
+    # Live in iTerm2, pcode's palette follows the profile you are looking at.
+    look, preferences = setup(iterm or bool(live and os.environ.get("ITERM_PROFILE")))
+    command = [sys.executable, str(SCENES / f"{name}.py")]
+    tabs = getattr(scene, "TABS", None)
+    if tabs is not None and not live:
+        raise SystemExit(f"{name} is a real iTerm2 window: run iterm_window.py {name}")
+    root, steps = DEMO_ROOT, getattr(scene, "STEPS", [])
+    if tabs is not None:
+        if tab not in tabs:
+            raise SystemExit(f"--live {name} plays one tab: --tab {' or '.join(tabs)}")
+        root, steps, command = DEMO_ROOT / tab, tabs[tab].steps, [*command, tab]
+    with session(command, root, (width, height), preferences) as pane:
+        if not live:
+            return play_steps(pane, steps, out, width, text=text, look=look, live=False)
+        failure = []
+
+        def play_live():
+            try:
+                play_steps(pane, steps, out, width, text=False, look=look, live=True)
+                if ready:
+                    # Whole or absent: iterm_window.py reads it as soon as it exists.
+                    partial = ready.with_name(ready.name + ".tmp")
+                    partial.write_text(pane.server)
+                    os.replace(partial, ready)
+            except Exception as error:  # in the pane now, in full once you detach
+                failure.append(error)
+                pane("display-message", "-d", "0", f"scene failed: {error!s:.80}  (Ctrl-b d)")
+
+        # Closing the window hangs up: exit through `session()`'s cleanup.
+        signal.signal(signal.SIGHUP, lambda *_: sys.exit(1))
+        threading.Thread(target=play_live, daemon=True).start()
+        print(
+            "Attaching. Take each screenshot once the scene settles; Ctrl-b Space moves "
+            "on to the next shot, Ctrl-b d leaves (Ctrl-b Ctrl-b d inside your own tmux)."
+        )
+        # Named `pcode`: iTerm2's tab title appends the foreground job's argv[0],
+        # which in real use is pcode (see pcode.proctitle), not tmux.
+        tmux = shutil.which("tmux", path=pane.env.get("PATH")) or sys.exit("tmux not found")
+        attach = ["pcode", *pane.base[1:], "attach", "-t", "shot"]
+        subprocess.run(attach, executable=tmux, env=pane.env)
+        if failure:
+            raise failure[0]
+        return []
 
 
 def main() -> None:
@@ -389,8 +453,14 @@ def main() -> None:
         action="store_true",
         help="play one scene in this terminal for a real screenshot instead of saving SVGs",
     )
+    parser.add_argument("--tab", help="--live: the tab of a scene with TABS to play")
+    parser.add_argument(
+        "--ready", type=Path, help="--live: write the tmux server's name here once played"
+    )
     args = parser.parse_args()
-    names = args.scenes or sorted(p.stem for p in SCENES.glob("*.py"))
+    # Scenes with TABS are whole iTerm2 windows, shot by iterm_window.py.
+    every = sorted(p.stem for p in SCENES.glob("*.py"))
+    names = args.scenes or [name for name in every if not hasattr(load(name), "TABS")]
     if args.live:
         if len(names) != 1:
             parser.error("--live plays exactly one scene")
@@ -398,11 +468,16 @@ def main() -> None:
             parser.error("--live saves no shots for --text to print")
         if not sys.stdout.isatty():
             parser.error("--live needs a terminal to attach")
+    elif args.tab or args.ready:
+        parser.error("--tab and --ready go with --live")
+    # iterm_window.py holds the lock for the tabs it starts, which pass --ready.
+    lock = None if args.ready else lock_demo_root()  # noqa: F841 - held until exit
     # Your terminal's colors are for you, not for the docs.
     args.out = args.out or (ITERM_OUT if args.iterm else OUT)
     args.out.mkdir(parents=True, exist_ok=True)
     for name in names:
-        shots = play(name, args.out, text=args.text, iterm=args.iterm, live=args.live)
+        options = dict(text=args.text, iterm=args.iterm, live=args.live)
+        shots = play(name, args.out, **options, tab=args.tab, ready=args.ready)
         for path in shots + ([png(shot) for shot in shots] if args.png else []):
             print(path.relative_to(Path.cwd()) if path.is_relative_to(Path.cwd()) else path)
 
