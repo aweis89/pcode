@@ -10,6 +10,31 @@ as a safety control. If you want the agent sandboxed, run
 container or VM. Otherwise use a trusted repository and a safe working
 environment.
 
+Without the sandbox, this is what the agent can do without asking:
+
+- **Run any shell command.** Treat `shell` as arbitrary code execution as you.
+  It can read or modify anything the OS allows, including files the file tools
+  protect.
+- **Read and write files anywhere the OS permits** with the file tools,
+  including other worktrees, temporary directories and credential files such
+  as SSH keys. The only exception: files matching `.git/*`, `.env`, `.env.*`,
+  `*.pem`, `*.key` and `**/secrets*` are read-only through the file tools, at
+  any depth. The shell is not bound by this.
+- **Call any tool you have enabled**: [MCP servers](mcp.md), the
+  [browser](#browser-per-conversation), web search and page fetching, and tools
+  added by [extensions](guide/extending.md).
+- **Delegate to sub-agents.** The built-in worker can do all of the above (see
+  [below](#sub-agents)).
+
+Files and command output returned by tools are sent to the selected model.
+Relative paths in the file tools (including `..`) always resolve against the
+workspace, even after a shell command changes directory. `list_files` and
+`grep` default to the workspace and return workspace-relative paths (`../` for
+results outside it).
+
+Sessions started by [email remote control](email.md#the-remote-profile) always
+run with the sandbox on.
+
 ### Write policy and shell sandbox (opt-in)
 
 `/extensions on sandbox` limits where the agent can write, for the file tools
@@ -73,7 +98,10 @@ can also edit by hand:
 }
 ```
 
-`deny_read`, when present, replaces the default list. `"shell_sandbox": false`
+`deny_read`, when present, replaces the default list, including the entries
+that hide pcode's own logins (`credentials.json` and `mcp-credentials.json` in
+the config directory), so copy those into your list if you want them kept
+unreadable. `"shell_sandbox": false`
 keeps the file-tool checks but runs shell commands unsandboxed. A file that
 isn't valid JSON blocks writes and shell commands until you fix it, rather than
 silently dropping the policy.
@@ -98,18 +126,7 @@ What it does not cover:
 - **Linux** protects `.pcode/` and `.git/hooks/` only where they already exist
   when a command starts.
 
-File tools accept absolute paths anywhere the OS permits, including other
-worktrees and temporary directories. Relative paths (including `..`) always
-resolve against the workspace, even after a shell command changes directory.
-`list_files` and `grep` default to the workspace and return workspace-relative
-paths (`../` for results outside it). Files matching protected patterns such as
-`.git/*`, `.env`, `.env.*`, `*.pem`, `*.key`, and `**/secrets*` are read-only
-through file tools at any depth.
-
-`shell` accepts any command: treat it as arbitrary code execution as you. Shell
-commands can read or modify anything the OS allows, including files the file
-tools protect. Files and command output returned by tools are sent to the
-selected model.
+## Sub-agents
 
 The built-in `worker` sub-agent is general-purpose, not read-only: it can
 inspect and edit files, run commands and tests, and use the same extension tools,
@@ -241,13 +258,14 @@ alone and explain how to restore its path.
 Sub-agents defined by extensions always share the workspace; isolation is only
 for the built-in worker.
 
-### File and shell tools
+## File and shell tools
 
 The agent has `read_file`, `write_file`, `edit_file`, `list_files`, `grep`, and
-`shell`, plus planning, the worker, and web search. `list_files` and `grep` use a
-bundled ripgrep and respect ignore files. An edit can be one replacement or a
-list of them, all checked before the file is written once. Anthropic models get
-that list wrong often enough that pcode lets the model correct itself: see
+`shell`, plus tools for shell jobs, planning, delegating to the worker, web
+search, and [recalling earlier sessions](sessions.md#recalling-earlier-sessions).
+`list_files` and `grep` use a bundled ripgrep and respect ignore files. An edit can be one replacement or a
+list of them, all checked before the file is written once. When the model sends
+a malformed list, pcode lets it correct itself: see
 [retries](sessions.md#retries-and-resend).
 
 ### Shell jobs
@@ -285,8 +303,7 @@ message.
 
 The footer below the editor shows the active total as `1 job` or `N jobs`,
 including jobs the model is waiting on, and hides the count when none remain.
-There are no persistent per-job rows; use `/jobs` for details. While the model
-waits on a job, the status row says `Wait for job` and the tool row above it
+Use `/jobs` for details. While the model waits on a job, the status row says `Wait for job` and the tool row above it
 names the job: `⧖ 45.2s · j3 · running the e2e suite · make e2e`.
 The finished job goes to scrollback at the end of the turn (or at once while
 idle) as a normal `Run shell` block labeled `background`, with its id and
@@ -331,7 +348,7 @@ backend available:
 
 | | Search | Fetch a URL |
 | --- | --- | --- |
-| Model has a native tool (Anthropic, OpenAI; not Meridian) | provider runs it server-side | Anthropic runs it server-side |
+| Model has a native tool (Anthropic, OpenAI) | provider runs it server-side | Anthropic runs it server-side |
 | `EXA_API_KEY` set | Exa `web_search` | Exa `get_page` |
 | Otherwise | DuckDuckGo `web_search` | HTTP fetch `get_page`, converted to Markdown |
 

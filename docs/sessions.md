@@ -188,11 +188,11 @@ terminal on a different protocol version is refused with a message saying so.
 ## Resuming
 
 ```sh
-uv run pcode --sessions
-uv run pcode --continue                             # this directory's newest session
-uv run pcode --continue SESSION_ID
-uv run pcode --continue SESSION_ID --fork          # branch off a copy, keep the original
-uv run pcode -m openai-codex:gpt-5.6-sol --no-save  # opt out for a sensitive session
+pcode --sessions
+pcode --continue                             # this directory's newest session
+pcode --continue SESSION_ID
+pcode --continue SESSION_ID --fork           # branch off a copy, keep the original
+pcode -m openai-codex:gpt-5.6-sol --no-save  # opt out for a sensitive session
 ```
 
 `-c` / `--continue` restores the saved model, workspace, and message history. It

@@ -79,9 +79,9 @@ write one.
 
 For a workflow that's instructions rather than code, write a skill: a
 `SKILL.md` file under `.agents/skills/NAME/` (or `.claude/skills/NAME/`) in a
-repository, or `~/.agents/skills/NAME/` for yourself. Each skill becomes a slash command
-(`/skill:NAME`), and the agent can also pick one up on its own when a task
-matches its description. See
+repository, or `~/.agents/skills/NAME/` for yourself. Each skill becomes a
+slash command (`/skill:NAME`), and the agent is told which skill files the
+workspace has, so it can also read one on its own. See
 [skills as slash commands](../workspace.md#skills-as-slash-commands).
 
 ## Repository instructions

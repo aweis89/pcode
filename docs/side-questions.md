@@ -78,7 +78,7 @@ pcode config set btw_auto_open off   # Default on; applies immediately
 
 With it off, a ready answer only prints its transcript notice and waits for a
 bare `/btw`. Auto-open never interrupts a popup or command already using the
-terminal — it queues behind it — and it does nothing when the viewer is already
+terminal (it queues behind it), and it does nothing when the viewer is already
 open, because an open viewer follows new answers on its own.
 
 The footer counts side questions that are `running` and answers that are
@@ -201,7 +201,7 @@ is the question.
 
 ```text
 ❯ /btw $anthropic:claude-sonnet-5 is this migration safe?
-❯ /btw $meridian:claude-opus-5-5 $openai-codex:gpt-6-astra second opinions on the plan?
+❯ /btw $claude:claude-opus-5-5 $openai-codex:gpt-6-astra second opinions on the plan?
 ```
 
 Typing `$` in a `/btw` line completes model names from the same catalog as the
@@ -217,9 +217,7 @@ completes there too.
 - **Another model:** the same agent, tools, history and framing, but the
   model's own settings: its defaults and its saved `/effort`, never the
   conversation model's. It starts **without the conversation's cache**, so its
-  first request pays full price for the whole conversation. It also runs under
-  a conversation id of its own, so a Meridian session for the main conversation
-  is never moved by it.
+  first request pays full price for the whole conversation.
 - **Several models:** one side question per model, started together. Each has
   its own row, answer, error and `errors.log` entry, and one failing does not
   affect the others. Rows, the viewer list, and the ready notices carry a short
@@ -257,8 +255,8 @@ stay apart. The effort is only read from the leading words, and only from the
 last `+` in a model word when a real level follows, so model ids that contain
 `+` still work. An unknown level fails the command, and so does an effort on a
 model `/effort` cannot set (it supports OpenAI/Codex models and the Anthropic
-and Meridian models whose profile has effort control). Typing `+` in the leading
-words completes the levels.
+and Claude Code models whose profile has effort control). Typing `+` in the
+leading words completes the levels.
 
 ## Which context it sees
 

@@ -1,4 +1,4 @@
-<img width="1512" height="947" alt="Screenshot 2026-10-06 at 7 23 29 PM" src="https://github.com/user-attachments/assets/a648fede-d703-44ef-8b52-895d3a0cd2af" />
+<img width="1512" height="947" alt="pcode running in a terminal" src="https://github.com/user-attachments/assets/a648fede-d703-44ef-8b52-895d3a0cd2af" />
 <img width="1360" alt="pcode fixing a bug: a word-level diff of the edit, then a worker sub-agent reviewing it with its own plan nested under the task list" src="https://raw.githubusercontent.com/cruxwell/pcode/master/docs/assets/screenshots/readme.png" />
 
 # pcode
@@ -42,9 +42,9 @@ uv tool install 'pcode[claude]'
 ## Quick start
 
 ```sh
-codex login                                  # or /login [claude|openai-codex] inside pcode, or export a provider API key
-pcode -m openai-codex:gpt-5.6-luna           # interactive; /model (Ctrl+L) saves a default
-pcode                                        # reuses the saved model, or opens the offline preview
+pcode -m claude:claude-sonnet-5              # Claude subscription; run /login claude if not signed in
+pcode -m openai-codex:gpt-5.6-luna           # ChatGPT subscription (/login openai-codex), or any API-key provider
+pcode                                        # reuses your last model; with none, an offline preview
 pcode -C /path/to/repo "Summarize the open TODOs"
 git diff | pcode -p --no-save                # non-interactive: reply to stdout
 pcode --continue                             # resume this directory's newest session
@@ -68,10 +68,10 @@ before pointing it at anything you care about.
   `jj` to leave insert mode.
 - `/btw` side questions, background sessions, recall of past sessions, a
   browser the agent can drive, and Python extensions.
-- Pydantic AI's Harness coder capabilities, with the rest of a finished agent
-  on top: MCP with OAuth and tool search, searchable sessions, jobs,
-  worktrees. Extensions are plain Pydantic AI capabilities. The conversation
-  tree follows [pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md)'s.
+- Built on Pydantic AI's Harness coder, with MCP (OAuth and tool search),
+  searchable sessions, jobs and worktrees on top. Extensions are plain
+  Pydantic AI capabilities. The conversation tree follows
+  [pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md)'s.
 
 See [PLAN.md](https://github.com/cruxwell/pcode/blob/master/PLAN.md) for the longer-term direction.
 
@@ -79,21 +79,23 @@ See [PLAN.md](https://github.com/cruxwell/pcode/blob/master/PLAN.md) for the lon
 
 | Page | What it covers |
 | --- | --- |
-| [Getting started](https://cruxwell.github.io/pcode/getting-started/) | Homebrew and source installs, `-C`, `--print`, shell completion |
+| [Getting started](https://cruxwell.github.io/pcode/getting-started/) | Homebrew, uv and source installs, signing in, `--print`, shell completion |
 | [Scrollback and transparency](https://cruxwell.github.io/pcode/guide/scrollback/) | Guide: what goes into scrollback, `/tools`, `/diffs` |
 | [A shell for long-running work](https://cruxwell.github.io/pcode/guide/shell/) | Guide: background jobs, watching CI |
 | [Parallel agents](https://cruxwell.github.io/pcode/guide/parallel/) | Guide: worktrees, parallel sub-agents, `/agents` |
 | [Extending pcode](https://cruxwell.github.io/pcode/guide/extending/) | Guide: extensions, skills, settings |
-| [Providers and models](https://cruxwell.github.io/pcode/providers/) | Authentication, supported providers, the model picker, reasoning effort, Claude Code, Meridian, proxies |
+| [Providers and models](https://cruxwell.github.io/pcode/providers/) | Authentication, supported providers, the model picker, reasoning effort, Claude Code, proxies |
 | [Configuration](https://cruxwell.github.io/pcode/configuration/) | `pcode config`, per-repository overrides, trusting repository code, the settings table, syntax styles |
 | [Commands and keys](https://cruxwell.github.io/pcode/commands/) | Slash commands, key bindings, vi mode, tmux newlines, status line, `!command`, the diff and tool inspectors |
 | [Keybindings](https://cruxwell.github.io/pcode/keybindings/) | Custom command mappings with `/bind`, Ctrl shortcuts, vi editing, a normal-mode leader, and custom escape sequences such as `jj` |
+| [Terminal setup](https://cruxwell.github.io/pcode/terminal/) | Tab titles, the progress bar, iTerm2 and tmux settings |
 | [Tools](https://cruxwell.github.io/pcode/tools/) | Tool permissions, web search, the browser, code mode |
 | [MCP servers](https://cruxwell.github.io/pcode/mcp/) | Opt-in MCP configuration, OAuth sign-in, deferred tool search |
 | [Working in a repository](https://cruxwell.github.io/pcode/workspace/) | `AGENTS.md`/`CLAUDE.md`, skills as slash commands, one worktree per session |
 | [Sessions and recovery](https://cruxwell.github.io/pcode/sessions/) | Saving, resuming, recalling earlier sessions, checkpoints, retries |
 | [Context, limits and caching](https://cruxwell.github.io/pcode/context/) | Prompt overhead, compaction, output limits, prompt cache notices |
 | [The transcript](https://cruxwell.github.io/pcode/transcript/) | What lands in scrollback: diffs, thinking, errors, command output, `/redraw` |
+| [Email remote control](https://cruxwell.github.io/pcode/email/) | Driving a session from Gmail, the remote profile |
 | [Conversation tree](https://cruxwell.github.io/pcode/conversation-tree/) | `/tree`: rewinding and forking a conversation |
 | [Side questions](https://cruxwell.github.io/pcode/side-questions/) | `/btw`: asking about the running turn without interrupting it |
 

@@ -70,9 +70,9 @@ optional vi leader share mappings.
 
 `PCODE_CONFIG_DIR` points pcode at a different config directory without moving
 the rest of your `XDG_CONFIG_HOME`. Everything pcode keeps there follows it:
-`preferences.json`, `credentials.json` and `mcp-credentials.json` (so each
-instance has its own `/login`), `mcp.json`, `bindings.json`, `extensions/`, and
-`worktree-setup`.
+`preferences.json`, `codex-credentials.json` and `mcp-credentials.json` (so
+each instance has its own `/login openai-codex` and MCP sign-ins), `mcp.json`,
+`bindings.json`, `extensions/`, and `worktree-setup`.
 Sessions and other state still live under `XDG_STATE_HOME`; set
 `PCODE_SESSION_DIR` too if those should be separate.
 
@@ -80,8 +80,8 @@ Sessions and other state still live under `XDG_STATE_HOME`; set
 PCODE_CONFIG_DIR=~/.config/pcode-work pcode      # separate login and settings
 ```
 
-`PCODE_CREDENTIALS_FILE` and `PCODE_MCP_CONFIG` still win over the directory
-for their single file.
+`PCODE_CODEX_CREDENTIALS_FILE` and `PCODE_MCP_CONFIG`
+still win over the directory for their single file.
 
 ## Per-repository overrides
 
@@ -100,10 +100,12 @@ pcode config project reset              # Drop the whole overlay
 
 A cloned repository must not be able to run code or pick credentials on your
 behalf, so `project_extensions`, `trusted_projects`, `extension_dirs`,
-`extensions_off`, `extensions_on`, `meridian_managed`, and `anthropic_auth` are
-user-only: the project file cannot set them, and pcode says so at launch if it
-tries. `model` and `subagent_models` can be set, but only choose among the
-providers you are signed in to; `/subagents` names a list the repository set. The overlay is read from the
+`extensions_off`, and `extensions_on` are user-only: the project file cannot
+set them, and pcode says so at launch if it tries. `model` and `subagent_models`
+can be set, but only choose among the providers you are signed in to. When the
+repository sets `subagent_models`, `/subagents` shows that list, says it comes
+from the repository, and refuses to change it; edit it with
+`pcode config project set` or `unset` instead. The overlay is read from the
 launch workspace before any worktree is created, so `worktree on` in a
 repository's file is what starts each of its sessions in a worktree.
 
@@ -136,10 +138,8 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
-| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Meridian); fallback for models `/effort` has not set |
-| `model_providers` | `` | `,`-separated providers `/model` lists; empty shows every provider you're signed in to or have a key for |
-| `anthropic_auth` | unset | `api-key`, `oauth` (which Anthropic credential `anthropic:` models use; set by `/login`, overridden by `PCODE_ANTHROPIC_AUTH`) |
-| `meridian_managed` | `auto` | `auto`, `on`, `off` (use a running Meridian proxy or start a private one; see [Meridian](providers.md#which-meridian-pcode-uses)) |
+| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Claude Code); fallback for models `/effort` has not set |
+| `model_providers` | empty | `,`-separated providers `/model` lists; empty shows every provider you're signed in to or have a key for |
 | `claude_idle_processes` | `1` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes each session keeps warm (about 120 MB each beyond the first); `0` stops each when its turn ends. None are kept under memory pressure |
 | `claude_idle_minutes` | `10` | Positive integer, minutes a finished `claude:` CLI process is kept warm |
 | `retry_attempts` | `3` | Whole number, automatic retries after a dropped connection; `0` disables. See [retries](sessions.md#retries-and-resend) |
@@ -150,9 +150,9 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | --- | --- | --- |
 | `send_mode` | `steering` | `steering`, `queue`, `interrupt` (what Enter does while a turn runs; see [sending while the agent is working](commands.md#sending-while-the-agent-is-working)) |
 | `editing_mode` | `emacs` | `emacs`, `vi` (prompt editor key bindings; see [vi editing](commands.md#optional-vi-editing)) |
-| `vi_key_prefix` | `off` | Additional leader for the main prompt's vi normal mode: `<space>` or a single printable non-whitespace character, such as `,` or `\`. Keeps the global prefix. Requires restart; see [normal-mode shortcuts](commands.md#normal-mode-shortcut-prefix). |
+| `vi_key_prefix` | `off` | Additional leader for the main prompt's vi normal mode: `<space>` or a single printable non-whitespace character, such as `,` or `\`. Keeps the global prefix. Requires restart; see [Use Space as the vi leader](keybindings.md#use-space-as-the-vi-leader). |
 | `vi_escape_sequence` | `escape` | Escape-only by default; set `jj` (or another printable sequence without spaces) to also leave vi insert mode with that sequence. Escape remains available. Requires restart; see [vi editing](commands.md#optional-vi-editing). |
-| `key_prefix` | `ctrl` | Direct Ctrl+letter shortcuts, such as Ctrl+L for models and Ctrl+Y to copy. No global action-menu leader by default. Set `ctrl+b`, `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"` to use a leader before the action letter; existing saved leaders remain supported. Ctrl+/ browses contextual help. See [shortcut prefix](commands.md#shortcut-prefix) |
+| `key_prefix` | `ctrl` | Direct Ctrl+letter shortcuts, such as Ctrl+L for models and Ctrl+Y to copy. No global action-menu leader by default. Set `ctrl+b`, `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"` to use a leader before the action letter. Ctrl+/ browses contextual help. See [shortcut prefix](commands.md#shortcut-prefix) |
 | `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel; `off` keeps native text selection, Ctrl+Q flips it inside one popup, see [popup keys](commands.md#popup-keys)) |
 | `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |
 
@@ -170,7 +170,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; `/show-edits`) |
 | `live_edits` | `off` | `on`, `off` (preview an edit or `run_code` snippet at the bottom while the model writes it) |
 | `diff_renderer` | `delta` | `delta`, `rich` (draw diffs in scrollback and `/diffs` with [delta](https://dandavison.github.io/delta/) when it's installed, falling back to Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
-| `delta_args` | `` | delta's arguments, quoted as in a shell, such as `--line-numbers`; the only delta configuration pcode reads (git config is ignored), and they override pcode's own choices |
+| `delta_args` | empty | delta's arguments, quoted as in a shell, such as `--line-numbers`; the only delta configuration pcode reads (git config is ignored), and they override pcode's own choices |
 | `diff_dedent` | `on` | `on`, `off` (strip the indentation every line of a diff hunk shares, so an edit deep in a nested block starts at the left edge; with delta or Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
 | `diff_layout` | `unified` | `unified`, `side-by-side`, `auto` (delta's layout; `auto` goes side by side at 180 columns or wider) |
 | `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+G or `/show-commands`) |
@@ -208,7 +208,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `job_wake` | `on` | `on`, `off` (start a turn when a job the model backgrounded finishes while idle; see [shell jobs](tools.md#shell-jobs)) |
 | `tool_retries` | `3` | Whole number, corrections the model gets per turn when a tool call has invalid arguments |
 | `strict_tools` | `on` | `on`, `off` (constrain `edit_file` arguments with Anthropic strict tool use) |
-| `subagent_models` | `` | `,`-separated models `delegate_task` lists for running a sub-agent; others can still be named per delegation ([`/subagents`](tools.md#sub-agents-on-other-models)); empty runs every sub-agent on the session's model; `/reload` to apply |
+| `subagent_models` | empty | `,`-separated models `delegate_task` lists for running a sub-agent; others can still be named per delegation ([`/subagents`](tools.md#sub-agents-on-other-models)); empty runs every sub-agent on the session's model; `/reload` to apply |
 | `worker_concurrency` | `0` | `0` means unlimited; a positive integer caps concurrent built-in workers per session; `/reload` to apply |
 | `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |
 | `tool_output_threshold` | `10000` | Positive integer, characters that trigger reduction |
@@ -259,10 +259,10 @@ Settings for [`pcode --email-listen`](email.md). All of them are user-only: a re
 | `skill_commands` | `prefix` | `prefix`, `bare`, `both`, `off` (how discovered skills appear as slash commands) |
 | `skill_dirs` | `~/.agents/skills:.agents/skills` | `:`-separated directories searched for skills; relative entries resolve against the workspace |
 | `project_extensions` | `off` | `on`, `off` (`on` trusts every repository's `.pcode/extensions` and `worktree-setup`) |
-| `trusted_projects` | `` | `:`-separated repository paths whose shipped code may run; the launch prompt appends here |
-| `extension_dirs` | `` | `:`-separated extra directories searched for extensions, after the user one |
-| `extensions_off` | `` | `,`-separated extension names that never load (`/extensions off NAME`) |
-| `extensions_on` | `` | `,`-separated opt-in extension names to load (`/extensions on NAME`) |
+| `trusted_projects` | empty | `:`-separated repository paths whose shipped code may run; the launch prompt appends here |
+| `extension_dirs` | empty | `:`-separated extra directories searched for extensions, after the user one |
+| `extensions_off` | empty | `,`-separated extension names that never load (`/extensions off NAME`) |
+| `extensions_on` | empty | `,`-separated opt-in extension names to load (`/extensions on NAME`) |
 
 ### Diagnostics
 
@@ -300,8 +300,8 @@ chosen while the dark palette is active keeps its popup but leaves the chrome
 on the palette. Picking any Pygments style also switches scrollback headings,
 links, quotes and tables from ANSI names to the palette's own colors.
 
-These are the styles Pygments installs here; a Pygments style plugin package adds
-to the list automatically.
+These are the styles that come with Pygments; installing a Pygments style plugin
+package adds to the list automatically.
 
 Darker backgrounds: `coffee`, `dracula`, `fruity`, `github-dark`, `gruvbox-dark`,
 `inkpot`, `lightbulb`, `material`, `monokai`, `native`, `night-owl`, `nord`,
@@ -309,7 +309,8 @@ Darker backgrounds: `coffee`, `dracula`, `fruity`, `github-dark`, `gruvbox-dark`
 `vim`, `zenburn`.
 
 Lighter backgrounds: `abap`, `algol`, `algol_nu`, `arduino`, `autumn`, `borland`,
-`bw`, `colorful`, `default`, `emacs`, `friendly`, `friendly_grayscale`, `igor`,
+`bw`, `colorful`, `default`, `emacs`, `friendly`, `friendly_grayscale`,
+`gruvbox-light`, `igor`,
 `lilypond`, `lovelace`, `manni`, `murphy`, `paraiso-light`, `pastie`, `perldoc`,
 `rainbow_dash`, `sas`, `solarized-light`, `staroffice`, `stata-light`, `tango`,
 `trac`, `vs`, `xcode`.
@@ -338,5 +339,5 @@ malformed file, but config commands report it and refuse to overwrite it: use
 `PCODE_CONFIG_DIR` overrides the user config directory for preferences, extensions,
 MCP configuration, keybindings, worktree setup, and stored logins. Otherwise pcode uses
 `$XDG_CONFIG_HOME/pcode`, defaulting to `~/.config/pcode`. Per-file overrides
-(`PCODE_CREDENTIALS_FILE`, `PCODE_CODEX_CREDENTIALS_FILE`, `PCODE_MCP_CONFIG`)
+(`PCODE_CODEX_CREDENTIALS_FILE`, `PCODE_MCP_CONFIG`)
 take precedence.

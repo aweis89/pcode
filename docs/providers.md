@@ -25,9 +25,9 @@ and refreshed tokens are saved for later launches.
 
 For ordinary OpenAI API models, use `openai:<model-id>` with `OPENAI_API_KEY` in
 your environment. For Anthropic API models, use `anthropic:<model-id>` with
-`ANTHROPIC_API_KEY`. Use the exact model ID your account offers; pcode does not
-remap aliases. The provider extras below are installed by default, including with
-`make install`.
+`ANTHROPIC_API_KEY`; to use a Claude subscription instead, pick a
+[Claude Code model](#claude-code-provider). Use the exact model ID your account
+offers; pcode does not remap aliases. Every provider in the table below works with the default install.
 
 ## Supported providers
 
@@ -38,11 +38,10 @@ or only accepts IDs you type.
 
 | Prefix | Enabled by | Catalog |
 | --- | --- | --- |
-| `anthropic` | `ANTHROPIC_API_KEY` (or a `/login` credential, [turned off](#sign-in-with-your-anthropic-account)) | yes |
+| `anthropic` | `ANTHROPIC_API_KEY` | yes |
 | `openai-codex` | pcode login, then CLI credential file (`CODEX_HOME` honored) | yes (all OpenAI IDs) |
 | `openai`, `openai-chat`, `openai-responses` | `OPENAI_API_KEY` | yes |
 | `claude` | Claude Code config (`~/.claude`, `~/.claude.json`, or `CLAUDE_CONFIG_DIR`) or `claude` on `PATH` | yes (Anthropic IDs) |
-| `meridian` | [Turned off](#local-meridian-provider); otherwise `meridian` on `PATH` or `PCODE_MERIDIAN_BASE_URL` | yes (Anthropic IDs) |
 | `google` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | yes |
 | `google-cloud` | `GOOGLE_CLOUD_PROJECT` or `GOOGLE_APPLICATION_CREDENTIALS` | yes |
 | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID`, or `AWS_PROFILE` | yes |
@@ -72,64 +71,8 @@ or only accepts IDs you type.
 The catalog is a static list of known models, not what your account is entitled
 to. Providers not in the table (for example `mistral`, `cohere`, `huggingface`,
 `litellm`) still work from `--model` once you install their Pydantic AI extra,
-but the picker does not offer them. Apart from Anthropic sign-in, Codex and
-Claude Code, every provider is plain API-key access with no login in pcode: set
-the variable in your shell before launching.
-
-## Sign in with your Anthropic account
-
-!!! note "Turned off"
-    This sign-in and [Meridian](#local-meridian-provider) are off while
-    [Claude Code models](#claude-code-provider) (`claude:`) are tried as the way
-    to use a Claude subscription. `/login` signs in to Claude Code instead, a
-    stored sign-in is ignored, and `anthropic:` models use `ANTHROPIC_API_KEY`
-    as before. Setting `LEGACY_ANTHROPIC_AUTH = True` in `src/pcode/models.py`
-    restores both as described here.
-
-Enter `/login` in an idle session to use your Anthropic subscription with
-`anthropic:` models. pcode prints the authorization URL and opens `claude.ai` in
-your browser; with a current browser session it is a single approval click. The
-active conversation keeps its history and switches to the new credential.
-
-```sh
-pcode -m anthropic:<model-id>   # then: /login
-```
-
-- The browser redirects to `http://localhost:54545/callback`. Set
-  `PCODE_OAUTH_CALLBACK_PORT` if that port is taken. The callback must be
-  reachable from the browser; over SSH, forward it with
-  `ssh -L 54545:localhost:54545`. A callback from anything but this sign-in gets
-  an error page while the sign-in keeps waiting. Sign-in times out after five
-  minutes.
-- Tokens are stored in `~/.config/pcode/credentials.json` with owner-only (0600)
-  permissions (`XDG_CONFIG_HOME`, `PCODE_CONFIG_DIR`, and `PCODE_CREDENTIALS_FILE`
-  are honored). They are refreshed automatically, without blocking the terminal.
-  No API key is created, and nothing is written to another tool's credential
-  store.
-- `/logout` removes the stored credential. Neither command works while a run or
-  queued prompts are active.
-- Later launches use the stored login ahead of `ANTHROPIC_API_KEY`. Set
-  `PCODE_ANTHROPIC_AUTH=api-key` to force the environment key, or
-  `PCODE_ANTHROPIC_AUTH=oauth` to require this login.
-- Requests go to `https://api.anthropic.com` regardless of `ANTHROPIC_BASE_URL`.
-
-!!! warning "Account risk"
-    This sign-in authenticates as the public Claude Code client. It is
-    compatibility support, not an official third-party integration, and
-    entitlements, quotas, and server behavior can change at any time. The
-    supported path is `ANTHROPIC_API_KEY`. See
-    [Anthropic provider options](https://github.com/cruxwell/pcode/blob/master/dev/anthropic-providers.md)
-    for the account risk and the alternatives.
-
-If a model is rejected with `400 claude_code_version_too_old`, the Claude Code
-version pcode reports is too old for it. pcode reports your installed
-`claude --version` when that is newer than its built-in value, so keeping Claude
-Code updated usually fixes it. Without Claude Code installed, set
-`PCODE_CLAUDE_VERSION` (for example `2.1.280`). An older or never-released
-version gets requests rejected.
-
-There is no API-key entry UI. For API-key access, set `ANTHROPIC_API_KEY` in your
-environment.
+but the picker does not offer them. Apart from Codex and Claude Code, every
+provider is plain API-key access with no login in pcode: set the variable in your shell before launching.
 
 ## Choose a model in the terminal
 
@@ -189,7 +132,7 @@ separate from saved conversations and unaffected by `--no-save`.
 
 ## Reasoning effort
 
-For OpenAI/Codex, Anthropic, Claude Code, and Meridian models, Ctrl+N raises
+For OpenAI/Codex, Anthropic, and Claude Code models, Ctrl+N raises
 effort and Ctrl+P lowers it; or use `/effort low|medium|high|xhigh`. `/effort`
 alone shows the current setting and `/effort default` removes the override. Each
 model remembers its own level. The footer shows the selected effort.
@@ -199,7 +142,7 @@ model remembers its own level. The footer shows the selected effort.
 - Changes apply from the next turn and keep your draft.
 - Effort does not change the model's thinking configuration. Not every model
   accepts every level; the provider still validates it.
-- On Anthropic, Claude Code, and Meridian, only models that support effort accept
+- On Anthropic and Claude Code, only models that support effort accept
   it (Opus 4.5+ and Sonnet 4.6+, among others). For any other model, `/effort`
   refuses a level and the footer shows `n/a`; `/effort default` still clears a
   saved level. `xhigh` becomes Anthropic's `max` where the model has no native
@@ -223,7 +166,7 @@ elsewhere install `pcode[claude]`, for example
 models are left out of `/model`, and naming one tells you what to install.
 
 pcode keeps one Claude Code process per conversation and runs every tool itself.
-Unlike Meridian, a tool round does not start a new process.
+A tool round does not start a new process.
 [Anthropic provider options](https://github.com/cruxwell/pcode/blob/master/dev/anthropic-providers.md#direct-sdk-provider)
 has the design and measurements.
 
@@ -271,122 +214,6 @@ writes it to the cache again.
   reaches the model as a message the user sent while it was working.
 - Thinking is shown in summarized form.
 
-## Local Meridian provider
-
-!!! note "Turned off"
-    Meridian is off, along with [pcode's own Anthropic sign-in](#sign-in-with-your-anthropic-account):
-    `/model` does not offer it and a saved `meridian:` model fails to start with
-    a pointer to the matching `claude:` one. The rest of this section describes it
-    with `LEGACY_ANTHROPIC_AUTH = True` in `src/pcode/models.py`.
-
-[Meridian](https://github.com/rynfar/meridian) runs Claude Code behind a local
-Anthropic-compatible API, so a `meridian:` model uses your Claude subscription.
-[Anthropic provider options](https://github.com/cruxwell/pcode/blob/master/dev/anthropic-providers.md)
-compares it with `/login`.
-
-```sh
-pcode --upgrade-meridian            # install or upgrade Meridian with npm
-pcode -m meridian:claude-sonnet-5   # then /login meridian if Claude is not signed in
-```
-
-Meridian is an npm package, so the Homebrew formula does not install it, and
-`pcode --upgrade-meridian` needs `npm` on `PATH`. Once `meridian` is on `PATH`,
-pcode starts its own private instance with no further setup, unless an older
-shared proxy already answers on port 3456 (see below).
-
-### Which Meridian pcode uses
-
-The `meridian_managed` preference decides which Meridian pcode connects to:
-
-| Value | Behavior |
-| --- | --- |
-| `auto` (default) | Use a proxy already answering at `http://127.0.0.1:3456`; otherwise start a private one when `meridian` is on `PATH` |
-| `on` | Always start a private instance |
-| `off` | Always use the external proxy, running or not |
-
-Setting `PCODE_MERIDIAN_BASE_URL` always selects that external proxy.
-`PCODE_MERIDIAN_MANAGED=1` or `0` overrides the preference for one process (as
-`on` or `off`); config commands show the saved value, not this override. A change
-applies the next time pcode connects to Meridian and does not stop an instance
-already running.
-
-**Private instance.** Each pcode process starts one on a free loopback port while
-the terminal opens, and it needs Meridian 1.71.1 or newer. It is configured
-separately from any Meridian you run yourself (your `MERIDIAN_*` and
-`CLAUDE_PROXY_*` variables are ignored), with Thinking Passthrough on and
-telemetry and update checks off. If it is not ready within 30 seconds, pcode
-reports the failure.
-
-It uses your saved active Meridian profile, else the first profile, else Claude
-Code's own login. pcode never reads or copies the credential.
-
-Its session store is `$XDG_STATE_HOME/pcode/meridian/sessions` (default
-`~/.local/state/pcode/meridian/sessions`), shared by all pcode processes, so a
-resumed conversation continues where it left off. If the instance exits, pcode
-restarts it within about a second; requests in flight are not replayed, and after
-three restarts in five minutes pcode gives up and says so. A normal pcode exit
-stops the instance, but `kill -9` cannot. After Meridian itself crashes, the
-replacement can answer `503 overloaded_error` for about a minute.
-
-**External instance.** The default is `http://127.0.0.1:3456`; override it with
-`PCODE_MERIDIAN_BASE_URL` (the server root, without `/v1/messages`). If your proxy
-needs an API key, set `PCODE_MERIDIAN_API_KEY`. pcode never changes an external
-proxy's settings.
-
-If you run Meridian as a service (launchd, systemd, `brew services`), set
-`MERIDIAN_WORKDIR` to an existing empty directory. Otherwise Meridian usually runs
-in `/`, and Claude Code scans every file under it on each request: requests slow
-down, and under load Meridian answers `503 overloaded_error` ("session
-bookkeeping is saturated"). The private instance does this for you.
-
-Meridian owns authentication, so `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and
-`ANTHROPIC_BASE_URL` are not passed to it. Global HTTP proxy settings and
-`PCODE_LLM_PROXY` do not apply. If Meridian is unavailable, requests fail rather
-than going to Anthropic directly.
-
-### Signing in
-
-`/login meridian` runs `claude auth login` for the login your Meridian reads: the
-active profile of an external proxy that has profiles, the profile a private
-instance started with, or otherwise Claude Code's own login. Sign-in completes in
-Anthropic's own flow, pcode stores nothing, and the next request uses it. It needs
-`claude` on `PATH` (or `MERIDIAN_CLAUDE_PATH`).
-
-Over SSH, or when no browser opens, `/login meridian` prints the command to run in
-a terminal on that machine instead. For a profile that authenticates with a
-`claude setup-token` token, it prints `meridian profile add NAME --oauth-token`.
-`/login` without an argument is still pcode's own Anthropic sign-in.
-
-### Upgrading Meridian
-
-`pcode --upgrade-meridian` upgrades every Meridian pcode can use, each with the
-npm that installed it: the `meridian` on `PATH` and the one the running proxy was
-started from. With neither installed, it installs `@rynfar/meridian`. A running
-proxy keeps its old version until it restarts; the command says so and, when a
-macOS launchd agent runs Meridian, prints the `launchctl kickstart -k` line to
-restart it. Private instances update when pcode restarts.
-
-### Models, errors and thinking
-
-`/model` includes Meridian when `meridian` is on `PATH`, when
-`PCODE_MERIDIAN_BASE_URL` is set, or when the current model is Meridian. It
-suggests Claude model IDs; type `meridian:<model-id>` for others your proxy
-supports. Listing does not start Meridian or check model access. pcode, not
-Meridian, runs the tools.
-
-When a request fails, the error names the cause when pcode can tell: the proxy
-not answering, a private instance restarting, a Claude login to refresh with
-`/login meridian`, or a key the proxy rejected.
-
-To see thinking, `/show-thinking` must not be `off` and Meridian must forward
-thinking. A private instance does this already. For an external proxy,
-`/show-thinking` reports the proxy's setting, and pcode warns once per session
-when thinking display is on but the proxy is not forwarding it. Turn on the
-passthrough adapter's Thinking Passthrough option on the proxy's `/settings` page
-(default <http://127.0.0.1:3456/settings>); it is off by default and affects every
-client of that proxy, so pcode leaves it to you. Thinking the model never sent
-still cannot be shown.
-
 ## Model-only HTTP proxy
 
 Set `PCODE_LLM_PROXY` to send Codex model requests, and only those, through an
@@ -398,8 +225,8 @@ PCODE_LLM_PROXY=http://127.0.0.1:8080 pcode --model openai-codex:gpt-5.6-sol
 
 - HTTP and HTTPS proxy URLs work (HTTPS traffic uses CONNECT). Unset or blank
   means no proxy.
-- Only `openai-codex:` models use it, including Codex token refresh and the
-  worker's model calls. Other providers ignore it, so you can leave it set when
+- Only `openai-codex:` models use it, including Codex token refresh and model
+  calls from delegated workers. Other providers ignore it, so you can leave it set when
   switching providers.
 - The Codex client then ignores other proxy settings, including `NO_PROXY`, and
   environment-based TLS configuration, so use a proxy that tunnels HTTPS without

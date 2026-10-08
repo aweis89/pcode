@@ -179,7 +179,7 @@ built up, pcode adds a muted note near the end of the footer under the editor,
 just before the keybindings hint, kept until your next prompt:
 
 ```text
-~/p/pcode@main · steering · claude:claude-opus-5-5 (high) · 92k/1m · cache miss 0/166k · Ctrl+B Keys
+~/p/pcode@main · steering · claude:claude-opus-5-5 (high) · 92k/1m · cache miss 0/166k · Ctrl+/ Keys
 ```
 
 That reads "reused 0 of about 166k cached tokens"; `cache drop 41k/166k` means
@@ -189,7 +189,7 @@ this note. It never goes into
 the scrollback.
 
 The full notice is saved with the session (in `transcript.jsonl` in its session
-directory), where `make cache-report` and later debugging can read it:
+directory), where later debugging can read it:
 
 ```text
 Prompt cache: request 1 reused 0 of ~48,210 tokens cached in an earlier turn (anthropic/claude-sonnet-4-5).
@@ -233,7 +233,7 @@ Request fingerprints: ~/.local/state/pcode/cache-diagnostics/20260919T035812-482
 
 The files contain sizes, digests, and token counts, never prompt text. Set
 `PCODE_CACHE_DIAGNOSTICS=off` to skip them even with `debug` on, or to a
-directory to write them there; the notice itself is unaffected. `make cache-report`
-summarizes cache performance across saved sessions.
+directory to write them there; the notice itself is unaffected. From a source
+checkout, `make cache-report` summarizes cache performance across saved sessions.
 [Prompt caching](https://github.com/cruxwell/pcode/blob/master/dev/prompt-caching.md#reading-a-cache-notice)
 explains how to read the comparison and the files.

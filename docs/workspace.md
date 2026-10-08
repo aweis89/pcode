@@ -112,10 +112,10 @@ fields, so other assistants reading the file ignore it):
 
 ```yaml
 ---
-name: oncall-pay
-description: Claim on-call pay from the PagerDuty schedule.
+name: triage-incident
+description: Triage an open incident from PagerDuty and Sentry.
 metadata:
-  pcode-mcp-servers: pagerduty, conduit
+  pcode-mcp-servers: pagerduty, sentry
 ---
 ```
 
@@ -176,7 +176,8 @@ Inside the session:
   branch. It works while a turn is running, so work the model already committed
   can land without waiting, but refuses a worktree with uncommitted changes.
 - `/worktree finish` merges, then removes the worktree and its branch and quits.
-- `/worktree remove` deletes the directory once it is merged and clean.
+- `/worktree remove` deletes the directory once it is merged and clean; the
+  branch stays.
 - `/worktree list` shows every worktree.
 - `/worktree clean` removes every other worktree of the repository (and its
   branch) with nothing uncommitted, nothing untracked, and nothing the main

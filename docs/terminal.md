@@ -59,15 +59,16 @@ running bar, kitty uses its `scrollbar_*` colours, and [iTerm2](#iterm2) lets
 you pick both per profile. Hide it on the terminal's side with Ghostty's
 `progress-style = false` or kitty's `progress_bar hidden`.
 
-The `terminal_progress` setting decides who gets it. `auto` sends it only to
-terminals whose environment variables say they draw
-it: Ghostty, WezTerm, iTerm2 3.6.6 or newer, Windows Terminal, ConEmu, VS
-Code, Warp, mintty, VTE 0.79 terminals (GNOME Terminal, Ptyxis) and Konsole
-26.04. Older iTerm2 and kitty before 0.38 read the sequence as a desktop
-notification, which is why an unknown terminal gets nothing. kitty is among
-them because it reports no version; on kitty 0.47 or newer, set
-`terminal_progress on`. `on` sends it to any terminal, and terminals that
-do not know it ignore it. The setting is read when pcode starts.
+The `terminal_progress` setting decides who gets it. `auto` (the default)
+sends it only to terminals whose environment variables say they draw it:
+Ghostty, WezTerm, iTerm2 3.6.6 or newer, Windows Terminal, ConEmu, VS Code,
+Warp, mintty, VTE 0.79 terminals (GNOME Terminal, Ptyxis) and Konsole 26.04.
+An unknown terminal gets nothing, because some older ones (iTerm2 before
+3.6.6, kitty before 0.38) show the sequence as a desktop notification instead.
+kitty doesn't report its version, so `auto` leaves it out; on kitty 0.47 or
+newer, set `terminal_progress on`. `on` sends it to any terminal, and
+terminals that don't know it ignore it; `off` never sends it. The setting is
+read when pcode starts.
 
 ## iTerm2
 

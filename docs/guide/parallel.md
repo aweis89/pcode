@@ -41,11 +41,11 @@ files like `.envrc`. See
 
 ### Sessions keep running when you look away
 
-Every session runs in a background host, so you can juggle them from one
-terminal. `/switch` moves to another running session (or starts a new one), and
-Ctrl+^ flips back to the last one. Closing the terminal doesn't stop a turn;
-`pcode --attach` picks it back up, and you get a desktop notification when a
-background session finishes. See
+`/detach` moves a session into a background host, or `pcode --host` starts it
+in one, so you can juggle several from one terminal. `/switch` moves to another
+running session (or starts a new one), and Ctrl+^ flips back to the last one.
+Closing the terminal doesn't stop a hosted turn; `pcode --attach` picks it back
+up, and you get a desktop notification when a background session finishes. See
 [background sessions](../sessions.md#background-sessions).
 
 ## Sub-agents in parallel
@@ -80,10 +80,11 @@ also show under the parent's in scrollback and in `/tools`.
 
 ### Agents on other models
 
-By default agents run on the session's model. Name another model in your
-request ("ask openai-codex:gpt-6-astra for a second opinion") and the agent runs
-on it. `/subagents` gives the agent a standing list of other models to pick from, for example a cheaper, faster model
-for mechanical changes, or a different vendor for a second opinion:
+By default sub-agents run on the session's model. Name another model in your
+request ("ask openai-codex:gpt-6-astra for a second opinion") and the sub-agent
+runs on it. `/subagents` gives the agent a standing list of models to pick
+from, for example a cheaper, faster model for mechanical changes, or a
+different vendor for a second opinion:
 
 ```text
 ❯ /subagents openai-codex:gpt-6-astra anthropic:claude-sonnet-5

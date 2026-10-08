@@ -6,6 +6,9 @@ Type `/` to open the command menu, then narrow it by typing. Use Tab or the
 arrow keys to choose. Enter accepts a selected completion; another Enter runs it.
 
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
+- `/config [diff | get KEY | set KEY VALUE | unset KEY]`: inspect or change saved
+  settings from inside a session, with completion for setting names and values. See
+  [Configuration](configuration.md#settings-reference).
 - `/bind` (or `/bind list`): list default, custom, and disabled prompt bindings;
   `/bind KEY` inspects one. `/bind KEY /command args` or `/bind KEY @action`
   saves a mapping. `/bind actions` lists built-in targets, `/bind reset KEY`
@@ -15,10 +18,10 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   Changes apply immediately and are saved for your user, not the project.
 - `/login [claude|openai-codex]`: sign in in a browser. `claude` (the default) runs
   `claude auth login` for the login `claude:` models use ([details](providers.md#signing-in));
-  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required). pcode's own Anthropic
-  sign-in and Meridian are [turned off](providers.md#sign-in-with-your-anthropic-account).
-  `/logout [anthropic|openai-codex]` removes pcode's stored login, leaving CLI credentials
-  untouched. Both require an idle conversation.
+  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required). `anthropic:` models use
+  `ANTHROPIC_API_KEY` and have no sign-in.
+  `/logout [anthropic|openai-codex]` removes pcode's stored login (`anthropic` clears one
+  left by an earlier version), leaving CLI credentials untouched. Both require an idle conversation.
 - `/model`: searchable model picker for configured providers. Keeps the conversation;
   chosen mid-run, it applies from the next request. To switch for one prompt only, start
   it with `$PROVIDER:MODEL` (optionally `+EFFORT`, as in `$openai:gpt-5+high fix this`)
@@ -29,6 +32,12 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   compaction is skipped for its turn, since that model's window and summarizer would
   decide what the conversation keeps. Such a prompt never steers a running turn; it
   queues as its own. `/resend` of it asks the conversation's model.
+- `/effort [low|medium|high|xhigh|default]`: set reasoning effort; bare shows the current
+  level ([details](providers.md#reasoning-effort)).
+- `/mcp [list | enable NAME [--save] | enable-all | disable NAME [--save] | logout NAME]`:
+  manage [MCP servers](mcp.md).
+- `/extensions [list | on NAME | off NAME]` and `/reload`: list or toggle extensions, and
+  reload them without losing the conversation ([Extending pcode](guide/extending.md)).
 - `/subagents [MODEL ...|off]`: the models `delegate_task` suggests for running a sub-agent (any other `provider:model` also works); each
   word completes from the `/model` catalog. Bare lists them, `off` clears them
   ([details](tools.md#sub-agents-on-other-models)).
@@ -62,12 +71,14 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/usage`: plan limits and spend for the Claude Code and Codex logins, fetched when you
   run it. Subscription seats show the session (5h) and weekly percentages with their resets,
   including per-model weekly caps. Seats billed at API rates show monthly spend against
-  its cap (for example `Spend: $652.42 of $2,500.00 (26%)`). No admin key is needed: Claude
+  its cap (for example `Spend: $130.00 of $500.00 (26%)`). No admin key is needed: Claude
   reads the login of the current `CLAUDE_CONFIG_DIR` (from the Keychain on macOS, else
   `.credentials.json`), and Codex uses pcode's `/login openai-codex` or the Codex CLI's
   `auth.json`, through `PCODE_LLM_PROXY` when set. Both endpoints are undocumented and can
   change. An expired Claude Code token is reported, never refreshed, so Claude Code stays
   signed in. Plain API keys have no per-user usage endpoint and aren't covered.
+- `/worktree [status|merge|resolve|finish|remove|list|clean]`: manage this session's git
+  worktree ([details](workspace.md#one-git-worktree-per-session)).
 - `/resend`: retry from the last checkpoint without a new message; shows the previous
   prompt and spinner.
 - `/jobs [stop ID|stop all|watch ID|unwatch]`: bare `/jobs` opens a popup listing this
@@ -142,7 +153,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/theme-preview`: sample Markdown, code, diffs, tables, and tool summaries, then a
   gallery of every installed Pygments style (current one marked) with the command that
   selects it. Never calls the model and isn't added to the conversation.
-  `pcode --theme-preview` (formerly `--demo`, still accepted) prints the same and exits.
+  `pcode --theme-preview` prints the same and exits.
 - `/redraw`: rebuild the transcript at the current width; see
   [Regenerating the terminal transcript](transcript.md#regenerating-the-terminal-transcript).
 - `/quit` (alias `/exit`): exit. It cancels a running turn and waits for its cleanup first.
@@ -216,48 +227,6 @@ gets exactly what Enter would send. In direct chord mode only, this replaces
 nothing typed it runs `/copy` instead, to copy the last response or a quote
 from it. Copying uses a local helper (`pbcopy`, `wl-copy`,
 `xclip`) or OSC 52 over ssh, like the popups, and truncates at 64 KiB.
-
-Delegated sub-agents are listed in the widget beneath your active task while
-they run. A finished one leaves the widget; its outcome shows briefly on the
-status row and stays in the transcript.
-
-`/autohide-tasks on` (or `pcode config set autohide_tasks on`) hides the widget
-as soon as the model finishes a turn, keeping the idle prompt compact; it
-returns on the next turn, and Ctrl+O brings it back immediately. Default: off.
-
-The widget also hides in a pane shorter than `tasks_min_rows` (default 30) or
-narrower than `tasks_min_columns` (default 100), so splitting a terminal either
-way frees the room for the transcript, and the widget comes back once the pane
-is large enough again. Each attached terminal checks its own pane. Ctrl+O
-shows it in a small pane anyway until the pane crosses the threshold again.
-Set either to `0` to never hide for that dimension; both apply immediately
-through `/config`.
-
-The widget sits at the top of the editor box by default (`attach_tasks=on`),
-with a divider between the tasks and your draft. While a turn runs, the status
-row is the box's top border and the tasks hang straight under it; between turns
-the widget's heading (`Tasks 2/5`) takes that border instead. While the turn
-runs, that count sits at the right of the status. Queued prompts sit above the
-combined box. Use
-`/config set attach_tasks off` to draw it in a separate box above the editor,
-or `/config set attach_tasks on` to attach it again. Both apply immediately
-and save the preference; `pcode config set attach_tasks off` sets it from the shell.
-
-`pcode config set tasks_max_height 0.5` caps the widget and the editor box
-together at half the screen; a whole number such as `20` caps them at that many
-rows instead. The tasks get the room first and the editor keeps at least one
-text row, so a long plan lists more of its steps while a long draft scrolls
-inside the editor. Unset (the default), the widget stays at no more than 10 rows
-or half the screen, whichever is smaller, and the editor grows into whatever is left.
-
-**Ctrl+Y** copies whatever is in the editor right now, so a draft can be moved
-somewhere else without sending it. A collapsed paste marker is expanded first:
-what lands on the clipboard is what Enter would send. In direct chord mode
-only, this replaces `yank` in Emacs editing mode and copy-character-from-above
-in vi insert mode. With nothing typed it runs
-`/copy` instead, to copy the last response or a quote from it. Copying uses a
-local helper (`pbcopy`, `wl-copy`, `xclip`) or OSC 52 over ssh, the same as the
-popups, and truncates at 64 KiB.
 
 **Setting acknowledgements are transient.** Toggles and display settings
 (`/show-thinking`, `/show-tasks`, `/show-edits`, `/show-commands`,
@@ -339,7 +308,8 @@ line up whether or not a thought is showing:
 
 The turn's three latest calls are shown, fewer in a short pane;
 `/config set tool_max_lines 1` keeps just the call the status row is on.
-A finished call's row clears after 10 seconds (`tool_linger_seconds`; `0` keeps it).
+A finished call's row clears after 10 seconds (`tool_linger_seconds`; `0` keeps
+it until newer calls push it out).
 
 Work pcode runs itself has no tool row, just its detail on the status row:
 
@@ -372,13 +342,16 @@ the next turn, and Ctrl+O brings it back immediately. Default off.
 
 It also hides in a pane shorter than `tasks_min_rows` (default 30) or narrower
 than `tasks_min_columns` (default 100), and returns when the pane grows back, so
-a split in either direction keeps the transcript readable. Ctrl+O overrides
-that for the pane; `0` turns either check off.
+a split in either direction keeps the transcript readable. Each attached
+terminal checks its own pane. Ctrl+O shows it in a small pane anyway until the
+pane crosses the threshold again; `0` turns either check off. Both apply
+immediately through `/config`.
 
 By default the widget is attached to the top of the editor box
 (`attach_tasks=on`), with a divider between tasks and your draft. The running
-status rides the box's top border above the tasks; between turns the widget's
-heading takes it. Queued prompts sit above the combined box.
+status rides the box's top border above the tasks, with the plan's count
+(`Tasks 2/5`) at its right; between turns the widget's heading takes the
+border. Queued prompts sit above the combined box.
 `/config set attach_tasks off` draws it in a separate box above the editor, and
 `/config set attach_tasks on` attaches it again. Both apply immediately and save
 the preference; `pcode config set attach_tasks off` works from the shell.
@@ -415,13 +388,15 @@ its active task, and they update as it works. Its own tool calls show on the
 status row, like yours, rather than in the tree. Its plan is
 separate from yours: never saved and never merged into your plan, and it leaves
 with the delegate. The built-in worker always plans; an extension's delegate can
-opt in (see "Sub-agents" in pcode's extension guide).
+opt in (see
+[Sub-agents](https://github.com/cruxwell/pcode/blob/master/src/pcode/extension_guide.md#sub-agents)
+in the extension guide).
 
 ```text
-* Fix the flaky login test
+↺ Fix the flaky login test
 └── » Worker · 12.4s · Working · Investigate the retry path
     ├── ✓ Read the retry code
-    ├── * Reproduce the failure
+    ├── ↺ Reproduce the failure
     └── ○ Report back
 ```
 
@@ -432,8 +407,7 @@ Customize the main prompt's mapping with [/bind](keybindings.md#managing-binding
 popup mappings are unchanged.
 The default is **`ctrl`**, using direct Ctrl chords: Ctrl+S cycles the send
 mode, and Ctrl+L opens the model picker. There is no global action-menu leader
-by default. To use a leader, configure it explicitly, then restart the prompt.
-Existing saved leader settings, including `ctrl+b`, remain supported:
+by default. To use a leader, configure it explicitly, then restart the prompt:
 
 ```sh
 pcode config set key_prefix ctrl+b           # Ctrl+B, then s cycles the send mode
@@ -477,9 +451,6 @@ The prompt reads `key_prefix` at launch; popups read it as each one opens.
 
 ## Optional vi editing
 
-The dedicated [Keybindings](keybindings.md#optional-vi-editing) guide covers vi
-editing, `jj`, the Space leader, and custom actions shared with the global prefix.
-
 The prompt uses Emacs-style editing by default. To use vi bindings from the next
 launch:
 
@@ -488,8 +459,7 @@ pcode config set editing_mode vi
 ```
 
 `/config set editing_mode vi` in a session works too, followed by a restart.
-Restore the default with `pcode config set editing_mode emacs` or
-`pcode config unset editing_mode`.
+Restore the default with `pcode config unset editing_mode`.
 
 The editor starts in insert mode; Escape switches to normal mode, and `i` or `a`
 resume inserting. `o` / `O` in normal mode open a line below / above. Standard vi
@@ -498,73 +468,16 @@ completion), and Ctrl+J inserts a newline. Escape takes priority in vi mode, so
 Escape then Enter submits rather than inserting a newline; that's why Alt+Enter
 is a newline only in Emacs mode. Other pcode shortcuts are unchanged.
 
-### Custom insert-mode escape sequence
-
-To leave insert mode by typing `jj`, set the optional escape sequence and restart:
-
-```sh
-pcode config set vi_escape_sequence jj
-```
-
-Inside a session, `/config set vi_escape_sequence jj` saves the same setting for
-next launch. This requires `editing_mode vi`. Other literal sequences, such as
-`jk`, work too; use printable characters without spaces. The sequence applies
-only in the main prompt's vi insert mode, not normal mode or popup search fields.
-Escape remains available as a fallback, and bracketed paste inserts the sequence
-as text instead of changing modes.
-
-Type the sequence without pausing for a second between keys. A partial sequence
-(such as a lone `j`) waits up to one second before being inserted; a nonmatching
-next key inserts the pending text immediately. To restore Escape-only behavior:
-
-```sh
-pcode config set vi_escape_sequence escape
-```
-
-`pcode config unset vi_escape_sequence` also restores the default. Restart after
-changing this setting.
+To leave insert mode by typing `jj` (or another sequence such as `jk`), set
+`vi_escape_sequence`; see [Leave insert mode with jj](keybindings.md#leave-insert-mode-with-jj).
 
 ### Normal-mode shortcut prefix
 
-Add an optional leader for the main prompt's vi normal mode:
-
-```sh
-pcode config set vi_key_prefix '<space>'
-```
-
-Inside pcode, use `/config set vi_key_prefix <space>`. Restart to apply it.
-The quotes in the shell command prevent `<space>` from being interpreted as
-shell redirection. `vi_key_prefix` defaults to `off`; it also accepts a single
-printable character, such as `,` or `\`.
-
-After Escape (or your configured `jj`), press Space to open the full keybinding
-help, the same list Ctrl+/ shows, then press an action letter from it:
-
-| Sequence | Action |
-| --- | --- |
-| Space `l` | Choose a model |
-| Space `n` / Space `p` | Increase / decrease thinking effort |
-| Space `s` | Cycle send mode |
-| Space `t` | Choose thinking visibility |
-| Space `o` | Show / hide the task panel |
-| Space `y` | Copy the draft, or the last response when the draft is empty |
-
-The global `key_prefix` is unchanged: Ctrl+L still works with the default
-`ctrl` prefix; with `key_prefix ctrl+b`, use Ctrl+B `l`. Both routes invoke
-the same actions and keep your draft. Escape, Ctrl+C, or pressing the normal-mode
-leader again dismisses its menu. If you choose an action letter as your leader,
-that letter is reserved for dismissal in its own menu; use the global shortcut
-for that action instead.
-
-The extra leader does not apply in insert, replace, or visual mode, while a vi
-operator is waiting for a motion, or in popup search fields. Space still types a
-space in insert mode, and bracketed paste is not interpreted as shortcuts.
-
-To disable the extra leader, set `vi_key_prefix off` or unset it, then restart:
-
-```sh
-pcode config unset vi_key_prefix
-```
+`pcode config set vi_key_prefix '<space>'` adds a leader for vi normal mode:
+after Escape, press Space and then an action key, such as Space `l` for the
+model picker. It shares its mapping with the global prefix, which keeps
+working. See [Use Space as the vi leader](keybindings.md#use-space-as-the-vi-leader)
+for the details.
 
 ### Escape timing and newlines
 
@@ -704,7 +617,7 @@ the send mode, and nothing reaches the model until you send a message, so
 ## Popup keys
 
 Every full-screen popup (`/diffs`, `/tools`, `/links`, `/tree`, `/resume`,
-`/btw`, `/status`, and the Ctrl+L model picker) scrolls with the same keys,
+`/switch`, `/jobs`, `/agents`, `/btw`, `/status`, and the Ctrl+L model picker) scrolls with the same keys,
 acting on whichever pane has focus:
 
 | Key | Action |

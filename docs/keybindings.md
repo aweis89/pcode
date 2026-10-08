@@ -7,8 +7,7 @@ whole editor keymap. For example, give the copy action another key:
 
 With the default prefix, **Ctrl+E** now copies your draft, or the last response
 when the draft is empty, instead of moving to the end of the line. Ctrl+Y still
-works: adding a binding does not remove
-another key for the same action. To move copy rather than duplicate it, also run
+works: adding a binding does not remove another key for the same action. To move copy rather than duplicate it, also run
 `/unbind y`.
 
 Bindings apply only to the main prompt. They do not change
@@ -27,8 +26,7 @@ To use a global leader, set it explicitly:
 
 After restarting, press and release Ctrl+B, then press an action key. The leader
 opens a menu showing available actions, including custom bindings; **Esc**
-dismisses it without changing your draft. Existing saved `ctrl+b` settings remain
-supported and keep this behavior.
+dismisses it without changing your draft.
 
 Choose another global leader, a sequence of leaders, or restore direct Ctrl chords:
 
@@ -95,10 +93,9 @@ sending a prompt to the model.
 
 ### Drafts and command behavior
 
-Shortcuts dispatch through the same safe command queue as existing shortcuts.
-They do not insert command text into the editor, replace the draft, move its
-cursor, or submit it to the model. Built-in actions keep their existing behavior,
-and custom bindings appear alongside them in the prompt's action menu.
+A bound key runs its target directly. It does not insert command text into the
+editor, replace the draft, move its cursor, or submit it to the model. Custom
+bindings appear alongside the built-in actions in the prompt's action menu.
 
 That protects the draft from the shortcut itself, not from the command's intended
 behavior. A binding to a session-switching command still switches sessions; a
@@ -150,7 +147,7 @@ To use `jj` instead of reaching for Escape:
 > pcode config set vi_escape_sequence jj
 
 Restart after setting it. This requires `editing_mode vi` and applies only in the
-main prompt's insert mode. Escape still works. Other printable sequences without
+main prompt's insert mode, not in popup search fields. Escape still works. Other printable sequences without
 spaces, such as `jk`, are allowed. Type the sequence without pausing for a second
 between keys: a partial sequence waits up to one second before insertion, and a
 nonmatching next key inserts the pending text immediately. Bracketed paste treats
@@ -201,6 +198,6 @@ partially overwrite the file.
 Binding changes apply immediately in the terminal where you make them. Other
 running terminals do not automatically synchronize: they read the file on their
 next start or when you make a `/bind` management edit there (including `/unbind`).
-In contrast, changing `key_prefix`, `editing_mode`, `vi_escape_sequence`, or
-`vi_key_prefix` requires restarting the prompt. See
+Changing `key_prefix`, `editing_mode`, `vi_escape_sequence`, or `vi_key_prefix`
+requires restarting the prompt. See
 [Configuration](configuration.md#keybindings) for the storage overview.

@@ -21,13 +21,9 @@ keeps running whether or not anyone is waiting on it.
 - If the agent has already finished its turn, a job it started finishing
   **wakes it up**: a new turn starts on its own so it can act on the result.
 
-The screenshots below show an earlier UI; their static key hints may differ.
-The text describes the current defaults: direct Ctrl shortcuts for actions,
-and Ctrl+/ for contextual help.
-
 The footer below the editor shows `1 job` or `N jobs` for all active jobs,
-including those the agent is waiting on. The count disappears when none remain;
-individual jobs no longer take up persistent rows.
+including those the agent is waiting on, and the count disappears when none
+remain.
 
 ![The footer shows 1 job while CI runs and the agent answers something else](../assets/screenshots/jobs.svg)
 

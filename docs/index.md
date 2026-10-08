@@ -5,9 +5,9 @@ work. Background commands wake the agent when they finish, every session can
 use its own git worktree, conversations can be rewound and forked (in the style
 of [pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md)),
 and every tool call stays inspectable. It runs on any model
-[Pydantic AI](https://ai.pydantic.dev/) supports, and on your Claude
-subscription through Anthropic's own Agent SDK and Claude Code login, the way
-Anthropic supports, or your ChatGPT one.
+[Pydantic AI](https://ai.pydantic.dev/) supports, or on your ChatGPT or Claude
+subscription (Claude through Anthropic's own Agent SDK and Claude Code login,
+the way Anthropic supports).
 
 ```sh
 brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
@@ -51,10 +51,6 @@ next.
 Resizing the terminal re-renders at the new width too, so a narrowed pane
 doesn't leave half-wrapped wreckage behind. Replay never reruns a tool. See
 [scrollback and transparency](guide/scrollback.md).
-
-The screenshots below show an earlier UI; their static key hints may differ.
-The text describes the current defaults: direct Ctrl shortcuts for actions,
-and Ctrl+/ for contextual help.
 
 ## Nothing hidden: `/tools`
 

@@ -27,10 +27,6 @@ A typical rhythm:
 3. Want a line per call instead? `/group-tools off` unfolds them, again for the
    whole history.
 
-The screenshots on this page show an earlier UI; their static key hints may
-differ. The text describes the current defaults: direct Ctrl shortcuts for
-actions, and Ctrl+/ for contextual help.
-
 Here is one turn both ways. First with commands hidden and the tool calls folded
 into a line:
 
@@ -74,11 +70,12 @@ while a turn is still running:
 ![The /tools inspector with a passing check selected](../assets/screenshots/tools.svg)
 
 Type to search, press Ctrl+X to show only failures, and Ctrl+T to filter by
-tool.
+tool. Ctrl+Y copies the command so you can run it yourself, and Ctrl+O copies
+the output.
 
 ![/tools filtered to failures with Ctrl+X, showing the traceback the model saw](../assets/screenshots/tools-failed.svg)
- Ctrl+Y copies the command so you can run it yourself, and Ctrl+O copies
-the output. It works on resumed sessions too, so you can audit what an agent
+
+It works on resumed sessions too, so you can audit what an agent
 did last week. Opening it never reruns anything. See the
 [tool-call inspector](../commands.md#tool-call-inspector).
 

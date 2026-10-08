@@ -17,8 +17,9 @@ several lines hangs under its text, with the mark on the first line only.
 Shell tool calls show a compact two-row preview with their result and duration.
 Long arguments and embedded scripts are abbreviated; short commands stay
 readable. Previews are redacted and stripped of terminal control sequences.
-Failure excerpts stay visible. There is no command to expand a preview or show a
-command's full output in scrollback; use `/tools` for that.
+Failure excerpts stay visible. To see a command's full output, use `/tools`, or
+turn on [`show_commands`](#command-output-in-scrollback) to mirror it into
+scrollback.
 
 ## Edit diffs and streaming previews
 
@@ -130,7 +131,7 @@ title rather than the prose under it.
 
 Each mode asks the provider for the text that suits it:
 
-- **Opus 5.5, Sonnet 5.5, Fable and Mythos 5.1 over `anthropic:`**: `status-line`
+- **Opus 5.5, Sonnet 5.5, Fable 5 and Mythos 5.1 over `anthropic:`**: `status-line`
   asks for progress updates, the short notes these models write between tool
   calls for whoever is watching. The row stays empty while the model reasons
   and fills in as it moves between tools. `scrollback` asks for full summaries.
@@ -156,10 +157,9 @@ answers or tool output. The usual [redraw limits](#regenerating-the-terminal-tra
 apply, and output redirected to a file or pipe can't be redrawn.
 
 This view shows the readable text the provider actually exposes, which may
-itself be a summary. It is **not hidden internal reasoning**. There is no length
-or row limit. Sub-agents' thinking isn't shown in the parent transcript (use
-`/agents`). The old `thinking_display` and `thinking_lines` preferences are
-ignored.
+itself be a summary. It is **not hidden internal reasoning**. In `scrollback`
+mode there is no length or row limit. Sub-agents' thinking isn't shown in the
+parent transcript (use `/agents`).
 
 **Privacy:** readable thinking is saved in sessions even while hidden, and
 resume restores it. Hiding it isn't redaction or deletion of the terminal, logs,
@@ -176,9 +176,6 @@ Provider behavior:
   that request and restores provider defaults; it doesn't disable reasoning.
   Requests already in flight and the selected effort are unchanged.
 - Codex always requests thinking summaries, whatever this setting says.
-- Meridian needs thinking generation and forwarding enabled upstream; pcode
-  doesn't change an external proxy's settings. See the Meridian setup section
-  for the isolated managed-instance option.
 
 ## Error logs in scrollback
 

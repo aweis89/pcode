@@ -88,8 +88,8 @@ a browser and a reachable local callback; there is no headless or device-code
 login.
 
 - Servers without dynamic client registration need a
-  [pre-registered client](#pre-registered-clients). Custom scopes and fixed
-  callback ports are not configurable yet.
+  [pre-registered client](#pre-registered-clients). pcode chooses the OAuth
+  scopes and the local callback port itself; neither can be set in `mcp.json`.
 - **Sign-ins are saved** in `~/.config/pcode/mcp-credentials.json` (owner-only),
   keyed by server URL. Disabling and re-enabling, `/new`, resume, and restart
   reuse them, refreshing silently; the browser opens again only when the service
@@ -202,7 +202,7 @@ enabled. Delegated workers and side questions (`/btw`) see the same list.
 <mcp-servers>
 Enabled MCP servers (replaces any earlier list):
 - gdrive
-- cs: CodeSignal assessments and candidates
+- hd: Helpdesk tickets and customer history
 </mcp-servers>
 ```
 
@@ -220,9 +220,9 @@ The name is often enough. Add a `description` when it is not:
 ```json
 {
   "mcpServers": {
-    "cs": {
-      "command": "cs-mcp",
-      "description": "CodeSignal assessments and candidates"
+    "hd": {
+      "command": "hd-mcp",
+      "description": "Helpdesk tickets and customer history"
     }
   }
 }

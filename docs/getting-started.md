@@ -35,7 +35,7 @@ uv tool uninstall pcode
 ```
 
 Leave out `[claude]` if you don't use a Claude subscription: it bundles the
-Claude Code CLI, about 95 MB. Homebrew also adds `shfmt` and delta, which uv
+Claude Code CLI, over 200 MB installed. Homebrew also adds `shfmt` and delta, which uv
 doesn't; install them yourself if you want them.
 
 To install from a checkout instead, see [run from source](#run-from-source).
@@ -142,7 +142,7 @@ uv tool install --editable '.[claude]'         # a bare `pcode` everywhere (or `
 ```
 
 The `claude` extra adds [`claude:` models](providers.md#claude-code-provider)
-and bundles the Claude Code CLI (about 215 MB). Leave it out with
+and bundles the Claude Code CLI (over 200 MB installed). Leave it out with
 `uv tool install --editable .` or `make install EXTRAS=` if you don't need
 them. Install `shfmt` yourself for formatted commands in `/tools`; without it,
 pcode uses a simpler built-in formatter. Likewise, install
