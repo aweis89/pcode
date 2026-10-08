@@ -224,6 +224,28 @@ def test_released_jobs_are_reclaimed_when_nobody_adopted_them(tmp_path):
     terminal.reset()
 
 
+def test_a_record_claimed_by_a_process_that_died_is_claimed_again(tmp_path):
+    """A host killed while it started may have claimed the jobs released to it."""
+    root = tmp_path / "jobs"
+    terminal = JobRegistry(state=lambda: root)
+    live = terminal.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
+    released = terminal.release()
+    published = released.home / "registry.json"
+    published.rename(released.home / f"registry.claimed-{2**22 - 1}.json")
+    assert terminal.reclaim(released)
+    assert list(terminal.jobs.values()) == [live]
+    assert [path.name for path in released.home.glob("registry*.json")] == ["registry.json"]
+    # And by another pcode, had this one gone too.
+    home = root / "99999"
+    home.mkdir()
+    record = {"owner_pid": 2**22 - 2, "jobs": {live.id: live.record()}}
+    (home / f"registry.claimed-{2**22 - 1}.json").write_text(json.dumps(record))
+    assert [job.command for job in JobRegistry(state=lambda: root).adopt_orphans()] == [
+        live.command
+    ]
+    terminal.reset()
+
+
 def test_failed_job_notice_carries_its_tail_but_a_success_does_not(tmp_path):
     jobs = JobRegistry()
     # A purpose keeps the command text (which also contains the output) out of

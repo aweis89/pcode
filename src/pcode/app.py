@@ -1424,8 +1424,9 @@ class PreviewApp:
                         "Another process opened this session meanwhile; turns here no "
                         "longer save safely. Quit, then `pcode --continue` it."
                     )
-            if released is not None:
-                jobs.reclaim(released)
+            if released is not None and not jobs.reclaim(released):
+                # The killed host took them over first: its record is an orphan now.
+                self.controller.adopt_jobs()
             if not isinstance(error, Exception):
                 raise
             # Host errors carry the log tail and path; nothing secret.
@@ -1624,8 +1625,7 @@ class PreviewApp:
         /resume or `pcode -c`); another host keeps running.
         """
         previous = self.controller
-        # Typed while it moved: meant for the session, which now runs there.
-        typed = previous.take_typed() if handed_off else []
+        commands, messages = [], []
         if isinstance(previous, SessionController):
             # Handed off: the host now runs that same conversation.
             if not handed_off and (saved := getattr(previous.runtime, "session", None)):
@@ -1634,6 +1634,12 @@ class PreviewApp:
             close = getattr(previous.runtime, "close", None)
             if close is not None:
                 close()
+            # No await from here to the swap, so nothing typed falls between.
+            if handed_off:
+                # Typed while it moved: meant for the session, which now runs there.
+                commands, messages = previous.take_typed()
+            else:
+                previous.clear_queue()  # Says what was dropped, as leaving it always has.
         else:
             if not previous.runtime.lost:
                 self.previous_host = previous.id
@@ -1667,8 +1673,10 @@ class PreviewApp:
             with self.transcript.restore():
                 self.transcript.retained_note(note)
         await controller.start(welcome)
+        for text, mode in messages:
+            controller.submit(text, mode)
         if self._submit_typed is not None:
-            for text in typed:
+            for text in commands:
                 self._submit_typed(text)
         if self._host_watch is not None:
             self._host_watch()

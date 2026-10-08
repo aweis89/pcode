@@ -320,8 +320,8 @@ class PromptQueue:
         self._sync()
         return messages
 
-    def take_all(self) -> list[str]:
-        """Remove and return every waiting message, oldest first, without dropping it.
+    def take_all(self) -> list[tuple[str, str]]:
+        """Remove and return every waiting message and its mode, oldest first, without dropping it.
 
         For a session moving into a host. The panel is left alone: by then it
         shows the host's queue. The new generation makes stale the one `get`
@@ -331,7 +331,11 @@ class PromptQueue:
         items = [*fetched, *self._drain()]
         self._fetched = None
         self.generation += 1
-        return [text for generation, text, *_ in items if generation == self.generation - 1]
+        return [
+            (text, mode)
+            for generation, text, mode, _owner in items
+            if generation == self.generation - 1
+        ]
 
     def _drain(self) -> list[Item]:
         items = []
@@ -1034,14 +1038,20 @@ class SessionController:
 
     # --- Stopping ---
 
-    def take_typed(self) -> list[str]:
-        """Commands, then messages, still waiting: for the host this session moves into."""
+    def take_typed(self) -> tuple[list[str], list[tuple[str, str]]]:
+        """Commands and messages (with their modes) the user left waiting, for the
+        host this session moves into. Job wake-ups and resends stay behind: the
+        host makes its own."""
         commands = []
         while not self.commands.empty():
             generation, text, _idle, _tag = self.commands.get_nowait()
             if generation == self.prompts.generation:
                 commands.append(text)
-        return commands + self.prompts.take_all()
+        self.command_idle.set()
+        messages = [
+            (text, mode) for text, mode in self.prompts.take_all() if mode not in ("wake", "resend")
+        ]
+        return commands, messages
 
     def clear_queue(self) -> None:
         """Drop every queued message and pending command, saying what went."""

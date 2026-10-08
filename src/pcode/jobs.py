@@ -273,15 +273,22 @@ class JobRegistry:
         self._released += 1
         return released
 
-    def reclaim(self, released: "Released") -> None:
-        """Take back what `release` let go, unless another pcode adopted it meanwhile."""
-        if self.jobs or self._home is not None or _claim(released.home) is None:
-            return  # Adopted, or this process has moved on to a directory of its own.
+    def reclaim(self, released: "Released") -> bool:
+        """Take back what `release` let go, unless another pcode adopted it meanwhile.
+
+        A record claimed by a process that has since died (a host killed while
+        it started) is taken back too. False if nothing was.
+        """
+        if self.jobs or self._home is not None:
+            return False  # This process has moved on to a directory of its own.
+        source = _claimable(released.home)
+        if source is None or _claim(released.home, source) is None:
+            return False
+        _unclaim(released.home, delete=True)
         self.jobs, self._home = released.jobs, released.home
         self._released -= 1
         self._save()
-        for claimed in released.home.glob("registry.claimed-*.json"):
-            claimed.unlink(missing_ok=True)
+        return True
 
     def adopt_orphans(self) -> list[Job]:
         """Take over the running jobs of pcode processes that are gone.
@@ -300,15 +307,22 @@ class JobRegistry:
             # This process's own, and any it released for another to adopt.
             if home.name.split("-")[0] == str(os.getpid()) or not home.is_dir():
                 continue
+            if (source := _claimable(home)) is None:
+                continue
             try:
-                record = json.loads((home / "registry.json").read_text(encoding="utf-8"))
+                record = json.loads(source.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
             owner = record.get("owner_pid") if isinstance(record, dict) else None
             if isinstance(owner, int) and _alive(owner):
                 continue
-            if (record := _claim(home)) is None:
+            if (record := _claim(home, source)) is None:
                 continue  # Another pcode took them first.
+            owner = record.get("owner_pid")
+            if isinstance(owner, int) and _alive(owner):
+                # Republished by a living owner since it was read: put it back.
+                _unclaim(home)
+                continue
             entries = record.get("jobs", {})
             kept = set()
             for identity, entry in entries.items() if isinstance(entries, dict) else ():
@@ -582,19 +596,43 @@ class Released:
     jobs: dict[str, Job]
 
 
-def _claim(home: Path) -> dict | None:
-    """Take a published record for this process, or None if another got there first.
+def _claimable(home: Path) -> Path | None:
+    """The record in `home` another pcode may claim: published, or claimed by one now dead."""
+    published = home / "registry.json"
+    if published.exists():
+        return published
+    for claimed in home.glob("registry.claimed-*.json"):
+        pid = claimed.name.removeprefix("registry.claimed-").removesuffix(".json")
+        if pid.isdigit() and not _alive(int(pid)):
+            return claimed
+    return None
+
+
+def _claim(home: Path, source: Path) -> dict | None:
+    """Take the record at `source` for this process, or None if another got there first.
 
     A rename is atomic, so of two processes reading the same record only one
     goes on to own its jobs.
     """
     claimed = home / f"registry.claimed-{os.getpid()}.json"
     try:
-        os.rename(home / "registry.json", claimed)
+        os.rename(source, claimed)
         record = json.loads(claimed.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return record if isinstance(record, dict) else None
+
+
+def _unclaim(home: Path, *, delete: bool = False) -> None:
+    """Undo `_claim`: publish the record again, or drop it once its jobs are saved elsewhere."""
+    claimed = home / f"registry.claimed-{os.getpid()}.json"
+    try:
+        if delete:
+            claimed.unlink()
+        else:
+            os.rename(claimed, home / "registry.json")
+    except OSError:
+        pass
 
 
 def _publish(home: Path, owner: int | None, jobs: dict[str, Job]) -> None:
