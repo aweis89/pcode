@@ -21,6 +21,7 @@ from pcode.runtime import (
     ToolSummary,
 )
 from pcode.terminal_notify import TabProgress, terminal_fd
+from pcode.terminal_text import safe_text
 
 
 def present_events(events, *, activity, transcript, edits) -> None:
@@ -89,7 +90,7 @@ class PrintedReply:
         # The reply goes elsewhere, so close the run of calls it follows first.
         self.transcript.settle_tools()
         if self.console is not None:
-            self.console.print(Markdown(markdown, code_theme=self.transcript.code_theme))
+            self.console.print(Markdown(safe_text(markdown), code_theme=self.transcript.code_theme))
             self.console.print()
             return
         if not streamed:

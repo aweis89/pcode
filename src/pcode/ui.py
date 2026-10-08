@@ -77,6 +77,7 @@ from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, To
 from pcode.shell_mode import SHELL_PREFIX
 from pcode.syntax_colors import derive_colors
 from pcode.task_prompt import TaskPrompt
+from pcode.terminal_text import safe_text
 from pcode.theme import detect_theme
 from pcode.theme_gallery import SyntaxGallery
 from pcode.thinking_markdown import ThinkingMarkdown
@@ -1843,7 +1844,7 @@ class TerminalOutput:
         self.print()
 
     def message(self, source: str) -> None:
-        self.print(Markdown(source, code_theme=self.code_theme()))
+        self.print(Markdown(safe_text(source), code_theme=self.code_theme()))
         self.print()
 
     def end_turn(self) -> None:
@@ -1880,15 +1881,7 @@ class TerminalOutput:
         if not text:
             return
         self.streamed = True
-        # Model output is text, never terminal control sequences.
-        text = "".join(
-            "    "
-            if c == "\t"
-            else c
-            if c == "\n" or ord(c) >= 32 and not 127 <= ord(c) < 160
-            else "�"
-            for c in text
-        )
+        text = safe_text(text)
         # Examine boundaries independently of provider chunk sizes. Do not parse
         # every token: a newline can complete a block, a partial line cannot.
         for part in text.splitlines(keepends=True):
@@ -3145,7 +3138,7 @@ class Transcript:
             self._flush_group()
         # Resolve theme-dependent renderables again on every replay.
         objects = tuple(
-            Markdown(obj.markup, code_theme=self.code_theme)
+            Markdown(safe_text(obj.markup), code_theme=self.code_theme)
             if isinstance(obj, (Markdown, RetainedMarkdown))
             else replace(obj, code_theme=self.code_theme, delta=self.delta, dedent=self.diff_dedent)
             if isinstance(obj, EditTranscript)

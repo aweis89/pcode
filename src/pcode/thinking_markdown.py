@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from rich.markdown import Markdown
 from rich.segment import Segment
 
+from pcode.terminal_text import safe_text
+
 
 @dataclass
 class ThinkingMarkdown:
@@ -15,7 +17,7 @@ class ThinkingMarkdown:
     def __rich_console__(self, console, options):
         # Codex also emits heading-only Markdown summaries:
         # https://github.com/openai/codex/issues/34873
-        markdown = Markdown(self.source, code_theme=self.code_theme)
+        markdown = Markdown(safe_text(self.source), code_theme=self.code_theme)
         # Keep provider line boundaries rather than folding adjacent thoughts
         # into a single paragraph. Markdown's other inline/block rules still apply.
         for token in markdown.parsed:
