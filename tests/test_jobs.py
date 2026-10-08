@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import shlex
 import sys
 
@@ -182,6 +183,67 @@ def test_running_jobs_are_adopted_by_the_next_registry(tmp_path):
     other.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
     assert JobRegistry(state=lambda: root).adopt_orphans() == []
     other.reset()
+
+
+def test_released_jobs_are_adopted_though_their_owner_lives_on(tmp_path):
+    """`/detach` hands a session's jobs to the host it moves into."""
+    root = tmp_path / "jobs"
+    terminal = JobRegistry(state=lambda: root)
+    terminal._home = root / "99999"  # Another process's, so this one may adopt.
+    until_finished(terminal, terminal.launch(command("pass"), cwd=tmp_path))
+    live = terminal.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
+    released = terminal.release()
+    assert released is not None and terminal.jobs == {}
+    assert JobRegistry(state=lambda: root).release() is None  # Nothing running: nothing to do.
+    host = JobRegistry(state=lambda: root)
+    host.launch(command("pass"), cwd=tmp_path)  # j1 is taken here; the job was j2.
+    adopted = host.adopt_orphans()
+    assert [job.command for job in adopted] == [live.command]
+    # Under the id the conversation knows it by, and later launches count on from it.
+    assert adopted[0].id == live.id == "j2"
+    assert host.launch(command("pass"), cwd=tmp_path).id == "j3"
+    # Too late to take back; and the terminal's next job gets a directory of its own.
+    terminal.reclaim(released)
+    assert terminal.jobs == {}
+    later = terminal.launch(command("pass"), cwd=tmp_path)
+    assert later.directory.parent != live.directory.parent
+    until_finished(terminal, later)
+    host.reset()
+    terminal.reset()
+
+
+def test_released_jobs_are_reclaimed_when_nobody_adopted_them(tmp_path):
+    root = tmp_path / "jobs"
+    terminal = JobRegistry(state=lambda: root)
+    live = terminal.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
+    released = terminal.release()
+    terminal.reclaim(released)
+    assert list(terminal.jobs.values()) == [live]
+    record = json.loads((live.directory.parent / "registry.json").read_text())
+    assert record["owner_pid"] == os.getpid()
+    terminal.reset()
+
+
+def test_a_record_claimed_by_a_process_that_died_is_claimed_again(tmp_path):
+    """A host killed while it started may have claimed the jobs released to it."""
+    root = tmp_path / "jobs"
+    terminal = JobRegistry(state=lambda: root)
+    live = terminal.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
+    released = terminal.release()
+    published = released.home / "registry.json"
+    published.rename(released.home / f"registry.claimed-{2**22 - 1}.json")
+    assert terminal.reclaim(released)
+    assert list(terminal.jobs.values()) == [live]
+    assert [path.name for path in released.home.glob("registry*.json")] == ["registry.json"]
+    # And by another pcode, had this one gone too.
+    home = root / "99999"
+    home.mkdir()
+    record = {"owner_pid": 2**22 - 2, "jobs": {live.id: live.record()}}
+    (home / f"registry.claimed-{2**22 - 1}.json").write_text(json.dumps(record))
+    assert [job.command for job in JobRegistry(state=lambda: root).adopt_orphans()] == [
+        live.command
+    ]
+    terminal.reset()
 
 
 def test_failed_job_notice_carries_its_tail_but_a_success_does_not(tmp_path):

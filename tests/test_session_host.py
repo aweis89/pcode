@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from io import StringIO
 from pathlib import Path
@@ -38,11 +39,19 @@ from pcode.host_protocol import (
     find_host,
     list_hosts,
     list_stopped,
+    remove_entry,
     socket_path,
     write_entry,
 )
 from pcode.live import AgentRuntime
-from pcode.remote import HostError, HostLaunch, RemoteController, spawn_host
+from pcode.remote import (
+    HostError,
+    HostLaunch,
+    RemoteController,
+    request_host,
+    spawn_host,
+    stop_if_idle,
+)
 from pcode.runtime import (
     CacheBust,
     ChildPlan,
@@ -61,7 +70,7 @@ from pcode.runtime import (
     ToolStarted,
     ToolSummary,
 )
-from pcode.sessions import SavedSession
+from pcode.sessions import SavedSession, is_open
 from pcode.ui import Activity, create_prompt
 
 SAMPLES = [
@@ -215,8 +224,19 @@ class Script:
             yield f"Echo: {prompt}"
 
 
-async def start_host(identity: str, workspace: Path, script: Script) -> SessionHost:
-    """A host serving a controller over a scripted model, as `pcode.host` sets one up."""
+def scripted_agent(script: Script, workspace: Path) -> Agent:
+    return Agent(
+        FunctionModel(stream_function=script.model), capabilities=[create_coder(workspace)]
+    )
+
+
+async def start_host(
+    identity: str, workspace: Path, script: Script, saved: SavedSession | None = None
+) -> SessionHost:
+    """A host serving a controller over a scripted model, as `pcode.host` sets one up.
+
+    With `saved` it carries that conversation on, as `pcode.host --resume` does.
+    """
     (workspace / "sample.txt").write_text("a workspace marker\n")
     entry = HostEntry(
         id=identity, pid=os.getpid(), model="function:script", workspace=str(workspace)
@@ -225,12 +245,17 @@ async def start_host(identity: str, workspace: Path, script: Script) -> SessionH
     controller = host.controller
     controller.model = "function:script"
     controller.workspace = workspace
-    controller.runtime = AgentRuntime(
-        Agent(FunctionModel(stream_function=script.model), capabilities=[create_coder(workspace)]),
-        session_factory=lambda model=None: SavedSession.create(
-            "function:script", workspace, workspace / "sessions"
-        ),
-    )
+    if saved is not None:
+        entry.session_id = saved.info.id
+        controller.runtime = AgentRuntime(scripted_agent(script, workspace), saved)
+        await controller.runtime.restore()
+    else:
+        controller.runtime = AgentRuntime(
+            scripted_agent(script, workspace),
+            session_factory=lambda model=None: SavedSession.create(
+                "function:script", workspace, workspace / "sessions"
+            ),
+        )
     await host.serve()
     host.reset_buffer()
     host.push_state()
@@ -723,6 +748,128 @@ def test_stopping_an_idle_host_tells_terminals_it_closed_and_nothing_else(tmp_pa
     asyncio.run(run())
 
 
+def test_kill_hosts_idle_asks_each_idle_host_and_reports_what_it_did(host_dir, monkeypatch, capsys):
+    from pcode.app import main
+
+    for identity, state in (
+        ("idle0001", "idle"),
+        ("busy0001", "idle"),
+        ("work0001", "working"),
+        ("gone0001", "idle"),
+    ):
+        entry = HostEntry(id=identity, pid=os.getpid(), model="test", workspace="/")
+        entry.state, entry.title = state, identity
+        write_entry(entry)
+    asked = []
+
+    async def stop_if_idle(entry):
+        asked.append(entry.id)
+        if entry.id == "gone0001":
+            raise ConnectionRefusedError("refused")
+        return "a side question is running" if entry.id == "busy0001" else ""
+
+    monkeypatch.setattr("pcode.remote.stop_if_idle", stop_if_idle)
+    monkeypatch.setattr(sys, "argv", ["pcode", "--kill-hosts", "idle"])
+    main()
+    # One running a turn says so in its entry, so it is not even asked.
+    assert sorted(asked) == ["busy0001", "gone0001", "idle0001"]
+    output = capsys.readouterr()
+    assert "Skipped work0001  work0001: a turn is running" in output.out
+    assert "Stopped idle0001  idle0001" in output.out
+    assert "Skipped busy0001  busy0001: a side question is running" in output.out
+    assert "Could not stop gone0001: refused" in output.err
+
+    for entry in list_hosts():
+        remove_entry(entry.id)
+    # The flag's old name still works.
+    monkeypatch.setattr(sys, "argv", ["pcode", "--stop-hosts", "idle"])
+    main()
+    assert "No session hosts are running." in capsys.readouterr().out
+
+
+def test_a_host_stops_as_if_idle_with_a_terminal_attached_unless_busy(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal, _, _ = await attach(host)
+            host.controller.command_idle.clear()
+            assert await request_host(host.entry, "stop_if_idle") == "a command is running"
+            assert not host.stopped.is_set()
+            host.controller.command_idle.set()
+            assert await request_host(host.entry, "stop_if_idle") == ""
+            # Stopped as it stops itself once idle: unmerged work and an
+            # unread reply are kept for resuming.
+            assert host.stopped.is_set() and host.idle_stopped and not host.keep_worktree
+            terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_host_says_what_it_is_busy_with(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        controller = host.controller
+        try:
+            assert host.busy_with() == ""
+            controller.startup_pending = True
+            assert host.busy_with() == "it is starting up"
+            controller.startup_pending = False
+            controller.naming_task = asyncio.get_running_loop().create_future()
+            assert host.busy_with() == "it is naming the session"
+            controller.naming_task.cancel()
+            assert host.busy_with() == ""
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_host_that_never_answers_hello_times_out(host_dir):
+    from pcode.remote import _host_peer
+
+    async def run():
+        entry = HostEntry(id="mute0001", pid=os.getpid(), model="test", workspace="/")
+
+        async def mute(reader, writer):
+            await asyncio.sleep(5)  # Accepts, then never says ready.
+
+        server = await asyncio.start_unix_server(mute, path=entry.socket)
+        try:
+            with pytest.raises(HostError, match="did not answer"):
+                async with _host_peer(entry, timeout=0.1):
+                    pass
+        finally:
+            server.close()
+
+    asyncio.run(run())
+
+
+def test_a_host_older_than_stop_if_idle_is_judged_by_its_entry(tmp_path, host_dir):
+    old_calls = frozenset({"attach", "query", "send", "run", "stop", "asides_read"})
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            with (
+                patch("pcode.host.HOST_CALLS", old_calls),
+                patch("pcode.remote.wait_for_exit", return_value=True),
+            ):
+                host.entry.state = "working"
+                assert await stop_if_idle(host.entry) == "a turn is running"
+                assert not host.stopped.is_set()
+                host.entry.state = "idle"
+                assert await stop_if_idle(host.entry) == ""
+                await asyncio.wait_for(host.stopped.wait(), 5)
+            # Nobody said it was idle, so its worktree is left alone.
+            assert host.keep_worktree and not host.idle_stopped
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
 def test_a_terminal_on_another_protocol_is_refused(tmp_path, host_dir):
     async def run():
         host = await start_host("aaaa1111", tmp_path, Script())
@@ -822,6 +969,140 @@ def test_switch_leaves_a_running_turn_in_its_host_and_comes_back_to_it(tmp_path,
         finally:
             await stop_host(host_a)
             await stop_host(host_b)
+
+    asyncio.run(run())
+
+
+def local_app(tmp_path: Path, script: Script, output: StringIO) -> PreviewApp:
+    """A session running in this terminal (`session_host off`) that saves its conversation."""
+    sessions = tmp_path / "sessions"
+    runtime = AgentRuntime(
+        scripted_agent(script, tmp_path),
+        session_factory=lambda model=None: SavedSession.create(
+            "function:script", tmp_path, sessions
+        ),
+    )
+    return PreviewApp(
+        model="function:script",
+        workspace=tmp_path,
+        runtime=runtime,
+        save=True,
+        session_dir=sessions,
+        console=Console(file=output, color_system=None, width=160),
+    )
+
+
+@pytest.mark.in_process("moves a session running in this terminal; hosted, there is none")
+def test_detach_moves_a_session_running_here_into_a_host_and_stays_on_it(tmp_path, host_dir):
+    async def run():
+        output = StringIO()
+        script = Script()
+        app = local_app(tmp_path, script, output)
+        hosts: list[SessionHost] = []
+        loop = asyncio.get_running_loop()
+        typed = threading.Event()
+
+        def spawn_host(*, model, workspace, resume, session_dir):
+            # Typed while it moves: lands in this terminal's own queue first.
+            loop.call_soon_threadsafe(pipe.send_text, "typed meanwhile\r")
+            loop.call_soon_threadsafe(
+                lambda: loop.call_later(0.2, typed.set)  # Time to reach the queue.
+            )
+            typed.wait(5)
+            # Opens the session as the real host does: refused if the terminal still held it.
+            saved = SavedSession.open(resume, session_dir)
+            host = asyncio.run_coroutine_threadsafe(
+                start_host("cccc3333", workspace, Script(), saved), loop
+            ).result()
+            hosts.append(host)
+            return "cccc3333", None, tmp_path / "host.log"
+
+        try:
+            with create_pipe_input() as pipe:
+
+                def prompt(*args, **kwargs):
+                    return create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+
+                async def seen(text):
+                    await until(lambda: text in output.getvalue(), timeout=10)
+
+                async def drive():
+                    pipe.send_text("/detach\r")
+                    await seen("Nothing to move to a background host yet")
+                    pipe.send_text("hello here\r")
+                    await seen("Echo: hello here")
+                    await until(lambda: not app.activity.busy)
+                    pipe.send_text("hang here\r")
+                    await until(lambda: "hang here" in script.gates)
+                    pipe.send_text("/detach\r")
+                    await seen("so what it is doing can't move")
+                    script.release("hang here")
+                    await seen("Finished.")
+                    await until(lambda: not app.activity.busy)
+                    session_id = app.runtime.session.info.id
+                    pipe.send_text("/detach\r")
+                    await seen("Moved to background session cccc3333")
+                    # What was typed during the move went to the host, not lost.
+                    await seen("Echo: typed meanwhile")
+                    assert app.hosted and app.runtime.session_id == session_id
+                    assert "left " not in output.getvalue(), "the host runs that same session"
+                    pipe.send_text("hello there\r")
+                    await seen("Echo: hello there")
+                    # The host carried the conversation on, not a copy of it.
+                    assert hosts[0].controller.runtime.session.info.id == session_id
+                    pipe.send_text("/detach\r")
+
+                with (
+                    patch("pcode.app.create_prompt", prompt),
+                    patch("pcode.remote.spawn_host", spawn_host),
+                ):
+                    await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=30)
+            assert "keeps running in the background" in output.getvalue()
+            await until(lambda: not hosts[0].clients)
+            assert not hosts[0].stopped.is_set()
+        finally:
+            for host in hosts:
+                await stop_host(host)
+
+    asyncio.run(run())
+
+
+@pytest.mark.in_process("moves a session running in this terminal; hosted, there is none")
+def test_a_session_that_cannot_move_to_a_host_carries_on_here(tmp_path, host_dir):
+    async def run():
+        output = StringIO()
+        app = local_app(tmp_path, Script(), output)
+
+        def spawn_host(**kwargs):
+            raise OSError("no room for a host")
+
+        with create_pipe_input() as pipe:
+
+            def prompt(*args, **kwargs):
+                return create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+
+            async def seen(text):
+                await until(lambda: text in output.getvalue(), timeout=10)
+
+            async def drive():
+                pipe.send_text("hello\r")
+                await seen("Echo: hello")
+                await until(lambda: not app.activity.busy)
+                pipe.send_text("/detach\r")
+                await seen("so it carries on here")
+                assert not app.hosted
+                # Still its own: the lock is held again and turns keep saving.
+                assert is_open(app.runtime.session.directory)
+                pipe.send_text("still here\r")
+                await seen("Echo: still here")
+                pipe.send_text("\x04")
+
+            with (
+                patch("pcode.app.create_prompt", prompt),
+                patch("pcode.remote.spawn_host", spawn_host),
+            ):
+                await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=30)
+        app.runtime.close()
 
     asyncio.run(run())
 

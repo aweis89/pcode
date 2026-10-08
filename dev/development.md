@@ -151,12 +151,18 @@ image diff before committing.
 
 ## Session hosts
 
-Every interactive session with a model runs in a host process. `SessionController`
-(`src/pcode/controller.py`) owns the session (queues, send modes, turns, commands,
-MCP, side questions, jobs) and runs in the host behind `HostView`; the terminal
-attaches over the socket protocol with a `RemoteController` and runs only its own
-commands (`TERMINAL_COMMANDS`). `--no-host` and `--print` run a controller
-in-process with `PreviewApp` as its view. The user-facing side is
+`SessionController` (`src/pcode/controller.py`) owns the session (queues, send
+modes, turns, commands, MCP, side questions, jobs). By default it runs in the
+terminal's process with `PreviewApp` as its view. With `--host` (or
+`session_host on`), or after `/detach` moves an in-process session
+(`PreviewApp.move_to_host`), it runs in a host process behind `HostView`; the
+terminal attaches over the socket protocol with a `RemoteController` and runs
+only its own commands (`TERMINAL_COMMANDS`).
+
+The handoff releases the session lock and the process's running jobs
+(`JobRegistry.release`, adopted by the host as orphans), then spawns a host that
+resumes the session. A host that fails to start is SIGKILLed, never SIGTERMed:
+a stopped host tidies the worktree the terminal's session is still in. The user-facing side is
 [background sessions](../docs/sessions.md#background-sessions).
 
 Each host is its own process listening on a Unix socket. An attaching terminal

@@ -61,7 +61,7 @@ SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 RESETS = {"conversation_reset", "replay_conversation", "show_branch"}
 
 # What a terminal may call besides the controller's intents.
-HOST_CALLS = frozenset({"attach", "query", "send", "run", "stop", "asides_read"})
+HOST_CALLS = frozenset({"attach", "query", "send", "run", "stop", "stop_if_idle", "asides_read"})
 
 _MISSING = object()
 
@@ -240,6 +240,10 @@ class _Client:
         # A remote profile keeps its worktree however the host is stopped.
         self.host.keep_worktree = bool(keep_worktree) or remote_profile.active() is not None
         self.host.stop()
+
+    def stop_if_idle(self) -> str:
+        """`pcode --kill-hosts idle`: "" once stopping, else what it is busy with."""
+        return self.host.stop_if_idle()
 
 
 class HostView:
@@ -699,19 +703,37 @@ class SessionHost:
 
     def idle(self) -> bool:
         """Nothing would be lost by stopping: no terminal, no work, no running job."""
-        jobs = getattr(self.controller.runtime, "jobs", None)
-        running = jobs.running() if jobs is not None else []
-        return (
-            not self.clients
-            and not self.connections
-            and not self.busy
-            and self.controller.command_idle.is_set()
-            and not running
-            and not self.controller.startup_pending
-            and not self.controller.asides.running
+        return not self.clients and not self.connections and not self.busy_with()
+
+    def busy_with(self) -> str:
+        """What stopping now would interrupt, terminals aside; "" for nothing."""
+        controller = self.controller
+        jobs = getattr(controller.runtime, "jobs", None)
+        work = (
+            (self.busy, "a turn or command is running"),
+            (not controller.command_idle.is_set(), "a command is running"),
+            # A job outlives its host, but its finish would wake nobody.
+            (jobs is not None and jobs.running(), "a background command is running"),
+            (controller.startup_pending, "it is starting up"),
+            (controller.asides.running, "a side question is running"),
             # A title asked for beside the first turn would be lost.
-            and (self.controller.naming_task is None or self.controller.naming_task.done())
+            (
+                controller.naming_task is not None and not controller.naming_task.done(),
+                "it is naming the session",
+            ),
         )
+        return next((reason for busy, reason in work if busy), "")
+
+    def stop_if_idle(self) -> str:
+        """Stop as an idle host stops itself, terminals or not; else say what it is busy with.
+
+        Checked and stopped with no await in between, so nothing starts in the gap.
+        """
+        if reason := self.busy_with():
+            return reason
+        self.idle_stopped = True
+        self.stop()
+        return ""
 
     async def stop_when_idle(
         self, minutes: float, *, every: float = 2.0, grace: float = IDLE_GRACE_SECONDS
@@ -735,6 +757,9 @@ class SessionHost:
                 return
 
     def stop(self) -> None:
+        # At once, not in close(): a prompt an attached terminal sends before
+        # then would otherwise start a turn only for close() to cancel it.
+        self.controller.running = False
         self.stopped.set()
 
     async def close(self) -> None:

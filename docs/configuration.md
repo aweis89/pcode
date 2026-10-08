@@ -228,7 +228,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 
 | Key | Built-in default | Values |
 | --- | --- | --- |
-| `session_host` | `on` | `on`, `off` (run sessions in a [background host](sessions.md#background-sessions) that outlives the terminal; `--host`/`--no-host` override it once) |
+| `session_host` | `off` | `on`, `off` (run sessions in a [background host](sessions.md#background-sessions) that outlives the terminal from the start; off runs them in the terminal until [`/detach`](sessions.md#background-sessions) moves one into a host; `--host`/`--no-host` override it once) |
 | `session_host_idle_minutes` | `0` | whole minutes a [background session](sessions.md#idle-hosts-stop) may sit idle with no terminal before its host stops; `0` stops it 15 seconds after it goes idle, `off` never |
 | `worktree` | `off` | `on`, `off` (start new sessions in `.worktrees/` git worktrees; does not enable worker isolation on its own) |
 | `worktree_exit` | `ask` | `ask`, `merge`, `keep` (what to do with unmerged commits when a session worktree is left) |

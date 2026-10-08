@@ -176,6 +176,9 @@ class JobRegistry:
         # tests change after the process-wide registry has been created.
         self._state = state
         self._home: Path | None = None
+        # Directories this process has handed to others (`release`): the next
+        # one gets a new name, so it never republishes jobs adopted elsewhere.
+        self._released = 0
         self._counter = 0
         self._waited: set[str] = set()
         # Jobs sent SIGTERM, by the time they get SIGKILL instead.
@@ -240,7 +243,8 @@ class JobRegistry:
         if self._state is None:
             return None
         if self._home is None:
-            self._home = self._state() / str(os.getpid())
+            name = str(os.getpid())
+            self._home = self._state() / (f"{name}-{self._released}" if self._released else name)
         self._home.mkdir(parents=True, exist_ok=True)
         return self._home
 
@@ -250,15 +254,41 @@ class JobRegistry:
 
     def _save(self) -> None:
         home = self._directory()
-        if home is None:
-            return
-        record = {
-            "owner_pid": os.getpid(),
-            "jobs": {job.id: job.record() for job in self.jobs.values()},
-        }
-        pending = home / "registry.tmp"
-        pending.write_text(json.dumps(record), encoding="utf-8")
-        pending.replace(home / "registry.json")
+        if home is not None:
+            _publish(home, os.getpid(), self.jobs)
+
+    def release(self) -> "Released | None":
+        """Let the next pcode to start adopt the running jobs, though this process lives on.
+
+        For a session moving into a session host: a living owner's jobs are
+        never adopted, so they would otherwise stay with this terminal, out of
+        the session's sight. None when nothing is running.
+        """
+        self.shutdown()
+        if self._home is None or not self.jobs:
+            return None
+        released = Released(self._home, self.jobs)
+        _publish(self._home, None, self.jobs)
+        self.jobs, self._home = {}, None
+        self._released += 1
+        return released
+
+    def reclaim(self, released: "Released") -> bool:
+        """Take back what `release` let go, unless another pcode adopted it meanwhile.
+
+        A record claimed by a process that has since died (a host killed while
+        it started) is taken back too. False if nothing was.
+        """
+        if self.jobs or self._home is not None:
+            return False  # This process has moved on to a directory of its own.
+        source = _claimable(released.home)
+        if source is None or _claim(released.home, source) is None:
+            return False
+        _unclaim(released.home, delete=True)
+        self.jobs, self._home = released.jobs, released.home
+        self._released -= 1
+        self._save()
+        return True
 
     def adopt_orphans(self) -> list[Job]:
         """Take over the running jobs of pcode processes that are gone.
@@ -274,19 +304,29 @@ class JobRegistry:
             return []
         adopted = []
         for home in sorted(root.iterdir()):
-            if home.name == str(os.getpid()) or not home.is_dir():
+            # This process's own, and any it released for another to adopt.
+            if home.name.split("-")[0] == str(os.getpid()) or not home.is_dir():
+                continue
+            if (source := _claimable(home)) is None:
                 continue
             try:
-                record = json.loads((home / "registry.json").read_text(encoding="utf-8"))
+                record = json.loads(source.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
             owner = record.get("owner_pid") if isinstance(record, dict) else None
             if isinstance(owner, int) and _alive(owner):
                 continue
+            if (record := _claim(home, source)) is None:
+                continue  # Another pcode took them first.
+            owner = record.get("owner_pid")
+            if isinstance(owner, int) and _alive(owner):
+                # Republished by a living owner since it was read: put it back.
+                _unclaim(home)
+                continue
             entries = record.get("jobs", {})
             kept = set()
-            for entry in entries.values() if isinstance(entries, dict) else ():
-                job = self._adopt(entry)
+            for identity, entry in entries.items() if isinstance(entries, dict) else ():
+                job = self._adopt(entry, identity)
                 if job is not None:
                     adopted.append(job)
                     kept.add(job.directory.resolve())
@@ -300,7 +340,11 @@ class JobRegistry:
             self._save()
         return adopted
 
-    def _adopt(self, entry: object) -> Job | None:
+    def _adopt(self, entry: object, identity: str = "") -> Job | None:
+        """A running job from another pcode's record, under its old id if that is free.
+
+        The old id is what the conversation that started it knows it by.
+        """
         if not isinstance(entry, dict):
             return None
         try:
@@ -312,9 +356,16 @@ class JobRegistry:
             return None
         if not directory.is_dir() or not _alive(supervisor_pid):
             return None
-        self._counter += 1
+        counter = self._counter
+        number = identity[1:] if identity.startswith("j") else ""
+        if number.isdigit() and identity not in self.jobs:
+            # Later launches count on from it, so never reuse it.
+            self._counter = max(self._counter, int(number))
+        else:
+            self._counter += 1
+            identity = f"j{self._counter}"
         job = Job(
-            id=f"j{self._counter}",
+            id=identity,
             command=command,
             directory=directory,
             supervisor_pid=supervisor_pid,
@@ -327,7 +378,7 @@ class JobRegistry:
         status = self._read_status(job)
         if status is not None:
             if status.get("exit_code") is not None:
-                self._counter -= 1
+                self._counter = counter
                 return None
             job.pid = status.get("pid")
         self.jobs[job.id] = job
@@ -535,6 +586,61 @@ def _alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+@dataclass
+class Released:
+    """Jobs `JobRegistry.release` handed over, should they need taking back."""
+
+    home: Path
+    jobs: dict[str, Job]
+
+
+def _claimable(home: Path) -> Path | None:
+    """The record in `home` another pcode may claim: published, or claimed by one now dead."""
+    published = home / "registry.json"
+    if published.exists():
+        return published
+    for claimed in home.glob("registry.claimed-*.json"):
+        pid = claimed.name.removeprefix("registry.claimed-").removesuffix(".json")
+        if pid.isdigit() and not _alive(int(pid)):
+            return claimed
+    return None
+
+
+def _claim(home: Path, source: Path) -> dict | None:
+    """Take the record at `source` for this process, or None if another got there first.
+
+    A rename is atomic, so of two processes reading the same record only one
+    goes on to own its jobs.
+    """
+    claimed = home / f"registry.claimed-{os.getpid()}.json"
+    try:
+        os.rename(source, claimed)
+        record = json.loads(claimed.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _unclaim(home: Path, *, delete: bool = False) -> None:
+    """Undo `_claim`: publish the record again, or drop it once its jobs are saved elsewhere."""
+    claimed = home / f"registry.claimed-{os.getpid()}.json"
+    try:
+        if delete:
+            claimed.unlink()
+        else:
+            os.rename(claimed, home / "registry.json")
+    except OSError:
+        pass
+
+
+def _publish(home: Path, owner: int | None, jobs: dict[str, Job]) -> None:
+    """Write `registry.json`; with no `owner` any other pcode may adopt the jobs."""
+    record = {"owner_pid": owner, "jobs": {job.id: job.record() for job in jobs.values()}}
+    pending = home / "registry.tmp"
+    pending.write_text(json.dumps(record), encoding="utf-8")
+    pending.replace(home / "registry.json")
 
 
 def _remove_if_empty(directory: Path) -> None:

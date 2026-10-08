@@ -1,7 +1,8 @@
-"""What runs a conversation: the `SessionController` a session host runs.
+"""What runs a conversation: the `SessionController`, in the terminal's process or a host's.
 
-The terminal only renders and attaches over the socket; `--no-host` and
-`--print` run a controller in-process. See dev/development.md#session-hosts.
+By default the terminal runs one in-process; in a session host (`--host`, or
+after `/detach`) the terminal only renders and attaches over the socket. See
+dev/development.md#session-hosts.
 """
 
 import asyncio
@@ -232,6 +233,8 @@ class PromptQueue:
         self.activity = activity
         self.generation = 0
         self._items: asyncio.Queue[Item] = asyncio.Queue()
+        # What `get` handed out and nobody has acted on yet (see `take_all`).
+        self._fetched: Item | None = None
 
     def __len__(self) -> int:
         return len(self.activity.queued_prompts)
@@ -255,13 +258,15 @@ class PromptQueue:
 
     async def get(self) -> Item:
         """The next item, stale or not; check `current` before acting on it."""
-        return await self._items.get()
+        self._fetched = await self._items.get()
+        return self._fetched
 
     def current(self, item: Item) -> bool:
         return item[0] == self.generation
 
     def taken(self) -> None:
         """The item just fetched is being acted on: drop it from the panel."""
+        self._fetched = None
         self.activity.queued_prompts.pop(0)
         self.activity.queued_modes.pop(0)
         self._sync()
@@ -314,6 +319,23 @@ class PromptQueue:
                 self._items.put_nowait(item)
         self._sync()
         return messages
+
+    def take_all(self) -> list[tuple[str, str]]:
+        """Remove and return every waiting message and its mode, oldest first, without dropping it.
+
+        For a session moving into a host. The panel is left alone: by then it
+        shows the host's queue. The new generation makes stale the one `get`
+        fetched but has not acted on, which is taken here too.
+        """
+        fetched = [self._fetched] if self._fetched is not None else []
+        items = [*fetched, *self._drain()]
+        self._fetched = None
+        self.generation += 1
+        return [
+            (text, mode)
+            for generation, text, mode, _owner in items
+            if generation == self.generation - 1
+        ]
 
     def _drain(self) -> list[Item]:
         items = []
@@ -457,6 +479,9 @@ class SessionController:
         self.runtime = runtime
         # False once the owner (the terminal, or the host) is done with it.
         self.running = True
+        # The terminal moved on to another controller (/detach, /switch) and
+        # shares its activity: this one must no longer reset it.
+        self.superseded = False
         # Building the runtime has not finished yet, or failed with this.
         self.startup_pending = False
         self.startup_error: Exception | None = None
@@ -1013,6 +1038,21 @@ class SessionController:
 
     # --- Stopping ---
 
+    def take_typed(self) -> tuple[list[str], list[tuple[str, str]]]:
+        """Commands and messages (with their modes) the user left waiting, for the
+        host this session moves into. Job wake-ups and resends stay behind: the
+        host makes its own."""
+        commands = []
+        while not self.commands.empty():
+            generation, text, _idle, _tag = self.commands.get_nowait()
+            if generation == self.prompts.generation:
+                commands.append(text)
+        self.command_idle.set()
+        messages = [
+            (text, mode) for text, mode in self.prompts.take_all() if mode not in ("wake", "resend")
+        ]
+        return commands, messages
+
     def clear_queue(self) -> None:
         """Drop every queued message and pending command, saying what went."""
         self.startup_commands.clear()
@@ -1167,7 +1207,9 @@ class SessionController:
             self.activity.busy = True
         if self.mcp_defaults_requested:
             self.start_mcp_defaults()
-        if not self.running:
+        # Not once the terminal shows another controller (/detach, /switch):
+        # they share its activity, which this would reset under the new one.
+        if not self.running and not self.superseded:
             self.cancel()
             if active := self.tasks():
                 await asyncio.gather(*active, return_exceptions=True)

@@ -195,6 +195,12 @@ class PreviewApp:
         self.session_over = False
         # `/detach`: leave the host running on exit, which otherwise stops it.
         self.detach_requested = False
+        # `/detach` in a session running here: move it into a host first.
+        self.handoff_requested = False
+        # Set once a host owns this terminal's in-process session.
+        self.moved_to_host = False
+        # The editor's Enter, so what was typed during a move reaches the host.
+        self._submit_typed: Callable[[str], None] | None = None
         # The host this terminal showed before the current one, for `/switch -`.
         self.previous_host: str | None = None
         # Its conversation, to resume should that host have stopped meanwhile.
@@ -359,7 +365,8 @@ class PreviewApp:
             ),
             Command(
                 "/detach",
-                "Quit but leave this background session's host running",
+                "Quit, leaving this session's background host running; "
+                "a session running here moves into a host instead",
                 self.detach,
                 group="Session",
             ),
@@ -1288,10 +1295,29 @@ class PreviewApp:
     def detach(self, argument: str) -> None:
         if argument:
             raise ValueError("Usage: /detach")
-        if not self.hosted:
-            raise ValueError("/detach leaves a session host running; this session runs here.")
-        self.detach_requested = True
-        self.running = False
+        if self.hosted:
+            self.detach_requested = True
+            self.running = False
+            return
+        # Running here: move it into a host first, and stay on it.
+        if not self.model:
+            raise ValueError("/detach needs a model; this is a local UI preview.")
+        if (
+            self.activity.busy
+            or self.activity.queued_prompts
+            or self.controller.working()
+            or self.asides.running
+        ):
+            raise ValueError(
+                "This session runs in this terminal, so what it is doing can't move to a "
+                "background host. Wait or cancel, then /detach."
+            )
+        if getattr(self.runtime, "session", None) is None:
+            raise ValueError(
+                "Nothing to move to a background host yet: a session is saved with its "
+                "first prompt. `pcode --host` starts one in a host."
+            )
+        self.handoff_requested = True
 
     def stop_host_on_exit(self) -> None:
         """Quitting (Ctrl+D, `/quit`) ends the host as `/stop` does, unless `/detach` asked."""
@@ -1342,6 +1368,81 @@ class PreviewApp:
             )
         else:
             await self.start_host_session("")
+
+    async def move_to_host(self) -> None:
+        """`/detach` in a session running here: carry it on in a new host, still shown here.
+
+        The conversation, its worktree and its running jobs go to the host;
+        only this terminal's own process stays behind. Should the host fail to
+        start, the session carries on here as if nothing happened.
+        """
+        from filelock import Timeout
+
+        from pcode.remote import HostError, spawn_host, wait_for_host
+        from pcode.sessions import SessionError, is_open
+
+        self.handoff_requested = False
+        runtime = self.runtime
+        saved = runtime.session
+        jobs = getattr(runtime, "jobs", None)
+        # Both before the host starts: it takes the session's lock, and adopts
+        # jobs while it boots.
+        # A title still being asked for would be written beside the host's own.
+        await self.controller.stop_naming()
+        released = jobs.release() if jobs is not None else None
+        saved.close()
+        wait = self.activity.begin_wait("Moving this session to a background host")
+        process = None
+        let_go = False
+        try:
+            if is_open(saved.directory):
+                # A lock is per thread: one taken on another thread is still held.
+                raise SessionError("This session's lock could not be handed to a host.")
+            let_go = True
+            identity, process, log = await asyncio.to_thread(
+                spawn_host,
+                model=self.model,
+                workspace=self.workspace,
+                resume=saved.info.id,
+                session_dir=self.session_dir,
+            )
+            controller, welcome = await wait_for_host(identity, self, self.activity, process, log)
+            # From here the host owns the session: an exit before this terminal
+            # shows it must leave its worktree to it.
+            self.moved_to_host = True
+        except BaseException as error:
+            if process is not None and process.poll() is None:
+                # Killed, never stopped: a stopped host tidies the worktree
+                # this session is still working in.
+                process.kill()
+                await asyncio.to_thread(process.wait)
+            try:
+                saved.lock.acquire(timeout=0)
+            except Timeout:
+                if let_go:
+                    self.transcript.warning(
+                        "Another process opened this session meanwhile; turns here no "
+                        "longer save safely. Quit, then `pcode --continue` it."
+                    )
+            if released is not None and not jobs.reclaim(released):
+                # The killed host took them over first: its record is an orphan now.
+                self.controller.adopt_jobs()
+            if not isinstance(error, Exception):
+                raise
+            # Host errors carry the log tail and path; nothing secret.
+            detail = str(error) if isinstance(error, (HostError, OSError)) else error_message(error)
+            raise SessionError(
+                f"Could not move this session to a background host, so it carries on here: {detail}"
+            ) from error
+        finally:
+            self.activity.end_wait(wait)
+        await self.adopt_controller(
+            controller,
+            welcome,
+            f"Moved to background session {identity}: /detach or closing the terminal "
+            "now leaves it running",
+            handed_off=True,
+        )
 
     async def switch_session(self, output: TerminalOutput, session) -> None:
         """`/switch`: pick a running host (or start one) and show it in this terminal."""
@@ -1515,26 +1616,41 @@ class PreviewApp:
         )
         await self.adopt_controller(controller, welcome, f"{note} ({identity})" if note else what)
 
-    async def adopt_controller(self, controller, welcome: dict, note: str) -> None:
+    async def adopt_controller(
+        self, controller, welcome: dict, note: str, *, handed_off: bool = False
+    ) -> None:
         """Show the host behind `controller` in this terminal, leaving the current session.
 
         A session running in this process ends here (its journal keeps it for
         /resume or `pcode -c`); another host keeps running.
         """
         previous = self.controller
+        commands, messages = [], []
         if isinstance(previous, SessionController):
-            if saved := getattr(previous.runtime, "session", None):
+            # Handed off: the host now runs that same conversation.
+            if not handed_off and (saved := getattr(previous.runtime, "session", None)):
                 note += f" · left {saved.info.id} (pcode --continue {saved.info.id[:8]} resumes it)"
             await self.leave_controller(previous)
             close = getattr(previous.runtime, "close", None)
             if close is not None:
                 close()
+            # No await from here to the swap, so nothing typed falls between.
+            if handed_off:
+                # Typed while it moved: meant for the session, which now runs there.
+                commands, messages = previous.take_typed()
+            else:
+                previous.clear_queue()  # Says what was dropped, as leaving it always has.
         else:
             if not previous.runtime.lost:
                 self.previous_host = previous.id
                 self.previous_session = previous.runtime.session_id or None
             previous.close()
         self.controller = controller
+        if isinstance(previous, SessionController):
+            # Only now, while this terminal reads `running` from the new one:
+            # the loop running this command ends once it has finished.
+            previous.running = False
+            previous.superseded = True
         controller.on_closed = self.host_closed
         if forked := welcome.get("forked_from"):
             note += f" · continuing a copy of {forked}"
@@ -1557,6 +1673,11 @@ class PreviewApp:
             with self.transcript.restore():
                 self.transcript.retained_note(note)
         await controller.start(welcome)
+        for text, mode in messages:
+            controller.submit(text, mode)
+        if self._submit_typed is not None:
+            for text in commands:
+                self._submit_typed(text)
         if self._host_watch is not None:
             self._host_watch()
         self.redraw()
@@ -1952,6 +2073,8 @@ class PreviewApp:
                 await self.switch_session(output, session)
             if self.restart_requested:
                 await self.restart_host()
+            if self.handoff_requested:
+                await self.move_to_host()
             if self.session_info_requested:
                 await self.show_session_info(output, session)
             if self.inspector_requested is not None:
@@ -2160,6 +2283,7 @@ class PreviewApp:
             else:
                 self.controller.submit(text, mode)
 
+        self._submit_typed = submit
         session = create_prompt(
             self.registry,
             activity=self.activity,
@@ -2308,6 +2432,9 @@ class PreviewApp:
             controller.close()
             return
         loops, self._loops = self._loops, []
+        # In-process, the command leaving (/switch, /detach) runs in one of
+        # these loops: awaiting itself would never end. adopt_controller stops it.
+        loops = [task for task in loops if task is not asyncio.current_task()]
         for task in loops:
             task.cancel()
         # Side questions outlive turns, not the terminal; nor does a title request.
@@ -2544,8 +2671,8 @@ def main() -> None:
         "--host",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Run the conversation in a background session host that outlives this terminal "
-        "(the default); --no-host runs it inside this terminal",
+        help="Run the conversation in a background session host that outlives this terminal; "
+        "--no-host runs it inside this terminal (the default, unless session_host is on)",
     )
     complete_with(
         parser.add_argument(
@@ -2559,10 +2686,16 @@ def main() -> None:
         "hosts",
     )
     parser.add_argument("--hosts", action="store_true", help="List running session hosts and exit")
+    host_kinds = ("all", "stale", "idle")
     parser.add_argument(
-        "--stop-hosts",
-        choices=("all", "stale"),
-        help="Stop every session host, or those running older pcode code, and exit",
+        "--kill-hosts",
+        choices=host_kinds,
+        help="Stop every session host, those running older pcode code, or those with "
+        "nothing running (even with a terminal attached), and exit",
+    )
+    # The flag's old name, kept working for scripts and habit.
+    parser.add_argument(
+        "--stop-hosts", dest="kill_hosts", choices=host_kinds, help=argparse.SUPPRESS
     )
     parser.add_argument(
         "--email-listen",
@@ -2769,6 +2902,45 @@ def _resume_workspace(info, requested: Path | None) -> Path:
     )
 
 
+def _kill_hosts(which: str, entries: list, code: str) -> None:
+    """`--kill-hosts all|stale|idle`, reporting each host as it stops.
+
+    `idle` is for the hosts forgotten terminal tabs keep alive: an attached
+    terminal stops a host from stopping itself. Each host checks for itself
+    that nothing but its terminals would be lost, then stops exactly as it
+    would once idle, so its worktree and an unread reply are kept the same way.
+    """
+    from pcode.remote import HostError, stop_entry, stop_if_idle
+    from pcode.rpc import RemoteError
+
+    chosen = [
+        entry
+        for entry in entries
+        if which in ("all", "idle") or (which == "stale" and entry.stale(code))
+    ]
+    for entry in chosen:
+        try:
+            if which == "idle" and entry.state != "idle":
+                # Running a turn, or starting, says so in its entry; the host checks the rest.
+                busy = "it is starting up" if entry.state == "starting" else "a turn is running"
+            elif which == "idle":
+                busy = asyncio.run(stop_if_idle(entry))
+            elif not asyncio.run(stop_entry(entry)):
+                raise HostError("it was told to stop but is still running after 30 s")
+            else:
+                busy = ""
+        except (OSError, ValueError, HostError, RemoteError) as error:
+            # Usually gone since it was listed (stopped itself, or crashed).
+            print(f"Could not stop {entry.id}: {error}", file=sys.stderr)
+            continue
+        if busy:
+            print(f"Skipped {entry.id}  {entry.label()}: {busy}")
+        else:
+            print(f"Stopped {entry.id}  {entry.label()}")
+    if not chosen:
+        print("No stale session hosts." if which == "stale" else "No session hosts are running.")
+
+
 def _stopped_session(selector: str, root: Path | None = None) -> str | None:
     """The saved session `--attach SELECTOR` means when no running host matches it.
 
@@ -2887,8 +3059,8 @@ def _run_hosted(args: argparse.Namespace) -> None:
     finally:
         if app.hosted:
             app.runtime.close()
-    if app.hosted and app.host_stopped:
-        _tidy_stopped_host(app)
+    if app.hosted:
+        _leave_host(app)
 
 
 def _print_hosted(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
@@ -2935,6 +3107,13 @@ def _email(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     except KeyboardInterrupt:
         parser.exit(130)
     sys.exit(status)
+
+
+def _leave_host(app) -> None:
+    """A terminal on a host exits: a host left running tidies its own worktree."""
+    app.runtime.close()
+    if app.host_stopped:
+        _tidy_stopped_host(app)
 
 
 def _tidy_stopped_host(app) -> None:
@@ -3014,19 +3193,14 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         app.transcript.events(app.preview.demo(), show_tools=True)
         app.transcript.syntax_gallery()
         return
-    if args.hosts or args.stop_hosts:
+    if args.hosts or args.kill_hosts:
         from pcode.host_protocol import code_fingerprint, list_hosts
         from pcode.host_ui import host_row, ordered
 
         code = code_fingerprint()
         entries = ordered(list_hosts())
-        if args.stop_hosts:
-            from pcode.remote import stop_entry
-
-            for entry in entries:
-                if args.stop_hosts == "all" or entry.stale(code):
-                    asyncio.run(stop_entry(entry))
-                    print(f"Stopped {entry.id}  {entry.label()}")
+        if args.kill_hosts:
+            _kill_hosts(args.kill_hosts, entries, code)
             return
         for entry in entries:
             print(f"{entry.id}  {host_row(entry, None, code=code).strip()}")
@@ -3043,8 +3217,8 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.print and args.attach is not None:
         _print_hosted(args, parser)
         return
-    # Every interactive session with a model runs in a background host unless
-    # asked not to; the canned preview (no model) has nothing to host.
+    # A session runs in a background host when asked (--host, session_host on);
+    # the canned preview (no model) has nothing to host.
     has_model = bool(args.model or args.resume or load_preferences().get("model"))
     hosted = args.attach is not None or (
         has_model
@@ -3150,7 +3324,12 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 parser.exit(1)
         else:
             app.run()
-            _leave_worktree_on_exit(app)
+            # `is True`: tests stand a Mock in for the app, which answers every attribute.
+            if app.hosted is True or app.moved_to_host is True:
+                # Moved to a host meanwhile (/detach, /switch): leave as a hosted terminal does.
+                _leave_host(app)
+            else:
+                _leave_worktree_on_exit(app)
     except Exception as error:
         parser.exit(2, error_message(error) + "\n")
     finally:

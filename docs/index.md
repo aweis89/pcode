@@ -126,7 +126,8 @@ the main conversation unless you choose to pull it in. See
 
 ## Sessions that outlive the terminal
 
-Each session runs in a background host. Close the terminal and the turn keeps
+A session runs inside its terminal until you want it to outlive it: `/detach`
+moves it into a background host. Then close the terminal and the turn keeps
 going; `pcode --attach` picks it back up. `/switch` moves between running
 sessions and Ctrl+^ flips back to the last one. Everything is saved, so
 `pcode --continue` resumes the latest conversation in a directory and `/resume`

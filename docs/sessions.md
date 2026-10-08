@@ -5,20 +5,43 @@ Opening the app, using commands, or quitting without a prompt creates no session
 
 ## Background sessions
 
-Every interactive session runs in a *session host*: a headless pcode process
-that owns the conversation while the terminal only draws it. The terminal can
-leave, switch to another session, or close, and the work carries on. `--no-host` (or `session_host off`) runs a
-session inside the terminal instead, as `--print` does unless it is given
-`--attach` (see [Scripting a running host](#scripting-a-running-host)).
+A session starts inside its terminal: one process, quick to start, gone when
+you quit. When you want it to outlive the terminal, `/detach` moves it into a
+*session host*: a headless pcode process that owns the conversation while the
+terminal only draws it. The terminal stays on it, and from then on it can
+leave, switch to another session, or close, and the work carries on.
+
+- `/detach` moves the conversation, its worktree and its running background
+  commands (they keep their IDs). It refuses while a turn, command or side
+  question is in progress, which can't move: let it finish or cancel it first.
+  A session needs its first prompt (which saves it) before it can move.
+  Anything you type while it moves goes to the host once it is there.
+- Once it is in a host, `/detach` again (or closing the terminal) quits and
+  leaves the host running for `pcode --attach`.
+- `pcode --host` (or `session_host on`) starts every session in a host instead,
+  so any turn can be walked away from. `--print` runs in-process either way
+  unless it is given `--attach` (see
+  [Scripting a running host](#scripting-a-running-host)).
 
 ```sh
-pcode                            # start a session in a host and attach to it
-pcode --no-host                  # run this one inside the terminal instead
+pcode                            # start a session in this terminal
+pcode --host                     # start it in a background host instead
 pcode --hosts                    # list running hosts
 pcode --attach                   # reattach to the newest host in this repository
 pcode --attach 3f9c              # ...or to one by host or session ID prefix
-pcode --stop-hosts stale         # stop hosts still running older pcode code (or: all)
+pcode --kill-hosts idle          # stop hosts with nothing running (or: stale, all)
 ```
+
+`--kill-hosts idle` is for the hosts a forgotten terminal tab keeps alive: an
+attached terminal keeps a host from [stopping itself](#idle-hosts-stop). It
+stops every host that has nothing running, terminal attached or not, the
+same way the host would have stopped itself with no terminal: a worktree with
+unmerged work is kept (an untouched one is removed) and a reply you haven't
+read stays in `/switch`. A host
+running a turn, a command, a side question or a background command is skipped
+and listed with the reason. A terminal still showing a stopped host says so and
+prints the `pcode --continue` command that resumes it. `stale` stops hosts
+still running older pcode code, and `all` stops every host.
 
 Inside a hosted session:
 
@@ -44,6 +67,10 @@ Inside a hosted session:
   the worktree the way a local exit does. `/detach` quits but leaves the host
   running for `pcode --attach`, as closing the terminal window does, until it
   [goes idle](#idle-hosts-stop).
+
+From a session running in its terminal, `/switch` works too, but showing
+another session ends this one (so it refuses while a turn is in progress);
+`/resume` and `pcode --continue` bring it back.
 
 ### Scripting a running host
 
