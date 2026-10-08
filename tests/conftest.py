@@ -35,6 +35,18 @@ DEAD_TMUX_SOCKET_SECONDS = 60
 TMUX_OPT_IN_ENV = "PCODE_TEST_TMUX"
 TRANSPORT_ENV = "PCODE_TEST_TRANSPORT"
 
+# `-n auto` means a worker per core, and every worker boots its own pcode
+# processes, PTYs and session hosts. Two or three agent sessions running the
+# suite at once then took the whole machine down with memory pressure, so auto
+# stops at a few workers per run. PYTEST_XDIST_AUTO_NUM_WORKERS picks another.
+AUTO_WORKER_CAP = 4
+
+
+def pytest_xdist_auto_num_workers(config):
+    if os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS"):
+        return None  # xdist's own implementation reads it
+    return min(AUTO_WORKER_CAP, os.cpu_count() or 1)
+
 
 def pytest_addoption(parser):
     parser.addoption(
