@@ -94,7 +94,7 @@ class SizedPlanningToolset(PlanningToolset):
                 default), L (the bulk of the work, e.g. the main implementation or a long
                 test run). Omit for M.
         """
-        store = self._resolve(ctx)
+        store = await self._resolve(ctx)
         before = await store.get_items()
         item = await store.add_item(
             SizedPlanItem(content=content, active_form=active_form, size=size)

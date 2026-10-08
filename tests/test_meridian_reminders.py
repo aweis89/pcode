@@ -133,7 +133,7 @@ def test_warning_deduplicates_deciles_and_preserves_old_messages():
             model_settings=None,
             model_request_parameters=ModelRequestParameters(),
         )
-        ctx = SimpleNamespace(usage=RunUsage(requests=70))
+        ctx = SimpleNamespace(usage=RunUsage(requests=70), messages=[])
         await capability.before_model_request(ctx, context)
         initial = ModelMessagesTypeAdapter.dump_json(context.messages)
         await capability.before_model_request(ctx, context)
@@ -145,6 +145,8 @@ def test_warning_deduplicates_deciles_and_preserves_old_messages():
         await capability.before_model_request(ctx, context)
         assert len(context.messages) == 3
         assert ModelMessagesTypeAdapter.dump_json(context.messages[:2]) == initial
+        # Each reminder joins the run's history too, not only the request.
+        assert ctx.messages == context.messages[1:]
         # A suspended provider response must not get another user message.
         context.messages.append(ModelResponse(parts=[], state="suspended"))
         ctx.usage.requests = 99
@@ -179,7 +181,7 @@ def test_context_warning_uses_pcode_window_not_harness_fallback(monkeypatch):
             model_request_parameters=ModelRequestParameters(),
         )
         capability = MeridianLimitWarnings(max_context_fraction=0.9)
-        ctx = SimpleNamespace(usage=RunUsage())
+        ctx = SimpleNamespace(usage=RunUsage(), messages=[])
         asyncio.run(capability.before_model_request(ctx, context))
         return context.messages[-1].parts[0].content if len(context.messages) > 1 else None
 

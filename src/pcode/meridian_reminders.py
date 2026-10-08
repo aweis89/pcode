@@ -33,7 +33,7 @@ def last_reminder(messages, tag: str) -> str | None:
 
 
 def append_reminder(
-    request_context, tag: str, text: str, normalize: Callable[[str], str] | None = None
+    ctx, request_context, tag: str, text: str, normalize: Callable[[str], str] | None = None
 ) -> None:
     """Append `text` as durable history unless the last reminder already says it.
 
@@ -49,7 +49,10 @@ def append_reminder(
     key = normalize or (lambda value: value)
     if previous is not None and key(previous) == key(text):
         return
-    messages.append(ModelRequest(parts=[UserPromptPart(content=text)]))
+    reminder = ModelRequest(parts=[UserPromptPart(content=text)])
+    # Both lists: the request is what gets sent, `ctx.messages` the run's history.
+    request_context.messages = [*messages, reminder]
+    ctx.messages.append(reminder)
 
 
 def _decile_key(text: str) -> str:
@@ -102,6 +105,10 @@ class MeridianLimitWarnings(WarnNearLimits):
             # Warn at percentage deciles rather than on every token increase.
             # Keep severity and warning kinds so new limits/escalations still fire.
             append_reminder(
-                request_context, LIMITS_TAG, candidate.messages[-1].parts[0].content, _decile_key
+                ctx,
+                request_context,
+                LIMITS_TAG,
+                candidate.messages[-1].parts[0].content,
+                _decile_key,
             )
         return request_context

@@ -34,11 +34,11 @@ dependencies = [
     # itself is downloaded on first use, not at install.
     # Harness ships from the pydantic-ai repo with every Pydantic AI release and
     # pins pydantic-ai-slim to the same minor; bump both together.
-    "pydantic-ai-harness[exa,coder,codemode,playwright]>=0.52.0,<0.53",
+    "pydantic-ai-harness[exa,coder,codemode,playwright]>=0.54.0,<0.55",
     # duckduckgo and web-fetch back the bundled web_research extension when no
     # provider-native search or Exa key is available.
     # google covers both google and google-cloud providers; bedrock pulls boto3.
-    "pydantic-ai-slim[anthropic,bedrock,duckduckgo,google,groq,mcp,openai,web-fetch,xai]>=2.52.0,<3",
+    "pydantic-ai-slim[anthropic,bedrock,duckduckgo,google,groq,mcp,openai,web-fetch,xai]>=2.54.0,<3",
     "rich>=14,<15",
     # FastMCP 4.x OAuth callback server selects Uvicorn's websockets-sansio protocol.
     "websockets>=15.0.1,<17",

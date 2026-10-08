@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai_harness.step_persistence import is_provider_valid
 
 # Seconds before a request that got no answer is resent, by a turn or a worker.
@@ -14,15 +14,23 @@ class RequestCheckpoint(AbstractCapability):
         self.messages = None
         self.step = 0
 
-    async def wrap_model_request(self, ctx, *, request_context, handler):
-        # All before-request hooks (including steering and compaction) have run.
+    def get_ordering(self):
+        # Innermost, so this before-request hook runs after every other one
+        # (steering, job notices, compaction) and sees the request as sent.
+        return CapabilityOrdering(position="innermost")
+
+    async def before_model_request(self, ctx, request_context):
+        # Captured here rather than in `wrap_model_request`: that hook's handler
+        # runs the whole before-request chain, and a streamed request's error
+        # reaches the consumer while the wrap is still parked on the stream.
         # Keep a copy: the graph mutates history while unwinding a broken stream.
-        self.messages = (
-            deepcopy(request_context.messages)
-            if is_provider_valid(request_context.messages)
-            else None
-        )
+        messages = list(request_context.messages)
+        self.messages = deepcopy(messages) if is_provider_valid(messages) else None
         self.step = ctx.run_step
+        return request_context
+
+    async def wrap_model_request(self, ctx, *, request_context, handler):
         response = await handler(request_context)
+        # Answered: resending this request would replay what it started.
         self.messages = None
         return response
