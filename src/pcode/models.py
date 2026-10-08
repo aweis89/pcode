@@ -94,6 +94,17 @@ def login_sources() -> tuple[str, ...]:
     return ("claude", "openai-codex")
 
 
+def logout_sources() -> tuple[str, ...]:
+    """What `/logout` offers; the first is what a bare `/logout` removes.
+
+    `/logout anthropic` is accepted either way, so a sign-in stored while the
+    legacy route was on can still be cleared.
+    """
+    if LEGACY_ANTHROPIC_AUTH:
+        return ("anthropic", "openai-codex")
+    return ("openai-codex",)
+
+
 def anthropic_credential_hint() -> str:
     """How to give an `anthropic:` model that has no credential one."""
     if LEGACY_ANTHROPIC_AUTH:

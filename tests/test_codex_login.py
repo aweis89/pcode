@@ -133,6 +133,21 @@ def test_logout_preserves_cli_store(tmp_path, monkeypatch):
     assert "Removed pcode's stored" in buffer.getvalue()
 
 
+def test_bare_logout_removes_the_codex_login(monkeypatch):
+    codex_login.write_credentials(codex_login.credentials_path(), tokens())
+    app, _, buffer = make_app("openai-codex:test-model")
+    app.handle("/logout")
+    assert app.controller.logout_requested == "openai-codex"
+    assert "anthropic" not in app.controller.registry.find("/logout").arguments
+    # An Anthropic sign-in stored while the legacy route was on can still go.
+    app.controller.logout_requested = None
+    app.handle("/logout anthropic")
+    assert app.controller.logout_requested is None
+    assert "No stored Anthropic login" in buffer.getvalue()
+    app.handle("/logout gemini")
+    assert "Usage: /logout [openai-codex]" in buffer.getvalue()
+
+
 def tokens():
     from pydantic_ai.providers.openai_codex import OpenAICodexCredentials
 

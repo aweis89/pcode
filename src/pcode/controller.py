@@ -611,7 +611,7 @@ class SessionController:
 
     def _model_commands(self) -> tuple[Command, ...]:
         """Commands for the model, its sign-ins, and the extensions it runs with."""
-        from pcode.models import LEGACY_ANTHROPIC_AUTH, login_sources
+        from pcode.models import LEGACY_ANTHROPIC_AUTH, login_sources, logout_sources
 
         login_targets = (
             "Anthropic, OpenAI Codex, or Claude Code (claude/meridian)"
@@ -641,9 +641,12 @@ class SessionController:
             ),
             Command(
                 "/logout",
-                "Remove a stored login (anthropic or openai-codex)",
+                f"Remove a stored login ({' or '.join(logout_sources())})",
                 self.logins.logout,
-                ("anthropic", "openai-codex"),
+                logout_sources(),
+                # The handler validates, so `/logout anthropic` still clears an
+                # old sign-in when the legacy route is off and unadvertised.
+                free_arguments=True,
                 group="Model",
             ),
             Command(

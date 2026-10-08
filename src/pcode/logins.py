@@ -41,12 +41,15 @@ class Logins:
         self.controller.login_requested = source
 
     def logout(self, argument: str) -> None:
-        source = argument.strip() or "anthropic"
+        from pcode.models import logout_sources
+
+        sources = logout_sources()
+        source = argument.strip() or sources[0]
         if source == "openai-codex":
             self.controller.logout_requested = source
             return
         if source != "anthropic":
-            self.view.note("Usage: /logout [anthropic|openai-codex]")
+            self.view.note(f"Usage: /logout [{'|'.join(sources)}]")
             return
         self.logout_anthropic()
 
