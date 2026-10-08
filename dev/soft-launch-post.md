@@ -12,7 +12,7 @@ One feature I particularly like: you can change what’s visible in your termina
 
 It uses your terminal’s native scrollback, so normal scrolling, search, and copy still work. The transcript reflows when you resize or split panes, it follows your terminal between dark and light themes in auto mode, and a live task panel keeps ongoing work visible above the prompt.
 
-It’s also highly extensible: small Python files can add tools, slash commands, guardrails, and sub-agents, and /reload picks up changes without restarting. Extensions are built on [Pydantic AI](https://ai.pydantic.dev/), so anything a Pydantic AI capability can do, a pcode extension can do.
+It’s also highly extensible: small Python files can add tools, slash commands, guardrails, and sub-agents. Extensions are built on [Pydantic AI](https://ai.pydantic.dev/), so anything a Pydantic AI capability can do, a pcode extension can do.
 
 There’s quite a bit built in: a pi-inspired /tree for rewinding and branching conversations, customizable keybindings (including leader keys), Vim editing mode, and a /diffs popup for reviewing git diffs without leaving the conversation. Background commands wake the agent when they finish, and separate git worktrees let you run sessions in parallel.
 
@@ -22,7 +22,7 @@ Next on my roadmap: transferring active sessions between your local machine and 
 
 Repo, screenshots, and install instructions: https://github.com/cruxwell/pcode
 
-If you already use a terminal coding agent, I’d love some blunt feedback. What would make this worth trying, and what’s missing?
+What would make pcode worth trying for you?
 
 ![pcode in dark and light terminal themes, side by side](assets/soft-launch-terminal-themes.png)
 
