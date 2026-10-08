@@ -106,6 +106,8 @@ async def log(ctx, *, call, tool_def, args, result):
 
 @pcode.hooks.on.before_model_request
 async def before(ctx, request_context):
+    # Changes to request_context.messages reach this request only. To keep a
+    # message in the conversation, also add it to ctx.messages (the history).
     return request_context
 
 

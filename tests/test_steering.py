@@ -64,3 +64,44 @@ def test_pending_steering_lets_the_whole_batch_run_then_arrives_once(tmp_path):
         assert not any(isinstance(part, RetryPromptPart) for part in history)
 
     asyncio.run(asyncio.wait_for(run(), timeout=10))
+
+
+def test_steering_beside_a_limit_warning_reaches_history(tmp_path):
+    """A near-limit warning ends the request with a message only the request carries;
+    steering added after it must still be saved, not sent once and lost."""
+    from pcode.meridian_reminders import MeridianLimitWarnings
+
+    async def run():
+        pending = [STEER]
+        sent = []
+
+        def take():
+            # Delivered on the second request, beside the tool result.
+            taken, pending[:] = (list(pending), []) if sent else ([], pending)
+            return taken
+
+        async def model(messages, info):
+            sent.append(messages)
+            if len(sent) == 1:
+                yield {0: DeltaToolCall(name="read", json_args="{}")}
+                return
+            yield "done"
+
+        agent = Agent(
+            FunctionModel(stream_function=model),
+            capabilities=[MeridianLimitWarnings(max_iterations=2, warning_threshold=0.1)],
+        )
+
+        @agent.tool_plain
+        def read() -> str:
+            return "contents"
+
+        runtime = AgentRuntime(agent)
+        runtime.take_steering = take
+        async for _ in runtime.stream("Read it"):
+            pass
+        assert STEER in str(sent[1])
+        assert "[WarnNearLimits]" in str(sent[1])
+        assert STEER in str(runtime.history)
+
+    asyncio.run(asyncio.wait_for(run(), timeout=10))

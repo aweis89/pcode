@@ -11,6 +11,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import UserPromptPart
 
 from pcode.jobs import JobRegistry, format_duration
+from pcode.steering import run_request
 
 # A failed job's tail rides along with its notice: the model fetches it nearly
 # every time, and a request saved is worth more than the bytes. A success is
@@ -50,5 +51,6 @@ class JobNotices(AbstractCapability):
         # Appended to the framework's own request, so tool results stay ahead
         # of the notice and the notice is persisted with the conversation.
         for job in self.jobs.take_announcements("model"):
-            request_context.messages[-1].parts.append(UserPromptPart(notice_for(self.jobs, job)))
+            notice = UserPromptPart(notice_for(self.jobs, job))
+            run_request(ctx, request_context).parts.append(notice)
         return request_context

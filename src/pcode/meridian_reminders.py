@@ -49,7 +49,13 @@ def append_reminder(
     key = normalize or (lambda value: value)
     if previous is not None and key(previous) == key(text):
         return
-    reminder = ModelRequest(parts=[UserPromptPart(content=text)])
+    # Stamped here: the framework fills these in only after every before-hook
+    # has run, which is after the request checkpoint has copied the request.
+    reminder = ModelRequest(
+        parts=[UserPromptPart(content=text)],
+        run_id=ctx.run_id,
+        conversation_id=ctx.conversation_id,
+    )
     # Both lists: the request is what gets sent, `ctx.messages` the run's history.
     request_context.messages = [*messages, reminder]
     ctx.messages.append(reminder)
