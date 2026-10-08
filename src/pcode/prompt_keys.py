@@ -154,12 +154,12 @@ def _add_shortcuts(
     def previous_session(event: KeyPressEvent) -> None:
         on_previous_session()
 
-    @shortcuts.add("y", "Copy draft / last response")
+    @shortcuts.add("y", "Copy draft / choose response")
     def copy_draft(event: KeyPressEvent) -> None:
         # Collapsed pastes are a display device, so copy what sending would:
         # the expanded text, not the `[pasted …]` marker standing in for it.
         text = pasted.expand(event.current_buffer.text)
-        # With nothing typed, there is no draft to copy: copy the last response.
+        # With nothing typed, there is no draft to copy: choose a response.
         if not text and on_copy_response is not None:
             on_copy_response()
             return

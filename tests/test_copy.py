@@ -1,6 +1,9 @@
 import asyncio
+from contextlib import asynccontextmanager
 from io import StringIO
+from types import SimpleNamespace
 
+import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
@@ -83,6 +86,76 @@ def test_copy_command_copies_a_plain_response_without_a_picker(monkeypatch):
         assert copied == ["plain answer"] and "Copied response." in output.getvalue()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("older", "answer_keys", "snippet_keys", "expected"),
+    [
+        ("older plain answer", "older\r", None, "older plain answer"),
+        ("export PASSWORD=hunter2", "PASSWORD\r", None, "export PASSWORD=[redacted]"),
+        ("older plain answer", "\x1b", None, None),
+        (RESPONSE, "Two things\r", "\x1b[B\r", "zed schema read"),
+        (RESPONSE, "Two things\r", "\r", "SAML login fails for\n**all** users.\nlazy continuation"),
+        (RESPONSE, "Two things\r", "\x1b\x1b", None),
+        (RESPONSE, "Two things\r", "\x03\x03", None),
+        (RESPONSE, "Two things\r", "\x1b[A\r", RESPONSE.strip()),
+    ],
+)
+def test_main_copy_history_by_keyboard(monkeypatch, older, answer_keys, snippet_keys, expected):
+    from pydantic_ai import Agent
+
+    import pcode.clipboard
+    import pcode.copy_ui as copy_ui
+    from pcode.app import PreviewApp
+    from pcode.live import AgentRuntime
+
+    copied = []
+    monkeypatch.setattr(
+        pcode.clipboard, "copy", lambda text, output=None: (copied.append(text), (True, False))[1]
+    )
+    dialogs = []
+
+    async def run():
+        runtime = AgentRuntime(Agent("test"))
+        runtime.tree = tree_with(older, "newest answer", "")
+        # A newer sibling must not enter the active branch's answer history.
+        runtime.tree.consume(
+            {"kind": "turn_started", "run_id": "sibling", "parent_id": "t0", "prompt": "other"}
+        )
+        runtime.tree.consume({"kind": "Message", "markdown": "excluded sibling answer"})
+        runtime.tree.consume({"kind": "turn_completed"})
+        runtime.tree.active = "t2"
+        app = PreviewApp(runtime=runtime, console=Console(file=StringIO()))
+        with create_pipe_input() as pipe:
+
+            @asynccontextmanager
+            async def popup(output, session):
+                yield pipe
+
+            monkeypatch.setattr(app, "popup", popup)
+            original = copy_ui.copy_dialog
+
+            def build(choices, **kwargs):
+                dialogs.append("copy_dialog")
+                assert [answer.text for answer in choices] == [
+                    "newest answer",
+                    older.strip().replace("hunter2", "[redacted]"),
+                ]
+                dialog = original(choices, **kwargs)
+                dialog.pre_run_callables.append(
+                    lambda: pipe.send_text(answer_keys + (snippet_keys or ""))
+                )
+                return dialog
+
+            monkeypatch.setattr(copy_ui, "copy_dialog", build)
+            session = SimpleNamespace(app=SimpleNamespace(output=DummyOutput(), style=None))
+            assert app.registry.dispatch("/copy")
+            await asyncio.wait_for(app.choose_copy(output=None, session=session), 5)
+            assert not app.copy_requested
+
+    asyncio.run(run())
+    assert copied == ([] if expected is None else [expected])
+    assert dialogs == ["copy_dialog"]
 
 
 def test_tree_copy_opens_a_picker_for_quotes(monkeypatch):

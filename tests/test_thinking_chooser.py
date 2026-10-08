@@ -106,7 +106,7 @@ def test_main_shortcut_labels():
         "o": "Hide task panel",
         "t": "Select thinking visibility",
         "g": "Toggle command output",
-        "y": "Copy draft / last response",
+        "y": "Copy draft / choose response",
     }
     activity.tasks_shown = False
     assert {shortcut.key: shortcut.label for shortcut in shortcuts.available()}["o"] == (

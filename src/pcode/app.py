@@ -310,7 +310,7 @@ class PreviewApp:
             ),
             Command(
                 "/copy",
-                "Copy the last response, or a quote or code block from it",
+                "Choose a response to copy, or a quote or code block from it",
                 self.copy,
                 group="Inspect",
             ),
@@ -1056,21 +1056,20 @@ class PreviewApp:
 
     async def choose_copy(self, output: TerminalOutput, session) -> None:
         from pcode.clipboard import copy as copy_to_clipboard
-        from pcode.copy_ui import last_response, snippet_dialog, snippets
-        from pcode.session_ui import literal
+        from pcode.copy_ui import answers, copy_dialog, snippets
 
         self.copy_requested = False
         tree = getattr(self.runtime, "tree", None)
-        # Redacted like /tree's copy: what leaves pcode never carries a secret.
-        choices = snippets(literal(last_response(tree))) if tree is not None else []
-        if not choices:
+        history = answers(tree) if tree is not None else []
+        if not history:
             self.transcript.note("No response to copy yet.")
             return
+        choices = snippets(history[0].text)
         choice = choices[0]
-        if len(choices) > 1:
+        if len(history) > 1 or len(choices) > 1:
             async with self.popup(output, session) as modal_input:
-                dialog = snippet_dialog(
-                    choices,
+                dialog = copy_dialog(
+                    history,
                     input=modal_input,
                     output=session.app.output,
                     style=session.app.style,

@@ -343,7 +343,7 @@ def test_the_prompt_renders_descriptive_actions_in_shared_help():
     assert "Cycle send mode" in screen
     assert "n / p  Thinking effort up / down" in screen
     assert "Select thinking visibility" in screen
-    assert "Copy draft / last response" in screen
+    assert "Copy draft / choose response" in screen
     assert "Esc cancel · Ctrl+/ all keys" in screen
 
 

@@ -282,7 +282,7 @@ def test_action_labels_describe_actions_and_follow_state():
         "o": "Hide task panel",
         "t": "Select thinking visibility",
         "g": "Hide command output",
-        "y": "Copy draft / last response",
+        "y": "Copy draft / choose response",
     }
     activity.tasks_shown = False
     transcript.command_scrollback = False

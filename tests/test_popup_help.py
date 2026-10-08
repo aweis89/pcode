@@ -9,7 +9,7 @@ from prompt_toolkit.output import DummyOutput
 
 from pcode.aside import Aside, Asides
 from pcode.aside_ui import AsideBrowser
-from pcode.copy_ui import Snippet, SnippetPicker
+from pcode.copy_ui import Answer, CopyPicker
 from pcode.links_ui import LinkPicker
 
 
@@ -43,11 +43,9 @@ def test_aside_help_follows_reader_editor_and_nested_picker_focus():
             assert ("Enter", "Summarize (empty: as is)") in browser.help()
             browser.picker = LinkPicker([], lambda _: None, lambda: None)
             assert browser.help() == browser.picker.help()
-            browser.picker = SnippetPicker(
-                [Snippet("Answer", "text")], lambda _: None, lambda: None
-            )
+            browser.picker = CopyPicker([Answer("question", "text")], lambda _: None, lambda: None)
             assert ("Enter", "Copy selected snippet") in browser.help()
-            assert ("Esc/Ctrl+C", "Cancel") in browser.help()
+            assert ("Esc / Ctrl+C", "Cancel") in browser.help()
 
 
 def test_aside_help_describes_interrupt_only_while_answers_are_running():
@@ -77,7 +75,7 @@ def test_session_help_lists_delete_binding(tmp_path):
             assert "Delete" not in browser.prefix_keys.summary()
 
 
-@pytest.mark.parametrize("picker", [None, "links", "snippets"])
+@pytest.mark.parametrize("picker", [None, "links", "snippets", "answers"])
 def test_help_is_modal_in_reader_and_nested_pickers(picker):
     async def run():
         asides = Asides()
@@ -91,14 +89,17 @@ def test_help_is_modal_in_reader_and_nested_pickers(picker):
                     [], lambda _: None, lambda: None, shortcuts=browser.prefix_keys
                 )
                 browser.app.layout.focus(browser.picker.query)
-            elif picker == "snippets":
-                browser.picker = SnippetPicker(
-                    [Snippet("Answer", "text")],
+            elif picker in ("snippets", "answers"):
+                choices = [Answer("question", "text")]
+                if picker == "answers":
+                    choices.append(Answer("older question", "older text"))
+                browser.picker = CopyPicker(
+                    choices,
                     lambda _: None,
                     lambda: None,
                     shortcuts=browser.prefix_keys,
                 )
-                browser.app.layout.focus(browser.picker.list)
+                browser.app.layout.focus(browser.picker.query or browser.picker.list)
             focused = browser.app.layout.current_control
             rendered = asyncio.Event()
             browser.app.after_render += lambda _: rendered.set()

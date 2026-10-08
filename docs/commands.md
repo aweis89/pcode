@@ -58,10 +58,15 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   search. Filters reset when you reopen it. Output dropped by truncation or stored
   only in a spill file isn't searched. Handy when your terminal or tmux doesn't
   make links clickable.
-- `/copy`: copy the last response to the system clipboard. A quote renders with a
-  `▌` rail and wraps to the terminal, which makes it awkward to select by hand, so
+- `/copy`: choose a response from the active conversation branch to copy to the
+  system clipboard, newest first and selected by default. Type to search questions
+  or answer text; use ↑/↓ and Enter to choose. With only one answer, skip straight
+  to copying it or choosing a snippet. A quote renders with a `▌` rail and wraps
+  to the terminal, which makes it awkward to select by hand, so
   when the response holds quotes or fenced code blocks a picker lists each one
   (without its `>` markers) beside the whole response. Enter copies the selection.
+  This is a second screen in the same popup: Escape returns to the answer list,
+  preserving your search and selection. With only one answer, Escape closes it.
   pcode asks the model to put text meant for pasting elsewhere, such as a message
   to send, in a quote. **Ctrl+Y** with an empty editor does the same.
 - `/status`: current model, workspace, session storage path, completed turns, token usage,
@@ -210,7 +215,7 @@ arrows, Ctrl+J, Ctrl+C, and Ctrl+D never change.
 | Ctrl+^ | Back to the session this terminal showed before (`/switch -`) |
 | Ctrl+O | Show/hide the Tasks/Tools widget (saves the default) |
 | Ctrl+T | Choose where thinking shows: `o` off, `s` status line, `b` scrollback (saves the default) |
-| Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first); with an empty editor, `/copy` the last response |
+| Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first); with an empty editor, `/copy` chooses a response |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
 | Ctrl+D | Exit on empty idle input (stopping a background session's host); cancel during generation |
@@ -224,7 +229,7 @@ Ctrl+J still inserts a newline.
 without sending it. A collapsed paste marker is expanded first, so the clipboard
 gets exactly what Enter would send. In direct chord mode only, this replaces
 `yank` in Emacs mode and copy-character-from-above in vi insert mode. With
-nothing typed it runs `/copy` instead, to copy the last response or a quote
+nothing typed it runs `/copy` instead, to choose a response or a quote
 from it. Copying uses a local helper (`pbcopy`, `wl-copy`,
 `xclip`) or OSC 52 over ssh, like the popups, and truncates at 64 KiB.
 
@@ -434,7 +439,7 @@ still undoes.
 
 At the prompt the default keys are `s` send mode, `l` model, `n`/`p` more/less
 effort, `o` tasks widget, `t` thinking, `g` command output, `^` previous
-session, and `y` copy the draft or last response. Custom bindings share the same
+session, and `y` copy the draft or choose a response. Custom bindings share the same
 menu and prefix. Each popup lists its own in contextual help; see
 [Popup keys](#popup-keys).
 

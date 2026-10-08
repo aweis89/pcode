@@ -34,10 +34,15 @@ streams it.
 - **Ctrl+R:** type a [follow-up](#following-up) to the selected answer.
 - **Ctrl+S / Ctrl+T:** [bring the thread into the conversation](#keeping-a-thread),
   as a summary or merged into the tree.
-- **Ctrl+Y:** copy the selected thread's newest answer to the clipboard as
-  markdown, secrets redacted (also works mid-stream, taking what has arrived so far). As with
-  `/copy`, an answer holding quotes or code blocks opens a picker to copy just
-  one of them.
+- **Ctrl+Y:** choose an answer from the selected thread to copy as markdown,
+  secrets redacted. Answers appear newest first, with the newest selected; type
+  to search questions or answer text, then use ↑/↓ and Enter to choose. With only
+  one answer, skip the answer picker. Copying also works mid-stream, taking what
+  has arrived so far. As with `/copy`, an answer holding quotes or code blocks
+  moves to a second screen in the same popup to copy one of them or the whole
+  answer. Escape from that screen returns to the answer list, keeping your search
+  and selection; Escape from the answer list cancels copying. With a single answer,
+  Escape closes the snippet screen. Neither changes the thread or follow-up draft.
 - **Ctrl+O:** pick a link from the selected thread's questions and answers and
   open it in the browser, as `/links` does for the conversation.
 - **Ctrl+K:** stop every running side question, keeping the records.
@@ -60,7 +65,7 @@ single name (`/co`) is enough on its own:
 
 | Command | Does |
 | --- | --- |
-| `/copy` | Copy the newest answer, as Ctrl+Y |
+| `/copy` | Choose an answer from this thread to copy, as Ctrl+Y |
 | `/links` | Open a link from the thread, as Ctrl+O |
 | `/summarize [focus]` | Summarize into the conversation, keeping what *focus* says, as Ctrl+S |
 | `/merge` | Merge into `/tree`, as Ctrl+T |
