@@ -888,7 +888,8 @@ def test_plan_panel_is_bounded_updates_and_clears(pane, release, split):
     first_frame = next(line[3] for line in screen.splitlines() if line.startswith(SPINNER_ROW))
     deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
-        animated = pane("capture-pane", "-p", "-t", "preview:0.0")
+        # A raw capture can land between erasing the prompt and redrawing it.
+        animated = capture(pane, "", running=True)
         assert "↺ Task 8" in animated
         if any(
             line.startswith(SPINNER_ROW) and line[3] != first_frame
@@ -1247,7 +1248,6 @@ def test_single_running_tool_needs_no_box_above_the_editor(pane):
 
 
 SPACING_SCRIPT = """
-import asyncio
 from pcode.app import PreviewApp
 from pcode.runtime import ToolStarted, ToolSummary
 
@@ -1259,7 +1259,7 @@ class Runtime:
             yield ToolStarted("read_file", f"file_{i:02d}.py", str(i))
             yield ToolSummary("read_file", f"file_{i:02d}.py", call_id=str(i))
         yield ToolStarted("read_file", "SLOW_FILE", "31")
-        await asyncio.sleep(30)
+        await gate()
 
 PreviewApp(model="test:local", runtime=Runtime()).run()
 """
@@ -1270,7 +1270,10 @@ def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
     capture(pane, "❯")
     pane("send-keys", "-t", "preview:0.0", "h", "Enter")
     capture(pane, "SLOW_FILE", running=True)
-    screen = settle(pane, lambda screen: "file_30.py" in screen, running=True)
+    # The live panel can show the filename before its scrollback line is flushed.
+    last_summary = "✓ Read file  file_30.py"
+    screen = settle(pane, lambda screen: last_summary in screen, running=True)
+    assert last_summary in screen, screen
     lines = screen.splitlines()
     tool = next(i for i, line in enumerate(lines) if "SLOW_FILE" in line)
     # Led by the spinner's frame while it runs.
@@ -1279,7 +1282,7 @@ def test_status_row_keeps_a_blank_line_below_the_last_tool_line(pane):
     # The transcript's last tool line, then a blank line, then the live rows:
     # the newest finished calls (while they linger, `tool_max_lines` of them
     # at most) above the running one.
-    last = max(i for i, line in enumerate(lines) if "✓ Read file  file_30.py" in line)
+    last = max(i for i, line in enumerate(lines) if last_summary in line)
     assert lines[last + 1].strip() == ""
     live = [line.strip() for line in lines[last + 2 : tool]]
     assert live in ([], ["✓ ⎘ file_30.py"], ["✓ ⎘ file_29.py", "✓ ⎘ file_30.py"]), screen
