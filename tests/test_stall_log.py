@@ -6,8 +6,75 @@ import signal
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
+import pytest
+
+from pcode import stall_log
 from pcode.stall_log import StallWatch
+
+
+def frame(filename, name, caller=None):
+    return SimpleNamespace(
+        f_code=SimpleNamespace(co_filename=filename, co_name=name, co_qualname=name),
+        f_lineno=1,
+        f_back=caller,
+    )
+
+
+class ScriptedWatch:
+    """Run the real watcher synchronously, controlling what happens between polls.
+
+    Wall time and process CPU are independent: sleeping and scheduler starvation
+    must not accidentally stand in for CPU-bound work or a process suspension.
+    Patch module references, not the shared time/sys modules used by pytest.
+    """
+
+    def __init__(self, tmp_path, monkeypatch):
+        self.wall = 10.0
+        self.cpu = 1.0
+        self.frame = frame("test_stall_log.py", "block_the_loop")
+        self.watch = StallWatch(tmp_path / "stalls.jsonl")
+        self.watch._loop_thread = 123
+        self.monkeypatch = monkeypatch
+        monkeypatch.setattr(
+            stall_log,
+            "time",
+            SimpleNamespace(
+                monotonic=lambda: self.wall,
+                process_time=lambda: self.cpu,
+                time=time.time,
+                strftime=time.strftime,
+                localtime=time.localtime,
+            ),
+        )
+        monkeypatch.setattr(
+            stall_log, "sys", SimpleNamespace(_current_frames=lambda: {123: self.frame})
+        )
+
+    def advance(self, wall, cpu=0):
+        self.wall += wall
+        self.cpu += cpu
+
+    def run(self, *steps):
+        steps = iter(steps)
+
+        def wait(timeout):
+            assert timeout == stall_log.POLL
+            step = next(steps, None)
+            if step is None:
+                return True
+            step()
+            return False
+
+        self.monkeypatch.setattr(self.watch._stop, "wait", wait)
+        self.watch._watch()
+        return records(self.watch.path)
+
+
+@pytest.fixture
+def scripted_watch(tmp_path, monkeypatch):
+    return ScriptedWatch(tmp_path, monkeypatch)
 
 
 def block_the_loop(seconds):
@@ -31,6 +98,26 @@ def records(path):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
+def test_heartbeat_registers_gc_callback_until_stopped(tmp_path):
+    watch = StallWatch(tmp_path / "stalls.jsonl")
+
+    async def run():
+        task = asyncio.create_task(watch.heartbeat())
+        try:
+            await asyncio.sleep(0)  # Let heartbeat reach its first await.
+            assert watch._gc in gc.callbacks
+        finally:
+            task.cancel()
+            try:
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            finally:
+                watch.stop()
+        assert watch._gc not in gc.callbacks
+
+    asyncio.run(run())
+
+
 def test_a_blocked_loop_logs_one_stall_naming_the_blocker(tmp_path):
     path = tmp_path / "stalls.jsonl"
     watch = StallWatch(path, context=lambda: {"busy": True})
@@ -46,62 +133,106 @@ def test_a_blocked_loop_logs_one_stall_naming_the_blocker(tmp_path):
     assert "block_the_loop" in top and "test_stall_log.py" in top
 
 
-def test_a_blocking_subprocess_is_a_stall_though_it_waits_in_a_selector(tmp_path):
-    path = tmp_path / "stalls.jsonl"
+@pytest.mark.parametrize("caller", ["subprocess", "event_loop"])
+def test_a_blocking_subprocess_is_a_stall_though_it_waits_in_a_selector(scripted_watch, caller):
+    driver = scripted_watch
+    watch = driver.watch
+    driver.frame = frame(
+        "selectors.py",
+        "select",
+        frame("subprocess.py", "_communicate")
+        if caller == "subprocess"
+        else frame("base_events.py", "_run_once"),
+    )
+    watch._due = driver.wall
 
-    async def body():
-        subprocess.run([sys.executable, "-c", "import time; time.sleep(0.4)"], capture_output=True)
+    def poll():
+        # Regular polls can sample a blocking selector even with no CPU use.
+        driver.advance(0.02)
 
-    asyncio.run(watched(StallWatch(path), body))
-    [record] = records(path)
-    assert any("subprocess" in frame for frame in record["stacks"][0]["frames"])
+    def heartbeat():
+        watch._late = (watch._due, driver.wall - watch._due)
+        watch._due = driver.wall + stall_log.BEAT
+        driver.advance(0.02)
+
+    result = driver.run(*([poll] * 10), heartbeat)
+    if caller == "event_loop":
+        assert result == []
+    else:
+        [record] = result
+        assert record["stall_ms"] == 200
+        assert record["samples"] > 0
+        assert record["stacks"][0]["frames"] == [
+            "selectors.py:1 select",
+            "subprocess.py:1 _communicate",
+        ]
 
 
-def test_a_slow_log_write_is_not_mistaken_for_a_suspension(tmp_path):
+def test_a_slow_log_write_is_not_mistaken_for_a_suspension(scripted_watch):
     """Writing one stall can take a while on a slow disk; the next stall, already
     under way, must still be logged."""
-    path = tmp_path / "stalls.jsonl"
-    watch = StallWatch(path)
+    driver = scripted_watch
+    watch = driver.watch
+    watch._due = driver.wall
     write = watch._write
 
     def slow_write(*args, **kwargs):
-        time.sleep(0.15)
+        driver.advance(0.15)  # Slow disk: wall time passes, but no CPU is used.
         write(*args, **kwargs)
 
-    watch._write = slow_write
+    driver.monkeypatch.setattr(watch, "_write", slow_write)
 
-    async def body():
-        time.sleep(0.3)
-        await asyncio.sleep(0.01)
-        time.sleep(0.6)
+    def poll():
+        driver.advance(0.02)
 
-    asyncio.run(watched(watch, body, settle=0.4))
-    assert len(records(path)) == 2
+    def heartbeat():
+        watch._late = (watch._due, driver.wall - watch._due)
+        watch._due = driver.wall + stall_log.BEAT
+        driver.advance(0.02)
+
+    first, second = driver.run(*([poll] * 10), heartbeat, poll, heartbeat)
+    assert [first["stall_ms"], second["stall_ms"]] == [200, 140]
+    assert first["samples"] > 0 and second["samples"] > 0
+    assert first["stacks"][0]["frames"] == second["stacks"][0]["frames"]
 
 
-def test_a_stall_holding_the_gil_is_logged_without_stacks(tmp_path):
-    path = tmp_path / "stalls.jsonl"
-    garbage = []
-    for _ in range(300_000):
-        node = []
-        node.append(node)
-        garbage.append(node)
+@pytest.mark.parametrize("watcher_first", [False, True])
+@pytest.mark.parametrize("busy", [False, True], ids=["suspended", "gil_held"])
+def test_a_stall_holding_the_gil_is_logged_without_stacks(scripted_watch, watcher_first, busy):
+    driver = scripted_watch
+    watch = driver.watch
+    watch._due = driver.wall + stall_log.BEAT
+    driver.frame = frame("selectors.py", "select", frame("base_events.py", "_run_once"))
 
-    async def body():
-        # The watcher thread cannot take the GIL until this block ends.
-        interval = sys.getswitchinterval()
-        sys.setswitchinterval(30)
-        try:
-            garbage.clear()
-            gc.collect()
-            block_the_loop(0.3)
-        finally:
-            sys.setswitchinterval(interval)
+    def heartbeat():
+        watch._late = (watch._due, driver.wall - watch._due)
+        watch._due = driver.wall + stall_log.BEAT
 
-    asyncio.run(watched(StallWatch(path), body))
-    [record] = records(path)
-    assert record["stacks"] == [] and record["stall_ms"] >= 200
-    assert record["gc_ms"] > 0
+    def delayed_poll():
+        if busy:
+            watch._gc("start", {})
+            driver.advance(0.04, cpu=0.04)
+            watch._gc("stop", {})
+            driver.advance(0.31, cpu=0.26)
+        else:
+            driver.advance(0.35)
+        if not watcher_first:
+            heartbeat()
+
+    def next_poll():
+        if watcher_first:
+            heartbeat()
+        driver.advance(0.02)
+
+    result = driver.run(delayed_poll, next_poll)
+    if not busy:
+        assert result == []
+    else:
+        [record] = result
+        assert record["stacks"] == []
+        assert record["samples"] == 0
+        assert record["stall_ms"] == 300
+        assert record["gc_ms"] == 40
 
 
 def test_a_suspended_process_logs_no_stall(tmp_path):
