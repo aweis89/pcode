@@ -560,3 +560,84 @@ def test_cancelled_turn_is_labelled_and_can_be_edited(tmp_path, save):
             runtime.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("save", [False, True])
+@pytest.mark.parametrize("outcome", ["cancel", "fail"])
+def test_prompt_after_an_unanswered_turn_is_not_merged_into_it(tmp_path, save, outcome):
+    from pcode.live import CANCELLED_MARKER, UNANSWERED_MARKER
+
+    async def run():
+        sent = []
+
+        async def model(messages, info):
+            sent.append(deepcopy(messages))
+            if len(sent) <= 2:  # the interrupted turn, then its /resend
+                if outcome == "cancel":
+                    raise asyncio.CancelledError
+                raise ValueError("bad request")
+            yield "Answer"
+
+        saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions") if save else None
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)), saved)
+        error = asyncio.CancelledError if outcome == "cancel" else ValueError
+        try:
+            for prompt in ("is", None):
+                with pytest.raises(error):
+                    await turn(runtime, prompt)
+            # /resend repeats the abandoned request exactly; no marker yet.
+            assert prompts(sent[1]) == ["is"]
+            await turn(runtime, "ci is failing")
+            marker = CANCELLED_MARKER if outcome == "cancel" else UNANSWERED_MARKER
+            assert prompts(sent[2]) == ["is", marker, "ci is failing"]
+            assert prompts(runtime.history) == ["is", marker, "ci is failing"]
+        finally:
+            runtime.close()
+
+    asyncio.run(run())
+
+
+def test_marker_looks_past_a_compaction_and_is_dropped_if_the_turn_never_sends():
+    from pydantic_ai.messages import ModelMessagesTypeAdapter
+
+    from pcode.live import CANCELLED_MARKER
+
+    async def run():
+        sent = []
+
+        async def model(messages, info):
+            sent.append(deepcopy(messages))
+            if len(sent) == 1:
+                raise asyncio.CancelledError
+            yield "Answer"
+
+        runtime = AgentRuntime(Agent(FunctionModel(stream_function=model)))
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await turn(runtime, "is")
+            # /compact keeps the unanswered tail but makes a `completed` node active.
+            kept = deepcopy(runtime.history)
+            runtime.tree.consume(
+                {
+                    "kind": "compaction_checkpoint",
+                    "node_id": "compacted",
+                    "parent_id": runtime.tree.active,
+                    "messages": ModelMessagesTypeAdapter.dump_python(kept, mode="json"),
+                    "before": 2,
+                    "after": 1,
+                    "plan": [],
+                }
+            )
+            runtime.history = kept
+            # A turn that fails before its first request leaves no marker behind.
+            with patch.object(runtime, "refresh_context", side_effect=RuntimeError("setup")):
+                with pytest.raises(RuntimeError):
+                    await turn(runtime, "lost")
+            assert prompts(runtime.history) == ["is"]
+            runtime.tree.active = "compacted"
+            await turn(runtime, "ci is failing")
+            assert prompts(sent[-1]) == ["is", CANCELLED_MARKER, "ci is failing"]
+        finally:
+            runtime.close()
+
+    asyncio.run(run())

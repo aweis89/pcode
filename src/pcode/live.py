@@ -5,7 +5,7 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -885,6 +885,11 @@ class AgentRuntime:
         # through the runtime. One turn runs at a time, so it is still the
         # active branch's context; a second turn would be given its own.
         context = self.context
+        # Restored if this turn fails before sending anything, so the marker
+        # never outlives the prompt it was added for.
+        unmarked = marked = context.history
+        if send is not None:
+            context.history = marked = mark_unanswered(context.history, self._last_turn())
         context.checkpoint = RequestCheckpoint()
         saved = self._open_session()
         run_id = str(uuid4())
@@ -999,6 +1004,10 @@ class AgentRuntime:
                 if context.checkpoint.messages is not None:
                     context.pending_shell = []
                     context.history = context.checkpoint.messages
+                elif context.history is marked:
+                    # Untouched since: nothing was sent. Failed auto-compaction
+                    # instead leaves the settled tool results it recovered.
+                    context.history = unmarked
                 self.tree.consume(
                     {
                         "kind": "turn_cancelled" if cancelled else "turn_failed",
@@ -1026,6 +1035,18 @@ class AgentRuntime:
             # reset per attempt, so a retry loop cannot double-count it.
             self.totals.add(context.compaction_usage)
             context.context_history = None
+
+    def _last_turn(self):
+        """The active branch's latest turn, looking past compactions of it.
+
+        A compaction node is always `completed`, yet the tail it keeps can still
+        end in the request a cancelled turn left unanswered.
+        """
+        for identity in reversed(self.tree.path(self.tree.active)):
+            node = self.tree.nodes[identity]
+            if node.kind != "compaction":
+                return node
+        return None
 
     def _consume_steering(self, run_id: str) -> list[str]:
         messages = self.take_steering()
@@ -1108,6 +1129,34 @@ class AgentRuntime:
                 async with aclosing(translator.translate(event)) as outputs:
                     async for out in outputs:
                         yield out
+
+
+CANCELLED_MARKER = "[Request interrupted by user]"
+UNANSWERED_MARKER = "[Request ended without a response]"
+
+
+def mark_unanswered(history: list[ModelMessage], node) -> list[ModelMessage]:
+    """Close a request the previous turn left unanswered before a new prompt follows it.
+
+    A cancelled or failed turn keeps the request it sent, so completed tool
+    results are never re-run. Without a marker the next prompt lands right
+    after it as another user message; providers merge the two, and the model
+    reads the abandoned prompt and the new one as a single message ("is" then
+    "ci is failing" arrives as "isci is failing"). The marker goes on the
+    trailing request itself, so its `interrupted` state, which tells Pydantic
+    AI to close out dangling tool calls, is kept. `/resend` sends no new prompt,
+    so it still repeats the request exactly as it was.
+    """
+    if node is None or node.status == "completed" or not history:
+        return history
+    last = history[-1]
+    if not isinstance(last, ModelRequest):
+        return history
+    marker = CANCELLED_MARKER if node.status == "cancelled" else UNANSWERED_MARKER
+    tail = last.parts[-1] if last.parts else None
+    if isinstance(tail, UserPromptPart) and tail.content in (CANCELLED_MARKER, UNANSWERED_MARKER):
+        return history
+    return [*history[:-1], replace(last, parts=[*last.parts, UserPromptPart(marker)])]
 
 
 RETRY_CEILING = re.compile(r"^Tool '(?P<tool>[^']+)' exceeded max retries count of (?P<limit>\d+)")
