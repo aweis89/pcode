@@ -24,7 +24,7 @@ The formula downloads a release asset rather than GitHub's
 `archive/refs/tags/...` tarball because only assets keep a download count:
 
 ```sh
-gh api repos/cruxwell/pcode/releases --jq '.[] | .tag_name + " " +
+gh api --paginate repos/cruxwell/pcode/releases --jq '.[] | .tag_name + " " +
   ([.assets[] | select(.name | endswith("-src.tar.gz")) | .download_count] | add // 0 | tostring)'
 ```
 

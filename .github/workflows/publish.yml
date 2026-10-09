@@ -42,7 +42,7 @@ jobs:
         run: |
           mkdir src-dist
           git archive --prefix="pcode-${GITHUB_REF_NAME#v}/" \
-            -o "src-dist/pcode-${GITHUB_REF_NAME#v}-src.tar.gz" "$GITHUB_REF_NAME"
+            -o "src-dist/pcode-${GITHUB_REF_NAME#v}-src.tar.gz" "refs/tags/$GITHUB_REF_NAME"
       - uses: actions/upload-artifact@v4
         with:
           name: src-dist
@@ -89,8 +89,11 @@ jobs:
               --title "pcode ${GITHUB_REF_NAME#v}" --generate-notes \
               $(echo "$GITHUB_REF_NAME" | grep -qE '^v[0-9]+(\.[0-9]+)*$' || echo --prerelease)
           # Separate from create so a re-run fills in an asset a failed attempt
-          # missed; --clobber replaces it with this run's identical archive.
-          gh release upload "$GITHUB_REF_NAME" src-dist/* -R "$GITHUB_REPOSITORY" --clobber
+          # missed, but never replaces one: a new asset restarts its count at 0.
+          asset=$(basename src-dist/*)
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' | grep -qxF "$asset" ||
+            gh release upload "$GITHUB_REF_NAME" "src-dist/$asset" -R "$GITHUB_REPOSITORY"
 
   homebrew:
     # The formula must not point at the asset before the release holds it.
@@ -102,16 +105,17 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           ref: master
-      - uses: actions/download-artifact@v4
-        with:
-          name: src-dist
-          path: src-dist/
       - name: Point the formula at this release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Pre-releases (v0.2.0rc1) stay off the stable formula.
           echo "$GITHUB_REF_NAME" | grep -qE '^v[0-9]+(\.[0-9]+)*$' || exit 0
-          # Hash the file the release serves, not a fresh download.
-          sha256=$(sha256sum src-dist/*-src.tar.gz | cut -d' ' -f1)
+          # Hash the asset the release serves, which an earlier attempt may
+          # have uploaded. This adds at most one to the count (seemingly none).
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" \
+            -p '*-src.tar.gz' -D "$RUNNER_TEMP/src"
+          sha256=$(sha256sum "$RUNNER_TEMP"/src/*-src.tar.gz | cut -d' ' -f1)
           python3 scripts/bump_formula.py "$GITHUB_REF_NAME" "$sha256"
       - name: Commit to master
         run: |
