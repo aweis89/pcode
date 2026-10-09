@@ -20,6 +20,7 @@ import asyncio
 import gc
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -79,6 +80,10 @@ def _suspended(before: tuple[float, float], after: tuple[float, float], threshol
     return gap >= threshold and after[1] - before[1] < BUSY_SHARE * gap
 
 
+def _on_main_thread() -> bool:
+    return threading.current_thread() is threading.main_thread()
+
+
 class StallWatch:
     """Run `heartbeat()` as a task on the loop to watch; `stop()` when done."""
 
@@ -96,10 +101,18 @@ class StallWatch:
         self._gc_seconds = 0.0
         self._stop = threading.Event()
         self._watcher: threading.Thread | None = None
+        # When the process last resumed from a stop (Ctrl+Z, then `fg`), as seen
+        # by a SIGCONT handler. It runs on the loop thread as soon as that thread
+        # runs again, so unlike the watcher's CPU test it does not depend on how
+        # soon a loaded machine schedules the watcher after the resume.
+        self._continued: float | None = None
+        self._sigcont_installed = False
+        self._previous_sigcont = None
 
     async def heartbeat(self) -> None:
         self._loop_thread = threading.get_ident()
         if self._watcher is None:
+            self._catch_sigcont()
             gc.callbacks.append(self._gc)
             self._watcher = threading.Thread(target=self._watch, name="stall-watch", daemon=True)
             self._watcher.start()
@@ -120,6 +133,34 @@ class StallWatch:
             self._watcher.join(timeout=1)
         if self._gc in gc.callbacks:
             gc.callbacks.remove(self._gc)
+        self._release_sigcont()
+
+    def _catch_sigcont(self) -> None:
+        # Python only lets the main thread install handlers; elsewhere the
+        # watcher falls back to its CPU test alone.
+        if not hasattr(signal, "SIGCONT") or not _on_main_thread():
+            return
+        self._previous_sigcont = signal.getsignal(signal.SIGCONT)
+        signal.signal(signal.SIGCONT, self._sigcont)
+        # Restart interrupted calls, as with no handler: native threads that do
+        # not retry on EINTR must not start failing on every `fg`.
+        signal.siginterrupt(signal.SIGCONT, False)
+        self._sigcont_installed = True
+
+    def _release_sigcont(self) -> None:
+        if not self._sigcont_installed or not _on_main_thread():
+            return
+        # Left alone if someone has replaced it since: theirs now.
+        if signal.getsignal(signal.SIGCONT) == self._sigcont:
+            # None: installed outside Python, so it cannot be put back.
+            previous = self._previous_sigcont
+            signal.signal(signal.SIGCONT, signal.SIG_DFL if previous is None else previous)
+        self._sigcont_installed = False
+
+    def _sigcont(self, signum, frame) -> None:
+        self._continued = time.monotonic()
+        if callable(self._previous_sigcont):
+            self._previous_sigcont(signum, frame)
 
     def _gc(self, phase: str, info: dict) -> None:
         if phase == "start":
@@ -137,6 +178,7 @@ class StallWatch:
         # A beat due before this fell due while the whole process was stopped,
         # so it counts as late only from here.
         resumed = float("-inf")
+        seen = self._continued  # The last SIGCONT accounted for.
         while True:
             # Taken just before waiting, so the watcher's own work (a write, a
             # stack walk) is not mistaken for time spent stopped.
@@ -144,13 +186,18 @@ class StallWatch:
             if self._stop.wait(POLL):
                 break
             now = time.monotonic()
-            if _suspended(waited, (now, time.process_time()), self.threshold):
+            continued = self._continued
+            signalled = continued is not None and continued != seen
+            seen = continued
+            if signalled or _suspended(waited, (now, time.process_time()), self.threshold):
                 # The loop may resume mid-callback, so sampling it now would
                 # blame that callback for the pause. A stall already under way
                 # is written as far as it got.
                 if samples:
                     self._write(waited[0] - stalled, samples, context, mark, ended=waited[0])
-                resumed = now
+                # The handler's reading is the resume itself; `now` can be well
+                # after it when the resumed loop holds the GIL.
+                resumed = max(resumed, continued) if signalled else now
                 stalled, samples, context = None, Counter(), {}
             late = self._late
             if late is not None and late[0] != settled:
@@ -183,9 +230,10 @@ class StallWatch:
             # Stopped mid-stall: the loop is late by at least this much, up to
             # the last poll if the process was suspended since.
             now = time.monotonic()
-            ended = (
-                waited[0] if _suspended(waited, (now, time.process_time()), self.threshold) else now
+            suspended = self._continued != seen or _suspended(
+                waited, (now, time.process_time()), self.threshold
             )
+            ended = waited[0] if suspended else now
             self._write(ended - stalled, samples, context, mark, ended=ended)
 
     def _context(self) -> dict:

@@ -235,6 +235,64 @@ def test_a_stall_holding_the_gil_is_logged_without_stacks(scripted_watch, watche
         assert record["gc_ms"] == 40
 
 
+def test_a_resume_the_watcher_wakes_late_for_is_still_a_suspension(scripted_watch):
+    """On a loaded machine the watcher can get its first poll after `fg` only once
+    the resumed loop has burned enough CPU to look busy; SIGCONT still marks the
+    resume, so the stalls on either side are logged apart and without the stop."""
+    driver = scripted_watch
+    watch = driver.watch
+    watch._due = driver.wall
+
+    def spinning_poll():
+        driver.advance(0.02, cpu=0.02)
+
+    def stopped_then_starved():
+        driver.advance(0.6)  # Stopped: no CPU at all.
+        watch._sigcont(signal.SIGCONT, None)
+        driver.advance(0.2, cpu=0.2)  # The loop spins before the watcher runs.
+
+    def heartbeat():
+        watch._late = (watch._due, driver.wall - watch._due)
+        watch._due = driver.wall + stall_log.BEAT
+        driver.advance(0.02)
+
+    before, after = driver.run(
+        *([spinning_poll] * 15), stopped_then_starved, *([spinning_poll] * 40), heartbeat
+    )
+    assert [before["stall_ms"], after["stall_ms"]] == [300, 1000]
+
+
+def test_sigcont_handler_chains_to_the_previous_one_until_stopped(tmp_path):
+    original = signal.getsignal(signal.SIGCONT)
+    seen = []
+
+    def previous(signum, frame):
+        seen.append(signum)
+
+    watch = StallWatch(tmp_path / "stalls.jsonl")
+
+    async def run():
+        task = asyncio.create_task(watch.heartbeat())
+        await asyncio.sleep(0)
+        assert signal.getsignal(signal.SIGCONT) == watch._sigcont
+        os.kill(os.getpid(), signal.SIGCONT)
+        await asyncio.sleep(0)  # Python runs handlers between bytecodes.
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    signal.signal(signal.SIGCONT, previous)
+    try:
+        asyncio.run(run())
+        watch.stop()
+        assert watch._continued is not None
+        assert seen == [signal.SIGCONT]
+        assert signal.getsignal(signal.SIGCONT) == previous
+    finally:
+        watch.stop()
+        signal.signal(signal.SIGCONT, original)
+
+
 def test_a_suspended_process_logs_no_stall(tmp_path):
     """Ctrl+Z stops the watcher with the loop: a late beat with no CPU behind it is not a stall."""
     path = tmp_path / "stalls.jsonl"

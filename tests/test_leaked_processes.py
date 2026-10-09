@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import leaked_processes
 import psutil
@@ -119,6 +120,34 @@ def test_processes_of_a_run_that_crashed_are_stopped(spawn, run, crashed_run):
     assert {line.split()[0] for line in stopped} <= {str(orphan.pid)}
     assert gone(orphan)
     assert not gone(live)
+
+
+def test_a_transiently_unreadable_environment_is_read_again(run, crashed_run, monkeypatch):
+    """macOS can fail the read of one of our own live processes once (EIO, which
+    psutil reports as AccessDenied); that must not hide a dead run's orphan."""
+
+    class Flaky:
+        def __init__(self, pid, tag, failures, uid=os.getuid()):
+            self.pid, self.tag, self.failures, self.uid = pid, tag, failures, uid
+
+        def environ(self):
+            if self.failures:
+                self.failures -= 1
+                raise psutil.AccessDenied(self.pid)
+            return {RUN_ENV: self.tag}
+
+        def uids(self):
+            return SimpleNamespace(real=self.uid)
+
+    monkeypatch.setattr(leaked_processes, "ENVIRON_RETRY_SECONDS", 0)
+    orphan = Flaky(-1, crashed_run, failures=1)
+    foreign = Flaky(-2, crashed_run, failures=99, uid=os.getuid() + 1)
+    live = Flaky(-3, run(), failures=1)
+
+    found = leaked_processes._tagged(leaked_processes._alive, [orphan, foreign, live])
+
+    assert found == [orphan]
+    assert foreign.failures == 98  # Never retried: another user's stays denied.
 
 
 def test_only_a_run_proven_over_is_dead(run):

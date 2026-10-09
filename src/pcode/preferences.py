@@ -831,6 +831,11 @@ def _read_valid(path: Path | None) -> dict[str, str]:
         return {}
     if not isinstance(data, dict):
         return {}
+    return valid_preferences(data)
+
+
+def valid_preferences(data: dict) -> dict[str, str]:
+    """Keep valid overrides before merging layers, so invalid values inherit."""
     result = {}
     for key, setting in SETTINGS.items():
         value = data.get(key)

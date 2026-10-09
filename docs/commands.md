@@ -6,9 +6,11 @@ Type `/` to open the command menu, then narrow it by typing. Use Tab or the
 arrow keys to choose. Enter accepts a selected completion; another Enter runs it.
 
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
-- `/config [list | diff | path | get KEY | set KEY VALUE | unset KEY | reset | project ...]`: inspect or change saved
-  settings from inside a session, with completion for setting names and values. See
-  [Configuration](configuration.md#settings-reference).
+- `/config`: open the searchable settings editor to inspect values and their sources,
+  edit user/project defaults, or remove an override. `/config list | diff | path |
+  get KEY | set KEY VALUE | unset KEY | reset | project ...` keeps the direct-command
+  interface, with completion for setting names and values. See
+  [Configuration](configuration.md).
 - `/bind` (or `/bind list`): list default, custom, and disabled prompt bindings;
   `/bind KEY` inspects one. `/bind KEY /command args` or `/bind KEY @action`
   saves a mapping. `/bind actions` lists built-in targets, `/bind reset KEY`

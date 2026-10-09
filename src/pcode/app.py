@@ -24,8 +24,13 @@ from pcode.cli import ask, restore_stdin
 from pcode.commands import Command, CommandRegistry
 from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.completion import complete_with
+from pcode.config import (
+    IMMEDIATE_SETTINGS,
+    config_argument_descriptions,
+    config_arguments,
+    configure,
+)
 from pcode.config import USAGE as CONFIG_USAGE
-from pcode.config import config_argument_descriptions, config_arguments, configure
 from pcode.controller import (
     MODEL_COMMANDS,
     TERMINAL_COMMANDS,
@@ -234,6 +239,7 @@ class PreviewApp:
         self.reviewed_checkpoint = None
         self.links_requested = False
         self.copy_requested = False
+        self.config_requested = False
         # Unsaved conversations have no journal to re-read, so keep their changes.
         self.edits: list[EditCompleted] = []
         self.session_requested = False
@@ -260,7 +266,7 @@ class PreviewApp:
             ),
             Command(
                 "/config",
-                "Inspect or edit saved defaults: diff / get KEY / set KEY VALUE / unset KEY",
+                "Browse saved settings, or use list / diff / get KEY / set KEY VALUE / unset KEY",
                 self.config,
                 free_arguments=True,
                 argument_provider=config_arguments,
@@ -727,7 +733,29 @@ class PreviewApp:
         return bindings.complete(argument) if bindings is not None else ()
 
     def config(self, argument: str) -> None:
-        args = shlex.split(argument)
+        if not argument.strip():
+            self.config_requested = True
+            return
+        self.transcript.note(self.apply_config(shlex.split(argument)))
+
+    async def browse_config(self, output: TerminalOutput, session) -> None:
+        from pcode.config_ui import ConfigBrowser
+
+        self.config_requested = False
+        try:
+            async with self.popup(output, session) as modal_input:
+                browser = ConfigBrowser(
+                    save=self.apply_config,
+                    input=modal_input,
+                    output=session.app.output,
+                    style=session.app.style,
+                )
+                await browser.run()
+        except (ValueError, OSError) as error:
+            self.transcript.warning(f"Could not open configuration: {error}")
+
+    def apply_config(self, args: list[str]) -> str:
+        """One write and immediate-layout path for commands and the browser."""
         try:
             result = configure(args)
         except OSError as error:
@@ -751,25 +779,9 @@ class PreviewApp:
         if self.transcript.output is not None:
             self.transcript.output.app.invalidate()
         edits = args[1:] if args[:1] == ["project"] else args
-        if (
-            len(edits) >= 2
-            and edits[0] in ("set", "unset")
-            and edits[1]
-            in (
-                "attach_tasks",
-                "tasks_max_height",
-                "tasks_min_rows",
-                "tasks_min_columns",
-                "task_style",
-                "tool_glyphs",
-                "tool_max_lines",
-                "tool_linger_seconds",
-                "show_hints",
-                "live_edits",
-            )
-        ):
+        if len(edits) >= 2 and edits[0] in ("set", "unset") and edits[1] in IMMEDIATE_SETTINGS:
             result = result.replace("Applies on next launch.", "Layout settings apply immediately.")
-        self.transcript.note(result)
+        return result
 
     def set_show_tasks(self, shown: bool) -> None:
         self.activity.show_tasks = shown
@@ -2064,6 +2076,8 @@ class PreviewApp:
         self._command_popup_generation = tag
         try:
             self.handle(text)
+            if self.config_requested:
+                await self.browse_config(output, session)
             if self.worker_view_requested:
                 await self.read_workers(output, session)
             if self.tree_requested:

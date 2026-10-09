@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <!-- GitHub social preview (Settings > General > Social preview). Render: rsvg-convert -w 1280 -h 640 dev/social-preview.svg -o dev/social-preview.png -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#11161d"/>
+      <stop offset="1" stop-color="#07090c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.18" cy="0.35" r="0.55">
+      <stop offset="0" stop-color="#68a0b3" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#68a0b3" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+  <style>
+    .mono { font-family: "JetBrains Mono", "Fira Code", Menlo, monospace; }
+    .sans { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+    .t { font-family: "Fira Code", "JetBrains Mono", Menlo, monospace; font-size: 21px; fill: #c5c8c6; }
+    .dim { fill: #868887; }
+    .ok { fill: #98a84b; font-weight: 700; }
+    .user { fill: #c5c8c6; font-weight: 700; }
+    .bar { fill: #68a0b3; }
+    .cyan { fill: #68a0b3; }
+    .yellow { fill: #d0b344; }
+  </style>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <!-- Left: wordmark and pitch -->
+  <g transform="translate(88 0)">
+    <text x="0" y="250" class="mono" font-size="132" font-weight="800" fill="#e6e8e6" letter-spacing="-4"><tspan fill="#68a0b3">❯</tspan>pcode</text>
+    <text class="sans" font-size="31" fill="#b9bdbb">
+      <tspan x="4" y="318">A terminal coding agent that</tspan>
+      <tspan x="4" y="358">lets you change what your</tspan>
+      <tspan x="4" y="398">scrollback shows, even after</tspan>
+      <tspan x="4" y="438">the work is done.</tspan>
+    </text>
+    <text x="4" y="508" class="mono" font-size="17" fill="#868887">
+      <tspan fill="#98a84b">●</tspan> background jobs
+      <tspan fill="#d0b344">●</tspan> worktrees
+      <tspan fill="#68a0b3">●</tspan> rewind &amp; fork
+    </text>
+  </g>
+
+  <!-- Right: terminal window -->
+  <g transform="translate(640 92)" filter="url(#shadow)">
+    <rect width="572" height="456" rx="14" fill="#1b1e22" stroke="#2c3036"/>
+    <path d="M14 0 H558 A14 14 0 0 1 572 14 V40 H0 V14 A14 14 0 0 1 14 0 Z" fill="#24282d"/>
+    <circle cx="24" cy="20" r="6.5" fill="#ff5f57"/>
+    <circle cx="46" cy="20" r="6.5" fill="#febc2e"/>
+    <circle cx="68" cy="20" r="6.5" fill="#28c840"/>
+    <text x="286" y="26" text-anchor="middle" class="sans" font-size="15" fill="#868887">pcode · ~/acme-api</text>
+  </g>
+  <g transform="translate(640 92)" class="t">
+    <rect x="22" y="62" width="5" height="22" class="bar"/>
+    <text x="38" y="80" class="user">Push the fix and watch CI</text>
+    <text x="22" y="114"><tspan class="ok">✓</tspan> <tspan class="dim">Run shell · j1 · background</tspan></text>
+    <text x="22" y="148">CI is running as job j1. I'll</text>
+    <text x="22" y="174">report back when it finishes.</text>
+
+    <rect x="22" y="196" width="5" height="22" class="bar"/>
+    <text x="38" y="214" class="user">Meanwhile, draft a changelog</text>
+    <text x="22" y="248"><tspan class="dim">▸ 3 tool calls hidden</tspan></text>
+    <text x="22" y="282"><tspan class="ok">✓</tspan> <tspan class="dim">j1 finished · </tspan><tspan class="ok">40/40 passed</tspan></text>
+    <text x="22" y="316">Drafted 0.3.1; CI is green.</text>
+
+    <rect x="22" y="342" width="528" height="46" rx="4" fill="none" stroke="#3a3f45"/>
+    <text x="38" y="372"><tspan class="cyan" font-weight="700">❯</tspan></text>
+    <rect x="62" y="356" width="11" height="22" fill="#c5c8c6"/>
+    <text x="22" y="422" font-size="15" class="dim">~/acme-api@main · <tspan class="yellow">1 job</tspan> · claude-opus · 21k/1m</text>
+  </g>
+</svg>

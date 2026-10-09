@@ -23,10 +23,28 @@ from pcode.preferences import (
     project_preferences_path,
     read_preferences,
     update_preferences,
+    valid_preferences,
 )
 
 USAGE = "config [list | diff | path | get KEY | set KEY VALUE | unset KEY | reset | project ...]"
 PROJECT_USAGE = "config project [list | path | set KEY VALUE | unset KEY | reset]"
+
+# The terminal reapplies these after a config edit. Shared with the browser so
+# its timing hints cannot drift from the command's immediate-update behavior.
+IMMEDIATE_SETTINGS = frozenset(
+    {
+        "attach_tasks",
+        "tasks_max_height",
+        "tasks_min_rows",
+        "tasks_min_columns",
+        "task_style",
+        "tool_glyphs",
+        "tool_max_lines",
+        "tool_linger_seconds",
+        "show_hints",
+        "live_edits",
+    }
+)
 
 # Resetting clears the recorded /login choice and every per-repository extension
 # grant, so say so rather than leaving the next launch to re-prompt unexplained.
@@ -67,10 +85,16 @@ def _effective(data: dict, key: str) -> str | None:
 
 def _effective_data() -> dict:
     """Both files read strictly, so a broken one is reported instead of hidden."""
-    data = read_preferences()
+    data = valid_preferences(read_preferences())
     project = project_preferences_path()
     if project is not None:
-        data.update({k: v for k, v in read_preferences(project).items() if k not in USER_ONLY})
+        data.update(
+            {
+                k: v
+                for k, v in valid_preferences(read_preferences(project)).items()
+                if k not in USER_ONLY
+            }
+        )
     return data
 
 
@@ -95,7 +119,7 @@ def _diff() -> str:
     """
     user = read_preferences()
     project_path = project_preferences_path()
-    project = read_preferences(project_path) if project_path is not None else {}
+    project = valid_preferences(read_preferences(project_path)) if project_path is not None else {}
     data = _effective_data()
     lines = []
     for key, setting in SETTINGS.items():
