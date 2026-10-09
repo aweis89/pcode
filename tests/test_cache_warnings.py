@@ -85,11 +85,18 @@ async def collect(runtime):
     [
         ([(0, 8000), (8000, 200), (500, 0)], 1),
         ([(0, 8000), (0, 8000), (0, 8000)], 1),
-        ([(8000, 0), (0, 0), (0, 0), (8000, 0), (0, 0)], 2),
+        ([(8000, 0), (0, 8000), (0, 8000), (8000, 0), (0, 8000)], 2),
         ([(0, 8000), (8000, 200), (8200, 0)], 0),
         ([(0, 0), (0, 0)], 0),
         ([(0, 500), (10, 0)], 0),
-        ([(8000, 0), (4000, 0)], 0),
+        # Below the 2,000-token miss threshold.
+        ([(8000, 0), (6500, 0)], 0),
+        # Over 2,000 tokens but under 5% of the prefix.
+        ([(100_000, 0), (97_000, 0)], 0),
+        # A full miss reporting neither reads nor writes is "unreported"
+        # upstream and never warns, even though some providers (OpenAI's
+        # implicit cache) can report a real full miss this way.
+        ([(8000, 0), (0, 0)], 0),
     ],
 )
 def test_streamed_detector_preserves_threshold_and_latch(usages, count):
@@ -135,7 +142,7 @@ def reply(read, write, *, server_tool=False):
         # judged against the summed figure.
         ((25200, 100), 0),
         # A genuine collapse right after the server-tool step is still caught.
-        ((0, 0), 1),
+        ((0, 8000), 1),
     ],
 )
 def test_server_tool_usage_does_not_establish_a_prefix(last, count):
@@ -148,13 +155,17 @@ def test_server_tool_usage_does_not_establish_a_prefix(last, count):
         reply(*last),
     ]
     monitor = CacheBustReporting()
-    ctx = MagicMock()
+    # Unbound by `for_run`, the detector records marks with no run id.
+    ctx = MagicMock(run_id=None)
     ctx.emit = AsyncMock()
 
     async def run():
         for response in replies:
             result = await monitor.after_model_request(
-                ctx, request_context=MagicMock(messages=[]), response=response
+                ctx,
+                # A real model: the detector asks it for its cache retention.
+                request_context=MagicMock(messages=[], model=LocalModel(), model_settings=None),
+                response=response,
             )
             assert result is response
 
@@ -169,7 +180,7 @@ def test_turns_and_parallel_runs_have_independent_detectors():
     async def run():
         # Reuse one capability across multiple agents and repeated turns.
         monitor = CacheBustReporting()
-        runtimes = [runtime_for([(8000, 0), (0, 0)], monitor=monitor) for _ in range(2)]
+        runtimes = [runtime_for([(8000, 0), (0, 8000)], monitor=monitor) for _ in range(2)]
         for _ in range(2):
             results = await asyncio.gather(*(collect(runtime) for runtime in runtimes))
             assert all(sum(isinstance(e, CacheBust) for e in events) == 1 for events in results)
@@ -181,7 +192,7 @@ def test_next_chat_turn_is_compared_with_what_the_last_one_cached():
     async def run():
         runtime = runtime_for([(8000, 0)])
         first = await collect(runtime)
-        runtime.agent.model.usages = [(0, 0)]
+        runtime.agent.model.usages = [(0, 8000)]
         second = await collect(runtime)
         assert not any(isinstance(e, CacheBust) for e in first)
         (notice,) = [e for e in second if isinstance(e, CacheBust)]
@@ -198,7 +209,7 @@ def test_another_conversation_starts_from_a_clean_mark():
         monitor = CacheBustReporting()
         first = runtime_for([(8000, 0)], monitor=monitor)
         await collect(first)
-        second = runtime_for([(0, 0)], monitor=monitor)
+        second = runtime_for([(0, 8000)], monitor=monitor)
         assert not any(isinstance(e, CacheBust) for e in await collect(second))
 
     asyncio.run(run())
@@ -208,7 +219,7 @@ def test_model_switch_starts_own_mark_and_switch_back_keeps_original():
     runtime = AgentRuntime(
         Agent(
             CacheModel(
-                [(8000, 0), (0, 0), (0, 0)],
+                [(8000, 0), (0, 8000), (0, 8000)],
                 keys=[("provider", "first"), ("provider", "second"), ("provider", "first")],
             ),
             tools=[noop],
@@ -222,13 +233,10 @@ def test_model_switch_starts_own_mark_and_switch_back_keeps_original():
     assert "request 3" in busts[0].text
 
 
-def test_expiry_speculation_is_omitted_even_after_a_long_gap(monkeypatch):
-    # Run start, first response, then a response past the ~300s cache TTL.
-    times = iter([0, 0, 301])
-    monkeypatch.setattr(
-        "pydantic_ai_harness.warn_on_cache_busts._capability._now", lambda: next(times)
-    )
-    events = asyncio.run(collect(runtime_for([(8000, 0), (0, 0)])))
+def test_a_collapse_with_no_known_retention_speculates_no_cause():
+    # The test model publishes no cache retention, so upstream cannot rule
+    # expiry in or out; the notice must not guess either way.
+    events = asyncio.run(collect(runtime_for([(8000, 0), (0, 8000)])))
     bust = next(event for event in events if isinstance(event, CacheBust))
     assert "cache TTL" not in bust.text
     assert "cause unknown" in bust.text
@@ -240,9 +248,9 @@ def test_explicit_warning_filters_still_work(action):
         warnings.simplefilter(action, CacheBustWarning)
         if action == "error":
             with pytest.raises(CacheBustWarning):
-                asyncio.run(collect(runtime_for([(8000, 0), (0, 0)])))
+                asyncio.run(collect(runtime_for([(8000, 0), (0, 8000)])))
         else:
-            events = asyncio.run(collect(runtime_for([(8000, 0), (0, 0)])))
+            events = asyncio.run(collect(runtime_for([(8000, 0), (0, 8000)])))
             assert not any(isinstance(e, CacheBust) for e in events)
 
 
@@ -295,7 +303,7 @@ def test_delegated_notice_reaches_parent_without_child_prose():
         else:
             yield "Parent answer"
 
-    child = Agent(CacheModel([(8000, 0), (0, 0)]), tools=[noop], name="explorer")
+    child = Agent(CacheModel([(8000, 0), (0, 8000)]), tools=[noop], name="explorer")
     runtime = AgentRuntime(
         Agent(
             FunctionModel(stream_function=model),
@@ -327,7 +335,7 @@ def replay_text(transcript):
 
 def test_notice_is_journaled_but_not_redrawn_on_reopen(tmp_path):
     saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
-    runtime = runtime_for([(8000, 0), (0, 0)], saved)
+    runtime = runtime_for([(8000, 0), (0, 8000)], saved)
     try:
         events = asyncio.run(collect(runtime))
         bust = next(e for e in events if isinstance(e, CacheBust))

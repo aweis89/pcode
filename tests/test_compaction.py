@@ -201,7 +201,6 @@ def test_unmeasured_history_tokens_are_not_carried_forward_as_overhead(monkeypat
 
 def test_media_in_the_kept_tail_is_counted_apart_from_text_density(monkeypatch):
     from pydantic_ai.messages import BinaryContent
-    from pydantic_ai_harness.compaction._shared import estimate_token_count
 
     from pcode.compaction import MEDIA_TOKENS, text_and_media
 
@@ -224,7 +223,6 @@ def test_media_in_the_kept_tail_is_counted_apart_from_text_density(monkeypatch):
         assert 2 * MEDIA_TOKENS < result.after < 3 * MEDIA_TOKENS
         # A tool return's image bytes are not read as text either.
         returned = ModelRequest(parts=[ToolReturnPart("screenshot", ["page", shot], "s")])
-        assert estimate_token_count([returned]) > 100_000
         tokens, media = text_and_media([returned])
         assert tokens < 10 and media == 1
 

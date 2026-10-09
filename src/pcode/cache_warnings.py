@@ -13,8 +13,11 @@ import warnings
 from dataclasses import dataclass, field
 
 from pydantic_ai import CapabilityEvent
-from pydantic_ai.messages import NativeToolCallPart
-from pydantic_ai_harness.warn_on_cache_busts import CacheBustWarning, WarnOnCacheBusts
+from pydantic_ai_harness.warn_on_cache_busts import (
+    CacheBustWarning,
+    CacheNotEnabledWarning,
+    WarnOnCacheBusts,
+)
 
 from pcode.cache_diagnostics import CacheDiagnostics
 from pcode.context_usage import compact_tokens
@@ -24,16 +27,6 @@ from pcode.tool_display import command_text
 @dataclass(kw_only=True)
 class CacheBustEvent(CapabilityEvent, namespace="pcode_cache", name="bust"):
     text: str
-
-
-def server_tool_iterations(response) -> int:
-    """Count server-side tool calls (web search, code execution) in a response.
-
-    Each one is an extra sampling pass inside a single API call, and the provider
-    reports one ``usage`` summed over every pass: ``cache_read_tokens`` is then
-    roughly ``passes * prefix``, not a prefix anyone can read back.
-    """
-    return sum(isinstance(part, NativeToolCallPart) for part in response.parts)
 
 
 def notice_text(step: int, read: int, established: int, model: str, *, earlier_turn: bool) -> str:
@@ -90,21 +83,16 @@ class CacheBustReporting(WarnOnCacheBusts):
         # The pinned upstream hook does not suspend: only its synchronous warning
         # emission is captured, never model/tool execution or another task's work.
         # Emit outside this scope; ctx.emit can suspend. No global warning handler.
-        key = (response.provider_name, response.model_name)
-        prior = self._state.conversation.keys.get(key)
+        # Which run set the mark this response is judged against, read before
+        # upstream advances it. Same key as `CacheHealthDetector.observe`.
+        # (A summed multi-pass usage, e.g. after web searches, no longer
+        # raises the mark upstream, so pcode needs no correction for it.)
+        key = (response.provider_name, response.provider_url, response.model_name)
+        prior = self._state.detector.marks.get(key)
         with warnings.catch_warnings(record=True) as caught:
             result = await super().after_model_request(
                 ctx, request_context=request_context, response=response
             )
-        if server_tool_iterations(response):
-            # Upstream raises its high-water mark to `read + write` of every
-            # response, but a summed multi-pass usage puts the mark several
-            # times above the real prefix, and the next healthy request then
-            # "collapses" against it (seen: 148k established from a 29k prefix
-            # after three web searches; the next request read exactly 47k).
-            # Keep the previous mark; the next single-pass response sets a real
-            # one from its own usage.
-            self._state.conversation.keys[key].prefix = prior.prefix if prior else 0
         # Fingerprint every request, not just collapsing ones: diagnosing a
         # collapse needs the healthy request before it to compare against.
         # Part shapes vary by provider and capability, so a diagnostic that
@@ -122,8 +110,8 @@ class CacheBustReporting(WarnOnCacheBusts):
                 )
                 text = notice_text(
                     self._state.step,
-                    response.usage.cache_read_tokens,
-                    prior.prefix if prior else 0,
+                    warning.message.cache_read_tokens,
+                    warning.message.established_tokens,
                     model,
                     earlier_turn=prior is not None and prior.run_id != ctx.run_id,
                 )
@@ -132,6 +120,11 @@ class CacheBustReporting(WarnOnCacheBusts):
                 if path is not None:
                     text += f"\nRequest fingerprints: {path}"
                 await ctx.emit(CacheBustEvent(text=command_text(text)))
+            elif issubclass(warning.category, CacheNotEnabledWarning):
+                # pcode picks caching per provider (`cache_settings`), leaving
+                # Meridian's off on purpose; and a stray warning would print
+                # over the terminal UI.
+                continue
             else:
                 warnings.warn_explicit(
                     warning.message, warning.category, warning.filename, warning.lineno

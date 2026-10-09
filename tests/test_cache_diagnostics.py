@@ -210,7 +210,7 @@ def test_bust_event_names_the_cause_and_dump_excludes_prompt_text(monkeypatch, t
     monkeypatch.delenv("PCODE_CACHE_DIAGNOSTICS", raising=False)
 
     async def run():
-        runtime = dumping([(8000, 0), (0, 0)])
+        runtime = dumping([(8000, 0), (0, 8000)])
         return [event async for event in runtime.stream(SECRET)]
 
     with warnings.catch_warnings(record=True):
@@ -247,7 +247,7 @@ def test_unreadable_request_degrades_to_silence_without_ending_the_run(monkeypat
 
     with warnings.catch_warnings(record=True):
         warnings.simplefilter("always")
-        events = asyncio.run(collect(runtime_for([(8000, 0), (0, 0)])))
+        events = asyncio.run(collect(runtime_for([(8000, 0), (0, 8000)])))
 
     # The provider's own verdict still reaches the user; only the extra
     # diagnosis is missing, and no stale window invents a divergence.
@@ -264,7 +264,7 @@ def test_dumps_can_be_disabled_without_losing_the_notice(monkeypatch, tmp_path, 
     else:
         # Without `debug`, nothing is written even where dumps are allowed.
         monkeypatch.delenv("PCODE_CACHE_DIAGNOSTICS", raising=False)
-    runtime = dumping([(8000, 0), (0, 0)]) if debug else runtime_for([(8000, 0), (0, 0)])
+    runtime = dumping([(8000, 0), (0, 8000)]) if debug else runtime_for([(8000, 0), (0, 8000)])
 
     with warnings.catch_warnings(record=True):
         warnings.simplefilter("always")
@@ -283,7 +283,7 @@ def test_unwritable_dump_directory_does_not_break_the_run(monkeypatch, tmp_path)
 
     with warnings.catch_warnings(record=True):
         warnings.simplefilter("always")
-        events = asyncio.run(collect(dumping([(8000, 0), (0, 0)])))
+        events = asyncio.run(collect(dumping([(8000, 0), (0, 8000)])))
 
     bust = next(event for event in events if isinstance(event, CacheBust))
     assert "Request fingerprints:" not in bust.text
@@ -293,9 +293,9 @@ def test_each_run_fingerprints_only_its_own_requests(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
     async def run():
-        runtime = dumping([(8000, 0), (0, 0)])
+        runtime = dumping([(8000, 0), (0, 8000)])
         await collect(runtime)
-        runtime.agent.model.usages = [(8000, 0), (0, 0)]
+        runtime.agent.model.usages = [(8000, 0), (0, 8000)]
         runtime.agent.model.step = 0
         await collect(runtime)
 

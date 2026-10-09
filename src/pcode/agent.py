@@ -360,8 +360,10 @@ def create_coder(
     """
     workspace = workspace.resolve()
     _ensure_bundled_rg()
-    # Delegation is pcode's own `WorkspaceSubAgents`, added below.
-    coder = Coder(sub_agents=False)
+    # Delegation is pcode's own `WorkspaceSubAgents`, added below. Caching is
+    # `ProviderCacheSettings`' per-provider choice: Coder's default `cache=True`
+    # would also reach Meridian and OpenAI's explicit-breakpoint models.
+    coder = Coder(sub_agents=False, caching=False)
     output_limits = create_tool_output_limits()
     # Keep Coder's tool selection, including its persistent shell (as a
     # `JobShell`). File display and repository discovery remain local adapters;
