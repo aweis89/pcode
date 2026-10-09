@@ -26,9 +26,7 @@ Dynamic Profiles and built-in presets come out as you see them; the progress
 bar's style comes from that session's profile. It sets pcode's `theme` to
 match the background, and writes to `tmp/screenshots/` unless given `--out`. `--png` also
 renders each shot as a 2x PNG in headless Chrome (`CHROME` overrides the
-binary). The README's `docs/assets/screenshots/readme.png` is `--iterm --png
-review` output, copied by hand, so `make screenshots` never refreshes it. It is
-a PNG because GitHub shows an SVG through `<img>`, which loads no fonts. `--live`
+binary). `--live`
 attaches your terminal to the scene's tmux pane, sized to your window. Each
 shot but the last waits for `Ctrl-b Space`; `Ctrl-b d` leaves (`Ctrl-b Ctrl-b d`
 inside your own tmux). Closing the window instead skips cleanup, so check
@@ -50,7 +48,8 @@ played and shows its title, then captures the window with `screencapture`.
 That needs Screen Recording permission for your terminal; without it the script
 waits for you to take the shot (Cmd-Shift-4, Space, click the window). The docs
 keep a light and a dark capture (`tabs-light.png`, `tabs-dark.png`), shown per
-the reader's theme with `#only-light`/`#only-dark`. iTerm2 starts a tab's
+the reader's theme with `#only-light`/`#only-dark`; the README shows the same
+two files, so replacing them updates both. iTerm2 starts a tab's
 command with a bare PATH, so its launcher exports yours.
 
 Each `("shot", name)` step writes `docs/assets/screenshots/<name>.svg`. You
