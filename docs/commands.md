@@ -198,8 +198,8 @@ prompt actions with `/bind`, choose a leader, or configure vi editing.
 
 Actions that pick a mode, open a picker, or toggle a widget follow the
 [shortcut prefix](#shortcut-prefix): by default, hold Ctrl while pressing the
-letter. Ctrl+/ browses contextual help without running an action. Enter, the
-arrows, Ctrl+J, Ctrl+C, and Ctrl+D never change.
+letter. Ctrl+/ browses contextual help; the shortcuts it lists still work while
+it is open. Enter, the arrows, Ctrl+J, Ctrl+C, and Ctrl+D never change.
 
 | Key | Action |
 | --- | --- |
@@ -433,9 +433,9 @@ With a configured leader, press and release it to open the same help surface in
 action mode, then press the plain action letter (without Ctrl). A listed
 letter runs its action; Esc dismisses the menu without changing your draft.
 The leader works whatever has focus, including a popup's search line or the
-`/btw` editor. In direct `ctrl` mode, Ctrl+/ still lets you browse help without
-running an action. Ctrl+/ takes over Emacs's Ctrl+_ undo chord; Ctrl+X Ctrl+U
-still undoes.
+`/btw` editor. Help stays read-only for plain keys, but a shortcut it lists
+(Ctrl+L, or the leader and a letter) runs straight from it and closes help.
+Ctrl+/ takes over Emacs's Ctrl+_ undo chord; Ctrl+X Ctrl+U still undoes.
 
 At the prompt the default keys are `s` send mode, `l` model, `n`/`p` more/less
 effort, `o` tasks widget, `t` thinking, `g` command output, `^` previous

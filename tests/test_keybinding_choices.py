@@ -100,8 +100,11 @@ def test_chooser_cancel_unknown_and_f1_browse(prefix):
             assert shortcuts.visible and "No choice" in shortcuts.message
             press(app, Keys.Escape)
             assert not shortcuts.visible and not fired
-            press(app, *opening, Keys.ControlUnderscore, "a", Keys.ControlT)
+            press(app, *opening, Keys.ControlUnderscore, "a")
             assert shortcuts.browsing and not shortcuts.choices and not fired
+            # A shortcut listed in help runs from it, here reopening the chooser.
+            press(app, *opening)
+            assert shortcuts.choices and not shortcuts.browsing and not fired
             press(app, Keys.Escape)
             assert not shortcuts.visible
             if shortcuts.leader:
@@ -113,7 +116,7 @@ def test_chooser_cancel_unknown_and_f1_browse(prefix):
 
 
 @pytest.mark.parametrize("prefix", ["ctrl", "ctrl+b"])
-def test_help_key_browses_without_executing_actions_or_submitting(prefix):
+def test_help_key_browses_without_submitting_but_runs_shortcuts(prefix):
     async def run():
         shortcuts = PrefixKeys(prefix)
         shortcuts.set_help(lambda: [("Enter", "Submit draft")], title="Editor")
@@ -131,7 +134,7 @@ def test_help_key_browses_without_executing_actions_or_submitting(prefix):
                 (shortcuts.label("y"), "Copy draft"),
             ]
             assert shortcuts.hint_footer() == [("Esc / Ctrl+/", "close")]
-            press(app, "y", Keys.ControlY, Keys.Enter)
+            press(app, "y", Keys.Enter)
             assert shortcuts.browsing and not calls
             assert draft.buffer.document == before
             assert app.layout.current_control is focus
@@ -141,6 +144,12 @@ def test_help_key_browses_without_executing_actions_or_submitting(prefix):
             assert app.layout.current_control is focus
             press(app, Keys.Enter)
             assert calls == ["submit"]
+            # The shortcut itself works from help without closing it first.
+            press(app, Keys.ControlUnderscore)
+            assert shortcuts.browsing
+            press(app, *((Keys.ControlY,) if prefix == "ctrl" else (Keys.ControlB, "y")))
+            assert calls == ["submit", "copy"] and not shortcuts.visible
+            assert draft.buffer.document == before
 
     asyncio.run(run())
 
@@ -171,7 +180,12 @@ def test_multikey_f_key_leader_runs_actions_and_then_browses_help(prefix, leader
             assert shortcuts.browsing and not shortcuts.pending
             press(app, "y")
             assert calls == ["copy"]
-            press(app, Keys.Escape)
+            # The whole multi-key leader reaches its menu from help.
+            press(app, *leader)
+            assert shortcuts.pending and not shortcuts.browsing
+            press(app, "y")
+            assert calls == ["copy", "copy"] and not shortcuts.visible
+            press(app, Keys.ControlUnderscore, Keys.Escape)
             assert not shortcuts.visible
             assert draft.buffer.document == before
             assert app.layout.current_control is focus

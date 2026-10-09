@@ -174,6 +174,18 @@ class PrefixKeys:
         )
         return not typed or typed[-1].key not in passthrough
 
+    def _starting_leader(self) -> bool:
+        """The keys typed so far begin a longer, multi-key leader.
+
+        A catch-all must not swallow its first key, or the leader never
+        completes while help or the leader menu is open.
+        """
+        typed = tuple(press.key for press in get_app().key_processor.key_buffer)
+        return any(
+            0 < len(typed) < len(leader) and leader[: len(typed)] == typed
+            for leader in (self.leader, self.vi_leader)
+        )
+
     @property
     def visible(self) -> bool:
         return self.pending or self.browsing or bool(self.choices)
@@ -265,6 +277,7 @@ class PrefixKeys:
             event.app.invalidate()
 
         browse = Condition(lambda: self.browsing)
+        starting_leader = Condition(self._starting_leader)
         scrollable = Condition(lambda: self.visible)
 
         @self.bindings.add("escape", filter=browse, eager=True)
@@ -273,7 +286,7 @@ class PrefixKeys:
             self.dismiss()
             event.app.invalidate()
 
-        @self.bindings.add(Keys.Any, filter=browse, eager=True)
+        @self.bindings.add(Keys.Any, filter=browse & ~starting_leader, eager=True)
         @self.bindings.add(Keys.BracketedPaste, filter=browse, eager=True)
         def ignore(event: KeyPressEvent) -> None:
             pass
@@ -298,7 +311,9 @@ class PrefixKeys:
         def bind(leader: tuple[str, ...], filter: FilterOrBool = True) -> None:
             @keys.add(*leader, filter=filter, eager=True)
             def lead(event: KeyPressEvent) -> None:
-                pending = not self.visible
+                # From the help view the leader opens its menu, so a listed
+                # shortcut works without dismissing help first.
+                pending = self.browsing or not self.visible
                 self.dismiss()
                 self.pending = pending
                 if pending:
@@ -309,11 +324,16 @@ class PrefixKeys:
             bind(self.leader)
         if self.vi_leader:
             # Do not steal choices or actions from a menu opened by another
-            # prefix, even when the alias itself is an action letter.
+            # prefix, even when the alias itself is an action letter. Help
+            # runs no letters, so there it opens its own menu like the leader.
             bind(
                 self.vi_leader,
                 self.vi_leader_enabled
-                & Condition(lambda: not self.visible or self._pending_leader == self.vi_leader),
+                & Condition(
+                    lambda: (
+                        not self.visible or self.browsing or self._pending_leader == self.vi_leader
+                    )
+                ),
             )
 
         # Esc cancels; unknown keys keep the menu open with an error instead
@@ -324,7 +344,7 @@ class PrefixKeys:
             self.dismiss()
             event.app.invalidate()
 
-        @keys.add(Keys.Any, filter=self.waiting, eager=True)
+        @keys.add(Keys.Any, filter=self.waiting & ~Condition(self._starting_leader), eager=True)
         def unknown(event: KeyPressEvent) -> None:
             if self.pending:
                 self.message = f"No binding for {event.data!r}"
@@ -383,7 +403,18 @@ class PrefixKeys:
                 self._pending_leader = leader
 
         if not self.leader and has_ctrl_chord(key):
-            self.bindings.add(f"c-{key}", filter=enabled & ~self.waiting, eager=True)(run)
+            # Help is read-only but not modal: a chord it lists still runs.
+            browsing = Condition(lambda: self.browsing)
+
+            def chord(event: KeyPressEvent) -> None:
+                # A chord is not the leader that opened help, so a chooser
+                # it opens must not be tagged with (and closed by) that leader.
+                self._pending_leader = ()
+                run(event)
+
+            self.bindings.add(f"c-{key}", filter=enabled & (~self.waiting | browsing), eager=True)(
+                chord
+            )
         if self.leader or self.vi_leader:
             self.bindings.add(
                 key,

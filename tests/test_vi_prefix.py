@@ -200,7 +200,8 @@ def test_repeating_vi_leader_cancels_its_chooser_but_not_global_choices(
     asyncio.run(run())
 
 
-def test_vi_leader_can_close_its_full_help_without_hiding_global_actions():
+@pytest.mark.parametrize("opening", ["t\x1f", "\x1f"], ids=["from-vi-menu", "plain"])
+def test_vi_leader_reopens_its_menu_from_full_help_without_hiding_global_actions(opening):
     save_preferences(vi_key_prefix="t")
 
     async def run():
@@ -214,11 +215,15 @@ def test_vi_leader_can_close_its_full_help_without_hiding_global_actions():
             )
 
             async def feed():
-                pipe.send_text("draft\x1bt\x1f")  # Ctrl+/ opens full help from the vi menu.
+                pipe.send_text("draft\x1b" + opening)  # Ctrl+/ opens full help.
                 while not prompt.shortcuts.browsing:
                     await asyncio.sleep(0.01)
                 assert ("Ctrl+B t", "Select thinking visibility") in prompt.shortcuts.hint_rows()
-                pipe.send_text("ta!\r")
+                pipe.send_text("t")  # The leader works from help: its menu opens.
+                while not prompt.shortcuts.pending:
+                    await asyncio.sleep(0.01)
+                assert not prompt.shortcuts.browsing
+                pipe.send_text("ta!\r")  # Pressed again, it closes.
 
             assert (
                 await asyncio.wait_for(

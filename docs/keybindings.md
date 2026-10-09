@@ -17,8 +17,8 @@ Bindings apply only to the main prompt. They do not change
 
 The default global `key_prefix` is **`ctrl`**: hold Ctrl while pressing the
 action key, such as **Ctrl+L** for models or **Ctrl+Y** to copy. There is no global
-action-menu leader by default. **Ctrl+/** opens contextual help without running an
-action.
+action-menu leader by default. **Ctrl+/** opens contextual help, and the shortcuts
+it lists still work while it is open.
 
 To use a global leader, set it explicitly:
 
