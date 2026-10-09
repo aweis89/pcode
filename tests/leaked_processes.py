@@ -41,6 +41,12 @@ TERM_GRACE_SECONDS = 3.0
 # (a missing file proves nothing), so anything of the run a scan missed would
 # be immune from then on; a day gives later runs time to catch it.
 STALE_LOCK_SECONDS = 24 * 60 * 60
+# macOS fails the environment read of a live process transiently (sysctl
+# KERN_PROCARGS2 -> EIO), which psutil reports as AccessDenied, the same as for
+# a process it may never read. Our own denied processes are read again this
+# many times, together, this far apart.
+ENVIRON_ATTEMPTS = 4
+ENVIRON_RETRY_SECONDS = 0.05
 
 # Runs this process owns, by tag: the lock descriptor, and the environment it
 # tagged with the tag that was there before.
@@ -109,18 +115,39 @@ def _alive(identity: str) -> bool:
     return False
 
 
+def _ours(process: psutil.Process) -> bool:
+    try:
+        return process.uids().real == os.getuid()
+    except psutil.Error:
+        return False
+
+
 def _tagged(keep, candidates=None) -> list[psutil.Process]:
     me = os.getpid()
+    pending = [
+        process
+        for process in (psutil.process_iter() if candidates is None else candidates)
+        if process.pid != me
+    ]
     found = []
-    for process in psutil.process_iter() if candidates is None else candidates:
-        if process.pid == me:
-            continue
-        try:
-            identity = process.environ().get(RUN_ENV)
-        except psutil.Error:
-            continue
-        if identity and not keep(identity):
-            found.append(process)
+    for _ in range(ENVIRON_ATTEMPTS):
+        denied = []
+        for process in pending:
+            try:
+                identity = process.environ().get(RUN_ENV)
+            except psutil.AccessDenied:
+                denied.append(process)
+                continue
+            except psutil.Error:
+                continue
+            if identity and not keep(identity):
+                found.append(process)
+        # Another user's process stays denied; so does one of ours that macOS
+        # hides (see the module docstring), at the cost of these few retries.
+        pending = [process for process in denied if _ours(process)]
+        if not pending:
+            break
+        time.sleep(ENVIRON_RETRY_SECONDS)
     return found
 
 
