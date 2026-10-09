@@ -24,8 +24,8 @@ A typical rhythm:
     ✓ 15 ✗ 1 tools · Edit file ✓ 10 · Run shell ✓ 5 ✗ 1
     ```
 
-3. Want a line per call instead? `/group-tools off` unfolds them, again for the
-   whole history.
+3. Want a line per call instead? Ctrl+] (or `/group-tools off`) unfolds them,
+   again for the whole history.
 
 Here is one turn both ways. First with commands hidden and the tool calls folded
 into a line:
@@ -41,9 +41,9 @@ The toggles, each saved as your default:
 | Toggle | Shows or hides |
 | --- | --- |
 | Ctrl+G, `/show-commands` | Each shell command and its output |
-| `/show-edits` | The diff of each file edit |
+| Ctrl+V, `/show-edits` | The diff of each file edit |
 | `/show-thinking scrollback` | The model's readable reasoning |
-| `/group-tools` | One line per run of tool calls (the default) or one per call |
+| Ctrl+], `/group-tools` | One line per run of tool calls (the default) or one per call |
 | Ctrl+O, `/show-tasks` | The live task and tool panel above the editor |
 
 Hidden isn't deleted. Thinking, diffs and command results are kept even while

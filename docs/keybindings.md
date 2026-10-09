@@ -120,6 +120,18 @@ targets you can reuse on another key.
 | `^` | `@previous-session` | Return to the session previously shown in this terminal |
 | `y` | `@copy` | Copy the draft, or the last response when the draft is empty |
 
+Two more defaults run a slash command, exactly as if you had bound them
+yourself, and `/bind reset KEY` restores them the same way:
+
+| Key | Command | Action |
+| --- | --- | --- |
+| `v` | `/show-edits` | Show or hide edit diffs in scrollback |
+| `]` | `/group-tools` | Fold runs of tool calls into one line, or expand them |
+
+They take Ctrl+V and Ctrl+], which the Emacs-style editor leaves unbound or
+uses only for character search. In vi insert mode Ctrl+V is quoted insert; run
+`/unbind v` to get it back.
+
 `@copy` expands collapsed pastes before copying. It is different from binding
 `/copy`, which operates on responses rather than choosing between the draft and
 the last response. Likewise, `@thinking` opens the visibility selector, while
