@@ -389,7 +389,7 @@ async def main():
     watch = StallWatch(Path({str(path)!r}))
     task = asyncio.create_task(watch.heartbeat())
     await asyncio.sleep(0.1)
-    spin(0.3)
+    spin(0.5)
     os.kill(os.getpid(), signal.SIGSTOP)
     spin(1.0)
     await asyncio.sleep(0.3)
@@ -410,6 +410,10 @@ asyncio.run(main())
         child.wait()
     stalls = sorted(record["stall_ms"] for record in records(path))
     # Before the stop, then after it: neither spans the 600 ms spent stopped.
+    # The first is measured from the next beat's due time to the watcher's last
+    # poll before the stop, both GIL-bound against the spin, so a loaded runner
+    # reads well under the 500 ms spun (146 ms of a 300 ms spin was seen).
+    # Including the stop would read over 1,100 ms.
     assert len(stalls) == 2, stalls
     assert 150 <= stalls[0] < 600 and 800 <= stalls[1] < 1500, stalls
 
