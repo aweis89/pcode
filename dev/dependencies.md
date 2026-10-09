@@ -863,13 +863,31 @@ from potentially opaque native model history without a separate migration design
 
 ### Explicit newline key encodings
 
-`input_keys.py` registers narrow VT100 aliases before constructing a prompt:
-CSI-u and xterm modifyOtherKeys Ctrl+J / Shift+Enter become `Keys.ControlJ`.
-Verified against prompt_toolkit 3.0.53: CSI-u is not decoded by default, and
-`ESC [ 27 ; 2 ; 13 ~` otherwise maps to `ControlM` (submit). Registration uses
-its process-global `ANSI_SEQUENCES` table and clears the private
-`_IS_PREFIX_OF_LONGER_MATCH_CACHE`; recheck these internals on upgrades.
-No keyboard protocol is enabled and this is not general Kitty support.
+`input_keys.py` installs a bounded per-parser interceptor around prompt_toolkit
+3.0.53's `Vt100Parser.feed`. It decodes Kitty flag-1 CSI-u and xterm modified-key
+reports before vi sees Escape, leaving paste, CPR, mouse and legacy input to the
+original parser. Shift+Enter becomes `Keys.ControlJ`; Ctrl+Enter uses the internal
+`Keys.ControlF24` identifier for interrupt-send. Recheck the private `_input_parser`
+and `_Flush` integration on dependency upgrades. Unsupported enhanced keys are
+consumed rather than inserted as escape-sequence text.
+
+`keyboard_protocol.py` wraps real VT100 output and pushes Kitty flag 1 when the
+renderer enables bracketed paste. It pops before paste is disabled or the alternate
+screen is left, so terminal handoffs, renderer resets and exit restore the prior
+flags on the correct screen. It requests neither key releases nor all-key reporting.
+This is flag-1 support, not the full Kitty protocol. Under tmux, the wrapper instead
+queries `#{pane_key_mode}` once before rendering. A `VT10x` pane temporarily gets
+`modifyOtherKeys` mode 1 and is restored to mode 0 on handoff; inherited `Ext 1` /
+`Ext 2` modes are left alone. Failed or unknown mode queries do not change the
+mode. No tmux server options are changed, so `extended-keys=off` still prevents
+modified-key reporting. Xterm mode is not enabled outside tmux. See the
+[Kitty protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) for the per-screen
+push/pop stacks. Atomic transcript handoffs preserve keyboard reporting across
+renderer resets and the CPR wait: they keep input raw, so disabling the mode even
+temporarily can turn modified Enter into submit during streaming. External-program
+handoffs still restore it. Real-tmux tests must use named `S-Enter` / `C-Enter` keys
+as well as literal bytes: byte injection alone passes even when mode negotiation
+is broken. Use named `C-j` too; tmux's Ext 1 mode drops literal LF injection.
 
 Inspiration: [pi-vim](https://github.com/lajarre/pi-vim/blob/main/index.ts)
 passes insert-mode input to Pi's editor and implements `o`/`O` with explicit
