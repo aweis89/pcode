@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass, field
 
 from pydantic_ai.exceptions import ModelHTTPError
-from scene import Call, Fail, launch
+from scene import Call, Fail, Think, launch
 
 MODEL = "claude:claude-opus-5-5"
 SIZE = (110, 40)
@@ -135,6 +135,18 @@ TABS = {
             [
                 "Fixed and tested. Handing the change to a worker for an independent "
                 "review of the edge cases before committing.",
+                # After the text, so the thinking rows stay above the status row
+                # while the worker runs: answer text would clear them.
+                Think(
+                    "The fix scales the subtotal instead of subtracting a flat amount, "
+                    "and the new test covers a zero discount. What I haven't checked is "
+                    "the ends of the range: 100% should come out at exactly 0.0, and a "
+                    "fractional discount like 12.5% on 25.00 could leave float noise in "
+                    "the total. A fresh pair of eyes on the diff will catch what I'm too "
+                    "close to see, so hand the review to a worker and keep it read-only. "
+                    "If it finds rounding drift, round to cents in total() before "
+                    "committing rather than in each caller."
+                ),
                 plan(DISCOUNT, 3),
                 Call(
                     "delegate_task",

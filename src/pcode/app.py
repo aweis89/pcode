@@ -2167,6 +2167,7 @@ class PreviewApp:
                 self.activity.busy = False
             else:
                 session.app.create_background_task(refresh_metadata())
+                session.app.create_background_task(controller.warn_outdated())
                 controller.start_mcp_defaults()
             finally:
                 self._startup_pending = False

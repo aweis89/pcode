@@ -336,6 +336,11 @@ invalid setting values fall back to built-in defaults. Normal startup tolerates 
 malformed file, but config commands report it and refuse to overwrite it: use
 `pcode config path` to find and repair it first. Invalid commands exit nonzero.
 
+At startup pcode looks up the latest release on PyPI, at most once a day and
+without delaying the session, and shows a warning with the upgrade command for
+your install (Homebrew, uv, pipx or pip) when a newer version is out. Development
+and editable installs skip it; set `PCODE_NO_UPDATE_CHECK=1` to turn it off.
+
 `PCODE_CONFIG_DIR` overrides the user config directory for preferences, extensions,
 MCP configuration, keybindings, worktree setup, and stored logins. Otherwise pcode uses
 `$XDG_CONFIG_HOME/pcode`, defaulting to `~/.config/pcode`. Per-file overrides
