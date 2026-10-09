@@ -59,6 +59,7 @@ from pcode.file_refs import FileReferenceCompleter, ReferenceLexer, reference_fr
 from pcode.frame import TITLE_CHROME, Frame
 from pcode.input_keys import configure_newline_keys
 from pcode.jobs import WATCHED_PREFIX
+from pcode.keyboard_protocol import keyboard_output
 from pcode.keymap import PromptKeymap
 from pcode.layout_speed import install_fast_layout_division
 from pcode.paste import MARKER_PATTERN
@@ -1383,7 +1384,7 @@ class CursorSafeOutput:
     """Keep renderer erases out of history and hide the cursor during handoffs."""
 
     def __init__(self, output: Output):
-        self.output = output
+        self.output = keyboard_output(output)
         self._hidden = 0
         self._visible = True
 
@@ -1477,8 +1478,9 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
     Popups and external programs must not use ``atomic``: a frame held across
     them would freeze the terminal until its guard timeout.
 
-    An atomic handoff also keeps the terminal in raw mode. Only an external
-    program needs cooked mode, and in cooked mode the tty echoes anything typed
+    An atomic handoff also keeps raw mode and extended keyboard reporting,
+    including while waiting for a cursor report. Only an external program
+    needs cooked mode, and in cooked mode the tty echoes anything typed
     during the handoff and turns a Return into a newline, which the editor then
     reads as Ctrl+J. Paced scrollback makes handoffs frequent while the user
     may well be typing, so the window has to be harmless.
@@ -1515,48 +1517,51 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
             # Also collects the report an atomic exit left outstanding, before
             # cooked mode could echo it onto the screen as text.
             await app.renderer.wait_for_cpr_responses()
-        handoff = Handoff(layout_top_row(app) if atomic else None)
-        if atomic:
-            app.output.write_raw(SYNC_START)  # erase() flushes it
-        app.renderer.erase()
-        app._running_in_terminal = True
-        # A popup takes over SIGWINCH, but the editor's ``_poll_output_size``
-        # task keeps calling ``_on_resize`` on any size change. That erases
-        # from the cursor down (over the popup) and requests a CPR the popup
-        # then reads as input. Ignore resizes until the handoff repaints below.
-        app._on_resize = lambda: None
-        try:
-            with app.input.detach(), nullcontext() if atomic else app.input.cooked_mode():
-                yield handoff
-        finally:
-            del app._on_resize
-            app.renderer.reset()
-            if handoff.top_row is not None and handoff.rows_written is not None:
-                rows = app.output.get_size().rows
-                row = min(handoff.top_row + handoff.rows_written, rows)
-                app.renderer._min_available_height = rows - row + 1
-                # Sent with the cursor still on the editor's top row, as the
-                # renderer requires; the reply only refines the guess above.
-                app._request_absolute_cursor_position()
-                app._running_in_terminal = False
-                app._redraw()
-                app.output.write_raw(SYNC_END)
-                app.output.flush()
-            else:
-                if atomic:
-                    # Nothing to hold the frame for across the report round trip.
-                    app.output.write_raw(SYNC_END)
-                    app.output.flush()
-                app._request_absolute_cursor_position()
-                try:
-                    # Input is attached again, so the report can be read here.
-                    # Rendering stays disabled meanwhile: an invalidation from a
-                    # keystroke or the spinner would otherwise paint the early frame.
-                    if app.output.responds_to_cpr:
-                        await app.renderer.wait_for_cpr_responses()
-                finally:
+        preserve = getattr(app.output, "preserve_keyboard", nullcontext)
+        with preserve() if atomic else nullcontext():
+            handoff = Handoff(layout_top_row(app) if atomic else None)
+            if atomic:
+                app.output.write_raw(SYNC_START)  # erase() flushes it
+            app.renderer.erase()
+            app._running_in_terminal = True
+            # A popup takes over SIGWINCH, but the editor's ``_poll_output_size``
+            # task keeps calling ``_on_resize`` on any size change. That erases
+            # from the cursor down (over the popup) and requests a CPR the popup
+            # then reads as input. Ignore resizes until the handoff repaints below.
+            app._on_resize = lambda: None
+            try:
+                with app.input.detach(), nullcontext() if atomic else app.input.cooked_mode():
+                    yield handoff
+            finally:
+                del app._on_resize
+                app.renderer.reset()
+                if handoff.top_row is not None and handoff.rows_written is not None:
+                    rows = app.output.get_size().rows
+                    row = min(handoff.top_row + handoff.rows_written, rows)
+                    app.renderer._min_available_height = rows - row + 1
+                    # Sent with the cursor still on the editor's top row, as the
+                    # renderer requires; the reply only refines the guess above.
+                    app._request_absolute_cursor_position()
                     app._running_in_terminal = False
                     app._redraw()
+                    app.output.write_raw(SYNC_END)
+                    app.output.flush()
+                else:
+                    if atomic:
+                        # Nothing to hold the frame for across the report round trip.
+                        app.output.write_raw(SYNC_END)
+                        app.output.flush()
+                    app._request_absolute_cursor_position()
+                    try:
+                        # Input is attached again, so the report can be read here.
+                        # Keep modified keys encoded while this wait delays repaint.
+                        # Rendering stays disabled meanwhile: an invalidation from a
+                        # keystroke or the spinner would otherwise paint the early frame.
+                        if app.output.responds_to_cpr:
+                            await app.renderer.wait_for_cpr_responses()
+                    finally:
+                        app._running_in_terminal = False
+                        app._redraw()
     finally:
         if not done.done():
             done.set_result(None)
@@ -2952,6 +2957,7 @@ def create_prompt(
     on_thinking=None,
     on_commands=None,
     on_send_mode=None,
+    on_interrupt_submit=None,
     on_previous_session=None,
     on_copy_response=None,
     key_prefix: str | None = None,
@@ -2969,6 +2975,7 @@ def create_prompt(
         on_thinking=on_thinking,
         on_commands=on_commands,
         on_send_mode=on_send_mode,
+        on_interrupt_submit=on_interrupt_submit,
         on_previous_session=on_previous_session,
         on_copy_response=on_copy_response,
     )

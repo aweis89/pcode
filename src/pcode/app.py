@@ -2253,7 +2253,7 @@ class PreviewApp:
                 self.transcript.note(f"Cleared {prompts} queued message(s).")
             self.activity.busy = False
 
-        def submit(text):
+        def submit(text, *, mode_override: str | None = None):
             text = text.strip()
             ready = early is None and getattr(self.controller, "ready", None)
             if (early is not None or (ready and not ready.is_set())) and text in {"/quit", "/exit"}:
@@ -2275,7 +2275,7 @@ class PreviewApp:
                 mode = "shell"
             elif text:
                 # One send consumes a Ctrl+S pick; the saved default returns.
-                mode = self.next_send_mode
+                mode = mode_override or self.next_send_mode
                 self.send_mode_once = None
             else:
                 return
@@ -2292,6 +2292,7 @@ class PreviewApp:
             transcript=self.transcript,
             workspace=lambda: self.workspace,
             on_submit=submit,
+            on_interrupt_submit=lambda text: submit(text, mode_override="interrupt"),
             on_command=submit,
             on_cancel=cancel,
             on_tasks=self.set_show_tasks,

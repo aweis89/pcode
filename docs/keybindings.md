@@ -13,6 +13,31 @@ works: adding a binding does not remove another key for the same action. To move
 Bindings apply only to the main prompt. They do not change
 [popup keys](commands.md#popup-keys), search fields, or ordinary editor motions.
 
+## Sending and newlines
+
+In the main prompt:
+
+| Key | Action |
+| --- | --- |
+| Enter | Send using the selected send mode, or accept a selected completion |
+| Shift+Enter | Insert a newline |
+| Ctrl+Enter | Interrupt the current turn and send the draft; send normally when idle |
+| Ctrl+J | Insert a newline (portable fallback) |
+
+Ctrl+Enter overrides the selected send mode for that send only. An empty draft
+has no effect. Slash commands and `!shell` drafts retain their normal behavior.
+
+Shift+Enter and Ctrl+Enter require a terminal that reports modified Enter keys
+separately. Pcode requests extended keyboard reporting while the editor owns the
+terminal and restores the previous mode when it hands the terminal back. Terminal
+multiplexers must support forwarding those keys too. If Shift+Enter still submits,
+use Ctrl+J and check your terminal or multiplexer configuration; pcode cannot
+distinguish keys that arrive as identical bytes. In tmux, pcode requests its
+extended-key mode while editing and restores the previous mode afterward; tmux's
+`extended-keys` option must not be `off`. Outside tmux, pcode requests Kitty's
+keyboard protocol. Other terminals need to send distinct modified-key reports
+without that request, or use a terminal mapping for Shift+Enter to Ctrl+J.
+
 ## Prefixes and action menus
 
 The default global `key_prefix` is **`ctrl`**: hold Ctrl while pressing the
