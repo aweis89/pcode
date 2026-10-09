@@ -443,6 +443,7 @@ class SessionHost:
             await controller.warn_meridian_thinking()
             # Optional, and it can hang; the session must not wait for it.
             self.tasks.append(asyncio.create_task(self._refresh_context()))
+            self.tasks.append(asyncio.create_task(controller.warn_outdated()))
             profile = remote_profile.active()
             if profile is None or profile.mcp:
                 controller.start_mcp_defaults()

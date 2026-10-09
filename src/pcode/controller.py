@@ -2518,6 +2518,13 @@ class SessionController:
             self._meridian_thinking_warned = True
             self.view.warning(meridian_thinking_note(base, passthrough))
 
+    async def warn_outdated(self) -> None:
+        """Warn when PyPI has a newer release. Run as a background task: it may hit the network."""
+        from pcode import update_check
+
+        if notice := await asyncio.to_thread(update_check.check):
+            self.view.warning(notice)
+
     async def switch_model(self, model: str) -> None:
         """Adopt a model now, or record it for the next request while working."""
         if self.activity.busy or self.activity.queued_prompts:
