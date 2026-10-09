@@ -182,6 +182,8 @@ def isolated_preferences(monkeypatch, tmp_path, request):
     # meridian_managed defaults to auto, which probes the developer's proxy and
     # can start a real Meridian. Tests of that lifecycle clear this themselves.
     monkeypatch.setenv("PCODE_MERIDIAN_MANAGED", "0")
+    # A clean release build would otherwise ask PyPI from every startup test.
+    monkeypatch.setenv("PCODE_NO_UPDATE_CHECK", "1")
     # skill_dirs defaults to ~/.agents/skills, so a developer's own skills would
     # otherwise register as commands in every app the suite builds.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))

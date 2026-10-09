@@ -2520,9 +2520,9 @@ class SessionController:
 
     async def warn_outdated(self) -> None:
         """Warn when PyPI has a newer release. Run as a background task: it may hit the network."""
-        from pcode import update_check
+        from pcode.update_check import check_in_background
 
-        if notice := await asyncio.to_thread(update_check.check):
+        if notice := await check_in_background():
             self.view.warning(notice)
 
     async def switch_model(self, model: str) -> None:
