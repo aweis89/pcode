@@ -20,8 +20,30 @@ pcode config unset theme          # Restore automatic theme detection
 pcode config reset                # Remove every saved default at once
 ```
 
-The same commands are available inside pcode as `/config`, with tab completion:
-`/config set theme light`, `/config get autocompact`, `/config unset effort`, etc.
+Inside pcode, **`/config` opens a searchable settings editor**. Type to search
+setting names and descriptions, use ↑/↓ to select a setting, and press Enter to
+edit it. Choose from the available options or enter a value; Enter saves and
+keeps the browser open. Escape cancels the current edit, or closes the browser
+when you are not editing. Invalid values stay in the editor with an explanation.
+
+Each setting shows its built-in default, saved effective value, and whether that
+value comes from the user or project configuration. These are saved defaults,
+not a snapshot of the running conversation. The detail area identifies layout
+settings that apply immediately and warns when a project override takes
+precedence over a user edit.
+
+The scope control shows the shortcut for switching between user and project
+settings. Project scope is available when a workspace is selected and omits
+user-only settings. Toggle **Overrides only** to see just the values saved in the
+selected scope, including explicit overrides equal to the built-in default.
+Removing an override clears that scope's saved value, letting the underlying
+user value or built-in default take over. The scope, filter, and reset shortcuts
+are shown in the browser and follow your configured key prefix; **Keys** opens
+the complete keyboard help.
+
+Explicit commands remain available with tab completion: `/config list` prints
+JSON, and `/config set theme light`, `/config get autocompact`,
+`/config unset effort`, and `/config diff` work without opening the browser.
 **Most config edits affect the next launch, not the running conversation.** To change
 an active setting and save its default immediately, use `/theme`, `/effort`,
 `/model`, or `/autocompact` instead. The layout settings `attach_tasks`,

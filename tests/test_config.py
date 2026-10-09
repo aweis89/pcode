@@ -479,7 +479,7 @@ def test_slash_config_io_errors_do_not_crash():
     output = StringIO()
     app = PreviewApp(console=Console(file=output))
     with patch("pcode.app.configure", side_effect=PermissionError("denied")):
-        app.handle("/config")
+        app.handle("/config list")
     assert "Could not access global defaults" in output.getvalue()
 
 
