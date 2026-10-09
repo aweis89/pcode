@@ -8,7 +8,7 @@ from pathlib import Path
 from filelock import FileLock
 from prompt_toolkit.completion import CompleteEvent, Completion
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Always
+from prompt_toolkit.filters import Always, Condition
 
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.preferences import config_dir, write_json
@@ -26,7 +26,23 @@ DEFAULT_ACTIONS = {
     "^": "@previous-session",
     "y": "@copy",
 }
+# Default keys that run a slash command, much as a `/bind KEY /command` would.
+# Only chords the Emacs editor barely uses: Ctrl+V is unbound there, Ctrl+] is
+# character search. Vi loses Ctrl+V (quoted insert, visual block) to it.
+DEFAULT_COMMANDS = {
+    "v": "/show-edits",
+    "]": "/group-tools",
+}
+# How the help overlay names these targets, on whichever key they sit.
+COMMAND_LABELS = {
+    "/show-edits": "Show / hide edit diffs",
+    "/group-tools": "Group / ungroup tool calls",
+}
 USAGE = "/bind [list | actions | KEY [TARGET] | reset [KEY]]; /unbind KEY disables a key"
+
+
+def default_target(key: str) -> str | None:
+    return DEFAULT_ACTIONS.get(key) or DEFAULT_COMMANDS.get(key)
 
 
 def bindings_path() -> Path:
@@ -116,23 +132,40 @@ class PromptKeymap:
         except ValueError as error:
             self.report(str(error))
 
+    def keys(self) -> list[str]:
+        """Every key with a default or a saved binding, defaults first."""
+        return list(dict.fromkeys([*self.defaults, *DEFAULT_COMMANDS, *self.overrides]))
+
     def apply(self, overrides: dict[str, str | None]) -> None:
-        for key in set(self.defaults) | set(self.overrides) | set(overrides):
+        for key in set(self.keys()) | set(overrides):
             self.shortcuts.remove(key)
         self.overrides = overrides
-        for key in dict.fromkeys([*self.defaults, *overrides]):
-            target = overrides.get(key, DEFAULT_ACTIONS.get(key))
+        for key in self.keys():
+            target = overrides.get(key, default_target(key))
             if target is None:
                 continue
             if target.startswith("@"):
                 self.shortcuts.set_shortcut(replace(self.actions[target], key=key))
-            else:
-                self.shortcuts.set_shortcut(
-                    Shortcut(key, target, lambda event, text=target: self.invoke(text), Always())
+                continue
+            # A default command stays out of the way where this prompt lacks
+            # it; a saved one still reports why its key did nothing.
+            name = target.split(maxsplit=1)[0]
+            available = (
+                Always()
+                if key in overrides
+                else Condition(lambda name=name: self.registry.find(name) is not None)
+            )
+            self.shortcuts.set_shortcut(
+                Shortcut(
+                    key,
+                    COMMAND_LABELS.get(target, target),
+                    lambda event, text=target: self.invoke(text),
+                    available,
                 )
+            )
 
     def describe(self, key: str) -> str:
-        target = self.overrides.get(key, DEFAULT_ACTIONS.get(key))
+        target = self.overrides.get(key, default_target(key))
         source = "custom" if key in self.overrides else "default"
         if target is None:
             return f"{key}: disabled" if key in self.overrides else f"{key}: unbound"
@@ -151,9 +184,7 @@ class PromptKeymap:
             self.apply(save_binding(key, None))
             return f"Disabled binding {key}. /bind reset {key} restores its default."
         if not parts or parts == ["list"]:
-            return "Prompt keybindings:\n" + "\n".join(
-                self.describe(key) for key in dict.fromkeys([*self.defaults, *self.overrides])
-            )
+            return "Prompt keybindings:\n" + "\n".join(self.describe(key) for key in self.keys())
         if parts == ["actions"]:
             return "Built-in actions:\n" + "\n".join(
                 f"{name}: {action.label}" for name, action in self.actions.items()
@@ -179,15 +210,15 @@ class PromptKeymap:
 
     def action_label(self, default_key: str) -> str:
         """Tell help/notifications where a native action moved, or that it is unbound."""
-        target = DEFAULT_ACTIONS.get(default_key)
-        for key in dict.fromkeys([*self.defaults, *self.overrides]):
-            if self.overrides.get(key, DEFAULT_ACTIONS.get(key)) == target:
+        target = default_target(default_key)
+        for key in self.keys():
+            if self.overrides.get(key, default_target(key)) == target:
                 return self.shortcuts.label(key)
         return "unbound"
 
     def complete(self, argument: str):
         parts = argument.split(maxsplit=1)
-        keys = list(dict.fromkeys([*self.defaults, *self.overrides]))
+        keys = self.keys()
         if not any(char.isspace() for char in argument):
             for word in ["list", "actions", "reset", *keys]:
                 if word.startswith(argument):

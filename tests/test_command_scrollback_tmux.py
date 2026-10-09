@@ -104,7 +104,8 @@ def test_toggle_rebuilds_existing_history_without_rerunning_commands(pane):
         while True:
             screen = capture(pane, "keep draft")
             text = history()
-            if ("OUTPUT_LINE_03" in text) == enabled:
+            # A replay briefly clears history; absence alone is not readiness.
+            if "TURN_1_DONE" in text and ("OUTPUT_LINE_03" in text) == enabled:
                 break
             assert time.monotonic() < deadline, text
             time.sleep(0.05)

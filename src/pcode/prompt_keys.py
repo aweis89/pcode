@@ -33,6 +33,7 @@ class PromptCallbacks:
     on_thinking: Callable | None = None
     on_commands: Callable | None = None
     on_send_mode: Callable | None = None
+    on_interrupt_submit: Callable[[str], None] | None = None
     on_previous_session: Callable | None = None
     on_copy_response: Callable | None = None
 
@@ -59,6 +60,8 @@ def prompt_key_bindings(
     shortcuts.set_help(
         lambda: [
             ("Enter", "Send"),
+            ("Ctrl+Enter", "Interrupt and send"),
+            ("Shift+Enter", "Newline"),
             ("Ctrl+J", "Newline"),
             ("Tab", "Complete"),
             ("↑ / ↓", "Move / history"),
@@ -205,9 +208,13 @@ def _editing_keys(
         event.current_buffer.insert_text(pasted.collapse(data))
 
     @keys.add("enter")
+    @keys.add(Keys.ControlF24)
     def submit(event: KeyPressEvent) -> None:
         buffer = event.current_buffer
-        if buffer.complete_state and buffer.complete_state.current_completion:
+        interrupt = event.key_sequence[-1].key == Keys.ControlF24
+        if interrupt and not buffer.text.strip():
+            return
+        if not interrupt and buffer.complete_state and buffer.complete_state.current_completion:
             # First Enter accepts the selected completion; next Enter sends it.
             buffer.complete_state = None
         else:
@@ -215,7 +222,17 @@ def _editing_keys(
             if expanded != buffer.text:
                 buffer.document = Document(expanded, len(expanded))
             pasted.clear()
-            buffer.validate_and_handle()
+            accept_handler = buffer.accept_handler
+            if interrupt and callbacks.on_interrupt_submit is not None:
+                # Keep validation, history, and buffer reset identical to Enter.
+                def accept_interrupt(buffer: Buffer) -> None:
+                    callbacks.on_interrupt_submit(buffer.text)
+
+                buffer.accept_handler = accept_interrupt
+            try:
+                buffer.validate_and_handle()
+            finally:
+                buffer.accept_handler = accept_handler
 
     @keys.add("escape", filter=vi_mode, eager=True)
     def normal_mode(event: KeyPressEvent) -> None:

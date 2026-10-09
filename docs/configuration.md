@@ -167,14 +167,14 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `tool_spinner` | `arc` | The same, for a running tool call's row and the terminal's own waits, so they look different from the model's |
 | `show_thinking` | `status-line` | `off`, `status-line`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`) |
 | `thinking_max_lines` | `10` | Max rows of thinking above the status row in `status-line` mode, or a share of the screen (`0.2`). A row count is also capped at a quarter of the pane, so a short pane gets fewer. Applies on next launch |
-| `show_edits` | `on` | `on`, `off` (show a diff of each file edit; `/show-edits`) |
+| `show_edits` | `on` | `on`, `off` (show a diff of each file edit; Ctrl+V or `/show-edits`) |
 | `live_edits` | `off` | `on`, `off` (preview an edit or `run_code` snippet at the bottom while the model writes it) |
 | `diff_renderer` | `delta` | `delta`, `rich` (draw diffs in scrollback and `/diffs` with [delta](https://dandavison.github.io/delta/) when it's installed, falling back to Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
 | `delta_args` | empty | delta's arguments, quoted as in a shell, such as `--line-numbers`; the only delta configuration pcode reads (git config is ignored), and they override pcode's own choices |
 | `diff_dedent` | `on` | `on`, `off` (strip the indentation every line of a diff hunk shares, so an edit deep in a nested block starts at the left edge; with delta or Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
 | `diff_layout` | `unified` | `unified`, `side-by-side`, `auto` (delta's layout; `auto` goes side by side at 180 columns or wider) |
 | `show_commands` | `off` | `on`, `off` (mirror each shell command and its output into scrollback; Ctrl+G or `/show-commands`) |
-| `group_tools` | `on` | `on`, `off` (fold each run of tool calls into one line; `/group-tools`, see [grouping tool calls](transcript.md#grouping-tool-calls)) |
+| `group_tools` | `on` | `on`, `off` (fold each run of tool calls into one line; Ctrl+] or `/group-tools`, see [grouping tool calls](transcript.md#grouping-tool-calls)) |
 | `command_scrollback_lines` | `20` | Positive integer, lines of each command's output mirrored into scrollback |
 | `command_preview_lines` | `10` | Rows (`10`) or a share of the screen (`0.25`) for the live preview of a running command |
 | `tool_error_scrollback` | `off` | `on`, `off` (keep a failed tool call's full diagnostic in scrollback instead of one line) |

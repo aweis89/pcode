@@ -1370,6 +1370,61 @@ def test_streamed_task_preview_has_real_prompt_height_and_cancels_cleanly(pane):
     assert "STREAMED_TASK" not in history
 
 
+MODIFIED_ENTER_SCRIPT = r"""
+import json, pathlib, subprocess
+from rich.console import Console
+from pcode.commands import CommandRegistry
+from pcode.ui import Transcript, create_prompt
+
+root = pathlib.Path(os.environ['PCODE_TEST_GATES'])
+subprocess.run(['tmux', 'set-option', '-s', 'extended-keys', 'on'], check=True)
+subprocess.run(['tmux', 'set-option', '-s', 'extended-keys-format', KEY_FORMAT], check=True)
+
+async def run():
+    sent = []
+    def submit(kind, text):
+        sent.append([kind, text])
+        prompt.app.exit()
+    prompt = create_prompt(
+        CommandRegistry(), transcript=Transcript(Console()),
+        on_submit=lambda text: submit('ordinary', text),
+        on_interrupt_submit=lambda text: submit('interrupt', text),
+    )
+    async def ready():
+        while not prompt.app.output.output._active:
+            await asyncio.sleep(0)
+        (root / 'keyboard-ready').touch()
+    await prompt.app.run_async(pre_run=lambda: prompt.app.create_background_task(ready()))
+    mode = subprocess.check_output(
+        ['tmux', 'display-message', '-p', '-t', os.environ['TMUX_PANE'], '#{pane_key_mode}'],
+        text=True,
+    ).strip()
+    (root / 'keyboard-result.tmp').write_text(json.dumps([sent, mode]))
+    (root / 'keyboard-result.tmp').replace(root / 'keyboard-result')
+    await gate()
+
+asyncio.run(run())
+"""
+
+
+@pytest.mark.parametrize(
+    "pane",
+    [MODIFIED_ENTER_SCRIPT.replace("KEY_FORMAT", repr(fmt)) for fmt in ("xterm", "csi-u")],
+    indirect=True,
+)
+def test_tmux_generates_modified_enter_and_restores_mode(pane, tmp_path):
+    ready, result = tmp_path / "keyboard-ready", tmp_path / "keyboard-result"
+    until(ready.exists, lambda: "Editor did not acquire keyboard mode")
+    # Named keys make tmux encode according to the mode the app requested.
+    # Literal escape-sequence injection would miss broken negotiation.
+    pane("send-keys", "-t", "preview:0.0", "-l", "first")
+    pane("send-keys", "-t", "preview:0.0", "S-Enter")
+    pane("send-keys", "-t", "preview:0.0", "-l", "second")
+    pane("send-keys", "-t", "preview:0.0", "C-Enter")
+    until(result.exists, lambda: "Modified Enter did not submit")
+    assert json.loads(result.read_text()) == [[["interrupt", "first\nsecond"]], "VT10x"]
+
+
 THINKING_SCRIPT = r"""
 import asyncio
 from pydantic_ai import Agent
@@ -1443,12 +1498,15 @@ def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(
     [
         "from pcode.preferences import save_preferences; "
         "save_preferences(editing_mode='vi'); "
+        "import subprocess; "
+        "subprocess.run(['tmux', 'set-option', '-s', 'extended-keys', 'on'], check=True); "
         "from pcode.app import main; main()"
     ],
     indirect=True,
 )
 @pytest.mark.parametrize(
-    "newline", ["\n", "\x1b[106;5u", "\x1b[27;5;106~", "\x1b[13;2u", "\x1b[27;2;13~"]
+    "newline",
+    ["C-j", "\x1b[106;5u", "\x1b[27;5;106~", "\x1b[13;2u", "\x1b[27;2;13~", "S-Enter"],
 )
 def test_vi_newline_and_escape_keep_editor_compact(pane, newline):
     screen = capture(pane, "INSERT")
@@ -1456,7 +1514,9 @@ def test_vi_newline_and_escape_keep_editor_compact(pane, newline):
     assert "INSERT" not in screen.split("│❯")[0]
     assert input_rows(screen) == 1
     pane("send-keys", "-t", "preview:0.0", "-l", "first")
-    pane("send-keys", "-t", "preview:0.0", "-l", newline)
+    # Named Ctrl+J is intentional: tmux in Ext 1 drops literal LF injection.
+    literal = [] if newline in {"S-Enter", "C-j"} else ["-l"]
+    pane("send-keys", "-t", "preview:0.0", *literal, newline)
     pane("send-keys", "-t", "preview:0.0", "-l", "second")
     assert input_rows(capture(pane, "second")) == 2
     pane("send-keys", "-t", "preview:0.0", "Escape")

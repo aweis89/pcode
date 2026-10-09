@@ -40,7 +40,7 @@ on` turns it on at once; `/show-edits off` hides it along with completed diffs.
 ```text
 /show-edits off   Hide edit blocks and previews, and redraw retained scrollback
 /show-edits on    Show them again, including previously hidden completed diffs
-/show-edits       Toggle visibility
+/show-edits       Toggle visibility (also Ctrl+V)
 ```
 
 The choice is saved for the next launch; `pcode config set show_edits on|off`
@@ -247,8 +247,9 @@ failed` lists just the failures. A delegate keeps its own line, with its
 sub-agent's calls grouped the same way beneath it. A run of one call keeps its
 usual line, and a background job's exit notice is never folded in.
 
-`/group-tools on`, `/group-tools off`, or bare `/group-tools` (toggle) switch it
-for the session, save the default, and rebuild earlier scrollback to match.
+`/group-tools on`, `/group-tools off`, or bare `/group-tools` (toggle, also
+Ctrl+]) switch it for the session, save the default, and rebuild earlier
+scrollback to match.
 
 ## Command output in scrollback
 
@@ -362,8 +363,8 @@ falls back to the default.
 ## Regenerating the terminal transcript
 
 `/redraw` rebuilds the retained transcript at the current terminal width with
-the current display settings. Ctrl+G, `/show-commands`, `/show-edits`,
-`/show-thinking`, `/group-tools`, `/theme`, and `/syntax` rebuild it the same
+the current display settings. Ctrl+G, Ctrl+V, Ctrl+], `/show-commands`,
+`/show-edits`, `/show-thinking`, `/group-tools`, `/theme`, and `/syntax` rebuild it the same
 way. Your draft, the live tool panel, and unfinished model text are kept; a
 rebuild never calls tools or changes model history.
 

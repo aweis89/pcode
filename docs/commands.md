@@ -217,6 +217,8 @@ it is open. Enter, the arrows, Ctrl+J, Ctrl+C, and Ctrl+D never change.
 | Ctrl+T | Choose where thinking shows: `o` off, `s` status line, `b` scrollback (saves the default) |
 | Ctrl+Y | Copy the current draft to the system clipboard (collapsed pastes are expanded first); with an empty editor, `/copy` chooses a response |
 | Ctrl+G | Mirror commands and their output to scrollback (saves the default) |
+| Ctrl+V | Show/hide edit diffs in scrollback (`/show-edits`, saves the default) |
+| Ctrl+] | Group/ungroup runs of tool calls (`/group-tools`, saves the default) |
 | Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
 | Ctrl+D | Exit on empty idle input (stopping a background session's host); cancel during generation |
 

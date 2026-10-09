@@ -29,7 +29,7 @@ PreviewApp().run()
 """
 HINT = "Cycle send mode"
 # The overlay's last row: a short terminal shows it only after scrolling.
-LAST = "Copy draft / choose response"
+LAST = "Group / ungroup tool calls"
 
 
 def draft_line(screen: str) -> str:

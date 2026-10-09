@@ -195,6 +195,34 @@ def test_management_listing_actions_inspection_disable_and_reset(keymap_factory)
     assert read_bindings() == {}
 
 
+@run_async
+async def test_default_command_keys_run_only_where_the_command_exists(keymap_factory):
+    view = keymap_factory("ctrl")
+    async with running_surface(view) as surface:
+        # Without the commands, Ctrl+V and Ctrl+] stay the editor's, silently;
+        # Emacs character search after Ctrl+] consumes the next key, here x.
+        await surface.press("draft\x16")
+        await surface.press("\x1dx")
+        assert view.executed == [] and view.reports == []
+        assert all(shortcut.key not in "v]" for shortcut in view.shortcuts.available())
+        for name in ("/show-edits", "/group-tools"):
+            view.registry.register(Command(name, name, lambda arg: None, ("on", "off")))
+        labels = {shortcut.key: shortcut.label for shortcut in view.shortcuts.available()}
+        assert labels["v"] == "Show / hide edit diffs"
+        await surface.press("\x16\x1d")
+        assert view.executed == ["/show-edits", "/group-tools"]
+        assert surface.editor.text == "draft"
+        assert "/show-edits" in view.manager.manage("v") and "[default]" in view.manager.manage("v")
+        assert view.manager.action_label("v") == "Ctrl+V"
+        view.manager.manage("v", unbind=True)
+        await surface.press("\x16")
+        assert view.executed == ["/show-edits", "/group-tools"]
+        assert view.manager.action_label("v") == "unbound"
+        view.manager.manage("reset v")
+        await surface.press("\x16")
+        assert view.executed[-1] == "/show-edits"
+
+
 @pytest.mark.parametrize(
     "argument",
     [
