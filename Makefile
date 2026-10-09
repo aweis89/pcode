@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve screenshots screenshot-live icons cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-install brew-update brew-uninstall sync release
+.PHONY: help install update uninstall run test test-socket test-tmux test-all lint fmt docs docs-serve screenshots screenshot-live icons cache-report shell-report harness-src worktree worktree-merge worktree-remove worktree-clean worktrees clean-merged brew-stats brew-install brew-update brew-uninstall sync release
 
 # Harness lives in the pydantic-ai repo (src/pydantic_ai_harness, docs/harness,
 # tests/harness) and ships with each Pydantic AI release.
@@ -96,6 +96,11 @@ clean-merged: worktree-clean ## Also delete merged branches left behind, local a
 
 release: ## Tag origin's master as the next release and push it (BUMP=minor|major, VERSION=x.y.z); CI publishes
 	@sh scripts/release.sh
+
+brew-stats: ## Homebrew downloads per release and in total (installs plus upgrades, not unique users)
+	@gh api --paginate repos/cruxwell/pcode/releases \
+		--jq '.[] | .tag_name as $$tag | .assets[] | select(.name | endswith("-src.tar.gz")) | "\($$tag)\t\(.download_count)"' \
+		| awk -F'\t' '{ print; total += $$2 } END { print "total\t" total + 0 }'
 
 brew-install: ## Alternative: install the latest release via Homebrew (ARGS=--HEAD for master)
 	brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git

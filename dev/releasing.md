@@ -21,12 +21,8 @@ That tag is the whole release. `.github/workflows/publish.yml` then:
 ## Counting Homebrew installs
 
 The formula downloads a release asset rather than GitHub's
-`archive/refs/tags/...` tarball because only assets keep a download count:
-
-```sh
-gh api --paginate repos/cruxwell/pcode/releases --jq '.[] | .tag_name + " " +
-  ([.assets[] | select(.name | endswith("-src.tar.gz")) | .download_count] | add // 0 | tostring)'
-```
+`archive/refs/tags/...` tarball because only assets keep a download count.
+`make brew-stats` lists it per release, plus the total.
 
 Each count is installs plus upgrades to that release (brew caches the
 download, so a reinstall rarely adds one), not unique users. `--HEAD` installs
