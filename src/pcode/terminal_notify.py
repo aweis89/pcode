@@ -362,7 +362,7 @@ def terminal_fd(*streams) -> int | None:
     for stream in streams:
         try:
             fd = stream.fileno()
-        except (AttributeError, OSError, ValueError):
+        except AttributeError, OSError, ValueError:
             continue  # In memory (StringIO), or closed.
         if _isatty(fd):
             return fd

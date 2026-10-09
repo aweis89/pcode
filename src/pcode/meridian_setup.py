@@ -56,7 +56,7 @@ def active_profile(base_url: str) -> str | None:
             trust_env=False,
         )
         data = response.json()
-    except (httpx2.HTTPError, ValueError):
+    except httpx2.HTTPError, ValueError:
         return None
     if not isinstance(data, dict) or not data.get("profiles"):
         return None
@@ -115,7 +115,7 @@ def auth_status(executable: str, env: dict[str, str]) -> dict:
             env=env,
         )
         data = json.loads(result.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except OSError, subprocess.SubprocessError, ValueError:
         return {}
     if not isinstance(data, dict):
         return {}
@@ -218,14 +218,14 @@ class Install:
     def version(self) -> str | None:
         try:
             return json.loads((self.root / "package.json").read_text()).get("version")
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return None
 
 
 def _run(args: list[str], env=None) -> str | None:
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=60, env=env)
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     return result.stdout.strip() if result.returncode == 0 else None
 
@@ -262,7 +262,7 @@ def proxy_install(base_url: str) -> Install | None:
     try:
         health = httpx2.get(base_url + "/health", timeout=2, trust_env=False).json()
         path = health["claudeExecutable"]["path"]
-    except (httpx2.HTTPError, ValueError, KeyError, TypeError):
+    except httpx2.HTTPError, ValueError, KeyError, TypeError:
         return None
     root = package_root(path) if isinstance(path, str) else None
     if root is None:
@@ -279,7 +279,7 @@ def proxy_install(base_url: str) -> Install | None:
 def running_version(base_url: str) -> str | None:
     try:
         return httpx2.get(base_url + "/health", timeout=2, trust_env=False).json().get("version")
-    except (httpx2.HTTPError, ValueError, AttributeError):
+    except httpx2.HTTPError, ValueError, AttributeError:
         return None
 
 

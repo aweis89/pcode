@@ -59,7 +59,7 @@ def project_plan(items: list[dict], part: ToolCallPart) -> list[dict]:
             if values == []:
                 try:
                     part.args_as_dict(raise_if_invalid=True)
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     return items
                 return []
     elif part.tool_name == "add_task":

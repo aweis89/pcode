@@ -311,7 +311,7 @@ class JobRegistry:
                 continue
             try:
                 record = json.loads(source.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 continue
             owner = record.get("owner_pid") if isinstance(record, dict) else None
             if isinstance(owner, int) and _alive(owner):
@@ -352,7 +352,7 @@ class JobRegistry:
             supervisor_pid = int(entry["supervisor_pid"])
             command = str(entry["command"])
             started_at = float(entry["started_at"])
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             return None
         if not directory.is_dir() or not _alive(supervisor_pid):
             return None
@@ -429,7 +429,7 @@ class JobRegistry:
     def _read_status(self, job: Job) -> dict | None:
         try:
             status = json.loads(job.status_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError, ValueError:
             # Absent until the supervisor's first publication, and never
             # partially readable: it is written to a temp file and renamed.
             return None
@@ -572,7 +572,7 @@ def _signal_session(pid: int, signum: int) -> None:
         return
     try:
         os.killpg(pid, signum)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError, PermissionError:
         pass
 
 
@@ -618,7 +618,7 @@ def _claim(home: Path, source: Path) -> dict | None:
     try:
         os.rename(source, claimed)
         record = json.loads(claimed.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     return record if isinstance(record, dict) else None
 

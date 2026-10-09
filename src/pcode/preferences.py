@@ -151,7 +151,7 @@ def parse_token_count(text: str) -> int:
         value = value[:-1]
     try:
         tokens = int(float(value) * scale)
-    except (ValueError, OverflowError):
+    except ValueError, OverflowError:
         raise ValueError(f"Not a token count: {text!r}. Use e.g. 200000 or 200k.") from None
     if tokens < MIN_AUTO_COMPACT_TOKENS:
         raise ValueError(
@@ -827,7 +827,7 @@ def _read_valid(path: Path | None) -> dict[str, str]:
         return {}
     try:
         data = json.loads(path.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
     if not isinstance(data, dict):
         return {}
@@ -871,7 +871,7 @@ def rejected_project_keys() -> list[str]:
         return []
     try:
         data = json.loads(path.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return []
     return sorted(USER_ONLY & set(data)) if isinstance(data, dict) else []
 
@@ -939,7 +939,7 @@ def _model_efforts(path: Path | None) -> dict[str, str]:
         return {}
     try:
         data = json.loads(path.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
     stored = data.get(MODEL_EFFORTS_KEY) if isinstance(data, dict) else None
     if not isinstance(stored, dict):

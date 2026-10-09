@@ -56,7 +56,7 @@ def oauth_user_agent() -> str:
                 timeout=VERSION_TIMEOUT_SECONDS,
                 check=True,
             )
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             pass
         else:
             local = _parse_version(result.stdout)

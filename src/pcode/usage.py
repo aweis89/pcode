@@ -88,7 +88,7 @@ def claude_login(config_dir: str | None = None) -> dict:
                 text=True,
                 timeout=10,
             ).stdout
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             raw = ""
     if not raw.strip():
         path = Path(config_dir).expanduser() if config_dir else Path.home() / ".claude"
@@ -98,7 +98,7 @@ def claude_login(config_dir: str | None = None) -> dict:
             raw = ""
     try:
         login = json.loads(raw).get("claudeAiOauth") if raw.strip() else None
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         login = None
     if not isinstance(login, dict) or not login.get("accessToken"):
         where = f" for {config_dir}" if config_dir else ""

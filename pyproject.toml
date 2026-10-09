@@ -102,8 +102,6 @@ markers = ["tmux: real-tmux layout regression (slow; opt in with --tmux)"]
 
 [tool.ruff]
 line-length = 100
-# Preserve parenthesized exception handlers instead of reformatting them for 3.14.
-target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

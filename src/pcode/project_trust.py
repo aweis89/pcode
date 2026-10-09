@@ -80,7 +80,7 @@ def prompt_trust(workspace: Path, ask=input, stream=None) -> bool:
     )
     try:
         answer = ask("Trust this repository? [y/N] ")
-    except (EOFError, OSError, KeyboardInterrupt):
+    except EOFError, OSError, KeyboardInterrupt:
         answer = ""  # closed or captured stdin: same as declining
     if answer.strip().lower() in ("y", "yes"):
         trust(workspace)

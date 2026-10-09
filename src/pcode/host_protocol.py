@@ -96,7 +96,7 @@ async def read_message(reader: asyncio.StreamReader) -> dict | None:
     """The next message, or None once the peer has gone."""
     try:
         line = await reader.readline()
-    except (ConnectionError, asyncio.IncompleteReadError):
+    except ConnectionError, asyncio.IncompleteReadError:
         return None
     if not line:
         return None
@@ -198,7 +198,7 @@ def _read(path: Path) -> HostEntry | None:
     try:
         data = json.loads(path.read_text())
         return HostEntry(**{f.name: data[f.name] for f in fields(HostEntry) if f.name in data})
-    except (OSError, ValueError, TypeError):
+    except OSError, ValueError, TypeError:
         return None
 
 

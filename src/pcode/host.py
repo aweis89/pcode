@@ -500,7 +500,7 @@ class SessionHost:
         client.peer = Peer(reader, writer, client, allowed=INTENTS | HOST_CALLS)
         try:
             await client.peer.serve()
-        except (ValueError, ConnectionError):
+        except ValueError, ConnectionError:
             pass
         finally:
             client.peer.close()

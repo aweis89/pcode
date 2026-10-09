@@ -105,7 +105,7 @@ def running_chrome_url() -> str | None:
     for file in files:
         try:
             port, path = file.read_text().split()[:2]
-        except (OSError, ValueError):
+        except OSError, ValueError:
             continue
         return f"ws://127.0.0.1:{int(port)}{path}"
     return None

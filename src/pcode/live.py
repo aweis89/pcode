@@ -529,7 +529,7 @@ class AgentRuntime:
             elif isinstance(event, FunctionToolCallEvent):
                 try:
                     args = event.part.args_as_dict()
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     args = {}
                 where = target(event.part.tool_name, args)
                 tools[event.part.tool_call_id] = event.part.tool_name

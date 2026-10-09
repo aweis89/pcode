@@ -46,7 +46,7 @@ def _helper(text: str, output=None) -> bool:
                 timeout=5,
             )
             return True
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             continue
     return False
 

@@ -474,7 +474,7 @@ def test_thinking_persists_and_replays_after_reopen_even_when_hidden(tmp_path, o
         try:
             try:
                 _ = [event async for event in runtime.stream("Question")]
-            except (RuntimeError, asyncio.CancelledError):
+            except RuntimeError, asyncio.CancelledError:
                 assert outcome != "done"
         finally:
             runtime.close()

@@ -924,7 +924,7 @@ class PreviewApp:
     def persist_defaults(self, **updates: str) -> None:
         try:
             save_preferences(**updates)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             self.transcript.warning("Could not save defaults; this selection applies only here.")
 
     def forget_defaults(self, *keys: str) -> None:
@@ -932,7 +932,7 @@ class PreviewApp:
 
         try:
             update_preferences({}, remove=keys)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             self.transcript.warning("Could not update defaults; this change applies only here.")
 
     @asynccontextmanager
@@ -1940,7 +1940,7 @@ class PreviewApp:
                     timeout=1,
                 )
             self.branch = plain(result.stdout.strip(), limit=None) if result.returncode == 0 else ""
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError, subprocess.TimeoutExpired:
             self.branch = ""
         return self.branch != previous
 
@@ -2318,7 +2318,7 @@ class PreviewApp:
         )
         try:
             terminal = session.app.output.fileno()
-        except (NotImplementedError, OSError, ValueError):
+        except NotImplementedError, OSError, ValueError:
             terminal = None
         if terminal is not None:
             mode = load_preferences().get("terminal_progress", "auto")

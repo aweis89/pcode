@@ -70,7 +70,7 @@ def format_command(command: str) -> str:
             timeout=0.25,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired, UnicodeError):
+    except OSError, subprocess.TimeoutExpired, UnicodeError:
         pass
     else:
         if result.returncode == 0 and result.stdout.strip():

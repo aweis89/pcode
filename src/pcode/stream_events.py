@@ -316,7 +316,7 @@ class EventTranslator:
     def on_native_tool_call(self, part: NativeToolCallPart) -> Iterator[Event]:
         try:
             args = part.args_as_dict()
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             args = {}
         self.tools[part.tool_call_id] = (part.tool_name, args, monotonic())
         agent, task = assignment(part.tool_name, args)
@@ -337,7 +337,7 @@ class EventTranslator:
     def on_tool_call(self, event: FunctionToolCallEvent) -> Iterator[Event]:
         try:
             args = event.part.args_as_dict()
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             args = {}
         self.tools[event.part.tool_call_id] = (event.part.tool_name, args, monotonic())
         self.called[event.part.tool_call_id] = event.part.tool_name

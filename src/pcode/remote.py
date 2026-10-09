@@ -70,7 +70,7 @@ class JobsView(JobRegistry):
     def refresh(self) -> list:
         try:
             record = json.loads((self.home / "registry.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError, ValueError:
             record = {}
         entries = record.get("jobs") if isinstance(record, dict) else None
         for identity, entry in (entries if isinstance(entries, dict) else {}).items():
@@ -85,7 +85,7 @@ class JobsView(JobRegistry):
                         background=True,
                         purpose=str(entry.get("purpose") or ""),
                     )
-                except (KeyError, TypeError, ValueError):
+                except KeyError, TypeError, ValueError:
                     continue
         for job in self.jobs.values():
             if job.exit_code is not None:
@@ -133,7 +133,7 @@ class HostedSession:
         elif self.session is None or str(self.session.directory) != directory:
             try:
                 self.session = SessionJournal.read(Path(directory))
-            except (OSError, SessionError, ValueError):
+            except OSError, SessionError, ValueError:
                 self.session = None
         else:
             self.session.refresh()
@@ -149,7 +149,7 @@ class HostedSession:
         if self.session is not None:
             try:
                 self.session.refresh()
-            except (OSError, SessionError, ValueError):
+            except OSError, SessionError, ValueError:
                 pass  # Keep what was read; the next refresh catches up.
 
     def stop(self, *, keep_worktree: bool = False) -> None:

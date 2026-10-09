@@ -49,7 +49,7 @@ def meridian_profiles() -> list[dict]:
     """Account profiles from the user's `profiles.json`; tokens are never read out."""
     try:
         data = json.loads((meridian_config_dir() / "profiles.json").read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return []
     if not isinstance(data, list):
         return []
@@ -70,7 +70,7 @@ def default_profile() -> dict | None:
     try:
         settings = json.loads((meridian_config_dir() / "settings.json").read_text())
         saved = settings.get("activeProfile") if isinstance(settings, dict) else None
-    except (OSError, ValueError):
+    except OSError, ValueError:
         saved = None
     return next((p for p in profiles if p["id"] == saved), profiles[0] if profiles else None)
 
@@ -109,7 +109,7 @@ class ManagedMeridian:
             version = subprocess.run(
                 [executable, "--version"], capture_output=True, text=True, timeout=10, check=True
             ).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             raise ValueError("Could not verify the installed Meridian version.") from None
         if not supported(version):
             raise ValueError(
@@ -226,7 +226,7 @@ class ManagedMeridian:
                                 "Managed Meridian did not enable thinking passthrough."
                             )
                         return
-                except (httpx2.HTTPError, json.JSONDecodeError):
+                except httpx2.HTTPError, json.JSONDecodeError:
                     pass
                 time.sleep(0.1)
         raise ValueError("Managed Meridian was not ready within 30 seconds; check Claude login.")
@@ -302,7 +302,7 @@ def external_proxy_running(base_url: str) -> bool:
         return True  # A key-protected proxy still counts as the user's own.
     try:
         return "status" in response.json()
-    except (ValueError, AttributeError, TypeError):
+    except ValueError, AttributeError, TypeError:
         return False
 
 

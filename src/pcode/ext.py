@@ -212,7 +212,7 @@ class ExtensionAPI:
         if getattr(capability, "id", None) is None:
             try:
                 capability.id = self.id
-            except (AttributeError, TypeError):
+            except AttributeError, TypeError:
                 pass  # Frozen or slotted: it stays anonymous in /status.
         self._capabilities.append(capability)
 

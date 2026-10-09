@@ -403,7 +403,7 @@ async def _receive_code(port: int, state: str, timeout: float) -> str:
                 + body
             )
             await writer.drain()
-        except (OSError, asyncio.TimeoutError, UnicodeError):
+        except OSError, asyncio.TimeoutError, UnicodeError:
             code = ""
         finally:
             writer.close()

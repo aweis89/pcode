@@ -264,7 +264,7 @@ def _reuse_findings(requests: Sequence[Request]) -> list[Finding]:
 def analyze(directory: Path) -> Report:
     try:
         info = json.loads((directory / "session.json").read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         raise SessionError("Unreadable session metadata.") from None
     database = directory / "steps.sqlite3"
     if not database.exists():

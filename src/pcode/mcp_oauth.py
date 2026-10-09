@@ -81,7 +81,7 @@ class CredentialStore(BaseStore):
             data = json.loads(self._path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
-        except (OSError, ValueError):
+        except OSError, ValueError:
             raise RuntimeError(f"Cannot read MCP credentials: {self._path}") from None
         return data if isinstance(data, dict) else {}
 

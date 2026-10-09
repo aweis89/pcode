@@ -25,7 +25,7 @@ def meridian_base_url() -> str:
             raise ValueError
         if url.query or url.fragment:
             raise ValueError
-    except (ValueError, httpx2.InvalidURL):
+    except ValueError, httpx2.InvalidURL:
         raise ValueError(
             "PCODE_MERIDIAN_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment"
         ) from None
@@ -96,7 +96,7 @@ def thinking_passthrough(base_url: str, api_key: str | None) -> bool | None:
             trust_env=False,
         )
         value = response.json().get("passthrough", {}).get("thinkingPassthrough")
-    except (httpx2.HTTPError, ValueError, AttributeError):
+    except httpx2.HTTPError, ValueError, AttributeError:
         return None
     return value if isinstance(value, bool) else None
 

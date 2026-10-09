@@ -61,7 +61,7 @@ class ResumeIndex:
                     entries.pop(row["key"], None)
                     continue
                 entries[row["key"]] = ForkPoint(row["session"], row["uuid"], row["cwd"])
-            except (ValueError, KeyError, TypeError, AttributeError):
+            except ValueError, KeyError, TypeError, AttributeError:
                 continue
         if len(lines) > INDEX_LIMIT:
             kept = list(entries.items())[-INDEX_LIMIT // 2 :]

@@ -162,7 +162,7 @@ def sandboxed_calls(code: str) -> list[str]:
     """
     try:
         tree = ast.parse(code)
-    except (SyntaxError, ValueError):
+    except SyntaxError, ValueError:
         return []
     counts = Counter(
         node.func.id
@@ -639,7 +639,7 @@ def result_detail(
                 if count
                 else "No assistant configuration directories found"
             )
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             result = "Assistant configuration inspected"
     else:
         result = ""

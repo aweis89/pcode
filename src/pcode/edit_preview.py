@@ -97,7 +97,7 @@ class StreamingEditPreview:
                     and resolved.is_relative_to(self.root)
                     and not sensitive_path(str(resolved.relative_to(self.root)))
                 )
-            except (OSError, ValueError, RuntimeError):
+            except OSError, ValueError, RuntimeError:
                 permitted = False
         if not permitted:
             if self.shown.pop(index, None) is not None:

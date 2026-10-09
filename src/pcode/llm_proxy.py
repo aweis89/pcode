@@ -16,7 +16,7 @@ class ProxiedCodexProvider(OpenAICodexProvider):
             url = httpx2.URL(proxy)
             if url.scheme not in {"http", "https"} or not url.host:
                 raise ValueError
-        except (ValueError, httpx2.InvalidURL):
+        except ValueError, httpx2.InvalidURL:
             raise ValueError(
                 "PCODE_LLM_PROXY must be a valid http:// or https:// proxy URL"
             ) from None

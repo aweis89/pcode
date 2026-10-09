@@ -99,7 +99,7 @@ def _profiles() -> tuple[list[dict], str | None]:
     for path in sorted(DYNAMIC.glob("*")) if DYNAMIC.is_dir() else []:
         try:
             profiles += json.loads(path.read_text()).get("Profiles", [])
-        except (OSError, ValueError, AttributeError):
+        except OSError, ValueError, AttributeError:
             continue  # iTerm2 also takes plists here; those are not read
     return profiles, default
 

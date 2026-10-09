@@ -80,7 +80,7 @@ def _alive(record: TaskRecord) -> bool:
     try:
         process = psutil.Process(record.pid)
         return process.create_time() == record.process_started and process.is_running()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
+    except psutil.NoSuchProcess, psutil.AccessDenied:
         return False
 
 

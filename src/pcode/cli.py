@@ -35,13 +35,13 @@ def _quiet_stdin(stack: ExitStack) -> None:
         quiet[6][termios.VMIN] = 1
         quiet[6][termios.VTIME] = 0
         termios.tcsetattr(fd, termios.TCSANOW, quiet)
-    except (OSError, ValueError, termios.error):
+    except OSError, ValueError, termios.error:
         return
 
     def restore():
         try:
             termios.tcsetattr(fd, termios.TCSANOW, original)
-        except (OSError, termios.error):
+        except OSError, termios.error:
             pass
 
     stack.callback(restore)

@@ -29,7 +29,7 @@ def rename(name: str = "pcode") -> bool:
         return False
     try:
         return _overwrite(orig[1:])
-    except (OSError, AttributeError, ValueError):
+    except OSError, AttributeError, ValueError:
         return False
 
 

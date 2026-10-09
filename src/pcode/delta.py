@@ -237,7 +237,7 @@ def _run(command: tuple[str, ...], patch: str, count: int = 1) -> str | None:
             # terminal pcode is drawing on.
             start_new_session=True,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if done.returncode != 0 or not done.stdout.strip():
         return None

@@ -58,7 +58,7 @@ def _git_files(root: Path) -> list[str] | None:
             text=True,
             timeout=5,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if result.returncode != 0:
         return None
@@ -100,7 +100,7 @@ def _ripgrep_files(root: Path) -> list[str] | None:
             # A stopped run is killed mid-write, so only judge a complete one.
             if process.wait() not in (0, 1) and len(paths) < LISTING_CEILING:
                 return None
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     # Ripgrep's parallel walk emits in thread completion order; sorting restores
     # the stable menu `os.walk` gave, and costs far less than `--sort path`,

@@ -65,7 +65,7 @@ class AutomaticRepoContext(RepoContext):
         path = await ctx.workspace.resolve(event.path, base=event.root_dir)
         try:
             entry = await ctx.workspace.stat(path)
-        except (FileNotFoundError, NotADirectoryError):
+        except FileNotFoundError, NotADirectoryError:
             return
         directory = Path(path) if entry.is_dir else Path(path).parent
         await self._on_file_traversal(

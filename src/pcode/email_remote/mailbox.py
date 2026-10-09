@@ -266,7 +266,7 @@ class GmailMailbox:
         for attempt in (1, 2):
             try:
                 status, data = getattr(self._connection(), name)(*args)
-            except (imaplib.IMAP4.abort, OSError):
+            except imaplib.IMAP4.abort, OSError:
                 self.close()
                 if attempt == 2:
                     raise
@@ -332,5 +332,5 @@ class GmailMailbox:
             return
         try:
             imap.logout()
-        except (imaplib.IMAP4.error, OSError):
+        except imaplib.IMAP4.error, OSError:
             pass

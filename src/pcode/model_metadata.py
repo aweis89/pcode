@@ -49,7 +49,7 @@ def codex_catalog_version() -> str:
         if isinstance(candidate, str) and re.fullmatch(r"\d{1,3}\.\d{1,4}\.\d{1,4}", candidate):
             if tuple(map(int, candidate.split("."))) > tuple(map(int, version.split("."))):
                 version = candidate
-    except (OSError, ValueError):
+    except OSError, ValueError:
         pass
     return version
 
@@ -300,7 +300,7 @@ class ContextCatalog:
                         and value.startswith("https://")
                     }
                 self._public_updated = updated
-        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        except OSError, ValueError, TypeError, KeyError, AttributeError:
             pass
 
     def _save(self) -> None:

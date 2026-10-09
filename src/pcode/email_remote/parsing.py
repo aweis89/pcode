@@ -87,7 +87,7 @@ def read_body(raw: bytes, incoming: Incoming) -> Incoming:
     try:
         message = BytesParser(policy=policy.default).parsebytes(raw)
         text, attachments = _body(message)
-    except (LookupError, ValueError, UnicodeError, AttributeError):
+    except LookupError, ValueError, UnicodeError, AttributeError:
         incoming.problem = MALFORMED
         return incoming
     incoming.attachments = attachments

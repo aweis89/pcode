@@ -83,7 +83,7 @@ def private_file(path: Path) -> None:
 def read_info(path: Path) -> SessionInfo:
     try:
         info = SessionInfo.model_validate_json((path / "session.json").read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         raise SessionError(
             "Session metadata is unreadable or uses an unsupported format."
         ) from None
@@ -176,7 +176,7 @@ def forget_refs(info: SessionInfo) -> None:
         scope = session_scope(info)
         if scope.is_dir():
             forget_session(scope, info.id)
-    except (GitDiffError, OSError):
+    except GitDiffError, OSError:
         pass
 
 
@@ -393,7 +393,7 @@ def compact_snapshots(directory: Path, keep: int = SNAPSHOTS_PER_RUN) -> tuple[i
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             connection.close()
-    except (sqlite3.Error, ValueError):
+    except sqlite3.Error, ValueError:
         # A session whose store cannot be rewritten is left exactly as it was.
         return before, _store_bytes(database)
     finally:
@@ -601,7 +601,7 @@ class PrivateStepStore(SqliteStepStore):
             for row in rows:
                 try:
                     text = snapshot_messages_json(connection, row[6])
-                except (ValueError, TypeError, AttributeError):
+                except ValueError, TypeError, AttributeError:
                     # Left as stored: the caller skips a row it cannot parse.
                     text = row[6]
                 expanded.append((*row[:6], text, row[7]))

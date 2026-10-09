@@ -88,7 +88,7 @@ def _gnome_read() -> str | None:
             text=True,
             timeout=2,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if result.returncode != 0:
         return None
@@ -102,7 +102,7 @@ def desktop_reader():
     try:
         if sys.platform == "darwin":
             return _macos_reader()
-    except (OSError, AttributeError, ValueError):
+    except OSError, AttributeError, ValueError:
         return None
     if sys.platform.startswith("linux") and shutil.which("gsettings"):
         if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):

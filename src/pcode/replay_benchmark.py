@@ -90,7 +90,7 @@ class JournalSnapshot:
                 continue
             try:
                 record = json.loads(line)
-            except (ValueError, UnicodeDecodeError):
+            except ValueError, UnicodeDecodeError:
                 self.skipped["malformed"] += 1
                 continue
             if not isinstance(record, dict):

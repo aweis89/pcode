@@ -93,7 +93,7 @@ def _query_background(timeout: float = 0.15) -> str | None:
                     return result
         finally:
             termios.tcsetattr(fd, termios.TCSANOW, original)
-    except (OSError, ValueError, termios.error):
+    except OSError, ValueError, termios.error:
         pass
     finally:
         if handle is not None:

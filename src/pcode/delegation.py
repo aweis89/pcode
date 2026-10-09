@@ -177,7 +177,7 @@ async def stream_child_activity(_ctx, events):
             part = event.part
             try:
                 args = part.args_as_dict()
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 args = {}
             tools[part.tool_call_id] = (part.tool_name, args, monotonic())
             called[part.tool_call_id] = part.tool_name

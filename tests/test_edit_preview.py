@@ -140,7 +140,7 @@ def test_runtime_streams_previews_but_never_saves_them(tmp_path, outcome):
                 observed.append(event)
                 if isinstance(event, EditPreview) and event.path:
                     assert not (tmp_path / "example.py").exists()
-        except (asyncio.CancelledError, RuntimeError):
+        except asyncio.CancelledError, RuntimeError:
             assert outcome != "done"
         try:
             assert any(isinstance(e, EditPreview) and "+PREVIEW_ONLY" in e.text for e in observed)

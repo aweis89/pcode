@@ -143,7 +143,7 @@ def saved_mode() -> str | None:
     """`defaultMode` from ponytail's config file; None when absent or unreadable."""
     try:
         config = json.loads(config_path().read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     return _valid(config.get("defaultMode")) if isinstance(config, dict) else None
 
@@ -157,7 +157,7 @@ def write_mode(mode: str) -> None:
     path = config_path()
     try:
         config = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         config = {}
     if not isinstance(config, dict):
         config = {}

@@ -75,7 +75,7 @@ def configured_servers() -> dict[str, Any]:
         if not os.environ.get("PCODE_MCP_CONFIG", "").strip():
             return {}
         raise ValueError(f"MCP configuration not found: {path}") from None
-    except (OSError, ValueError):
+    except OSError, ValueError:
         raise ValueError(f"Cannot read MCP configuration: {path} (expected JSON)") from None
     return _servers(data)
 
@@ -115,7 +115,7 @@ def save_default(name: str, enabled: bool) -> None:
     with FileLock(str(path) + ".lock", timeout=5):
         try:
             data = json.loads(path.read_text())
-        except (OSError, ValueError):
+        except OSError, ValueError:
             raise ValueError(f"Cannot read MCP configuration: {path} (expected JSON)") from None
         server = _servers(data).get(name)
         if not isinstance(server, dict):
@@ -378,7 +378,7 @@ def build_toolset(name: str, raw: Any, *, interactive: bool = True):
         if not config.direct:
             toolset = toolset.defer_loading()
         return toolset.prefixed(f"mcp_{name}")
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         raise ValueError(
             f"Cannot configure MCP server '{name}'; check its transport options."
         ) from None

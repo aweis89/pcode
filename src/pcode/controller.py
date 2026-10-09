@@ -2124,7 +2124,7 @@ class SessionController:
     def persist_defaults(self, **updates: str) -> None:
         try:
             save_preferences(**updates)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             self.view.warning("Could not save defaults; this selection applies only here.")
 
     def forget_defaults(self, *keys: str) -> None:
@@ -2132,7 +2132,7 @@ class SessionController:
 
         try:
             update_preferences({}, remove=keys)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             self.view.warning("Could not update defaults; this change applies only here.")
 
     # --- History: compaction and resending ---
@@ -2638,7 +2638,7 @@ class SessionController:
         # Per model: raising effort on one model must not raise it on the next.
         try:
             save_model_effort(self.model, value)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             self.view.warning("Could not save defaults; this selection applies only here.")
         if gated:
             self.view.flash(f"Cleared the saved effort; {self.model} has no effort control.")

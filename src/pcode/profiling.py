@@ -516,7 +516,7 @@ def report(directory: Path) -> str:
                         max(seen[0], process["cpu_seconds"]),
                         max(seen[1], process["rss_bytes"]),
                     )
-    except (OSError, ValueError, KeyError):
+    except OSError, ValueError, KeyError:
         lines.append("Samples: unreadable or truncated")
     else:
         lines.append(f"Peak threads in pcode: {own_peak_threads}")

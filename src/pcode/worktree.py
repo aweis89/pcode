@@ -631,7 +631,7 @@ def leave_worktree(workspace: Path, session, *, ask, notify, merge: bool = True)
             notify(f"worktree: {linked.branch} has {unmerged} commit(s) not in {mainline}.")
             try:
                 answer = ask("Merge and remove the worktree? [Y/n] ").strip().lower()
-            except (EOFError, OSError, KeyboardInterrupt):
+            except EOFError, OSError, KeyboardInterrupt:
                 answer = "n"
             if answer not in ("", "y", "yes"):
                 notify(f"worktree: kept; {resume}")

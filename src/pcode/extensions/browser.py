@@ -119,7 +119,7 @@ def _capability(pcode, toolset):
         await _start(pcode)
         try:
             tabs = await STATE.list_tabs()
-        except (PlaywrightError, BrowserUnavailableError):
+        except PlaywrightError, BrowserUnavailableError:
             STATE.session.launch_error = None  # Allow another attempt after a failed launch.
             return (
                 "Could not list browser tabs: the browser is unavailable or did not respond. "

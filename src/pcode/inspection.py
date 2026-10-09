@@ -74,7 +74,7 @@ class Payload:
             if value is None and self.key == "result" and record.get("error"):
                 return capture(record["error"]) + "\n\n" + MISSING
             return capture(value) if value is not None else MISSING
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return "Saved details are unavailable or the journal record is damaged."
 
 
