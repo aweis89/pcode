@@ -24,7 +24,16 @@ import anyio
 import anyio.lowlevel
 from pydantic_ai import CallToolsNode, CapabilityEvent
 from pydantic_ai._run_context import dispatch_event_stream
-from pydantic_ai.exceptions import ModelRetry, ToolFailedError, ToolRetryError
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.exceptions import (
+    ApprovalRequired,
+    CallDeferred,
+    ModelRetry,
+    RunCancelled,
+    ToolFailedError,
+    ToolRetryError,
+)
+from pydantic_ai.messages import UserPromptPart
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai_harness.background_tools import BackgroundTools
 from pydantic_ai_harness.background_tools._capability import (
@@ -33,7 +42,7 @@ from pydantic_ai_harness.background_tools._capability import (
     _format_background_result,
 )
 
-from pcode.steering import steering_pending, take_steering
+from pcode.steering import run_request, steering_pending, take_steering
 
 DELEGATE = "delegate_task"
 # How often a waiting delegation checks for steering; `shell` polls as often.
@@ -64,28 +73,69 @@ def detached_message(task_id: str) -> str:
         f"The user sent a follow-up, so this delegation (task {task_id}) moved to the "
         "background; the sub-agent is still working. Do not repeat or poll it: its result "
         "will arrive automatically as a later message. Answer the user, continue independent "
-        "work, or end your response to wait for it."
+        "work, or end your response to wait for it. A shared-mode sub-agent is still "
+        "editing the live files, so leave the files it is working on alone until it reports."
     )
+
+
+def abandoned_message(task_ids: list[str]) -> str:
+    tasks = ", ".join(task_ids)
+    return (
+        f"The background delegation {tasks} was stopped before it reported, because the "
+        "run it belonged to ended (interrupted or failed). Its result will not arrive. "
+        "Delegate again if you still need it; a sub-agent may have left partial changes."
+    )
+
+
+class AbandonedDelegations(AbstractCapability):
+    """Tell a main turn which detached children died unreported. Per run, main turns only.
+
+    The model was told those results would arrive by themselves. A turn retry
+    after a dropped connection, Ctrl+C, or a crash ends the run that owned them,
+    so the next request says they won't. `ids` is the branch's own list
+    (`TurnContext.abandoned_delegations`), so a retry's new run still sees it.
+    """
+
+    def __init__(self, ids: list[str]) -> None:
+        self.ids = ids
+
+    async def before_model_request(self, ctx, request_context):
+        if self.ids:
+            note = UserPromptPart(abandoned_message(self.ids))
+            run_request(ctx, request_context).parts.append(note)
+            self.ids.clear()
+        return request_context
+
+
+def _abandoned(ctx, task_id: str) -> None:
+    for capability in ctx.capabilities.values():
+        if isinstance(capability, AbandonedDelegations):
+            capability.ids.append(task_id)
 
 
 @dataclass
 class _Child:
     done: anyio.Event = field(default_factory=anyio.Event)
     result: Any = None
-    error: Exception | None = None
+    error: BaseException | None = None
     cancelled: bool = True
     detached: bool = False
 
 
-def _failure(task_id: str, error: Exception) -> tuple[str, ...] | Exception:
-    """What a detached child's error delivers: a message, or the error that ends the run."""
-    if isinstance(error, ToolRetryError | ToolFailedError):
+def _failure(task_id: str, error: BaseException) -> tuple[str, ...] | BaseException:
+    """What a detached child's error delivers: a message, or the error that ends the run.
+
+    Errors the foreground call would have turned into a failed tool result
+    become a message too. Anything else ends the run, as it would have inline:
+    Harness's `contain_errors` already turns child crashes into retries.
+    """
+    if isinstance(error, ToolRetryError | ToolFailedError | ApprovalRequired | CallDeferred):
         detail = _format_background_error(error)
     elif isinstance(error, ModelRetry):
         detail = str(error)
+    elif isinstance(error, RunCancelled):
+        detail = f"the sub-agent was cancelled. {error}".strip()
     else:
-        # Harness's `contain_errors` already turns child crashes into retries,
-        # so this is a bug; it ends the run as it would have in the foreground.
         return error
     return (f"Background tool '{DELEGATE}' (task {task_id}) failed: {detail}",)
 
@@ -132,13 +182,14 @@ class BackgroundDelegation(BackgroundTools):
                         child.result = await handler(args)
                     except anyio.get_cancelled_exc_class():
                         raise
-                    except Exception as error:
+                    except BaseException as error:
                         child.error = error
                     child.cancelled = False
             finally:
                 child.done.set()
                 if child.detached and child.cancelled:
                     self._live -= 1
+                    _abandoned(ctx, task_id)
             if not child.detached or child.cancelled:
                 return
             if child.error is not None:
@@ -153,6 +204,8 @@ class BackgroundDelegation(BackgroundTools):
                 self._send.send_nowait(outcome)
                 self._live -= 1
 
+        # Steering already pending still starts the child (steering never skips
+        # a requested tool); the first check below detaches it at once.
         self._task_group.start_soon(run, name=f"delegation ({task_id})")
         try:
             while not child.done.is_set():

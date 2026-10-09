@@ -43,6 +43,7 @@ from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 from pcode import retries
 from pcode.agent import SideModel, worker_toolsets
 from pcode.aside import SideReply
+from pcode.background_delegation import AbandonedDelegations
 from pcode.compaction import AutoCompaction, ContextTracking, effective_window, summarize
 from pcode.conversation_ids import model_conversation
 from pcode.conversation_tree import ConversationTree
@@ -1046,6 +1047,7 @@ class AgentRuntime:
                 # checkpoint, so a saved request carries the notices it
                 # was really sent with, as steering and compaction do.
                 JobNotices(self.jobs),
+                AbandonedDelegations(context.abandoned_delegations),
                 context.checkpoint,
                 TokenAccounting(record=self.totals.add),
                 ContextTracking(self, context),

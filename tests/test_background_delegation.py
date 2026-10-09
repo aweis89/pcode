@@ -1,15 +1,18 @@
 import asyncio
 import json
 
-from pydantic_ai import Agent, CallToolsNode, RunContext
+import pytest
+from pydantic_ai import Agent, CallToolsNode, ModelRetry, RunContext
 from pydantic_ai._run_context import dispatch_event_stream
+from pydantic_ai.exceptions import CallDeferred, RunCancelled
 from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness.background_tools import BackgroundTools
 from pydantic_ai_harness.background_tools import _capability as upstream
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
 
-from pcode.background_delegation import BackgroundDelegation
+from pcode.background_delegation import BackgroundDelegation, _failure
+from pcode.claude_sdk import ClaudeConnectionError
 from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.live import AgentRuntime
 from pcode.runtime import Message, RunStatus, ToolSummary
@@ -41,6 +44,8 @@ class Harness:
         self.stopped = asyncio.Event()
         self.steering: list[str] = []
         self.requests: list[str] = []
+        # Errors the parent model raises, once each, on its next requests.
+        self.parent_errors: list[BaseException] = []
 
         async def hold() -> str:
             self.started.set()
@@ -66,7 +71,11 @@ class Harness:
         async def parent_model(messages, info):
             text = last_request_text(messages)
             self.requests.append(text)
-            if "CHILD REPORT" in text:
+            if self.parent_errors and len(self.requests) > 1:
+                raise self.parent_errors.pop(0)
+            if "Next turn" in text:
+                yield "Noted"
+            elif "CHILD REPORT" in text:
                 yield "Final answer"
             elif "Second?" in text:
                 yield "Second answer"
@@ -193,8 +202,53 @@ def test_cancelling_the_turn_cancels_a_detached_child():
             pass
         assert h.stopped.is_set()
         assert len(h.requests) == 2
+        assert h.runtime.context.abandoned_delegations == ["call-1"]
+
+        # The model was promised a result; the next turn says it won't come.
+        await _collect(h.runtime.stream("Next turn"))
+        assert "call-1 was stopped before it reported" in h.requests[-1]
+        assert h.runtime.context.abandoned_delegations == []
 
     asyncio.run(run())
+
+
+def test_a_retried_turn_learns_its_detached_child_was_lost(monkeypatch):
+    monkeypatch.setattr("pcode.retries.RETRY_DELAY", 0)
+
+    async def run():
+        h = Harness()
+        h.parent_errors.append(ClaudeConnectionError("test", "Connection dropped (ECONNRESET)"))
+        task = asyncio.create_task(_collect(h.runtime.stream("Explore")))
+        await asyncio.wait_for(h.started.wait(), 5)
+        h.steering.append("Status?")
+        events = await asyncio.wait_for(task, 5)
+        # The failed run took its child down with it; the retry is told so,
+        # and does not wait for a result that cannot come.
+        assert h.stopped.is_set()
+        assert "call-1 was stopped before it reported" in h.requests[-1]
+        assert "Status?" in h.requests[-1]
+        assert [e.markdown for e in events if isinstance(e, Message)] == ["Still working on it"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "error, detail",
+    [
+        (ModelRetry("logs unreadable"), "logs unreadable"),
+        (RunCancelled("stopped by the child"), "cancelled"),
+        (CallDeferred(), "CallDeferred"),
+    ],
+)
+def test_a_detached_failure_the_call_would_have_reported_is_a_message(error, detail):
+    (message,) = _failure("call-1", error)
+    assert message.startswith("Background tool 'delegate_task' (task call-1) failed: ")
+    assert detail in message
+
+
+def test_a_detached_crash_still_ends_the_run():
+    crash = RuntimeError("bug")
+    assert _failure("call-1", crash) is crash
 
 
 async def _collect(stream):

@@ -124,6 +124,9 @@ class EventTranslator:
         # Delegates whose call returned on steering, by call id, as in `tools`:
         # their rows stay running until the child's result is delivered.
         self.detached: dict[str, tuple[str, dict, float]] = {}
+        # Detached delegates settled before their call's own result was
+        # translated; that result must not settle them a second time.
+        self.settled_detached: set[str] = set()
         self.shell_preview = ShellPreview()
         self.shell_ends: dict[str, CommandFinishedEvent] = {}
 
@@ -260,6 +263,8 @@ class EventTranslator:
         if entry is None:
             return
         name, args, started = entry
+        if event.tool_call_id in self.tools:
+            self.settled_detached.add(event.tool_call_id)
         self.delegates.pop(event.tool_call_id, None)
         end = self.delegation_ends.pop(event.tool_call_id, None)
         outcome = end.outcome if end is not None else "unknown"
@@ -413,8 +418,9 @@ class EventTranslator:
         detail, failed = result_detail(
             name, args, event.part.content, outcome, self.spill_source(name, args)
         )
-        if event.tool_call_id in self.detached:
-            # The child is still working; `on_delegation_delivered` settles it.
+        if event.tool_call_id in self.detached or event.tool_call_id in self.settled_detached:
+            # `on_delegation_delivered` settles it, once its child reports.
+            self.settled_detached.discard(event.tool_call_id)
             yield self.activity()
             return
         shell_end = self.shell_ends.pop(event.tool_call_id, None)
