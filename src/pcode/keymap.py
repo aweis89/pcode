@@ -26,12 +26,17 @@ DEFAULT_ACTIONS = {
     "^": "@previous-session",
     "y": "@copy",
 }
-# Default keys that run a slash command, as a `/bind KEY /command` would. Only
-# chords the editor barely uses: Ctrl+V is unbound in Emacs mode, and Ctrl+]
-# is Emacs character search.
+# Default keys that run a slash command, much as a `/bind KEY /command` would.
+# Only chords the Emacs editor barely uses: Ctrl+V is unbound there, Ctrl+] is
+# character search. Vi loses Ctrl+V (quoted insert, visual block) to it.
 DEFAULT_COMMANDS = {
     "v": "/show-edits",
     "]": "/group-tools",
+}
+# How the help overlay names these targets, on whichever key they sit.
+COMMAND_LABELS = {
+    "/show-edits": "Show / hide edit diffs",
+    "/group-tools": "Group / ungroup tool calls",
 }
 USAGE = "/bind [list | actions | KEY [TARGET] | reset [KEY]]; /unbind KEY disables a key"
 
@@ -151,7 +156,12 @@ class PromptKeymap:
                 else Condition(lambda name=name: self.registry.find(name) is not None)
             )
             self.shortcuts.set_shortcut(
-                Shortcut(key, target, lambda event, text=target: self.invoke(text), available)
+                Shortcut(
+                    key,
+                    COMMAND_LABELS.get(target, target),
+                    lambda event, text=target: self.invoke(text),
+                    available,
+                )
             )
 
     def describe(self, key: str) -> str:
