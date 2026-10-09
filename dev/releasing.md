@@ -11,10 +11,26 @@ That tag is the whole release. `.github/workflows/publish.yml` then:
    `hatch-vcs` (`pyproject.toml` holds no version);
 2. uploads them to PyPI through trusted publishing (no API token anywhere);
 3. creates the GitHub Release with generated notes (`--prerelease` for tags
-   like `v0.2.0rc1`);
+   like `v0.2.0rc1`), with the sdist, wheel and `pcode-X.Y.Z-src.tar.gz`
+   (a `git archive` of the tag, which unlike the sdist includes `uv.lock`);
 4. for a plain `vX.Y.Z` tag, runs `scripts/bump_formula.py` and commits the
-   new `url`/`sha256` to `Formula/pcode.rb` on `master`, so `brew upgrade`
-   sees the release. Pre-release tags leave the formula alone.
+   new `url`/`sha256` to `Formula/pcode.rb` on `master`, pointing at that
+   `-src.tar.gz` asset, so `brew upgrade` sees the release. Pre-release tags
+   leave the formula alone.
+
+## Counting Homebrew installs
+
+The formula downloads a release asset rather than GitHub's
+`archive/refs/tags/...` tarball because only assets keep a download count:
+
+```sh
+gh api repos/cruxwell/pcode/releases --jq '.[] | .tag_name + " " +
+  ([.assets[] | select(.name | endswith("-src.tar.gz")) | .download_count] | add // 0 | tostring)'
+```
+
+Each count is installs plus upgrades to that release (brew caches the
+download, so a reinstall rarely adds one), not unique users. `--HEAD` installs
+clone git and are never counted; releases before v0.1.3 have no such asset.
 
 `scripts/release.sh` tags what origin's `master` has, never the local checkout,
 and refuses a commit whose `ci` run didn't pass (`FORCE=1` overrides it).

@@ -20,10 +20,16 @@ def test_bump_preserves_revision_only_for_same_release(version, expected_revisio
         '  head "https://github.com/cruxwell/pcode.git", branch: "master"\n'
         "end\n"
     )
-    url = f"https://github.com/cruxwell/pcode/archive/refs/tags/v{version}.tar.gz"
+    url = (
+        f"https://github.com/cruxwell/pcode/releases/download/v{version}/pcode-{version}-src.tar.gz"
+    )
 
     result = bump(text, url, "new")
 
     assert f'  url "{url}"\n  sha256 "new"\n' in result
     assert ("  revision 1\n" in result) == bool(expected_revision)
     assert '  head "https://github.com/cruxwell/pcode.git", branch: "master"\n' in result
+
+    # Bumping again within the same release keeps the revision.
+    revised = result.replace('  sha256 "new"\n', '  sha256 "new"\n  revision 2\n')
+    assert "  revision 2\n" in bump(revised, url, "newer")

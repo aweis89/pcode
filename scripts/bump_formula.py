@@ -1,9 +1,11 @@
 """Point Formula/pcode.rb's stable release at a tag.
 
-    python scripts/bump_formula.py v0.1.1            # downloads the tag's tarball
+    python scripts/bump_formula.py v0.1.1            # downloads the release's tarball
     python scripts/bump_formula.py v0.1.1 <sha256>   # hash already known
 
-Sets `url` and `sha256` to GitHub's tarball for the tag, adding them above
+Sets `url` and `sha256` to the source tarball the publish workflow attaches to
+the tag's GitHub Release (a release asset, so its downloads are counted, which
+GitHub's archive/refs/tags tarballs are not), adding them above
 `head` the first time. The publish workflow runs this after each release; a
 tag older than the formula's release (a backport) leaves it alone. A new
 release resets the formula revision.
@@ -16,7 +18,7 @@ import urllib.request
 from pathlib import Path
 
 FORMULA = Path(__file__).resolve().parent.parent / "Formula" / "pcode.rb"
-TARBALL = "https://github.com/cruxwell/pcode/archive/refs/tags/{tag}.tar.gz"
+TARBALL = "https://github.com/cruxwell/pcode/releases/download/{tag}/pcode-{version}-src.tar.gz"
 
 
 def tarball_sha256(url: str) -> str:
@@ -29,7 +31,8 @@ def tarball_sha256(url: str) -> str:
 
 def release(text: str) -> tuple[int, ...] | None:
     """The formula's current stable version, if it has one."""
-    match = re.search(r'url "[^"]*/v([\d.]+)\.tar\.gz"', text)
+    # .../tags/v0.1.2.tar.gz (older formulae) or .../pcode-0.1.2-src.tar.gz.
+    match = re.search(r'url "[^"]*/(?:v|pcode-)([\d.]+)(?:-src)?\.tar\.gz"', text)
     return tuple(int(part) for part in match.group(1).split(".")) if match else None
 
 
@@ -54,7 +57,7 @@ def main(argv: list[str]) -> None:
     if current is not None and wanted < current:
         print(f"{FORMULA.name}: already at {'.'.join(map(str, current))}; {argv[0]} is older")
         return
-    url = TARBALL.format(tag=argv[0])
+    url = TARBALL.format(tag=argv[0], version=argv[0].removeprefix("v"))
     sha256 = argv[1] if len(argv) == 2 else tarball_sha256(url)
     FORMULA.write_text(bump(text, url, sha256))
     print(f"{FORMULA.name}: {url} {sha256}")
