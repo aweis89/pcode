@@ -1,6 +1,6 @@
-<img width="1392" height="1522" alt="pcode in a dark terminal" src="docs/assets/screenshots/pcode-dark.png" />
+<img width="1392" height="1522" alt="pcode in a dark terminal" src="docs/assets/screenshots/tabs-dark.png" />
 
-<img width="1392" height="1522" alt="pcode in a light terminal" src="docs/assets/screenshots/pcode-light.png" />
+<img width="1392" height="1522" alt="pcode in a light terminal" src="docs/assets/screenshots/tabs-light.png" />
 
 # pcode
 
