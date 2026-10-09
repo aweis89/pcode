@@ -1,8 +1,16 @@
 # Background delegation: plan
 
 Working notes for letting `delegate_task` run in the background, and for keeping
-a parent's prompt cache warm while it waits on sub-agents. Nothing here is built
-yet. Update the checklist in the same commit as the change.
+a parent's prompt cache warm while it waits on sub-agents. Update the checklist in
+the same commit as the change.
+
+Built so far: `pcode.background_delegation.BackgroundDelegation` detaches a
+foreground `delegate_task` when the user steers (not yet at a deadline, and with
+no `run_in_background` flag). The run-end wait it uses is unbounded but also wakes
+on steering, and runs inside the ending node's event stream rather than in
+`after_node_run`: between nodes Pydantic AI flushes no `ctx.emit` events, so the
+child's live activity would freeze on screen. A deadline detach can reuse the same
+path by adding a second trigger beside `steering_pending`.
 
 ## Why
 
@@ -208,9 +216,12 @@ short requests.
 ## Checklist
 
 - [ ] Wait deadline capability, used by `shell` and `wait_for_job`
+- [x] `BackgroundDelegation`: foreground detach on steering
 - [ ] `BackgroundDelegation`: optional background, foreground detach at the deadline
+- [x] Run-end wait that wakes on steering and keeps child events flowing
 - [ ] Bounded run-end wait with status notes
-- [ ] Delegate rows, `/agents` and status line for background children
+- [x] Delegate rows and status line for detached children
+- [ ] `/agents` for background children
 - [ ] Hooks the background path skips, applied where they matter
 - [ ] Live check of model behavior on Opus 5.5 and Codex
 - [ ] Cache verification on a real long delegation

@@ -40,6 +40,11 @@ from pydantic_ai_harness.shell import (
 )
 from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent
 
+from pcode.background_delegation import (
+    DelegatesPending,
+    DelegationDelivered,
+    DelegationDetached,
+)
 from pcode.cache_warnings import CacheBustEvent
 from pcode.delegation import ChildActivity, ChildOutput
 from pcode.edit_preview import StreamingEditPreview
@@ -116,6 +121,9 @@ class EventTranslator:
         self.delegates: dict[str, ToolStarted] = {}
         self.child_tools: dict[str, ToolStarted] = {}
         self.delegation_ends: dict[str, DelegationEndEvent] = {}
+        # Delegates whose call returned on steering, by call id, as in `tools`:
+        # their rows stay running until the child's result is delivered.
+        self.detached: dict[str, tuple[str, dict, float]] = {}
         self.shell_preview = ShellPreview()
         self.shell_ends: dict[str, CommandFinishedEvent] = {}
 
@@ -145,6 +153,13 @@ class EventTranslator:
                 return self.on_delegation_start(event)
             case DelegationEndEvent():
                 return self.on_delegation_end(event)
+            case DelegationDetached():
+                return self.on_delegation_detached(event)
+            case DelegationDelivered():
+                return self.on_delegation_delivered(event)
+            case DelegatesPending():
+                agents = "a sub-agent" if event.count == 1 else f"{event.count} sub-agents"
+                return iter((RunStatus(f"Waiting for {agents}…"),))
             case ChildOutput():
                 return self.on_child_output(event)
             case ChildActivity():
@@ -234,6 +249,33 @@ class EventTranslator:
                     parent_call_id=child.parent_call_id,
                 )
                 del self.child_tools[call_id]
+
+    def on_delegation_detached(self, event: DelegationDetached) -> Iterator[Event]:
+        if (entry := self.tools.get(event.tool_call_id)) is not None:
+            self.detached[event.tool_call_id] = entry
+        return iter(())
+
+    def on_delegation_delivered(self, event: DelegationDelivered) -> Iterator[Event]:
+        entry = self.detached.pop(event.tool_call_id, None)
+        if entry is None:
+            return
+        name, args, started = entry
+        self.delegates.pop(event.tool_call_id, None)
+        end = self.delegation_ends.pop(event.tool_call_id, None)
+        outcome = end.outcome if end is not None else "unknown"
+        detail, failed = delegation_detail(args, outcome)
+        yield ToolSummary(
+            name,
+            detail,
+            failed=failed,
+            call_id=event.tool_call_id,
+            result=capture(event.content),
+            run_id=self.run_id,
+            outcome=outcome,
+            elapsed_seconds=max(0, monotonic() - started),
+            command=invocation(name, args),
+            purpose=stated_purpose(args),
+        )
 
     def on_child_output(self, event: ChildOutput) -> Iterator[Event]:
         if event.tool_call_id in self.delegates:
@@ -371,6 +413,10 @@ class EventTranslator:
         detail, failed = result_detail(
             name, args, event.part.content, outcome, self.spill_source(name, args)
         )
+        if event.tool_call_id in self.detached:
+            # The child is still working; `on_delegation_delivered` settles it.
+            yield self.activity()
+            return
         shell_end = self.shell_ends.pop(event.tool_call_id, None)
         if name == "shell" and shell_end is not None and outcome == "success":
             # The result's own job marker is authoritative: it is

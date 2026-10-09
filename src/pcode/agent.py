@@ -32,6 +32,7 @@ from pydantic_ai_harness.subagents import ModelOption, SubAgent
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode import remote_profile
+from pcode.background_delegation import BackgroundDelegation
 from pcode.cache_settings import ProviderCacheSettings, model_settings
 from pcode.cache_warnings import CacheBustReporting
 from pcode.claude_sdk import ClaudeWorkspace
@@ -402,6 +403,8 @@ def create_coder(
     capabilities.append(
         _delegation(workspace, worker, subagents, extensions, output_limits, cache_notices)
     )
+    # Steering mid-delegation reaches the parent; the child keeps working.
+    capabilities.append(BackgroundDelegation())
     # Summarize evidence before discarding it; pcode owns compaction.
     return CombinedCapability([c for c in capabilities if not isinstance(c, ClearToolResults)])
 

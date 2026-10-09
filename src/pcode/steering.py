@@ -30,10 +30,15 @@ class Steering(AbstractCapability):
         return request_context
 
 
+def _steering(ctx):
+    """This run's own, never a parent's or a concurrent side question's input."""
+    return [c for c in ctx.capabilities.values() if isinstance(c, Steering)]
+
+
 def steering_pending(ctx) -> bool:
-    """Inspect this run only, never a parent's or a concurrent side question's input."""
-    return any(
-        capability.has_messages()
-        for capability in ctx.capabilities.values()
-        if isinstance(capability, Steering)
-    )
+    return any(capability.has_messages() for capability in _steering(ctx))
+
+
+def take_steering(ctx) -> list[str]:
+    """Consume this run's steering now, for a hook with no model request to append to."""
+    return [text for capability in _steering(ctx) for text in capability.take_messages()]

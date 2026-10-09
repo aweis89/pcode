@@ -140,6 +140,15 @@ not copied. The delegation is labeled with a short purpose in the task widget an
 scrollback, its tool calls show under the parent's, and Ctrl+C cancels it with
 the turn. Workers cannot delegate further, and have no request cap or timeout.
 
+A steering message you send while the model waits on a sub-agent doesn't wait
+for the sub-agent to finish. The delegation moves to the background, your message
+reaches the model on its very next request, and the sub-agent keeps working. The
+model can answer you or do other work in the meantime, and the sub-agent's result
+arrives as a follow-up message once it's done. If the model runs out of things to
+do first, the turn stays open (the status row reads `Waiting for a sub-agent`)
+until the result comes in, and you can keep steering it while it waits. Ctrl+C
+still cancels the sub-agent along with the turn.
+
 There is **no limit on concurrent workers by default** (`worker_concurrency=0`).
 Set a positive `worker_concurrency` and `/reload` to cap built-in workers per
 session; extra delegations then wait for a slot. Provider limits and machine
