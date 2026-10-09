@@ -21,9 +21,11 @@ pcode config reset                # Remove every saved default at once
 ```
 
 Inside pcode, **`/config` opens a full-screen, searchable settings editor**.
-Its layout stays fixed as you browse, filter, and edit; only resizing the terminal
-changes the pane sizes. Type to search setting names and descriptions, use ↑/↓
-to select a setting, and press Enter to edit it. Choose from the available options or enter a value; Enter saves and
+The settings list fills the screen, with the selected setting's details beside it
+(or below it in a narrow terminal), and the layout stays fixed as you browse,
+filter, and edit. Type to search setting names and descriptions; settings whose
+name contains your search come first. Use ↑/↓ to select a setting and press Enter
+to edit it in the details pane. Choose from the available options or enter a value; Enter saves and
 keeps the browser open. Escape cancels the current edit, or closes the browser
 when you are not editing. Invalid values stay in the editor with an explanation.
 Tab switches focus to the details so you can scroll long descriptions and values;

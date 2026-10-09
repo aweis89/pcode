@@ -9,8 +9,11 @@ from test_tmux import capture, input_rows, resize, until
 from test_tmux import pane as pane
 
 from pcode.config import listed_settings
+from pcode.config_ui import WIDE_COLUMNS, name_width
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+# The list row after saving 7, built from the column widths it is drawn with.
+SAVED_ROW = f'{"tool_max_lines":<{name_width()}}  {"user":<7}  "7"'
 
 SCRIPT = r"""
 from pathlib import Path
@@ -41,14 +44,15 @@ def test_config_edit_resize_and_restore(pane, width, height):
     resize(pane, "resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
     pane("send-keys", "-t", "preview:0.0", "/config", "Enter")
     modal(pane, "Saved configuration")
-    modal(pane, "Saved effective:")
-    modal(pane, "may require next launch")
+    if height >= 24:  # A smaller pane scrolls the details (Tab, then PgDn).
+        modal(pane, "Saved effective:")
+        modal(pane, "may require next launch")
     assert pane("display-message", "-p", "-t", "preview:0.0", "#{alternate_on}").strip() == "1"
     pane("send-keys", "-t", "preview:0.0", "tool_max_lines", "Enter", "C-a", "C-k", "7", "Enter")
-    modal(pane, 'Saved effective: "7" (from user)')
+    modal(pane, SAVED_ROW)
     # A compact terminal must retain the editor and its save/cancel controls.
     pane("resize-window", "-t", "preview:0", "-x", str(width), "-y", str(height))
-    modal(pane, 'Saved effective: "7" (from user)')
+    modal(pane, SAVED_ROW)
     pane("send-keys", "-t", "preview:0.0", "Enter", "C-a", "C-k", "bad", "Enter")
     modal(pane, "Value: bad")
     modal(pane, "must be")
@@ -62,27 +66,36 @@ def test_config_edit_resize_and_restore(pane, width, height):
     assert "Saved effective:" not in history
 
 
+def detail_region(lines, width, height):
+    """The details pane's rows: right of the list when wide, below it when narrow."""
+    if width >= WIDE_COLUMNS:
+        split = lines[2].index("┌", 1)
+        return [line[split:] for line in lines[2 : height - 3]]
+    body = height - 5
+    rows = max(3, min(16, body * 3 // 5, body - 3))
+    top = height - 3 - rows
+    assert lines[top - 1].startswith("└"), "\n".join(lines)
+    assert lines[top].startswith("┌"), "\n".join(lines)
+    return lines[top : height - 3]
+
+
 def assert_config_geometry(screen, width, height, *, detail, content=None, notice=None):
     """Check physical terminal cells, not just whether popup text is visible."""
     lines = screen.splitlines()
     assert len(lines) == height, screen
-    assert lines[0].startswith("┌") and lines[0].endswith("┐"), screen
-    assert lines[-1].startswith("└") and lines[-1].endswith("┘"), screen
-    assert all(get_cwidth(line) == width for line in lines), screen
-    assert all(line.startswith("│") and line.endswith("│") for line in lines[1:-1]), screen
-    assert "Saved configuration" in lines[0], screen
-    assert "Scope:" in lines[1], screen
-    assert "Show:" in lines[2], screen
-    assert "Filter:" in lines[3], screen
+    assert all(get_cwidth(line) <= width for line in lines), screen
+    assert "Saved configuration" in lines[0] and "Scope:" in lines[0], screen
+    assert "Filter:" in lines[1], screen
+    # The list frame starts right under the filter and reaches the full width
+    # or the details beside it; the frames end just above the two message rows.
+    assert lines[2].startswith("┌─ Settings") and get_cwidth(lines[2]) == width, screen
+    assert lines[height - 4].startswith("└") and lines[height - 4].endswith("┘"), screen
     if content is not None:
-        assert content in lines[4], screen
-    # Two header rows and a filter precede the fixed list/editor region.
-    detail_row = 4 + max(1, (height - 9) // 3)
-    assert detail in lines[detail_row], screen
+        assert content in lines[3], screen
+    assert any(detail in line for line in detail_region(lines, width, height)), screen
     if notice is not None:
-        assert notice in lines[height - 5], screen
-    assert "Enter Edit / Save" in lines[height - 3], screen
-    assert lines[height - 2][1:-1].strip(), screen  # Help owns its own row.
+        assert notice in lines[height - 3] + lines[height - 2], screen
+    assert "Keys" in lines[height - 1], screen
 
 
 @pytest.mark.parametrize("pane", [SCRIPT], indirect=True)
@@ -100,12 +113,12 @@ def test_config_full_terminal_geometry_across_interactions(pane):
         pane("send-keys", "-t", "preview:0.0", *keys)
 
     first, second = listed_settings()[:2]
-    check(f"{first}:", detail=f"{first}:")
+    check(f"› {first}", detail=first, content=f"› {first}")
     send("Down")
-    check(f"{second}:", detail=f"{second}:")
+    check(f"› {second}", detail=second)
 
     send("tool_max_lines")
-    check("Filter: tool_max_lines", detail="tool_max_lines:", content="› tool_max_lines")
+    check("Filter: tool_max_lines", detail="tool_max_lines", content="› tool_max_lines")
     send("C-a", "C-k", "not-a-real-setting-xyz")
     check(
         "No matching settings",
@@ -115,40 +128,40 @@ def test_config_full_terminal_geometry_across_interactions(pane):
     send("C-a", "C-k", "tool_max_lines", "Enter")
     check(
         "Enter saves; Escape cancels.",
-        detail="tool_max_lines:",
-        content="Value:",
+        detail="Value:",
+        content="› tool_max_lines",
         notice="Enter saves; Escape cancels.",
     )
     send("C-a", "C-k", "bad", "Enter")
-    check("must be", detail="tool_max_lines:", content="Value: bad", notice="must be")
+    check("must be", detail="Value: bad", content="› tool_max_lines", notice="must be")
     send("Escape")
     check(
         "Edit cancelled",
-        detail="tool_max_lines:",
+        detail="tool_max_lines",
         content="› tool_max_lines",
         notice="Edit cancelled",
     )
     send("Enter", "C-a", "C-k", "7", "Enter")
-    check('Saved effective: "7" (from user)', detail="tool_max_lines:", content="› tool_max_lines")
+    check('"7" (from user)', detail='"7" (from user)', content="› tool_max_lines")
 
     send("C-a", "C-k", "show_thinking", "Enter")
-    check("Enter saves; Escape cancels.", detail="show_thinking:")
+    check("Enter saves; Escape cancels.", detail="› status-line")
     send("Down", "Escape")
     check(
         "Edit cancelled",
-        detail="show_thinking:",
+        detail="show_thinking",
         content="› show_thinking",
         notice="Edit cancelled",
     )
 
     send("C-a", "C-k", "tool_max_lines", "C-o")
-    check("Show: Overrides only", detail="tool_max_lines:", content="› tool_max_lines")
+    check("Show: Overrides only", detail="tool_max_lines", content="› tool_max_lines")
     send("C-t")
     check("Scope: project", detail="Saved effective values include", content="No matching settings")
     send("C-o")
-    check("Show: All settings", detail="tool_max_lines:", content="› tool_max_lines")
+    check("Show: All settings", detail="tool_max_lines", content="› tool_max_lines")
     send("C-t")
-    check("Scope: user", detail="tool_max_lines:", content="› tool_max_lines")
+    check("Scope: user", detail="tool_max_lines", content="› tool_max_lines")
 
     # In the alternate screen a resize repaints the popup, not scrollback.
     # Wait for the new border coordinates, since the detail marker already exists.
@@ -160,12 +173,12 @@ def test_config_full_terminal_geometry_across_interactions(pane):
             lines = screen.splitlines()
             return (
                 len(lines) == height
-                and lines[-1].startswith("└")
-                and lines[-1].endswith("┘")
-                and get_cwidth(lines[-1]) == width
+                and lines[height - 4].startswith("└")
+                and lines[height - 4].endswith("┘")
+                and get_cwidth(lines[2]) == width
             )
 
         until(resized, lambda: pane("capture-pane", "-p", "-t", "preview:0.0"))
-        check("tool_max_lines:", detail="tool_max_lines:", content="› tool_max_lines")
+        check("› tool_max_lines", detail="tool_max_lines", content="› tool_max_lines")
     send("Escape")
     capture(pane, "draft must survive", columns=width)

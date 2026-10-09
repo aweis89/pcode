@@ -1,4 +1,5 @@
 import asyncio
+import re
 from contextlib import asynccontextmanager
 
 import pytest
@@ -46,7 +47,7 @@ def test_search_navigation_and_description():
             await wait_for(lambda: ui.matches == ["tool_max_lines"])
             assert ui.selected == 0
             assert "Saved effective:" in ui.details()
-            assert " · default" in str(ui.fragments())
+            assert "tool_max_lines" in str(ui.fragments())
             pipe.send_text("\x01\x0b" + preferences.SETTINGS["tool_max_lines"].description)
             await wait_for(lambda: "tool_max_lines" in ui.matches and " " in ui.search.text)
             pipe.send_text("\x01\x0bnot-a-real-setting-xyz")
@@ -57,6 +58,17 @@ def test_search_navigation_and_description():
             assert not calls
 
     asyncio.run(run())
+
+
+def test_search_ranks_name_prefix_then_name_then_description():
+    with create_pipe_input() as pipe:
+        ui = ConfigBrowser(save=config.configure, input=pipe, output=DummyOutput())
+        ui.search.text = "tool"
+        first_other = next(i for i, key in enumerate(ui.matches) if not key.startswith("tool"))
+        assert all(key.startswith("tool") for key in ui.matches[:first_other])
+        assert "email_turn_tool_calls" in ui.matches[first_other:]
+        named = [i for i, key in enumerate(ui.matches) if "tool" in key]
+        assert named == list(range(len(named)))
 
 
 def test_enum_save_typed_ahead_and_cancel():
@@ -91,7 +103,7 @@ def test_text_preserves_spaces_and_empty_values(text):
             assert preferences.read_preferences()[key] == text
             assert ui.app.layout.has_focus(ui.search)
             if not text:
-                assert 'Saved effective: ""' in ui.details()
+                assert re.search(r'Saved effective:\s+"" \(from user\)', ui.details())
 
     asyncio.run(run())
 
@@ -138,7 +150,7 @@ def test_scopes_inheritance_and_reset(monkeypatch, tmp_path, prefix, toggle, res
             # Exact name first is not required; select it from the filtered list.
             ui.selected = ui.matches.index("model")
             assert ui.effective("model") == ("provider:project-model", "project")
-            assert 'user override: "provider:user-model"' in ui.details()
+            assert re.search(r'User override:\s+"provider:user-model"', ui.details())
             pipe.send_text(toggle)
             await wait_for(lambda: ui.scope == "project")
             ui.search.text = ""
@@ -146,7 +158,7 @@ def test_scopes_inheritance_and_reset(monkeypatch, tmp_path, prefix, toggle, res
             assert set(ui.matches) == set(config.listed_settings()) - preferences.USER_ONLY
             ui.search.text = "model"
             ui.selected = ui.matches.index("model")
-            assert 'project override: "provider:project-model"' in ui.details()
+            assert re.search(r'Project override:\s+"provider:project-model"', ui.details())
             pipe.send_text(reset)
             await wait_for(lambda: len(calls) == 1)
             assert calls == [["project", "unset", "model"]]
@@ -195,10 +207,10 @@ def test_saved_values_ignore_invalid_and_user_only_project_overrides(tmp_path):
         assert preferences.load_preferences()["tool_max_lines"] == "23"
         assert ui.effective("extension_dirs")[1] == "default"
         ui.search.text = "tool_max_lines"
-        assert "Layout setting; applies immediately when saved" in ui.details()
+        assert "immediately (layout setting)" in ui.details()
         ui.search.text = "model"
         ui.selected = ui.matches.index("model")
-        assert "Saved default; may require next launch" in ui.details()
+        assert "may require next launch" in ui.details()
 
 
 def test_overrides_filter_includes_default_values_and_tracks_reset(tmp_path):

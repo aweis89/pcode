@@ -8,7 +8,7 @@ from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
-from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import TextArea
@@ -24,11 +24,29 @@ from pcode.preferences import (
     read_preferences,
     valid_preferences,
 )
-from pcode.prefix_keys import PrefixKeys
+from pcode.prefix_keys import PrefixKeys, compact_label
+
+# Side by side from this width; stacked below it.
+WIDE_COLUMNS = 100
+# Values longer than this are cut in the list; the details show them whole.
+VALUE_CHARS = 48
 
 
 def _display(value) -> str:
     return "unset" if value is None else json.dumps(value, ensure_ascii=False)
+
+
+def _clip(text: str, limit: int = VALUE_CHARS) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def name_width() -> int:
+    """The list's name column, measured over every setting so filtering never shifts it."""
+    return min(32, max(len(key) for key in config.listed_settings()))
+
+
+def _field(label: str, value: str) -> str:
+    return f"{label + ':':<18}{value}"
 
 
 class ConfigBrowser:
@@ -44,6 +62,7 @@ class ConfigBrowser:
         self.search = TextArea(height=1, prompt="Filter: ", multiline=False)
         self.value = TextArea(height=1, prompt="Value: ", multiline=False)
         self.search.buffer.on_text_changed += self.filter
+        self.name_width = name_width()
         self.reload()
         self.filter()
         browsing = Condition(lambda: not self.editing)
@@ -61,6 +80,9 @@ class ConfigBrowser:
                 self.choice_fragments,
                 focusable=True,
                 get_cursor_position=lambda: Point(x=0, y=self.choice),
+            ),
+            height=lambda: Dimension(
+                min=1, preferred=len(self.choices), max=max(1, len(self.choices))
             ),
             always_hide_cursor=True,
         )
@@ -149,57 +171,108 @@ class ConfigBrowser:
         def reset(event):
             self.apply("unset")
 
-        def line(text):
-            return Window(FormattedTextControl(text), height=1, wrap_lines=False)
+        def line(text, style=""):
+            return Window(FormattedTextControl(text), height=1, wrap_lines=False, style=style)
 
-        # Only terminal dimensions determine the zones, never a setting's text,
-        # result count, or edit state. A bare Frame fills the screen without the
-        # content-sized Box and Shadow used by a small Dialog.
-        editor = HSplit([self.value, Window()])
-        selection = HSplit(
-            [
-                DynamicContainer(
-                    lambda: (
-                        self.choice_rows if self.choices else editor if self.editing else self.rows
-                    )
-                )
-            ],
-            height=lambda: max(1, (get_app().output.get_size().rows - 9) // 3),
-        )
-        filter_label = line(lambda: f"Filter: {self.search.text}")
+        def header():
+            show = "Overrides only" if self.changed_only else "All settings"
+            parts = [
+                ("bold", "Saved configuration"),
+                ("", "  ·  Scope: "),
+                ("bold", self.scope),
+                ("", "  ·  Show: "),
+                ("bold", show),
+            ]
+            # The note is the first thing to go in a narrow terminal, never Show.
+            note = "  ·  no project workspace"
+            room = get_app().output.get_size().columns
+            if self.project_path is None and sum(len(t) for _, t in parts) + len(note) <= room:
+                parts.append(("dim", note))
+            return parts
+
+        def keys_hint():
+            def key(letter):
+                return compact_label(shortcuts.label(letter))
+
+            tab = "Tab Back" if get_app().layout.has_focus(self.detail.window) else "Tab Details"
+            if self.editing:
+                parts = ["Enter Save", "Esc Cancel", tab]
+            else:
+                parts = ["Enter Edit", "Esc Close"]
+                if self.project_path is not None:
+                    parts.append(f"{key('t')} Scope")
+                parts += [f"{key('o')} Overrides", f"{key('r')} Reset", tab]
+            # Drop the least important hints rather than cutting off the help key.
+            room = get_app().output.get_size().columns
+            while parts and len(" · ".join([*parts, shortcuts.summary()])) > room:
+                parts.pop()
+            return " · ".join([*parts, shortcuts.summary()])
+
+        def list_title():
+            total = sum(
+                self.scope == "user" or key not in USER_ONLY for key in config.listed_settings()
+            )
+            return f"Settings {len(self.matches)}/{total}"
+
+        def detail_title():
+            if not self.editing:
+                return "Details"
+            return f"Edit {self.matches[self.selected]} · {self.scope}"
+
+        # Edit controls open at the top of the details, so the list beside or
+        # above keeps its place and the outer layout never moves.
         self.detail.window.height = Dimension(min=1)
-        frame = Frame(
-            title="Saved configuration",
-            body=HSplit(
-                [
-                    line(
-                        lambda: (
-                            f"Scope: {self.scope}"
-                            + (
-                                " · no project workspace"
-                                if self.project_path is None
-                                else f" · {shortcuts.label('t')} Switch scope"
-                            )
-                        )
-                    ),
-                    line(
-                        lambda: (
-                            f"Show: {'Overrides only' if self.changed_only else 'All settings'}"
-                            f" · {shortcuts.label('o')} Toggle"
-                            f" · {shortcuts.label('r')} Reset override"
-                        )
-                    ),
-                    DynamicContainer(lambda: filter_label if self.editing else self.search),
-                    selection,
-                    self.detail,
-                    Window(FormattedTextControl(lambda: self.message), height=2, wrap_lines=True),
-                    line("↑/↓ Select · Enter Edit / Save · Esc Cancel / Close"),
-                    line(shortcuts.summary),
-                ],
-            ),
+        text_editor = HSplit([self.value, Window(height=1), self.detail])
+        choice_editor = HSplit([self.choice_rows, Window(height=1), self.detail])
+
+        def detail_body():
+            if not self.editing:
+                return self.detail
+            return choice_editor if self.choices else text_editor
+
+        def stacked_detail_height() -> int:
+            # Header, filter, two message rows, and keys take five. The details
+            # get the larger share: the list row already shows name and value.
+            body = get_app().output.get_size().rows - 5
+            # Always leave the list at least one row between its borders.
+            return max(3, min(16, body * 3 // 5, body - 3))
+
+        wide = VSplit(
+            [
+                Frame(self.rows, title=list_title, width=Dimension(weight=3)),
+                Frame(DynamicContainer(detail_body), title=detail_title, width=Dimension(weight=2)),
+            ]
+        )
+        narrow = HSplit(
+            [
+                Frame(self.rows, title=list_title),
+                Frame(
+                    DynamicContainer(detail_body),
+                    title=detail_title,
+                    height=lambda: Dimension.exact(stacked_detail_height()),
+                ),
+            ]
+        )
+        filter_label = line(lambda: f"Filter: {self.search.text}", "dim")
+        body = HSplit(
+            [
+                line(header),
+                DynamicContainer(lambda: filter_label if self.editing else self.search),
+                DynamicContainer(
+                    lambda: wide if get_app().output.get_size().columns >= WIDE_COLUMNS else narrow
+                ),
+                # Two rows, wrapped: the end of a long error is often what matters.
+                Window(
+                    FormattedTextControl(lambda: self.message),
+                    height=2,
+                    wrap_lines=True,
+                    style="class:hint.message",
+                ),
+                line(keys_hint, "dim"),
+            ]
         )
         self.app = Application(
-            layout=Layout(popup_container(frame, shortcuts), focused_element=self.search),
+            layout=Layout(popup_container(body, shortcuts), focused_element=self.search),
             key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             input=input,
@@ -212,7 +285,10 @@ class ConfigBrowser:
         text = self.details()
         if text != self._detail_text:
             self._detail_text = text
-            self.detail.set([Text(text)])
+            rendered = Text(text)
+            if self.matches:
+                rendered.stylize("bold", 0, len(text.partition("\n")[0]))
+            self.detail.set([rendered])
 
     def reload(self) -> None:
         self.project_path = project_preferences_path()
@@ -225,7 +301,18 @@ class ConfigBrowser:
 
     def filter(self, buffer=None) -> None:
         terms = self.search.text.casefold().split()
-        self.matches = [
+
+        def rank(key: str) -> int:
+            # Names starting with the search first, then names containing it,
+            # then description hits, then fuzzy matches.
+            text = f"{key} {SETTINGS[key].description}".casefold()
+            if terms and key.startswith(terms[0]) and all(t in key for t in terms):
+                return 0
+            if all(t in key for t in terms):
+                return 1
+            return 2 if all(t in text for t in terms) else 3
+
+        matches = [
             key
             for key in config.listed_settings()
             if (self.scope == "user" or key not in USER_ONLY)
@@ -237,6 +324,7 @@ class ConfigBrowser:
                 fuzzy_match(term, f"{key} {SETTINGS[key].description}".casefold()) for term in terms
             )
         ]
+        self.matches = sorted(matches, key=rank)
         self.selected = 0
 
     def effective(self, key: str) -> tuple[str | None, str]:
@@ -252,45 +340,52 @@ class ConfigBrowser:
         result = []
         for index, key in enumerate(self.matches):
             value, source = self.effective(key)
-            result.append(
-                (
-                    "class:selected" if index == self.selected else "",
-                    f"{'›' if index == self.selected else ' '} {key} = {_display(value)}"
-                    f" · {source}",
-                )
-            )
+            chosen = index == self.selected
+            style = "class:selected" if chosen else ""
+            # The source sits in its own column before the value, so a long
+            # value can never push it out of a narrow pane. Defaults go
+            # unmarked, so the eye lands on what was changed.
+            marker = "" if source == "default" else source
+            result += [
+                (style, f"{'›' if chosen else ' '} {key:<{self.name_width}}  "),
+                (f"{style} bold", f"{marker:<7}  "),
+                (style, _clip(_display(value))),
+            ]
             if index < len(self.matches) - 1:
                 result.append(("", "\n"))
         return result
 
     def details(self) -> str:
         if not self.matches:
-            return "Saved effective values include user and project overrides."
+            return (
+                "No setting selected.\n\nSaved effective values include user and project overrides."
+            )
         key = self.matches[self.selected]
         setting = SETTINGS[key]
         scope = self.project if self.scope == "project" else self.user
         value, source = self.effective(key)
         override = _display(scope[key]) if key in scope else "none (inherited)"
         timing = (
-            "Layout setting; applies immediately when saved"
+            "immediately (layout setting)"
             if key in config.IMMEDIATE_SETTINGS
-            else "Saved default; may require next launch"
+            else "saved default; may require next launch"
         )
-        suggestions = (
-            f"\nSuggestions: {', '.join(setting.choices)}"
-            if setting.choices and (setting.positive_integer or setting.whole_number)
-            else ""
-        )
-        shadowed = (
-            "\nProject override takes precedence over edits to the user value."
-            if self.scope == "user" and source == "project"
-            else ""
-        )
-        return (
-            f"{key}: {setting.description}\nDefault: {_display(setting.default)}"
-            f" · {self.scope} override: {override}\n"
-            f"Saved effective: {_display(value)} (from {source})\n{timing}{suggestions}{shadowed}"
-        )
+        lines = [
+            key,
+            setting.description,
+            "",
+            _field("Saved effective", f"{_display(value)} (from {source})"),
+            _field("Default", _display(setting.default)),
+            _field(f"{self.scope.capitalize()} override", override),
+            _field("Applies", timing),
+        ]
+        if setting.choices and (setting.positive_integer or setting.whole_number):
+            lines.append(_field("Suggestions", ", ".join(setting.choices)))
+        elif setting.choices and not self.editing:
+            lines.append(_field("Choices", ", ".join(setting.choices)))
+        if self.scope == "user" and source == "project":
+            lines += ["", "Project override takes precedence over edits to the user value."]
+        return "\n".join(lines)
 
     def choice_fragments(self):
         result = []
