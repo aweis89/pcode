@@ -20,11 +20,14 @@ pcode config unset theme          # Restore automatic theme detection
 pcode config reset                # Remove every saved default at once
 ```
 
-Inside pcode, **`/config` opens a searchable settings editor**. Type to search
-setting names and descriptions, use ↑/↓ to select a setting, and press Enter to
-edit it. Choose from the available options or enter a value; Enter saves and
+Inside pcode, **`/config` opens a full-screen, searchable settings editor**.
+Its layout stays fixed as you browse, filter, and edit; only resizing the terminal
+changes the pane sizes. Type to search setting names and descriptions, use ↑/↓
+to select a setting, and press Enter to edit it. Choose from the available options or enter a value; Enter saves and
 keeps the browser open. Escape cancels the current edit, or closes the browser
 when you are not editing. Invalid values stay in the editor with an explanation.
+Tab switches focus to the details so you can scroll long descriptions and values;
+Shift+Tab returns to the search or value editor.
 
 Each setting shows its built-in default, saved effective value, and whether that
 value comes from the user or project configuration. These are saved defaults,

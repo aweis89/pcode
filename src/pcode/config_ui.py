@@ -5,16 +5,18 @@ from collections.abc import Callable
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.data_structures import Point
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
+from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
+from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Label, TextArea
+from prompt_toolkit.widgets import TextArea
+from rich.text import Text
 
 from pcode import config
-from pcode.frame import Dialog
-from pcode.popup_ui import focus_overlay, fuzzy_match, popup_container, popup_style
+from pcode.frame import Frame
+from pcode.popup_ui import RichPane, focus_overlay, fuzzy_match, popup_container, popup_style
 from pcode.preferences import (
     SETTINGS,
     USER_ONLY,
@@ -51,11 +53,6 @@ class ConfigBrowser:
         )
         self.rows = Window(
             rows,
-            # Leave room for wrapped details and validation messages in split panes.
-            height=lambda: Dimension(
-                min=1, max=min(8, max(1, (get_app().output.get_size().rows - 12) // 2))
-            ),
-            dont_extend_height=True,
             wrap_lines=False,
             always_hide_cursor=True,
         )
@@ -65,29 +62,34 @@ class ConfigBrowser:
                 focusable=True,
                 get_cursor_position=lambda: Point(x=0, y=self.choice),
             ),
-            height=Dimension(min=1, max=8),
-            dont_extend_height=True,
             always_hide_cursor=True,
         )
+        self.detail = RichPane()
+        self._detail_text = None
         keys = KeyBindings()
+        self.detail.bind_scrolling(keys)
+        keys.add("tab")(focus_next)
+        keys.add("s-tab")(focus_previous)
+        selecting = ~editing_text & ~has_focus(self.detail.window)
         shortcuts = self.shortcuts = PrefixKeys()
         shortcuts.set_help(
             lambda: [
                 ("Type", "Filter settings, or edit a value"),
                 ("↑/↓ / Ctrl+P/N", "Select setting or enum value"),
-                ("PgUp/PgDn / Ctrl+U/D", "Page / half page settings"),
+                ("PgUp/PgDn / Ctrl+U/D", "Page / half page settings or details"),
+                ("Tab/Shift+Tab", "Switch between settings/editor and details"),
                 ("Enter", "Edit setting / save value"),
                 ("Esc / Ctrl+C / Ctrl+L", "Cancel edit / close browser"),
             ]
         )
 
-        @keys.add("up", eager=True, filter=~editing_text)
-        @keys.add("c-p", eager=True, filter=~editing_text)
+        @keys.add("up", eager=True, filter=selecting)
+        @keys.add("c-p", eager=True, filter=selecting)
         def previous(event):
             self.move(-1)
 
-        @keys.add("down", eager=True, filter=~editing_text)
-        @keys.add("c-n", eager=True, filter=~editing_text)
+        @keys.add("down", eager=True, filter=selecting)
+        @keys.add("c-n", eager=True, filter=selecting)
         def next_row(event):
             self.move(1)
 
@@ -103,7 +105,7 @@ class ConfigBrowser:
                 size = max(1, info.window_height - 1) if info else 10
                 self.move(direction * (max(1, (size + 1) // 2) if half else size))
 
-            keys.add(key, eager=True, filter=browsing)(page)
+            keys.add(key, eager=True, filter=browsing & selecting)(page)
 
         @keys.add("enter", eager=True)
         def accept(event):
@@ -147,11 +149,30 @@ class ConfigBrowser:
         def reset(event):
             self.apply("unset")
 
-        dialog = Dialog(
+        def line(text):
+            return Window(FormattedTextControl(text), height=1, wrap_lines=False)
+
+        # Only terminal dimensions determine the zones, never a setting's text,
+        # result count, or edit state. A bare Frame fills the screen without the
+        # content-sized Box and Shadow used by a small Dialog.
+        editor = HSplit([self.value, Window()])
+        selection = HSplit(
+            [
+                DynamicContainer(
+                    lambda: (
+                        self.choice_rows if self.choices else editor if self.editing else self.rows
+                    )
+                )
+            ],
+            height=lambda: max(1, (get_app().output.get_size().rows - 9) // 3),
+        )
+        filter_label = line(lambda: f"Filter: {self.search.text}")
+        self.detail.window.height = Dimension(min=1)
+        frame = Frame(
             title="Saved configuration",
             body=HSplit(
                 [
-                    Label(
+                    line(
                         lambda: (
                             f"Scope: {self.scope}"
                             + (
@@ -161,36 +182,37 @@ class ConfigBrowser:
                             )
                         )
                     ),
-                    Label(
+                    line(
                         lambda: (
                             f"Show: {'Overrides only' if self.changed_only else 'All settings'}"
                             f" · {shortcuts.label('o')} Toggle"
                             f" · {shortcuts.label('r')} Reset override"
                         )
                     ),
-                    ConditionalContainer(self.search, browsing),
-                    ConditionalContainer(self.rows, browsing),
-                    Label(self.details, dont_extend_height=True),
-                    ConditionalContainer(self.value, editing_text),
-                    ConditionalContainer(self.choice_rows, Condition(lambda: bool(self.choices))),
-                    ConditionalContainer(
-                        Label(lambda: self.message, dont_extend_height=True),
-                        Condition(lambda: bool(self.message)),
-                    ),
-                    Label("↑/↓ Select · Enter Edit / Save · Esc Cancel / Close"),
-                    Label(shortcuts.summary, dont_extend_height=True),
+                    DynamicContainer(lambda: filter_label if self.editing else self.search),
+                    selection,
+                    self.detail,
+                    Window(FormattedTextControl(lambda: self.message), height=2, wrap_lines=True),
+                    line("↑/↓ Select · Enter Edit / Save · Esc Cancel / Close"),
+                    line(shortcuts.summary),
                 ],
-                padding=0,
             ),
         )
         self.app = Application(
-            layout=Layout(popup_container(dialog, shortcuts), focused_element=self.search),
+            layout=Layout(popup_container(frame, shortcuts), focused_element=self.search),
             key_bindings=shortcuts.key_bindings(keys),
             full_screen=True,
             input=input,
             output=output,
             style=popup_style(style),
+            before_render=self.refresh_details,
         )
+
+    def refresh_details(self, app) -> None:
+        text = self.details()
+        if text != self._detail_text:
+            self._detail_text = text
+            self.detail.set([Text(text)])
 
     def reload(self) -> None:
         self.project_path = project_preferences_path()

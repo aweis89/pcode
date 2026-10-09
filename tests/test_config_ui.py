@@ -230,6 +230,38 @@ def test_overrides_filter_includes_default_values_and_tracks_reset(tmp_path):
     asyncio.run(run())
 
 
+def test_scroll_details_without_changing_selection_or_editor():
+    preferences.update_preferences({"extension_dirs": "/" + "long-path-" * 300})
+
+    async def run():
+        async with browser() as (ui, pipe, calls):
+            pipe.send_text("extension_dirs\t")
+            await wait_for(lambda: ui.app.layout.has_focus(ui.detail.window))
+            selected = ui.selected
+            await wait_for(
+                lambda: (
+                    ui.detail.window.render_info is not None
+                    and ui.detail.window.render_info.content_height
+                    > ui.detail.window.render_info.window_height
+                )
+            )
+            pipe.send_text("\x1b[6~")
+            await wait_for(lambda: ui.detail.window.vertical_scroll > 0)
+            assert ui.selected == selected
+            pipe.send_text("\x1b[Z\r")  # Back to search, then edit.
+            await wait_for(lambda: ui.editing and ui.app.layout.has_focus(ui.value))
+            pipe.send_text("\x01\x0bnew draft\t\x1b[6~")
+            await wait_for(lambda: ui.app.layout.has_focus(ui.detail.window))
+            assert ui.value.text == "new draft"
+            assert ui.selected == selected
+            assert not calls
+            pipe.send_text("\x1b")
+            await wait_for(lambda: not ui.editing)
+            assert ui.app.layout.has_focus(ui.search)
+
+    asyncio.run(run())
+
+
 def test_text_cancel_and_help_preserve_draft():
     async def run():
         async with browser() as (ui, pipe, calls):
