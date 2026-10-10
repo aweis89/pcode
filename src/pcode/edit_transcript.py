@@ -9,6 +9,7 @@ from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.lexers import Lexer
 from pygments.token import Generic, Token
 from rich.console import Console, ConsoleOptions, RenderResult
+from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.style import Style
 from rich.syntax import Syntax
@@ -19,6 +20,7 @@ from pcode.delta import Delta, preview_patch
 from pcode.edits import edit_text, patch_text
 from pcode.runtime import EditCompleted
 from pcode.syntax import transparent_theme
+from pcode.terminal_text import safe_text
 from pcode.tool_display import command_text
 
 
@@ -40,13 +42,18 @@ class EditTranscript:
             )
         )
         if change.patch:
-            text = patch_text(change.patch, dedent=self.dedent)
-            lines = self.delta.render(text, options.max_width) if self.delta else None
-            patch = (
-                Text("\n").join(lines)
-                if lines is not None
-                else Syntax(text, "diff", theme=transparent_theme(self.code_theme), word_wrap=True)
-            )
+            if (source := created_markdown(change)) is not None:
+                patch = Markdown(safe_text(source), code_theme=self.code_theme)
+            else:
+                text = patch_text(change.patch, dedent=self.dedent)
+                lines = self.delta.render(text, options.max_width) if self.delta else None
+                patch = (
+                    Text("\n").join(lines)
+                    if lines is not None
+                    else Syntax(
+                        text, "diff", theme=transparent_theme(self.code_theme), word_wrap=True
+                    )
+                )
             rows = console.render_lines(patch, options, pad=False)
             for row in rows[: self.max_rows]:
                 yield from row
@@ -58,11 +65,39 @@ class EditTranscript:
         yield block_rule()
 
 
+MARKDOWN_SUFFIXES = (".md", ".markdown")
+
+
+def created_markdown(change: EditCompleted) -> str | None:
+    """A new Markdown file's redacted source, to show rendered rather than as a diff.
+
+    Every line of a created file is an addition, so the `+` column says
+    nothing and the raw source buries the document. The patch is the only
+    copy of the content the transcript keeps; each `+` line after the hunk
+    header is a line of the file.
+    """
+    if (
+        change.operation != "created"
+        or change.removed
+        or not change.patch
+        or not change.path.lower().endswith(MARKDOWN_SUFFIXES)
+    ):
+        return None
+    lines = patch_text(change.patch, dedent=False).split("\n")
+    start = next((i for i, line in enumerate(lines) if line.startswith("@@")), len(lines))
+    return "\n".join(line[1:] for line in lines[start + 1 :] if line.startswith("+"))
+
+
 def prefetch_edits(objects, width: int) -> None:
     """Render every delta edit block in `objects` through one delta process each."""
     patches: dict[Delta, list[str]] = {}
     for obj in objects:
-        if isinstance(obj, EditTranscript) and obj.delta is not None and obj.change.patch:
+        if (
+            isinstance(obj, EditTranscript)
+            and obj.delta is not None
+            and obj.change.patch
+            and created_markdown(obj.change) is None
+        ):
             text = patch_text(obj.change.patch, dedent=obj.dedent)
             patches.setdefault(obj.delta, []).append(text)
     for delta, texts in patches.items():

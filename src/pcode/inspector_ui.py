@@ -22,7 +22,7 @@ from rich.theme import Theme
 
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.delta import Delta
-from pcode.edit_transcript import EditTranscript
+from pcode.edit_transcript import EditTranscript, created_markdown
 from pcode.edits import patch_text
 from pcode.frame import Frame
 from pcode.inspection import InspectedCall, ToolArchive
@@ -330,7 +330,7 @@ class ToolInspector:
             patch_text(change.patch, dedent=self.dedent)
             for call in self.archive.calls
             for change in call.changes
-            if change.patch
+            if change.patch and created_markdown(change) is None
         ]
         if patches:
             self.prefetching = threading.Thread(

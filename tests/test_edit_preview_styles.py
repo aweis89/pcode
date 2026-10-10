@@ -76,6 +76,37 @@ def test_styles_that_color_diffs_by_background_stay_visible(theme):
     assert rows[0][0] != rows[1][0]
 
 
+def _plain(renderable, width=60) -> str:
+    console = Console(width=width, file=StringIO(), color_system=None)
+    console.print(renderable)
+    return console.file.getvalue()
+
+
+def test_created_markdown_renders_as_markdown_not_a_diff():
+    from pcode.edits import completed_change
+
+    source = '# Plan\n\n- **first** step\n- second\n\n```py\nx = 1\n```\n\ntoken = "abc123"\n'
+    change = completed_change("plans/plan.md", "", source, existed=False)
+    text = _plain(EditTranscript(change))
+    assert "Created plans/plan.md · +10 −0" in text
+    assert "Plan" in text and "# Plan" not in text
+    assert "first step" in text and "**" not in text and "+-" not in text
+    assert "x = 1" in text and "```" not in text
+    assert "abc123" not in text and "[redacted]" in text
+
+
+@pytest.mark.parametrize(
+    ("path", "existed"), [("plan.md", True), ("notes.txt", False), ("README.markdown", False)]
+)
+def test_only_new_markdown_files_skip_the_diff(path, existed):
+    from pcode.edits import completed_change
+
+    change = completed_change(path, "# Old\n" if existed else "", "# Title\n", existed=existed)
+    text = _plain(EditTranscript(change))
+    rendered = path.endswith((".md", ".markdown")) and not existed
+    assert ("+# Title" not in text) == rendered
+
+
 def test_theme_and_terminal_color_mode_changes_recompute_preview_styles():
     view = Transcript(
         Console(file=StringIO()),
