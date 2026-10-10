@@ -251,11 +251,13 @@ class ExtensionAPI:
         aliases: tuple[str, ...] = (),
         argument_descriptions: dict[str, str] | None = None,
         complete_paths: bool = False,
+        free_arguments: bool | None = None,
     ) -> None:
         """Add a slash command. `handler(argument)` runs on the terminal's event loop.
 
-        Without `arguments`, any text is accepted; with them, only those values,
-        and `argument_descriptions` labels each in the completion menu.
+        Without `arguments`, any text is accepted; with them, only those values
+        unless `free_arguments=True` keeps them as completions for free text.
+        `argument_descriptions` labels each in the completion menu.
         `complete_paths` completes the argument, after any leading `--option`
         words, as a filesystem path. Names taken by pcode itself are reported
         and skipped, never overridden.
@@ -281,7 +283,7 @@ class ExtensionAPI:
                 handler,
                 arguments=arguments,
                 aliases=aliases,
-                free_arguments=not arguments,
+                free_arguments=not arguments if free_arguments is None else free_arguments,
                 group="Extensions",
                 argument_descriptions=argument_descriptions,
                 argument_completer=completer,

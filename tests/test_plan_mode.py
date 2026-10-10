@@ -5,6 +5,8 @@ import pytest
 from pydantic_ai import ModelRetry
 from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
+from pcode.commands import CommandRegistry
+from pcode.ext import ExtensionAPI
 from pcode.extensions import plan_mode
 
 
@@ -82,6 +84,20 @@ def test_bare_plan_resumes_latest_and_off_stops(tmp_path):
     assert "Resuming .pcode/plans/old-idea.md" in api.notes[-1]
     api.commands["/plan"]("off")
     assert remind(api) == []
+
+
+def test_plan_accepts_a_topic_beside_its_fixed_arguments(tmp_path):
+    notes = []
+    ui = SimpleNamespace(notify=lambda text, level="info": notes.append(text))
+    api = ExtensionAPI("plan_mode", tmp_path, ui=ui, session_dir=tmp_path / "sessions")
+    plan_mode.setup(api)
+    registry = CommandRegistry()
+    for command in api.commands:
+        registry.register(command)
+    assert registry.dispatch("/plan Add export button")
+    assert "add-export-button.md" in notes[-1]
+    assert registry.dispatch("/plan status")
+    assert "add-export-button.md" in notes[-1]
 
 
 def test_workers_get_nothing(tmp_path):
