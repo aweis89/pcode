@@ -5,7 +5,8 @@ prompt (its opening words also name the plan file). While it is on, each user
 turn carries a reminder to investigate, keep a plan in
 `.pcode/plans/<slug>.md`, and hold off on implementing until the user approves.
 Approval is the model's call: when the user says "go ahead" (in whatever
-words), it calls `exit_plan_mode` and starts building in the same turn.
+words), or answers the last open questions without raising new ones, it calls
+`exit_plan_mode` and starts building in the same turn.
 `/plan off` is the manual way out.
 
 The model is trusted rather than fenced in: nothing blocks edits, the reminder
@@ -32,9 +33,13 @@ Plan mode is on. The user wants to agree on a plan before any implementation.
 - Do not start implementing. A small throwaway experiment to answer a question
   is fine; making the change itself is not.
 - End each turn with the open questions or a clear "ready to proceed?".
-- When the user approves (for example "go ahead", "do it", "lgtm", "ship it"),
-  call `exit_plan_mode`, then implement the plan in that same turn. Approval
-  with changes ("yes, but skip step 3") counts: fold the change in, then exit.
+- When the user approves, call `exit_plan_mode`, then implement the plan in
+  that same turn. Approval can be explicit ("go ahead", "lgtm", "ship it") or
+  implicit: if the user's reply answers every remaining open question and
+  raises no new concerns, that is the go-ahead; don't ask again for a
+  separate confirmation. Approval with changes ("yes, but skip step 3")
+  counts too: fold the change in, then exit. Stay in plan mode only while
+  something is genuinely unresolved or the user asks to keep planning.
 </plan-mode>"""
 
 
@@ -105,7 +110,7 @@ def setup(pcode) -> None:
         verb = "Resuming" if exists else "Planning in"
         ask = "Say" if argument else "Describe the change; say"
         pcode.ui.notify(
-            f"Plan mode on. {verb} {relative(slug)}. {ask} 'go ahead' when the plan looks right."
+            f"Plan mode on. {verb} {relative(slug)}. {ask} 'go ahead' (or just answer its questions) when the plan looks right."
         )
         # The text is the request itself, so it goes to the model now rather
         # than making the user send it again.
@@ -127,7 +132,8 @@ def setup(pcode) -> None:
     def exit_plan_mode() -> str:
         """Leave plan mode once the user has approved the plan, then implement it.
 
-        Call this only when plan mode is on and the user has said to go ahead.
+        Call this only when plan mode is on and the user has approved, either by
+        saying so or by answering every open question without raising new ones.
         """
         current = active()
         if current is None:
