@@ -113,6 +113,7 @@ def test_defaults_and_path_do_not_create_files():
         "job_wake": "on",
         "code_mode": "off",
         "web_search": "auto",
+        "web_fetch": "auto",
         "tool_output_mode": "spill",
         "tool_output_threshold": "10000",
         "tool_output_preview_chars": "1000",

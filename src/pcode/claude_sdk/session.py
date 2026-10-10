@@ -23,6 +23,7 @@ from pcode.claude_sdk.errors import (
 )
 from pcode.claude_sdk.messages import _blocks, _mcp_content, _result_ids
 from pcode.claude_sdk.resume import ForkPoint
+from pcode.claude_sdk.web import result_block, server_tool_use
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,9 @@ CALL_TIMEOUT_SECONDS = 10.0
 # that gap goes out with none (verified with 2.1.285), so wait for them.
 TOOLS_READY_TIMEOUT_SECONDS = 30.0
 TOOLS_READY_POLL_SECONDS = 0.02
+# The CLI can run its web tools before a pcode call made beside them, so that call
+# reaches pcode only once they finish. The CLI bounds each fetch and search itself.
+WEB_TOOLS_TIMEOUT_SECONDS = 300.0
 # Statuses for the CLI's error kinds when it reports no HTTP status itself.
 # `server_error` has none on purpose: without a status it is a connection failure
 # (`ClaudeConnectionError`), while a real 5xx or 529 always carries its status.
@@ -63,6 +67,8 @@ class SessionConfig:
     thinking: str | None = None  # canonical JSON of the thinking setting
     # pcode's output ceiling; the CLI clamps it to the model's own limit.
     max_tokens: int | None = None
+    # The CLI's own web tools to offer (`web.CLI_WEB_TOOLS`), which it runs itself.
+    web_tools: tuple[str, ...] = ()
 
     def options(self, server, resume: ForkPoint | None, stderr, prompt_file: str) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions
@@ -71,13 +77,14 @@ class SessionConfig:
         if thinking is not None and thinking.get("type") != "disabled":
             thinking = {"display": "summarized", **thinking}
         return ClaudeAgentOptions(
-            # No built-in tools, settings, CLAUDE.md, plugins or other MCP
-            # servers: the model sees pcode's prompt and pcode's tools only.
-            tools=[],
+            # No settings, CLAUDE.md, plugins, other MCP servers or built-in
+            # tools beyond the web ones pcode asked for: the model sees pcode's
+            # prompt and pcode's tools only.
+            tools=list(self.web_tools),
             setting_sources=[],
             strict_mcp_config=True,
             mcp_servers={SERVER: {"type": "sdk", "name": SERVER, "instance": server}},
-            allowed_tools=[f"mcp__{SERVER}"],
+            allowed_tools=[f"mcp__{SERVER}", *self.web_tools],
             system_prompt={"type": "file", "path": prompt_file},
             include_partial_messages=True,
             model=self.model,
@@ -105,6 +112,29 @@ def _client_factory(options) -> Any:
     from claude_agent_sdk import ClaudeSDKClient
 
     return ClaudeSDKClient(options)
+
+
+def _block_events(block: dict, index: int) -> list[dict]:
+    """A whole content block as the start and stop events that carry it."""
+    return [
+        {"type": "content_block_start", "index": index, "content_block": block},
+        {"type": "content_block_stop", "index": index},
+    ]
+
+
+def _sum(first: dict, second: dict) -> dict:
+    """Two messages' usage as one: counts add up, anything else is the latest."""
+    total = dict(first)
+    for key, value in second.items():
+        if isinstance(value, dict):
+            earlier = total.get(key)
+            total[key] = _sum(earlier if isinstance(earlier, dict) else {}, value)
+        elif isinstance(value, int) and not isinstance(value, bool):
+            earlier = total.get(key)
+            total[key] = value + (earlier if isinstance(earlier, int) else 0)
+        else:
+            total[key] = value
+    return total
 
 
 class _Diverged(ClaudeProcessError):
@@ -145,6 +175,10 @@ class ClaudeSession:
         # a released handler, or sent as input). Any other result is its own.
         self._called: set[str] = set()
         self._answered: set[str] = set()
+        # Web tool calls the CLI is running itself (id -> name, input), until
+        # their results arrive; and the tool names in the message streaming now.
+        self._web_calls: dict[str, tuple[str, dict]] = {}
+        self._message_tools: list[str] = []
         # Pulsed on every change a waiter may be waiting for.
         self._changed = asyncio.Event()
         self._last_uuid: str | None = None
@@ -372,6 +406,8 @@ class ClaudeSession:
             raise _Diverged(self.config.model, "Claude Code did not end its turn.") from None
         self._ask()
         self._turn_done.clear()
+        # The last turn ended, so any web call still listed will never answer.
+        self._web_calls.clear()
         # A fork may start with results for the calls its transcript ends on.
         self._answered.update(b["tool_use_id"] for b in content if b.get("type") == "tool_result")
         await self._write(content)
@@ -384,9 +420,17 @@ class ClaudeSession:
         Input written before the results is already queued when they arrive, so
         the CLI sends both in one request (verified with 2.1.283).
         """
+
+        def reached() -> bool:
+            return bool(self._called & set(self.open_tool_ids)) or self.dead
+
         try:
+            # The CLI may run its web tools first; until they finish, a call
+            # not reaching pcode yet is no sign of a refusal.
+            async with asyncio.timeout(WEB_TOOLS_TIMEOUT_SECONDS):
+                await self._until(lambda: reached() or not self._web_calls)
             async with asyncio.timeout(CALL_TIMEOUT_SECONDS):
-                await self._until(lambda: bool(self._called & set(self.open_tool_ids)) or self.dead)
+                await self._until(reached)
         except TimeoutError:
             self._diverge("no tool call reached pcode")
         self._ask()
@@ -431,20 +475,36 @@ class ClaudeSession:
                     kind = event.get("type")
                     if kind == "message_start":
                         stop_reason = None
+                        self._message_tools = []
                         wanted, self._expecting = self._expecting, False
                         if not wanted:
                             # A request of its own (a nudge after a thinking-only
                             # reply, output-limit recovery, a retried tool call).
                             self._diverge("a message pcode did not ask for")
+                    elif kind == "content_block_start":
+                        block = event.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            name = str(block.get("name", ""))
+                            self._message_tools.append(name)
+                            if name in self.config.web_tools:
+                                self._web_calls[block.get("id")] = (name, {})
                     elif kind == "message_delta":
                         stop_reason = (event.get("delta") or {}).get("stop_reason") or stop_reason
                     elif kind == "message_stop" and stop_reason != "tool_use":
                         # The turn ends here; absorb its result message.
                         self._final = True
+                    elif kind == "message_stop" and wanted and self._web_only():
+                        # The CLI runs its web tools and asks again: that next
+                        # message continues the response pcode asked for.
+                        self._expecting = True
                     if wanted:
                         self._queue.put_nowait(("event", event, self._last_uuid))
                 elif isinstance(message, AssistantMessage):
                     self._last_uuid = message.uuid or self._last_uuid
+                    for block in message.content:
+                        call = getattr(block, "id", None)
+                        if call in self._web_calls:
+                            self._web_calls[call] = (block.name, dict(block.input or {}))
                     if message.error:
                         text = " ".join(getattr(b, "text", "") for b in message.content)
                         self._api_error = (message.error, text.strip())
@@ -486,14 +546,41 @@ class ClaudeSession:
         content = message.content if isinstance(message.content, list) else []
         for block in content:
             tool_use_id = getattr(block, "tool_use_id", None)
-            if tool_use_id and tool_use_id not in self._answered and not self._closed:
+            if tool_use_id in self._web_calls:
+                # One of the CLI's own web calls: its result is part of the response.
+                name, args = self._web_calls.pop(tool_use_id)
+                result = result_block(name, tool_use_id, args, block.content, bool(block.is_error))
+                self._queue.put_nowait(("web_result", result, None))
+                self._changed.set()
+            elif tool_use_id and tool_use_id not in self._answered and not self._closed:
                 self._diverge(f"Claude Code answered tool call {tool_use_id} itself")
 
+    def _web_only(self) -> bool:
+        """Whether the message just streamed called the CLI's web tools and nothing else."""
+        return bool(self._message_tools) and all(
+            name in self.config.web_tools for name in self._message_tools
+        )
+
     async def response(self) -> AsyncIterator[dict]:
-        """Raw stream events of the CLI's next assistant message, through message_stop."""
+        """Raw stream events of the CLI's next assistant message, through message_stop.
+
+        A message whose only calls are the CLI's web tools is not the end: the
+        CLI runs them and sends another, which is folded into this one as an
+        Anthropic server tool loop would be. Block indices run on across the
+        messages, the web calls become server tool blocks with their results
+        inserted after them, and usage is the sum of every message folded in.
+        Results of web calls made beside a pcode call arrive after that
+        response ended, so they open the next one.
+        """
         tool_ids: list[str] = []
+        web_ids: list[str] = []
         stop_reason = None
         self.stray_call = False
+        started = False
+        early: list[dict] = []  # web results that came before this message did
+        shift = emitted = 0  # added to the current message's indices; blocks so far
+        folded: dict = {}  # usage of the messages already folded in
+        usage: dict = {}  # usage of the current message, as it accumulates
         while True:
             kind, value, uuid = await self._queue.get()
             if kind == "error":
@@ -502,18 +589,57 @@ class ClaudeSession:
             if kind == "result":
                 self.dead = True
                 raise self._result_error(value)
+            if kind == "web_result":
+                if not started:
+                    early.append(value)
+                    continue
+                for event in _block_events(value, emitted):
+                    yield event
+                emitted += 1
+                continue
             event_type = value.get("type")
+            if event_type == "message_start":
+                tool_ids, web_ids, stop_reason = [], [], None
+                usage = dict((value.get("message") or {}).get("usage") or {})
+                if started:
+                    # A continuation: its usage joins the response's, the rest is known.
+                    yield {"type": "message_delta", "delta": {}, "usage": _sum(folded, usage)}
+                else:
+                    started = True
+                    yield value
+                    for block in early:
+                        for event in _block_events(block, emitted):
+                            yield event
+                        emitted += 1
+                shift = emitted
+                continue
+            if isinstance(value.get("index"), int):
+                value = {**value, "index": value["index"] + shift}
+                emitted = max(emitted, value["index"] + 1)
             if event_type == "content_block_start":
                 block = value.get("content_block") or {}
-                if block.get("type") == "tool_use":
+                wire = str(block.get("name", ""))
+                if block.get("type") == "tool_use" and wire in self.config.web_tools:
+                    web_ids.append(block.get("id"))
+                    value = {**value, "content_block": server_tool_use(block)}
+                elif block.get("type") == "tool_use":
                     tool_ids.append(block.get("id"))
-                    wire = str(block.get("name", ""))
                     self.stray_call = self.stray_call or not wire.startswith(TOOL_PREFIX)
                     name = wire.removeprefix(TOOL_PREFIX)
                     value = {**value, "content_block": {**block, "name": name}}
             elif event_type == "message_delta":
                 stop_reason = (value.get("delta") or {}).get("stop_reason") or stop_reason
+                usage.update(value.get("usage") or {})
+                folding = stop_reason == "tool_use" and web_ids and not tool_ids
+                if folding or folded:
+                    delta = dict(value.get("delta") or {})
+                    if folding:
+                        delta.pop("stop_reason", None)  # the response goes on
+                    value = {**value, "delta": delta, "usage": _sum(folded, usage)}
             elif event_type == "message_stop":
+                if stop_reason == "tool_use" and web_ids and not tool_ids:
+                    folded = _sum(folded, usage)
+                    continue
                 # Settled before handing it over, in case the reader stops here.
                 self.open_tool_ids = tuple(tool_ids) if stop_reason == "tool_use" else ()
                 self.response_uuid = uuid

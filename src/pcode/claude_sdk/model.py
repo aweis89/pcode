@@ -24,6 +24,7 @@ from pcode.claude_sdk.errors import MISSING_SDK, ClaudeSDKMissing
 from pcode.claude_sdk.messages import _digest, lineage, normalize
 from pcode.claude_sdk.session import SessionConfig
 from pcode.claude_sdk.session_pool import pool
+from pcode.claude_sdk.web import cli_tool_names
 from pcode.claude_sdk.workspace import CWD_SETTING
 
 PREFIX = "claude:"
@@ -71,16 +72,18 @@ KEEP_WARM_SETTING = "pcode_claude_keep_warm"
 class ClaudeModel(AnthropicModel):
     @cached_property
     def profile(self):
-        # The CLI forwards only MCP tools, so no Anthropic server tool reaches
-        # the model and web tools fall back to local ones. Like Meridian, wire
-        # tool deferral is off: hidden tools are withheld until found.
+        # No Anthropic server tool reaches the model through the CLI, but the
+        # CLI's own WebSearch and WebFetch stand in for those two (`web.py`).
+        # Like Meridian, wire tool deferral is off: hidden tools are withheld
+        # until found.
+        from pydantic_ai.native_tools import WebFetchTool, WebSearchTool
         from pydantic_ai.profiles import merge_profile
         from pydantic_ai.profiles.anthropic import AnthropicModelProfile
 
         return merge_profile(
             super().profile,
             AnthropicModelProfile(
-                supported_native_tools=frozenset(),
+                supported_native_tools=frozenset({WebSearchTool, WebFetchTool}),
                 tool_deferral_mode=None,
                 tool_addition_mode=None,
                 # The system prompt is fixed per process; mid-conversation
@@ -89,7 +92,7 @@ class ClaudeModel(AnthropicModel):
             ),
         )
 
-    def session_config(self, system, tools, settings) -> SessionConfig:
+    def session_config(self, system, tools, settings, native_tools=()) -> SessionConfig:
         if isinstance(system, str):
             prompt = system
         else:
@@ -114,6 +117,7 @@ class ClaudeModel(AnthropicModel):
             effort=effort if effort in EFFORTS else None,
             thinking=json.dumps(thinking, sort_keys=True) if isinstance(thinking, dict) else None,
             max_tokens=max_tokens if isinstance(max_tokens, int) and max_tokens > 0 else None,
+            web_tools=cli_tool_names(native_tools),
         )
 
     async def request(self, messages, model_settings, model_request_parameters):
@@ -140,7 +144,7 @@ class ClaudeModel(AnthropicModel):
         settings = dict(settings or {})
         system, mapped = await self._map_message(messages, parameters, settings)
         tools, _ = self._prepare_tools_and_tool_choice(settings, parameters)
-        config = self.session_config(system, tools, settings)
+        config = self.session_config(system, tools, settings, parameters.native_tools)
         mapped = normalize(mapped)
         chain = lineage(mapped)
         sessions = pool()

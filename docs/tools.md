@@ -356,7 +356,7 @@ backend available:
 
 | | Search | Fetch a URL |
 | --- | --- | --- |
-| Model has a native tool (`anthropic:` and OpenAI models; not `claude:`) | provider runs it server-side | Anthropic runs it server-side |
+| Model has a native tool (`anthropic:`, `claude:` and OpenAI models) | provider runs it server-side | Anthropic runs it server-side; `claude:` has Claude Code fetch it |
 | `EXA_API_KEY` set | Exa `web_search` | Exa `get_page` |
 | Otherwise | DuckDuckGo `web_search` | HTTP fetch `get_page`, converted to Markdown |
 
@@ -368,10 +368,16 @@ returns up to five results, and a fetched page up to 10,000 characters. Queries,
 content go to whichever backend is in use, reach the model, and can be saved in
 session history. The worker inherits the same web policy and tools.
 
+On `claude:` models, Claude Code runs its own WebSearch and WebFetch tools and
+pcode shows them like any other native call. Its fetch answers with a summary
+of the page written by a small model, not the page text. Set `web_fetch` to
+`local` when you want the model to read pages verbatim; search stays native.
+
 ```sh
 pcode config set web_search local   # Never advertise native tools to the model
 pcode config set web_search off     # No web tools at all
 pcode config unset web_search       # Back to auto
+pcode config set web_fetch local    # Native search, but pcode's own get_page
 ```
 
 `local` is the escape hatch for an endpoint that rejects server-side tools.
