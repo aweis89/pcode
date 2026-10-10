@@ -254,11 +254,55 @@ def test_extension_commands_register_after_builtins(tmp_path):
     app.handle("/hello there")
     assert notes == ["hi there"]
 
+    assert app.controller.skill_requested is None
+
     # A reload replaces the previous set rather than accumulating duplicates.
     app.extensions = FakeLoaded([])
     app.controller.register_extension_commands()
     assert app.registry.find("/hello") is None
     assert app.registry.find("/help") is not None
+
+
+def test_extension_command_text_becomes_a_prompt(tmp_path):
+    from pcode.commands import Command
+    from pcode.ext import Extension
+
+    output = StringIO()
+    app = PreviewApp(console=Console(file=output), workspace=tmp_path, model="test:model")
+
+    async def later(arg):
+        return f"async {arg}"
+
+    ext = Extension("ask", tmp_path / "ask.py", "user")
+    ext.commands = [
+        Command("/ask", "Ask", lambda arg: arg or None, free_arguments=True),
+        Command("/later", "Later", later, free_arguments=True),
+    ]
+    app.extensions = FakeLoaded([ext])
+    app.controller.register_extension_commands()
+
+    app.handle("/ask")
+    assert app.controller.skill_requested is None
+    app.handle("/ask first line\nsecond line")
+    assert app.controller.skill_requested == "first line\nsecond line"
+
+    # Its own turn whatever the send mode: steered into a running turn, it
+    # would skip what the command set up for the next one.
+    sent = []
+    app.controller.prompts.put = lambda text, mode: sent.append((text, mode))
+    asyncio.run(app.controller.follow_up())
+    assert sent == [("first line\nsecond line", "queue")]
+    assert app.controller.skill_queued is False
+
+    asyncio.run(app.controller.run_command("/later one"))
+    assert app.controller.skill_requested == "async one"
+
+    offline = PreviewApp(console=Console(file=output), workspace=tmp_path)
+    offline.extensions = FakeLoaded([ext])
+    offline.controller.register_extension_commands()
+    offline.handle("/ask hi")
+    assert offline.controller.skill_requested is None
+    assert "/ask requires a live model session" in output.getvalue()
 
 
 def test_reload_rebuilds_the_agent_and_commands(tmp_path, monkeypatch):

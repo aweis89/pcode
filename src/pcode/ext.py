@@ -245,7 +245,7 @@ class ExtensionAPI:
         self,
         name: str,
         description: str,
-        handler: Callable[[str], None],
+        handler: Callable[[str], str | None],
         *,
         arguments: tuple[str, ...] = (),
         aliases: tuple[str, ...] = (),
@@ -254,6 +254,8 @@ class ExtensionAPI:
         free_arguments: bool | None = None,
     ) -> None:
         """Add a slash command. `handler(argument)` runs on the terminal's event loop.
+
+        A handler that returns text sends it to the model as a prompt.
 
         Without `arguments`, any text is accepted; with them, only those values
         unless `free_arguments=True` keeps them as completions for free text.
