@@ -103,6 +103,7 @@ def setup(pcode) -> None:
         "Plan before implementing; the model exits when you approve",
         plan_command,
         arguments=("off", "status"),
+        free_arguments=True,  # anything else names the plan's topic
         argument_descriptions={
             "off": "Leave plan mode (the plan file is kept)",
             "status": "Show whether plan mode is on and its file",

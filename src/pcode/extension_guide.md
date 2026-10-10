@@ -145,6 +145,9 @@ pcode.register_command(
 )
 ```
 
+With `arguments`, any other text is a usage error; add `free_arguments=True`
+to accept free text too, keeping `arguments` as completions.
+
 Pass `complete_paths=True` to Tab-complete the argument (after any leading
 `--option` words) as a file or directory path.
 
